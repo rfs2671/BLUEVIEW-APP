@@ -241,14 +241,17 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
     };
     const en = load('en.js').dailyJobsite;
     const es = load('es.js').dailyJobsite;
-    ok(Boolean(en.photoNotSavedTitle && en.photoNotSavedBody
-      && es.photoNotSavedTitle && es.photoNotSavedBody),
-      'copy: both locales carry the retake message');
-    ok(en.photoNotSavedTitle !== es.photoNotSavedTitle
-      && en.photoNotSavedBody !== es.photoNotSavedBody,
-      'copy: the Spanish is translated, not a copy of the English');
-    ok(/again|de nuevo/i.test(en.photoNotSavedBody) && /nuevo|otra vez/i.test(es.photoNotSavedBody),
-      'copy: both tell the CP what to DO about it — take it again');
+    ok(Boolean(en.photoNotSavedTitle && en.photoNotSavedBody),
+      'copy: the retake message exists');
+    // EN-ONLY BY RULING. A logbook is a legal record filed with the DOB and is
+    // written in English; Spanish belongs where a WORKER must understand what
+    // he is signing. This toast is CP-facing. Asserted as an absence rather
+    // than dropped, so a translation cannot quietly reappear — and translate()
+    // falls back to English, so a Spanish-locale CP still reads it.
+    ok(es === undefined,
+      'copy: the dailyJobsite namespace is absent from the ES catalogue');
+    ok(/again/i.test(en.photoNotSavedBody),
+      'copy: it tells the CP what to DO about it — take it again');
   }
 
   // ══════════════════════════════════════════════════════════════════════════

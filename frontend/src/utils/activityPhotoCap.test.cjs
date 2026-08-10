@@ -294,8 +294,16 @@ const en = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
 const es = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'es.js'), 'utf8');
 ok(/photoCapBody: 'Maximum \{n\} photos per subcontractor'/.test(en),
   'copy: the EN message keeps the "per subcontractor" framing it always had');
-ok(/photoCapBody: 'M[áa]ximo \{n\} fotos por subcontratista'/.test(es),
-  'copy: the ES message says the same thing in Spanish');
+// A logbook is a legal record filed with the DOB, so it is written in English.
+// Spanish belongs where a WORKER must understand what he is signing — the gate,
+// and any worker signature line inside a logbook. This message is CP-facing, so
+// it is EN-only BY RULING. Asserted as an absence, not skipped, so a well-meant
+// translation cannot quietly reappear. (translate() falls back to English, so a
+// Spanish-locale CP still reads it — see src/i18n/i18n.test.cjs.)
+ok(!/photoCapBody:/.test(es),
+  'copy: the ES catalogue does NOT carry this CP-facing message');
+ok(!/dailyJobsite:\s*\{/.test(es),
+  'copy: the whole dailyJobsite namespace is absent from the ES catalogue');
 ok(/\{n\}/.test(en) && !/Maximum 10 photos/.test(en),
   'copy: the number is substituted from the constant, never hardcoded in the sentence');
 ok(/capMessage = \(\) => t\('photoCapBody'\)\.replace\('\{n\}', String\(MAX_PHOTOS_PER_SUBCONTRACTOR\)\)/.test(src),

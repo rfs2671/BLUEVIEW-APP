@@ -165,8 +165,15 @@ ok(ALL_TYPES.every((k) => tabKeys.includes(k)),
 ok(/l\.log_type === activeTab/.test(src),
   'the tab filter is still the single gate the tabs must satisfy (premise of the test above)');
 const labelKeys = [...src.matchAll(/labelKey: '(\w+)'/g)].map((m) => m[1]);
-ok(labelKeys.every((k) => k in EN.logbookView && k in ES.logbookView),
-  `every tab label resolves in EN and ES${labelKeys.filter((k) => !(k in ES.logbookView)).join(',')}`);
+// FLIPPED, not dropped. `logbookView` is EN-only by ruling: it renders FILED
+// logs, read by a CP or a DOB inspector, and a DOB inspector reads English.
+// The guard that matters is unchanged — every tab label must exist in the
+// catalogue, so a renamed key still fails here. What is asserted about ES is
+// now its ABSENCE, so a well-meant translation cannot quietly reappear.
+ok(labelKeys.every((k) => k in EN.logbookView),
+  `every tab label resolves in EN${labelKeys.filter((k) => !(k in EN.logbookView)).join(',')}`);
+ok(ES.logbookView === undefined,
+  'logbookView is absent from the ES catalogue — a filed log is an English record');
 
 // ════════════════════════════════════════════════════════════════════════════
 //  1 — each of the eight renders its REAL payload keys

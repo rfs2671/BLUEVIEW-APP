@@ -307,9 +307,15 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 
     const es = await run({ finalizeError: rejection(400, code), locale: 'es' });
     const esErr = es.calls.toasts.find((t) => t.kind === 'error');
+    // FLIPPED, not dropped. `finalize` is EN-only by ruling — a logbook is a
+    // legal record filed with the DOB and these are the CP's lock/refusal
+    // prompts. The guard that matters is unchanged: the CP is shown the MAPPED
+    // copy for the code, never the server's raw detail. Under es that copy
+    // resolves to English via translate()'s fallback, which is the difference
+    // between "deliberately English" and "missing".
     ok(esErr.body === I.translate('finalize', `code_${code}`, 'es'),
-      `${code}: a Spanish-speaking CP gets the Spanish reason`);
-    ok(esErr.body !== err.body, `${code}: which is genuinely a different string`);
+      `${code}: an es-locale CP gets the mapped reason`);
+    ok(esErr.body === err.body, `${code}: which is the English copy — EN-only namespace`);
 
     // ── AND IT OUTLIVES THE TOAST ──────────────────────────────────────────
     // The toast above is gone in four seconds. If the CP walks off the screen
@@ -409,8 +415,8 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 
     const es = await run({ finalizeError: rejection(status, null), locale: 'es' });
     const esErr = es.calls.toasts.find((t) => t.kind === 'error');
-    ok(esErr && esErr.body === GENERIC.es && esErr.body !== GENERIC.en,
-      `${status}: and a Spanish-speaking CP gets it in Spanish`);
+    ok(esErr && esErr.body === GENERIC.es && esErr.body === GENERIC.en,
+      `${status}: and an es-locale CP gets the same English generic (EN-only)`);
 
     // NOT recorded: the banner's own copy says the log is frozen on this device
     // and queued. On a 5xx it is neither, so raising it would be a third lie.

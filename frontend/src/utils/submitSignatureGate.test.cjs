@@ -96,12 +96,17 @@ const valueOf = (src, key) => {
   const m = new RegExp(`${key}:\\s*'((?:[^'\\\\]|\\\\.)*)'`).exec(src);
   return m ? m[1] : null;
 };
+// FLIPPED, not dropped. `finalize` is EN-only by ruling: a logbook is a legal
+// record filed with the DOB, and these are the CP's lock, refusal and signature
+// prompts. The guard still bites — the EN copy must exist, and the ES catalogue
+// must NOT carry it, so a well-meant translation cannot quietly reappear.
+// A Spanish-locale CP still reads these: translate() falls back to English.
 for (const k of NEW_KEYS) {
-  const e = valueOf(en, k);
-  const s = valueOf(es, k);
-  ok(e && s, `${k}: present in EN and ES`);
-  ok(e && s && e !== s, `${k}: the ES value is not a copy of the EN one`);
+  ok(Boolean(valueOf(en, k)), `${k}: present in EN`);
+  ok(valueOf(es, k) === null, `${k}: absent from ES — CP-facing legal record copy`);
 }
+ok(!/^\s*finalize:\s*\{/m.test(es),
+  'the whole finalize namespace is absent from the ES catalogue');
 
 // ── 4. the server's codes and the client's copy agree ────────────────────────
 const SUBMIT_CODES = [...new Set(
@@ -112,8 +117,8 @@ ok(SUBMIT_CODES.length === 2
   && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE'),
   `server.py returns exactly the 2 submit codes (${SUBMIT_CODES.join(', ')})`);
 for (const c of SUBMIT_CODES) {
-  ok(en.includes(`code_${c}:`) && es.includes(`code_${c}:`),
-    `${c}: has bilingual copy, so it never falls back to the generic message`);
+  ok(en.includes(`code_${c}:`),
+    `${c}: has mapped copy, so it never falls back to the generic message`);
 }
 
 // ── 5. both server endpoints are gated, not just create ──────────────────────

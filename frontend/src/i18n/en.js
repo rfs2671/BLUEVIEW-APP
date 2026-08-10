@@ -116,6 +116,73 @@ export default {
     // kept, and the fix is to take it again. It never blocks the log.
     photoNotSavedTitle: 'Photo Not Saved',
     photoNotSavedBody: 'This device could not store the photo, so it was not kept. Please take it again.',
+
+    // ── U5 scaffolding for the U1 stepper ────────────────────────────────
+    // Every user-facing string the Daily Jobsite Log needs, routed here BEFORE
+    // the stepper is built so U1 consumes the layer instead of hardcoding and
+    // being retrofitted. The screen on main still carries these as literals;
+    // it is replaced wholesale by U1, so it was deliberately NOT churned.
+    //
+    // DELIBERATELY ABSENT: the DOB form number ("NYC DOB 3301-02"). It is an
+    // identifier, not prose — identical in every language — and this catalogue
+    // forbids an ES value equal to its EN one, correctly. U1 renders it from a
+    // module constant, not from here.
+    screenTitle: 'Daily Jobsite Log',
+
+    sectionProject: 'Project Information',
+    sectionActivities: 'Activity Details',
+    sectionEquipment: 'Equipment on Site',
+    sectionInspected: 'Items Inspected',
+    sectionObservations: 'Safety Observations / Violations',
+    sectionVisitors: 'Visitors / Deliveries',
+    sectionSignOff: 'Competent Person Sign-Off',
+
+    fieldAddress: 'Address',
+    fieldWeather: 'Weather',
+    fieldGeneralDescription: "General Description of Today's Activities",
+    colCompany: 'COMPANY',
+    colWorkDescription: 'WORK DESCRIPTION',
+    colWorkLocations: 'WORK LOCATIONS',
+
+    phCompany: 'Company',
+    phWorkPerformed: 'Work performed...',
+    phWorkLocations: 'Floors, areas...',
+    phGeneralDescription: 'Describe the main work performed today...',
+    phObservation: 'Describe observation...',
+    phResponsibleParty: 'Responsible party',
+    phRemedy: 'Remedy / corrective action',
+    phVisitors: 'Record any visitors or deliveries...',
+
+    photoTake: 'Take Photo',
+    photoGallery: 'Gallery',
+    photoLabel: 'Photo',
+    pendingAssignment: 'Pending assignment',
+    autoPopulatedHint: 'Auto-populated from check-ins. Edit as needed.',
+
+    permissionDeniedTitle: 'Permission Denied',
+    permissionDeniedBody: 'Camera roll access is required to upload photos',
+    cameraErrorTitle: 'Camera Error',
+    cameraErrorBody: 'Could not open camera. Check permissions in device settings.',
+
+    draftSavedTitle: 'Draft Saved',
+    saveFailedTitle: 'Could not save log',
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the log before submitting — this is a signed record.',
+    submittedTitle: 'Submitted & Signed',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+
+    // ── U4: the activity chips ───────────────────────────────────────────
+    // The ranker ORDERS chips; it never pre-selects and never blocks. When a
+    // project has no structural system set the app says so rather than letting
+    // the CP assume it knows — `structuralSystemUnknown` is that sentence.
+    chipsSuggested: 'Suggested from yesterday',
+    chipsAlwaysAvailable: 'Always available',
+    chipsCatalog: 'All activities',
+    chipsRemembered: 'Used on this project',
+    chipOther: 'Other',
+    chipOtherPrompt: 'What was the activity?',
+    structuralSystemUnknown: 'Structural system not set for this project, so both concrete and CFS activities are shown.',
+    chipsNoPriorDay: 'No earlier log to suggest from, so these are the project-start activities.',
   },
 
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────

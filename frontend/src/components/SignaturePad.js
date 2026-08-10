@@ -4,7 +4,7 @@ import { Trash2, Check, PenTool, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
-import { useT } from '../i18n';
+import { useT, useLocale } from '../i18n';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -76,7 +76,27 @@ const SignaturePad = ({
 }) => {
   const { isDark, colors } = useTheme();
   const styles = buildStyles(colors, isDark);
-  const t = useT('signature', lang);
+
+  // THE PAD OWNS ITS OWN LANGUAGE.
+  //
+  // The thing being translated is the sentence a person SIGNS, so it belongs to
+  // that signature — not to a session-wide mode somebody set on another screen
+  // an hour earlier. The toggle used to live in app/logbooks/review.jsx and
+  // called the app-wide setLocale, which meant it changed this pad remotely,
+  // from a screen that does not even render one.
+  //
+  // Local state, so there is no session state to lose: a CP who picks Spanish
+  // and force-closes the app is not silently back in English on a signature he
+  // has already read once. An explicit `lang` prop still wins and hides the
+  // toggle — a caller that pins a locale means it.
+  const [padLang, setPadLang] = useState(lang);
+  // Resolved to a CONCRETE locale, never undefined, because it is recorded onto
+  // the signature: "the affirmation was shown in en" is a fact, `undefined` is
+  // not. Precedence: an explicit prop, then this pad's own choice, then the app
+  // locale (which has no control today and is always 'en' — see setLocale).
+  const appLocale = useLocale();
+  const activeLang = lang ?? padLang ?? appLocale;
+  const t = useT('signature', activeLang);
 
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
@@ -160,6 +180,8 @@ const SignaturePad = ({
       timestamp: now,
       affirmed: true,
       affirmedAt: now,
+      // WHAT THE SIGNER WAS SHOWN, frozen at this instant. See handleAffirm.
+      affirmedLang: activeLang,
     };
 
     setSignatureData(sigData);
@@ -167,10 +189,20 @@ const SignaturePad = ({
     setIsAffirmed(true);
     isSignedRef.current = true;
     onSignatureCapture?.(sigData);
-  }, [canConfirm, signerName, onSignatureCapture]);
+  }, [canConfirm, signerName, onSignatureCapture, activeLang]);
 
   // ONE explicit affirmative action per document: keep the inherited credential
   // image but stamp a FRESH affirmation timestamp onto THIS record and emit it.
+  //
+  // affirmedLang records WHAT THE SIGNER WAS SHOWN, captured here and FROZEN.
+  // It is written once, next to affirmedAt, from the locale rendering at this
+  // instant — and never read back out of state afterwards. That matters: the
+  // toggle stays usable after signing, so a field that tracked live state would
+  // silently rewrite what the record claims a person was shown. A record that
+  // changes after the fact is worse than no record.
+  //
+  // Precedent for storing it at all: subcontractor_orientation.jsx already
+  // stores language_provided and renders it back.
   const handleAffirm = useCallback(() => {
     const now = new Date().toISOString();
     const base = (signatureData && typeof signatureData === 'object')
@@ -182,11 +214,12 @@ const SignaturePad = ({
       timestamp: now,
       affirmed: true,
       affirmedAt: now,
+      affirmedLang: activeLang,
     };
     setSignatureData(affirmedSig);
     setIsAffirmed(true);
     onSignatureCapture?.(affirmedSig);
-  }, [signatureData, signerName, onSignatureCapture]);
+  }, [signatureData, signerName, onSignatureCapture, activeLang]);
 
   // ── Render active drawing paths (current stroke + completed strokes) ──
   const renderPaths = () => {
@@ -202,11 +235,32 @@ const SignaturePad = ({
           <PenTool size={16} strokeWidth={1.5} color={colors.text.muted} />
           <Text style={styles.title}>{title}</Text>
         </View>
-        {isAffirmed && (signatureData?.affirmedAt || signatureData?.timestamp) && (
-          <Text style={styles.timestamp}>
-            {new Date(signatureData.affirmedAt || signatureData.timestamp).toLocaleTimeString()}
-          </Text>
-        )}
+        <View style={styles.headerRight}>
+          {isAffirmed && (signatureData?.affirmedAt || signatureData?.timestamp) && (
+            <Text style={styles.timestamp}>
+              {new Date(signatureData.affirmedAt || signatureData.timestamp).toLocaleTimeString()}
+            </Text>
+          )}
+          {/* Language of the AFFIRMATION — the sentence being signed. Local to
+              this pad, so nothing else in the app changes and there is no
+              session state to lose. Hidden when the caller pinned `lang`: a
+              caller that names a locale means it. */}
+          {lang === undefined && (
+            <Pressable
+              onPress={() => setPadLang(activeLang === 'es' ? 'en' : 'es')}
+              hitSlop={16}
+              accessibilityRole="button"
+              accessibilityLabel={activeLang === 'es'
+                ? 'Ver esta declaración en inglés'
+                : 'View this statement in Spanish'}
+              style={styles.langToggle}
+            >
+              <Text style={styles.langToggleText}>
+                {activeLang === 'es' ? 'EN' : 'ES'}
+              </Text>
+            </Pressable>
+          )}
+        </View>
       </View>
 
       {/* Name Input */}
@@ -347,6 +401,26 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: spacing.md,
+    },
+    headerRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    langToggle: {
+      minWidth: 44,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: spacing.sm,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: withAlpha(colors.text.muted, 0.35),
+    },
+    langToggleText: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: colors.text.secondary,
     },
     titleRow: {
       flexDirection: 'row',

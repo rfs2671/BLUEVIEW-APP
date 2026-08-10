@@ -1699,6 +1699,11 @@ class ProjectCreate(BaseModel):
     has_full_demolition: bool = False
     demolition_stories: Optional[int] = None
     project_class: Optional[str] = None  # admin override
+    # Which superstructure loop this project runs. Drives which activity chips
+    # the sequence ranker offers. NEVER inferred: when this is unset the ranker
+    # reports structural_system_set=False and offers BOTH loops, because
+    # guessing it would put the wrong trades in front of the CP.
+    structural_system: Optional[Literal["cast_in_place", "cfs", "unknown"]] = None
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
@@ -1736,6 +1741,8 @@ class ProjectUpdate(BaseModel):
     has_full_demolition: Optional[bool] = None
     demolition_stories: Optional[int] = None
     project_class: Optional[str] = None
+    # See ProjectCreate — unset means "not known", never "cast in place".
+    structural_system: Optional[Literal["cast_in_place", "cfs", "unknown"]] = None
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
@@ -15928,6 +15935,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         asyncio.create_task(
             _enhance_logbook_photos(str(existing["_id"]), data.project_id)
         )
+        await _remember_other_activities(data.project_id, data.data)
         return serialize_id(updated)
 
     doc = {
@@ -15973,6 +15981,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         _enhance_logbook_photos(str(result.inserted_id), data.project_id)
     )
 
+    await _remember_other_activities(data.project_id, data.data)
     return serialize_id(created)
 
 @api_router.put("/logbooks/{logbook_id}")
@@ -16057,6 +16066,8 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Logbook not found")
     updated = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    if data.data is not None:
+        await _remember_other_activities((updated or {}).get("project_id"), data.data)
     return serialize_id(updated)
 
 
@@ -16281,6 +16292,154 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
         "parent_logbook_id": str(original["_id"]), "reason": str(reason).strip()[:200], "log_type": original.get("log_type"),
     })
     return serialize_id(await db.logbooks.find_one({"_id": result.inserted_id}))
+
+
+# ══ ACTIVITY CHIPS — the sequence engine's only consumer ═════════════════════
+#
+# app/scheduling/ has held 86 nodes and 145 edges since it was written, and
+# rank_activities was called by nothing but its own test: it was built to order
+# activity chips for a screen that had none. This is the data side of that wiring
+# (U4). The chip UI itself is U1's; nothing here renders anything.
+#
+# THE CONTRACT WITH THE EDITOR — an activity row may carry:
+#   activity_chip_id     the rules node id ("insulation"), or "other"
+#   activity_other_label the free text, only when activity_chip_id == "other"
+# Both are optional. A row without them is invisible to the ranker and harmless:
+# rules NEVER block an entry, so a CP can log anything with or without a chip.
+
+ACTIVITY_CHIP_ID_FIELD = "activity_chip_id"
+ACTIVITY_OTHER_LABEL_FIELD = "activity_other_label"
+# Free-text "Other" labels remembered per project, so an activity the CP typed
+# once comes back as a chip the next day. Capped: this is a convenience list on
+# a hot document, not an audit trail.
+PROJECT_OTHER_ACTIVITIES_FIELD = "remembered_other_activities"
+MAX_REMEMBERED_OTHER = 25
+
+
+def _activity_rows(data) -> list:
+    """The activity rows of a logbook payload, or []. Tolerant by design —
+    every log type has a different `data` shape and most have no activities."""
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("activities")
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def _activity_chip_ids(data) -> list:
+    """Chip ids logged in this payload, de-duplicated, order preserved.
+
+    A remembered "Other" entry is reported under its OWN id (`other:<label>`),
+    not the bare "other", so that yesterday's free-text entry ranks as itself
+    tomorrow instead of collapsing into the generic chip.
+    """
+    out = []
+    for row in _activity_rows(data):
+        chip = row.get(ACTIVITY_CHIP_ID_FIELD)
+        if not isinstance(chip, str) or not chip.strip():
+            continue
+        chip = chip.strip()
+        if chip == "other":
+            label = row.get(ACTIVITY_OTHER_LABEL_FIELD)
+            if isinstance(label, str) and label.strip():
+                chip = f"other:{label.strip()}"
+        if chip not in out:
+            out.append(chip)
+    return out
+
+
+def _other_labels_in(data) -> list:
+    """Free-text labels the CP entered under "Other" in this payload."""
+    out = []
+    for row in _activity_rows(data):
+        if str(row.get(ACTIVITY_CHIP_ID_FIELD) or "").strip() != "other":
+            continue
+        label = row.get(ACTIVITY_OTHER_LABEL_FIELD)
+        if isinstance(label, str) and label.strip() and label.strip() not in out:
+            out.append(label.strip())
+    return out
+
+
+async def _remember_other_activities(project_id, data) -> None:
+    """Persist this payload's "Other" labels against the project.
+
+    Rides on the logbook save rather than adding a write route, because the act
+    of logging the activity IS the thing worth remembering. Failure-isolated: a
+    CP's log must never fail because a convenience list did not update.
+    """
+    labels = _other_labels_in(data)
+    if not labels or not project_id:
+        return
+    try:
+        await db.projects.update_one(
+            {"_id": to_query_id(project_id)},
+            {"$addToSet": {
+                PROJECT_OTHER_ACTIVITIES_FIELD: {"$each": labels[:MAX_REMEMBERED_OTHER]},
+            }},
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            f"[activity_chips] could not remember Other labels for "
+            f"project={project_id}: {e!r}"
+        )
+
+
+@api_router.get(
+    "/projects/{project_id}/activity-chips",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def get_activity_chips(
+    project_id: str,
+    date: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Ranked activity chips for one project-day.
+
+    RANKING ONLY. The response orders chips and says why; it never pre-selects
+    one (ActivityChip.selected is Literal[False], so a pre-selected chip is
+    unconstructible) and never blocks an entry. "Other" is always present as the
+    last chip.
+
+    `date` is the day being logged; priors are read from the most recent
+    daily_jobsite log STRICTLY BEFORE it, so re-opening today's log ranks off
+    yesterday rather than off itself. Served by the existing
+    (project_id, log_type, date DESC) index.
+
+    A project with no structural system set gets BOTH superstructure loops and
+    `structural_system_set: false` — the caller is expected to say so rather
+    than let the CP assume the app knows.
+    """
+    from app.scheduling.sequence_ranking import rank_activities
+
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Eastern, not UTC. The app always sends `date`, so this default only fires
+    # for a caller that omits it — but on the UTC clock that caller would be
+    # asking for TOMORROW's chips from 20:00 EDT (19:00 EST), and the priors
+    # below are read with {"$lt": day}, so it would silently rank off the wrong
+    # day. Uses the shared helper added alongside get_day_range_est.
+    day = (date or "").strip() or eastern_today()
+
+    prior_query = {
+        "project_id": str(project_id),
+        "log_type": "daily_jobsite",
+        "date": {"$lt": day},
+        "is_deleted": {"$ne": True},
+    }
+    prior = await db.logbooks.find_one(prior_query, sort=[("date", -1)])
+
+    ranking = rank_activities(
+        project_id=str(project_id),
+        prior_activity_ids=_activity_chip_ids((prior or {}).get("data")),
+        structural_system=project.get("structural_system"),
+        remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
+    )
+    out = ranking.model_dump()
+    # Which day the suggestions were derived from, so the UI can be honest about
+    # a stale or absent prior instead of implying the ranking is about today.
+    out["prior_date"] = (prior or {}).get("date")
+    return out
 
 
 @api_router.delete("/logbooks/{logbook_id}")

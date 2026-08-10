@@ -454,15 +454,23 @@ class RejectionShape(unittest.TestCase):
         self.assertIsInstance(detail, dict)
         self.assertEqual(list(detail.keys()), ["code"])
 
-    def test_both_codes_have_bilingual_copy(self):
-        """A code with no EN/ES entry renders as the generic message, which
-        tells the CP nothing about what to fix."""
+    def test_both_codes_have_mapped_copy_in_english_only(self):
+        """A code with no mapped entry renders as the generic message, which
+        tells the CP nothing about what to fix — so EN must carry both.
+
+        ES must NOT. `finalize` is EN-only by operator ruling: a logbook is a
+        legal record filed with the DOB, and these are the CP's lock and
+        refusal prompts. An es-locale CP still reads them — translate() falls
+        back to English — and the absence is asserted rather than tolerated so
+        a well-meant translation cannot quietly reappear.
+        """
         root = _BACKEND.parent / "frontend" / "src" / "i18n"
-        for locale in ("en", "es"):
-            text = (root / f"{locale}.js").read_text(encoding="utf-8")
-            for code in ("SUBMIT_EMPTY_LOG", "SUBMIT_MISSING_CP_SIGNATURE"):
-                with self.subTest(locale=locale, code=code):
-                    self.assertIn(f"code_{code}:", text)
+        en = (root / "en.js").read_text(encoding="utf-8")
+        es = (root / "es.js").read_text(encoding="utf-8")
+        for code in ("SUBMIT_EMPTY_LOG", "SUBMIT_MISSING_CP_SIGNATURE"):
+            with self.subTest(code=code):
+                self.assertIn(f"code_{code}:", en)
+                self.assertNotIn(f"code_{code}:", es)
 
 
 if __name__ == "__main__":

@@ -46,7 +46,27 @@ export function getLocale() {
   return _locale;
 }
 
-/** Set the app-wide locale. Unknown values fall back to DEFAULT_LOCALE. */
+/**
+ * Set the app-wide locale. Unknown values fall back to DEFAULT_LOCALE.
+ *
+ * DELIBERATELY UNCALLED — this is not dead code, and it is not working
+ * machinery either. Do not read the app as having a global language control.
+ *
+ * There is nothing left for one to switch. A logbook is a legal record filed
+ * with the DOB, so it is written in English: dailyJobsite, logbookView, review,
+ * finalize and reportPreview are all English-only (see the EN_ONLY_NAMESPACES
+ * allowlist in ./i18n.test.cjs). The one namespace still carrying Spanish is
+ * `signature`, and SignaturePad owns that choice LOCALLY — the language of the
+ * sentence a person signs belongs to that signature, not to a session-wide mode
+ * set on some other screen. The toggle that used to call this lived in
+ * app/logbooks/review.jsx and was removed for exactly that reason.
+ *
+ * Kept because the stated future home for a global control is a settings
+ * screen, and this is the shape it would take. `_locale` is module-level and
+ * never persisted, so with no caller it simply stays at DEFAULT_LOCALE for the
+ * life of the process — which is what every EN-only namespace already relies on
+ * when translate() falls back.
+ */
 export function setLocale(next) {
   const resolved = CATALOGUES[next] ? next : DEFAULT_LOCALE;
   if (resolved === _locale) return _locale;
