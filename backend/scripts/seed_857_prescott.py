@@ -383,15 +383,23 @@ def main():
                 "work_description": "Envelope closed",
                 "work_locations": "Floors 3-5",
                 "photos": [],
-                # THE FIELDS THE RANKER READS (server.py _activity_chip_ids)
-                "activity_chip_id": PRIOR_ACTIVITY,
+                # THE FIELD THE RANKER READS (server.py _activity_chip_ids).
+                #
+                # A LIST, matching what the U1 stepper writes. It used to be the
+                # legacy single-string `activity_chip_id`, and that was the only
+                # thing in the whole system writing it — so the chip test was
+                # the seed handing the ranker the field the ranker wanted, and
+                # it passed while every log a real CP filed contributed nothing.
+                # Writing what the editor writes is what makes the test mean
+                # something.
+                "activity_ids": [PRIOR_ACTIVITY],
             }],
             "equipment_on_site": {}, "checklist_items": {}, "observations": [],
         },
     }, label=f"daily_jobsite {yday} — {PRIOR_ACTIVITY}")
     lid = log.get("id") or log.get("_id")
     api.post(f"/api/logbooks/{lid}/finalize", {}, label="finalize")
-    print(f"  PRIOR-DAY LOG {yday}  activity_chip_id={PRIOR_ACTIVITY}  -> {lid}")
+    print(f"  PRIOR-DAY LOG {yday}  activity_ids=[{PRIOR_ACTIVITY}]  -> {lid}")
     print(f"      today (America/New_York) is {today}")
     print(f"      the ranker reads priors with date < {today}, so {yday} qualifies")
     print("      today's suggested chips should be exactly:")
