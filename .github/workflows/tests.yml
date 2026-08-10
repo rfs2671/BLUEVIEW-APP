@@ -65,8 +65,11 @@ jobs:
 
       # THE "NO INSTALL NEEDED" PREMISE WAS TRUE, AND IS NOT ANY MORE.
       #
-      # 26 of the 28 JS tests are dependency-free harnesses (fs/path only) that
-      # parse real component source. Two are not: logbookViewRenderers and
+      # All but two of the JS tests are dependency-free harnesses (fs/path only)
+      # that parse real component source. The count is deliberately not written
+      # here — it was "26 of the 28" and was wrong within a day of being typed,
+      # because the runner below globs and the suite grows. What matters is the
+      # EXCEPTION, which is a closed set of two: logbookViewRenderers and
       # reportPreviewPhotoIssue TRANSPILE the real JSX renderer blocks and
       # EXECUTE them — strictly stronger than grepping source, and worth
       # keeping — so they require @babel/core, which package.json has declared
