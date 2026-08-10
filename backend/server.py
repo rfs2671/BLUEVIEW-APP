@@ -16361,13 +16361,42 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
 # (U4). The chip UI itself is U1's; nothing here renders anything.
 #
 # THE CONTRACT WITH THE EDITOR — an activity row may carry:
-#   activity_chip_id     the rules node id ("insulation"), or "other"
-#   activity_other_label the free text, only when activity_chip_id == "other"
-# Both are optional. A row without them is invisible to the ranker and harmless:
-# rules NEVER block an entry, so a CP can log anything with or without a chip.
+#
+#   activity_ids         a LIST of rules node ids, e.g. ["excavation",
+#                        "slab_rebar"], with a free-text entry carried as its
+#                        own id "other:<label>". This is what the U1 stepper
+#                        writes and is the current shape.
+#
+#   activity_chip_id     LEGACY. One node id as a bare string, or "other", with
+#   activity_other_label the free text beside it. Read for records already
+#                        filed; not written by anything current.
+#
+# ONE ROW PER CREW, SEVERAL ACTIVITIES PER ROW. A crew is one row: Vanguard
+# Concrete doing excavation, rebar and formwork is one crew that did three
+# things, not three crews. The array is what lets the record say that without
+# splitting a signed document to suit a data shape — and the photo bucket and
+# the headcount both key on the crew, so splitting would break those too.
+#
+# WHY THIS CHANGED. The ranker read `activity_chip_id` and the stepper wrote
+# `activity_ids`, and nothing bridged them, so `activity_chip_id` was written
+# by the SEED SCRIPT and by nothing else. Every log a real CP filed contributed
+# ZERO priors and the chips fell back to cold start every single day. The
+# endpoint's tests passed because they fed it the field it wanted; the sequence
+# engine had never once fired on data a person produced.
+#
+# HISTORICAL ROWS ARE NOT MIGRATED. They are filed records. A string is simply
+# read as a list of one.
+#
+# All fields are optional. A row without any of them is invisible to the ranker
+# and harmless: rules NEVER block an entry.
 
+ACTIVITY_IDS_FIELD = "activity_ids"
 ACTIVITY_CHIP_ID_FIELD = "activity_chip_id"
 ACTIVITY_OTHER_LABEL_FIELD = "activity_other_label"
+# A free-text entry's id is "other:<label>" — the same shape
+# sequence_ranking.other_entry_chip_id builds, so a label logged today comes
+# back as its own chip tomorrow instead of collapsing into the generic "other".
+OTHER_ID_PREFIX = "other:"
 # Free-text "Other" labels remembered per project, so an activity the CP typed
 # once comes back as a chip the next day. Capped: this is a convenience list on
 # a hot document, not an audit trail.
@@ -16384,37 +16413,73 @@ def _activity_rows(data) -> list:
     return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
 
 
+def _row_chip_ids(row) -> list:
+    """Every chip id on ONE activity row, current shape first, legacy second.
+
+    A crew may have done several things, so this returns a list. The legacy
+    single-string field is read as a list of one — historical rows are filed
+    records and are never migrated.
+
+    Both shapes are read on the same row rather than one winning: a row that
+    somehow carries both is a row someone edited across a version boundary, and
+    dropping half of what it says would lose logged work.
+    """
+    out = []
+
+    ids = row.get(ACTIVITY_IDS_FIELD)
+    if isinstance(ids, (list, tuple)):
+        for chip in ids:
+            if isinstance(chip, str) and chip.strip() and chip.strip() not in out:
+                out.append(chip.strip())
+
+    legacy = row.get(ACTIVITY_CHIP_ID_FIELD)
+    if isinstance(legacy, str) and legacy.strip():
+        chip = legacy.strip()
+        if chip == "other":
+            # Legacy carried the free text in a sibling field. Fold it into the
+            # same "other:<label>" id the current shape already uses, so both
+            # eras rank identically. A blank label leaves the bare "other",
+            # which the ranker treats as the generic escape hatch.
+            label = row.get(ACTIVITY_OTHER_LABEL_FIELD)
+            if isinstance(label, str) and label.strip():
+                chip = f"{OTHER_ID_PREFIX}{label.strip()}"
+        if chip not in out:
+            out.append(chip)
+
+    return out
+
+
 def _activity_chip_ids(data) -> list:
     """Chip ids logged in this payload, de-duplicated, order preserved.
 
-    A remembered "Other" entry is reported under its OWN id (`other:<label>`),
-    not the bare "other", so that yesterday's free-text entry ranks as itself
-    tomorrow instead of collapsing into the generic chip.
+    A free-text entry is reported under its OWN id (`other:<label>`), not the
+    bare "other", so that yesterday's typed activity ranks as itself tomorrow
+    instead of collapsing into the generic chip.
     """
     out = []
     for row in _activity_rows(data):
-        chip = row.get(ACTIVITY_CHIP_ID_FIELD)
-        if not isinstance(chip, str) or not chip.strip():
-            continue
-        chip = chip.strip()
-        if chip == "other":
-            label = row.get(ACTIVITY_OTHER_LABEL_FIELD)
-            if isinstance(label, str) and label.strip():
-                chip = f"other:{label.strip()}"
-        if chip not in out:
-            out.append(chip)
+        for chip in _row_chip_ids(row):
+            if chip not in out:
+                out.append(chip)
     return out
 
 
 def _other_labels_in(data) -> list:
-    """Free-text labels the CP entered under "Other" in this payload."""
+    """Free-text labels the CP entered under "Other" in this payload.
+
+    Reads the same two shapes as _row_chip_ids. The current one carries the
+    label inside the id ("other:night pour"); the legacy one carried it in a
+    sibling field. Without the first, a label typed in the stepper was never
+    remembered and the "used on this project" band stayed permanently empty.
+    """
     out = []
     for row in _activity_rows(data):
-        if str(row.get(ACTIVITY_CHIP_ID_FIELD) or "").strip() != "other":
-            continue
-        label = row.get(ACTIVITY_OTHER_LABEL_FIELD)
-        if isinstance(label, str) and label.strip() and label.strip() not in out:
-            out.append(label.strip())
+        for chip in _row_chip_ids(row):
+            if not chip.startswith(OTHER_ID_PREFIX):
+                continue
+            label = chip[len(OTHER_ID_PREFIX):].strip()
+            if label and label not in out:
+                out.append(label)
     return out
 
 
