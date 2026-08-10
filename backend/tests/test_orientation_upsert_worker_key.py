@@ -87,6 +87,14 @@ class _Coll:
                 return copy.deepcopy(d)
         return None
 
+    async def count_documents(self, query):
+        # Added after this file was written: the create path now stamps
+        # `instance_seq` (which filing of the day this is) via count_documents
+        # on (project_id, log_type, date). Same _match/{$ne} semantics as
+        # find_one — the count is incidental to what these tests assert, the
+        # fake just has to answer the call.
+        return sum(1 for d in self.docs if _match(d, query))
+
     async def insert_one(self, doc):
         self._seq += 1
         _id = doc.get("_id") or f"oid_{self._seq}"
