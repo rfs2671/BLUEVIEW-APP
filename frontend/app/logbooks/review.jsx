@@ -41,7 +41,7 @@ import {
   Image,
   Modal,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -164,6 +164,27 @@ export default function CheckInReviewScreen() {
   useEffect(() => {
     if (projectId) { setLoading(true); fetchFlagged(); }
   }, [projectId, fetchFlagged]);
+
+  // Refetch whenever this screen regains focus.
+  //
+  // WHY: resolving a worker updates the row IN PLACE (handleReview below stamps
+  // review_decision onto it) but never removes it, and the server's flagged
+  // list already excludes anything with a review_decision
+  // (get_flagged_project_checkins, server.py — {"review_decision": {"$exists":
+  // False}}). The effect above only fires on mount and on a projectId change,
+  // and expo-router keeps this screen MOUNTED when the CP navigates away, so
+  // nothing ever asked the server again. The resolved man stayed on the list
+  // until a full app force-close, and a CP reading a still-present row
+  // approves the same worker over and over believing it failed.
+  //
+  // No loading spinner here on purpose: this is a background reconcile of a
+  // list the CP is already looking at, and flashing it to empty would read as
+  // "everything vanished". Mirrors the pattern in app/logbooks/index.jsx.
+  useFocusEffect(
+    useCallback(() => {
+      if (projectId) fetchFlagged();
+    }, [projectId, fetchFlagged])
+  );
 
   const onRefresh = () => { setRefreshing(true); fetchFlagged(); };
 
