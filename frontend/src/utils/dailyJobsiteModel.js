@@ -72,12 +72,16 @@ export const EMPTY_ACTIVITY = () => ({
   // are what the sequence ranker reads back tomorrow.
   activity_ids: [],
   location_ids: [],
-  // Company correction keeps BOTH values, attributed. company_gate is never
-  // overwritten, so the signed log and the check-in record cannot contradict
-  // each other.
+  // GATE PROVENANCE, not a correction trail. Set once, at seed time, to the
+  // company the gate actually recorded, so the signed log and the check-in
+  // record can always be compared.
+  //
+  // It no longer has a companion `company_corrected_by` / `_at`: assigning a
+  // company or trade does not belong on the daily log at all. A worker sets his
+  // own at check-in, and a CP who has to fix it does so during safety
+  // orientation — the first-time-on-site flow — not here. Those two keys had
+  // exactly one writer, the correction flow, and died with it.
   company_gate: null,
-  company_corrected_by: null,
-  company_corrected_at: null,
 });
 
 export const EMPTY_OBSERVATION = () => ({
@@ -235,29 +239,84 @@ export function cameraReady(activity) {
 }
 
 /**
- * Correct a crew's company, KEEPING BOTH VALUES, attributed.
+ * The roster row a (company, trade) pair belongs to, or null.
  *
- * The gate value is written once and never overwritten — re-correcting a row
- * that was already corrected must not lose what the gate actually recorded.
- * The roster binding is re-resolved because a row carrying Acme's id under a
- * different sub's name is a fabricated binding: it would share Acme's photo
- * bucket and be reported against Acme.
+ * THE ONLY REMAINING BINDING PATH. `applyCompanyCorrection` lived here and is
+ * gone: assigning a company or trade does not belong on the daily log. A
+ * worker sets his own at check-in; a CP who has to fix one does it during
+ * safety orientation. What survives is the hand-added crew — the CP naming a
+ * crew the gate missed — which still has to resolve to a real roster row.
+ *
+ * NULL IS THE ANSWER WHENEVER IT IS NOT CERTAIN. A row carrying one sub's id
+ * under another's name is a fabricated binding: it would share that sub's
+ * photo bucket and be reported against them. Matching is on the same
+ * strip+casefold rule the backend's _roster_key uses, so a case or whitespace
+ * difference still resolves; anything else does not resolve at all.
  */
-export function applyCompanyCorrection(activity, nextCompany, opts = {}) {
-  const { by = null, at = null, rosterIds = null } = opts;
-  const clean = String(nextCompany || '').trim();
-  const priorGate = activity.company_gate != null
-    ? activity.company_gate
-    : (activity.gate_sourced ? (activity.company || '') : null);
-  const key = `${rosterKey(clean)}|${rosterKey(activity.trade)}`;
-  return {
-    ...activity,
-    company: clean,
-    company_gate: priorGate,
-    company_corrected_by: by,
-    company_corrected_at: at,
-    subcontractor_id: rosterIds ? (rosterIds.get(key) || null) : null,
-  };
+export function resolveRosterId(company, trade, rosterIds) {
+  if (!rosterIds || typeof rosterIds.get !== 'function') return null;
+  const name = rosterKey(company);
+  if (!name) return null;   // no company, no identity
+  return rosterIds.get(`${name}|${rosterKey(trade)}`) || null;
+}
+
+/**
+ * Draft the day's general description from the TRADES of the chips the CP
+ * actually tapped, across every crew.
+ *
+ * WHY TRADES AND NOT A PHASE. A phase line ("foundation prep") would read
+ * better, but no phase attribute exists: the sequence rules carry
+ * id/trade/scope/per_floor/is_structural/zone_scoped/requires and nothing
+ * else, and the semantic phases exist only as SOURCE COMMENTS in
+ * sequence_rules_v1.py. Deciding which of 86 nodes is "foundation" versus
+ * "superstructure" is domain judgment, and that graph's own header says
+ * RULE CONTENTS PENDING NYC DOB DOMAIN-EXPERT SIGN-OFF. `trade` is already on
+ * every node, set by whoever authored the approved rules, so it is reportable
+ * without anyone here inventing taxonomy. Weaker prose, but TRUE.
+ *
+ * (The other candidate, lib/ai/phase_inference.py, is weekly Gemini inference
+ * at PROJECT granularity. It cannot say what this crew did today, and prose
+ * generated into a signed legal record is a different risk class.)
+ *
+ * RULES:
+ *   * EMPTY when nothing was tapped. Never guessed, never defaulted.
+ *   * The "other" escape hatch is EXCLUDED even though its node reports trade
+ *     "gc" — the chip stands for free text the CP typed, so its trade says
+ *     nothing about the work.
+ *   * Trades are de-duplicated and ordered by how many crews were doing them,
+ *     so the biggest activity on site leads the sentence. Ties keep first-seen
+ *     order, which makes the output deterministic and therefore testable.
+ *
+ * This is a DRAFT. The caller must show it to the CP and let him edit it
+ * before he signs — he is attesting to the sentence, so the app may propose it
+ * but may not put words he never read into the record.
+ */
+export const OTHER_CHIP_ID = 'other';
+
+export function deriveGeneralDescription(activities, tradeById) {
+  const rows = Array.isArray(activities) ? activities : [];
+  const counts = new Map();       // trade -> crews doing it
+  const order = [];               // first-seen order, for stable ties
+
+  for (const a of rows) {
+    const seenHere = new Set();   // one crew counts a trade once
+    for (const id of (a?.activity_ids || [])) {
+      if (id === OTHER_CHIP_ID) continue;          // free text, not a trade
+      if (String(id).startsWith('other:')) continue;
+      const raw = tradeById?.get?.(id) ?? tradeById?.[id];
+      const trade = String(raw || '').trim().toLowerCase();
+      if (!trade || seenHere.has(trade)) continue;
+      seenHere.add(trade);
+      if (!counts.has(trade)) { counts.set(trade, 0); order.push(trade); }
+      counts.set(trade, counts.get(trade) + 1);
+    }
+  }
+
+  if (order.length === 0) return '';
+  const ranked = [...order].sort((a, b) => (
+    counts.get(b) - counts.get(a) || order.indexOf(a) - order.indexOf(b)
+  ));
+  return ranked.join(', ');
 }
 
 /** True once this row names a sub the project roster does not know. */
@@ -345,7 +404,9 @@ export default {
   parseInstant,
   composeSelection,
   cameraReady,
-  applyCompanyCorrection,
+  resolveRosterId,
+  deriveGeneralDescription,
+  OTHER_CHIP_ID,
   isUnboundCrew,
   observationComplete,
   incompleteObservations,

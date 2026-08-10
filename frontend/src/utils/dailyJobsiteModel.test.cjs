@@ -40,7 +40,7 @@ const M = new Function(`
   ${body}
   return { rosterKey, isUnassignedCompany, EMPTY_ACTIVITY, EMPTY_OBSERVATION,
            buildCrewsFromRoster, rosterIdIndex, parseInstant, composeSelection,
-           cameraReady, applyCompanyCorrection, isUnboundCrew,
+           cameraReady, resolveRosterId, isUnboundCrew, deriveGeneralDescription,
            observationComplete, incompleteObservations, formatLogDate,
            formatCheckInTime, stepComplete };
 `)();
@@ -174,41 +174,97 @@ console.log('\n── Step 1: the roster ──');
 eq(M.buildCrewsFromRoster(null, null), [], 'a failed roster read yields no crews and does not throw');
 
 // ═════════════════════════════════════════════════════════════════════════════
-// THE COMPANY CORRECTION — both values, attributed
+// GATE PROVENANCE, AND THE ONE SURVIVING BINDING PATH
 // ═════════════════════════════════════════════════════════════════════════════
-console.log('\n── Correcting a company keeps BOTH values ──');
+//
+// `applyCompanyCorrection` is GONE. Assigning a company or trade does not
+// belong on the daily log — a worker sets his own at check-in, and a CP who
+// has to fix one does it during safety orientation. What survives is the
+// hand-added crew, which still has to resolve to a real roster row, and
+// company_gate, which is still recorded as provenance.
+console.log('\n── Gate provenance, and resolving a hand-added crew ──');
 
 {
   const rosterIds = new Map([['acme drywall|drywall', 'srv_acme']]);
-  const gateRow = {
-    ...M.EMPTY_ACTIVITY(), company: 'ACME Drywal', company_gate: 'ACME Drywal',
-    trade: 'Drywall', gate_sourced: true, subcontractor_id: null,
-  };
-  const fixed = M.applyCompanyCorrection(gateRow, 'Acme Drywall', {
-    by: 'Ada CP', at: '2026-03-04T18:00:00Z', rosterIds,
-  });
-  eq(fixed.company, 'Acme Drywall', 'the correction becomes the company of record');
-  eq(fixed.company_gate, 'ACME Drywal',
-    'THE GATE VALUE SURVIVES — the log and the check-in record cannot contradict');
-  eq(fixed.company_corrected_by, 'Ada CP', 'the correction is attributed to a person');
-  eq(fixed.company_corrected_at, '2026-03-04T18:00:00Z', 'and to a time');
-  eq(fixed.subcontractor_id, 'srv_acme',
-    'the corrected name re-binds to the roster it now matches');
-
-  const twice = M.applyCompanyCorrection(fixed, 'Acme Drywall LLC', {
-    by: 'Ada CP', at: '2026-03-04T19:00:00Z', rosterIds,
-  });
-  eq(twice.company_gate, 'ACME Drywal',
-    'correcting a SECOND time still keeps the original gate value, not the first correction');
-  eq(twice.subcontractor_id, null,
-    'a name that no longer matches the roster drops its binding rather than keeping a false one');
+  eq(M.resolveRosterId('Acme Drywall', 'Drywall', rosterIds), 'srv_acme',
+    'a crew the CP names that IS on the roster binds to its row');
+  eq(M.resolveRosterId('  acme   drywall  '.replace(/\s+/g, ' ').trim(), 'DRYWALL', rosterIds),
+    'srv_acme',
+    'case and surrounding whitespace still resolve — same rule as the backend');
+  eq(M.resolveRosterId('Ghost Co', 'Drywall', rosterIds), null,
+    'a company the roster does not know gets NULL, never a fabricated id');
+  eq(M.resolveRosterId('Acme Drywall', 'Concrete', rosterIds), null,
+    'the RIGHT company on the WRONG trade is a different roster row — null, not a guess');
+  eq(M.resolveRosterId('', 'Drywall', rosterIds), null,
+    'no company means no identity');
+  eq(M.resolveRosterId('Acme Drywall', 'Drywall', null), null,
+    'no roster to match against resolves to null and does not throw');
 }
 
 {
-  const hand = { ...M.EMPTY_ACTIVITY(), company: 'Typed Co', gate_sourced: false };
-  const fixed = M.applyCompanyCorrection(hand, 'Other Co', {});
-  eq(fixed.company_gate, null,
-    'a hand-added row has no gate value to keep, and does not invent one');
+  // company_gate survives as provenance and is set ONLY from the gate.
+  const roster = [{ worker_id: 'w1', worker_name: 'A', company: 'Vanguard',
+    trade: 'Concrete', check_in_time: null }];
+  const [crew] = M.buildCrewsFromRoster(roster, []);
+  eq(crew.company_gate, 'Vanguard',
+    'a gate-sourced crew records what the gate said, so the two records can be compared');
+  const hand = M.EMPTY_ACTIVITY();
+  eq(hand.company_gate, null,
+    'a hand-added row has no gate value and does not invent one');
+  ok(!('company_corrected_by' in hand) && !('company_corrected_at' in hand),
+    'the dead correction-trail keys are gone from the row entirely');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE GENERAL DESCRIPTION — drafted from trades, never guessed
+// ═════════════════════════════════════════════════════════════════════════════
+console.log('\n── The drafted general description ──');
+
+{
+  const trades = new Map([
+    ['excavation', 'excavation'], ['site_prep', 'sitework'],
+    ['slab_rebar', 'concrete'], ['edge_forms', 'concrete'],
+    ['drywall', 'drywall'], ['other', 'gc'],
+  ]);
+  const crew = (ids) => ({ ...M.EMPTY_ACTIVITY(), activity_ids: ids });
+
+  eq(M.deriveGeneralDescription([], trades), '',
+    'no crews at all drafts NOTHING — never a default sentence');
+  eq(M.deriveGeneralDescription([crew([])], trades), '',
+    'a crew with no activity tapped contributes nothing');
+  eq(M.deriveGeneralDescription(null, trades), '',
+    'a missing activity list is empty, and does not throw');
+
+  eq(M.deriveGeneralDescription([crew(['excavation'])], trades), 'excavation',
+    'one tapped chip drafts its trade');
+  eq(M.deriveGeneralDescription([crew(['slab_rebar', 'edge_forms'])], trades), 'concrete',
+    'two chips of the SAME trade collapse to one word, not a repetition');
+  eq(M.deriveGeneralDescription([crew(['excavation', 'site_prep'])], trades),
+    'excavation, sitework', 'two trades are both named');
+
+  // Ranked by how many crews were doing it, so the biggest activity leads.
+  eq(M.deriveGeneralDescription(
+    [crew(['excavation']), crew(['slab_rebar']), crew(['edge_forms'])], trades,
+  ), 'concrete, excavation',
+  'the trade the most crews were doing leads the sentence');
+
+  // THE ESCAPE HATCH IS EXCLUDED even though its node reports trade "gc".
+  eq(M.deriveGeneralDescription([crew(['other'])], trades), '',
+    'the "Other" chip alone drafts NOTHING — it stands for free text, not a trade');
+  eq(M.deriveGeneralDescription([crew(['excavation', 'other'])], trades), 'excavation',
+    '...and it never contributes "gc" alongside a real trade');
+  eq(M.deriveGeneralDescription([crew(['other:night pour'])], trades), '',
+    'a remembered free-text entry has no trade and contributes nothing');
+
+  eq(M.deriveGeneralDescription([crew(['ghost_chip'])], trades), '',
+    'a chip with no trade on it contributes nothing rather than an id');
+  eq(M.deriveGeneralDescription([crew(['excavation'])], null), '',
+    'no trade map at all drafts nothing, and does not throw');
+
+  // Deterministic: same input, same sentence, every time.
+  const once = M.deriveGeneralDescription([crew(['excavation']), crew(['drywall'])], trades);
+  const twice = M.deriveGeneralDescription([crew(['excavation']), crew(['drywall'])], trades);
+  eq(once, twice, 'the draft is deterministic — the same day drafts the same sentence');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

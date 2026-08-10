@@ -457,9 +457,16 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     ok(!!b5 && !!b4 && b5 !== b4,
       '3-way: a server failure and a refusal do not read the same to the CP');
 
-    // The predicate is the app's, not a second one invented here.
-    ok(/import \{ isOfflineError \} from '\.\.\/\.\.\/src\/utils\/offlineState'/.test(screenSrc),
+    // The predicate is the app's, not a second one invented here. Asserted on
+    // the SOURCE MODULE rather than the exact named-import list: the screen now
+    // also pulls settleFetch from it for the weather fetch, and pinning the
+    // list would fail on a file that had become MORE consistent, not less.
+    // What matters is that isOfflineError comes from src/utils/offlineState and
+    // is not redefined locally.
+    ok(/import \{[^}]*\bisOfflineError\b[^}]*\} from '\.\.\/\.\.\/src\/utils\/offlineState'/.test(screenSrc),
       '3-way: offline is decided by the app-wide isOfflineError, the same predicate settleFetch uses');
+    ok(!/(const|function)\s+isOfflineError/.test(screenSrc),
+      '3-way: ...and the screen does not define a second one of its own');
     ok(/const offline = isOfflineError\(finalizeErr\);/.test(submitSrc),
       '3-way: ...and it is applied to the finalize error itself');
     ok(!/error\.response|!finalizeErr\?\.response/.test(submitSrc),

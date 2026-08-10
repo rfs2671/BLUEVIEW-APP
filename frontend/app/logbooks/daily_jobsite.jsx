@@ -77,11 +77,12 @@ import {
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
 // The app-wide OFFLINE discriminator — the same one settleFetch is built on.
 // "Offline" here has to mean what it means everywhere else: no response at all.
-import { isOfflineError } from '../../src/utils/offlineState';
+import { isOfflineError, settleFetch } from '../../src/utils/offlineState';
 import * as ImagePicker from 'expo-image-picker';
 import {
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
-  composeSelection, cameraReady, applyCompanyCorrection, isUnboundCrew,
+  composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
+  deriveGeneralDescription,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
   rosterKey,
 } from '../../src/utils/dailyJobsiteModel';
@@ -190,7 +191,10 @@ const photoForPayload = (photo) => {
   return { ...stored, upload_pending: true };
 };
 
-const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
+// The closed set of conditions the weather API is expected to report. No
+// longer rendered as a chooser — weather is fetched, not picked — but kept
+// as the documented vocabulary that `weather` on the record draws from.
+export const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
 
 const EQUIPMENT_ITEMS = [
   { key: 'elevator', label: 'Elevator' },
@@ -285,6 +289,12 @@ export default function DailyJobsiteLog() {
   const [weatherTemp, setWeatherTemp] = useState('');
   const [weatherWind, setWeatherWind] = useState('');
   const [weatherLoading, setWeatherLoading] = useState(false);
+  // 'ok' | 'offline' | 'error' | null(not attempted yet). This RIDES ON THE
+  // RECORD. Weather is read-only now, so when the fetch fails the CP has no
+  // way to fill it in — which means a blank weather field on a signed log
+  // would be indistinguishable from a question nobody asked. The state is
+  // what lets the log say "could not be retrieved" instead.
+  const [weatherFetchState, setWeatherFetchState] = useState(null);
   const [generalDescription, setGeneralDescription] = useState('');
   const [activities, setActivities] = useState([]);
   const [equipmentOnSite, setEquipmentOnSite] = useState({});
@@ -322,7 +332,6 @@ export default function DailyJobsiteLog() {
   useCameraPrewarmPermission();
 
   // ── Modals ────────────────────────────────────────────────────────────
-  const [correcting, setCorrecting] = useState(null);      // {index, value}
   const [addingCrew, setAddingCrew] = useState(null);      // {company, trade, num}
   const [otherPrompt, setOtherPrompt] = useState(null);    // {index, kind, value}
   const [photoLightbox, setPhotoLightbox] = useState(null);
@@ -341,6 +350,7 @@ export default function DailyJobsiteLog() {
   const draftBody = useCallback((acts) => ({
     project_address: projectAddress,
     weather, weather_temp: weatherTemp, weather_wind: weatherWind,
+    weather_fetch_state: weatherFetchState,
     general_description: generalDescription,
     activities: acts,
     equipment_on_site: equipmentOnSite,
@@ -349,7 +359,8 @@ export default function DailyJobsiteLog() {
     visitors_deliveries: visitorsDeliveries,
     time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
   }), [
-    projectAddress, weather, weatherTemp, weatherWind, generalDescription,
+    projectAddress, weather, weatherTemp, weatherWind, weatherFetchState,
+    generalDescription,
     equipmentOnSite, checklistItems, observations, visitorsDeliveries,
     timeIn, timeOut, areasVisited,
   ]);
@@ -487,6 +498,7 @@ export default function DailyJobsiteLog() {
     if (d.weather) setWeather(d.weather);
     if (d.weather_temp) setWeatherTemp(d.weather_temp);
     if (d.weather_wind) setWeatherWind(d.weather_wind);
+    if (d.weather_fetch_state) setWeatherFetchState(d.weather_fetch_state);
     if (d.general_description) setGeneralDescription(d.general_description);
     if (d.activities?.length) setActivities(d.activities);
     if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
@@ -498,18 +510,35 @@ export default function DailyJobsiteLog() {
     if (d.areas_visited) setAreasVisited(d.areas_visited);
   };
 
+  /**
+   * Weather is an OBSERVED FACT, fetched, never typed.
+   *
+   * It used to be an editable chip row with a silent catch: a failed fetch left
+   * the field empty and said nothing, and the CP could sign a log whose weather
+   * was blank. Now that the chips are gone he cannot even paper over it, so the
+   * failure has to be recorded rather than swallowed.
+   *
+   * settleFetch is the app-wide three-way discriminator — the same one the
+   * roster envelope and report-settings use — so "offline" means here exactly
+   * what it means everywhere else: no response at all, as opposed to a server
+   * that answered badly. Both are failures; only one is the CP's signal problem.
+   */
   const fetchWeather = async (address) => {
     setWeatherLoading(true);
-    try {
-      const data = await weatherAPI.getCurrent(null, null, address || null);
+    const r = await settleFetch(() => weatherAPI.getCurrent(null, null, address || null));
+    if (r.status === 'ok') {
+      const data = r.data;
       if (data?.condition) setWeather(data.condition);
       if (data?.temperature != null) setWeatherTemp(`${Math.round(data.temperature)}°F`);
       if (data?.wind_speed != null) setWeatherWind(`${Math.round(data.wind_speed)} mph`);
-    } catch (e) {
-      console.warn('Weather autofill failed (non-blocking):', e?.message);
-    } finally {
-      setWeatherLoading(false);
+    } else {
+      console.warn('Weather fetch failed:', r.status, r.error?.message);
     }
+    // Recorded on EVERY outcome, including success — a reader must be able to
+    // tell "retrieved and it was Sunny" from "we never got an answer".
+    setWeatherFetchState(r.status);
+    setWeatherLoading(false);
+    return r.status;
   };
 
   // ── Row edits ─────────────────────────────────────────────────────────
@@ -538,6 +567,31 @@ export default function DailyJobsiteLog() {
     chips.forEach((c) => m.set(c.id, c.label));
     return m;
   }, [chips]);
+
+  // chip id -> the WorkPackage's trade, newly carried on ActivityChip. This is
+  // the only grouping signal the client has; see deriveGeneralDescription.
+  const chipTrades = useMemo(() => {
+    const m = new Map();
+    chips.forEach((c) => { if (c.trade) m.set(c.id, c.trade); });
+    return m;
+  }, [chips]);
+
+  // The DRAFT sentence, recomputed from what the CP has tapped so far.
+  const suggestedDescription = useMemo(
+    () => deriveGeneralDescription(activities, chipTrades),
+    [activities, chipTrades],
+  );
+
+  // THE CP IS ATTESTING TO THIS SENTENCE, so the app may draft it and may not
+  // write it for him. The draft only lands in the record when he has been on
+  // the review step to see it — `descriptionTouched` flips the moment he edits,
+  // after which the app never overwrites his words.
+  const [descriptionTouched, setDescriptionTouched] = useState(false);
+  useEffect(() => {
+    if (descriptionTouched) return;
+    if (step !== TOTAL_STEPS) return;   // only once he is looking at it
+    setGeneralDescription(suggestedDescription);
+  }, [step, suggestedDescription, descriptionTouched]);
 
   const locationChips = useMemo(() => floorChips(buildingStories), [buildingStories]);
   const locationLabels = useMemo(() => {
@@ -634,29 +688,12 @@ export default function DailyJobsiteLog() {
     setOtherPrompt(null);
   };
 
-  const commitCorrection = () => {
-    const c = correcting;
-    if (!c) return;
-    const next = String(c.value || '').trim();
-    if (!next) { setCorrecting(null); return; }
-    setActivities((prev) => prev.map((a, i) => (i === c.index ? applyCompanyCorrection(
-      a, next,
-      {
-        by: cpName || user?.full_name || user?.email || null,
-        at: new Date().toISOString(),
-        rosterIds: rosterIdsRef.current,
-      },
-    ) : a)));
-    setCorrecting(null);
-  };
-
   const commitAddCrew = () => {
     const c = addingCrew;
     if (!c) return;
     const company = String(c.company || '').trim();
     if (!company) { setAddingCrew(null); return; }
     const trade = String(c.trade || '').trim();
-    const key = `${rosterKey(company)}|${rosterKey(trade)}`;
     setActivities((prev) => [...prev, {
       ...EMPTY_ACTIVITY(),
       crew_id: `C${prev.length + 1}`,
@@ -665,7 +702,7 @@ export default function DailyJobsiteLog() {
       num_workers: String(parseInt(c.num, 10) || 0),
       // Added by hand — it did NOT come from the gate and must not claim to.
       gate_sourced: false,
-      subcontractor_id: rosterIdsRef.current.get(key) || null,
+      subcontractor_id: resolveRosterId(company, trade, rosterIdsRef.current),
     }]);
     setAddingCrew(null);
   };
@@ -1187,14 +1224,6 @@ export default function DailyJobsiteLog() {
               <Text style={s.unboundText}>{t('unboundCrewHint')}</Text>
             </View>
           )}
-
-          <Pressable
-            style={s.secondaryBtn}
-            accessibilityRole="button"
-            onPress={() => setCorrecting({ index: i, value: a.company || '' })}
-          >
-            <Text style={s.secondaryBtnText}>{t('correctCompany')}</Text>
-          </Pressable>
         </View>
       ))}
 
@@ -1485,21 +1514,33 @@ export default function DailyJobsiteLog() {
     <View>
       <StepHeader title={t('step4Title')} />
 
+      {/* READ-ONLY. Weather is observed and fetched, never chosen: the CP is
+          reporting what the sky did, and a tappable list invites him to record
+          what he remembers rather than what was measured. When the fetch
+          failed, the failure is shown — it is never left looking unanswered. */}
       <Text style={s.question}>{t('fieldWeather')}</Text>
-      {!!weatherTemp && (
-        <Text style={s.noteText}>
-          {weatherTemp}{weatherWind ? ` · ${weatherWind}` : ''}
-        </Text>
+      {weatherLoading ? (
+        <ActivityIndicator size="small" color={outdoor.textDim} />
+      ) : weatherFetchState === 'ok' && weather ? (
+        <View style={s.readOnlyValue}>
+          <Text style={s.readOnlyText}>
+            {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')}
+          </Text>
+          <Text style={s.noteText}>{t('weatherAutoNote')}</Text>
+        </View>
+      ) : (
+        <View style={s.warnCard}>
+          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
+          <View style={s.warnBody}>
+            <Text style={s.warnTitle}>{t('weatherUnavailableTitle')}</Text>
+            <Text style={s.warnText}>
+              {weatherFetchState === 'offline'
+                ? t('weatherUnavailableOffline')
+                : t('weatherUnavailableBody')}
+            </Text>
+          </View>
+        </View>
       )}
-      {weatherLoading && <ActivityIndicator size="small" color={outdoor.textDim} />}
-      <View style={s.chipWrap}>
-        {WEATHER_OPTIONS.map((w) => (
-          <Chip
-            key={w} label={w} selected={weather === w}
-            onPress={() => setWeather(weather === w ? '' : w)}
-          />
-        ))}
-      </View>
 
       <Text style={s.question}>{t('sectionEquipment')}</Text>
       <View style={s.chipWrap}>
@@ -1531,15 +1572,6 @@ export default function DailyJobsiteLog() {
         multiline
       />
 
-      <Text style={s.question}>{t('fieldGeneralDescription')}</Text>
-      <TextInput
-        style={s.input}
-        value={generalDescription}
-        onChangeText={setGeneralDescription}
-        placeholder={t('phGeneralDescription')}
-        placeholderTextColor={outdoor.textDim}
-        multiline
-      />
     </View>
   );
 
@@ -1554,7 +1586,9 @@ export default function DailyJobsiteLog() {
         <Text style={s.reviewValue}>{projectAddress || t('reviewNothingYet')}</Text>
         <Text style={s.reviewLabel}>{t('fieldWeather')}</Text>
         <Text style={s.reviewValue}>
-          {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ') || t('reviewNothingYet')}
+          {weatherFetchState === 'ok' && weather
+            ? [weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')
+            : t('weatherUnavailableTitle')}
         </Text>
       </View>
 
@@ -1590,6 +1624,25 @@ export default function DailyJobsiteLog() {
           ))}
         </View>
       )}
+
+      {/* DRAFTED, NOT WRITTEN. Composed from the trades of the chips the CP
+          tapped, shown here before he signs, and editable — he is attesting to
+          this sentence, so the app may propose it and may not put words he
+          never read into the record. Empty when nothing was tapped. */}
+      <View style={s.reviewCard}>
+        <Text style={s.reviewLabel}>{t('fieldGeneralDescription')}</Text>
+        <TextInput
+          style={s.input}
+          value={generalDescription}
+          onChangeText={(v) => { setDescriptionTouched(true); setGeneralDescription(v); }}
+          placeholder={t('phGeneralDescription')}
+          placeholderTextColor={outdoor.textDim}
+          multiline
+        />
+        <Text style={s.noteText}>
+          {suggestedDescription ? t('descriptionDrafted') : t('descriptionEmpty')}
+        </Text>
+      </View>
 
       <View style={s.reviewCard}>
         <SignaturePad
@@ -1694,20 +1747,6 @@ export default function DailyJobsiteLog() {
         onClose={() => setCameraVisible(false)}
         onCapture={handleCameraCapture}
         onDeleteShot={handleDeleteShot}
-      />
-
-      <PromptModal
-        visible={!!correcting}
-        title={t('correctCompanyTitle')}
-        hint={t('correctCompanyHint')}
-        value={correcting?.value || ''}
-        placeholder={t('phCompany')}
-        onChange={(v) => setCorrecting((p) => ({ ...p, value: v }))}
-        onCancel={() => setCorrecting(null)}
-        onConfirm={commitCorrection}
-        confirmLabel={t('next')}
-        cancelLabel={t('cancel')}
-        s={s}
       />
 
       <PromptModal
@@ -2043,6 +2082,13 @@ function buildStyles() {
       fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
     },
 
+    readOnlyValue: {
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.md,
+      padding: spacing.md, gap: spacing.xs,
+    },
+    readOnlyText: {
+      fontSize: typography.sizes.lg, fontWeight: '600', color: outdoor.text,
+    },
     reviewCard: {
       backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
       borderWidth: 1, borderColor: outdoor.line,

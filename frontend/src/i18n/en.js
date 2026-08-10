@@ -210,12 +210,11 @@ export default {
     noCrews: 'No crews came through the gate for this day.',
     addCrew: 'Add a crew the gate missed',
     addCrewTitle: 'Add a crew',
-    correctCompany: 'Wrong company?',
-    correctCompanyTitle: 'Correct the company',
-    // Both values are kept on the row and attributed. The gate value is never
-    // overwritten, so the signed log and the check-in record cannot contradict
-    // each other — this sentence is what tells the CP that.
-    correctCompanyHint: 'The gate name is kept alongside your correction.',
+    // NO CORRECTION AFFORDANCE. Assigning a company or trade does not belong on
+    // the daily log: a worker sets his own at check-in, and a CP who has to fix
+    // one does it during safety orientation. The three `correctCompany*` keys
+    // were removed with the flow. `correctedFrom` stays — company_gate is still
+    // recorded as gate provenance and is still shown when it differs.
     correctedFrom: 'Gate recorded',
     unboundCrew: 'Not on the project roster',
     unboundCrewHint: 'Saved and flagged for an admin. It does not block this log.',
@@ -253,6 +252,21 @@ export default {
     observationRemedyRequired: 'What was done about it?',
     observationRemedyMissing: 'Add what was done about it before saving.',
     correctedImmediately: 'Fixed on the spot',
+
+    // Weather is fetched, never typed. When the fetch fails the log must SAY
+    // so — a blank weather field on a signed record cannot be told apart from
+    // a question nobody asked, and with the manual chips gone the CP has no
+    // way to fill it in himself.
+    // The general description is DRAFTED from the trades of the chips the CP
+    // tapped, and he edits it before signing. The copy has to make both halves
+    // plain: the app wrote a first line, and it is his to change.
+    descriptionDrafted: 'Drafted from the activities you chose. Edit it if it is not right — you are signing this.',
+    descriptionEmpty: 'No activities were chosen, so this is blank. Write it yourself if there is anything to record.',
+
+    weatherAutoNote: 'Recorded automatically from the weather service.',
+    weatherUnavailableTitle: 'Weather could not be retrieved',
+    weatherUnavailableBody: 'The weather service did not answer. This is recorded on the log — it is not left blank.',
+    weatherUnavailableOffline: 'This device could not reach the weather service. This is recorded on the log — it is not left blank.',
 
     // Step 5 — the record read back before it is signed.
     reviewHeading: 'Check this is right',

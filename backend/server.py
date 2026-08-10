@@ -12839,9 +12839,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
 
     if log_type == "daily_jobsite":
         type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
-        weather_str = f'{data.get("weather", "N/A")} {data.get("weather_temp", "")}'
-        if data.get("weather_wind"):
-            weather_str += f' — Wind: {data["weather_wind"]}'
+        weather_str = _display_weather(data)
         
         # Activities table
         act_rows = ""
@@ -17506,6 +17504,47 @@ def _display_sub_company(name):
     return s
 
 
+# The one phrase for a field that was never filled. Matches the inspector
+# screen's logbookView.fNotRecorded, so one record reads the same on the device
+# and in the PDF.
+NOT_RECORDED = "— Not recorded"
+
+
+def _display_weather(data):
+    """Render weather for a report or PDF. NEVER a blank.
+
+    A blank cell cannot be told apart from a question nobody asked, and on the
+    Daily Jobsite Log weather is now fetched rather than typed — so when the
+    fetch fails the CP has no way to fill it in and the document must say what
+    happened instead of leaving a gap.
+
+    The three renderers that print this disagreed. All used
+    `data.get("weather", "N/A")`, but a dict default only fires when the key is
+    ABSENT: the editor always writes the key, so an empty value rendered as an
+    empty string on two of them and "N/A" on the third. Measured:
+
+        key ABSENT -> 'N/A '        key EMPTY -> ' '
+
+    `weather_fetch_state` is written by the editor on every outcome
+    ('ok' | 'offline' | 'error'), so a failure is distinguishable from a log
+    filed before the field existed. Older documents have no state and simply
+    fall through to the not-recorded case, which is the honest reading of them.
+    """
+    d = data or {}
+    state = str(d.get("weather_fetch_state") or "").strip().lower()
+    if state in ("offline", "error"):
+        return "— Weather could not be retrieved"
+    parts = [
+        str(d.get("weather") or "").strip(),
+        str(d.get("weather_temp") or "").strip(),
+    ]
+    body = " ".join(p for p in parts if p)
+    if not body:
+        return NOT_RECORDED
+    wind = str(d.get("weather_wind") or "").strip()
+    return f"{body} — Wind: {wind}" if wind else body
+
+
 def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140, max_height=60):
     """Reconstruct an inline SVG from SignaturePad stroke paths.
 
@@ -17814,9 +17853,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         visitors = d.get("visitors_deliveries", "")
         wind = d.get("weather_wind", "")
 
-        weather_str = f'{d.get("weather", "N/A")} {d.get("weather_temp", "")}'
-        if wind:
-            weather_str += f' &mdash; Wind: {wind}'
+        weather_str = _display_weather(d)
 
         jobsite_html = (
             section_title("Daily Jobsite Log (NYC DOB 3301-02)")
@@ -18536,7 +18573,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             + info_box(
                 f'<strong style="color:#0A1929;">Project Address:</strong> {_capitalize_first(d.get("project_address", "")) or "N/A"}<br />'
                 f'<strong style="color:#0A1929;">Site Safety Plan #:</strong> {d.get("ssp_number") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Weather:</strong> {d.get("weather") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Weather:</strong> {_display_weather(d)}<br />'
                 f'<strong style="color:#0A1929;">Workers on Site:</strong> {d.get("workers_on_site_count") or "N/A"}'
             )
             + sub_title("Compliance")
