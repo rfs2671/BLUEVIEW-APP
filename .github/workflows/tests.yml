@@ -60,13 +60,39 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
 
-      # The JS tests are dependency-free harnesses (fs/path only) that parse
-      # real component source, so no npm install is needed and the job stays
-      # seconds long. Globbed rather than hard-coded so a new *.test.cjs /
-      # *.test.js is picked up automatically — a test nobody runs is the thing
-      # this workflow exists to prevent. Fails the job on the FIRST non-zero
-      # exit, and fails loudly if the glob ever matches nothing.
+      # THE "NO INSTALL NEEDED" PREMISE WAS TRUE, AND IS NOT ANY MORE.
+      #
+      # 26 of the 28 JS tests are dependency-free harnesses (fs/path only) that
+      # parse real component source. Two are not: logbookViewRenderers and
+      # reportPreviewPhotoIssue TRANSPILE the real JSX renderer blocks and
+      # EXECUTE them — strictly stronger than grepping source, and worth
+      # keeping — so they require @babel/core, which package.json has declared
+      # all along.
+      #
+      # With no node_modules those two die on "Cannot find module
+      # '@babel/core'". Nobody saw it: the runner below halts on the FIRST
+      # non-zero exit, both files sort after one that was already failing, and
+      # so neither had ever executed in CI even once. They passed on
+      # developers' machines purely because node_modules happened to exist
+      # there. That is the precise failure mode this workflow was written to
+      # prevent, reproduced inside the workflow itself.
+      #
+      # `npm ci`, not a targeted `npm i`: with a package.json present, npm
+      # resolves the whole tree anyway (measured — 987 packages either way), so
+      # a targeted install buys nothing and gives up the lockfile's
+      # reproducibility. Same step the mount-smoke job below already runs, and
+      # the setup-node cache above keeps it short.
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Globbed rather than hard-coded so a new *.test.cjs / *.test.js is
+      # picked up automatically — a test nobody runs is the thing this workflow
+      # exists to prevent. Fails the job on the FIRST non-zero exit, and fails
+      # loudly if the glob ever matches nothing.
       - name: Run frontend JS tests
         working-directory: frontend
         run: |
