@@ -879,6 +879,68 @@ export const logbooksAPI = {
   },
 
   /**
+   * The same roster as getCheckinsForDate, but WITH the integrity report the
+   * bare list cannot carry:
+   *
+   *   {workers, partial, degraded_passes, truncated_passes, collapsed}
+   *
+   * The endpoint runs three passes and each swallows its own failure, so a
+   * bare list cannot distinguish "nobody else was on site" from "a query
+   * failed and those men are missing". The daily jobsite stepper builds a
+   * SIGNED record off this, so it asks for the envelope and says so on screen
+   * when `partial` is true rather than rendering a short roster as complete.
+   *
+   * `collapsed` counts men dropped by the (name, company) dedupe guard —
+   * normally a duplicate of the same worker, but indistinguishable from a
+   * second man who shares a name at one sub, because the gate and legacy id
+   * spaces have no join key.
+   *
+   * Returns a normalized envelope even on a malformed response, so a caller
+   * never has to guess whether it got the list or the wrapper.
+   */
+  getCheckinsRoster: async (projectId, date = null) => {
+    const params = { envelope: 1 };
+    if (date) params.date = date;
+    const response = await apiClient.get(
+      `/api/logbooks/project/${projectId}/checkins-today`, { params },
+    );
+    const d = response.data;
+    if (Array.isArray(d)) {
+      // An older server that does not know the flag. Unknown is NOT clean:
+      // report it as partial so the CP is never told a roster is complete on
+      // the word of something that cannot make that claim.
+      return {
+        workers: d, partial: true, degraded_passes: [], truncated_passes: [],
+        collapsed: 0, envelope_unsupported: true,
+      };
+    }
+    return {
+      workers: Array.isArray(d?.workers) ? d.workers : [],
+      partial: d?.partial !== false,
+      degraded_passes: d?.degraded_passes || [],
+      truncated_passes: d?.truncated_passes || [],
+      collapsed: Number(d?.collapsed) || 0,
+      envelope_unsupported: false,
+    };
+  },
+
+  /**
+   * Ranked activity chips for one project-day.
+   * GET /api/projects/{id}/activity-chips — RANKING ONLY. The server never
+   * pre-selects (ActivityChip.selected is Literal[False], so a selected chip is
+   * unconstructible) and "Other" is always the last chip. `date` is the day
+   * being logged; priors are read from the most recent daily_jobsite log
+   * STRICTLY BEFORE it.
+   */
+  getActivityChips: async (projectId, date = null) => {
+    const params = date ? { date } : {};
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/activity-chips`, { params },
+    );
+    return response.data;
+  },
+
+  /**
    * Per-company headcount for a project on a given date. Used by
    * Daily Jobsite Log — a headcount log, not a signature roster.
    * Returns [{sub_name, trade, worker_count_today}, ...].

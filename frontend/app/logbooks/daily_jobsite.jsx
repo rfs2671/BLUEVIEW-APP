@@ -1,16 +1,51 @@
+/**
+ * DAILY JOBSITE LOG — NYC DOB 3301-02, as a five-step stepper.
+ *
+ * WHO THIS IS FOR. A Competent Person who is older and not technical, on his
+ * own phone, outdoors, gloved, one-handed. That outranks aesthetics wherever
+ * the two conflict. The rules it is built to, all of them load-bearing:
+ *
+ *   • TAP ONLY. No swipe, no long-press, no hidden gesture. The photo strip is
+ *     a wrapping grid, not a horizontal scroller, because a horizontal
+ *     scroller IS a swipe affordance.
+ *   • 56pt minimum touch target (touchTarget.min), applied as a minimum, never
+ *     as a size.
+ *   • ONE primary action per screen, and it is the largest element on it.
+ *   • No screen needs more than twelve words read to know what to do.
+ *   • Light, high-contrast surfaces (theme.outdoor) that do NOT flip with the
+ *     app theme — direct sun does not care what theme the CP picked.
+ *   • Every colour, size and spacing comes from the token file.
+ *   • English. A logbook is a legal record filed with the DOB. The one place
+ *     Spanish belongs is the sentence a worker signs, and SignaturePad owns
+ *     that itself.
+ *
+ * WHAT CHANGED ABOUT THE RECORD, AND WHAT DID NOT. Every legal field the old
+ * single-scroll form captured is still captured; only the capture method
+ * changed. No field was added or removed. The one behavioural correction:
+ *
+ *   THE APP NO LONGER WRITES THE WORK DESCRIPTION. The previous screen seeded
+ *   `work_description: r.trade`, so a signed log asserted that the Concrete
+ *   crew performed "Concrete" — the app wrote that sentence, not the CP. Now
+ *   the CP taps what actually happened and an unselected activity is EMPTY,
+ *   never guessed. See composeSelection in src/utils/dailyJobsiteModel.js.
+ *
+ * WHERE THE DECISIONS LIVE. Anything that decides what reaches the signed
+ * record — who was on site, whether the camera may open, whether an
+ * observation is complete — is a pure function in
+ * src/utils/dailyJobsiteModel.js so it can be executed by a test rather than
+ * grepped. This file renders.
+ */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image, Modal,
+  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  Image, Modal, Platform,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft, Building2, CheckCircle, Save, Plus, Calendar,
-  HardHat, Truck, AlertTriangle, Users, Clipboard, CloudSun, Camera, X, ImageIcon,
+  ArrowLeft, ArrowRight, Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
 import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
@@ -18,72 +53,60 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { useT } from '../../src/i18n';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
-import { useTheme } from '../../src/context/ThemeContext';
-import FloatingNav from '../../src/components/FloatingNav';
+import { spacing, borderRadius, typography, touchTarget, outdoor } from '../../src/styles/theme';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
+import { easternToday } from '../../src/utils/dates';
 import {
   draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending,
   persistActivityPhotos, markFinalized,
-  // Track R2 — photos go to R2 as they are TAKEN, so the document never
-  // carries full-size image data. persistPhoto now THROWS on a failed copy
-  // (it used to return the cache uri and say nothing), which is what makes
-  // "a photo taken offline is never lost" a claim this screen can honour.
+  // persistPhoto THROWS on a failed copy. That throw IS the offline photo
+  // guarantee: it used to return the OS cache uri and say nothing, so the
+  // draft recorded a path the app does not own, the cache was evicted, and the
+  // photo was gone with nothing having reported it. Reverting it to a swallow
+  // is a regression, not a simplification.
   persistPhoto, uploadCapturePhoto, uploadPendingActivityPhotos,
   photoNeedsUpload, hasPendingPhotoUploads,
 } from '../../src/utils/logbookDrafts';
-// The finalize-gate mechanism LogbookLockBar and the reconnect drain already
-// share. Reused here rather than reimplemented: finalizeErrorCode is the ONE
-// place a FINALIZE_* code is pulled out of an axios error (and the one place
-// that guarantees the server's English `detail` never reaches a screen), and
-// clearFinalizeError is what makes the drain's persistent "NOT LOCKED ON THE
-// SERVER" banner go away once this screen finalizes for real. recordFinalizeError
-// is the other half: it RAISES that same banner, so a refusal taken here in the
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen finalizes for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
 // foreground leaves the identical durable trace a background one does.
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
-// The app-wide OFFLINE discriminator (src/utils/offlineState.js), the same one
-// settleFetch is built on. "Offline" here has to mean what it means everywhere
-// else — no response at all — and not be a second, local guess at it.
+// The app-wide OFFLINE discriminator — the same one settleFetch is built on.
+// "Offline" here has to mean what it means everywhere else: no response at all.
 import { isOfflineError } from '../../src/utils/offlineState';
 import * as ImagePicker from 'expo-image-picker';
-import { Platform } from 'react-native';
+import {
+  EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
+  composeSelection, cameraReady, applyCompanyCorrection, isUnboundCrew,
+  observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
+  rosterKey,
+} from '../../src/utils/dailyJobsiteModel';
+
+// The DOB form number is an identifier, not prose — identical in every
+// language — so it is a module constant rather than a catalogue string.
+const FORM_NUMBER = 'NYC DOB 3301-02';
+
+const TOTAL_STEPS = 5;
 
 // ── THE PHOTO CAP: 10 PER SUBCONTRACTOR, AGGREGATED ─────────────────────────
-// This was 5 PER ROW while the message it showed said "per subcontractor". Both
-// halves were wrong: a sub with three activity rows could attach 15 photos while
-// being told the limit was 5. The cap is now what the message always claimed —
-// 10 photos for a subcontractor, counted across EVERY row that names it.
-//
-// There is no project-wide cap. The buckets are:
+// Counted across EVERY row that names the sub, not per row. There is no
+// project-wide cap. The buckets are:
 //
 //   • each distinct subcontractor_id  -> 10, shared across all of its rows
-//   • each row with NO roster id      -> its own 10, NEVER shared with another
-//     ("Other"/unbound)                  unbound row
-//   • each blank-company row          -> its own 10, NEVER merged with another
-//                                        blank
+//   • each row with NO roster id      -> its own 10, NEVER shared
+//   • each blank-company row          -> its own 10, NEVER merged
 //
 // The last two are the point. A CP standing on a jobsite with three crews the
-// admin has not entered on the roster yet is looking at an ADMIN failure, not
-// committing an abuse. Making those rows share one bucket would take the
-// evidence he is able to collect away from him as a punishment for someone
-// else's unfinished data entry. Each row gets its own allowance until the
-// roster catches up, and the moment it does the rows collapse into the real
-// subcontractor bucket on their own.
+// admin has not entered yet is looking at an ADMIN failure, not committing an
+// abuse. Making those rows share one bucket would take the evidence he can
+// collect away from him as a punishment for someone else's unfinished data
+// entry.
 const MAX_PHOTOS_PER_SUBCONTRACTOR = 10;
 
-/**
- * Which bucket does this row's photos count against?
- *
- * Bound to the roster -> the SUBCONTRACTOR, so every row naming that sub shares
- * one allowance. Otherwise the ROW itself, keyed on its stable activity_id, so
- * two unbound rows (and two blank rows) can never collide.
- *
- * A row stored before activity_id existed has neither key; it falls back to its
- * index, which still gives it a bucket of its own. That is the honest reading:
- * an old row we cannot attribute is exactly the unbound case.
- */
 const photoBucketKey = (activity, index) => {
   const subId = String(activity?.subcontractor_id || '').trim();
   if (subId) return `sub:${subId}`;
@@ -107,61 +130,32 @@ const bucketRemaining = (rows, index) => Math.max(
   0, MAX_PHOTOS_PER_SUBCONTRACTOR - photosInBucket(rows, index),
 );
 
-// The in-process camera is native-only (vision-camera cannot run in a browser),
-// and the desktop review view must keep the form it has. Everything gated on
-// this constant is the CP's phone path and nothing else.
+// The in-process camera is native-only (vision-camera cannot run in a browser).
 const MOBILE_CAPTURE = Platform.OS !== 'web';
 
-// Client-side only. `pending` marks a photo whose background compression is
-// still running; `id` is what lets that background job find its own photo again
-// after the CP has kept shooting, deleted a sibling, or switched rows. Both are
-// stripped before the log is saved, so the stored shape is unchanged.
 let photoSeq = 0;
 const newPhotoId = () => `cap_${Date.now()}_${(photoSeq += 1)}`;
 
-// ── Activity row identity ───────────────────────────────────────────────────
-// `activity_id` is a stable per-row id, minted on the device when the row is
-// created (seeded from headcount, or added by hand) and then stored with the
-// row. Nothing had one before: rows were identified only by their INDEX in
-// data.activities[], which changes the moment a row is added, removed or
-// reordered. An index is fine for rendering and useless for anything that has
-// to still mean the same row later — including the photo cap below, which has
-// to group a subcontractor's rows without a roster id to group them by.
-//
-// It is deliberately client-minted and NOT server-owned: a row can be created
-// with no signal at all (the whole point of the offline draft), so an id that
-// required a round-trip would simply not exist for the rows that need it most.
-let activitySeq = 0;
-const newActivityId = () => `act_${Date.now()}_${(activitySeq += 1)}`;
-
-// The one normalization used to match a typed company name against the day's
-// roster names. Mirrors _roster_key in backend/server.py (strip + casefold),
-// so a case-only or whitespace edit still resolves to the same subcontractor.
-const rosterKey = (v) => String(v || '').trim().toLowerCase();
-
-// A saved photo's full-size `base64` is DROPPED when its log is finalized —
-// server.py _purge_finalized_photo_base64, and only once R2 has confirmed both
-// derivatives. `thumb_base64` is the ~400px copy written in its place and is
-// never removed, so it is the last inline copy any screen can count on.
+// A saved photo's full-size `base64` is DROPPED when its log is finalized
+// (server.py _purge_finalized_photo_base64), and only once R2 has confirmed
+// both derivatives. `thumb_base64` is the ~400px copy written in its place and
+// is never removed, so it is the last inline copy any screen can count on.
 const inlinePhotoData = (b64) => (
   !b64 ? null : (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`)
 );
 
 // Has the backend already purged this photo's full-size copy? If so its `uri`
-// must NOT be re-encoded on save: that would push the full-size base64 straight
-// back into the document the purge just shrank, and it would do it without any
-// of the R2 proof the purge required. Nothing is lost by sending it as-is —
-// R2 holds the derivatives and thumb_base64 rides along in the payload.
+// must NOT be re-encoded on save — that would push the full-size base64 back
+// into the document the purge just shrank, without any of the R2 proof the
+// purge required.
 const isPurgedPhoto = (photo) => Boolean(
   photo && (photo.base64_purged_at || photo.thumb_base64),
 );
 
-// Patch ONE photo wherever it currently lives, matched by its CAPTURE ID.
-//
-// Not by (row index, photo index): a background upload can land after the CP
-// has added a row, deleted a sibling or switched subs, and both indexes move
-// when he does. The id does not, and it is unique across every row, so this
-// can never patch a different photo than the one it was told about.
+// Patch ONE photo wherever it currently lives, matched by its CAPTURE ID — not
+// by (row index, photo index). A background upload can land after the CP has
+// added a row, deleted a sibling or switched crews, and both indexes move when
+// he does. The id does not.
 const patchPhoto = (rows, photoId, patch) => (rows || []).map((a) => (
   ((a.photos || []).some((p) => p.id === photoId))
     ? { ...a, photos: a.photos.map((p) => (p.id === photoId ? { ...p, ...patch } : p)) }
@@ -177,40 +171,27 @@ const dropPhoto = (rows, photoId) => (rows || []).map((a) => (
 /**
  * ONE photo, as it is written into the logbook document.
  *
- * THE DOCUMENT NO LONGER CARRIES FULL-SIZE IMAGE DATA. A logbook is one
- * MongoDB document with a 16MB ceiling, and re-encoding each photo to base64
- * at save time cost ~200KB apiece: ten subcontractors at ten photos each
- * measured 20,510,438 bytes, so the END-OF-DAY save was rejected outright,
- * on a signed record, after the CP had done the whole day. Photos go to R2 as
- * they are taken; the row carries the key.
- *
- * Returns null for a photo with nothing left to send, so the caller can drop
- * it rather than write an empty entry into a compliance record.
+ * THE DOCUMENT DOES NOT CARRY FULL-SIZE IMAGE DATA. A logbook is one MongoDB
+ * document with a 16MB ceiling, and re-encoding each photo to base64 at save
+ * time cost ~200KB apiece: ten subcontractors at ten photos each measured
+ * 20,510,438 bytes, so the END-OF-DAY save was rejected outright, on a signed
+ * record, after the CP had done the whole day. Photos go to R2 as they are
+ * taken; the row carries the key.
  */
 const photoForPayload = (photo) => {
   if (!photo || typeof photo !== 'object') return photo;
-  // Client-side bookkeeping only: `pending` and `id` belong to the background
-  // compressor, `persist_failed` to the retake prompt.
   const { pending, id, persist_failed, ...stored } = photo; // eslint-disable-line no-unused-vars
   if (stored.original_r2_key) {
-    // In R2. The markers go with the pending state that is now over.
     const { upload_pending, upload_rejected, ...done } = stored; // eslint-disable-line no-unused-vars
     return done;
   }
-  if (stored.base64 || isPurgedPhoto(stored)) {
-    // An existing photo round-tripping through a re-save: an inline copy the
-    // backfill has not moved yet, or a finalized photo whose full-size copy
-    // the purge already took. Passed through EXACTLY as it arrived.
-    return stored;
-  }
-  if (!stored.uri) return null;   // nothing local, nothing stored — not a photo
-  // Taken, held on the device, upload not landed. The row says so: the readers
-  // fall back to the local file, and the reconnect drain uploads it and
-  // re-pushes. Deliberately NOT re-encoded to base64 — one such photo is
-  // ~200KB and a hundred of them is the save this whole change exists to stop.
+  if (stored.base64 || isPurgedPhoto(stored)) return stored;
+  if (!stored.uri) return null;
   return { ...stored, upload_pending: true };
 };
+
 const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
+
 const EQUIPMENT_ITEMS = [
   { key: 'elevator', label: 'Elevator' },
   { key: 'compressor', label: 'Compressor' },
@@ -232,54 +213,51 @@ const CHECKLIST_ITEMS = [
   { key: 'other_checklist', label: 'Other' },
 ];
 
-const EMPTY_ACTIVITY = () => ({
-  // Stable row identity — see newActivityId above.
-  activity_id: newActivityId(),
-  // The project roster row this activity is accountable to
-  // (project.trade_assignments[].id, minted server-side as `srv_<uuid4hex>`).
-  // A hand-added row has no roster identity until the CP names a company that
-  // is actually on the day's roster, so it starts NULL and stays null for an
-  // "Other"/unbound sub. Null is the honest answer; a placeholder id here
-  // would silently merge two unrelated subcontractors.
-  subcontractor_id: null,
-  crew_id: '',
-  company: '',
-  num_workers: '',
-  work_description: '',
-  work_locations: '',
-  photos: [],
-});
+/**
+ * Location chips are DERIVED, not invented.
+ *
+ * There is no location vocabulary anywhere in this codebase and no endpoint
+ * serving one, so authoring a fixed list of jobsite areas here would be
+ * putting made-up terms into a legal record. What the project record actually
+ * knows is how many storeys the building has (`building_stories`,
+ * backend/server.py:1472), so the floors are offered as chips and everything
+ * else goes through "Somewhere else", which is free text the CP writes
+ * himself. A project with no storey count set gets no floor chips at all —
+ * that is the honest state, and the CP still has free text.
+ */
+const floorChips = (stories) => {
+  const n = parseInt(stories, 10);
+  if (!Number.isFinite(n) || n <= 0) return [];
+  return Array.from({ length: Math.min(n, 60) }, (_, i) => ({
+    id: `floor_${i + 1}`, label: `Floor ${i + 1}`,
+  }));
+};
 
-const EMPTY_OBSERVATION = () => ({
-  description: '',
-  responsible_party: '',
-  remedy: '',
-  corrected_immediately: null,
-});
+const OTHER_LOCATION_ID = 'location_other';
+const OTHER_ACTIVITY_ID = 'other';
 
 export default function DailyJobsiteLog() {
-  const { colors, isDark } = useTheme();
-  // Memoized so a re-render (e.g. the camera tap) doesn't rebuild the
-  // entire StyleSheet on the critical path.
-  const s = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
   const router = useRouter();
-  const { projectId, date } = useLocalSearchParams();
+  const params = useLocalSearchParams();
+  const projectId = params.projectId;
+  // A date derived for a query or a record uses the Eastern helper. On the UTC
+  // clock this default would ask for TOMORROW from 20:00 EDT and file the log
+  // under it. That bug shipped thirteen times; this is not the fourteenth.
+  const date = params.date || easternToday();
   const { user } = useAuth();
   const toast = useToast();
   const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
   const t = useT('dailyJobsite');
-  // The finalize namespace is LogbookLockBar's; it is reused verbatim here so a
-  // server refusal reads identically wherever the CP meets it. See
-  // handleSubmitAndSign.
+  // LogbookLockBar's namespace, reused verbatim so a server refusal reads
+  // identically wherever the CP meets it.
   const tFinalize = useT('finalize');
+  const s = useMemo(() => buildStyles(), []);
+
   /**
-   * The server names the condition, the client owns the wording — the same rule
-   * LogbookLockBar's gateCopy follows, over the same `finalize` namespace, so a
-   * refusal reads identically whether the CP meets it here (on screen, at the
-   * moment he presses Submit & Sign) or on the LockBar's banner (surfaced later,
-   * from a background drain that had no screen to show it on). `translate`
-   * returns the KEY on a miss, which is how an unmapped code is detected; the
-   * server's English `detail` is never rendered.
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
    */
   const gateCopy = (code) => {
     if (!code) return tFinalize('genericError');
@@ -287,74 +265,28 @@ export default function DailyJobsiteLog() {
     const copy = tFinalize(key);
     return copy && copy !== key ? copy : tFinalize('genericError');
   };
-  // The cap is one number in one place; the copy takes it rather than repeating
-  // it, so the message can never drift from what is enforced.
+  // The cap is one number in one place; the copy takes it rather than
+  // repeating it, so the message can never drift from what is enforced.
   const capMessage = () => t('photoCapBody').replace('{n}', String(MAX_PHOTOS_PER_SUBCONTRACTOR));
+  const plural = (oneKey, otherKey, n) => (
+    n === 1 ? t(oneKey) : t(otherKey).replace('{n}', String(n))
+  );
 
+  const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  // The end-of-day Submit & Sign outlives handleSave's own `saving` window (it
-  // finalizes afterwards), so it carries its own busy flag — which also blocks
-  // a double-tap from double-finalizing.
   const [signing, setSigning] = useState(false);
-  // Double-tap guard as a ref, NOT state: a setState here would
-  // re-render the whole activities/photos tree at the exact moment the
-  // native camera intent fires, stalling launch. Refs also update
-  // synchronously, so the guard is more reliable against fast taps.
-  const capturingRef = useRef(false);
-  // In-process camera (CameraCaptureModal) — replaces launchCameraAsync on
-  // native so the app is never backgrounded/killed by the OS camera handoff.
-  // The surface is pre-warmed at screen mount, so cameraVisible only REVEALS
-  // it; it does not create it. cameraTargetIndex remembers which activity the
-  // capture belongs to while the camera is open.
-  const [cameraVisible, setCameraVisible] = useState(false);
-  const [cameraTargetIndex, setCameraTargetIndex] = useState(null);
-  // Ids captured since the camera was last opened — the keep-shooting strip
-  // shows THIS session's frames, not every photo the row already had.
-  const [sessionShotIds, setSessionShotIds] = useState([]);
-  // In-flight background compressions. handleSave waits on these so a log can
-  // never be submitted carrying a raw multi-megabyte sensor JPEG.
-  const pendingCompressRef = useRef([]);
-  // id -> compressed uri. handleSave reads this instead of trusting that the
-  // state update from a background job has already reached its closure.
-  const compressedUriRef = useRef({});
-
-  // ── Which activity does a photo belong to? ────────────────────────────────
-  // The FAB is global, so it has to answer this without the CP telling it.
-  // Signals, all cheap and all refs so scrolling never re-renders the form:
-  //   activitiesBlockYRef — y of the Activity Details card in scroll content
-  //   activityLayoutsRef  — per-row {y, h} inside that card
-  //   scrollYRef/viewportHRef — where the CP is looking right now
-  //   lastEditedRef       — the row whose fields/photos were last touched
-  const activitiesBlockYRef = useRef(0);
-  const activityLayoutsRef = useRef({});
-  const scrollYRef = useRef(0);
-  const viewportHRef = useRef(0);
-  const lastEditedRef = useRef(null);
-  const activitiesRef = useRef([]);
-  // rosterKey(sub_name) -> subcontractor_id, built from the day's headcount.
-  // Only names that resolve to EXACTLY ONE roster id are in here: a company
-  // working two trades today has two roster rows and therefore two ids, and
-  // there is no way to tell from a typed company name which one the CP meant.
-  // An ambiguous name is left out, which resolves to null — unbound, its own
-  // photo bucket. Guessing would attach a row to the wrong roster entry.
-  const rosterIdByCompanyRef = useRef(new Map());
-  const [fabTargetIndex, setFabTargetIndex] = useState(0);
-  // Resolve the camera permission dialog HERE, at screen mount, so it is not
-  // sitting between the capture tap and the preview. No-op on web.
-  useCameraPrewarmPermission();
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
   const [locked, setLocked] = useState(false);
+  const [existingLogId, setExistingLogId] = useState(null);
 
+  // ── The record ────────────────────────────────────────────────────────
   const [projectAddress, setProjectAddress] = useState('');
+  const [buildingStories, setBuildingStories] = useState(null);
   const [weather, setWeather] = useState('');
   const [weatherTemp, setWeatherTemp] = useState('');
   const [weatherWind, setWeatherWind] = useState('');
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [generalDescription, setGeneralDescription] = useState('');
-  const [activities, setActivities] = useState([EMPTY_ACTIVITY()]);
+  const [activities, setActivities] = useState([]);
   const [equipmentOnSite, setEquipmentOnSite] = useState({});
   const [checklistItems, setChecklistItems] = useState({});
   const [observations, setObservations] = useState([]);
@@ -363,178 +295,161 @@ export default function DailyJobsiteLog() {
   const [timeOut, setTimeOut] = useState('');
   const [areasVisited, setAreasVisited] = useState('');
 
-  useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+  // ── Roster integrity ──────────────────────────────────────────────────
+  // A short roster shown as complete is a fabricated record, so what the
+  // server could not confirm is carried and stated, never swallowed.
+  const [rosterPartial, setRosterPartial] = useState(false);
+  const [rosterCollapsed, setRosterCollapsed] = useState(0);
 
-  // Phase A2 — autosave to the local draft on any change (debounced). Photos are
-  // copied to persistent storage so they survive quit/reopen; base64 is NOT
-  // stored (built only at server-save). No server call; `status` omitted so an
-  // autosave never downgrades a submitted log.
-  //
-  // LATENCY (camera): every capture calls setActivities, so this effect used to
-  // fire 800ms after EACH shot and run persistActivityPhotos (a file copy per
-  // photo in the log) plus a JSON.stringify + AsyncStorage write of the whole
-  // draft — landing squarely on the JS thread while the CP is lining up the
-  // next frame, and getting more expensive with every photo taken. While the
-  // camera is OPEN the draft is not worth that: `cameraVisible` is in the deps,
-  // so closing the camera re-runs this immediately and writes everything the
-  // session captured, and handleSave persists independently of it either way.
-  useEffect(() => {
-    if (loading || cameraVisible) return undefined;
-    const t = setTimeout(async () => {
-      try {
-        const persistedActivities = await persistActivityPhotos(activities);
-        await writeDraft(draftKey({ projectId, logType: 'daily_jobsite', date }), {
-          data: {
-            project_address: projectAddress,
-            weather, weather_temp: weatherTemp, weather_wind: weatherWind,
-            general_description: generalDescription,
-            activities: persistedActivities,
-            equipment_on_site: equipmentOnSite,
-            checklist_items: checklistItems,
-            observations,
-            visitors_deliveries: visitorsDeliveries,
-            time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
-          },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        });
-      } catch (_e) { /* draft autosave is best-effort */ }
-    }, 800);
-    return () => clearTimeout(t);
-  }, [
-    loading, cameraVisible, projectId, date, projectAddress, weather, weatherTemp, weatherWind,
-    generalDescription, activities, equipmentOnSite, checklistItems, observations,
-    visitorsDeliveries, timeIn, timeOut, areasVisited, cpSignature, cpName,
+  // ── Chips ─────────────────────────────────────────────────────────────
+  const [chips, setChips] = useState([]);
+  const [chipsMeta, setChipsMeta] = useState(null);
+  const [expandedChips, setExpandedChips] = useState({});   // activity_id -> bool
+
+  const rosterIdsRef = useRef(new Map());
+  const activitiesRef = useRef([]);
+
+  // ── Camera ────────────────────────────────────────────────────────────
+  const capturingRef = useRef(false);
+  const [cameraVisible, setCameraVisible] = useState(false);
+  const [cameraTargetIndex, setCameraTargetIndex] = useState(null);
+  const [sessionShotIds, setSessionShotIds] = useState([]);
+  const pendingCompressRef = useRef([]);
+  const compressedUriRef = useRef({});
+  const uploadAttemptedRef = useRef(new Set());
+  // Resolve the camera permission dialog HERE, at screen mount, so it is not
+  // sitting between the capture tap and the preview. No-op on web.
+  useCameraPrewarmPermission();
+
+  // ── Modals ────────────────────────────────────────────────────────────
+  const [correcting, setCorrecting] = useState(null);      // {index, value}
+  const [addingCrew, setAddingCrew] = useState(null);      // {company, trade, num}
+  const [otherPrompt, setOtherPrompt] = useState(null);    // {index, kind, value}
+  const [photoLightbox, setPhotoLightbox] = useState(null);
+
+  useEffect(() => { activitiesRef.current = activities; }, [activities]);
+
+  useEffect(() => { fetchData(); }, [projectId, date]);
+
+  // A string, not a call: the pending-marker guarantee is pinned on the
+  // literal `markPending(_key)` shape in logbookPhotoR2.test.cjs.
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: 'daily_jobsite', date }),
+    [projectId, date],
+  );
+
+  const draftBody = useCallback((acts) => ({
+    project_address: projectAddress,
+    weather, weather_temp: weatherTemp, weather_wind: weatherWind,
+    general_description: generalDescription,
+    activities: acts,
+    equipment_on_site: equipmentOnSite,
+    checklist_items: checklistItems,
+    observations,
+    visitors_deliveries: visitorsDeliveries,
+    time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
+  }), [
+    projectAddress, weather, weatherTemp, weatherWind, generalDescription,
+    equipmentOnSite, checklistItems, observations, visitorsDeliveries,
+    timeIn, timeOut, areasVisited,
   ]);
+
+  // ── AUTOSAVE ──────────────────────────────────────────────────────────
+  // There is no "Save Draft" button. The CP never has to remember to save,
+  // because forgetting would cost him a day of work he has already done.
+  //
+  // While the camera is OPEN this is skipped: every capture calls
+  // setActivities, and running persistActivityPhotos (a file copy per photo)
+  // plus a JSON.stringify of the whole draft lands on the JS thread while the
+  // CP is lining up the next frame. `cameraVisible` is in the deps, so closing
+  // the camera re-runs it immediately and writes everything the session
+  // captured.
+  useEffect(() => {
+    if (loading || locked || cameraVisible) return undefined;
+    const h = setTimeout(async () => {
+      try {
+        const persisted = await persistActivityPhotos(activitiesRef.current);
+        await writeDraft(_key, {
+          data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
+        });
+      } catch (_e) { /* autosave is best-effort; the next change retries */ }
+    }, 800);
+    return () => clearTimeout(h);
+  }, [
+    loading, locked, cameraVisible, activities, draftBody, cpSignature, cpName,
+  ]);
+
+  /** Flush the draft NOW — used when leaving a step, so a step boundary is a
+   *  save point even if the app dies before the debounce fires. */
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
+    try {
+      const persisted = await persistActivityPhotos(activitiesRef.current);
+      await writeDraft(_key, {
+        data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort */ }
+  }, [locked, draftBody, cpSignature, cpName]);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Phase A2 — local-first: read the on-device draft first; if present,
-      // hydrate from it and skip the server round-trip (works fully offline).
-      const _draft = await readDraft(draftKey({ projectId, logType: 'daily_jobsite', date }));
-      if (_draft && _draft.data && Object.keys(_draft.data).length) {
-        const d = _draft.data;
-        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
-        if (_draft.finalized) {
-          setLocked(true);
-          markFinalized(draftKey({ projectId, logType: 'daily_jobsite', date }));
-        }
-        setExistingLogId(_draft.backend_id || null);
-        if (d.project_address) setProjectAddress(d.project_address);
-        if (d.weather) setWeather(d.weather);
-        if (d.weather_temp) setWeatherTemp(d.weather_temp);
-        if (d.weather_wind) setWeatherWind(d.weather_wind);
-        if (d.general_description) setGeneralDescription(d.general_description);
-        if (d.activities?.length > 0) setActivities(d.activities);
-        if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
-        if (d.checklist_items) setChecklistItems(d.checklist_items);
-        if (d.observations) setObservations(d.observations);
-        if (d.visitors_deliveries) setVisitorsDeliveries(d.visitors_deliveries);
-        if (d.time_in) setTimeIn(d.time_in);
-        if (d.time_out) setTimeOut(d.time_out);
-        if (d.areas_visited) setAreasVisited(d.areas_visited);
-        if (_draft.cp_signature) setCpSignature(_draft.cp_signature);
-        if (_draft.cp_name) setCpName(_draft.cp_name);
+      // Local-first: the on-device draft wins, so the screen works fully
+      // offline and a reopened log is exactly where the CP left it.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
+        hydrate(draft.data);
+        if (draft.finalized) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(draft.backend_id || null);
+        if (draft.cp_signature) setCpSignature(draft.cp_signature);
+        if (draft.cp_name) setCpName(draft.cp_name);
+        loadChips();
+        loadProjectShell();
         setLoading(false);
         return;
       }
 
-      // Daily Jobsite Log is a per-company HEADCOUNT log, not a
-      // per-worker signature roster. We hit /daily-headcount which
-      // returns pre-aggregated {sub_name, trade, worker_count_today}
-      // rows — NOT the per-worker getCheckinsForDate() endpoint.
-      const [projectData, headcount, existingLogs] = await Promise.all([
+      const [projectData, roster, headcount, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
+        logbooksAPI.getCheckinsRoster(projectId, date).catch(() => null),
         logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
         logbooksAPI.getByProject(projectId, 'daily_jobsite', date).catch(() => []),
       ]);
 
-      // FIX #2: Set full project address
       const fullAddress = projectData?.address || projectData?.location || '';
       setProjectAddress(fullAddress);
+      setBuildingStories(projectData?.building_stories ?? null);
+      rosterIdsRef.current = rosterIdIndex(headcount);
 
-      // Build the company -> roster id map from the day's headcount BEFORE the
-      // existing-log branch: an already-saved log still has to re-resolve a
-      // company the CP retypes, and stored rows from before this change carry
-      // no subcontractor_id at all.
-      {
-        const idsByName = new Map();      // rosterKey(name) -> Set(ids)
-        for (const r of (Array.isArray(headcount) ? headcount : [])) {
-          const id = r?.subcontractor_id;
-          const name = rosterKey(r?.sub_name);
-          if (!id || !name) continue;
-          if (!idsByName.has(name)) idsByName.set(name, new Set());
-          idsByName.get(name).add(id);
-        }
-        const unique = new Map();
-        for (const [name, ids] of idsByName) {
-          if (ids.size === 1) unique.set(name, [...ids][0]);
-        }
-        rosterIdByCompanyRef.current = unique;
+      // A roster read that FAILED is not an empty jobsite. Null here means the
+      // request itself did not come back, which is exactly the case the CP
+      // must not read as "nobody was here".
+      if (!roster) {
+        setRosterPartial(true);
+      } else {
+        setRosterPartial(Boolean(roster.partial));
+        setRosterCollapsed(roster.collapsed || 0);
       }
 
-      // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
-      // over a locked original that shares (project, type, date).
-      const _existingArr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = _existingArr.find(l => !l.is_locked) || _existingArr[0] || null;
-      if (existing?.is_locked) {
-        setLocked(true);
-        markFinalized(draftKey({ projectId, logType: 'daily_jobsite', date }));
-      }
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
+      if (existing?.is_locked) { setLocked(true); markFinalized(_key); }
+
       if (existing) {
         setExistingLogId(existing.id || existing._id);
-        const d = existing.data || {};
-        if (d.project_address) setProjectAddress(d.project_address);
-        if (d.weather) setWeather(d.weather);
-        if (d.weather_temp) setWeatherTemp(d.weather_temp);
-        if (d.weather_wind) setWeatherWind(d.weather_wind);
-        if (d.general_description) setGeneralDescription(d.general_description);
-        if (d.activities?.length > 0) setActivities(d.activities);
-        if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
-        if (d.checklist_items) setChecklistItems(d.checklist_items);
-        if (d.observations) setObservations(d.observations);
-        if (d.visitors_deliveries) setVisitorsDeliveries(d.visitors_deliveries);
-        if (d.time_in) setTimeIn(d.time_in);
-        if (d.time_out) setTimeOut(d.time_out);
-        if (d.areas_visited) setAreasVisited(d.areas_visited);
+        hydrate(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       } else {
-        // Auto-build activities from pre-aggregated per-sub headcount.
-        // One activity row per (sub, trade) pair with the count pulled
-        // straight from the backend aggregation. No per-worker rows,
-        // no per-worker signatures.
-        const rows = Array.isArray(headcount) ? headcount : [];
-        const autoActivities = rows.map((r, i) => {
-          // PR B: 'UNASSIGNED' is a placeholder (worker's sub not on the roster
-          // at check-in), not a company. Seed the field EMPTY so it reads as
-          // pending and prompts the CP to assign the accountable sub — never
-          // stamp the sentinel onto the 3301-02. The headcount is preserved.
-          const company = (r.sub_name && r.sub_name.toUpperCase() !== 'UNASSIGNED')
-            ? r.sub_name : '';
-          return {
-            activity_id: newActivityId(),
-            // Carried through from GET /daily-headcount, which resolves it
-            // against project.trade_assignments server-side. A row whose
-            // company was blanked above has no accountable sub yet, so it
-            // must not keep an id either — the two have to agree.
-            subcontractor_id: company ? (r.subcontractor_id || null) : null,
-            crew_id: `C${i + 1}`,
-            company,
-            num_workers: String(r.worker_count_today ?? 0),
-            work_description: r.trade || '',
-            work_locations: '',
-            photos: [],
-          };
-        });
-        if (autoActivities.length > 0) setActivities(autoActivities);
-
-        // FIX #1: Auto-fetch weather if no existing log
+        setActivities(buildCrewsFromRoster(roster?.workers || [], headcount));
+        // Weather and address are OBSERVED FACTS about the day, not asserted
+        // work, so auto-filling them states nothing the CP did not witness.
+        // This is why they stay auto-populated while work_description does not.
         fetchWeather(fullAddress);
       }
+      loadChips();
     } catch (e) {
       console.error(e);
     } finally {
@@ -542,20 +457,54 @@ export default function DailyJobsiteLog() {
     }
   };
 
-  // FIX #1: Weather autofill from API
+  /** Address + storeys only — used on the draft path, which skips the rest. */
+  const loadProjectShell = async () => {
+    try {
+      const p = await projectsAPI.getById(projectId);
+      if (p?.building_stories != null) setBuildingStories(p.building_stories);
+      const [headcount] = await Promise.all([
+        logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
+      ]);
+      rosterIdsRef.current = rosterIdIndex(headcount);
+    } catch (_e) { /* non-blocking */ }
+  };
+
+  const loadChips = async () => {
+    try {
+      const res = await logbooksAPI.getActivityChips(projectId, date);
+      setChips(Array.isArray(res?.chips) ? res.chips : []);
+      setChipsMeta(res || null);
+    } catch (_e) {
+      // Chips never block an entry. With no ranking the CP still has "Other",
+      // which is free text, so the day can always be logged.
+      setChips([]);
+      setChipsMeta(null);
+    }
+  };
+
+  const hydrate = (d) => {
+    if (d.project_address) setProjectAddress(d.project_address);
+    if (d.weather) setWeather(d.weather);
+    if (d.weather_temp) setWeatherTemp(d.weather_temp);
+    if (d.weather_wind) setWeatherWind(d.weather_wind);
+    if (d.general_description) setGeneralDescription(d.general_description);
+    if (d.activities?.length) setActivities(d.activities);
+    if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
+    if (d.checklist_items) setChecklistItems(d.checklist_items);
+    if (d.observations) setObservations(d.observations);
+    if (d.visitors_deliveries) setVisitorsDeliveries(d.visitors_deliveries);
+    if (d.time_in) setTimeIn(d.time_in);
+    if (d.time_out) setTimeOut(d.time_out);
+    if (d.areas_visited) setAreasVisited(d.areas_visited);
+  };
+
   const fetchWeather = async (address) => {
     setWeatherLoading(true);
     try {
       const data = await weatherAPI.getCurrent(null, null, address || null);
-      if (data?.condition) {
-        setWeather(data.condition);
-      }
-      if (data?.temperature != null) {
-        setWeatherTemp(`${Math.round(data.temperature)}°F`);
-      }
-      if (data?.wind_speed != null) {
-        setWeatherWind(`${Math.round(data.wind_speed)} mph`);
-      }
+      if (data?.condition) setWeather(data.condition);
+      if (data?.temperature != null) setWeatherTemp(`${Math.round(data.temperature)}°F`);
+      if (data?.wind_speed != null) setWeatherWind(`${Math.round(data.wind_speed)} mph`);
     } catch (e) {
       console.warn('Weather autofill failed (non-blocking):', e?.message);
     } finally {
@@ -563,139 +512,185 @@ export default function DailyJobsiteLog() {
     }
   };
 
+  // ── Row edits ─────────────────────────────────────────────────────────
   const updateActivity = (index, field, value) => {
-    lastEditedRef.current = index;
-    setActivities(prev => prev.map((a, i) => {
+    setActivities((prev) => prev.map((a, i) => (i === index ? { ...a, [field]: value } : a)));
+  };
+
+  const addActivity = () => setActivities((prev) => [...prev, {
+    ...EMPTY_ACTIVITY(), crew_id: `C${prev.length + 1}`,
+  }]);
+
+  const addObservation = () => setObservations((prev) => [...prev, EMPTY_OBSERVATION()]);
+  const updateObservation = (index, field, value) => setObservations(
+    (prev) => prev.map((o, i) => (i === index ? { ...o, [field]: value } : o)),
+  );
+  const removeObservation = (index) => setObservations(
+    (prev) => prev.filter((_, i) => i !== index),
+  );
+
+  const toggleEquipment = (key) => setEquipmentOnSite((p) => ({ ...p, [key]: !p[key] }));
+  const toggleChecklist = (key) => setChecklistItems((p) => ({ ...p, [key]: !p[key] }));
+
+  // Chip labels for composing the sentence the PDF prints.
+  const chipLabels = useMemo(() => {
+    const m = new Map();
+    chips.forEach((c) => m.set(c.id, c.label));
+    return m;
+  }, [chips]);
+
+  const locationChips = useMemo(() => floorChips(buildingStories), [buildingStories]);
+  const locationLabels = useMemo(() => {
+    const m = new Map();
+    locationChips.forEach((c) => m.set(c.id, c.label));
+    return m;
+  }, [locationChips]);
+
+  /**
+   * Toggle one activity chip on a crew, and re-compose the sentence that
+   * reaches the record. NOTHING is pre-selected — a chip is only ever in
+   * `activity_ids` because the CP tapped it.
+   */
+  const toggleActivityChip = (index, chipId) => {
+    if (chipId === OTHER_ACTIVITY_ID) {
+      setOtherPrompt({ index, kind: 'activity', value: '' });
+      return;
+    }
+    setActivities((prev) => prev.map((a, i) => {
       if (i !== index) return a;
-      const next = { ...a, [field]: value };
-      // Retyping the COMPANY re-resolves the roster binding. It cannot be left
-      // alone: a row seeded as "Acme" carries Acme's roster id, and renaming it
-      // to a different sub while keeping that id is a fabricated binding — the
-      // renamed row would then share Acme's photo bucket and be reported
-      // against Acme. Unknown or ambiguous name -> null, which is the honest
-      // "no roster identity" and gives the row its own bucket.
-      if (field === 'company') {
-        next.subcontractor_id = rosterIdByCompanyRef.current.get(rosterKey(value)) || null;
-      }
-      return next;
+      const has = (a.activity_ids || []).includes(chipId);
+      const ids = has
+        ? a.activity_ids.filter((x) => x !== chipId)
+        : [...(a.activity_ids || []), chipId];
+      return {
+        ...a,
+        activity_ids: ids,
+        work_description: composeSelection(ids, mergedActivityLabels(a)),
+      };
     }));
   };
 
-  /**
-   * Resolve the activity a globally-launched capture belongs to.
-   *
-   * A photo landing on the wrong subcontractor is a compliance problem, not a
-   * cosmetic one, so the rule is explicit and the answer is shown on the FAB
-   * itself before the CP taps it. Cascade, first match wins:
-   *
-   *   1. The last row the CP EDITED (typed in, or used its own photo buttons),
-   *      IF that row is currently on screen. Deliberate intent, still in view.
-   *   2. Otherwise the row nearest the vertical CENTRE of the viewport, among
-   *      rows currently on screen. "What I'm looking at."
-   *   3. Otherwise the last row edited, even though it has scrolled away —
-   *      better than silently defaulting when the CP has stated a preference.
-   *   4. Otherwise row 1.
-   *
-   * Reads refs only: no state, no measure() round-trip, nothing awaited. The
-   * FAB tap must stay two synchronous setStates.
-   */
-  const resolveTargetActivity = useCallback((rows) => {
-    const n = rows.length;
-    if (n <= 1) return 0;
-
-    const scrollY = scrollYRef.current;
-    const vh = viewportHRef.current;
-    const blockY = activitiesBlockYRef.current;
-    const layouts = activityLayoutsRef.current;
-    const edited = lastEditedRef.current;
-    const editedValid = edited != null && edited >= 0 && edited < n;
-
-    const bounds = (i) => {
-      const l = layouts[i];
-      if (!l || !vh) return null;
-      const top = blockY + l.y;
-      return { top, bottom: top + l.h, mid: top + l.h / 2 };
-    };
-    const onScreen = (i) => {
-      const b = bounds(i);
-      return !!b && b.bottom > scrollY && b.top < scrollY + vh;
-    };
-
-    if (editedValid && onScreen(edited)) return edited;
-
-    const centre = scrollY + vh / 2;
-    let best = null;
-    let bestDist = Infinity;
-    for (let i = 0; i < n; i += 1) {
-      if (!onScreen(i)) continue;
-      const d = Math.abs(bounds(i).mid - centre);
-      if (d < bestDist) { bestDist = d; best = i; }
+  const toggleLocationChip = (index, chipId) => {
+    if (chipId === OTHER_LOCATION_ID) {
+      setOtherPrompt({ index, kind: 'location', value: '' });
+      return;
     }
-    if (best != null) return best;
+    setActivities((prev) => prev.map((a, i) => {
+      if (i !== index) return a;
+      const has = (a.location_ids || []).includes(chipId);
+      const ids = has
+        ? a.location_ids.filter((x) => x !== chipId)
+        : [...(a.location_ids || []), chipId];
+      return {
+        ...a,
+        location_ids: ids,
+        work_locations: composeSelection(ids, mergedLocationLabels(a)),
+      };
+    }));
+  };
 
-    if (editedValid) return edited;
-    return 0;
-  }, []);
+  // A free-text entry becomes a chip on its own row, so it renders and
+  // composes exactly like a ranked one and survives a reload.
+  const mergedActivityLabels = (a) => {
+    const m = new Map(chipLabels);
+    Object.entries(a.custom_activity_labels || {}).forEach(([k, v]) => m.set(k, v));
+    return m;
+  };
+  const mergedLocationLabels = (a) => {
+    const m = new Map(locationLabels);
+    Object.entries(a.custom_location_labels || {}).forEach(([k, v]) => m.set(k, v));
+    return m;
+  };
 
-  // The FAB NAMES its target, so the CP is never guessing where a photo went.
-  // Scrolling writes refs (no re-render); this pulls the resolved index into
-  // state only when it actually changes, which is a few times per scroll at
-  // most rather than once per frame.
-  const syncFabTarget = useCallback(() => {
-    if (!MOBILE_CAPTURE) return;
-    const next = resolveTargetActivity(activitiesRef.current);
-    setFabTargetIndex((prev) => (prev === next ? prev : next));
-  }, [resolveTargetActivity]);
+  const commitOther = () => {
+    const p = otherPrompt;
+    if (!p) return;
+    const label = String(p.value || '').trim();
+    if (!label) { setOtherPrompt(null); return; }
+    const id = `other:${label}`;
+    setActivities((prev) => prev.map((a, i) => {
+      if (i !== p.index) return a;
+      if (p.kind === 'activity') {
+        const labels = { ...(a.custom_activity_labels || {}), [id]: label };
+        const ids = (a.activity_ids || []).includes(id)
+          ? a.activity_ids : [...(a.activity_ids || []), id];
+        const m = new Map(chipLabels);
+        Object.entries(labels).forEach(([k, v]) => m.set(k, v));
+        return {
+          ...a, custom_activity_labels: labels, activity_ids: ids,
+          work_description: composeSelection(ids, m),
+        };
+      }
+      const labels = { ...(a.custom_location_labels || {}), [id]: label };
+      const ids = (a.location_ids || []).includes(id)
+        ? a.location_ids : [...(a.location_ids || []), id];
+      const m = new Map(locationLabels);
+      Object.entries(labels).forEach(([k, v]) => m.set(k, v));
+      return {
+        ...a, custom_location_labels: labels, location_ids: ids,
+        work_locations: composeSelection(ids, m),
+      };
+    }));
+    setOtherPrompt(null);
+  };
 
-  // Mirror activities into a ref so the scroll handler and the FAB can read the
-  // current rows without either becoming a dependency that re-subscribes.
-  useEffect(() => {
-    activitiesRef.current = activities;
-    syncFabTarget();
-  }, [activities, syncFabTarget]);
+  const commitCorrection = () => {
+    const c = correcting;
+    if (!c) return;
+    const next = String(c.value || '').trim();
+    if (!next) { setCorrecting(null); return; }
+    setActivities((prev) => prev.map((a, i) => (i === c.index ? applyCompanyCorrection(
+      a, next,
+      {
+        by: cpName || user?.full_name || user?.email || null,
+        at: new Date().toISOString(),
+        rosterIds: rosterIdsRef.current,
+      },
+    ) : a)));
+    setCorrecting(null);
+  };
 
-  const fabTargetLabel = (() => {
-    const act = activities[fabTargetIndex];
-    if (!act) return '';
-    const name = (act.company || '').trim();
-    if (name) return name;
-    const crew = (act.crew_id || '').trim();
-    return crew ? `Crew ${crew}` : `Activity ${fabTargetIndex + 1}`;
-  })();
+  const commitAddCrew = () => {
+    const c = addingCrew;
+    if (!c) return;
+    const company = String(c.company || '').trim();
+    if (!company) { setAddingCrew(null); return; }
+    const trade = String(c.trade || '').trim();
+    const key = `${rosterKey(company)}|${rosterKey(trade)}`;
+    setActivities((prev) => [...prev, {
+      ...EMPTY_ACTIVITY(),
+      crew_id: `C${prev.length + 1}`,
+      company,
+      trade,
+      num_workers: String(parseInt(c.num, 10) || 0),
+      // Added by hand — it did NOT come from the gate and must not claim to.
+      gate_sourced: false,
+      subcontractor_id: rosterIdsRef.current.get(key) || null,
+    }]);
+    setAddingCrew(null);
+  };
 
-  // ── THE CAPTURE-TIME UPLOAD ───────────────────────────────────────────────
+  // ── THE CAPTURE-TIME UPLOAD ───────────────────────────────────────────
+  // Photos go to R2 as they are TAKEN, so the document never carries full-size
+  // image data. Driven off `activities` rather than bolted onto each capture
+  // path, because there are FOUR ways a photo arrives — the in-process
+  // shutter, the gallery picker, the web picker, and a draft rehydrated after
+  // the app was killed — and a guarantee that has to hold for all four should
+  // not be written four times.
   //
-  // Photos go to R2 as they are TAKEN, so the log document never carries
-  // full-size image data (see photoForPayload). The upload is driven off
-  // `activities` rather than bolted onto each capture path, because there are
-  // FOUR ways a photo arrives — the in-process shutter, the gallery picker,
-  // the web picker, and a draft rehydrated after the app was killed — and a
-  // guarantee that has to hold for all four should not be written four times.
-  //
-  // CAPTURE NEVER BLOCKS ON THE NETWORK: this runs after the commit that
-  // already painted the photo, and nothing on the shutter path awaits it.
-  //
-  // ONE ATTEMPT PER PHOTO PER SESSION. The id stays in the set whether the
+  // ONE ATTEMPT PER PHOTO PER SESSION: the id stays in the set whether the
   // attempt succeeded or failed, so a failure cannot re-trigger this effect
-  // through its own setActivities and spin. Retries belong to handleSave and
-  // to the reconnect drain, which is where the CP is actually waiting for an
-  // answer.
-  const uploadAttemptedRef = useRef(new Set());
-
+  // through its own setActivities and spin.
   const uploadOneCapture = useCallback(async (activityId, photo) => {
     const id = photo.id;
     let localUri = photo.uri;
     try {
       localUri = await persistPhoto(photo.uri, id);
     } catch (_e) {
-      // THE PHOTO DID NOT SAVE, AND THE CP IS TOLD SO.
-      //
-      // persistPhoto used to swallow this and hand back the OS CACHE uri: the
-      // draft then recorded a path the app does not own, the cache was evicted,
-      // and the photo was gone with nothing having reported it. A photo whose
-      // copy failed is now not recorded at all — it is removed from the row, so
-      // nothing on screen claims evidence that does not exist — and the CP is
-      // asked to retake it. He is NOT blocked from finishing the log.
+      // THE PHOTO DID NOT SAVE, AND THE CP IS TOLD SO. A photo whose copy
+      // failed is not recorded at all — nothing on screen claims evidence that
+      // does not exist — and he is asked to retake it. He is NOT blocked from
+      // finishing the log.
       setActivities((prev) => dropPhoto(prev, id));
       setSessionShotIds((prev) => prev.filter((sid) => sid !== id));
       toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
@@ -703,19 +698,13 @@ export default function DailyJobsiteLog() {
     }
     if (localUri !== photo.uri) setActivities((prev) => patchPhoto(prev, id, { uri: localUri }));
     try {
-      const key = await uploadCapturePhoto({
-        projectId, activityId, photoId: id, uri: localUri,
-      });
-      setActivities((prev) => patchPhoto(prev, id, {
-        original_r2_key: key, upload_pending: false,
-      }));
+      const key = await uploadCapturePhoto({ projectId, activityId, photoId: id, uri: localUri });
+      setActivities((prev) => patchPhoto(prev, id, { original_r2_key: key, upload_pending: false }));
     } catch (_e) {
       // DEFERRED, NOT LOST. The file is in documentDirectory and its uri is in
       // the draft, so it survives an app kill; the row keeps `upload_pending`,
-      // so every reader falls back to that local file and the CP never sees a
-      // blank tile in his own log; and handleSave and the reconnect drain both
-      // retry it. The key is a pure function of three stable ids, so a retry
-      // overwrites its own object rather than orphaning one.
+      // so every reader falls back to that local file; and the save and the
+      // reconnect drain both retry it.
       setActivities((prev) => patchPhoto(prev, id, { upload_pending: true }));
     }
   }, [projectId, toast, t]);
@@ -723,8 +712,8 @@ export default function DailyJobsiteLog() {
   useEffect(() => {
     if (loading || locked || !projectId) return;
     activities.forEach((a) => ((a && a.photos) || []).forEach((p) => {
-      // `pending` means the background compress has not finished; uploading now
-      // would send the RAW sensor JPEG the entry still points at.
+      // `pending` means the background compress has not finished; uploading
+      // now would send the RAW sensor JPEG the entry still points at.
       if (!p || !p.id || p.pending) return;
       if (!photoNeedsUpload(p) || uploadAttemptedRef.current.has(p.id)) return;
       uploadAttemptedRef.current.add(p.id);
@@ -732,51 +721,11 @@ export default function DailyJobsiteLog() {
     }));
   }, [activities, loading, locked, projectId, uploadOneCapture]);
 
-  const pickActivityPhoto = async (activityIndex) => {
-    lastEditedRef.current = activityIndex;
-    // Counted across the whole bucket, not just this row — that is the fix.
-    const remaining = bucketRemaining(activities, activityIndex);
-    if (remaining <= 0) {
-      toast.warning(t('photoCapTitle'), capMessage());
-      return;
-    }
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      toast.error('Permission Denied', 'Camera roll access is required to upload photos');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.6,
-      base64: false,
-      allowsMultipleSelection: true,
-      selectionLimit: remaining,
-    });
-    if (result.canceled) return;
-    const newPhotos = (result.assets || []).map((asset) => ({
-      // A capture id on EVERY entry point, not just the shutter: it is what the
-      // upload drain keys on, and it is the `photo_id` segment of the R2 key.
-      id: newPhotoId(),
-      uri: asset.uri,
-      base64: null,
-      timestamp: new Date().toISOString(),
-    }));
-    setActivities(prev => {
-      // Re-measured against `prev`, not against the value read before the
-      // picker opened: a background compress or another row's capture can land
-      // while the CP is choosing, and selectionLimit is a hint the picker is
-      // free to ignore. The trim is what actually enforces the cap.
-      const room = bucketRemaining(prev, activityIndex);
-      if (room <= 0) return prev;
-      return prev.map((a, i) => {
-        if (i !== activityIndex) return a;
-        return { ...a, photos: [...(a.photos || []), ...newPhotos.slice(0, room)] };
-      });
-    });
-  };
-
   const takeActivityPhoto = async (activityIndex) => {
-    lastEditedRef.current = activityIndex;
+    // The camera cannot be reached before crew, activity and location are set,
+    // so every frame carries all three. This is the last line of that gate —
+    // the button is not rendered either.
+    if (!cameraReady(activities[activityIndex])) return;
     if (bucketRemaining(activities, activityIndex) <= 0) {
       toast.warning(t('photoCapTitle'), capMessage());
       return;
@@ -784,468 +733,309 @@ export default function DailyJobsiteLog() {
     if (capturingRef.current) return;
     capturingRef.current = true;
     try {
-      // Web: camera API isn't available, use gallery
       if (Platform.OS === 'web') {
         const result = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
-          quality: 0.6,
-          base64: false,
+          mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.6, base64: false,
         });
         if (!result || result.canceled) return;
         const asset = result.assets?.[0];
         if (!asset) return;
-        setActivities(prev => {
+        setActivities((prev) => {
           if (bucketRemaining(prev, activityIndex) <= 0) return prev;
-          return prev.map((a, idx) => {
-            if (idx !== activityIndex) return a;
-            return { ...a, photos: [...(a.photos || []), { id: newPhotoId(), uri: asset.uri, base64: null, timestamp: new Date().toISOString() }] };
-          });
+          return prev.map((a, i) => (i === activityIndex ? {
+            ...a,
+            photos: [...(a.photos || []), {
+              id: newPhotoId(), uri: asset.uri, base64: null,
+              timestamp: new Date().toISOString(),
+            }],
+          } : a));
         });
         return;
       }
-
       // Native: REVEAL the already-mounted, already-permissioned camera
-      // overlay. Capture happens IN-PROCESS (CameraCaptureModal) so the app is
-      // never backgrounded and killed by the OS camera handoff — the root
-      // cause of the 20-30s cold-boot reload. The photo is appended in
-      // handleCameraCapture once the shutter fires.
-      //
-      // Nothing may be awaited below this line. These setState calls are the
-      // ENTIRE tap -> preview path; any fetch, permission request or file read
-      // added here goes straight into the user's perceived open time.
+      // overlay. Capture happens IN-PROCESS so the app is never backgrounded
+      // and killed by the OS camera handoff — the root cause of the 20-30s
+      // cold-boot reload. Nothing may be awaited below this line.
       setCameraTargetIndex(activityIndex);
       setSessionShotIds([]);
       setCameraVisible(true);
     } catch (err) {
       console.error('Camera launch failed:', err);
-      toast.error('Camera Error', 'Could not open camera. Check permissions in device settings.');
+      toast.error(t('cameraErrorTitle'), t('cameraErrorBody'));
     } finally {
       capturingRef.current = false;
     }
   };
 
+  const pickActivityPhoto = async (activityIndex) => {
+    if (!cameraReady(activities[activityIndex])) return;
+    const remaining = bucketRemaining(activities, activityIndex);
+    if (remaining <= 0) { toast.warning(t('photoCapTitle'), capMessage()); return; }
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      toast.error(t('permissionDeniedTitle'), t('permissionDeniedBody'));
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.6, base64: false, allowsMultipleSelection: true,
+      selectionLimit: remaining,
+    });
+    if (result.canceled) return;
+    const picked = (result.assets || []).map((asset) => ({
+      id: newPhotoId(), uri: asset.uri, base64: null,
+      timestamp: new Date().toISOString(),
+    }));
+    setActivities((prev) => {
+      // Re-measured against `prev`: a background compress or another row's
+      // capture can land while the CP is choosing, and selectionLimit is a
+      // hint the picker is free to ignore. The trim enforces the cap.
+      const room = bucketRemaining(prev, activityIndex);
+      if (room <= 0) return prev;
+      return prev.map((a, i) => (i === activityIndex
+        ? { ...a, photos: [...(a.photos || []), ...picked.slice(0, room)] } : a));
+    });
+  };
+
   /**
    * onCapture from CameraCaptureModal — the RAW sensor URI, handed over the
-   * instant the capture resolves. `report(stage, ms)` is the modal's timing
-   * badge: the stages below happen AFTER the modal's own measurement window
-   * closes, so this is the only place they can be timed.
+   * instant the capture resolves.
    *
    * NOTHING IS AWAITED HERE. The photo is appended immediately in `pending`
-   * state so the strip and the activity row both react on the same frame, and
-   * compressUnderCap is fired off unawaited. When it lands, the entry is found
-   * by id (indexes move: the CP may have deleted a sibling meanwhile) and its
-   * uri is swapped for the compressed one. The camera never waits for any of
-   * it, which is the whole point — the CP can shoot the next frame now.
-   *
-   * If compression fails the raw URI stays in place: a full-size photo is worse
-   * than a small one, but infinitely better than a lost one. handleSave still
-   * encodes it.
+   * state so the strip reacts on the same frame, and compressUnderCap is fired
+   * off unawaited. When it lands the entry is found BY ID (indexes move: the
+   * CP may have deleted a sibling meanwhile) and its uri is swapped for the
+   * compressed one. If compression fails the raw URI stays: a full-size photo
+   * is worse than a small one and infinitely better than a lost one.
    */
   const handleCameraCapture = (uri, report) => {
     if (cameraTargetIndex == null || !uri) return;
     const target = cameraTargetIndex;
     const tIn = Date.now();
-    // Keep-shooting: the CP can fire the shutter repeatedly without the form
-    // re-rendering between frames, so this reads the REF (current rows) and
-    // counts the whole bucket, not this row's array from a stale closure.
     if (bucketRemaining(activitiesRef.current, target) <= 0) {
       toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
-
     const id = newPhotoId();
     const shot = { id, uri, base64: null, pending: true, timestamp: new Date().toISOString() };
     setActivities(prev => {
-      // Second, authoritative check. The guard above reads a ref that is only
-      // refreshed after a commit, so two shutters fired inside one frame would
-      // both pass it; `prev` is always the real current rows.
+      // Second, authoritative check: the guard above reads a ref refreshed
+      // only after a commit, so two shutters inside one frame would both pass.
       if (bucketRemaining(prev, target) <= 0) return prev;
-      return prev.map((a, i) => {
-        if (i !== target) return a;
-        return { ...a, photos: [...(a.photos || []), shot] };
-      });
+      return prev.map((a, i) => (i === target
+        ? { ...a, photos: [...(a.photos || []), shot] } : a));
     });
-    setSessionShotIds(prev => [...prev, id]);
-
-    // TEMP camera-speed diagnostic (pairs with the modal's timing badge).
-    // The two setState calls above are BATCHED by React 18: they commit — and
-    // re-render this entire form — only after handleShutter has returned, so
-    // the modal's own `handoff` number cannot include them. rAF fires on the
-    // frame that commit actually paints, which is the CP's real "the photo
-    // appeared" moment. If the missing seconds are a render storm on this
-    // screen, THIS is the number that shows it.
+    setSessionShotIds((prev) => [...prev, id]);
     requestAnimationFrame(() => report?.('paint', Date.now() - tIn));
 
-    const tCompressStart = Date.now();
+    const started = Date.now();
     const job = compressUnderCap(uri)
       .then((smallUri) => {
-        const compressMs = Date.now() - tCompressStart;
         if (smallUri) compressedUriRef.current[id] = smallUri;
-        report?.('compress', compressMs);
-        setActivities(prev => prev.map((a, i) => {
-          if (i !== target) return a;
-          return {
-            ...a,
-            photos: (a.photos || []).map(p => (
-              p.id === id ? { ...p, uri: smallUri || p.uri, pending: false } : p
-            )),
-          };
+        report?.('compress', Date.now() - started);
+        setActivities((prev) => patchPhoto(prev, id, {
+          uri: smallUri || uri, pending: false,
         }));
       })
       .catch((err) => {
         console.warn('photo compression failed, keeping original:', err?.message);
-        report?.('compress', Date.now() - tCompressStart);
-        setActivities(prev => prev.map((a, i) => {
-          if (i !== target) return a;
-          return {
-            ...a,
-            photos: (a.photos || []).map(p => (p.id === id ? { ...p, pending: false } : p)),
-          };
-        }));
+        report?.('compress', Date.now() - started);
+        setActivities((prev) => patchPhoto(prev, id, { pending: false }));
       })
       .finally(() => {
-        pendingCompressRef.current = pendingCompressRef.current.filter(j => j !== job);
+        pendingCompressRef.current = pendingCompressRef.current.filter((j) => j !== job);
       });
     pendingCompressRef.current.push(job);
   };
 
-  // The keep-shooting strip: this session's frames, in capture order, resolved
-  // live out of the activity so `pending` flips to a real thumbnail in place.
   const cameraShots = useMemo(() => {
     if (cameraTargetIndex == null) return [];
     const photos = activities[cameraTargetIndex]?.photos || [];
-    const byId = new Map(photos.filter(p => p.id).map(p => [p.id, p]));
-    return sessionShotIds.map(id => byId.get(id)).filter(Boolean);
+    const byId = new Map(photos.filter((p) => p.id).map((p) => [p.id, p]));
+    return sessionShotIds.map((id) => byId.get(id)).filter(Boolean);
   }, [activities, cameraTargetIndex, sessionShotIds]);
 
-  // Delete a shot straight from the camera strip (item 7 — in-camera review).
-  // Removes it from the target activity's photos AND this session's id list so
-  // the strip and the row drop it together, and forgets any compressed uri.
-  // The CP never leaves the camera to discard a bad frame.
   const handleDeleteShot = (id) => {
     if (cameraTargetIndex == null || !id) return;
-    const target = cameraTargetIndex;
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== target) return a;
-      return { ...a, photos: (a.photos || []).filter(p => p.id !== id) };
-    }));
-    setSessionShotIds(prev => prev.filter(sid => sid !== id));
+    setActivities((prev) => dropPhoto(prev, id));
+    setSessionShotIds((prev) => prev.filter((sid) => sid !== id));
     delete compressedUriRef.current[id];
   };
 
   const removeActivityPhoto = (activityIndex, photoIndex) => {
-    lastEditedRef.current = activityIndex;
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== activityIndex) return a;
-      return { ...a, photos: (a.photos || []).filter((_, pi) => pi !== photoIndex) };
-    }));
+    setActivities((prev) => prev.map((a, i) => (i === activityIndex
+      ? { ...a, photos: (a.photos || []).filter((_, pi) => pi !== photoIndex) } : a)));
   };
 
-  // PR C: tap-to-enlarge so the CP can verify his own evidence before attesting.
-  // Mirrors the worker-detail OSHA-card lightbox modal. Shows the ENHANCED
-  // derivative for a saved photo (the serving endpoint falls back to the
-  // original on any failure, so enhance_status pending/failed never breaks the
-  // image); an unsaved photo shows its local capture. Labels which is which.
-  const [photoLightbox, setPhotoLightbox] = useState(null);
-  const openPhotoLightbox = (photo, activityIndex, photoIndex) => {
+  const photoTileUri = (photo, ai, pi) => (
+    photo?.uri
+    || inlinePhotoData(photo?.base64)
+    || inlinePhotoData(photo?.thumb_base64)
+    || (existingLogId
+      ? logbooksAPI.getLogbookPhotoUrl(existingLogId, ai, pi, 'thumb', photo?.enhance_status || '')
+      : null)
+    || undefined
+  );
+
+  const openPhotoLightbox = (photo, ai, pi) => {
     if (!photo || photo.pending) return;
     const done = photo.enhance_status === 'done';
-    // A photo already persisted server-side carries an enhance_status; use the
-    // server URL so we show the enhanced (or original-fallback) render.
     if (existingLogId && photo.enhance_status) {
       setPhotoLightbox({
         uri: logbooksAPI.getLogbookPhotoUrl(
-          existingLogId, activityIndex, photoIndex,
-          done ? 'enhanced' : 'original', photo.enhance_status,
+          existingLogId, ai, pi, done ? 'enhanced' : 'original', photo.enhance_status,
         ),
         label: done ? 'Enhanced' : `Original — enhancement ${photo.enhance_status}`,
       });
       return;
     }
-    const local = photo.uri
-      || inlinePhotoData(photo.base64)
-      || inlinePhotoData(photo.thumb_base64);
+    const local = photo.uri || inlinePhotoData(photo.base64) || inlinePhotoData(photo.thumb_base64);
     if (local) setPhotoLightbox({ uri: local, label: 'Original' });
   };
 
-  // Tile source for the activity grid. The local capture first (nothing to
-  // fetch), then whichever inline copy survives, then the served thumbnail —
-  // which is all a finalized log's photo has left once its full-size base64
-  // has been purged.
-  const photoTileUri = (photo, activityIndex, photoIndex) => (
-    photo?.uri
-    || inlinePhotoData(photo?.base64)
-    || inlinePhotoData(photo?.thumb_base64)
-    || (existingLogId
-      ? logbooksAPI.getLogbookPhotoUrl(
-        existingLogId, activityIndex, photoIndex, 'thumb', photo?.enhance_status || '',
-      )
-      : null)
-    || undefined
-  );
-
-  const addActivity = () => setActivities(prev => {
-    // A freshly added row is what the CP means to work on next, so it becomes
-    // the FAB's target immediately.
-    lastEditedRef.current = prev.length;
-    return [...prev, EMPTY_ACTIVITY()];
-  });
-
-  const toggleEquipment = (key) => setEquipmentOnSite(prev => ({ ...prev, [key]: !prev[key] }));
-  const toggleChecklist = (key) => setChecklistItems(prev => ({ ...prev, [key]: !prev[key] }));
-
-  const addObservation = () => setObservations(prev => [...prev, EMPTY_OBSERVATION()]);
-  const updateObservation = (index, field, value) => {
-    setObservations(prev => prev.map((o, i) => i === index ? { ...o, [field]: value } : o));
-  };
-
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    try {
-      // Phase A2 — write the LOCAL draft first (persistent photos, no base64) so
-      // an offline CP completes the log without losing anything. The server push
-      // below is best-effort; offline it's deferred (markPending) and the draft
-      // stays the source of truth.
-      const _key = draftKey({ projectId, logType: 'daily_jobsite', date });
-
-      // Let any background compression finish FIRST, before anything reads a
-      // photo's uri. A save fired immediately after a capture would otherwise
-      // persist and upload the RAW sensor JPEG the pending entry still points
-      // at. allSettled, not all: a failed compress must not block the save.
-      if (pendingCompressRef.current.length > 0) {
-        await Promise.allSettled(pendingCompressRef.current);
-      }
-
-      // The rows as they stand AFTER that, not the copy this closure captured.
-      const _rows = activitiesRef.current?.length ? activitiesRef.current : activities;
-      const _persisted = await persistActivityPhotos(_rows);
-      const _draftData = (acts) => ({
-        project_address: projectAddress, weather, weather_temp: weatherTemp, weather_wind: weatherWind,
-        general_description: generalDescription, activities: acts,
-        equipment_on_site: equipmentOnSite, checklist_items: checklistItems, observations,
-        visitors_deliveries: visitorsDeliveries, time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
-      });
-      await writeDraft(_key, {
-        data: _draftData(_persisted),
-        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-      });
-
-      // persistActivityPhotos no longer fails silently. A photo it could not
-      // copy into documentDirectory is NOT recorded with a uri the app cannot
-      // prove it owns — so say so once, and let the CP finish his log.
-      const _lostPhotos = _persisted.reduce(
-        (n, a) => n + ((a.photos || []).filter((p) => p.persist_failed).length), 0,
-      );
-      if (_lostPhotos > 0) toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
-
-      // THE PHOTOS GO TO R2, NOT INTO THE DOCUMENT. Most are already there —
-      // uploaded as they were taken — and this catches the stragglers: a photo
-      // shot seconds ago, or one whose upload failed while the CP was in a
-      // dead zone. Bounded: uploadPendingActivityPhotos abandons the loop on
-      // the first offline failure or 5xx rather than making the CP wait out a
-      // hundred identical timeouts.
-      const _uploaded = await uploadPendingActivityPhotos(projectId, _persisted);
-      if (_uploaded.uploaded > 0) {
-        // The keys just learned, back into screen state and the draft. Merged
-        // by capture id rather than replacing the array, so an edit made while
-        // the save was in flight is not clobbered.
-        const _keyById = new Map();
-        _uploaded.activities.forEach((a) => (a.photos || []).forEach((p) => {
-          if (p.id && p.original_r2_key) _keyById.set(p.id, p.original_r2_key);
-        }));
-        setActivities((prev) => prev.map((a) => ({
-          ...a,
-          photos: (a.photos || []).map((p) => (
-            _keyById.has(p.id)
-              ? { ...p, original_r2_key: _keyById.get(p.id), upload_pending: false }
-              : p
-          )),
-        })));
-        await writeDraft(_key, { data: _draftData(_uploaded.activities) });
-      }
-
-      const _payloadActivities = _uploaded.activities.map((act) => ({
-        ...act,
-        photos: (act.photos || []).map(photoForPayload).filter(Boolean),
-      }));
-
-      const payload = {
-        project_id: projectId,
-        log_type: 'daily_jobsite',
-        date,
-        data: {
-          project_address: projectAddress,
-          weather,
-          weather_temp: weatherTemp,
-          weather_wind: weatherWind,
-          general_description: generalDescription,
-          activities: _payloadActivities,
-          equipment_on_site: equipmentOnSite,
-          checklist_items: checklistItems,
-          observations,
-          visitors_deliveries: visitorsDeliveries,
-          time_in: timeIn,
-          time_out: timeOut,
-          areas_visited: areasVisited,
-          // superintendent fields intentionally omitted — super signs from site device
-        },
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
-
-      // FIX (PR F): `created` MUST be declared OUTSIDE the else. Referencing it
-      // at `docId = existingLogId || created?.id` below (a different block)
-      // threw ReferenceError on the FIRST submit of a new log — the record was
-      // written but the client errored, so recordSignatureEvent never fired and
-      // the CP was trained to press Submit twice. Hoisting fixes both.
-      let created = null;
-      // The id this save landed on — returned below so the end-of-day action can
-      // /finalize THIS document. Stays null offline (nothing on the server yet).
-      let savedId = existingLogId;
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data: payload.data,
-            cp_signature: cpSignature,
-            cp_name: cpName,
-            status: submitStatus,
-          });
-        } else {
-          created = await logbooksAPI.create(payload);
-          savedId = created.id || created._id;
-          setExistingLogId(savedId);
-        }
-        // Server push landed — bind the id, clear the pending marker.
-        await setDraftBackendId(_key, savedId);
-        await clearPending(_key);
-      } catch (pushErr) {
-        // Offline / server error — the local draft is already saved above; defer
-        // the push. NOTE: a submit made offline has no server id, so the
-        // signature audit below is skipped until it syncs.
-        await markPending(_key);
-        console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
-      }
-
-      // A PHOTO THAT HAS NOT REACHED R2 KEEPS THE DRAFT PENDING, even when the
-      // content push SUCCEEDED and cleared the marker above. The reconnect
-      // drain is the only thing that will retry that upload, and it only looks
-      // at keys in the pending index — without this, a photo whose upload
-      // failed while the rest of the day saved fine would sit on the device
-      // forever with nothing ever trying again.
-      if (hasPendingPhotoUploads(_uploaded.activities)) await markPending(_key);
-
-      await autoSave(cpName, cpSignature).catch(() => {});  // guarded: a CP-PROFILE save failure must never report "Could not save log" on a log that was already saved (and, for immediate types, already FROZEN)
-
-      // Record signature audit event
-      if (submitStatus === 'submitted' && cpSignature) {
-        const docId = existingLogId || created?.id || created?._id;
-        if (docId) {
-          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
-          recordSignatureEvent({
-            documentType: 'logbook',
-            documentId: docId,
-            eventType: 'cp_sign',
-            signerName: cpName,
-            signerRole: user?.role || 'cp',
-            signatureData: cpSignature,
-            contentSnapshot: {
-              log_type: 'daily_jobsite',
-              date,
-              project_id: projectId,
-              data: payload.data,
-              status: submitStatus,
-            },
-            user,
-          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
-        }
-      }
-
-      // DAILY NARRATIVE: the only 'submitted' caller is the end-of-day
-      // Submit & Sign below, which still has to finalize + freeze AFTER this
-      // returns. Announcing "submitted" (or leaving the screen) from here would
-      // report success before the log is actually locked, so that path owns its
-      // own toast and navigation. Save Draft is untouched.
-      if (submitStatus !== 'submitted') {
-        toast.success('Draft Saved', 'Draft saved');
-      }
-      // Hand back the server id so the caller can /finalize THIS document.
-      // `null` = saved locally but not yet on the server (offline).
-      return savedId || null;
-    } catch (e) {
-      console.error(e);
-      toast.error('Error', 'Could not save log');
-      // `undefined` (not null) = the save itself failed and has already been
-      // reported — the caller must NOT freeze a log that was never written.
-      return undefined;
-    } finally {
-      setSaving(false);
+  // ── SAVE ──────────────────────────────────────────────────────────────
+  const persistAndPush = async (submitStatus) => {
+    // Let any background compression finish FIRST. A save fired immediately
+    // after a capture would otherwise persist and upload the RAW sensor JPEG
+    // the pending entry still points at. allSettled, not all: a failed
+    // compress must not block the save.
+    if (pendingCompressRef.current.length > 0) {
+      await Promise.allSettled(pendingCompressRef.current);
     }
+    const rows = activitiesRef.current?.length ? activitiesRef.current : activities;
+    const persisted = await persistActivityPhotos(rows);
+    await writeDraft(_key, {
+      data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
+      status: submitStatus,
+    });
+
+    // persistActivityPhotos no longer fails silently.
+    const lost = persisted.reduce(
+      (n, a) => n + ((a.photos || []).filter((p) => p.persist_failed).length), 0,
+    );
+    if (lost > 0) toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
+
+    // Most photos are already in R2 — uploaded as they were taken. This
+    // catches the stragglers. Bounded: uploadPendingActivityPhotos abandons
+    // the loop on the first offline failure or 5xx rather than making the CP
+    // wait out a hundred identical timeouts.
+    const _uploaded = await uploadPendingActivityPhotos(projectId, persisted);
+    if (_uploaded.uploaded > 0) {
+      const keyById = new Map();
+      _uploaded.activities.forEach((a) => (a.photos || []).forEach((p) => {
+        if (p.id && p.original_r2_key) keyById.set(p.id, p.original_r2_key);
+      }));
+      setActivities((prev) => prev.map((a) => ({
+        ...a,
+        photos: (a.photos || []).map((p) => (keyById.has(p.id)
+          ? { ...p, original_r2_key: keyById.get(p.id), upload_pending: false } : p)),
+      })));
+      await writeDraft(_key, { data: draftBody(_uploaded.activities) });
+    }
+
+    const payloadActivities = _uploaded.activities.map((act) => ({
+      ...act,
+      photos: (act.photos || []).map(photoForPayload).filter(Boolean),
+    }));
+
+    const data = {
+      ...draftBody(payloadActivities),
+      // superintendent fields intentionally omitted — the super signs from the
+      // site device.
+    };
+
+    let created = null;
+    let savedId = existingLogId;
+    try {
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: 'daily_jobsite', date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
+      }
+      await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+    } catch (pushErr) {
+      // Offline / server error — the local draft is already saved above.
+      await markPending(_key);
+      console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
+    }
+
+    // A PHOTO THAT HAS NOT REACHED R2 KEEPS THE DRAFT PENDING, even when the
+    // content push SUCCEEDED and cleared the marker above. The reconnect drain
+    // only looks at keys in the pending index — without this, a photo whose
+    // upload failed while the rest of the day saved fine would sit on the
+    // device forever with nothing ever trying again.
+    if (hasPendingPhotoUploads(_uploaded.activities)) await markPending(_key);
+
+    // Guarded: a CP-PROFILE save failure must never report a failure on a log
+    // that was already saved.
+    await autoSave(cpName, cpSignature).catch(() => {});
+
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
+        const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+        recordSignatureEvent({
+          documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+          signerName: cpName, signerRole: user?.role || 'cp', signatureData: cpSignature,
+          contentSnapshot: {
+            log_type: 'daily_jobsite', date, project_id: projectId, data,
+            status: submitStatus,
+          },
+          user,
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
+      }
+    }
+    return savedId || null;
   };
 
   /**
-   * THE end-of-day action for this daily narrative log — one button, one freeze.
+   * THE end-of-day action — one button, one freeze.
    *
-   * Save Draft fills this log all day and never freezes it. There is deliberately
-   * no separate "Submit" any more: a log that could be submitted repeatedly and
-   * finalized separately can sit REQUIRED-but-unfrozen forever. This is the
-   * single closing action, and its order is what makes it hold OFFLINE:
-   *
-   *   1. handleSave('submitted') — content, photos and signature into the local
-   *      draft first, server push best-effort (markPending on failure;
-   *      draftSync drains it and re-applies /finalize on reconnect).
+   *   1. content, photos and signature into the local draft first; server push
+   *      best-effort (markPending on failure; draftSync drains it and re-applies
+   *      /finalize on reconnect).
    *   2. server /finalize when the doc has an id.
-   *   3. LOCAL freeze — but ONLY when the server never ANSWERED. An EOD sign
-   *      with no signal must still be frozen on this device; a log the server
-   *      rejected, or failed on, must not be. It MUST come after (1) —
-   *      writeDraft refuses content patches once a draft is finalized.
+   *   3. LOCAL freeze — but ONLY when the server never ANSWERED.
    *   4. flip the form read-only.
    *
-   * REFUSAL IS NOT OFFLINE. Step 2 used to treat every failure as "offline":
+   * REFUSAL IS NOT OFFLINE. Treating every finalize failure as offline
+   * produced three compounding lies: the CP was told the log was signed,
+   * locked and would sync when the server had said no and would keep saying
+   * no; markFinalized made the draft IMMUTABLE so he could not fix the very
+   * condition being refused; and the content push had SUCCEEDED, so no pending
+   * key existed and the drain would never retry. Silent, permanent, and his
+   * own device showed FINALIZED.
    *
-   *     } catch (finalizeErr) { console.warn('Finalize deferred...'); }
-   *     await markFinalized(_key); setLocked(true);
-   *     toast.success('Submitted & Signed', '...will sync when you are back online.');
-   *
-   * The server's finalize gate rejects an empty or unsigned log with a machine
-   * code (FINALIZE_EMPTY_LOG / FINALIZE_MISSING_CP_SIGNATURE). Run through that
-   * catch, a REFUSAL produced three compounding lies:
-   *
-   *   • the CP was told the log was signed, locked and would sync. It never
-   *     would — the server had said no, and would keep saying no.
-   *   • markFinalized makes the local draft IMMUTABLE (logbookDrafts.js
-   *     writeDraft), so he could not fix the very condition being refused.
-   *   • the content push had SUCCEEDED, so there was no pending key, so the
-   *     reconnect drain would never retry it either. Silent, permanent, and
-   *     the CP's own device showed FINALIZED.
-   *
-   * So a 4xx from the server is handled as what it is: the draft stays
-   * EDITABLE, nothing claims success, and the reason is shown in the CP's
-   * language — as a toast AND as a recorded refusal, because the toast alone
-   * lasts four seconds and the record is what is still there when he comes
-   * back. finalizeErrorCode, recordFinalizeError and the `finalize` i18n
-   * namespace are LogbookLockBar's, reused verbatim so the same refusal reads
-   * identically wherever it surfaces.
-   *
-   * A 5xx is neither of those and gets its own third branch: the server FAILED
-   * rather than judged, so there is nothing to name and nothing queued — it is
-   * simply retryable, and must not be frozen or announced as synced either.
-   * Only a genuine offline (isOfflineError — no response at all) keeps the
-   * freeze and the sync promise, and that path is untouched.
+   * So there are THREE outcomes and only one of them may promise a sync.
    */
   const handleSubmitAndSign = async () => {
-    if (saving || signing) return;
-    // Signed record: no signature, no submit.
+    if (signing) return;
     if (!cpSignature) {
-      toast.warning('Signature required', 'Sign the log before submitting — this is a signed record.');
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    const blocking = incompleteObservations(observations);
+    if (blocking.length > 0) {
+      setStep(3);
+      toast.warning(t('sectionObservations'), t('observationRemedyMissing'));
       return;
     }
     setSigning(true);
     try {
-      const _key = draftKey({ projectId, logType: 'daily_jobsite', date });
-      const savedId = await handleSave('submitted');
-      if (savedId === undefined) return;  // save failed and already reported
-
+      const savedId = await persistAndPush('submitted');
+      // `undefined` (not null) = the save itself failed and has already been
+      // reported. Nothing may be frozen, recorded or announced on a log that
+      // was never written. `null` is different: it saved LOCALLY but has no
+      // server id yet, which is the offline path and does freeze below.
+      if (savedId === undefined) return;
       let serverLocked = false;
       if (savedId) {
         try {
@@ -1253,445 +1043,605 @@ export default function DailyJobsiteLog() {
           serverLocked = true;
           await clearFinalizeError(savedId);
         } catch (finalizeErr) {
-          // THREE OUTCOMES, NOT TWO. Only ONE of them may say "it will sync
-          // when you are back online", because only one of them is true:
-          //
-          //   OFFLINE — no response at all. The draft IS queued and the drain
-          //     WILL re-apply /finalize on reconnect, so the sync promise is
-          //     accurate and the local freeze is exactly right. Unchanged.
-          //   4xx    — the server looked at this log and said no. It will keep
-          //     saying no. Handled below as a refusal.
-          //   5xx    — the server FAILED rather than judged. Nothing is queued
-          //     (the content push succeeded, so there is no pending key and the
-          //     drain has nothing to retry) and nothing is locked. Telling the
-          //     CP it is "signed and locked and will sync" is the same lie as
-          //     the refusal case, just on a rarer path — so it is not told.
-          //
-          // isOfflineError is the app-wide predicate settleFetch uses; offline
-          // is not re-derived here, so this screen cannot drift from the rest
-          // of the app about what being offline means.
           const offline = isOfflineError(finalizeErr);
           const status = finalizeErr?.response?.status;
           const refused = typeof status === 'number' && status >= 400 && status < 500;
           if (!offline && !refused) {
-            // A server error is retryable and nothing else: the log is NOT
-            // frozen, so Submit & Sign can simply be pressed again once the
-            // server is well. No record is written — the persistent banner says
-            // the log is frozen on this device only, and it is not frozen at
-            // all. genericError ("could not be finalized. Please try again") is
-            // the existing bilingual copy for exactly this.
+            // 5xx — the server FAILED rather than judged. Nothing is queued and
+            // nothing is locked, so it is simply retryable and must not be
+            // announced as synced.
             console.warn('Finalize FAILED server-side — not locked, not queued:', status || finalizeErr?.message);
             toast.error(tFinalize('errorTitle'), gateCopy(null));
             return;
           }
           if (refused) {
-            // NOT frozen locally, NOT announced as success, NOT navigated away
-            // from: the CP has to be able to fix what was refused, on this
-            // screen, right now. The content save above already landed, so
-            // nothing he has entered is at risk.
+            // NOT frozen, NOT announced, NOT navigated away from: the CP has to
+            // be able to fix what was refused, on this screen, right now. BOTH a
+            // toast and a record — the toast is gone in four seconds, and the
+            // record is what is still there when he comes back.
             const code = finalizeErrorCode(finalizeErr);
             console.warn('Finalize REFUSED by the server:', status, code);
-            // BOTH, deliberately. The toast is the immediate answer to the
-            // button he just pressed; the record is what outlives it. A toast
-            // is gone in four seconds, and if he walks off this screen while it
-            // fades, an unlocked compliance record is left with nothing at all
-            // saying so — the exact silence this whole path exists to end. The
-            // record raises LogbookLockBar's persistent "NOT LOCKED ON THE
-            // SERVER" banner on this log, and the successful finalize above
-            // already clears it.
             await recordFinalizeError(savedId, code, _key, 'editor');
             toast.error(tFinalize('errorTitle'), gateCopy(code));
             return;
           }
           // GENUINELY OFFLINE. The local freeze below stands — an EOD sign with
-          // no signal must still hold — and the reconnect drain re-applies
-          // /finalize once the push lands, which is what makes the sync promise
-          // in the toast below a true statement.
+          // no signal must still hold — and the drain re-applies /finalize once
+          // the push lands, which is what makes the promise below true.
           console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
         }
       }
-
       await markFinalized(_key);
       setLocked(true);
-
       toast.success(
-        'Submitted & Signed',
-        serverLocked
-          ? 'This log is now locked. Corrections require an amendment.'
-          : 'Signed and locked on this device. It will sync when you are back online.'
+        t('submittedTitle'),
+        serverLocked ? t('signingClosesDay') : t('submittedOfflineBody'),
       );
       router.back();
+    } catch (e) {
+      console.error(e);
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
       setSigning(false);
     }
   };
+
+  // ── Step navigation ───────────────────────────────────────────────────
+  // Autosave after every step. Moving on is never BLOCKED — a CP who cannot
+  // complete a step because the data is not there must still finish his day.
+  const goNext = async () => {
+    await flushDraft();
+    setStep((n) => Math.min(TOTAL_STEPS, n + 1));
+  };
+  const goBack = async () => {
+    await flushDraft();
+    setStep((n) => Math.max(1, n - 1));
+  };
+
+  // ── Small shared pieces ───────────────────────────────────────────────
+  // ChipBase / StepHeaderBase are declared at MODULE level (bottom of file)
+  // and bound to the stylesheet here. A component declared inline in this
+  // function would be a NEW type on every render, so React would unmount and
+  // remount every chip on the screen for each keystroke. On the older phone
+  // this screen is built for, that is the difference between usable and not.
+  // `s` is memoized with a stable dep, so these identities are stable too.
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
+
 
   if (loading) {
     return (
       <AnimatedBackground>
         <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingCenter}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
+            <ActivityIndicator size="large" color={outdoor.text} />
           </View>
         </SafeAreaView>
       </AnimatedBackground>
     );
   }
 
+  const crewName = (a) => (String(a.company || '').trim() || t('noCrewWorker'));
+
+  // ── STEP 1 — who was here ─────────────────────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      <StepHeader title={t('step1Title')} />
+
+      {rosterPartial && (
+        <View style={s.warnCard}>
+          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
+          <View style={s.warnBody}>
+            <Text style={s.warnTitle}>{t('rosterPartialTitle')}</Text>
+            <Text style={s.warnText}>{t('rosterPartialBody')}</Text>
+            {rosterCollapsed > 0 && (
+              <Text style={s.warnText}>{t('rosterCollapsedBody')}</Text>
+            )}
+          </View>
+        </View>
+      )}
+
+      {activities.length === 0 && (
+        <Text style={s.emptyText}>{t('noCrews')}</Text>
+      )}
+
+      {activities.map((a, i) => (
+        <View key={a.activity_id || i} style={s.crewCard}>
+          <View style={s.crewTop}>
+            <Text style={s.crewName}>{crewName(a)}</Text>
+            {a.gate_sourced && (
+              <View style={s.gateBadge}>
+                <Lock size={14} strokeWidth={2} color={outdoor.textSoft} />
+                <Text style={s.gateBadgeText}>{t('fromGate')}</Text>
+              </View>
+            )}
+          </View>
+
+          {!!a.trade && <Text style={s.crewMeta}>{a.trade}</Text>}
+          <Text style={s.crewMeta}>
+            {plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0)}
+          </Text>
+          <Text style={s.crewMeta}>
+            {a.check_in_time
+              ? t('checkedInAt').replace('{time}', formatCheckInTime(a.check_in_time) || '')
+              : t('checkInTimeUnknown')}
+          </Text>
+
+          {/* BOTH values, attributed. The gate name is never overwritten, so
+              the signed log and the check-in record cannot contradict. */}
+          {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
+            <Text style={s.correctedNote}>
+              {t('correctedFrom')}: {a.company_gate}
+            </Text>
+          )}
+
+          {isUnboundCrew(a) && (
+            <View style={s.unboundBox}>
+              <Text style={s.unboundTitle}>{t('unboundCrew')}</Text>
+              <Text style={s.unboundText}>{t('unboundCrewHint')}</Text>
+            </View>
+          )}
+
+          <Pressable
+            style={s.secondaryBtn}
+            accessibilityRole="button"
+            onPress={() => setCorrecting({ index: i, value: a.company || '' })}
+          >
+            <Text style={s.secondaryBtnText}>{t('correctCompany')}</Text>
+          </Pressable>
+        </View>
+      ))}
+
+      <Pressable
+        style={s.secondaryBtn}
+        accessibilityRole="button"
+        onPress={() => setAddingCrew({ company: '', trade: '', num: '1' })}
+      >
+        <Plus size={20} strokeWidth={2} color={outdoor.text} />
+        <Text style={s.secondaryBtnText}>{t('addCrew')}</Text>
+      </Pressable>
+    </View>
+  );
+
+  // ── STEP 2 — one card per crew ────────────────────────────────────────
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+
+      {chipsMeta && chipsMeta.structural_system_set === false && (
+        <Text style={s.noteText}>{t('structuralSystemUnknown')}</Text>
+      )}
+      {chipsMeta && !chipsMeta.prior_date && (
+        <Text style={s.noteText}>{t('chipsNoPriorDay')}</Text>
+      )}
+
+      {activities.map((a, i) => {
+        const suggested = chips.filter((c) => c.band === 'suggested');
+        const rest = chips.filter((c) => c.band !== 'suggested' && c.id !== OTHER_ACTIVITY_ID);
+        const open = !!expandedChips[a.activity_id];
+        const ready = cameraReady(a);
+        const customA = Object.entries(a.custom_activity_labels || {});
+        const customL = Object.entries(a.custom_location_labels || {});
+        return (
+          <View key={a.activity_id || i} style={s.crewCard}>
+            {/* Locked, gate-sourced facts, restated so the card shows exactly
+                what a photo taken from it will be tagged with. */}
+            <View style={s.crewTop}>
+              <Text style={s.crewName}>{crewName(a)}</Text>
+              {a.gate_sourced && (
+                <View style={s.gateBadge}>
+                  <Lock size={14} strokeWidth={2} color={outdoor.textSoft} />
+                  <Text style={s.gateBadgeText}>{t('gateLocked')}</Text>
+                </View>
+              )}
+            </View>
+            <Text style={s.crewMeta}>
+              {[a.trade, plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
+                a.check_in_time ? formatCheckInTime(a.check_in_time) : null]
+                .filter(Boolean).join(' · ')}
+            </Text>
+
+            {/* ACTIVITY. Ranked, never pre-selected. */}
+            <Text style={s.question}>{t('activityQuestion')}</Text>
+            <View style={s.chipWrap}>
+              {suggested.map((c) => (
+                <Chip
+                  key={c.id} label={c.label}
+                  selected={(a.activity_ids || []).includes(c.id)}
+                  onPress={() => toggleActivityChip(i, c.id)}
+                />
+              ))}
+              {customA.map(([id, label]) => (
+                <Chip
+                  key={id} label={label}
+                  selected={(a.activity_ids || []).includes(id)}
+                  onPress={() => toggleActivityChip(i, id)}
+                />
+              ))}
+              {/* "Other" is ALWAYS last and always visible without scrolling —
+                  it is rendered here, beside the suggested band, not at the
+                  bottom of the full catalogue. */}
+              <Chip
+                label={t('chipOther')} selected={false}
+                onPress={() => toggleActivityChip(i, OTHER_ACTIVITY_ID)}
+              />
+            </View>
+
+            {rest.length > 0 && (
+              <>
+                <Pressable
+                  style={s.secondaryBtn}
+                  accessibilityRole="button"
+                  onPress={() => setExpandedChips((p) => ({
+                    ...p, [a.activity_id]: !open,
+                  }))}
+                >
+                  <Text style={s.secondaryBtnText}>{t('chipsCatalog')}</Text>
+                </Pressable>
+                {open && (
+                  <View style={s.chipWrap}>
+                    {rest.map((c) => (
+                      <Chip
+                        key={c.id} label={c.label}
+                        selected={(a.activity_ids || []).includes(c.id)}
+                        onPress={() => toggleActivityChip(i, c.id)}
+                      />
+                    ))}
+                  </View>
+                )}
+              </>
+            )}
+
+            {/* LOCATION */}
+            <Text style={s.question}>{t('locationQuestion')}</Text>
+            <View style={s.chipWrap}>
+              {locationChips.map((c) => (
+                <Chip
+                  key={c.id} label={c.label}
+                  selected={(a.location_ids || []).includes(c.id)}
+                  onPress={() => toggleLocationChip(i, c.id)}
+                />
+              ))}
+              {customL.map(([id, label]) => (
+                <Chip
+                  key={id} label={label}
+                  selected={(a.location_ids || []).includes(id)}
+                  onPress={() => toggleLocationChip(i, id)}
+                />
+              ))}
+              <Chip
+                label={t('locationOther')} selected={false}
+                onPress={() => toggleLocationChip(i, OTHER_LOCATION_ID)}
+              />
+            </View>
+
+            {/* CAMERA — only once crew, activity and location are all set. */}
+            {!ready ? (
+              <Text style={s.lockedHint}>{t('cameraLockedHint')}</Text>
+            ) : (
+              <View style={s.photoBlock}>
+                <Text style={s.taggedWith}>
+                  {t('photoTaggedWith')} {crewName(a)} · {a.work_description} · {a.work_locations}
+                </Text>
+                {/* The BUCKET's count, not this row's: the cap is per
+                    subcontractor and shared across its rows. No counter until
+                    there is something to count. */}
+                {(a.photos || []).length > 0 && (
+                  <Text style={s.photoCount}>
+                    {`${t('photoLabel')} ${photosInBucket(activities, i)}/${MAX_PHOTOS_PER_SUBCONTRACTOR}`}
+                  </Text>
+                )}
+
+                {(a.photos || []).length > 0 && (
+                  // A WRAPPING GRID, NOT A HORIZONTAL SCROLLER. A horizontal
+                  // scroller is a swipe affordance, and this screen is tap-only.
+                  <View style={s.photoGrid}>
+                    {(a.photos || []).map((photo, pi) => (
+                      <View key={photo.id ?? pi} style={s.photoThumb}>
+                        {photo.pending ? (
+                          <View style={[s.photoImage, s.photoPending]}>
+                            <ActivityIndicator size="small" color={outdoor.textDim} />
+                          </View>
+                        ) : (
+                          <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
+                            <Image source={{ uri: photoTileUri(photo, i, pi) }} style={s.photoImage} />
+                          </Pressable>
+                        )}
+                        <Pressable
+                          style={s.photoRemove}
+                          hitSlop={16}
+                          accessibilityRole="button"
+                          onPress={() => removeActivityPhoto(i, pi)}
+                        >
+                          <X size={16} strokeWidth={3} color={outdoor.textOnSelected} />
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {bucketRemaining(activities, i) <= 0 ? (
+                  <Text style={s.lockedHint}>{t('photoCapRowHint')}</Text>
+                ) : (
+                  <View style={s.photoActions}>
+                    <Pressable
+                      style={s.photoBtn}
+                      accessibilityRole="button"
+                      onPress={() => takeActivityPhoto(i)}
+                    >
+                      <Camera size={22} strokeWidth={2} color={outdoor.textOnSelected} />
+                      <Text style={s.photoBtnText}>{t('photoTake')}</Text>
+                    </Pressable>
+                    <Pressable
+                      style={s.photoBtnGhost}
+                      accessibilityRole="button"
+                      onPress={() => pickActivityPhoto(i)}
+                    >
+                      <ImageIcon size={22} strokeWidth={2} color={outdoor.text} />
+                      <Text style={s.photoBtnGhostText}>{t('photoGallery')}</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+        );
+      })}
+    </View>
+  );
+
+  // ── STEP 3 — safety observations ──────────────────────────────────────
+  const renderStep3 = () => (
+    <View>
+      <StepHeader title={t('step3Title')} />
+      {observations.length === 0 && (
+        <Text style={s.emptyText}>{t('noObservations')}</Text>
+      )}
+      {observations.map((o, i) => {
+        const missing = !observationComplete(o);
+        return (
+          <View key={i} style={[s.crewCard, missing && s.crewCardFlagged]}>
+            <TextInput
+              style={s.input}
+              value={o.description}
+              onChangeText={(v) => updateObservation(i, 'description', v)}
+              placeholder={t('phObservation')}
+              placeholderTextColor={outdoor.textDim}
+              multiline
+            />
+
+            {/* Responsible party is PICKED from the crews on site, never typed:
+                a typed name cannot be matched to anyone and a misspelling is
+                an unattributable hazard on a signed record. */}
+            <Text style={s.question}>{t('observationWho')}</Text>
+            <Text style={s.noteText}>{t('observationWhoHint')}</Text>
+            <View style={s.chipWrap}>
+              {activities.map((a, ai) => (
+                <Chip
+                  key={a.activity_id || ai}
+                  label={crewName(a)}
+                  selected={o.responsible_party === crewName(a)}
+                  onPress={() => updateObservation(i, 'responsible_party', crewName(a))}
+                />
+              ))}
+            </View>
+
+            {/* An observation cannot be saved without a corrective action. A
+                logged hazard with no remedy records that something was seen and
+                nothing was done. */}
+            <Text style={s.question}>{t('observationRemedyRequired')}</Text>
+            <TextInput
+              style={s.input}
+              value={o.remedy}
+              onChangeText={(v) => updateObservation(i, 'remedy', v)}
+              placeholder={t('phRemedy')}
+              placeholderTextColor={outdoor.textDim}
+              multiline
+            />
+            <Pressable
+              style={[s.toggleRow, o.corrected_immediately === true && s.toggleRowOn]}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: o.corrected_immediately === true }}
+              onPress={() => updateObservation(
+                i, 'corrected_immediately', o.corrected_immediately === true ? null : true,
+              )}
+            >
+              {o.corrected_immediately === true
+                ? <Check size={22} strokeWidth={3} color={outdoor.ok} />
+                : <View style={s.toggleBox} />}
+              <Text style={s.toggleText}>{t('correctedImmediately')}</Text>
+            </Pressable>
+
+            {missing && (
+              <Text style={s.errorText}>{t('observationRemedyMissing')}</Text>
+            )}
+
+            <Pressable
+              style={s.secondaryBtn}
+              accessibilityRole="button"
+              onPress={() => removeObservation(i)}
+            >
+              <Text style={s.secondaryBtnText}>{t('removeObservation')}</Text>
+            </Pressable>
+          </View>
+        );
+      })}
+
+      <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={addObservation}>
+        <Plus size={20} strokeWidth={2} color={outdoor.text} />
+        <Text style={s.secondaryBtnText}>{t('addObservation')}</Text>
+      </Pressable>
+    </View>
+  );
+
+  // ── STEP 4 — visitors, deliveries, conditions ─────────────────────────
+  const renderStep4 = () => (
+    <View>
+      <StepHeader title={t('step4Title')} />
+
+      <Text style={s.question}>{t('fieldWeather')}</Text>
+      {!!weatherTemp && (
+        <Text style={s.noteText}>
+          {weatherTemp}{weatherWind ? ` · ${weatherWind}` : ''}
+        </Text>
+      )}
+      {weatherLoading && <ActivityIndicator size="small" color={outdoor.textDim} />}
+      <View style={s.chipWrap}>
+        {WEATHER_OPTIONS.map((w) => (
+          <Chip
+            key={w} label={w} selected={weather === w}
+            onPress={() => setWeather(weather === w ? '' : w)}
+          />
+        ))}
+      </View>
+
+      <Text style={s.question}>{t('sectionEquipment')}</Text>
+      <View style={s.chipWrap}>
+        {EQUIPMENT_ITEMS.map((it) => (
+          <Chip
+            key={it.key} label={it.label} selected={!!equipmentOnSite[it.key]}
+            onPress={() => toggleEquipment(it.key)}
+          />
+        ))}
+      </View>
+
+      <Text style={s.question}>{t('sectionInspected')}</Text>
+      <View style={s.chipWrap}>
+        {CHECKLIST_ITEMS.map((it) => (
+          <Chip
+            key={it.key} label={it.label} selected={!!checklistItems[it.key]}
+            onPress={() => toggleChecklist(it.key)}
+          />
+        ))}
+      </View>
+
+      <Text style={s.question}>{t('sectionVisitors')}</Text>
+      <TextInput
+        style={s.input}
+        value={visitorsDeliveries}
+        onChangeText={setVisitorsDeliveries}
+        placeholder={t('phVisitors')}
+        placeholderTextColor={outdoor.textDim}
+        multiline
+      />
+
+      <Text style={s.question}>{t('fieldGeneralDescription')}</Text>
+      <TextInput
+        style={s.input}
+        value={generalDescription}
+        onChangeText={setGeneralDescription}
+        placeholder={t('phGeneralDescription')}
+        placeholderTextColor={outdoor.textDim}
+        multiline
+      />
+    </View>
+  );
+
+  // ── STEP 5 — review and sign ──────────────────────────────────────────
+  const renderStep5 = () => (
+    <View>
+      <StepHeader title={t('step5Title')} />
+      <Text style={s.question}>{t('reviewHeading')}</Text>
+
+      <View style={s.reviewCard}>
+        <Text style={s.reviewLabel}>{t('fieldAddress')}</Text>
+        <Text style={s.reviewValue}>{projectAddress || t('reviewNothingYet')}</Text>
+        <Text style={s.reviewLabel}>{t('fieldWeather')}</Text>
+        <Text style={s.reviewValue}>
+          {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ') || t('reviewNothingYet')}
+        </Text>
+      </View>
+
+      {activities.map((a, i) => (
+        <View key={a.activity_id || i} style={s.reviewCard}>
+          <Text style={s.reviewCrew}>{a.crew_id} · {crewName(a)}</Text>
+          {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
+            <Text style={s.correctedNote}>{t('correctedFrom')}: {a.company_gate}</Text>
+          )}
+          <Text style={s.reviewValue}>
+            {plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0)}
+          </Text>
+          <Text style={s.reviewLabel}>{t('colWorkDescription')}</Text>
+          <Text style={s.reviewValue}>{a.work_description || t('reviewNothingYet')}</Text>
+          <Text style={s.reviewLabel}>{t('colWorkLocations')}</Text>
+          <Text style={s.reviewValue}>{a.work_locations || t('reviewNothingYet')}</Text>
+          {(a.photos || []).length > 0 && (
+            <Text style={s.reviewValue}>
+              {plural('photosCount_one', 'photosCount_other', (a.photos || []).length)}
+            </Text>
+          )}
+        </View>
+      ))}
+
+      {observations.length > 0 && (
+        <View style={s.reviewCard}>
+          <Text style={s.reviewLabel}>{t('sectionObservations')}</Text>
+          {observations.map((o, i) => (
+            <Text key={i} style={s.reviewValue}>
+              {o.description || t('reviewNothingYet')}
+              {o.responsible_party ? ` — ${o.responsible_party}` : ''}
+            </Text>
+          ))}
+        </View>
+      )}
+
+      <View style={s.reviewCard}>
+        <SignaturePad
+          title={t('sectionSignOff')}
+          signerName={cpName}
+          onNameChange={setCpName}
+          existingSignature={cpSignature}
+          onSignatureCapture={setCpSignature}
+        />
+      </View>
+
+      <Text style={s.noteText}>{t('signingClosesDay')}</Text>
+    </View>
+  );
+
+  const STEPS = {
+    1: renderStep1, 2: renderStep2, 3: renderStep3, 4: renderStep4, 5: renderStep5,
+  };
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
-        {/* Header */}
         <View style={s.header}>
-          <View style={s.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/logbooks')}
-            />
-            <View>
-              <Text style={s.headerTitle}>Daily Jobsite Log</Text>
-              <Text style={s.headerSub}>NYC DOB 3301-02</Text>
-            </View>
+          <Pressable
+            style={s.headerBack}
+            accessibilityRole="button"
+            accessibilityLabel={t('back')}
+            onPress={() => (step === 1 ? router.push('/logbooks') : goBack())}
+          >
+            <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+          </Pressable>
+          <View style={s.headerText}>
+            <Text style={s.headerTitle}>{t('screenTitle')}</Text>
+            <Text style={s.headerSub}>{FORM_NUMBER} · {formatLogDate(date)}</Text>
           </View>
         </View>
 
-        <ScrollView
-          style={s.scrollView}
-          contentContainerStyle={s.scrollContent}
-          showsVerticalScrollIndicator={false}
-          scrollEventThrottle={64}
-          onLayout={(e) => { viewportHRef.current = e.nativeEvent.layout.height; syncFabTarget(); }}
-          onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; syncFabTarget(); }}
-        >
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (inputs, chips, the photo
-              add/capture controls, the SignaturePad) — no per-field flags to
-              miss. Scrolling still works; the LockBar stays interactive. */}
+        {/* Progress — marks only. It never gates. */}
+        <View style={s.progressRow}>
+          {[1, 2, 3, 4, 5].map((n) => (
+            <View key={n} style={[s.progressPip, n <= step && s.progressPipOn]} />
+          ))}
+        </View>
+
+        <ScrollView style={s.scroll} contentContainerStyle={s.scrollContent}>
+          {/* A finalized log renders read-only. pointerEvents 'none' makes
+              EVERY control below non-interactive — no per-field flags to miss.
+              Scrolling still works; the LockBar stays interactive. */}
           <View pointerEvents={locked ? 'none' : 'auto'}>
-          {/* Date */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>
-                {new Date(date).toLocaleDateString('en-US', {
-                  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-                })}
-              </Text>
-            </View>
-          </GlassCard>
-
-          {/* Project Info — FIX #2: Full address, read-only */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Project Information</Text>
-            <View style={s.fieldRow}>
-              <Text style={s.fieldLabel}>Address</Text>
-              <Text style={s.fieldValueReadonly}>{projectAddress || 'No address on file'}</Text>
-            </View>
-
-            {/* Weather — FIX #1: Auto-filled from API */}
-            <View style={s.fieldRowVertical}>
-              <View style={s.weatherHeader}>
-                <Text style={s.fieldLabel}>Weather</Text>
-                {weatherTemp ? (
-                  <Text style={s.weatherAuto}>
-                    {weatherTemp}{weatherWind ? ` • ${weatherWind}` : ''}
-                  </Text>
-                ) : null}
-                {weatherLoading && <ActivityIndicator size="small" color={colors.primary} />}
-              </View>
-              <View style={s.weatherRow}>
-                {WEATHER_OPTIONS.map((w) => (
-                  <Pressable
-                    key={w}
-                    onPress={() => setWeather(weather === w ? '' : w)}
-                    style={[s.weatherBtn, weather === w && s.weatherBtnActive]}
-                  >
-                    <Text style={[s.weatherBtnText, weather === w && s.weatherBtnTextActive]}>{w}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          </GlassCard>
-
-          {/* General Description */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>General Description of Today's Activities</Text>
-            <TextInput
-              style={s.textArea}
-              value={generalDescription}
-              onChangeText={setGeneralDescription}
-              placeholder="Describe the main work performed today..."
-              placeholderTextColor={colors.text.subtle}
-              multiline
-              numberOfLines={4}
-            />
-          </GlassCard>
-
-          {/* Activity Details Table.
-              The wrapper exists to give the FAB a scroll-content-relative y for
-              this block; each card then reports its own offset within it. */}
-          <View onLayout={(e) => { activitiesBlockYRef.current = e.nativeEvent.layout.y; syncFabTarget(); }}>
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <Users size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>Activity Details</Text>
-            </View>
-            <Text style={s.sectionSubtitle}>Auto-populated from check-ins. Edit as needed.</Text>
-
-            {activities.map((act, i) => (
-              <View
-                key={i}
-                // Only worth marking when there is a choice to get wrong.
-                style={[s.activityCard,
-                  MOBILE_CAPTURE && activities.length > 1 && i === fabTargetIndex && s.activityCardTarget]}
-                onLayout={(e) => {
-                  const { y, height } = e.nativeEvent.layout;
-                  activityLayoutsRef.current[i] = { y, h: height };
-                  syncFabTarget();
-                }}
-              >
-                <View style={s.activityRow}>
-                  <View style={s.activityField}>
-                    <Text style={s.activityLabel}>CREW</Text>
-                    <TextInput style={s.activityInput} value={act.crew_id}
-                      onChangeText={(v) => updateActivity(i, 'crew_id', v)}
-                      placeholder="C1" placeholderTextColor={colors.text.subtle} />
-                  </View>
-                  <View style={[s.activityField, { flex: 2 }]}>
-                    <Text style={s.activityLabel}>COMPANY</Text>
-                    <TextInput style={s.activityInput} value={act.company}
-                      onChangeText={(v) => updateActivity(i, 'company', v)}
-                      placeholder="Company" placeholderTextColor={colors.text.subtle} />
-                    {/* PR B: workers present but no company = pending assignment.
-                        Reads as pending in the editor; the 3301-02 export renders
-                        it as "Pending assignment" too — never dropped. */}
-                    {!((act.company || '').trim()) && (parseInt(act.num_workers, 10) || 0) > 0 ? (
-                      <Text style={s.pendingHint}>Pending assignment</Text>
-                    ) : null}
-                  </View>
-                  <View style={s.activityField}>
-                    <Text style={s.activityLabel}># WORKERS</Text>
-                    <TextInput style={s.activityInput} value={act.num_workers}
-                      onChangeText={(v) => updateActivity(i, 'num_workers', v)}
-                      placeholder="0" placeholderTextColor={colors.text.subtle} keyboardType="numeric" />
-                  </View>
-                </View>
-                <View style={s.activityField}>
-                  <Text style={s.activityLabel}>WORK DESCRIPTION</Text>
-                  <TextInput style={s.activityInput} value={act.work_description}
-                    onChangeText={(v) => updateActivity(i, 'work_description', v)}
-                    placeholder="Work performed..." placeholderTextColor={colors.text.subtle} />
-                </View>
-                
-                <View style={s.activityField}>
-                  <Text style={s.activityLabel}>WORK LOCATIONS</Text>
-                  <TextInput style={s.activityInput} value={act.work_locations}
-                    onChangeText={(v) => updateActivity(i, 'work_locations', v)}
-                    placeholder="Floors, areas..." placeholderTextColor={colors.text.subtle} />
-                </View>
-
-                {/* Photos */}
-                <View style={s.photosSection}>
-                  <View style={s.photosHeader}>
-                    <Camera size={14} strokeWidth={1.5} color={colors.text.muted} />
-                    {/* No "(0/10)" — an empty counter is chrome for something
-                        that does not exist yet. The cap only matters once the
-                        CP is actually accumulating photos.
-                        The count is the BUCKET's, not this row's: the cap is
-                        per subcontractor, and showing a row's own 3 against a
-                        limit of 10 would misstate how much room is left when
-                        that sub already has 7 on another row. */}
-                    <Text style={s.activityLabel}>
-                      PHOTOS{(act.photos || []).length > 0
-                        ? ` (${photosInBucket(activities, i)}/${MAX_PHOTOS_PER_SUBCONTRACTOR})`
-                        : ''}
-                    </Text>
-                    {/* The strip fits 2.8 tiles at 390px, so from the third
-                        photo on the row clips mid-frame. showsHorizontal-
-                        ScrollIndicator only paints DURING a scroll (auto-hiding
-                        overlay bars on both web and iOS), which is no help to
-                        someone looking at a still screen — hence a standing
-                        hint as well. */}
-                    {(act.photos || []).length >= 3 && (
-                      <Text style={s.photoScrollHint}>swipe ›</Text>
-                    )}
-                  </View>
-                  {(act.photos || []).length > 0 && (
-                    // Indicator ON: at 390px the third tile clips mid-frame and
-                    // read as a broken image rather than as "there is more".
-                    <ScrollView horizontal showsHorizontalScrollIndicator style={s.photoScroll}>
-                      {(act.photos || []).map((photo, pi) => (
-                        <View key={photo.id ?? pi} style={s.photoThumb}>
-                          {photo.pending ? (
-                            // Placeholder until the background compress lands.
-                            // Rendering the raw capture here would make the UI
-                            // thread decode a full-size sensor JPEG per tile.
-                            <View style={[s.photoImage, s.photoPending]}>
-                              <ActivityIndicator size="small" color={colors.text.muted} />
-                            </View>
-                          ) : (
-                            <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
-                              <Image
-                                source={{ uri: photoTileUri(photo, i, pi) }}
-                                style={s.photoImage}
-                              />
-                            </Pressable>
-                          )}
-                          <Pressable style={s.photoRemove} hitSlop={10} onPress={() => removeActivityPhoto(i, pi)}>
-                            <X size={14} strokeWidth={2.5} color="#fff" />
-                          </Pressable>
-                        </View>
-                      ))}
-                    </ScrollView>
-                  )}
-                  {/* The capture controls go when the SUBCONTRACTOR's bucket is
-                      full, which can happen on a row with no photos of its own
-                      — so the reason is stated instead of the buttons simply
-                      vanishing with nothing to explain them. */}
-                  {bucketRemaining(activities, i) <= 0 ? (
-                    <Text style={s.pendingHint}>{t('photoCapRowHint')}</Text>
-                  ) : (
-                    <View style={s.photoActions}>
-                      {/* Take Photo is the workflow; Gallery is the fallback.
-                          They were identical outline pills, which said neither. */}
-                      <Pressable style={s.photoBtnPrimary} onPress={() => takeActivityPhoto(i)}>
-                        <Camera size={16} strokeWidth={2} color={colors.white} />
-                        <Text style={s.photoBtnPrimaryText}>Take Photo</Text>
-                      </Pressable>
-                      <Pressable style={s.photoBtn} onPress={() => pickActivityPhoto(i)}>
-                        <ImageIcon size={16} strokeWidth={1.5} color={colors.text.muted} />
-                        <Text style={s.photoBtnText}>Gallery</Text>
-                      </Pressable>
-                    </View>
-                  )}
-                </View>
-              </View>
-            ))}
-
-            <GlassButton title="+ Add Activity" onPress={addActivity} style={s.addBtn} />
-          </GlassCard>
+            {STEPS[step]()}
           </View>
 
-          {/* Equipment */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <Truck size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>Equipment on Site</Text>
-            </View>
-            <View style={s.chipRow}>
-              {EQUIPMENT_ITEMS.map((item) => (
-                <Pressable key={item.key} onPress={() => toggleEquipment(item.key)}
-                  style={[s.chip, equipmentOnSite[item.key] && s.chipActive]}>
-                  <Text style={[s.chipText, equipmentOnSite[item.key] && s.chipTextActive]}>
-                    {item.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </GlassCard>
-
-          {/* Safety Checklist */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <Clipboard size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>Items Inspected</Text>
-            </View>
-            <View style={s.chipRow}>
-              {CHECKLIST_ITEMS.map((item) => (
-                <Pressable key={item.key} onPress={() => toggleChecklist(item.key)}
-                  style={[s.chip, checklistItems[item.key] && s.chipActive]}>
-                  {checklistItems[item.key] && <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />}
-                  <Text style={[s.chipText, checklistItems[item.key] && s.chipTextActive]}>
-                    {item.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </GlassCard>
-
-          {/* Observations */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
-              <Text style={s.sectionTitle}>Safety Observations / Violations</Text>
-            </View>
-            {observations.map((obs, i) => (
-              <View key={i} style={s.observationCard}>
-                <TextInput style={s.fieldInput} value={obs.description}
-                  onChangeText={(v) => updateObservation(i, 'description', v)}
-                  placeholder="Describe observation..." placeholderTextColor={colors.text.subtle} multiline />
-                <TextInput style={s.fieldInput} value={obs.responsible_party}
-                  onChangeText={(v) => updateObservation(i, 'responsible_party', v)}
-                  placeholder="Responsible party" placeholderTextColor={colors.text.subtle} />
-                <TextInput style={s.fieldInput} value={obs.remedy}
-                  onChangeText={(v) => updateObservation(i, 'remedy', v)}
-                  placeholder="Remedy / corrective action" placeholderTextColor={colors.text.subtle} />
-              </View>
-            ))}
-            <GlassButton title="+ Add Observation" onPress={addObservation} style={s.addBtn} />
-          </GlassCard>
-
-          {/* Visitors / Deliveries */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Visitors / Deliveries</Text>
-            <TextInput style={s.textArea} value={visitorsDeliveries}
-              onChangeText={setVisitorsDeliveries}
-              placeholder="Record any visitors or deliveries..." placeholderTextColor={colors.text.subtle}
-              multiline numberOfLines={3} />
-          </GlassCard>
-
-          {/* CP Signature ONLY — FIX #3: No superintendent signature */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <Building2 size={16} strokeWidth={1.5} color="#3b82f6" />
-              <Text style={s.sectionTitle}>Competent Person Sign-Off</Text>
-            </View>
-            <Text style={s.sectionSubtitle}>
-              Superintendent will sign from the site device after review.
-            </Text>
-            <SignaturePad
-              title="Competent Person Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-            />
-          </GlassCard>
-          </View>
-
-          {/* Actions — hidden when finalized; the LockBar handles amend.
-              TWO actions only: fill it all day (Save Draft, never freezes) and
-              close it once (Submit & Sign, freezes). There is no third
-              "Submit" that leaves a REQUIRED daily log unfrozen. */}
-          {!locked && (
-          <View style={s.actions}>
-            <GlassButton
-              title={saving && !signing ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving && !signing}
-              style={s.draftBtn}
-            />
-            <GlassButton
-              title={signing ? 'Submitting...' : 'Submit & Sign (End of Day)'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={handleSubmitAndSign}
-              loading={signing}
-              style={s.submitBtn}
-            />
-            <Text style={s.signHint}>
-              Signing closes the day: this log locks and corrections then require an amendment.
-            </Text>
-          </View>
-          )}
-
-          {/* DAILY NARRATIVE log: stays open and accumulating all day;
-              intermediate saves do NOT freeze it. It freezes once, at the
-              end-of-day Submit & Sign above — which is why canFinalize is
-              false: that single button owns finalization, and a second
-              "Finalize" here would be the same two-button trap. logType and the
-              Amend path stay so a locked narrative log can still be amended. */}
           <LogbookLockBar
             logType={'daily_jobsite'}
             locked={locked}
@@ -1701,46 +1651,43 @@ export default function DailyJobsiteLog() {
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
           />
+          <Text style={s.autosaveNote}>{t('savedAutomatically')}</Text>
         </ScrollView>
 
-        {/* PERSISTENT CAPTURE. Take Photo lives 1000px+ down the form, inside
-            the 5th slot of an activity card — on a phone, on a jobsite, that is
-            a scroll the CP pays for every single photo. This is the same
-            action, pinned above the nav, always reachable.
-
-            It NAMES its target row: a photo landing on the wrong subcontractor
-            is a compliance defect, and a global button that does not say where
-            it is aiming would create them silently. See resolveTargetActivity.
-
-            Native only (MOBILE_CAPTURE) — the desktop review view is unchanged,
-            and there is no in-process camera on web to open. Hidden when the log
-            is finalized (Tier 1 (1)b) so a locked log can't add photos. */}
-        {MOBILE_CAPTURE && !locked && (
-          <View style={s.fabWrap} pointerEvents="box-none">
-            <Pressable
-              style={({ pressed }) => [s.fab, pressed && s.fabPressed]}
-              onPress={() => takeActivityPhoto(fabTargetIndex)}
-              accessibilityRole="button"
-              accessibilityLabel={`Take photo for ${fabTargetLabel}`}
-            >
-              <Camera size={20} strokeWidth={2} color={colors.white} />
-              <View style={s.fabTextWrap}>
-                <Text style={s.fabText}>Photo</Text>
-                {activities.length > 1 && !!fabTargetLabel && (
-                  <Text style={s.fabTarget} numberOfLines={1}>{fabTargetLabel}</Text>
-                )}
-              </View>
-            </Pressable>
+        {/* ONE PRIMARY ACTION, and it is the largest element on the screen. */}
+        {!locked && (
+          <View style={s.footer}>
+            {step < TOTAL_STEPS ? (
+              <Pressable
+                style={s.primaryBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('next')}
+                onPress={goNext}
+              >
+                <Text style={s.primaryBtnText}>{t('next')}</Text>
+                <ArrowRight size={26} strokeWidth={2.5} color={outdoor.textOnSelected} />
+              </Pressable>
+            ) : (
+              <Pressable
+                style={s.primaryBtn}
+                accessibilityRole="button"
+                accessibilityLabel={t('submitAndSign')}
+                disabled={signing}
+                onPress={handleSubmitAndSign}
+              >
+                {signing
+                  ? <ActivityIndicator size="small" color={outdoor.textOnSelected} />
+                  : <Check size={26} strokeWidth={2.5} color={outdoor.textOnSelected} />}
+                <Text style={s.primaryBtnText}>{t('submitAndSign')}</Text>
+              </Pressable>
+            )}
           </View>
         )}
-
-        <FloatingNav />
       </SafeAreaView>
+
       {/* OUTSIDE the SafeAreaView on purpose: on native this is a pre-warmed
           full-screen absolute overlay, and inside the SafeAreaView its absolute
-          fill would stop at the safe-area inset instead of going full-bleed.
-          On web this resolves to the .web.jsx stub, which renders an RN Modal —
-          unaffected by where it sits in the tree. */}
+          fill would stop at the safe-area inset instead of going full-bleed. */}
       <CameraCaptureModal
         visible={cameraVisible}
         shots={cameraShots}
@@ -1749,7 +1696,73 @@ export default function DailyJobsiteLog() {
         onDeleteShot={handleDeleteShot}
       />
 
-      {/* PR C: photo lightbox — mirrors the worker-detail OSHA-card modal. */}
+      <PromptModal
+        visible={!!correcting}
+        title={t('correctCompanyTitle')}
+        hint={t('correctCompanyHint')}
+        value={correcting?.value || ''}
+        placeholder={t('phCompany')}
+        onChange={(v) => setCorrecting((p) => ({ ...p, value: v }))}
+        onCancel={() => setCorrecting(null)}
+        onConfirm={commitCorrection}
+        confirmLabel={t('next')}
+        cancelLabel={t('cancel')}
+        s={s}
+      />
+
+      <PromptModal
+        visible={!!otherPrompt}
+        title={otherPrompt?.kind === 'location' ? t('locationOtherPrompt') : t('chipOtherPrompt')}
+        value={otherPrompt?.value || ''}
+        placeholder={otherPrompt?.kind === 'location' ? t('phWorkLocations') : t('phWorkPerformed')}
+        onChange={(v) => setOtherPrompt((p) => ({ ...p, value: v }))}
+        onCancel={() => setOtherPrompt(null)}
+        onConfirm={commitOther}
+        confirmLabel={t('next')}
+        cancelLabel={t('cancel')}
+        s={s}
+      />
+
+      <Modal
+        visible={!!addingCrew}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAddingCrew(null)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>{t('addCrewTitle')}</Text>
+            <TextInput
+              style={s.input}
+              value={addingCrew?.company || ''}
+              onChangeText={(v) => setAddingCrew((p) => ({ ...p, company: v }))}
+              placeholder={t('phCompany')}
+              placeholderTextColor={outdoor.textDim}
+            />
+            <TextInput
+              style={s.input}
+              value={addingCrew?.num || ''}
+              onChangeText={(v) => setAddingCrew((p) => ({ ...p, num: v }))}
+              placeholder={t('workers_one')}
+              placeholderTextColor={outdoor.textDim}
+              keyboardType="numeric"
+            />
+            <View style={s.modalActions}>
+              <Pressable
+                style={s.secondaryBtn}
+                accessibilityRole="button"
+                onPress={() => setAddingCrew(null)}
+              >
+                <Text style={s.secondaryBtnText}>{t('cancel')}</Text>
+              </Pressable>
+              <Pressable style={s.primaryBtn} accessibilityRole="button" onPress={commitAddCrew}>
+                <Text style={s.primaryBtnText}>{t('next')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal
         visible={!!photoLightbox}
         transparent
@@ -1757,15 +1770,16 @@ export default function DailyJobsiteLog() {
         onRequestClose={() => setPhotoLightbox(null)}
       >
         <Pressable style={s.lightboxOverlay} onPress={() => setPhotoLightbox(null)}>
-          <Pressable style={s.lightboxClose} hitSlop={16} onPress={() => setPhotoLightbox(null)}>
-            <X size={26} color="#fff" />
+          <Pressable
+            style={s.lightboxClose}
+            hitSlop={16}
+            accessibilityRole="button"
+            onPress={() => setPhotoLightbox(null)}
+          >
+            <X size={28} color={outdoor.textOnSelected} />
           </Pressable>
           {photoLightbox?.uri ? (
-            <Image
-              source={{ uri: photoLightbox.uri }}
-              style={s.lightboxImage}
-              resizeMode="contain"
-            />
+            <Image source={{ uri: photoLightbox.uri }} style={s.lightboxImage} resizeMode="contain" />
           ) : null}
           {photoLightbox?.label ? (
             <Text style={s.lightboxLabel}>{photoLightbox.label}</Text>
@@ -1776,149 +1790,328 @@ export default function DailyJobsiteLog() {
   );
 }
 
-function buildStyles(colors, isDark) {
-  return StyleSheet.create({
-  container: { flex: 1 },
-  loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  headerTitle: { fontSize: 17, fontWeight: '600', color: colors.text.primary },
-  headerSub: { fontSize: 12, color: colors.text.muted },
-  scrollView: { flex: 1 },
-  // Bottom padding clears BOTH floating layers: FloatingNav (bottom 24, ~56
-  // tall) and the capture FAB above it (bottom 96, ~67 tall). At the old 100 the
-  // FAB sat on top of Submit at the end of the scroll.
-  scrollContent: { padding: spacing.lg, paddingBottom: MOBILE_CAPTURE ? 180 : 100 },
-  section: { marginBottom: spacing.md },
-  sectionTitle: { fontSize: 16, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
-  sectionSubtitle: { fontSize: 13, color: colors.text.muted, marginBottom: spacing.md },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  fieldRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: spacing.sm },
-  fieldRowVertical: { paddingVertical: spacing.sm },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
-  fieldValueReadonly: { fontSize: 15, color: colors.text.primary, fontWeight: '500', flex: 1, textAlign: 'right' },
-  fieldInput: {
-    backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
-    padding: spacing.sm, fontSize: 14, color: colors.text.primary,
-    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.08), marginTop: spacing.xs,
-  },
-  textArea: {
-    backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
-    padding: spacing.md, fontSize: 14, color: colors.text.primary,
-    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.08), minHeight: 80, textAlignVertical: 'top',
-  },
-  weatherHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  weatherAuto: { fontSize: 13, color: colors.primary, fontWeight: '500' },
-  weatherRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
-  weatherBtn: {
-    paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-    borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-    backgroundColor: withAlpha('#ffffff', 0.04),
-  },
-  weatherBtnActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
-  weatherBtnText: { fontSize: 13, color: colors.text.muted },
-  weatherBtnTextActive: { color: '#3b82f6', fontWeight: '600' },
-  activityCard: {
-    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
-    padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
-  },
-  // The row the FAB is currently aiming at.
-  activityCardTarget: { borderColor: withAlpha(colors.primary, 0.45), backgroundColor: withAlpha(colors.primary, 0.05) },
-  activityRow: { flexDirection: 'row', gap: spacing.sm },
-  activityField: { flex: 1, gap: 2 },
-  activityLabel: { fontSize: 10, fontWeight: '600', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
-  activityInput: {
-    backgroundColor: withAlpha('#ffffff', 0.04), borderRadius: borderRadius.sm,
-    padding: spacing.xs, fontSize: 14, color: colors.text.primary,
-  },
-  pendingHint: {
-    fontSize: 11, fontWeight: '600', color: semantic.attention, marginTop: 2,
-  },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
-  chip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-    backgroundColor: withAlpha('#ffffff', 0.04),
-  },
-  chipActive: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
-  chipText: { fontSize: 13, color: colors.text.muted },
-  chipTextActive: { color: chrome.brand, fontWeight: '500' },
-  observationCard: {
-    borderWidth: 1, borderColor: semantic.attentionBorder, borderRadius: borderRadius.lg,
-    padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
-  },
-  addBtn: { marginTop: spacing.xs },
-  // Stacked, not side-by-side: the end-of-day action is irreversible, so it gets
-  // its own full-width row and cannot be mistaken for the save next to it.
-  actions: { gap: spacing.sm, marginTop: spacing.md, marginBottom: spacing.xl },
-  draftBtn: { width: '100%' },
-  submitBtn: { width: '100%', backgroundColor: semantic.verified, borderColor: semantic.verified },
-  signHint: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginTop: spacing.xs },
-  photosSection: { gap: spacing.xs, marginTop: spacing.xs },
-  photosHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  photoScrollHint: { fontSize: 10, fontWeight: '600', color: colors.primary, letterSpacing: 0.3 },
-  photoScroll: { marginTop: spacing.xs, paddingTop: 8, paddingBottom: 4 },
-  photoThumb: { width: 80, height: 80, borderRadius: borderRadius.md, marginRight: spacing.sm, position: 'relative', overflow: 'visible' },
-  photoImage: { width: 80, height: 80, borderRadius: borderRadius.md },
-  lightboxOverlay: {
-    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
-    alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
-  },
-  lightboxImage: { width: '100%', height: '80%' },
-  lightboxClose: {
-    position: 'absolute', top: 48, right: 24, zIndex: 2, padding: spacing.sm,
-  },
-  lightboxLabel: {
-    marginTop: spacing.md, color: '#fff', fontSize: 13, fontWeight: '600',
-    opacity: 0.85,
-  },
-  photoRemove: {
-    // Item 5: was top:-6/right:-6 — OUTSIDE the 80×80 thumbnail, so it got clipped
-    // and was untappable. Sit it just inside the corner and make it bigger; the
-    // Pressable also gets a hitSlop so the tap target clears the icon.
-    position: 'absolute', top: 3, right: 3, width: 26, height: 26, borderRadius: 13,
-    backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center', zIndex: 2,
-  },
-  photoPending: {
-    backgroundColor: withAlpha('#ffffff', 0.06),
-    alignItems: 'center', justifyContent: 'center',
-  },
-  photoActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
-  // PRIMARY — filled brand. This is the action the log is built around.
-  photoBtnPrimary: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full,
-    backgroundColor: colors.primary,
-  },
-  photoBtnPrimaryText: { fontSize: 12, fontWeight: '700', color: colors.white },
-  // SECONDARY — neutral outline. Was an identical blue pill to Take Photo.
-  photoBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12),
-    backgroundColor: withAlpha('#ffffff', 0.04),
-  },
-  photoBtnText: { fontSize: 12, fontWeight: '500', color: colors.text.muted },
+/**
+ * One chip. Selection is carried on accessibilityState as well as in the
+ * styling, so the state is available to a screen reader and to a test — not
+ * only to someone who can see the colour.
+ */
+function ChipBase({ s, label, selected, onPress }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: !!selected }}
+      accessibilityLabel={label}
+      style={[s.chip, selected && s.chipSelected]}
+    >
+      <Text style={[s.chipText, selected && s.chipTextSelected]}>{label}</Text>
+    </Pressable>
+  );
+}
 
-  // ── Persistent capture FAB ────────────────────────────────────────────────
-  // Sits above FloatingNav (bottom 24 + ~56 pill + breathing room).
-  fabWrap: { position: 'absolute', right: spacing.lg, bottom: 96 },
-  fab: {
-    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-    paddingLeft: spacing.md, paddingRight: spacing.lg, paddingVertical: spacing.md,
-    borderRadius: borderRadius.full,
-    backgroundColor: colors.primary,
-    shadowColor: '#000000', shadowOpacity: 0.35, shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 }, elevation: 8,
-  },
-  fabPressed: { opacity: 0.85 },
-  fabTextWrap: { maxWidth: 150 },
-  fabText: { fontSize: 15, fontWeight: '700', color: colors.white },
-  fabTarget: { fontSize: 11, fontWeight: '500', color: withAlpha('#ffffff', 0.8) },
-});
+function StepHeaderBase({ s, count, title }) {
+  return (
+    <View style={s.stepHeader}>
+      <Text style={s.stepCount}>{count}</Text>
+      <Text style={s.stepTitle}>{title}</Text>
+    </View>
+  );
+}
+
+/** One text prompt, used by the company correction and both "Other" entries. */
+function PromptModal({
+  visible, title, hint, value, placeholder, onChange, onCancel, onConfirm,
+  confirmLabel, cancelLabel, s,
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={s.modalOverlay}>
+        <View style={s.modalCard}>
+          <Text style={s.modalTitle}>{title}</Text>
+          {!!hint && <Text style={s.noteText}>{hint}</Text>}
+          <TextInput
+            style={s.input}
+            value={value}
+            onChangeText={onChange}
+            placeholder={placeholder}
+            placeholderTextColor={outdoor.textDim}
+            autoFocus
+          />
+          <View style={s.modalActions}>
+            <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={onCancel}>
+              <Text style={s.secondaryBtnText}>{cancelLabel}</Text>
+            </Pressable>
+            <Pressable style={s.primaryBtn} accessibilityRole="button" onPress={onConfirm}>
+              <Text style={s.primaryBtnText}>{confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/**
+ * Every value below comes from the token file. No literal colour, size, radius
+ * or spacing appears in this StyleSheet — that is asserted by
+ * src/utils/dailyJobsiteStepper.test.cjs, which fails on a raw hex, rgba(), or
+ * a numeric fontSize.
+ *
+ * Not theme-dependent, so it is built once: the outdoor palette deliberately
+ * does not flip (see theme.js).
+ */
+function buildStyles() {
+  return StyleSheet.create({
+    container: { flex: 1 },
+    loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+
+    header: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.md,
+      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+      backgroundColor: outdoor.surface,
+    },
+    headerBack: {
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: borderRadius.md,
+    },
+    headerText: { flex: 1 },
+    headerTitle: {
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+    },
+    headerSub: { fontSize: typography.sizes.fine, color: outdoor.textDim },
+
+    progressRow: {
+      flexDirection: 'row', gap: spacing.xs, paddingHorizontal: spacing.md,
+      paddingBottom: spacing.sm, backgroundColor: outdoor.surface,
+    },
+    progressPip: {
+      flex: 1, height: spacing.xs, borderRadius: borderRadius.sm,
+      backgroundColor: outdoor.line,
+    },
+    progressPipOn: { backgroundColor: outdoor.surfaceSelected },
+
+    scroll: { flex: 1, backgroundColor: outdoor.surfaceSunk },
+    scrollContent: { padding: spacing.md, paddingBottom: spacing.xxl },
+
+    stepHeader: { marginBottom: spacing.md },
+    stepCount: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+      letterSpacing: spacing.xs / 4, textTransform: 'uppercase',
+    },
+    stepTitle: {
+      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.text,
+    },
+
+    crewCard: {
+      backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: outdoor.line,
+      padding: spacing.md, marginBottom: spacing.md, gap: spacing.sm,
+    },
+    crewCardFlagged: { borderColor: outdoor.warnBorder, borderWidth: 2 },
+    crewTop: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      gap: spacing.sm, flexWrap: 'wrap',
+    },
+    crewName: {
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text, flexShrink: 1,
+    },
+    crewMeta: { fontSize: typography.sizes.sm, color: outdoor.textSoft },
+
+    gateBadge: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.sm,
+      paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
+    },
+    gateBadgeText: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textSoft,
+    },
+
+    correctedNote: {
+      fontSize: typography.sizes.fine, color: outdoor.textDim, fontStyle: 'italic',
+    },
+
+    unboundBox: {
+      backgroundColor: outdoor.warnBg, borderRadius: borderRadius.sm,
+      borderWidth: 1, borderColor: outdoor.warnBorder, padding: spacing.sm,
+    },
+    unboundTitle: {
+      fontSize: typography.sizes.dense, fontWeight: '700', color: outdoor.text,
+    },
+    unboundText: { fontSize: typography.sizes.fine, color: outdoor.textSoft },
+
+    warnCard: {
+      flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
+      backgroundColor: outdoor.warnBg, borderRadius: borderRadius.lg,
+      borderWidth: 2, borderColor: outdoor.warnBorder,
+      padding: spacing.md, marginBottom: spacing.md,
+    },
+    warnBody: { flex: 1, gap: spacing.xs },
+    warnTitle: {
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
+    },
+    warnText: { fontSize: typography.sizes.sm, color: outdoor.textSoft },
+
+    question: {
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
+      marginTop: spacing.sm,
+    },
+    noteText: { fontSize: typography.sizes.dense, color: outdoor.textDim },
+    emptyText: {
+      fontSize: typography.sizes.md, color: outdoor.textSoft, paddingVertical: spacing.md,
+    },
+    errorText: {
+      fontSize: typography.sizes.dense, fontWeight: '600', color: outdoor.danger,
+    },
+    lockedHint: {
+      fontSize: typography.sizes.sm, color: outdoor.textSoft,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.sm,
+      padding: spacing.sm,
+    },
+
+    chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+    chip: {
+      minHeight: touchTarget.min, justifyContent: 'center',
+      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+      borderRadius: borderRadius.md, borderWidth: 2, borderColor: outdoor.lineStrong,
+      backgroundColor: outdoor.surface,
+    },
+    chipSelected: {
+      backgroundColor: outdoor.surfaceSelected, borderColor: outdoor.surfaceSelected,
+    },
+    chipText: {
+      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
+    },
+    chipTextSelected: { color: outdoor.textOnSelected },
+
+    input: {
+      minHeight: touchTarget.min, borderRadius: borderRadius.md, borderWidth: 2,
+      borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+      fontSize: typography.sizes.md, color: outdoor.text,
+    },
+
+    toggleRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      minHeight: touchTarget.min, paddingHorizontal: spacing.sm,
+      borderRadius: borderRadius.md, borderWidth: 2, borderColor: outdoor.lineStrong,
+    },
+    toggleRowOn: { borderColor: outdoor.okBorder, backgroundColor: outdoor.okBg },
+    toggleBox: {
+      width: spacing.lg, height: spacing.lg, borderRadius: borderRadius.sm,
+      borderWidth: 2, borderColor: outdoor.lineStrong,
+    },
+    toggleText: { fontSize: typography.sizes.md, color: outdoor.text, flex: 1 },
+
+    photoBlock: { gap: spacing.sm },
+    taggedWith: {
+      fontSize: typography.sizes.fine, color: outdoor.textSoft,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.sm,
+      padding: spacing.sm,
+    },
+    photoCount: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+    },
+    photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+    photoThumb: { position: 'relative' },
+    photoImage: {
+      width: touchTarget.primary, height: touchTarget.primary,
+      borderRadius: borderRadius.sm, backgroundColor: outdoor.surfaceSunk,
+    },
+    photoPending: { alignItems: 'center', justifyContent: 'center' },
+    photoRemove: {
+      position: 'absolute', top: 0, right: 0,
+      width: spacing.lg, height: spacing.lg, borderRadius: borderRadius.full,
+      alignItems: 'center', justifyContent: 'center',
+      backgroundColor: outdoor.danger,
+    },
+    photoActions: { flexDirection: 'row', gap: spacing.sm },
+    photoBtn: {
+      flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.min, borderRadius: borderRadius.md,
+      backgroundColor: outdoor.surfaceSelected,
+    },
+    photoBtnText: {
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.textOnSelected,
+    },
+    photoBtnGhost: {
+      flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.min, borderRadius: borderRadius.md,
+      borderWidth: 2, borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+    },
+    photoBtnGhostText: {
+      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
+    },
+
+    reviewCard: {
+      backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: outdoor.line,
+      padding: spacing.md, marginBottom: spacing.md, gap: spacing.xs,
+    },
+    reviewCrew: {
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
+    },
+    reviewLabel: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+      textTransform: 'uppercase',
+    },
+    reviewValue: { fontSize: typography.sizes.md, color: outdoor.text },
+
+    secondaryBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.min,
+      paddingHorizontal: spacing.md, borderRadius: borderRadius.md,
+      borderWidth: 2, borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+    },
+    secondaryBtnText: {
+      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
+    },
+
+    footer: {
+      padding: spacing.md, backgroundColor: outdoor.surface,
+      borderTopWidth: 1, borderTopColor: outdoor.line,
+    },
+    primaryBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.primary,
+      borderRadius: borderRadius.lg, backgroundColor: outdoor.surfaceSelected,
+      paddingHorizontal: spacing.lg,
+    },
+    primaryBtnText: {
+      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.textOnSelected,
+    },
+
+    autosaveNote: {
+      fontSize: typography.sizes.fine, color: outdoor.textDim,
+      textAlign: 'center', paddingVertical: spacing.sm,
+    },
+
+    modalOverlay: {
+      flex: 1, alignItems: 'center', justifyContent: 'center',
+      backgroundColor: outdoor.scrim, padding: spacing.md,
+    },
+    modalCard: {
+      width: '100%', backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
+      padding: spacing.md, gap: spacing.sm,
+    },
+    modalTitle: {
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+    },
+    modalActions: { flexDirection: 'row', gap: spacing.sm },
+
+    lightboxOverlay: {
+      flex: 1, alignItems: 'center', justifyContent: 'center',
+      backgroundColor: outdoor.scrim,
+    },
+    lightboxClose: {
+      position: 'absolute', top: spacing.xl, right: spacing.lg,
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+    },
+    lightboxImage: { width: '100%', height: '80%' },
+    lightboxLabel: {
+      position: 'absolute', bottom: spacing.xl,
+      fontSize: typography.sizes.sm, color: outdoor.textOnSelected,
+    },
+  });
 }

@@ -17,10 +17,21 @@
  * there would merge unrelated subs — into one photo bucket, and into one line of
  * a signed compliance record.
  *
- * No test runner in this repo (see RiskScoreCircle.bandFor.test.cjs): the real
- * blocks are extracted from the .jsx by brace matching and evaluated against
- * stubs, the technique src/utils/checkinCardGate.test.cjs uses. Nothing below is
- * a hand-copy of the logic under test.
+ * WHERE THE CODE MOVED. The U1 stepper rebuild lifted all of this out of the
+ * .jsx and into src/utils/dailyJobsiteModel.js, so that decisions landing in a
+ * signed record could be EXECUTED by a test instead of extracted from a
+ * component by brace matching. Every guarantee below is the same one this file
+ * always made; only the address changed. Three of them are unchanged
+ * source-level greps, and those still read the screen.
+ *
+ * Two behaviours are stronger than before and are asserted as such:
+ *   * the roster index is keyed on (company, TRADE), so a company working two
+ *     trades no longer has to be dropped as ambiguous — it has two rows and
+ *     two ids, and each resolves exactly.
+ *   * seeding no longer writes the trade into work_description (Finding C).
+ *
+ * No test runner in this repo (see RiskScoreCircle.bandFor.test.cjs): the ESM
+ * model is read, stripped and evaluated. Nothing below is a hand-copy.
  *
  * Run:  node src/utils/activityIdentity.test.cjs
  */
@@ -29,280 +40,204 @@ const path = require('path');
 
 const FRONTEND = path.join(__dirname, '..', '..');
 const SCREEN = path.join(FRONTEND, 'app', 'logbooks', 'daily_jobsite.jsx');
+const MODEL = path.join(__dirname, 'dailyJobsiteModel.js');
 const src = fs.readFileSync(SCREEN, 'utf8');
+const modelSrc = fs.readFileSync(MODEL, 'utf8');
 
-let passed = 0, failed = 0;
+let passed = 0; let failed = 0;
 function ok(cond, label) {
   if (cond) { passed += 1; console.log(`  PASS  ${label}`); }
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
+const noComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-// ── extraction ───────────────────────────────────────────────────────────────
-function matchBalanced(text, openIdx, open, close) {
-  let depth = 0;
-  for (let i = openIdx; i < text.length; i += 1) {
-    if (text[i] === open) depth += 1;
-    else if (text[i] === close) {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  throw new Error('unbalanced region');
-}
-/** Slice from `anchor` (which must END with `open`) to its matching `close`. */
-function region(anchor, open, close) {
-  const at = src.indexOf(anchor);
-  if (at < 0) throw new Error(`anchor not found in daily_jobsite.jsx: ${anchor}`);
-  const openIdx = at + anchor.length - 1;
-  if (src[openIdx] !== open) throw new Error(`anchor must end with ${open}: ${anchor}`);
-  return src.slice(at, matchBalanced(src, openIdx, open, close) + 1);
-}
-/** Just the delimited region that `anchor` opens, without the anchor itself. */
-function body(anchor, open, close) {
-  const at = src.indexOf(anchor);
-  if (at < 0) throw new Error(`anchor not found in daily_jobsite.jsx: ${anchor}`);
-  const openIdx = at + anchor.length - 1;
-  return src.slice(openIdx, matchBalanced(src, openIdx, open, close) + 1);
-}
-/** The single line beginning at `anchor`. */
-function line(anchor) {
-  const at = src.indexOf(anchor);
-  if (at < 0) throw new Error(`anchor not found in daily_jobsite.jsx: ${anchor}`);
-  const end = src.indexOf('\n', at);
-  return src.slice(at, end < 0 ? src.length : end);
-}
+// ── Load the model ───────────────────────────────────────────────────────────
+const M = new Function(`
+  ${modelSrc.replace(/^export default [\s\S]*$/m, '').replace(/^export (const|function|let) /gm, '$1 ')}
+  return { EMPTY_ACTIVITY, newActivityId, rosterKey, buildCrewsFromRoster,
+           rosterIdIndex, applyCompanyCorrection, isUnboundCrew };
+`)();
 
-const activitySeqSrc = line('let activitySeq = ');
-const newActivityIdSrc = line('const newActivityId = ');
-const rosterKeySrc = line('const rosterKey = ');
-const emptyActivitySrc = region('const EMPTY_ACTIVITY = () => (', '(', ')');
-const seedBodySrc = body('const autoActivities = rows.map((r, i) => {', '{', '}');
-
-// The roster-map build is a plain block, not a delimited expression: take it
-// from its first statement through the assignment that publishes it.
-const rosterMapStart = src.indexOf('const idsByName = new Map();');
-const rosterMapEnd = src.indexOf('rosterIdByCompanyRef.current = unique;');
-if (rosterMapStart < 0 || rosterMapEnd < 0) throw new Error('roster-map block not found');
-const rosterMapBlock = src.slice(
-  rosterMapStart, rosterMapEnd + 'rosterIdByCompanyRef.current = unique;'.length,
-);
-
-const updateActivitySrc = (() => {
-  const anchor = 'const updateActivity = (index, field, value) => {';
-  const at = src.indexOf(anchor);
-  if (at < 0) throw new Error('updateActivity not found');
-  const open = at + anchor.length - 1;
-  return src.slice(at, matchBalanced(src, open, '{', '}') + 1);
-})();
-
-// ── evaluate the extracted blocks ────────────────────────────────────────────
-// eslint-disable-next-line no-new-func
-const ids = new Function(
-  `${activitySeqSrc}\n${newActivityIdSrc}\n${rosterKeySrc}\nreturn { newActivityId, rosterKey };`)();
-const { newActivityId, rosterKey } = ids;
-
-// eslint-disable-next-line no-new-func
-const EMPTY_ACTIVITY = new Function('newActivityId',
-  `${emptyActivitySrc}\nreturn EMPTY_ACTIVITY;`)(newActivityId);
-
-// eslint-disable-next-line no-new-func
-const seedRow = new Function('newActivityId',
-  `return (r, i) => ${seedBodySrc};`)(newActivityId);
-
-/** Run the shipped roster-map build over a headcount response. */
-// eslint-disable-next-line no-new-func
-const buildRosterMap = new Function('headcount', 'rosterKey', `
-  const rosterIdByCompanyRef = { current: null };
-  ${rosterMapBlock}
-  return rosterIdByCompanyRef.current;
-`);
-
-/** Run the shipped updateActivity over a rows array. */
-function runUpdate(rows, index, field, value, rosterMap) {
-  let state = rows;
-  const env = {
-    lastEditedRef: { current: null },
-    rosterIdByCompanyRef: { current: rosterMap || new Map() },
-    setActivities: (fn) => { state = fn(state); },
-    rosterKey,
-  };
-  // eslint-disable-next-line no-new-func
-  new Function('lastEditedRef', 'rosterIdByCompanyRef', 'setActivities', 'rosterKey',
-    `${updateActivitySrc}\nreturn updateActivity;`)(
-    env.lastEditedRef, env.rosterIdByCompanyRef, env.setActivities, env.rosterKey,
-  )(index, field, value);
-  return state;
-}
-
-// ── 1. EMPTY_ACTIVITY declares both fields ───────────────────────────────────
+// ── 1. EMPTY_ACTIVITY ────────────────────────────────────────────────────────
 {
-  const a = EMPTY_ACTIVITY();
+  const a = M.EMPTY_ACTIVITY();
+  const b = M.EMPTY_ACTIVITY();
   ok(typeof a.activity_id === 'string' && a.activity_id.length > 0,
-    'EMPTY_ACTIVITY: a manually added row is minted an activity_id');
+    'EMPTY_ACTIVITY: mints a non-empty activity_id');
   ok(Object.prototype.hasOwnProperty.call(a, 'subcontractor_id'),
-    'EMPTY_ACTIVITY: subcontractor_id is declared on the row');
+    'EMPTY_ACTIVITY: declares subcontractor_id');
   ok(a.subcontractor_id === null,
-    'EMPTY_ACTIVITY: an "Other"/unbound row carries NO roster id — null, not a placeholder');
+    'EMPTY_ACTIVITY: a hand-added row starts with NO roster identity');
+  ok(a.activity_id !== b.activity_id, 'EMPTY_ACTIVITY: two rows never share an id');
 
-  const b = EMPTY_ACTIVITY();
-  ok(a.activity_id !== b.activity_id,
-    'EMPTY_ACTIVITY: two hand-added rows get DIFFERENT ids');
+  const many = new Set(Array.from({ length: 500 }, () => M.EMPTY_ACTIVITY().activity_id));
+  ok(many.size === 500, 'ids stay unique across 500 rows minted in the same millisecond');
 
-  const many = new Set(Array.from({ length: 500 }, () => EMPTY_ACTIVITY().activity_id));
-  ok(many.size === 500,
-    'activity_id: 500 rows minted back-to-back are all distinct (the id is not just a timestamp)');
-
-  // The old shape must survive untouched — the 3301-02 renderers read these.
-  for (const f of ['crew_id', 'company', 'num_workers', 'work_description', 'work_locations', 'photos']) {
+  for (const f of ['crew_id', 'company', 'num_workers', 'work_description',
+    'work_locations', 'photos']) {
     ok(Object.prototype.hasOwnProperty.call(a, f), `EMPTY_ACTIVITY: still carries ${f}`);
   }
 }
 
-// ── 2. The auto-seed path sets both, from the headcount row ──────────────────
-{
-  const row = seedRow(
-    { sub_name: 'Acme Co', trade: 'Carpenter', worker_count_today: 4, subcontractor_id: 'srv_acme1' }, 0,
-  );
-  ok(typeof row.activity_id === 'string' && row.activity_id.length > 0,
-    'seed: an auto-populated row is minted an activity_id too');
-  ok(row.subcontractor_id === 'srv_acme1',
-    'seed: the roster id from /daily-headcount reaches the row');
-  ok(row.company === 'Acme Co' && row.num_workers === '4' && row.work_description === 'Carpenter',
-    'seed: the existing fields are unchanged');
+// ── 2. Seeding from the gate roster ──────────────────────────────────────────
+const HEADCOUNT = [
+  { sub_name: 'Acme Co', trade: 'Carpenter', worker_count_today: 4, subcontractor_id: 'srv_acme1' },
+  { sub_name: 'Volt LLC', trade: 'Electrical', worker_count_today: 2, subcontractor_id: 'srv_v' },
+];
+const worker = (over) => ({
+  worker_id: `w${Math.random()}`, worker_name: 'X', company: 'Acme Co',
+  trade: 'Carpenter', check_in_time: '2026-03-04T12:00:00Z', ...over,
+});
 
-  const rows = [
-    seedRow({ sub_name: 'Acme Co', trade: 'Carpenter', worker_count_today: 1, subcontractor_id: 'srv_a' }, 0),
-    seedRow({ sub_name: 'Volt LLC', trade: 'Electrician', worker_count_today: 2, subcontractor_id: 'srv_v' }, 1),
-  ];
-  ok(rows[0].activity_id !== rows[1].activity_id,
-    'seed: two seeded rows get different activity_ids');
+{
+  const rows = M.buildCrewsFromRoster(
+    [worker(), worker(), worker(), worker()], HEADCOUNT,
+  );
+  const row = rows[0];
+  ok(typeof row.activity_id === 'string' && row.activity_id.length > 0,
+    'seed: every seeded row gets an activity_id');
+  ok(row.subcontractor_id === 'srv_acme1',
+    'seed: the roster id from /daily-headcount is carried onto the row');
+  ok(row.company === 'Acme Co' && row.num_workers === '4',
+    'seed: company and headcount are carried');
+  ok(row.work_description === '',
+    'seed: the TRADE IS NOT written into work_description (Finding C)');
 }
 
-// ── 3. Absence is honest, never fabricated ───────────────────────────────────
 {
-  const unrostered = seedRow(
-    { sub_name: 'Ghost Crew', trade: 'Demolition', worker_count_today: 3, subcontractor_id: null }, 0,
+  const rows = M.buildCrewsFromRoster(
+    [worker(), worker({ company: 'Volt LLC', trade: 'Electrical' })], HEADCOUNT,
+  );
+  ok(rows[0].activity_id !== rows[1].activity_id, 'seed: two seeded rows never share an id');
+}
+
+{
+  const [unrostered] = M.buildCrewsFromRoster(
+    [worker({ company: 'Ghost Co', trade: 'Masonry' })], HEADCOUNT,
   );
   ok(unrostered.subcontractor_id === null,
-    'seed: a sub the admin has not entered yet carries NO roster id');
+    'seed: a company absent from the roster gets NULL, never a fabricated id');
   ok(typeof unrostered.activity_id === 'string' && unrostered.activity_id.length > 0,
-    'seed: ...but it still gets an activity_id, so it is still addressable');
+    'seed: ...but it still gets a row identity');
+  ok(M.isUnboundCrew(unrostered), 'seed: and is flagged unbound for an admin');
+}
 
-  const missingKey = seedRow({ sub_name: 'Ghost Crew', trade: 'Demolition', worker_count_today: 3 }, 0);
+{
+  const [missingKey] = M.buildCrewsFromRoster(
+    [worker()], [{ sub_name: 'Acme Co', trade: 'Carpenter', worker_count_today: 1 }],
+  );
   ok(missingKey.subcontractor_id === null,
-    'seed: an older server response with no subcontractor_id key yields null, not undefined-as-an-id');
+    'seed: a headcount row with no subcontractor_id yields null, not undefined-as-id');
+}
 
-  // 'UNASSIGNED' is a sentinel, not a company: the company is blanked, so the
-  // roster id must go with it or the two would disagree.
-  const unassigned = seedRow(
-    { sub_name: 'UNASSIGNED', trade: '', worker_count_today: 2, subcontractor_id: 'srv_leaked' }, 0,
+{
+  const [unassigned] = M.buildCrewsFromRoster(
+    [worker({ company: 'UNASSIGNED', trade: '' })], HEADCOUNT,
   );
   ok(unassigned.company === '',
-    'seed: UNASSIGNED is still blanked to "pending assignment", not stamped on the form');
+    'seed: the UNASSIGNED sentinel is blanked, never stamped on the 3301-02');
   ok(unassigned.subcontractor_id === null,
-    'seed: a blanked company drops the roster id — a row cannot be bound to a sub it does not name');
+    'seed: a blanked company keeps NO roster id — the two must agree');
 }
 
-// ── 4. The company -> roster id map only keeps UNAMBIGUOUS names ─────────────
+// ── 3. The roster index ──────────────────────────────────────────────────────
 {
-  const map = buildRosterMap([
+  const map = M.rosterIdIndex(HEADCOUNT);
+  ok(map.get('acme co|carpenter') === 'srv_acme1' && map.get('volt llc|electrical') === 'srv_v',
+    'roster map: normalized (company, trade) resolves to the roster id');
+
+  // STRONGER THAN BEFORE. The old index was keyed on company alone, so a
+  // company working two trades had two ids and had to be dropped as ambiguous.
+  // Keying on the pair removes the ambiguity instead of surrendering to it.
+  const twoTrades = M.rosterIdIndex([
     { sub_name: 'Acme Co', trade: 'Carpenter', subcontractor_id: 'srv_a' },
-    { sub_name: 'Volt LLC', trade: 'Electrician', subcontractor_id: 'srv_v' },
-  ], rosterKey);
-  ok(map.get('acme co') === 'srv_a' && map.get('volt llc') === 'srv_v',
-    'roster map: an unambiguous company name resolves to its roster id');
+    { sub_name: 'Acme Co', trade: 'Drywall', subcontractor_id: 'srv_b' },
+  ]);
+  ok(twoTrades.get('acme co|carpenter') === 'srv_a'
+    && twoTrades.get('acme co|drywall') === 'srv_b',
+  'roster map: one company on two trades resolves EXACTLY, not ambiguously');
 
-  const ambiguous = buildRosterMap([
-    { sub_name: 'Acme Co', trade: 'Carpenter', subcontractor_id: 'srv_a_carp' },
-    { sub_name: 'Acme Co', trade: 'Laborer', subcontractor_id: 'srv_a_lab' },
-  ], rosterKey);
-  ok(!ambiguous.has('acme co'),
-    'roster map: a company working TWO trades is two roster rows — the name is ambiguous and is NOT guessed at');
-
-  const noIds = buildRosterMap([
-    { sub_name: 'Acme Co', trade: 'Carpenter', subcontractor_id: null },
-    { sub_name: 'UNASSIGNED', trade: '', subcontractor_id: null },
-  ], rosterKey);
+  const noIds = M.rosterIdIndex([{ sub_name: 'Acme Co', trade: 'Carpenter' }]);
   ok(noIds.size === 0, 'roster map: rows with no roster id contribute nothing');
+  ok(M.rosterIdIndex(null).size === 0, 'roster map: a failed headcount read yields an empty map');
 }
 
-// ── 5. Retyping the company RE-RESOLVES the binding ──────────────────────────
+// ── 4. Correcting the company re-resolves the binding ────────────────────────
 {
-  const map = buildRosterMap([
-    { sub_name: 'Acme Co', trade: 'Carpenter', subcontractor_id: 'srv_a' },
-    { sub_name: 'Volt LLC', trade: 'Electrician', subcontractor_id: 'srv_v' },
-  ], rosterKey);
-  const seeded = seedRow(
-    { sub_name: 'Acme Co', trade: 'Carpenter', worker_count_today: 1, subcontractor_id: 'srv_a' }, 0,
-  );
+  const ids = M.rosterIdIndex(HEADCOUNT);
+  const seeded = M.buildCrewsFromRoster([worker()], HEADCOUNT)[0];
+  const fix = (row, name) => M.applyCompanyCorrection(row, name, { rosterIds: ids });
 
-  const renamed = runUpdate([seeded], 0, 'company', 'Volt LLC', map);
-  ok(renamed[0].subcontractor_id === 'srv_v',
-    'company edit: renaming the row to another roster sub rebinds it to THAT sub');
-
-  const offRoster = runUpdate([seeded], 0, 'company', 'Some Other Outfit', map);
-  ok(offRoster[0].subcontractor_id === null,
-    'company edit: renaming to a company that is NOT on the roster drops the id — no fabricated binding');
-
-  const cleared = runUpdate([seeded], 0, 'company', '', map);
-  ok(cleared[0].subcontractor_id === null,
-    'company edit: clearing the company drops the id too');
-
-  const caseOnly = runUpdate([seeded], 0, 'company', '  ACME CO ', map);
-  ok(caseOnly[0].subcontractor_id === 'srv_a',
-    'company edit: case-only / whitespace edits still resolve (rosterKey mirrors the backend _roster_key)');
-
-  const other = runUpdate([seeded], 0, 'work_description', 'shoring', map);
-  ok(other[0].subcontractor_id === 'srv_a' && other[0].work_description === 'shoring',
-    'company edit: editing a DIFFERENT field leaves the binding alone');
-
-  ok(renamed[0].activity_id === seeded.activity_id,
-    'company edit: the activity_id is stable across edits — that is the point of it');
+  // A row seeded as Acme carries Acme's roster id. Renaming it to a different
+  // sub while KEEPING that id would be a fabricated binding: the renamed row
+  // would share Acme's photo bucket and be reported against Acme.
+  const renamedRow = { ...seeded, trade: 'Electrical' };
+  ok(fix(renamedRow, 'Volt LLC').subcontractor_id === 'srv_v',
+    'rename: a company that IS on the roster re-binds to its own id');
+  ok(fix(seeded, 'Ghost Co').subcontractor_id === null,
+    'rename: a company that is NOT on the roster drops the binding to null');
+  ok(fix(seeded, '').subcontractor_id === null,
+    'rename: clearing the company clears the binding');
+  ok(fix(seeded, '  acme co  ').subcontractor_id === 'srv_acme1',
+    'rename: a case-and-whitespace-only edit still resolves to the same sub');
+  ok(fix(seeded, 'Volt LLC').activity_id === seeded.activity_id,
+    'rename: the ROW identity survives a company correction');
+  ok(fix(seeded, 'Volt LLC').company_gate === 'Acme Co',
+    'rename: and the gate value is kept alongside it');
 }
 
-// ── 6. A stored row predating both fields still works ────────────────────────
+// ── 5. Legacy rows are not retro-fitted ──────────────────────────────────────
 {
-  const legacy = {
-    crew_id: 'C1', company: 'Acme Co', num_workers: '3',
-    work_description: 'shoring', work_locations: 'cellar', photos: [],
-  };
+  const legacy = { crew_id: 'C1', company: 'Old Co', photos: [] };
   ok(legacy.activity_id === undefined && legacy.subcontractor_id === undefined,
-    'legacy row: genuinely has neither field');
-
-  const map = buildRosterMap(
-    [{ sub_name: 'Acme Co', trade: 'Carpenter', subcontractor_id: 'srv_a' }], rosterKey,
-  );
-  const edited = runUpdate([legacy], 0, 'work_locations', 'roof', map);
-  ok(edited[0].work_locations === 'roof' && edited[0].company === 'Acme Co',
-    'legacy row: still editable — the update path does not require either field');
-  ok(edited[0].activity_id === undefined,
-    'legacy row: nothing is silently back-filled onto a stored compliance record');
+    'legacy: a row stored before these fields existed simply has neither');
+  const ids = M.rosterIdIndex(HEADCOUNT);
+  const edited = M.applyCompanyCorrection(legacy, 'Acme Co', { rosterIds: ids });
+  ok(edited.company === 'Acme Co',
+    'legacy: correcting one still updates the company');
+  // A roster row is identified by (company, TRADE). A legacy row carries no
+  // trade, so there is genuinely nothing to resolve against — Acme Co could be
+  // any of its trades. Null is the honest answer; picking one would be a
+  // guess, and the guess would attach the row to the wrong roster entry and
+  // the wrong photo bucket.
+  ok(edited.subcontractor_id === null,
+    'legacy: a row with no trade resolves to NULL rather than guessing which roster row it is');
+  ok(M.applyCompanyCorrection({ ...legacy, trade: 'Carpenter' }, 'Acme Co',
+    { rosterIds: ids }).subcontractor_id === 'srv_acme1',
+  'legacy: once it has a trade, the same correction binds exactly');
+  ok(edited.activity_id === undefined,
+    'legacy: ...without inventing a row id it never had');
 }
 
-// ── 7. The wiring in the screen source ───────────────────────────────────────
-ok(/activity_id:\s*newActivityId\(\)/.test(emptyActivitySrc),
+// ── 6. The source itself ─────────────────────────────────────────────────────
+const emptyActivitySrc = (() => {
+  const at = modelSrc.indexOf('const EMPTY_ACTIVITY = () => ({');
+  return modelSrc.slice(at, modelSrc.indexOf('});', at));
+})();
+const seedSrc = (() => {
+  const at = modelSrc.indexOf('function buildCrewsFromRoster');
+  return modelSrc.slice(at, modelSrc.indexOf('\nexport function rosterIdIndex', at));
+})();
+
+ok(/activity_id: newActivityId\(\)/.test(emptyActivitySrc),
   'source: EMPTY_ACTIVITY mints its activity_id inline');
-ok(/activity_id:\s*newActivityId\(\)/.test(seedBodySrc),
-  'source: the seed path mints an activity_id per row');
-ok(/subcontractor_id:\s*company\s*\?\s*\(r\.subcontractor_id\s*\|\|\s*null\)\s*:\s*null/.test(seedBodySrc),
-  'source: the seed path ties the roster id to a non-empty company');
-// Comments are stripped: both blocks DOCUMENT the server's `srv_` prefix, and a
-// prose mention is not a mint.
-const noComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-ok(!/srv_/.test(noComments(seedBodySrc)) && !/srv_/.test(noComments(emptyActivitySrc)),
+ok(/\.\.\.EMPTY_ACTIVITY\(\)/.test(seedSrc),
+  'source: the seed path builds every row through EMPTY_ACTIVITY, so each is minted an id');
+ok(/subcontractor_id: rosterIds\.get\(key\) \|\| null/.test(seedSrc),
+  'source: the seed path resolves the roster id or falls to null — no third option');
+
+// The client must never mint anything that could be mistaken for a
+// server-minted roster id.
+ok(!/srv_/.test(noComments(seedSrc)) && !/srv_/.test(noComments(emptyActivitySrc)),
   'source: the client never mints anything that looks like a server roster id');
+ok(/const newActivityId = \(\) => `act_/.test(modelSrc),
+  'source: client-minted ids carry their own `act_` prefix');
 
-// The save path must not drop either field on the way to the server.
-// The base64 re-encode loop is gone - photos go to R2 as they are TAKEN and the
-// document carries only the key - but the rule is the same one: the payload is
-// built by spreading the WHOLE activity and replacing only `photos`, so a field
-// added to a row (activity_id, subcontractor_id) reaches the server without
-// anyone having to remember to list it.
-const saveSpread = /_uploaded\.activities\.map\(\(act\) => \(\{\s*\.\.\.act,\s*photos:/.test(src);
-ok(saveSpread,
-  'source: handleSave spreads the whole activity, so both new fields reach the server');
-
-const draftsSrc = fs.readFileSync(path.join(FRONTEND, 'src', 'utils', 'logbookDrafts.js'), 'utf8');
+// Both fields have to actually REACH the server and the offline draft. Each is
+// carried by a spread of the whole row, so a new field cannot be forgotten.
+ok(/\.\.\.act,\s*[\r\n]\s*photos: \(act\.photos \|\| \[\]\)\.map\(photoForPayload\)/.test(src),
+  'source: the payload spreads the whole activity, so both new fields reach the server');
+const draftsSrc = fs.readFileSync(path.join(__dirname, 'logbookDrafts.js'), 'utf8');
 ok(/\.\.\.a,\s*[\r\n]\s*photos: await Promise\.all/.test(draftsSrc),
   'source: persistActivityPhotos spreads the activity too, so the offline draft keeps both fields');
 

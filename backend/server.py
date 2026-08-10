@@ -16788,9 +16788,37 @@ async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, 
         raise HTTPException(status_code=502, detail="Could not fetch weather data")
 
 @api_router.get("/logbooks/project/{project_id}/checkins-today")
-async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
+async def get_project_checkins_today(project_id: str, date: Optional[str] = None, envelope: bool = False, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get all workers checked in to a project on a given date (for
     auto-populating log books).
+
+    ENVELOPE (`?envelope=1`) — OPT-IN, AND THE DEFAULT IS BYTE-IDENTICAL.
+    Without the flag this returns the bare list it always has, because three
+    screens already consume that shape (osha_log.jsx:98, preshift_signin.jsx:116,
+    toolbox_talk.jsx:170) and none of them should have to change to add a
+    capability they do not use.
+
+    With it, the same rows come back under `workers`, plus what the bare list
+    could never say:
+
+        {"workers": [...], "partial": bool, "degraded_passes": [...],
+         "collapsed": N, "truncated_passes": [...]}
+
+    WHY THIS EXISTS. Each of the three passes below swallows its own failure
+    and contributes nothing, and the bare list cannot distinguish "nobody else
+    was on site" from "a query failed and those men are missing". A CP building
+    a SIGNED log off a short roster would be attesting to a jobsite that did
+    not exist. `partial` is true when any pass degraded, truncated, or dropped
+    a row to the dedupe key; the caller is expected to say so rather than
+    render a short list as if it were complete.
+
+    `collapsed` counts rows dropped by the (name, company) dedupe guard in
+    passes 2 and 3. That guard is what stops a worker present in BOTH the gate
+    and legacy systems from being listed twice, but it cannot tell that case
+    apart from two different men who share a name at one subcontractor — the
+    two id spaces have no join key (WorkerEnrollment carries no worker_id;
+    card_audit.py:272-290). So the drop is COUNTED rather than silently taken,
+    and a non-zero count means the headcount may be short by that many.
 
     Merges two sources so the rollout from the legacy `checkins`
     collection to the new gate-based `sign_ins` + `worker_enrollments`
@@ -16832,6 +16860,12 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
 
     result: List[Dict[str, Any]] = []
     seen_name_keys: set = set()
+    # Roster-integrity accounting for the envelope. Every one of these is a way
+    # the list below can come back SHORT while still looking complete.
+    _degraded: List[str] = []        # a pass raised and contributed nothing
+    _truncated: List[str] = []       # a pass hit its to_list ceiling
+    _collapsed = 0                   # rows dropped by the (name, company) guard
+    _GATE_LIMIT, _LEGACY_LIMIT, _BLOCKED_LIMIT = 1000, 500, 500
 
     # ── PASS 1: New-system gate sign_ins ────────────────────────────────
     try:
@@ -16839,7 +16873,9 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         sign_ins = await db.sign_ins.find({
             "project_id": project_id,
             "timestamp": {"$gte": day_start, "$lt": day_end},
-        }).to_list(1000)
+        }).to_list(_GATE_LIMIT)
+        if len(sign_ins) >= _GATE_LIMIT:
+            _truncated.append("gate")
 
         # Unique worker_enrollment_ids from today's sign_ins
         enrollment_ids = []
@@ -16937,6 +16973,7 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             })
     except Exception as _e:
         logger.warning(f"checkins-today new-system merge failed: {_e!r}")
+        _degraded.append("gate")
 
     # ── PASS 2: Legacy checkins for workers not on the new system ──────
     try:
@@ -16944,9 +16981,12 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "project_id": project_id,
             "check_in_time": {"$gte": day_start, "$lt": day_end},
             "is_deleted": {"$ne": True},
-        }).to_list(500)
+        }).to_list(_LEGACY_LIMIT)
+        if len(legacy) >= _LEGACY_LIMIT:
+            _truncated.append("legacy")
     except Exception:
         legacy = []
+        _degraded.append("legacy")
 
     seen_legacy_wids: set = set()
     for c in legacy:
@@ -16959,6 +16999,11 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
         name_key = (name.lower(), company.lower())
         if name_key in seen_name_keys:
+            # Usually correct: the same man, already listed from the gate pass.
+            # But it is ALSO what happens to a second, different worker who
+            # shares a name with him at the same sub, and nothing on either row
+            # can tell the two cases apart. Counted, so the caller can warn.
+            _collapsed += 1
             continue   # already represented by a gate sign-in
         seen_name_keys.add(name_key)
         result.append({
@@ -17021,9 +17066,12 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "alert_type": "CERT_BLOCK",
             "project_id": project_id,
             "created_at": {"$gte": day_start, "$lt": day_end},
-        }).to_list(500)
+        }).to_list(_BLOCKED_LIMIT)
+        if len(blocked_alerts) >= _BLOCKED_LIMIT:
+            _truncated.append("blocked")
     except Exception:
         blocked_alerts = []
+        _degraded.append("blocked")
     seen_blocked_wids: set = set()
     for a in blocked_alerts:
         wid = a.get("worker_id")
@@ -17035,6 +17083,9 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         company = (a.get("worker_company") or "").strip()
         name_key = (name.lower(), company.lower())
         if name_key in seen_name_keys:
+            # Same ambiguity as pass 2: normally a worker who was blocked then
+            # cleared, but indistinguishable from a same-named second man.
+            _collapsed += 1
             continue  # already cleared/represented today — never double-list
         seen_name_keys.add(name_key)
         result.append({
@@ -17066,7 +17117,18 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "cert_warnings": [],
         })
 
-    return result
+    if not envelope:
+        # The shape three screens already parse. Unchanged, deliberately.
+        return result
+    return {
+        "workers": result,
+        # ONE boolean the caller can gate a warning on, so a new degradation
+        # mode added here starts warning without the client changing.
+        "partial": bool(_degraded or _truncated or _collapsed),
+        "degraded_passes": _degraded,
+        "truncated_passes": _truncated,
+        "collapsed": _collapsed,
+    }
 
 
 @api_router.get("/projects/{project_id}/daily-headcount")

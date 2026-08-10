@@ -254,8 +254,76 @@ export const borderRadius = {
   full: 9999,
 };
 
+// ─── Outdoor palette — deliberately NOT theme-aware ──────────────────────────
+//
+// The CP fills a logbook standing outside, often in direct sun, on his own
+// phone with whatever theme he happens to have set. Legibility there is a
+// function of contrast against sunlight, not of a preference — so these values
+// do not flip with `applyTheme`. A dark card in direct sun is unreadable no
+// matter how deliberately it was chosen.
+//
+// This is the ONE place in the app that opts out of the theme, and it opts out
+// for a stated physical reason. It is still a token group: screens consume
+// these names, never the hex.
+//
+// Contrast ratios against `surface` (#ffffff), sRGB:
+//   text     #111827  → 16.1:1   (WCAG AAA at every size)
+//   textSoft #374151  →  9.7:1   (AAA)
+//   textDim  #4b5563  →  7.6:1   (AAA)  — the floor; nothing dimmer is used
+// The STATE tints are here too, rather than reused from semanticColors. Those
+// are live getters over the mutable theme palette and are built as low-alpha
+// washes intended to sit on a dark glass surface; over white in sunlight they
+// wash out to nearly nothing. A warning a CP cannot see is not a warning, so
+// this group carries its own opaque, high-contrast versions.
+export const outdoor = {
+  surface: '#ffffff',
+  surfaceSunk: '#f3f4f6',
+  surfaceSelected: '#1d4ed8',
+  text: '#111827',
+  textSoft: '#374151',
+  textDim: '#4b5563',
+  textOnSelected: '#ffffff',
+  line: '#d1d5db',
+  lineStrong: '#9ca3af',
+
+  warnBg: '#fef3c7',
+  warnBorder: '#d97706',
+  warn: '#92400e',
+  dangerBg: '#fee2e2',
+  danger: '#b91c1c',
+  okBg: '#dcfce7',
+  okBorder: '#15803d',
+  ok: '#166534',
+
+  // A real modal backdrop. semantic.neutralBg is rgba(148,163,184,0.18) — a
+  // tint, not a scrim; a modal over it would read as part of the page.
+  scrim: 'rgba(17, 24, 39, 0.72)',
+};
+
+// ─── Touch targets ───────────────────────────────────────────────────────────
+//
+// The CP surfaces are used OUTDOORS, GLOVED, ONE-HANDED, by people who are
+// older and not technical. 44 is Apple's accessibility floor for a fingertip on
+// a clean screen indoors; none of those conditions hold on a jobsite. 56 is the
+// floor here and it is a FLOOR, not a size — `min` is applied via minHeight /
+// minWidth so a control may be larger but can never be smaller.
+//
+// `primary` is the one action a step is about. It is deliberately much bigger
+// than the floor: the rule is that a ten-year-old names the primary action
+// within three seconds, and on a phone that is won by size before it is won by
+// wording.
+export const touchTarget = {
+  min: 56,
+  primary: 72,
+};
+
 export const typography = {
-  sizes: { xs: 11, sm: 14, md: 16, lg: 18, xl: 24 },
+  // 12 and 13 are the two most-used sizes across the CP screens (86
+  // occurrences between them) and neither had a token, which is why those
+  // screens carry literals. They are named here so the stepper does not have
+  // to invent them again: `fine` is sub-label text, `dense` is body text in a
+  // packed row. `xl` is unchanged and still the largest.
+  sizes: { fine: 12, dense: 13, xs: 11, sm: 14, md: 16, lg: 18, xl: 24 },
   hero:  { fontSize: 48, fontWeight: '200', letterSpacing: -1 },
   h1:    { fontSize: 36, fontWeight: '300', letterSpacing: -0.5 },
   h2:    { fontSize: 24, fontWeight: '400' },
@@ -266,4 +334,4 @@ export const typography = {
   stat:  { fontSize: 36, fontWeight: '200' },
 };
 
-export default { colors, spacing, borderRadius, typography };
+export default { colors, spacing, borderRadius, typography, touchTarget, outdoor };
