@@ -138,6 +138,10 @@ def rank_activities(
     nodes = [n for n in g.nodes if _branch_allowed(n, system)]
     order: Dict[str, int] = {n.id: i for i, n in enumerate(nodes)}
     label_of: Dict[str, str] = {n.id: getattr(n, "scope", n.id) for n in nodes}
+    # The node's own trade, carried onto the chip. An InspectionGate has no
+    # `trade` attribute at all, so getattr defaults to None rather than
+    # inventing one — a gate is not a trade's work.
+    trade_of: Dict[str, object] = {n.id: getattr(n, "trade", None) for n in nodes}
     allowed = set(order)
     succ = successors_by_id(g)
 
@@ -180,8 +184,12 @@ def rank_activities(
     chips: List[ActivityChip] = []
 
     def _emit(chip_id: str, label: str, band: str) -> None:
+        # trade is looked up, never defaulted to a string: a chip with no node
+        # behind it ("Other", a remembered free-text entry) gets None, which
+        # says "there is no rule row to read a trade from" rather than implying
+        # one was found and was blank.
         chips.append(ActivityChip(id=chip_id, label=label, rank=len(chips),
-                                  band=band))
+                                  band=band, trade=trade_of.get(chip_id)))
 
     for i in suggested_ids:
         _emit(i, label_of[i], "suggested")

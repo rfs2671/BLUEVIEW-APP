@@ -55,7 +55,7 @@ const noComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*
 const M = new Function(`
   ${modelSrc.replace(/^export default [\s\S]*$/m, '').replace(/^export (const|function|let) /gm, '$1 ')}
   return { EMPTY_ACTIVITY, newActivityId, rosterKey, buildCrewsFromRoster,
-           rosterIdIndex, applyCompanyCorrection, isUnboundCrew };
+           rosterIdIndex, resolveRosterId, isUnboundCrew };
 `)();
 
 // ── 1. EMPTY_ACTIVITY ────────────────────────────────────────────────────────
@@ -162,51 +162,46 @@ const worker = (over) => ({
   ok(M.rosterIdIndex(null).size === 0, 'roster map: a failed headcount read yields an empty map');
 }
 
-// ── 4. Correcting the company re-resolves the binding ────────────────────────
+// ── 4. The one surviving binding path: a hand-added crew ────────────────────
+//
+// `applyCompanyCorrection` is GONE — assigning a company or trade does not
+// belong on the daily log. What still has to resolve is the crew the CP adds
+// because the gate missed it, and the rule is unchanged: bind only on an exact
+// normalized (company, trade) match, and answer NULL whenever it is not
+// certain. A row carrying one sub's id under another's name would share that
+// sub's photo bucket and be reported against them.
 {
   const ids = M.rosterIdIndex(HEADCOUNT);
-  const seeded = M.buildCrewsFromRoster([worker()], HEADCOUNT)[0];
-  const fix = (row, name) => M.applyCompanyCorrection(row, name, { rosterIds: ids });
-
-  // A row seeded as Acme carries Acme's roster id. Renaming it to a different
-  // sub while KEEPING that id would be a fabricated binding: the renamed row
-  // would share Acme's photo bucket and be reported against Acme.
-  const renamedRow = { ...seeded, trade: 'Electrical' };
-  ok(fix(renamedRow, 'Volt LLC').subcontractor_id === 'srv_v',
-    'rename: a company that IS on the roster re-binds to its own id');
-  ok(fix(seeded, 'Ghost Co').subcontractor_id === null,
-    'rename: a company that is NOT on the roster drops the binding to null');
-  ok(fix(seeded, '').subcontractor_id === null,
-    'rename: clearing the company clears the binding');
-  ok(fix(seeded, '  acme co  ').subcontractor_id === 'srv_acme1',
-    'rename: a case-and-whitespace-only edit still resolves to the same sub');
-  ok(fix(seeded, 'Volt LLC').activity_id === seeded.activity_id,
-    'rename: the ROW identity survives a company correction');
-  ok(fix(seeded, 'Volt LLC').company_gate === 'Acme Co',
-    'rename: and the gate value is kept alongside it');
+  ok(M.resolveRosterId('Volt LLC', 'Electrical', ids) === 'srv_v',
+    'add-crew: a company that IS on the roster binds to its own id');
+  ok(M.resolveRosterId('Ghost Co', 'Carpenter', ids) === null,
+    'add-crew: a company that is NOT on the roster resolves to null');
+  ok(M.resolveRosterId('', 'Carpenter', ids) === null,
+    'add-crew: no company means no binding');
+  ok(M.resolveRosterId('  acme co  ', 'CARPENTER', ids) === 'srv_acme1',
+    'add-crew: case and whitespace still resolve to the same sub');
+  ok(M.resolveRosterId('Acme Co', 'Electrical', ids) === null,
+    'add-crew: right company, WRONG trade is a different roster row — null, not a guess');
+  ok(M.resolveRosterId('Acme Co', 'Carpenter', null) === null,
+    'add-crew: no roster at all resolves to null and does not throw');
 }
 
-// ── 5. Legacy rows are not retro-fitted ──────────────────────────────────────
+// ── 5. Gate provenance survives; the correction trail does not ──────────────
 {
+  const seeded = M.buildCrewsFromRoster([worker()], HEADCOUNT)[0];
+  ok(seeded.company_gate === 'Acme Co',
+    'company_gate records what the GATE said, so the two records can be compared');
+  ok(!('company_corrected_by' in seeded) && !('company_corrected_at' in seeded),
+    'the dead correction-trail keys are gone from the seeded row');
+  const hand = M.EMPTY_ACTIVITY();
+  ok(hand.company_gate === null,
+    'a hand-added row has no gate value and does not invent one');
+  ok(!('company_corrected_by' in hand) && !('company_corrected_at' in hand),
+    'nor does a blank row carry the dead keys');
+
   const legacy = { crew_id: 'C1', company: 'Old Co', photos: [] };
   ok(legacy.activity_id === undefined && legacy.subcontractor_id === undefined,
     'legacy: a row stored before these fields existed simply has neither');
-  const ids = M.rosterIdIndex(HEADCOUNT);
-  const edited = M.applyCompanyCorrection(legacy, 'Acme Co', { rosterIds: ids });
-  ok(edited.company === 'Acme Co',
-    'legacy: correcting one still updates the company');
-  // A roster row is identified by (company, TRADE). A legacy row carries no
-  // trade, so there is genuinely nothing to resolve against — Acme Co could be
-  // any of its trades. Null is the honest answer; picking one would be a
-  // guess, and the guess would attach the row to the wrong roster entry and
-  // the wrong photo bucket.
-  ok(edited.subcontractor_id === null,
-    'legacy: a row with no trade resolves to NULL rather than guessing which roster row it is');
-  ok(M.applyCompanyCorrection({ ...legacy, trade: 'Carpenter' }, 'Acme Co',
-    { rosterIds: ids }).subcontractor_id === 'srv_acme1',
-  'legacy: once it has a trade, the same correction binds exactly');
-  ok(edited.activity_id === undefined,
-    'legacy: ...without inventing a row id it never had');
 }
 
 // ── 6. The source itself ─────────────────────────────────────────────────────

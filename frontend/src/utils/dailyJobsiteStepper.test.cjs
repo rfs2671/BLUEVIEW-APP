@@ -300,18 +300,80 @@ ok(/rosterPartialTitle|rosterPartialBody/.test(src), 'with copy that says what i
 ok(/rosterCollapsed > 0/.test(src),
   'a same-name collapse is surfaced too — it means the headcount may be short');
 
-// ═══ GATE PROVENANCE AND THE CORRECTION TRAIL ════════════════════════════════
-console.log('\n── Gate provenance, and corrections that keep both values ──');
+// ═══ GATE PROVENANCE — AND NO CORRECTION AFFORDANCE ══════════════════════════
+console.log('\n── Gate provenance, and no company/trade assignment on this log ──');
 
 ok(/a\.gate_sourced && \(/.test(src), 'a gate-sourced crew is visibly marked as such');
 ok(/fromGate|gateLocked/.test(src), 'with copy naming the gate as the source');
-ok(/applyCompanyCorrection/.test(src), 'the correction goes through the shared rule');
-ok(/company_gate/.test(src) && /correctedFrom/.test(src),
-  'and the ORIGINAL gate value is displayed alongside the correction');
 ok(/gate_sourced: false/.test(src),
   'a hand-added crew is explicitly NOT marked gate-sourced');
 ok(/isUnboundCrew\(a\)/.test(src) && /unboundCrew/.test(src),
   'a crew off the roster is saved and visibly flagged, never blocked');
+
+// ASSIGNING A COMPANY OR TRADE DOES NOT BELONG HERE. A worker sets his own at
+// check-in; a CP who has to fix one does it during safety orientation. The
+// affordance is asserted ABSENT so it cannot drift back onto the daily log.
+ok(!/applyCompanyCorrection/.test(code),
+  'the company-correction rule is gone from the screen entirely');
+ok(!/correctCompany/.test(code),
+  'no "Wrong company?" affordance is rendered on Step 1');
+ok(!/setCorrecting|commitCorrection/.test(code),
+  'and no correction state or handler survives');
+ok(!/company_corrected_by|company_corrected_at/.test(code + stripComments(model)),
+  'the dead correction-trail keys are gone from the row');
+// Provenance itself STAYS — it is set at seed time and is not a correction.
+ok(/company_gate/.test(stripComments(model)),
+  'company_gate is kept: it records what the gate said, independent of any edit');
+ok(/correctedFrom/.test(src),
+  'and it is still shown when it differs from the company of record');
+
+// ═══ WEATHER IS OBSERVED, NOT ANSWERED ═══════════════════════════════════════
+console.log('\n── Weather: read-only, and never blank on a signed record ──');
+
+ok(/settleFetch\(\(\) => weatherAPI\.getCurrent/.test(code),
+  'the weather fetch goes through the app-wide settleFetch, not a bare try/catch');
+ok(/setWeatherFetchState\(r\.status\)/.test(code),
+  'the outcome is recorded on EVERY result, success included');
+ok(/weather_fetch_state: weatherFetchState/.test(code),
+  'and it rides on the record, so a reader can tell a failure from an unasked question');
+
+// The manual chooser is GONE. With it gone, a silent failure would leave the CP
+// unable to fill the field at all — which is why the failure state came first.
+const step4 = code.slice(code.indexOf('const renderStep4'), code.indexOf('const renderStep5'));
+ok(!/WEATHER_OPTIONS\.map/.test(step4),
+  'Step 4 no longer renders weather as a tappable chooser');
+ok(!/setWeather\(weather === w/.test(code),
+  'nothing on the screen sets weather by hand');
+ok(/weatherUnavailableTitle/.test(step4),
+  'a failed fetch is STATED on the step, not left looking unanswered');
+ok(/weatherUnavailableOffline/.test(step4),
+  'and offline is distinguished from a server that answered badly');
+
+const step5w = code.slice(code.indexOf('const renderStep5'));
+ok(/weatherFetchState === 'ok' && weather/.test(step5w),
+  'the review step shows weather only when it was actually retrieved');
+ok(/weatherUnavailableTitle/.test(step5w),
+  '...and says so plainly when it was not');
+
+// ═══ THE GENERAL DESCRIPTION IS DRAFTED, NOT WRITTEN ═════════════════════════
+console.log('\n── The drafted general description ──');
+
+ok(/deriveGeneralDescription\(activities, chipTrades\)/.test(code),
+  'the draft is composed from the chips the CP tapped, via the shared rule');
+ok(/if \(c\.trade\) m\.set\(c\.id, c\.trade\)/.test(code),
+  'using the trade newly carried on ActivityChip');
+ok(/deriveGeneralDescription/.test(stripComments(model)),
+  'and the rule itself lives in the model, where a test can execute it');
+
+// It may only be drafted onto a step he is looking at, and never over his words.
+ok(/if \(descriptionTouched\) return;/.test(code),
+  'once the CP edits it, the app never overwrites his words again');
+ok(/if \(step !== TOTAL_STEPS\) return;/.test(code),
+  'and it is only drafted onto the review step, where he can see it');
+ok(step5w.includes('setDescriptionTouched(true); setGeneralDescription(v);'),
+  'the drafted line is EDITABLE in review — he is signing it');
+ok(!/fieldGeneralDescription/.test(step4),
+  'and it no longer sits on Step 4, away from the record it summarises');
 
 // ═══ OBSERVATIONS ════════════════════════════════════════════════════════════
 console.log('\n── Observations ──');

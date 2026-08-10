@@ -13,7 +13,7 @@ Edge types (see engine.py for how each is used):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, List, Literal, Union
+from typing import Annotated, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -93,6 +93,29 @@ class ActivityChip(BaseModel):
     # unconstructible — a caller that tries selected=True gets a
     # ValidationError, so "rank order only" cannot be violated by accident.
     selected: Literal[False] = False
+    # The WorkPackage's own `trade`, carried through so the client has a
+    # grouping signal. The chip list previously exposed none at all, which left
+    # the Daily Jobsite Log unable to summarise a day's work as anything but a
+    # list of individual activities.
+    #
+    # DELIBERATELY `trade` AND NOT A PHASE. A semantic phase ("foundation" vs
+    # "superstructure") is domain judgment over 86 nodes, and this graph's own
+    # header says RULE CONTENTS PENDING NYC DOB DOMAIN-EXPERT SIGN-OFF — so
+    # nobody here gets to decide it. `trade` is already on every node, was set
+    # by whoever authored the approved rules, and is therefore reportable
+    # without inventing anything.
+    #
+    # None ONLY for a chip with no node behind it — a remembered free-text
+    # "other:<label>" entry. There is no rule row to read a trade from, and an
+    # empty string would imply one was looked up and found blank.
+    #
+    # Note that the "other" escape hatch IS a real node (sequence_rules_v1
+    # declares it with trade "gc"), so it reports "gc" like any other. That is
+    # accurate about the graph but meaningless as a summary of the day, because
+    # the chip stands for whatever the CP typed — so a caller deriving prose
+    # from trades must exclude it. It is excluded in
+    # frontend/src/utils/dailyJobsiteModel.js (deriveGeneralDescription).
+    trade: Optional[str] = None
 
 
 class ActivityRanking(BaseModel):
