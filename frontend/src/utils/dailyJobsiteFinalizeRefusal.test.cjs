@@ -241,6 +241,11 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
     _key: KEY,
     observations: [],
     incompleteObservations: () => [],
+    // The inspection gate is the observation gate's twin and runs beside it:
+    // a fail with no note sends the CP back to Step 4 rather than refusing at
+    // the signature. Satisfied here so the finalize paths below are reachable.
+    checklistItems: {},
+    incompleteInspections: () => [],
     setStep: () => {},
     // Real English copy, so the success-toast assertions ("back online",
     // "amendment") test the shipped sentence rather than a stub.

@@ -12862,7 +12862,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         equip = data.get("equipment_on_site", {})
         equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
         chk = data.get("checklist_items", {})
-        check_list = ", ".join(k.replace("_", " ").title() for k, v in chk.items() if v)
+        check_list = _display_inspections(chk)
         
         # Observations
         obs_html = ""
@@ -17648,6 +17648,86 @@ def _display_sub_company(name):
 # and in the PDF.
 NOT_RECORDED = "— Not recorded"
 
+# The nine daily inspections, in the order the CP walks them. Order lives here
+# so the PDF does not print them in whatever order a dict happened to be built.
+INSPECTION_ORDER = [
+    "street_frontage", "fire_safety", "perimeter_fence", "fall_protections",
+    "neighbors_property", "license_spot_check", "plans", "permits",
+    "other_checklist",
+]
+
+
+def _inspection_label(key: str) -> str:
+    """`fall_protections` -> `Fall Protections`, matching the device."""
+    return str(key or "").replace("_", " ").title()
+
+
+def _display_inspections(chk) -> str:
+    """Render the daily inspections for a filed document.
+
+    A FAILED INSPECTION MUST NOT PRINT AS A PASSED ONE. Both renderers used to
+    do `", ".join(k for k, v in chk.items() if v)`, which was right while the
+    value was a tick. The value is now {result, note}, and a dict is truthy —
+    so that same line would have listed a FAILED item in the inspected list,
+    identically to a passed one, and dropped the note entirely. On an NYC DOB
+    3301-02 that is a document stating an inspection was fine when the CP
+    recorded that it was not.
+
+    THREE STATES, AND THEY ARE DIFFERENT:
+      pass        walked, and fine
+      fail        walked, and not fine — the note prints, always
+      not walked  no result. NOT a pass. Named, so its absence is visible
+                  rather than looking like an item that was never on the list.
+
+    LEGACY LOGS RENDER EXACTLY AS THEY DID. A log filed while this was a
+    tick-chip has {key: True} and no result anywhere in it. It keeps printing
+    as the same plain comma list — an already-filed document does not change
+    because the app later learned to record more.
+    """
+    import html as _html
+
+    if not isinstance(chk, dict) or not chk:
+        return ""
+
+    rows = [(k, chk[k]) for k in INSPECTION_ORDER if k in chk]
+    rows += [(k, v) for k, v in chk.items() if k not in INSPECTION_ORDER]
+
+    if all(not isinstance(v, dict) for _k, v in rows):
+        # Legacy tick shape, byte-identical to what it printed before.
+        return ", ".join(_inspection_label(k) for k, v in rows if v)
+
+    passed, failed, unwalked = [], [], []
+    for key, value in rows:
+        label = _inspection_label(key)
+        if isinstance(value, dict):
+            result = value.get("result")
+            note = str(value.get("note") or "").strip()
+            if result == "fail":
+                failed.append((label, note))
+            elif result == "pass":
+                passed.append(label)
+            else:
+                unwalked.append(label)
+        elif value:
+            # A tick sitting in an otherwise-upgraded log. It says the CP
+            # looked and nothing about what he found, so it is not a pass.
+            unwalked.append(label)
+
+    out = []
+    if passed:
+        out.append(f'Passed: {", ".join(passed)}')
+    for label, note in failed:
+        # The note is escaped. Everything around it in these renderers is not,
+        # which is a pre-existing hole this change does not widen.
+        detail = _html.escape(note) if note else NOT_RECORDED
+        out.append(
+            f'<span style="color:#b91c1c;"><strong>FAILED &mdash; {label}:</strong> '
+            f'{detail}</span>'
+        )
+    if unwalked:
+        out.append(f'Not inspected: {", ".join(unwalked)}')
+    return "<br />".join(out)
+
 
 def _display_weather(data):
     """Render weather for a report or PDF. NEVER a blank.
@@ -17967,7 +18047,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         equip = d.get("equipment_on_site", {})
         equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
         chk = d.get("checklist_items", {})
-        check_list = ", ".join(k.replace("_", " ").title() for k, v in chk.items() if v)
+        check_list = _display_inspections(chk)
 
         obs_html = ""
         obs_rows = ""

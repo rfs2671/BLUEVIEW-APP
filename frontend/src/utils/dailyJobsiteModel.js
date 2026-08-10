@@ -373,6 +373,63 @@ export const incompleteObservations = (list) => (Array.isArray(list) ? list : []
   .map((o, i) => (observationComplete(o) ? -1 : i))
   .filter((i) => i >= 0);
 
+/* ── THE DAILY INSPECTIONS ─────────────────────────────────────────────────
+ *
+ * The nine items the CP walks. They used to be tick-chips under "Items
+ * Inspected", which could only ever record THAT he looked — never what he
+ * found. A tick beside "Fall Protections" on a filed DOB document reads as
+ * "fall protections are fine", and there was no way for it to say otherwise.
+ *
+ * The row is therefore {result, note}:
+ *
+ *   result  'pass' | 'fail' | null   null means NOT WALKED, which is not the
+ *                                    same as passed and must never render as
+ *                                    one.
+ *   note    string                   REQUIRED on a fail. A failed inspection
+ *                                    with no note is the same empty record the
+ *                                    tick was.
+ *
+ * NOT_WALKED IS A REAL STATE. The CP is not forced to walk all nine — the
+ * gate is only that a fail carries its note. An unwalked item prints as not
+ * inspected rather than being quietly dropped into the passed list.
+ */
+export const INSPECTION_PASS = 'pass';
+export const INSPECTION_FAIL = 'fail';
+
+export const EMPTY_INSPECTION = () => ({ result: null, note: '' });
+
+/** One item's row, whatever shape the stored log used. See migrateChecklist. */
+export const inspectionRow = (items, key) => {
+  const row = (items || {})[key];
+  if (row && typeof row === 'object') {
+    return {
+      result: row.result === INSPECTION_PASS || row.result === INSPECTION_FAIL
+        ? row.result : null,
+      note: String(row.note || ''),
+    };
+  }
+  // LEGACY: a log filed while this was a tick-chip. `true` meant "inspected"
+  // and carried no result, so it is reported as walked-with-no-result rather
+  // than being upgraded to a pass nobody recorded.
+  if (row === true) return { result: null, note: '', legacy_ticked: true };
+  return EMPTY_INSPECTION();
+};
+
+/**
+ * A fail must say what failed. Nothing else is required — an unwalked item is
+ * allowed, and a pass needs no note.
+ */
+export const inspectionComplete = (row) => {
+  const r = inspectionRow({ k: row }, 'k');
+  if (r.result !== INSPECTION_FAIL) return true;
+  return Boolean(String(r.note || '').trim());
+};
+
+/** Which inspection keys block the sign step. Keys, not indexes: the nine are
+ *  a fixed named set, and an index would silently renumber if one is added. */
+export const incompleteInspections = (items) => Object.keys(items || {})
+  .filter((k) => !inspectionComplete((items || {})[k]));
+
 /**
  * Display a YYYY-MM-DD without a timezone touching it.
  *
@@ -422,7 +479,11 @@ export function stepComplete(step, state) {
         && work.every((a) => String(a.work_description || '').trim());
     }
     case 3: return incompleteObservations(state?.observations).length === 0;
-    case 4: return Boolean(state?.weather);
+    // Step 4 is the nine daily inspections. Weather moved to Step 1, where it
+    // belongs with the other observed facts about the day; it was never
+    // something Step 4 asked the CP for, so a fetch failure it could not fix
+    // used to leave this step permanently marked incomplete.
+    case 4: return incompleteInspections(state?.checklistItems).length === 0;
     case 5: return Boolean(state?.cpSignature);
     default: return false;
   }
@@ -447,6 +508,12 @@ export default {
   isUnboundCrew,
   observationComplete,
   incompleteObservations,
+  INSPECTION_PASS,
+  INSPECTION_FAIL,
+  EMPTY_INSPECTION,
+  inspectionRow,
+  inspectionComplete,
+  incompleteInspections,
   formatLogDate,
   formatCheckInTime,
   stepComplete,

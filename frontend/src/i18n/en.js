@@ -141,9 +141,9 @@ export default {
     sectionProject: 'Project Information',
     sectionActivities: 'Activity Details',
     sectionEquipment: 'Equipment on Site',
-    sectionInspected: 'Items Inspected',
+    sectionInspected: 'Daily inspections',
     sectionObservations: 'Safety Observations / Violations',
-    sectionVisitors: 'Visitors / Deliveries',
+    sectionVisitors: 'Visitors / Deliveries / Inspections',
     sectionSignOff: 'Competent Person Sign-Off',
 
     fieldAddress: 'Address',
@@ -203,11 +203,25 @@ export default {
     cancel: 'Cancel',
     save: 'Save',
 
-    step1Title: 'Who was here',
+    step1Title: 'What was on site',
     step2Title: 'What each crew did',
     step3Title: 'Safety observations',
-    step4Title: 'Site conditions',
+    step4Title: 'Daily inspections walked',
     step5Title: 'Review and sign',
+
+    // Step 4 — the nine items, walked. A tick could only say the CP LOOKED;
+    // on a filed 3301-02 that reads as "this is fine", with no way to say
+    // otherwise. Pass, fail, or not walked — and a fail says what failed.
+    inspectionsHint: 'Tap Pass or Fail for each. Leave an item blank if you did not walk it.',
+    inspectionPass: 'Pass',
+    inspectionFail: 'Fail',
+    inspectionNoteRequired: 'What failed?',
+    phInspectionNote: 'What you found, and where',
+    inspectionNoteMissing: 'A failed inspection has to say what failed.',
+    inspectionLegacyTicked: 'Ticked on an earlier version of this form, which recorded no result.',
+    reviewInspectionsNone: 'None walked',
+    reviewInspectionsNotWalked: 'Not inspected',
+    reviewInspectionsPassed: 'Passed',
 
     // Step 1 — the gate roster.
     // "Locked" has to read as PROVENANCE, not as a refusal. The CP is not

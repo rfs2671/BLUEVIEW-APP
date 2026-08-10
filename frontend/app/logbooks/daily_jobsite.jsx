@@ -86,6 +86,7 @@ import {
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
   isUnassignedWorkerRow, workRows,
+  INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   deriveGeneralDescription,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
   rosterKey,
@@ -586,7 +587,27 @@ export default function DailyJobsiteLog() {
   );
 
   const toggleEquipment = (key) => setEquipmentOnSite((p) => ({ ...p, [key]: !p[key] }));
-  const toggleChecklist = (key) => setChecklistItems((p) => ({ ...p, [key]: !p[key] }));
+
+  /**
+   * Set one inspection's result. Tapping the result it already holds clears
+   * it back to NOT WALKED — the CP must be able to undo a mis-tap, and there
+   * is no third chip to mean "actually I did not walk this".
+   *
+   * The note SURVIVES a result change. A CP who taps Pass by mistake after
+   * typing what he found must not lose the typing; and a note under a Pass is
+   * harmless, because only a fail's note is printed as a failure.
+   */
+  const setInspection = (key, result) => setChecklistItems((p) => {
+    const row = inspectionRow(p, key);
+    return {
+      ...p,
+      [key]: { result: row.result === result ? null : result, note: row.note },
+    };
+  });
+
+  const setInspectionNote = (key, note) => setChecklistItems((p) => ({
+    ...p, [key]: { ...inspectionRow(p, key), note },
+  }));
 
   // Chip labels for composing the sentence the PDF prints.
   const allChips = useMemo(
@@ -1095,6 +1116,16 @@ export default function DailyJobsiteLog() {
       toast.warning(t('sectionObservations'), t('observationRemedyMissing'));
       return;
     }
+    // A FAILED INSPECTION WITHOUT ITS NOTE IS THE EMPTY RECORD THE TICK WAS.
+    // Same shape as the observation gate above: send him back to the step
+    // that holds it rather than refusing at the signature with no route to a
+    // fix. Only a fail blocks — an item he did not walk is a real answer.
+    const badInspections = incompleteInspections(checklistItems);
+    if (badInspections.length > 0) {
+      setStep(4);
+      toast.warning(t('sectionInspected'), t('inspectionNoteMissing'));
+      return;
+    }
     setSigning(true);
     try {
       const savedId = await persistAndPush('submitted');
@@ -1278,6 +1309,53 @@ export default function DailyJobsiteLog() {
         <Plus size={20} strokeWidth={2} color={outdoor.text} />
         <Text style={s.secondaryBtnText}>{t('addCrew')}</Text>
       </Pressable>
+
+      {/* A HOIST BEING PRESENT IS THE SAME KIND OF FACT AS A MAN BEING
+          PRESENT, so equipment is answered here with the crews rather than on
+          a conditions step. Equipment being ON site and equipment being
+          INSPECTED are different statements and are not merged: the
+          inspections are Step 4.
+
+          The key stays `equipment_on_site` and the value stays a plain
+          tick. Both PDF renderers read it, and the section goes blank on the
+          filed document if either changes. */}
+      <Text style={s.question}>{t('sectionEquipment')}</Text>
+      <View style={s.chipWrap}>
+        {EQUIPMENT_ITEMS.map((it) => (
+          <Chip
+            key={it.key} label={it.label} selected={!!equipmentOnSite[it.key]}
+            onPress={() => toggleEquipment(it.key)}
+          />
+        ))}
+      </View>
+
+      {/* READ-ONLY. Weather is observed and fetched, never chosen: the CP is
+          reporting what the sky did, and a tappable list invites him to record
+          what he remembers rather than what was measured. When the fetch
+          failed, the failure is shown — it is never left looking unanswered. */}
+      <Text style={s.question}>{t('fieldWeather')}</Text>
+      {weatherLoading ? (
+        <ActivityIndicator size="small" color={outdoor.textDim} />
+      ) : weatherFetchState === 'ok' && weather ? (
+        <View style={s.readOnlyValue}>
+          <Text style={s.readOnlyText}>
+            {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')}
+          </Text>
+          <Text style={s.noteText}>{t('weatherAutoNote')}</Text>
+        </View>
+      ) : (
+        <Card s={s} style={s.cardWarn}>
+          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
+          <View style={s.warnBody}>
+            <Text style={s.warnTitle}>{t('weatherUnavailableTitle')}</Text>
+            <Text style={s.warnText}>
+              {weatherFetchState === 'offline'
+                ? t('weatherUnavailableOffline')
+                : t('weatherUnavailableBody')}
+            </Text>
+          </View>
+        </Card>
+      )}
     </View>
   );
 
@@ -1576,62 +1654,11 @@ export default function DailyJobsiteLog() {
         <Plus size={20} strokeWidth={2} color={outdoor.text} />
         <Text style={s.secondaryBtnText}>{t('addObservation')}</Text>
       </Pressable>
-    </View>
-  );
 
-  // ── STEP 4 — visitors, deliveries, conditions ─────────────────────────
-  const renderStep4 = () => (
-    <View>
-      <StepHeader title={t('step4Title')} />
-
-      {/* READ-ONLY. Weather is observed and fetched, never chosen: the CP is
-          reporting what the sky did, and a tappable list invites him to record
-          what he remembers rather than what was measured. When the fetch
-          failed, the failure is shown — it is never left looking unanswered. */}
-      <Text style={s.question}>{t('fieldWeather')}</Text>
-      {weatherLoading ? (
-        <ActivityIndicator size="small" color={outdoor.textDim} />
-      ) : weatherFetchState === 'ok' && weather ? (
-        <View style={s.readOnlyValue}>
-          <Text style={s.readOnlyText}>
-            {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')}
-          </Text>
-          <Text style={s.noteText}>{t('weatherAutoNote')}</Text>
-        </View>
-      ) : (
-        <Card s={s} style={s.cardWarn}>
-          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
-          <View style={s.warnBody}>
-            <Text style={s.warnTitle}>{t('weatherUnavailableTitle')}</Text>
-            <Text style={s.warnText}>
-              {weatherFetchState === 'offline'
-                ? t('weatherUnavailableOffline')
-                : t('weatherUnavailableBody')}
-            </Text>
-          </View>
-        </Card>
-      )}
-
-      <Text style={s.question}>{t('sectionEquipment')}</Text>
-      <View style={s.chipWrap}>
-        {EQUIPMENT_ITEMS.map((it) => (
-          <Chip
-            key={it.key} label={it.label} selected={!!equipmentOnSite[it.key]}
-            onPress={() => toggleEquipment(it.key)}
-          />
-        ))}
-      </View>
-
-      <Text style={s.question}>{t('sectionInspected')}</Text>
-      <View style={s.chipWrap}>
-        {CHECKLIST_ITEMS.map((it) => (
-          <Chip
-            key={it.key} label={it.label} selected={!!checklistItems[it.key]}
-            onPress={() => toggleChecklist(it.key)}
-          />
-        ))}
-      </View>
-
+      {/* Who came onto the site who was not working on it — a delivery, a
+          visitor, or an INSPECTOR turning up. An inspector's visit belongs
+          here, with the other arrivals; the nine items the CP walks himself
+          are Step 4, and they are a different statement. Key unchanged. */}
       <Text style={s.question}>{t('sectionVisitors')}</Text>
       <TextInput
         style={s.input}
@@ -1641,7 +1668,70 @@ export default function DailyJobsiteLog() {
         placeholderTextColor={outdoor.textDim}
         multiline
       />
+    </View>
+  );
 
+  // ── STEP 4 — the nine daily inspections, walked ───────────────────────
+  //
+  // These were nine tick-chips under "Items Inspected". A tick could only
+  // ever record THAT the CP looked, never what he found — and on a filed DOB
+  // 3301-02 a tick beside "Fall Protections" reads as "fall protections are
+  // fine", with no way for it to say otherwise.
+  //
+  // Each item now carries a result and, on a fail, a note saying what failed.
+  // NOT WALKED stays a real answer: the CP is not forced through all nine, and
+  // an item he did not reach is printed as not inspected rather than being
+  // quietly counted as fine.
+  const renderStep4 = () => (
+    <View>
+      <StepHeader title={t('step4Title')} />
+      <Text style={s.noteText}>{t('inspectionsHint')}</Text>
+
+      {CHECKLIST_ITEMS.map((it) => {
+        const row = inspectionRow(checklistItems, it.key);
+        const failed = row.result === INSPECTION_FAIL;
+        const noteMissing = failed && !String(row.note || '').trim();
+        return (
+          <Card s={s} key={it.key} style={noteMissing ? s.cardFlagged : null}>
+            <Text style={s.crewName}>{it.label}</Text>
+            {row.legacy_ticked && (
+              <Text style={s.noteText}>{t('inspectionLegacyTicked')}</Text>
+            )}
+
+            <View style={s.chipWrap}>
+              <Chip
+                label={t('inspectionPass')}
+                selected={row.result === INSPECTION_PASS}
+                onPress={() => setInspection(it.key, INSPECTION_PASS)}
+              />
+              <Chip
+                label={t('inspectionFail')}
+                selected={failed}
+                onPress={() => setInspection(it.key, INSPECTION_FAIL)}
+              />
+            </View>
+
+            {/* A FAILED INSPECTION MUST SAY WHAT FAILED. Without this the fail
+                is the same empty record the tick was. */}
+            {failed && (
+              <>
+                <Text style={s.question}>{t('inspectionNoteRequired')}</Text>
+                <TextInput
+                  style={s.input}
+                  value={row.note}
+                  onChangeText={(v) => setInspectionNote(it.key, v)}
+                  placeholder={t('phInspectionNote')}
+                  placeholderTextColor={outdoor.textDim}
+                  multiline
+                />
+                {noteMissing && (
+                  <Text style={s.errorText}>{t('inspectionNoteMissing')}</Text>
+                )}
+              </>
+            )}
+          </Card>
+        );
+      })}
     </View>
   );
 
@@ -1699,6 +1789,46 @@ export default function DailyJobsiteLog() {
           ))}
         </Card>
       )}
+
+      {/* THE INSPECTIONS, AS THEY WILL PRINT. A fail is called a fail here,
+          in red, with what failed — the CP is signing this, and the one thing
+          he must not be able to sign without seeing is an inspection he
+          recorded as failed. Items he did not walk are named too: a missing
+          item is not a passed one. */}
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('sectionInspected')}</Text>
+        {(() => {
+          const rows = CHECKLIST_ITEMS.map((it) => ({
+            it, row: inspectionRow(checklistItems, it.key),
+          }));
+          const passed = rows.filter((r) => r.row.result === INSPECTION_PASS);
+          const failed = rows.filter((r) => r.row.result === INSPECTION_FAIL);
+          const unwalked = rows.filter((r) => r.row.result === null);
+          if (passed.length === 0 && failed.length === 0) {
+            return <Text style={s.reviewValue}>{t('reviewInspectionsNone')}</Text>;
+          }
+          return (
+            <>
+              {failed.map(({ it, row }) => (
+                <Text key={it.key} style={s.errorText}>
+                  {t('inspectionFail').toUpperCase()} — {it.label}
+                  {row.note ? `: ${row.note}` : ''}
+                </Text>
+              ))}
+              {passed.length > 0 && (
+                <Text style={s.reviewValue}>
+                  {t('reviewInspectionsPassed')}: {passed.map((r) => r.it.label).join(', ')}
+                </Text>
+              )}
+              {unwalked.length > 0 && (
+                <Text style={s.reviewValue}>
+                  {t('reviewInspectionsNotWalked')}: {unwalked.map((r) => r.it.label).join(', ')}
+                </Text>
+              )}
+            </>
+          );
+        })()}
+      </Card>
 
       {/* DRAFTED, NOT WRITTEN. Composed from the trades of the chips the CP
           tapped, shown here before he signs, and editable — he is attesting to

@@ -43,7 +43,9 @@ const M = new Function(`
            cameraReady, resolveRosterId, isUnboundCrew, deriveGeneralDescription,
            isUnassignedWorkerRow, workRows,
            observationComplete, incompleteObservations, formatLogDate,
-           formatCheckInTime, stepComplete };
+           formatCheckInTime, stepComplete,
+           INSPECTION_PASS, INSPECTION_FAIL, EMPTY_INSPECTION, inspectionRow,
+           inspectionComplete, incompleteInspections };
 `)();
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -403,6 +405,71 @@ ok(M.stepComplete(2, { activities: [{ work_description: 'formwork' }] }),
   'step 2 completes when every crew has described work');
 ok(M.stepComplete(3, { observations: [] }), 'step 3 completes with no observations');
 ok(M.stepComplete(5, { cpSignature: 'data:...' }), 'step 5 completes once signed');
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE DAILY INSPECTIONS — a tick could not say what was FOUND
+console.log('\n── The nine daily inspections ──');
+
+const PASS = M.INSPECTION_PASS;
+const FAIL = M.INSPECTION_FAIL;
+ok(PASS === 'pass' && FAIL === 'fail', 'the two results are named, not typed literals');
+
+// The whole reason the shape changed.
+ok(M.inspectionRow({ k: { result: FAIL, note: 'north edge open' } }, 'k').result === FAIL,
+  'a failed inspection is recorded as failed');
+ok(M.inspectionRow({ k: { result: PASS, note: '' } }, 'k').result === PASS,
+  'and a passed one as passed');
+
+// NOT WALKED IS NOT A PASS. This is the assertion that stops the filed
+// document claiming an inspection nobody did.
+ok(M.inspectionRow({}, 'missing').result === null,
+  'an item the CP never touched has NO result');
+ok(M.inspectionRow({ k: { result: 'maybe', note: '' } }, 'k').result === null,
+  'and a junk result is no result, never coerced into a pass');
+ok(M.EMPTY_INSPECTION().result === null && M.EMPTY_INSPECTION().note === '',
+  'a fresh row starts unanswered');
+
+// LEGACY. A log filed while this was a tick-chip.
+const legacy = M.inspectionRow({ fire_safety: true }, 'fire_safety');
+ok(legacy.result === null, 'a legacy tick is NOT upgraded to a pass nobody recorded');
+ok(legacy.legacy_ticked === true, 'it is flagged, so the screen can say what it is');
+ok(M.inspectionRow({ fire_safety: false }, 'fire_safety').result === null,
+  'and an unticked legacy item is simply unanswered');
+
+// A FAIL MUST SAY WHAT FAILED.
+ok(!M.inspectionComplete({ result: FAIL, note: '' }), 'a fail with no note is incomplete');
+ok(!M.inspectionComplete({ result: FAIL, note: '   ' }), 'whitespace is not a note');
+ok(M.inspectionComplete({ result: FAIL, note: 'north edge open' }), 'a noted fail is complete');
+ok(M.inspectionComplete({ result: PASS, note: '' }), 'a pass needs no note');
+ok(M.inspectionComplete({ result: null, note: '' }),
+  'and an item he did not walk does NOT block him — he is not forced through all nine');
+ok(M.inspectionComplete(undefined), 'an absent row blocks nothing');
+
+// The sign gate reports KEYS, so adding a tenth item cannot renumber it.
+const items = {
+  street_frontage: { result: PASS, note: '' },
+  fall_protections: { result: FAIL, note: '' },
+  permits: { result: FAIL, note: 'expired' },
+  plans: { result: null, note: '' },
+};
+ok(JSON.stringify(M.incompleteInspections(items)) === JSON.stringify(['fall_protections']),
+  'exactly the un-noted fail blocks, named by key');
+ok(M.incompleteInspections({}).length === 0, 'a form nobody touched blocks nothing');
+ok(M.incompleteInspections(null).length === 0, 'and neither does a missing one');
+
+// Step 4 is the inspections now; weather moved to Step 1 and never gated a step
+// the CP could not fix.
+ok(M.stepComplete(4, { checklistItems: items }) === false,
+  'step 4 is incomplete while a fail has no note');
+ok(M.stepComplete(4, items) === true,
+  'and it reads state.checklistItems — a bare items object is not the state');
+ok(M.stepComplete(4, { checklistItems: {
+  ...items, fall_protections: { result: FAIL, note: 'north edge open' },
+} }), 'and completes once every fail says what failed');
+ok(M.stepComplete(4, { checklistItems: {} }),
+  'an untouched form is complete — walking all nine is not compulsory');
+ok(M.stepComplete(4, { weather: 'Sunny' }) === true,
+  'weather no longer decides step 4');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
