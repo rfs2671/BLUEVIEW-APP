@@ -3424,6 +3424,37 @@ def _same_company(actor: dict, target: dict) -> bool:
 # exact same check — FastAPI can only resolve `require_project_access` as a
 # dependency when {project_id} is in the path. `require_project_access` below is
 # a thin Depends wrapper over it; every existing dependency site is unchanged.
+def project_access_ok(project: dict, project_id: str, current_user: dict) -> bool:
+    """The three-branch rule, separated from the lookup that precedes it.
+
+    Extracted so a caller that must do its OWN project lookup can still reach
+    the same decision instead of restating it. create_logbook is that caller:
+    its project id arrives in the BODY, so FastAPI cannot resolve
+    Depends(require_project_access), and it deliberately does NOT apply
+    ACTIVE_PROJECT_FILTER — see the note at its call site.
+
+    The branches, and the decision each one encodes, are unchanged:
+      1. a site device may act on the project it was provisioned for, and no
+         other;
+      2. same company, derived from auth and NEVER from the request;
+      3. explicitly assigned to this project — validated same-company at every
+         write site by validate_assignable_projects, but historical rows
+         predate that, so the branch stays.
+
+    There is no platform-operator branch, and this does not add one: the
+    operator appears in user administration, project deletion and
+    assignable-project validation, and in no logbook flow.
+    """
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        return str(current_user.get("project_id") or "") == str(project_id)
+
+    user_company = get_user_company_id(current_user)
+    if user_company and str(project.get("company_id") or "") == str(user_company):
+        return True
+
+    return str(project_id) in (current_user.get("assigned_projects") or [])
+
+
 async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     project = await db.projects.find_one({
         "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
@@ -3431,24 +3462,11 @@ async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # 1. Site device — its own project only.
-    if current_user.get("site_mode") or current_user.get("role") == "site_device":
-        if str(current_user.get("project_id") or "") == str(project_id):
-            return project
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(
             status_code=403, detail="Not authorized for this project",
         )
-
-    # 2. Same company (derived from auth, never from the request).
-    user_company = get_user_company_id(current_user)
-    if user_company and str(project.get("company_id") or "") == str(user_company):
-        return project
-
-    # 3. Explicitly assigned to this project.
-    if str(project_id) in (current_user.get("assigned_projects") or []):
-        return project
-
-    raise HTTPException(status_code=403, detail="Not authorized for this project")
+    return project
 
 
 async def require_project_access(
@@ -15877,6 +15895,30 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # ── TENANT GATE ─────────────────────────────────────────────────────────
+    # THIS USED TO CHECK EXISTENCE AND NOTHING ELSE for every role but `cp`.
+    # The project id arrives in the BODY, so a caller who held another
+    # company's id reached the dedupe below, matched that company's unlocked
+    # row and $set over it: their content replaced, the document still
+    # labelled with their company_id, still carrying their instance_seq.
+    # Silent destruction of another company's compliance record.
+    #
+    # `project_access_ok` is the same three-branch rule the 57
+    # require_project_access call sites use, extracted from
+    # _assert_project_access so this one can keep its OWN lookup.
+    #
+    # WHY NOT Depends(require_project_access): no {project_id} in the path for
+    # FastAPI to resolve — the same reason get_logbook uses the by-id idiom.
+    #
+    # WHY THE LOOKUP ABOVE IS DELIBERATELY UNFILTERED: _assert_project_access
+    # applies ACTIVE_PROJECT_FILTER, which also excludes marked_for_deletion.
+    # Adopting that here would newly 404 an OFFLINE DRAFT syncing after an
+    # admin marked the project — a CP losing a filed day to an admin action
+    # taken while he was out of signal. Authorization is what was missing; the
+    # existence semantics are left exactly as they were.
+    if not project_access_ok(project, data.project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
+
     # ── SUBMIT GATE ─────────────────────────────────────────────────────────
     # For the nine IMMEDIATE types the signature IS the freeze: `is_locked` is
     # set below purely from `status == "submitted"`, so without this check a POST
@@ -15926,6 +15968,19 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     # data.worker_id, matching the check-in path's per-worker identity.
     dedupe_filter = {
         "project_id": data.project_id,
+        # DEFENCE IN DEPTH, and the second half of the tenant fix above. The
+        # gate should mean no foreign project id ever gets this far, but a
+        # match that CAN cross tenants is one bug away from overwriting
+        # another company's filed record — so the query itself is scoped.
+        # Taken from auth (`company_id`, resolved above), never from the body.
+        #
+        # A row written before this field existed would have no company_id and
+        # would no longer match, inserting a second row rather than editing the
+        # first. Both writers set it today — create_logbook here, and the gate's
+        # orientation insert in register_and_checkin — and historical rows
+        # cannot be checked from here without a production read. A duplicate
+        # filing is visible and recoverable; a cross-tenant overwrite is not.
+        "company_id": company_id,
         "log_type": data.log_type,
         "date": data.date,
         "is_deleted": {"$ne": True},
