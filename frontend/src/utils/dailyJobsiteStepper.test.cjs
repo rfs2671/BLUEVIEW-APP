@@ -165,8 +165,54 @@ const otherAt = step2.indexOf("t('chipOther')");
 const catalogAt = step2.indexOf("t('chipsCatalog')");
 ok(otherAt > -1 && catalogAt > -1 && otherAt < catalogAt,
   '"Other" is rendered BEFORE the full catalogue — visible without scrolling');
-ok(/setChips\(\[\]\)/.test(src),
+ok(/setChipsByTrade\(\(p\) => \(\{ \.\.\.p, \[tr\]: \[\] \}\)\)/.test(src),
   'a failed chip fetch leaves an empty list — chips never block the entry');
+
+// ── CHIPS ARE PER TRADE ──────────────────────────────────────────────────────
+// An electrical crew was offered drywall because ONE list was fetched for the
+// whole project and the ranking keyed off the project's prior day.
+ok(/getActivityChips\(projectId, date, tr \|\| null\)/.test(code),
+  'the crew trade is sent to the endpoint');
+// A crew with no trade keys on '', which is the UNFILTERED list — the right
+// list for a crew whose trade nobody recorded.
+ok(/wanted\.length === 0\) wanted\.push\(''\)/.test(code),
+  "and an empty roster still fetches the unfiltered list");
+ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(\)\]/.test(code),
+  'each crew reads its OWN trade list, keyed on its trade');
+ok(/const myChips = chipsFor\(a\);/.test(code),
+  'Step 2 renders that list, not a shared one');
+ok(!/chips\.filter\(/.test(code),
+  'no single project-wide chip list survives');
+// One fetch per DISTINCT trade, not one per crew.
+ok(/\[\.\.\.new Set\(/.test(code) && /wanted\.map/.test(code),
+  'one fetch per distinct trade on site, not one per crew');
+// An unassigned worker gets no activity card, so there is no crew trade to
+// fetch a list for. This call was dropped once, when the helper lived only on
+// an unmerged branch; it is asserted so it cannot be dropped silently again.
+ok(/workRows\(rows\)\.map\(/.test(code),
+  'and the unassigned workers are not fetched for at all');
+
+// ── EVERY MODEL HELPER THE SCREEN CALLS IS IMPORTED ──────────────────────────
+// Caught for real, on this change: a model helper was called in loadChips and
+// never added to the import list. It throws a ReferenceError on the first
+// render, INSIDE a try that swallows it, so the CP silently gets no chips at
+// all and nothing on screen says why. Every other test in this file passed.
+const modelExports = [...model.matchAll(/^export (?:const|function) (\w+)/gm)]
+  .map((m) => m[1]);
+const importBlock = (code.match(
+  /import \{([^}]*)\} from '\.\.\/\.\.\/src\/utils\/dailyJobsiteModel';/,
+) || [, ''])[1];
+const imported = new Set(importBlock.split(',').map((x) => x.trim()).filter(Boolean));
+const bodyOnly = code.replace(
+  /import \{[^}]*\} from '[^']*dailyJobsiteModel';/, '',
+);
+const usedNotImported = modelExports.filter(
+  (name) => new RegExp(`\\b${name}\\s*\\(`).test(bodyOnly) && !imported.has(name),
+);
+ok(modelExports.length > 10, 'the model exports were actually parsed');
+ok(usedNotImported.length === 0,
+  `every model helper the screen calls is imported${
+    usedNotImported.length ? ` — MISSING: ${usedNotImported.join(', ')}` : ''}`);
 
 // ═══ FINDING C ═══════════════════════════════════════════════════════════════
 console.log('\n── Finding C: the app never writes the work description ──');

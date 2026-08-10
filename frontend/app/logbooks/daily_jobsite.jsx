@@ -316,8 +316,12 @@ export default function DailyJobsiteLog() {
   const [rosterCollapsed, setRosterCollapsed] = useState(0);
 
   // ── Chips ─────────────────────────────────────────────────────────────
-  const [chips, setChips] = useState([]);
-  const [chipsMeta, setChipsMeta] = useState(null);
+  // CHIPS ARE PER TRADE, NOT PER PROJECT. An electrical crew was being offered
+  // drywall because one shared list was fetched for the whole project and the
+  // ranking keyed off the project's prior day. Keyed by the crew's roster
+  // trade; '' is the unfiltered list, used for a crew whose trade is blank.
+  const [chipsByTrade, setChipsByTrade] = useState({});
+  const [chipsMetaByTrade, setChipsMetaByTrade] = useState({});
   const [expandedChips, setExpandedChips] = useState({});   // activity_id -> bool
 
   const rosterIdsRef = useRef(new Map());
@@ -418,7 +422,7 @@ export default function DailyJobsiteLog() {
         setExistingLogId(draft.backend_id || null);
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
-        loadChips();
+        loadChips(draft.data.activities || []);
         loadProjectShell();
         setLoading(false);
         return;
@@ -448,6 +452,7 @@ export default function DailyJobsiteLog() {
 
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
       // locked original that shares (project, type, date).
+      let builtCrews = [];
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
       const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
       if (existing?.is_locked) { setLocked(true); markFinalized(_key); }
@@ -458,13 +463,14 @@ export default function DailyJobsiteLog() {
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       } else {
-        setActivities(buildCrewsFromRoster(roster?.workers || [], headcount));
+        builtCrews = buildCrewsFromRoster(roster?.workers || [], headcount);
+        setActivities(builtCrews);
         // Weather and address are OBSERVED FACTS about the day, not asserted
         // work, so auto-filling them states nothing the CP did not witness.
         // This is why they stay auto-populated while work_description does not.
         fetchWeather(fullAddress);
       }
-      loadChips();
+      loadChips(existing ? (existing.data || {}).activities || [] : builtCrews);
     } catch (e) {
       console.error(e);
     } finally {
@@ -484,18 +490,35 @@ export default function DailyJobsiteLog() {
     } catch (_e) { /* non-blocking */ }
   };
 
-  const loadChips = async () => {
-    try {
-      const res = await logbooksAPI.getActivityChips(projectId, date);
-      setChips(Array.isArray(res?.chips) ? res.chips : []);
-      setChipsMeta(res || null);
-    } catch (_e) {
-      // Chips never block an entry. With no ranking the CP still has "Other",
-      // which is free text, so the day can always be logged.
-      setChips([]);
-      setChipsMeta(null);
-    }
+  /**
+   * One fetch per DISTINCT crew trade on site — a handful, not one per crew.
+   * Each is cached under its trade key, so revisiting Step 2 refetches nothing.
+   */
+  const loadChips = async (rows) => {
+    // workRows drops the unassigned-worker rows: a worker with no company is
+    // present on site and is not a unit of work, so he gets no activity card
+    // and there is no crew trade to fetch a list for. Restored now that the
+    // helper is on main — it was left out only to avoid stacking on an open PR.
+    const wanted = [...new Set(
+      workRows(rows).map((a) => String(a.trade || '').trim()),
+    )];
+    if (wanted.length === 0) wanted.push('');
+    await Promise.all(wanted.map(async (tr) => {
+      try {
+        const res = await logbooksAPI.getActivityChips(projectId, date, tr || null);
+        setChipsByTrade((p) => ({ ...p, [tr]: Array.isArray(res?.chips) ? res.chips : [] }));
+        setChipsMetaByTrade((p) => ({ ...p, [tr]: res || null }));
+      } catch (_e) {
+        // Chips never block an entry. With no ranking the CP still has
+        // "Other", which is free text, so the day can always be logged.
+        setChipsByTrade((p) => ({ ...p, [tr]: [] }));
+        setChipsMetaByTrade((p) => ({ ...p, [tr]: null }));
+      }
+    }));
   };
+
+  /** The chip list for one crew — its own trade's, never another's. */
+  const chipsFor = (a) => chipsByTrade[String(a?.trade || '').trim()] || [];
 
   const hydrate = (d) => {
     if (d.project_address) setProjectAddress(d.project_address);
@@ -566,19 +589,22 @@ export default function DailyJobsiteLog() {
   const toggleChecklist = (key) => setChecklistItems((p) => ({ ...p, [key]: !p[key] }));
 
   // Chip labels for composing the sentence the PDF prints.
+  const allChips = useMemo(
+    () => Object.values(chipsByTrade).flat(), [chipsByTrade],
+  );
   const chipLabels = useMemo(() => {
     const m = new Map();
-    chips.forEach((c) => m.set(c.id, c.label));
+    allChips.forEach((c) => m.set(c.id, c.label));
     return m;
-  }, [chips]);
+  }, [allChips]);
 
   // chip id -> the WorkPackage's trade, newly carried on ActivityChip. This is
   // the only grouping signal the client has; see deriveGeneralDescription.
   const chipTrades = useMemo(() => {
     const m = new Map();
-    chips.forEach((c) => { if (c.trade) m.set(c.id, c.trade); });
+    allChips.forEach((c) => { if (c.trade) m.set(c.id, c.trade); });
     return m;
-  }, [chips]);
+  }, [allChips]);
 
   // The DRAFT sentence, recomputed from what the CP has tapped so far.
   const suggestedDescription = useMemo(
@@ -1260,12 +1286,19 @@ export default function DailyJobsiteLog() {
     <View>
       <StepHeader title={t('step2Title')} />
 
-      {chipsMeta && chipsMeta.structural_system_set === false && (
-        <Text style={s.noteText}>{t('structuralSystemUnknown')}</Text>
-      )}
-      {chipsMeta && !chipsMeta.prior_date && (
-        <Text style={s.noteText}>{t('chipsNoPriorDay')}</Text>
-      )}
+      {(() => {
+        const anyMeta = Object.values(chipsMetaByTrade).find(Boolean);
+        return (
+          <>
+            {anyMeta && anyMeta.structural_system_set === false && (
+              <Text style={s.noteText}>{t('structuralSystemUnknown')}</Text>
+            )}
+            {anyMeta && !anyMeta.prior_date && (
+              <Text style={s.noteText}>{t('chipsNoPriorDay')}</Text>
+            )}
+          </>
+        );
+      })()}
 
       {/* AN ACTIVITY ROW IS A COMPANY'S WORK. A man who came through the gate
           with no company assignment gets NO card here — no activity, no
@@ -1285,8 +1318,11 @@ export default function DailyJobsiteLog() {
 
       {activities.map((a, i) => {
         if (isUnassignedWorkerRow(a)) return null;
-        const suggested = chips.filter((c) => c.band === 'suggested');
-        const rest = chips.filter((c) => c.band !== 'suggested' && c.id !== OTHER_ACTIVITY_ID);
+        // THIS crew's chips, not the project's. An electrical crew must never
+        // be offered drywall.
+        const myChips = chipsFor(a);
+        const suggested = myChips.filter((c) => c.band === 'suggested');
+        const rest = myChips.filter((c) => c.band !== 'suggested' && c.id !== OTHER_ACTIVITY_ID);
         const open = !!expandedChips[a.activity_id];
         const ready = cameraReady(a);
         const customA = Object.entries(a.custom_activity_labels || {});
