@@ -113,14 +113,14 @@ export const tint = withAlpha;
 // audit snapshot.
 //
 // `via` records HOW the value is written today:
-//   'withAlpha' — already the sanctioned helper idiom (87 occurrences).
+//   'withAlpha' — already the sanctioned helper idiom (88 occurrences).
 //   'rgba'      — a hand-written rgba() string literal (44 occurrences).
 // Keeping them apart matters: counting the withAlpha bases as raw colour
 // literals inflates the apparent colour debt from 47 to 148.
 export const MEASURED_TINTS = Object.freeze([
   { base: 'black',    step: 'a04',  uses: 2,   via: 'withAlpha' },
   { base: 'black',    step: 'a06',  uses: 2,   via: 'withAlpha' },
-  { base: 'black',    step: 'a60',  uses: 1,   via: 'withAlpha' },
+  { base: 'black',    step: 'a60',  uses: 2,   via: 'withAlpha' },
   { base: 'black',    step: 'a90',  uses: 1,   via: 'withAlpha' },
   { base: 'blue300',  step: 'a30',  uses: 1,   via: 'rgba' },
   { base: 'blue300',  step: 'a35',  uses: 1,   via: 'rgba' },

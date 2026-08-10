@@ -401,8 +401,23 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                     "if this ever becomes true the empty gate starts catching it"
                 )
 
+    # ONE FORM IS NO LONGER IN THE HOLE.
+    #
+    # subcontractor_orientation now has a per-form content requirement: it
+    # cannot be SUBMITTED without a trade (SUBMIT_MISSING_TRADE). Its untouched
+    # payload has a blank `worker_trade`, so it is caught. That is the first
+    # per-form minimum-content rule in the codebase and it narrows this hole by
+    # exactly one form — it does not close it for the other ten, which is why
+    # this class still exists.
+    #
+    # Deliberately not folded into the loop as a skip: the exception is named,
+    # and the reason it is refused is asserted, so the boundary stays readable.
+    _HAS_CONTENT_RULE = {"subcontractor_orientation"}
+
     def test_a_signed_but_untouched_submit_is_ACCEPTED(self):
         for log_type in UNTOUCHED_PAYLOADS:
+            if log_type in self._HAS_CONTENT_RULE:
+                continue
             with self.subTest(log_type=log_type):
                 db = _db_for_create()
                 resp = _post(db, _create_body(log_type, status="submitted", signature=_SIG))
@@ -410,6 +425,25 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                     resp.status_code, 200,
                     "this branch does NOT close the blank-content case",
                 )
+
+    def test_the_one_form_that_DOES_have_a_content_rule_is_refused(self):
+        """An orientation with no trade names no scope of work, and the record
+        is entirely about what this man was oriented TO do. Refused by code, so
+        the client can name the worker and offer the fix."""
+        for log_type in self._HAS_CONTENT_RULE:
+            with self.subTest(log_type=log_type):
+                db = _db_for_create()
+                resp = _post(db, _create_body(log_type, status="submitted", signature=_SIG))
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(
+                    resp.json()["detail"]["code"], "SUBMIT_MISSING_TRADE",
+                )
+
+    def test_the_untouched_orientation_payload_really_has_no_trade(self):
+        """Guards the test above from passing for the wrong reason."""
+        payload = UNTOUCHED_PAYLOADS["subcontractor_orientation"]
+        self.assertFalse(str(payload.get("worker_trade") or "").strip())
+        self.assertTrue(payload, "still a non-empty dict — the empty gate cannot see it")
 
     def test_the_daily_jobsite_log_the_operator_filed_blank_is_still_accepted(self):
         """The exact production case. Auto-filled address and weather, one seed

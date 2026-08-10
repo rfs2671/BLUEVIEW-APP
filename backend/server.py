@@ -15810,6 +15810,52 @@ def _finalize_cp_signature(sig, doc_date, now):
     return out
 
 
+def _submit_missing_trade_detail(log_type, payload):
+    """A safety orientation may be CREATED without a trade. It may not be SUBMITTED.
+
+    THE SPLIT IS THE POINT, AND MUST NOT BE COLLAPSED.
+
+    The gate check-in writes the orientation draft itself (register_and_checkin,
+    `"worker_trade": trade or ""`) and that path stays FAIL-OPEN. This codebase
+    is deliberately fail-open at the turnstile — see the comment at the
+    strict-roster branch, "a pure config gap became a hard block on a real
+    person". A worker standing at the gate is never blocked because an admin has
+    not finished the roster. The draft is created, trade or no trade.
+
+    The CP is blocked instead, at the sign/submit transition, which is where the
+    trade actually has to exist: a filed orientation with no trade names no
+    scope of work, and the whole record is about what this man was oriented TO
+    do on this site.
+
+    Returns the HTTPException detail to raise, or None to allow. Same machine-
+    code convention as SUBMIT_EMPTY_LOG / SUBMIT_MISSING_CP_SIGNATURE — the
+    server names the condition, the client owns the wording.
+
+    `worker_name` and `worker_id` ride ALONGSIDE the code, not inside prose. A
+    refusal that names no worker is a dead end on a screen that may list a dozen
+    of them: the client needs to point at the right row and offer the fix there.
+    They are data, so the client still owns every rendered character, and
+    finalizeErrorCode reads only `.code` and ignores both.
+    """
+    if log_type != "subcontractor_orientation":
+        return None
+    # The type check comes BEFORE any coercion. `payload or {}` would turn None
+    # and [] into an empty dict and then refuse them for having no trade —
+    # reporting a missing trade on a payload that is not an orientation at all.
+    # A malformed or empty body is SUBMIT_EMPTY_LOG's business, and that gate
+    # runs first; this one declines to answer.
+    if not isinstance(payload, dict):
+        return None
+    d = payload
+    if str(d.get("worker_trade") or "").strip():
+        return None
+    return {
+        "code": "SUBMIT_MISSING_TRADE",
+        "worker_name": str(d.get("worker_name") or "").strip() or None,
+        "worker_id": str(d.get("worker_id") or "").strip() or None,
+    }
+
+
 @api_router.post("/logbooks")
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
@@ -15859,6 +15905,14 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
             )
+        # AFTER the signature check, deliberately. An unsigned submit is not a
+        # submit at all, so that condition is reported first and the existing
+        # contract is unchanged. The CP is not made to sign and THEN be refused
+        # for a missing trade either — subcontractor_orientation.jsx checks it
+        # before it will even open the signature pad.
+        _no_trade = _submit_missing_trade_detail(data.log_type, data.data)
+        if _no_trade:
+            raise HTTPException(status_code=400, detail=_no_trade)
 
     # Check for existing entry same type+date (upsert logic).
     #
@@ -16026,7 +16080,10 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     # nothing. The extra read happens only on a submit, never on a draft save.
     if data.status == "submitted":
         _cur = existing_lb if current_user.get("role") == "cp" else await db.logbooks.find_one(
-            {"_id": to_query_id(logbook_id)}, {"data": 1, "cp_signature": 1}
+            {"_id": to_query_id(logbook_id)},
+            # log_type is read from the STORED doc: LogbookUpdate has no such
+            # field, and the trade gate below has to know which form this is.
+            {"data": 1, "cp_signature": 1, "log_type": 1},
         )
         _cur = _cur or {}
         _eff_data = data.data if data.data is not None else _cur.get("data")
@@ -16039,6 +16096,10 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
             )
+        # After the signature check — same reasoning as create_logbook.
+        _no_trade = _submit_missing_trade_detail(_cur.get("log_type"), _eff_data)
+        if _no_trade:
+            raise HTTPException(status_code=400, detail=_no_trade)
 
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
