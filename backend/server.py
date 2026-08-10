@@ -16414,7 +16414,12 @@ async def get_activity_chips(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    day = (date or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Eastern, not UTC. The app always sends `date`, so this default only fires
+    # for a caller that omits it — but on the UTC clock that caller would be
+    # asking for TOMORROW's chips from 20:00 EDT (19:00 EST), and the priors
+    # below are read with {"$lt": day}, so it would silently rank off the wrong
+    # day. Uses the shared helper added alongside get_day_range_est.
+    day = (date or "").strip() or eastern_today()
 
     prior_query = {
         "project_id": str(project_id),

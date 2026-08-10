@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,8 @@ sys.path.insert(0, str(_BACKEND))
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
+
+_SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
 
 class _Result:
@@ -331,6 +334,75 @@ class Wiring(unittest.TestCase):
             if getattr(r, "path", "") == "/api/projects/{project_id}/activity-chips"
         )
         self.assertEqual(set(route.methods), {"GET"})
+
+
+class TheDefaultDayIsEasternNotUTC(unittest.TestCase):
+    """`date` is optional. When it is omitted the endpoint picks the day itself,
+    and on the UTC clock that is TOMORROW from 20:00 EDT (19:00 EST).
+
+    That matters here more than on a screen: priors are read with
+    {"$lt": day}, so a day that is one ahead silently ranks off the WRONG
+    prior instead of returning nothing obvious.
+
+    THE CLOCK IS PINNED. This defect is invisible before 20:00 Eastern, so a
+    test reading the real current time would pass all morning and prove nothing.
+    """
+
+    _EDT_2100 = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)   # 21:00 EDT 08-09
+    _EST_1900 = datetime(2026, 1, 16, 0, 0, tzinfo=timezone.utc)   # 19:00 EST 01-15
+
+    def test_the_boundary_instants_actually_discriminate(self):
+        """If UTC and Eastern agreed at these instants the assertions below
+        would pass on the broken code too."""
+        self.assertEqual(self._EDT_2100.strftime("%Y-%m-%d"), "2026-08-10")
+        self.assertEqual(server.eastern_date(self._EDT_2100), "2026-08-09")
+        self.assertEqual(self._EST_1900.strftime("%Y-%m-%d"), "2026-01-16")
+        self.assertEqual(server.eastern_date(self._EST_1900), "2026-01-15")
+
+    def _day_the_endpoint_defaulted_to(self, pinned_eastern_day):
+        """Run the endpoint with no ?date and report the day it queried priors
+        with, by capturing the filter it built."""
+        seen = {}
+
+        def _find_one(q):
+            seen.update(q)
+            return None
+
+        db = _mk_db()
+        db.logbooks.set_find_one(_find_one)
+        with patch.object(server, "eastern_today", lambda: pinned_eastern_day):
+            resp = _get(db)          # NO date param
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return seen.get("date", {}).get("$lt")
+
+    def test_at_2100_edt_it_defaults_to_the_eastern_day(self):
+        got = self._day_the_endpoint_defaulted_to(server.eastern_date(self._EDT_2100))
+        self.assertEqual(got, "2026-08-09")
+        self.assertNotEqual(got, "2026-08-10", "that is the UTC day — the bug")
+
+    def test_at_1900_est_it_defaults_to_the_eastern_day(self):
+        got = self._day_the_endpoint_defaulted_to(server.eastern_date(self._EST_1900))
+        self.assertEqual(got, "2026-01-15")
+        self.assertNotEqual(got, "2026-01-16", "that is the UTC day — the bug")
+
+    def test_an_explicit_date_still_wins(self):
+        seen = {}
+
+        def _find_one(q):
+            seen.update(q)
+            return None
+
+        db = _mk_db()
+        db.logbooks.set_find_one(_find_one)
+        with patch.object(server, "eastern_today", lambda: "2026-08-09"):
+            _get(db, date="2026-07-04")
+        self.assertEqual(seen.get("date", {}).get("$lt"), "2026-07-04")
+
+    def test_the_endpoint_calls_the_shared_helper_not_a_variant(self):
+        i = _SRC.index("async def get_activity_chips")
+        block = _SRC[i:i + 2500]
+        self.assertIn("or eastern_today()", block)
+        self.assertNotIn('datetime.now(timezone.utc).strftime("%Y-%m-%d")', block)
 
 
 if __name__ == "__main__":
