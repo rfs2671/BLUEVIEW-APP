@@ -41,6 +41,7 @@ const M = new Function(`
   return { rosterKey, isUnassignedCompany, EMPTY_ACTIVITY, EMPTY_OBSERVATION,
            buildCrewsFromRoster, rosterIdIndex, parseInstant, composeSelection,
            cameraReady, resolveRosterId, isUnboundCrew, deriveGeneralDescription,
+           isUnassignedWorkerRow, workRows,
            observationComplete, incompleteObservations, formatLogDate,
            formatCheckInTime, stepComplete };
 `)();
@@ -213,6 +214,74 @@ console.log('\n── Gate provenance, and resolving a hand-added crew ──');
     'a hand-added row has no gate value and does not invent one');
   ok(!('company_corrected_by' in hand) && !('company_corrected_at' in hand),
     'the dead correction-trail keys are gone from the row entirely');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A WORKER WITH NO COMPANY IS PRESENT, BUT IS NOT A UNIT OF WORK
+// ═════════════════════════════════════════════════════════════════════════════
+console.log('\n── The unassigned worker gets no activity card ──');
+
+{
+  const roster = [
+    { worker_id: 'w1', worker_name: 'A', company: 'Vanguard', trade: 'Concrete',
+      check_in_time: '2026-03-04T12:00:00Z' },
+    { worker_id: 'w2', worker_name: 'Solo', company: '', trade: 'Labourer',
+      check_in_time: '2026-03-04T12:00:00Z' },
+  ];
+  const crews = M.buildCrewsFromRoster(roster, []);
+  eq(crews.length, 2, 'he IS built — the log must show he was on site');
+
+  const solo = crews.find((c) => !c.company);
+  const van = crews.find((c) => c.company === 'Vanguard');
+  ok(M.isUnassignedWorkerRow(solo), 'his row is identified as unassigned');
+  ok(!M.isUnassignedWorkerRow(van), 'a real crew is not');
+
+  eq(M.workRows(crews).length, 1,
+    'only the COMPANY row is a work row — he gets no activity card');
+  eq(M.workRows(crews)[0].company, 'Vanguard', 'and it is the right one');
+}
+
+{
+  // A crew the CP typed in always has a company, so it can never be mistaken
+  // for an unassigned worker even before he fills anything else in.
+  const hand = { ...M.EMPTY_ACTIVITY(), company: 'Typed Co', gate_sourced: false };
+  ok(!M.isUnassignedWorkerRow(hand), 'a hand-added crew is never treated as unassigned');
+  const blank = M.EMPTY_ACTIVITY();
+  ok(!M.isUnassignedWorkerRow(blank),
+    'and neither is a blank row — the flag needs gate provenance');
+  ok(!M.isUnassignedWorkerRow(null), 'a missing row does not throw');
+}
+
+{
+  // THE STEP CAN STILL COMPLETE. Requiring work from a man who is never asked
+  // for any would leave Step 2 permanently unfinished.
+  const work = { ...M.EMPTY_ACTIVITY(), company: 'Vanguard', gate_sourced: true,
+    work_description: 'formwork' };
+  const solo = { ...M.EMPTY_ACTIVITY(), company: '', gate_sourced: true };
+  ok(M.stepComplete(2, { activities: [work, solo] }),
+    'step 2 completes with an unassigned worker present');
+  ok(!M.stepComplete(2, { activities: [{ ...work, work_description: '' }, solo] }),
+    '...but still refuses when a REAL crew has no work described');
+  ok(!M.stepComplete(2, { activities: [solo] }),
+    'and a day of nothing but unassigned workers is not a completed step 2');
+}
+
+{
+  // ONCE HE IS ASSIGNED, HE JOINS THE EXISTING ROW. No merge code — crews are
+  // keyed on (company, trade), so he simply falls into the bucket.
+  const before = M.buildCrewsFromRoster([
+    { worker_id: 'w1', worker_name: 'A', company: 'Vanguard', trade: 'Concrete' },
+    { worker_id: 'w2', worker_name: 'Solo', company: '', trade: 'Concrete' },
+  ], []);
+  eq(before.length, 2, 'before assignment: a crew and a loose man');
+
+  const after = M.buildCrewsFromRoster([
+    { worker_id: 'w1', worker_name: 'A', company: 'Vanguard', trade: 'Concrete' },
+    { worker_id: 'w2', worker_name: 'Solo', company: 'Vanguard', trade: 'Concrete' },
+  ], []);
+  eq(after.length, 1, 'after assignment he JOINS the crew — no second row');
+  eq(after[0].num_workers, '2', 'and the headcount picks him up');
+  eq(M.workRows(after).length, 1, 'and he now counts toward that crew as work');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

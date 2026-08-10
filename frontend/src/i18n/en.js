@@ -228,6 +228,15 @@ export default {
     unboundCrew: 'Not on the project roster',
     unboundCrewHint: 'Saved and flagged for an admin. It does not block this log.',
     noCrewWorker: 'No crew assigned',
+    // A man who came through the gate with no company. He is PRESENT — the log
+    // must show he was here — but an activity row represents a COMPANY's work,
+    // so he gets no card on Step 2. The copy has to say both halves, and must
+    // not read as an error: it is an admin gap, not something he did wrong, and
+    // it never blocks the CP.
+    unassignedTitle: 'On site, no company assigned',
+    unassignedHint: 'He is counted as present. Work is logged per company, so there is nothing to fill in for him until a company is assigned.',
+    unassignedNoCard_one: '1 worker on site has no company assigned, so he has no work card here. He is recorded on the previous step.',
+    unassignedNoCard_other: '{n} workers on site have no company assigned, so they have no work cards here. They are recorded on the previous step.',
     workers_one: '1 worker',
     workers_other: '{n} workers',
     checkedInAt: 'Checked in {time}',

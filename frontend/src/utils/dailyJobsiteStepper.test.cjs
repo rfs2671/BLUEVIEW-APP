@@ -440,6 +440,43 @@ ok(step5w.includes('setDescriptionTouched(true); setGeneralDescription(v);'),
 ok(!/fieldGeneralDescription/.test(step4),
   'and it no longer sits on Step 4, away from the record it summarises');
 
+// ═══ THE UNASSIGNED WORKER IS PRESENT, NOT A UNIT OF WORK ════════════════════
+console.log('\n── A man with no company gets no activity card ──');
+
+ok(/isUnassignedWorkerRow/.test(stripComments(model)),
+  'the rule lives in the model, where a test can execute it');
+
+// STEP 2 — no card at all. Not a disabled card, not an empty one.
+const s2 = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
+ok(/if \(isUnassignedWorkerRow\(a\)\) return null;/.test(s2),
+  'Step 2 renders NOTHING for him — no activity, no location, no camera');
+ok(/unassignedNoCard_one|unassignedNoCard_other/.test(s2),
+  '...and says why, rather than silently omitting him');
+
+// The index must stay the REAL one. Filtering the array instead of returning
+// null mid-map would renumber every row, and the photo bucket, the chip
+// toggles and every patch helper address rows by position.
+ok(/\{activities\.map\(\(a, i\) => \{/.test(s2),
+  'the map still walks the FULL activities array, so indexes stay correct');
+ok(!/workRows\(activities\)\.map/.test(s2),
+  'it does not map a filtered array, which would silently write to the wrong crew');
+
+// STEP 1 — he is shown, and flagged.
+const s1 = code.slice(code.indexOf('const renderStep1'), code.indexOf('const renderStep2'));
+ok(/isUnassignedWorkerRow\(a\)/.test(s1), 'Step 1 still renders him');
+ok(/unassignedTitle/.test(s1) && /unassignedHint/.test(s1),
+  '...flagged as needing assignment');
+
+// SOFT FLAG, NOT A GATE. Nothing about him may block the CP.
+ok(!/isUnassignedWorkerRow[\s\S]{0,200}?(return;|disabled=\{true\}|toast\.(error|warning))/.test(code),
+  'he never blocks a save, disables a control, or raises an error');
+
+// STEP 5 — he stays in the record. He was on site.
+const s5 = code.slice(code.indexOf('const renderStep5'));
+ok(/isUnassignedWorkerRow\(a\)/.test(s5),
+  'the review still lists him — dropping him would hide a man who was there');
+ok(/unassignedTitle/.test(s5), '...marked as having no company rather than no work');
+
 // ═══ OBSERVATIONS ════════════════════════════════════════════════════════════
 console.log('\n── Observations ──');
 

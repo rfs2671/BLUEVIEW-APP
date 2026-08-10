@@ -85,6 +85,7 @@ import * as ImagePicker from 'expo-image-picker';
 import {
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
+  isUnassignedWorkerRow, workRows,
   deriveGeneralDescription,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
   rosterKey,
@@ -1169,6 +1170,10 @@ export default function DailyJobsiteLog() {
 
   const crewName = (a) => (String(a.company || '').trim() || t('noCrewWorker'));
 
+  // Present on site, not a unit of work. Counted so Step 2 can say why there
+  // is no card for him rather than simply omitting him without explanation.
+  const unassignedWorkerCount = activities.filter(isUnassignedWorkerRow).length;
+
   // ── STEP 1 — who was here ─────────────────────────────────────────────
   const renderStep1 = () => (
     <View>
@@ -1227,6 +1232,15 @@ export default function DailyJobsiteLog() {
               <Text style={s.unboundText}>{t('unboundCrewHint')}</Text>
             </View>
           )}
+
+          {/* Present, and not a unit of work. Stated on his own row so the CP
+              knows he was counted and knows nothing is being asked of him. */}
+          {isUnassignedWorkerRow(a) && (
+            <View style={s.unboundBox}>
+              <Text style={s.unboundTitle}>{t('unassignedTitle')}</Text>
+              <Text style={s.unboundText}>{t('unassignedHint')}</Text>
+            </View>
+          )}
         </Card>
       ))}
 
@@ -1253,7 +1267,24 @@ export default function DailyJobsiteLog() {
         <Text style={s.noteText}>{t('chipsNoPriorDay')}</Text>
       )}
 
+      {/* AN ACTIVITY ROW IS A COMPANY'S WORK. A man who came through the gate
+          with no company assignment gets NO card here — no activity, no
+          location, no camera. Giving him one lets the CP log work against
+          nobody, which is a line in a signed record that cannot be true. He is
+          shown on Step 1 instead, present and flagged for assignment.
+
+          The INDEX is the one from the full `activities` array, not the
+          filtered one: the photo bucket, the chip toggles and every patch
+          helper address rows by their real position. Filtering the map without
+          keeping the original index would silently write to the wrong crew. */}
+      {unassignedWorkerCount > 0 && (
+        <Text style={s.noteText}>
+          {plural('unassignedNoCard_one', 'unassignedNoCard_other', unassignedWorkerCount)}
+        </Text>
+      )}
+
       {activities.map((a, i) => {
+        if (isUnassignedWorkerRow(a)) return null;
         const suggested = chips.filter((c) => c.band === 'suggested');
         const rest = chips.filter((c) => c.band !== 'suggested' && c.id !== OTHER_ACTIVITY_ID);
         const open = !!expandedChips[a.activity_id];
@@ -1598,6 +1629,11 @@ export default function DailyJobsiteLog() {
       {activities.map((a, i) => (
         <Card s={s} key={a.activity_id || i}>
           <Text style={s.reviewCrew}>{a.crew_id} · {crewName(a)}</Text>
+          {/* He is NOT dropped from the review. He was on site and the signed
+              record has to say so — it simply does not claim he did work. */}
+          {isUnassignedWorkerRow(a) && (
+            <Text style={s.correctedNote}>{t('unassignedTitle')}</Text>
+          )}
           {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
             <Text style={s.correctedNote}>{t('correctedFrom')}: {a.company_gate}</Text>
           )}

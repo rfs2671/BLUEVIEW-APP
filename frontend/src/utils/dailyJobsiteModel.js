@@ -319,6 +319,34 @@ export function deriveGeneralDescription(activities, tradeById) {
   return ranked.join(', ');
 }
 
+/**
+ * Is this row a worker who came through the gate with NO company?
+ *
+ * AN ACTIVITY ROW REPRESENTS A COMPANY'S WORK. A man with no company assignment
+ * does not get one: giving him activity and location fields lets the CP log
+ * work against nobody, and that is a line in a signed record that cannot be
+ * true. He is a real person who was on site, so Step 1 shows him and flags him
+ * for assignment — he is simply not a unit of work yet.
+ *
+ * He is NEVER blocked over it. Soft flag, not a gate.
+ *
+ * Identified by the absence of a company on a gate-sourced row. A hand-added
+ * crew always has one (commitAddCrew refuses an empty company), so this cannot
+ * catch a crew the CP typed in.
+ *
+ * ONCE HE IS ASSIGNED A COMPANY HE JOINS THAT COMPANY'S ROW rather than
+ * creating a new one — that needs no code here, because buildCrewsFromRoster
+ * keys crews on (company, trade) and he simply falls into the existing bucket
+ * on the next roster read. Asserted in the tests so it cannot regress.
+ */
+export const isUnassignedWorkerRow = (activity) => Boolean(
+  activity && activity.gate_sourced && !String(activity.company || '').trim(),
+);
+
+/** The rows that represent a company's work — the ones Step 2 asks about. */
+export const workRows = (activities) => (Array.isArray(activities) ? activities : [])
+  .filter((a) => !isUnassignedWorkerRow(a));
+
 /** True once this row names a sub the project roster does not know. */
 export const isUnboundCrew = (activity) => Boolean(
   activity && String(activity.company || '').trim() && !activity.subcontractor_id,
@@ -384,8 +412,15 @@ export function stepComplete(step, state) {
   const acts = state?.activities || [];
   switch (step) {
     case 1: return acts.length > 0;
-    case 2: return acts.length > 0
-      && acts.every((a) => String(a.work_description || '').trim());
+    case 2: {
+      // Only the rows Step 2 actually asks about. An unassigned worker gets no
+      // activity card, so requiring a work description from him would leave
+      // this step permanently incomplete the moment one man checks in without
+      // a company.
+      const work = workRows(acts);
+      return work.length > 0
+        && work.every((a) => String(a.work_description || '').trim());
+    }
     case 3: return incompleteObservations(state?.observations).length === 0;
     case 4: return Boolean(state?.weather);
     case 5: return Boolean(state?.cpSignature);
@@ -405,6 +440,8 @@ export default {
   composeSelection,
   cameraReady,
   resolveRosterId,
+  isUnassignedWorkerRow,
+  workRows,
   deriveGeneralDescription,
   OTHER_CHIP_ID,
   isUnboundCrew,
