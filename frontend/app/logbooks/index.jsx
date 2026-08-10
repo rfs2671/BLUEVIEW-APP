@@ -109,7 +109,19 @@ export default function LogBooksScreen() {
     count: 0, projectId: null, expired: 0, unknown: 0, needsTrade: 0,
   });
 
-  const today = new Date().toISOString().split('T')[0];
+  // The NEW YORK calendar date, not the UTC one. toISOString() rolls over at
+  // 20:00 EDT (19:00 EST), so from 8pm every screen this navigates to was asking
+  // the backend for TOMORROW: `today` is passed straight through as
+  // ?date=... below, and /checkins-today bounds that date to Eastern midnight
+  // (server.py get_day_range_est). An evening check-in therefore fell three
+  // hours before the window the roster asked for and came back EMPTY, while the
+  // CP-home badge — which counts with no day bound at all — still found it. That
+  // is the count and the roster disagreeing.
+  //
+  // Same expression as checkinsAPI.getByDate (src/utils/api.js) and
+  // useDailyLogs.js; en-CA formats as YYYY-MM-DD.
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
+    .format(new Date());
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
