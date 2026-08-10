@@ -42,6 +42,7 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
   ArrowLeft, ArrowRight, Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock,
 } from 'lucide-react-native';
@@ -53,7 +54,9 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { useT } from '../../src/i18n';
-import { spacing, borderRadius, typography, touchTarget, outdoor } from '../../src/styles/theme';
+import {
+  spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
+} from '../../src/styles/theme';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
 import { easternToday } from '../../src/utils/dates';
@@ -1172,7 +1175,7 @@ export default function DailyJobsiteLog() {
       <StepHeader title={t('step1Title')} />
 
       {rosterPartial && (
-        <View style={s.warnCard}>
+        <Card s={s} style={s.cardWarn}>
           <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
           <View style={s.warnBody}>
             <Text style={s.warnTitle}>{t('rosterPartialTitle')}</Text>
@@ -1181,7 +1184,7 @@ export default function DailyJobsiteLog() {
               <Text style={s.warnText}>{t('rosterCollapsedBody')}</Text>
             )}
           </View>
-        </View>
+        </Card>
       )}
 
       {activities.length === 0 && (
@@ -1189,7 +1192,7 @@ export default function DailyJobsiteLog() {
       )}
 
       {activities.map((a, i) => (
-        <View key={a.activity_id || i} style={s.crewCard}>
+        <Card s={s} key={a.activity_id || i}>
           <View style={s.crewTop}>
             <Text style={s.crewName}>{crewName(a)}</Text>
             {a.gate_sourced && (
@@ -1224,7 +1227,7 @@ export default function DailyJobsiteLog() {
               <Text style={s.unboundText}>{t('unboundCrewHint')}</Text>
             </View>
           )}
-        </View>
+        </Card>
       ))}
 
       <Pressable
@@ -1258,7 +1261,7 @@ export default function DailyJobsiteLog() {
         const customA = Object.entries(a.custom_activity_labels || {});
         const customL = Object.entries(a.custom_location_labels || {});
         return (
-          <View key={a.activity_id || i} style={s.crewCard}>
+          <Card s={s} key={a.activity_id || i}>
             {/* Locked, gate-sourced facts, restated so the card shows exactly
                 what a photo taken from it will be tagged with. */}
             <View style={s.crewTop}>
@@ -1419,7 +1422,7 @@ export default function DailyJobsiteLog() {
                 )}
               </View>
             )}
-          </View>
+          </Card>
         );
       })}
     </View>
@@ -1435,7 +1438,7 @@ export default function DailyJobsiteLog() {
       {observations.map((o, i) => {
         const missing = !observationComplete(o);
         return (
-          <View key={i} style={[s.crewCard, missing && s.crewCardFlagged]}>
+          <Card s={s} key={i} style={missing ? s.cardFlagged : null}>
             <TextInput
               style={s.input}
               value={o.description}
@@ -1498,7 +1501,7 @@ export default function DailyJobsiteLog() {
             >
               <Text style={s.secondaryBtnText}>{t('removeObservation')}</Text>
             </Pressable>
-          </View>
+          </Card>
         );
       })}
 
@@ -1529,7 +1532,7 @@ export default function DailyJobsiteLog() {
           <Text style={s.noteText}>{t('weatherAutoNote')}</Text>
         </View>
       ) : (
-        <View style={s.warnCard}>
+        <Card s={s} style={s.cardWarn}>
           <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
           <View style={s.warnBody}>
             <Text style={s.warnTitle}>{t('weatherUnavailableTitle')}</Text>
@@ -1539,7 +1542,7 @@ export default function DailyJobsiteLog() {
                 : t('weatherUnavailableBody')}
             </Text>
           </View>
-        </View>
+        </Card>
       )}
 
       <Text style={s.question}>{t('sectionEquipment')}</Text>
@@ -1581,7 +1584,7 @@ export default function DailyJobsiteLog() {
       <StepHeader title={t('step5Title')} />
       <Text style={s.question}>{t('reviewHeading')}</Text>
 
-      <View style={s.reviewCard}>
+      <Card s={s}>
         <Text style={s.reviewLabel}>{t('fieldAddress')}</Text>
         <Text style={s.reviewValue}>{projectAddress || t('reviewNothingYet')}</Text>
         <Text style={s.reviewLabel}>{t('fieldWeather')}</Text>
@@ -1590,10 +1593,10 @@ export default function DailyJobsiteLog() {
             ? [weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')
             : t('weatherUnavailableTitle')}
         </Text>
-      </View>
+      </Card>
 
       {activities.map((a, i) => (
-        <View key={a.activity_id || i} style={s.reviewCard}>
+        <Card s={s} key={a.activity_id || i}>
           <Text style={s.reviewCrew}>{a.crew_id} · {crewName(a)}</Text>
           {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
             <Text style={s.correctedNote}>{t('correctedFrom')}: {a.company_gate}</Text>
@@ -1610,11 +1613,11 @@ export default function DailyJobsiteLog() {
               {plural('photosCount_one', 'photosCount_other', (a.photos || []).length)}
             </Text>
           )}
-        </View>
+        </Card>
       ))}
 
       {observations.length > 0 && (
-        <View style={s.reviewCard}>
+        <Card s={s}>
           <Text style={s.reviewLabel}>{t('sectionObservations')}</Text>
           {observations.map((o, i) => (
             <Text key={i} style={s.reviewValue}>
@@ -1622,14 +1625,14 @@ export default function DailyJobsiteLog() {
               {o.responsible_party ? ` — ${o.responsible_party}` : ''}
             </Text>
           ))}
-        </View>
+        </Card>
       )}
 
       {/* DRAFTED, NOT WRITTEN. Composed from the trades of the chips the CP
           tapped, shown here before he signs, and editable — he is attesting to
           this sentence, so the app may propose it and may not put words he
           never read into the record. Empty when nothing was tapped. */}
-      <View style={s.reviewCard}>
+      <Card s={s}>
         <Text style={s.reviewLabel}>{t('fieldGeneralDescription')}</Text>
         <TextInput
           style={s.input}
@@ -1642,9 +1645,9 @@ export default function DailyJobsiteLog() {
         <Text style={s.noteText}>
           {suggestedDescription ? t('descriptionDrafted') : t('descriptionEmpty')}
         </Text>
-      </View>
+      </Card>
 
-      <View style={s.reviewCard}>
+      <Card s={s}>
         <SignaturePad
           title={t('sectionSignOff')}
           signerName={cpName}
@@ -1652,7 +1655,7 @@ export default function DailyJobsiteLog() {
           existingSignature={cpSignature}
           onSignatureCapture={setCpSignature}
         />
-      </View>
+      </Card>
 
       <Text style={s.noteText}>{t('signingClosesDay')}</Text>
     </View>
@@ -1830,6 +1833,35 @@ export default function DailyJobsiteLog() {
 }
 
 /**
+ * A card, rendered the way the rest of the app renders one.
+ *
+ * This is GlassCard's light-mode appearance, rebuilt rather than reused: a
+ * white->blue-100 vertical gradient, a 32pt corner, a soft diffuse shadow and
+ * the glass border. GlassCard itself is theme-aware and would go dark for a CP
+ * with dark mode on, which the outdoor rule forbids — see the note on
+ * `outdoor` in theme.js.
+ *
+ * TWO NESTED VIEWS ON PURPOSE. The shadow lives on the OUTER view and the
+ * gradient on the inner one: a shadow and `overflow: 'hidden'` on the same view
+ * clip each other on iOS, so the rounded gradient would square off or the
+ * shadow would vanish.
+ */
+function Card({ s, style, children }) {
+  return (
+    <View style={[s.cardShadow, style]}>
+      <LinearGradient
+        colors={[outdoor.cardTop, outdoor.cardBottom]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={s.cardFill}
+      >
+        {children}
+      </LinearGradient>
+    </View>
+  );
+}
+
+/**
  * One chip. Selection is carried on accessibilityState as well as in the
  * styling, so the state is available to a screen reader and to a test — not
  * only to someone who can see the colour.
@@ -1907,12 +1939,16 @@ function buildStyles() {
     header: {
       flexDirection: 'row', alignItems: 'center', gap: spacing.md,
       paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-      backgroundColor: outdoor.surface,
     },
+    // GlassButton's icon variant is a 44x44 circular pill. Same look here, but
+    // the 56pt floor wins over the visual size: the constraint is a gloved
+    // thumb outdoors, not the component.
     headerBack: {
       minWidth: touchTarget.min, minHeight: touchTarget.min,
       alignItems: 'center', justifyContent: 'center',
-      borderRadius: borderRadius.md,
+      borderRadius: borderRadius.full,
+      backgroundColor: outdoor.surface,
+      borderWidth: 1, borderColor: outdoor.line,
     },
     headerText: { flex: 1 },
     headerTitle: {
@@ -1922,7 +1958,7 @@ function buildStyles() {
 
     progressRow: {
       flexDirection: 'row', gap: spacing.xs, paddingHorizontal: spacing.md,
-      paddingBottom: spacing.sm, backgroundColor: outdoor.surface,
+      paddingBottom: spacing.sm,
     },
     progressPip: {
       flex: 1, height: spacing.xs, borderRadius: borderRadius.sm,
@@ -1930,7 +1966,10 @@ function buildStyles() {
     },
     progressPipOn: { backgroundColor: outdoor.surfaceSelected },
 
-    scroll: { flex: 1, backgroundColor: outdoor.surfaceSunk },
+    // NO background colour. The flat grey was covering AnimatedBackground's
+    // blue-tinted gradient, which is what made this screen read as foreign
+    // beside every other one.
+    scroll: { flex: 1 },
     scrollContent: { padding: spacing.md, paddingBottom: spacing.xxl },
 
     stepHeader: { marginBottom: spacing.md },
@@ -1942,12 +1981,23 @@ function buildStyles() {
       fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.text,
     },
 
-    crewCard: {
-      backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
-      borderWidth: 1, borderColor: outdoor.line,
-      padding: spacing.md, marginBottom: spacing.md, gap: spacing.sm,
+    // Shadow on the outer view, gradient on the inner - see Card.
+    cardShadow: {
+      borderRadius: borderRadius.xxl,
+      marginBottom: spacing.md,
+      backgroundColor: outdoor.cardTop,
+      ...outdoorShadow,
     },
-    crewCardFlagged: { borderColor: outdoor.warnBorder, borderWidth: 2 },
+    cardFill: {
+      borderRadius: borderRadius.xxl,
+      borderWidth: 1,
+      borderColor: outdoor.line,
+      padding: spacing.xl,
+      gap: spacing.sm,
+      overflow: 'hidden',
+    },
+    cardFlagged: { borderColor: outdoor.warnBorder },
+    cardWarn: { backgroundColor: outdoor.warnBg },
     crewTop: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
       gap: spacing.sm, flexWrap: 'wrap',
@@ -1957,13 +2007,16 @@ function buildStyles() {
     },
     crewMeta: { fontSize: typography.sizes.sm, color: outdoor.textSoft },
 
+    // The app renders a count / status as a small rounded pill badge - see the
+    // reference screen's countBadge and autoFilledBadge.
     gateBadge: {
       flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
-      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.sm,
+      backgroundColor: outdoor.accentBg, borderRadius: borderRadius.full,
+      borderWidth: 1, borderColor: outdoor.accentBorder,
       paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
     },
     gateBadgeText: {
-      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textSoft,
+      fontSize: typography.sizes.fine, fontWeight: '700', color: outdoor.accent,
     },
 
     correctedNote: {
@@ -1971,19 +2024,17 @@ function buildStyles() {
     },
 
     unboundBox: {
-      backgroundColor: outdoor.warnBg, borderRadius: borderRadius.sm,
-      borderWidth: 1, borderColor: outdoor.warnBorder, padding: spacing.sm,
+      backgroundColor: outdoor.warnBg, borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: outdoor.warnBorder, padding: spacing.md,
     },
     unboundTitle: {
       fontSize: typography.sizes.dense, fontWeight: '700', color: outdoor.text,
     },
     unboundText: { fontSize: typography.sizes.fine, color: outdoor.textSoft },
 
+    // The warning is now the CONTENT of a Card, so it carries only its layout.
     warnCard: {
       flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
-      backgroundColor: outdoor.warnBg, borderRadius: borderRadius.lg,
-      borderWidth: 2, borderColor: outdoor.warnBorder,
-      padding: spacing.md, marginBottom: spacing.md,
     },
     warnBody: { flex: 1, gap: spacing.xs },
     warnTitle: {
@@ -2004,16 +2055,16 @@ function buildStyles() {
     },
     lockedHint: {
       fontSize: typography.sizes.sm, color: outdoor.textSoft,
-      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.sm,
-      padding: spacing.sm,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
+      padding: spacing.md,
     },
 
     chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
     chip: {
       minHeight: touchTarget.min, justifyContent: 'center',
-      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-      borderRadius: borderRadius.md, borderWidth: 2, borderColor: outdoor.lineStrong,
-      backgroundColor: outdoor.surface,
+      paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+      borderRadius: borderRadius.full, borderWidth: 1,
+      borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
     },
     chipSelected: {
       backgroundColor: outdoor.surfaceSelected, borderColor: outdoor.surfaceSelected,
@@ -2024,7 +2075,7 @@ function buildStyles() {
     chipTextSelected: { color: outdoor.textOnSelected },
 
     input: {
-      minHeight: touchTarget.min, borderRadius: borderRadius.md, borderWidth: 2,
+      minHeight: touchTarget.min, borderRadius: borderRadius.lg, borderWidth: 1,
       borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
       paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
       fontSize: typography.sizes.md, color: outdoor.text,
@@ -2032,8 +2083,9 @@ function buildStyles() {
 
     toggleRow: {
       flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-      minHeight: touchTarget.min, paddingHorizontal: spacing.sm,
-      borderRadius: borderRadius.md, borderWidth: 2, borderColor: outdoor.lineStrong,
+      minHeight: touchTarget.min, paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.full, borderWidth: 1,
+      borderColor: outdoor.lineStrong,
     },
     toggleRowOn: { borderColor: outdoor.okBorder, backgroundColor: outdoor.okBg },
     toggleBox: {
@@ -2045,8 +2097,8 @@ function buildStyles() {
     photoBlock: { gap: spacing.sm },
     taggedWith: {
       fontSize: typography.sizes.fine, color: outdoor.textSoft,
-      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.sm,
-      padding: spacing.sm,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
+      padding: spacing.md,
     },
     photoCount: {
       fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
@@ -2067,7 +2119,8 @@ function buildStyles() {
     photoActions: { flexDirection: 'row', gap: spacing.sm },
     photoBtn: {
       flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-      gap: spacing.sm, minHeight: touchTarget.min, borderRadius: borderRadius.md,
+      gap: spacing.sm, minHeight: touchTarget.min,
+      borderRadius: borderRadius.full,
       backgroundColor: outdoor.surfaceSelected,
     },
     photoBtnText: {
@@ -2075,24 +2128,21 @@ function buildStyles() {
     },
     photoBtnGhost: {
       flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-      gap: spacing.sm, minHeight: touchTarget.min, borderRadius: borderRadius.md,
-      borderWidth: 2, borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+      gap: spacing.sm, minHeight: touchTarget.min,
+      borderRadius: borderRadius.full,
+      borderWidth: 1, borderColor: outdoor.lineStrong,
+      backgroundColor: outdoor.surface,
     },
     photoBtnGhostText: {
       fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
     },
 
     readOnlyValue: {
-      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.md,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
       padding: spacing.md, gap: spacing.xs,
     },
     readOnlyText: {
       fontSize: typography.sizes.lg, fontWeight: '600', color: outdoor.text,
-    },
-    reviewCard: {
-      backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
-      borderWidth: 1, borderColor: outdoor.line,
-      padding: spacing.md, marginBottom: spacing.md, gap: spacing.xs,
     },
     reviewCrew: {
       fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
@@ -2106,22 +2156,21 @@ function buildStyles() {
     secondaryBtn: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: spacing.sm, minHeight: touchTarget.min,
-      paddingHorizontal: spacing.md, borderRadius: borderRadius.md,
-      borderWidth: 2, borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+      paddingHorizontal: spacing.lg, borderRadius: borderRadius.full,
+      borderWidth: 1, borderColor: outdoor.lineStrong,
+      backgroundColor: outdoor.surface,
     },
     secondaryBtnText: {
       fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
     },
 
-    footer: {
-      padding: spacing.md, backgroundColor: outdoor.surface,
-      borderTopWidth: 1, borderTopColor: outdoor.line,
-    },
+    footer: { padding: spacing.md },
     primaryBtn: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: spacing.sm, minHeight: touchTarget.primary,
-      borderRadius: borderRadius.lg, backgroundColor: outdoor.surfaceSelected,
-      paddingHorizontal: spacing.lg,
+      borderRadius: borderRadius.full, backgroundColor: outdoor.surfaceSelected,
+      paddingHorizontal: spacing.xl,
+      ...outdoorShadow,
     },
     primaryBtnText: {
       fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.textOnSelected,
@@ -2137,8 +2186,9 @@ function buildStyles() {
       backgroundColor: outdoor.scrim, padding: spacing.md,
     },
     modalCard: {
-      width: '100%', backgroundColor: outdoor.surface, borderRadius: borderRadius.lg,
-      padding: spacing.md, gap: spacing.sm,
+      width: '100%', backgroundColor: outdoor.cardTop,
+      borderRadius: borderRadius.xxl,
+      padding: spacing.xl, gap: spacing.sm, ...outdoorShadow,
     },
     modalTitle: {
       fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
