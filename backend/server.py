@@ -8911,16 +8911,39 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
 
 @api_router.get("/projects/pending-deletion")
 async def list_pending_deletion_projects(owner = Depends(get_owner_user)):
-    """Owner-ONLY review list of projects an admin has marked for deletion.
+    """Review list of projects an admin has marked for deletion.
 
     MUST stay registered ABOVE GET /projects/{project_id} — FastAPI matches
     in registration order, so declaring it after would make the literal
     "pending-deletion" bind to {project_id} and 404.
+
+    THIS LISTED EVERY COMPANY'S. `get_owner_user` is role == "owner", which is
+    what EVERY self-serve signup receives — a company owner, i.e. a customer —
+    so any customer could read the ids of every other company's projects
+    awaiting purge. Together with the hard-delete gate below, that was the
+    discovery half of a working cross-tenant purge.
+
+    SCOPED THE SAME WAY GET /projects IS: the platform operator sees across
+    companies, everyone else sees their own. `is_platform_operator` is the
+    PURE FUNCTION, deliberately — `require_platform_operator` is in shadow
+    mode until PLATFORM_GATES_ENFORCED is set, so a gate written on the
+    dependency would log, allow, and pass its tests while protecting nothing.
     """
-    projects = await db.projects.find({
+    _q = {
         "marked_for_deletion": True,
         "is_deleted": {"$ne": True},
-    }).sort("marked_at", -1).to_list(500)
+    }
+    if not is_platform_operator(owner):
+        _company = get_user_company_id(owner)
+        if _company:
+            _q["company_id"] = _company
+        else:
+            # ABSENCE IS NOT AUTHORIZATION. `company_id: None` would MATCH
+            # every project that has no company — an orphan row is not "mine".
+            # `_id: None` matches nothing, which is the honest answer for a
+            # caller who owns nothing.
+            _q["_id"] = None
+    projects = await db.projects.find(_q).sort("marked_at", -1).to_list(500)
 
     items = []
     for p in projects:
@@ -9172,6 +9195,29 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # ── TENANT GATE ON AN IRREVERSIBLE PURGE ────────────────────────────────
+    # This compared NOTHING. The decorator's require_platform_operator is in
+    # SHADOW MODE while PLATFORM_GATES_ENFORCED is unset — it logs the
+    # non-operator and lets them through — so the only live gate was
+    # `get_owner_user`, i.e. role == "owner", which is what every self-serve
+    # signup receives. Any customer owner could physically purge any company's
+    # project, and GET /projects/pending-deletion handed them the ids.
+    #
+    # is_platform_operator is the PURE FUNCTION on purpose. Writing this on
+    # the dependency would inherit the shadow and gate nothing, while passing
+    # its own tests. That is asserted with the flag unset.
+    #
+    # Not narrowed to operator-only: that would lock the real operator out
+    # until is_platform_operator is bootstrapped on their account, which is
+    # the very hazard shadow mode exists to avoid. Operator purges anything;
+    # anyone else is confined to their own company.
+    if not is_platform_operator(owner):
+        _caller_company = str(get_user_company_id(owner) or "")
+        if not _caller_company or _caller_company != str(project.get("company_id") or ""):
+            raise HTTPException(
+                status_code=403, detail="Not authorized to delete this project",
+            )
 
     owner_id = str(owner.get("_id", owner.get("id", "")))
     company_id = str(project.get("company_id") or "")
