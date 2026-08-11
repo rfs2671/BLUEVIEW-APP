@@ -5459,6 +5459,26 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
                    "Assign them to a company first.",
         )
 
+    # STAMPED, not left absent. This path wrote NO account_status at all, so an
+    # admin-created CP had none until the next process restart, when
+    # run_account_status_startup_migration backfills every field-less user to
+    # "approved". In between, they passed require_approved only because
+    # ALLOW_LEGACY_NULL_STATUS admits a null — a flag whose own header calls it
+    # TEMPORARY and gives a removal procedure.
+    #
+    # That was survivable while no gate sat on a CP's daily work. It is not now
+    # that POST/PUT /logbooks carry require_approved: turning that flag off
+    # would stop any CP created since the last restart from FILING HIS DAY, on
+    # site, with no way for him to fix it.
+    #
+    # This is not a policy change. The startup migration already resolves these
+    # accounts to "approved" at every boot; stamping makes that deterministic
+    # instead of restart-dependent, and closes the window rather than relying
+    # on the grace flag to cover it. An admin creating a user is itself the
+    # approval — the review gate exists for SELF-SERVE signup, which is the
+    # only writer of "pending".
+    user_dict["account_status"] = "approved"
+
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
 
@@ -15944,7 +15964,23 @@ def _submit_missing_trade_detail(log_type, payload):
     }
 
 
-@api_router.post("/logbooks")
+# COST-BEARING, so it carries the activation gate. Both this and PUT below
+# fire _enhance_logbook_photos, which is AI image work on the platform's bill,
+# and they were the only two spending endpoints in the codebase without
+# require_approved.
+#
+# THIS REFUSES NOBODY WHO CAN FILE TODAY. A pending account is, by
+# construction, a self-registered `owner` with company_id = None: /auth/register
+# is the ONLY writer of "pending", and it forces both. A CP can only be made by
+# POST /admin/users, which never writes account_status at all, and
+# account_status is not in ALLOWED_USER_FIELDS so no admin can set an existing
+# CP pending. A company-less account already fails the tenant gate inside both
+# handlers, so it could not reach a logbook anyway.
+#
+# THE ONE THING THAT WOULD CHANGE THAT is ALLOW_LEGACY_NULL_STATUS. See the
+# stamp added to POST /admin/users, which is what keeps this gate off a CP's
+# filing path when that flag is eventually turned off.
+@api_router.post("/logbooks", dependencies=[Depends(require_approved)])
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
     # CP write-scope gate: a Competent Person may only create/upsert
@@ -16197,7 +16233,8 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
     return logbook
 
 
-@api_router.put("/logbooks/{logbook_id}")
+# Cost-bearing for the same reason as POST above — see the note there.
+@api_router.put("/logbooks/{logbook_id}", dependencies=[Depends(require_approved)])
 async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = Depends(get_current_user)):
     """Update an existing logbook entry"""
     # Tenant + project gate. Returns the doc, so the CP branch and the lock
