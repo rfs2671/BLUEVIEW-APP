@@ -32,6 +32,9 @@ import {
   ChevronRight,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
+import * as Clipboard from 'expo-clipboard';
+import Constants from 'expo-constants';
+import * as Updates from 'expo-updates';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
@@ -42,8 +45,8 @@ import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
-import apiClient, { authAPI } from '../src/utils/api';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
+import apiClient, { authAPI, versionAPI } from '../src/utils/api';
+import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 
 const INSURANCE_LABELS = {
@@ -74,6 +77,59 @@ export default function SettingsScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const { isDark, toggleTheme, colors } = useTheme();
   const toast = useToast();
+
+  // ── BUILD IDENTITY ──────────────────────────────────────────────────
+  // `jsCommit` is a slot EAS fills at build time (app.json extra.jsCommit).
+  // Until that is wired it is null, and the OTA update id is what identifies
+  // the bundle — a UUID, not a SHA, so it cannot be COMPARED to the backend
+  // commit. The card says which of the two it is showing rather than implying
+  // a comparison it cannot make.
+  const jsCommit = Constants.expoConfig?.extra?.jsCommit || null;
+  const appVersion = Constants.expoConfig?.version || 'unknown';
+  const jsBundle = jsCommit
+    || (Updates.updateId ? `${Updates.updateId.slice(0, 8)} (OTA id)` : 'embedded in build');
+  const jsBuiltAt = Updates.createdAt
+    ? new Date(Updates.createdAt).toLocaleString()
+    : 'shipped with the binary';
+
+  const [backendCommit, setBackendCommit] = useState(null);
+  const [backendLoading, setBackendLoading] = useState(true);
+  const [buildCopied, setBuildCopied] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const v = await versionAPI.get();
+        if (alive) setBackendCommit(v?.short || v?.commit || null);
+      } catch (_e) {
+        if (alive) setBackendCommit(null);   // rendered as "unreachable"
+      } finally {
+        if (alive) setBackendLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // Only a REAL comparison is offered. With no injected commit the two
+  // identities are different kinds of thing, and claiming a match either way
+  // would be the same false confidence this card exists to remove.
+  const buildMatches = Boolean(jsCommit && backendCommit)
+    && jsCommit.slice(0, 7) === String(backendCommit).slice(0, 7);
+  const buildVerdict = !backendCommit
+    ? null
+    : jsCommit
+      ? (buildMatches ? 'App and backend are on the same commit.'
+        : 'MISMATCH — the app and the backend are on different commits.')
+      : 'Bundle commit not injected at build time; compare the times above.';
+
+  const copyBuild = async () => {
+    await Clipboard.setStringAsync(
+      `app ${appVersion} | js ${jsBundle} | built ${jsBuiltAt} | backend ${backendCommit || 'unreachable'}`,
+    );
+    setBuildCopied(true);
+    setTimeout(() => setBuildCopied(false), 2000);
+  };
 
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
   const isCp    = user?.role === 'cp';
@@ -877,12 +933,62 @@ export default function SettingsScreen() {
             />
           </GlassCard>
 
+          {/* ── BUILD ────────────────────────────────────────────────────
+              WHY THIS EXISTS. A device test reported Step 1 as missing its
+              equipment and weather sections. They were on main and had never
+              been reverted — the phone was simply running an older JS bundle
+              than the backend. Time was spent diagnosing a defect that did
+              not exist.
+
+              The two identities are shown TOGETHER, because knowing the
+              bundle alone does not tell you whether it matches the server.
+              Not on a CP-facing compliance screen — settings only. */}
+          <Text style={s.sectionLabel}>BUILD</Text>
+          <GlassCard style={s.card}>
+            <BuildInfoRow label="App version" value={appVersion} onCopy={copyBuild} />
+            <BuildInfoRow label="JS bundle" value={jsBundle} onCopy={copyBuild} />
+            <BuildInfoRow label="Bundle built" value={jsBuiltAt} onCopy={copyBuild} />
+            <BuildInfoRow
+              label="Backend"
+              value={backendLoading ? 'checking…' : (backendCommit || 'unreachable')}
+              onCopy={copyBuild}
+            />
+            {buildVerdict && (
+              <Text style={[s.buildVerdict, buildMatches ? s.buildOk : s.buildWarn]}>
+                {buildVerdict}
+              </Text>
+            )}
+            <Pressable
+              onPress={copyBuild}
+              accessibilityRole="button"
+              accessibilityLabel="Copy build information"
+              style={s.buildCopy}
+            >
+              <Text style={s.buildCopyText}>
+                {buildCopied ? 'Copied' : 'Tap to copy'}
+              </Text>
+            </Pressable>
+          </GlassCard>
+
         </ScrollView>
 
         {isCp ? <CpNav /> : <FloatingNav />}
 
       </SafeAreaView>
     </AnimatedBackground>
+  );
+}
+
+/** One label/value line. 56pt so the copy target is never smaller than the
+ *  app's minimum, even though this is a read-only row. */
+function BuildInfoRow({ label, value, onCopy }) {
+  const { colors } = useTheme();
+  const s = buildStyles(colors);
+  return (
+    <Pressable style={s.buildRow} onPress={onCopy} accessibilityRole="button">
+      <Text style={s.buildLabel}>{label}</Text>
+      <Text style={s.buildValue} numberOfLines={1}>{value}</Text>
+    </Pressable>
   );
 }
 
@@ -933,5 +1039,25 @@ function buildStyles(colors) {
 
     saveBtn:    { marginTop: spacing.md },
     signOutBtn: { borderColor: semantic.criticalBorder },
+    // BUILD card. touchTarget.min so the copy row is never a smaller target
+    // than anything else in the app, read-only though it is.
+    buildRow: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      minHeight: touchTarget.min, gap: spacing.md,
+    },
+    buildLabel: { color: colors.text.secondary, fontSize: typography.sizes.sm },
+    buildValue: {
+      color: colors.text.primary, fontSize: typography.sizes.sm,
+      flexShrink: 1, textAlign: 'right',
+    },
+    buildVerdict: {
+      fontSize: typography.sizes.sm, marginTop: spacing.sm,
+    },
+    buildOk: { color: semantic.verified },
+    buildWarn: { color: semantic.criticalText },
+    buildCopy: {
+      minHeight: touchTarget.min, justifyContent: 'center', alignItems: 'center',
+    },
+    buildCopyText: { color: colors.text.secondary, fontSize: typography.sizes.sm },
   });
 }

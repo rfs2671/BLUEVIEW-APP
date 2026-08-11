@@ -503,7 +503,11 @@ export default function DailyJobsiteLog() {
     const wanted = [...new Set(
       workRows(rows).map((a) => String(a.trade || '').trim()),
     )];
-    if (wanted.length === 0) wanted.push('');
+    // ALWAYS the unfiltered list too. A trade-filtered response contains only
+    // that trade's activities, so without this there is no "everything else"
+    // to put behind the catalogue toggle — and the toggle would repeat the
+    // chips already shown inline. Keyed on '' and cached like any other.
+    if (!wanted.includes('')) wanted.push('');
     await Promise.all(wanted.map(async (tr) => {
       try {
         const res = await logbooksAPI.getActivityChips(projectId, date, tr || null);
@@ -520,6 +524,47 @@ export default function DailyJobsiteLog() {
 
   /** The chip list for one crew — its own trade's, never another's. */
   const chipsFor = (a) => chipsByTrade[String(a?.trade || '').trim()] || [];
+
+  /**
+   * The chips this crew sees ON THE CARD, in order, and the remainder behind
+   * the catalogue toggle.
+   *
+   * THE DEFECT THIS FIXES. The trade filter worked — an electrical crew's 16
+   * activities came back correctly — and every one of them landed in the
+   * CATALOG band, which renders collapsed. The SUGGESTED band was empty, so
+   * the card showed "Other" and nothing else. For the 249 taxonomy activities
+   * that band is empty by construction: they carry no edges, so nothing can
+   * ever sequence them.
+   *
+   * FOR A CREW WHOSE ACTIVITIES HAVE NO EDGES, ITS TRADE'S WORK IS THE
+   * SUGGESTION. There is nothing better to offer, so it renders inline.
+   *
+   * A REAL PRIOR STILL OUTRANKS IT. Sequenced chips keep their position above
+   * the trade list — that ordering is what the sequence engine is for, and
+   * this must not cost it. Neither band is ever pre-selected.
+   */
+  const chipBandsFor = (a) => {
+    const mine = chipsFor(a);
+    const resolved = chipsMetaByTrade[String(a?.trade || '').trim()]?.resolved_trades;
+    const filtered = Array.isArray(resolved) && resolved.length > 0;
+
+    const sequenced = mine.filter((c) => c.band === 'suggested');
+    // Promoted ONLY when a trade actually resolved. For a crew with no trade
+    // `mine` IS the whole catalogue, and inlining it would put ~80 chips on
+    // the card — the opposite of the fix.
+    const tradeWork = filtered
+      ? mine.filter((c) => c.band === 'catalog' && c.id !== OTHER_ACTIVITY_ID)
+      : [];
+
+    const shown = new Set([...sequenced, ...tradeWork].map((c) => c.id));
+    // The remainder is drawn from the UNFILTERED list, so "All activities"
+    // means all activities rather than "the rest of this trade's".
+    const everything = filtered ? (chipsByTrade[''] || mine) : mine;
+    const rest = everything.filter(
+      (c) => !shown.has(c.id) && c.id !== OTHER_ACTIVITY_ID,
+    );
+    return { sequenced, tradeWork, rest };
+  };
 
   const hydrate = (d) => {
     if (d.project_address) setProjectAddress(d.project_address);
@@ -1398,9 +1443,7 @@ export default function DailyJobsiteLog() {
         if (isUnassignedWorkerRow(a)) return null;
         // THIS crew's chips, not the project's. An electrical crew must never
         // be offered drywall.
-        const myChips = chipsFor(a);
-        const suggested = myChips.filter((c) => c.band === 'suggested');
-        const rest = myChips.filter((c) => c.band !== 'suggested' && c.id !== OTHER_ACTIVITY_ID);
+        const { sequenced, tradeWork, rest } = chipBandsFor(a);
         const open = !!expandedChips[a.activity_id];
         const ready = cameraReady(a);
         const customA = Object.entries(a.custom_activity_labels || {});
@@ -1427,7 +1470,17 @@ export default function DailyJobsiteLog() {
             {/* ACTIVITY. Ranked, never pre-selected. */}
             <Text style={s.question}>{t('activityQuestion')}</Text>
             <View style={s.chipWrap}>
-              {suggested.map((c) => (
+              {/* Sequenced off the prior day FIRST — a real prior outranks a
+                  trade list, and that ordering is what the engine is for. */}
+              {sequenced.map((c) => (
+                <Chip
+                  key={c.id} label={c.label}
+                  selected={(a.activity_ids || []).includes(c.id)}
+                  onPress={() => toggleActivityChip(i, c.id)}
+                />
+              ))}
+              {/* Then this crew's own trade. Empty unless a trade resolved. */}
+              {tradeWork.map((c) => (
                 <Chip
                   key={c.id} label={c.label}
                   selected={(a.activity_ids || []).includes(c.id)}

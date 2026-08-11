@@ -175,12 +175,38 @@ ok(/getActivityChips\(projectId, date, tr \|\| null\)/.test(code),
   'the crew trade is sent to the endpoint');
 // A crew with no trade keys on '', which is the UNFILTERED list — the right
 // list for a crew whose trade nobody recorded.
-ok(/wanted\.length === 0\) wanted\.push\(''\)/.test(code),
-  "and an empty roster still fetches the unfiltered list");
+ok(/if \(!wanted\.includes\(''\)\) wanted\.push\(''\)/.test(code),
+  'the unfiltered list is ALWAYS fetched too, so "All activities" can mean all');
 ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(\)\]/.test(code),
   'each crew reads its OWN trade list, keyed on its trade');
-ok(/const myChips = chipsFor\(a\);/.test(code),
+ok(/const \{ sequenced, tradeWork, rest \} = chipBandsFor\(a\);/.test(code),
   'Step 2 renders that list, not a shared one');
+
+// ── THE TRADE'S WORK IS VISIBLE WITHOUT A TAP ────────────────────────────────
+// Found on a device: the filter worked, all 16 electrical chips came back, and
+// every one landed in the CATALOG band, which renders COLLAPSED. The suggested
+// band was empty — and for the 249 taxonomy activities it is empty by
+// construction, because they carry no edges. The card showed "Other" alone.
+const step2band = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
+ok(/\{tradeWork\.map\(/.test(step2band),
+  "the crew's own trade renders INLINE, not behind the catalogue toggle");
+// A real prior still outranks a trade list — that ordering is the engine's job.
+ok(step2band.indexOf('{sequenced.map(') > -1
+  && step2band.indexOf('{sequenced.map(') < step2band.indexOf('{tradeWork.map('),
+  'sequenced chips keep priority ABOVE the trade list');
+ok(/band === 'catalog' && c\.id !== OTHER_ACTIVITY_ID/.test(code),
+  'the promoted band is the trade catalogue, and never Other');
+// Only when a trade actually resolved. A crew with no trade would otherwise
+// get the ENTIRE catalogue inlined onto its card.
+ok(/const filtered = Array\.isArray\(resolved\) && resolved\.length > 0;/.test(code),
+  'promotion is gated on the trade having RESOLVED, not merely being non-empty');
+ok(/const tradeWork = filtered/.test(code),
+  'so an untraded crew keeps the collapsed catalogue it had');
+// "All activities" must mean all of them, not the rest of this one trade.
+ok(/const everything = filtered \? \(chipsByTrade\[''\] \|\| mine\) : mine;/.test(code),
+  'the remainder is drawn from the UNFILTERED list');
+ok(/!shown\.has\(c\.id\)/.test(code),
+  'and never repeats a chip already shown inline');
 ok(!/chips\.filter\(/.test(code),
   'no single project-wide chip list survives');
 // One fetch per DISTINCT trade, not one per crew.

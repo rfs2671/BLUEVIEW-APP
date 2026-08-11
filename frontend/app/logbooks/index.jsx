@@ -515,8 +515,14 @@ export default function LogBooksScreen() {
                   {missingToolbox.length} worker{missingToolbox.length > 1 ? 's' : ''} missing Tool Box Talk this week
                 </Text>
               </View>
+              {/* The parentheses are CONDITIONAL. The company is per-project
+                  and can legitimately be absent — an unpaired worker — and
+                  "Andre Duval ()" reads as a rendering fault rather than as
+                  missing data. No company, no brackets. */}
               {missingToolbox.slice(0, 3).map((w, i) => (
-                <Text key={i} style={styles.notifWorker}>• {w.worker_name} ({w.company})</Text>
+                <Text key={i} style={styles.notifWorker}>
+                  • {w.worker_name}{w.company ? ` (${w.company})` : ''}
+                </Text>
               ))}
               {missingToolbox.length > 3 && (
                 <Text style={styles.notifMore}>+{missingToolbox.length - 3} more</Text>

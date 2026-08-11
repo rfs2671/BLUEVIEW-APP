@@ -224,6 +224,18 @@ export const authAPI = {
 /**
  * Projects APIs
  */
+/**
+ * The commit the BACKEND is running. Pairs with the JS bundle identity in
+ * settings so a stale-bundle device test cannot be mistaken for a missing
+ * feature — which it was, once, for the Step 1 equipment/weather move.
+ */
+export const versionAPI = {
+  get: async () => {
+    const response = await apiClient.get('/api/version');
+    return response.data;
+  },
+};
+
 export const projectsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/projects');
