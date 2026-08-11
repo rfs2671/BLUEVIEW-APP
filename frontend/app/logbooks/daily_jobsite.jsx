@@ -37,18 +37,15 @@
  */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator,
   Image, Modal, Platform,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
-  ArrowLeft, ArrowRight, Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock,
+  Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock,
 } from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
@@ -57,6 +54,9 @@ import { useT } from '../../src/i18n';
 import {
   spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
 } from '../../src/styles/theme';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase, PromptModal } from '../../src/components/logbookStepper/primitives';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
 import { easternToday } from '../../src/utils/dates';
@@ -1289,18 +1289,6 @@ export default function DailyJobsiteLog() {
   ), [s, step, t]);
 
 
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.loadingCenter}>
-            <ActivityIndicator size="large" color={outdoor.text} />
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
-
   const crewName = (a) => (String(a.company || '').trim() || t('noCrewWorker'));
 
   // Present on site, not a unit of work. Counted so Step 2 can say why there
@@ -1959,124 +1947,53 @@ export default function DailyJobsiteLog() {
     </View>
   );
 
-  const STEPS = {
-    1: renderStep1, 2: renderStep2, 3: renderStep3, 4: renderStep4, 5: renderStep5,
-  };
+  // The step contract the reference settled on, unchanged: an ordered list,
+  // one rendered at a time, 1-indexed.
+  const STEPS = [
+    { render: renderStep1 }, { render: renderStep2 }, { render: renderStep3 },
+    { render: renderStep4 }, { render: renderStep5 },
+  ];
 
   return (
-    <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
-        <View style={s.header}>
-          <Pressable
-            style={s.headerBack}
-            accessibilityRole="button"
-            accessibilityLabel={t('back')}
-            onPress={() => (step === 1 ? router.push('/logbooks') : goBack())}
-          >
-            <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
-          </Pressable>
-          <View style={s.headerText}>
-            <Text style={s.headerTitle}>{t('screenTitle')}</Text>
-            <Text style={s.headerSub}>{FORM_NUMBER} · {formatLogDate(date)}</Text>
-          </View>
-        </View>
-
-        {/* Progress — marks only. It NEVER gates: a CP who cannot complete a
-            step because the data is not there must still be able to finish and
-            sign his day.
-
-            THREE STATES, because position and completeness are different
-            questions and one pip used to answer only the first:
-              unfilled  not reached yet
-              filled    reached
-              amber     reached, LEFT, and still incomplete
-
-            Amber is for a step he has MOVED PAST. The step he is standing on
-            is not marked incomplete while he is filling it in — that would
-            scold him for work in progress. */}
-        <View
-          style={s.progressRow}
-          accessibilityRole="progressbar"
-          accessibilityLabel={
-            stepsLeftIncomplete.length
-              ? t('stepsIncomplete').replace('{steps}', stepsLeftIncomplete.join(', '))
-              : t('stepsAllComplete')
-          }
-        >
-          {[1, 2, 3, 4, 5].map((n) => (
-            <View
-              key={n}
-              style={[
-                s.progressPip,
-                n <= step && s.progressPipOn,
-                stepsLeftIncomplete.includes(n) && s.progressPipWarn,
-              ]}
-            />
-          ))}
-        </View>
-
-        <ScrollView style={s.scroll} contentContainerStyle={s.scrollContent}>
-          {/* A finalized log renders read-only. pointerEvents 'none' makes
-              EVERY control below non-interactive — no per-field flags to miss.
-              Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-            {STEPS[step]()}
-          </View>
-
-          <LogbookLockBar
-            logType={'daily_jobsite'}
-            locked={locked}
-            logId={existingLogId}
-            draftKey={draftKey({ projectId, logType: 'daily_jobsite', date })}
-            canFinalize={false}
-            onFinalized={() => setLocked(true)}
-            onAmended={fetchData}
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={`${FORM_NUMBER} · ${formatLogDate(date)}`}
+      step={step}
+      steps={STEPS}
+      onStepChange={(n) => (n > step ? goNext() : goBack())}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={stepsLeftIncomplete}
+      a11yProgressLabel={
+        stepsLeftIncomplete.length
+          ? t('stepsIncomplete').replace('{steps}', stepsLeftIncomplete.join(', '))
+          : t('stepsAllComplete')
+      }
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      onSubmit={handleSubmitAndSign}
+      logType={'daily_jobsite'}
+      logId={existingLogId}
+      draftKey={draftKey({ projectId, logType: 'daily_jobsite', date })}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+      overlays={(
+        <>
+          {/* OUTSIDE the SafeAreaView on purpose: on native this is a
+              pre-warmed full-screen absolute overlay, and inside the
+              SafeAreaView its absolute fill would stop at the safe-area inset
+              instead of going full-bleed. */}
+          <CameraCaptureModal
+            visible={cameraVisible}
+            shots={cameraShots}
+            onClose={() => setCameraVisible(false)}
+            onCapture={handleCameraCapture}
+            onDeleteShot={handleDeleteShot}
           />
-          <Text style={s.autosaveNote}>{t('savedAutomatically')}</Text>
-        </ScrollView>
-
-        {/* ONE PRIMARY ACTION, and it is the largest element on the screen. */}
-        {!locked && (
-          <View style={s.footer}>
-            {step < TOTAL_STEPS ? (
-              <Pressable
-                style={s.primaryBtn}
-                accessibilityRole="button"
-                accessibilityLabel={t('next')}
-                onPress={goNext}
-              >
-                <Text style={s.primaryBtnText}>{t('next')}</Text>
-                <ArrowRight size={26} strokeWidth={2.5} color={outdoor.textOnSelected} />
-              </Pressable>
-            ) : (
-              <Pressable
-                style={s.primaryBtn}
-                accessibilityRole="button"
-                accessibilityLabel={t('submitAndSign')}
-                disabled={signing}
-                onPress={handleSubmitAndSign}
-              >
-                {signing
-                  ? <ActivityIndicator size="small" color={outdoor.textOnSelected} />
-                  : <Check size={26} strokeWidth={2.5} color={outdoor.textOnSelected} />}
-                <Text style={s.primaryBtnText}>{t('submitAndSign')}</Text>
-              </Pressable>
-            )}
-          </View>
-        )}
-      </SafeAreaView>
-
-      {/* OUTSIDE the SafeAreaView on purpose: on native this is a pre-warmed
-          full-screen absolute overlay, and inside the SafeAreaView its absolute
-          fill would stop at the safe-area inset instead of going full-bleed. */}
-      <CameraCaptureModal
-        visible={cameraVisible}
-        shots={cameraShots}
-        onClose={() => setCameraVisible(false)}
-        onCapture={handleCameraCapture}
-        onDeleteShot={handleDeleteShot}
-      />
-
       <PromptModal
         visible={!!otherPrompt}
         title={otherPrompt?.kind === 'location' ? t('locationOtherPrompt') : t('chipOtherPrompt')}
@@ -2153,152 +2070,19 @@ export default function DailyJobsiteLog() {
           ) : null}
         </Pressable>
       </Modal>
-    </AnimatedBackground>
+        </>
+      )}
+    />
   );
 }
 
-/**
- * A card, rendered the way the rest of the app renders one.
- *
- * This is GlassCard's light-mode appearance, rebuilt rather than reused: a
- * white->blue-100 vertical gradient, a 32pt corner, a soft diffuse shadow and
- * the glass border. GlassCard itself is theme-aware and would go dark for a CP
- * with dark mode on, which the outdoor rule forbids — see the note on
- * `outdoor` in theme.js.
- *
- * TWO NESTED VIEWS ON PURPOSE. The shadow lives on the OUTER view and the
- * gradient on the inner one: a shadow and `overflow: 'hidden'` on the same view
- * clip each other on iOS, so the rounded gradient would square off or the
- * shadow would vanish.
- */
-function Card({ s, style, children }) {
-  return (
-    <View style={[s.cardShadow, style]}>
-      <LinearGradient
-        colors={[outdoor.cardTop, outdoor.cardBottom]}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={s.cardFill}
-      >
-        {children}
-      </LinearGradient>
-    </View>
-  );
-}
-
-/**
- * One chip. Selection is carried on accessibilityState as well as in the
- * styling, so the state is available to a screen reader and to a test — not
- * only to someone who can see the colour.
- */
-function ChipBase({ s, label, selected, onPress }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected: !!selected }}
-      accessibilityLabel={label}
-      style={[s.chip, selected && s.chipSelected]}
-    >
-      <Text style={[s.chipText, selected && s.chipTextSelected]}>{label}</Text>
-    </Pressable>
-  );
-}
-
-function StepHeaderBase({ s, count, title }) {
-  return (
-    <View style={s.stepHeader}>
-      <Text style={s.stepCount}>{count}</Text>
-      <Text style={s.stepTitle}>{title}</Text>
-    </View>
-  );
-}
-
-/** One text prompt, used by the company correction and both "Other" entries. */
-function PromptModal({
-  visible, title, hint, value, placeholder, onChange, onCancel, onConfirm,
-  confirmLabel, cancelLabel, s,
-}) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      <View style={s.modalOverlay}>
-        <View style={s.modalCard}>
-          <Text style={s.modalTitle}>{title}</Text>
-          {!!hint && <Text style={s.noteText}>{hint}</Text>}
-          <TextInput
-            style={s.input}
-            value={value}
-            onChangeText={onChange}
-            placeholder={placeholder}
-            placeholderTextColor={outdoor.textDim}
-            autoFocus
-          />
-          <View style={s.modalActions}>
-            <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={onCancel}>
-              <Text style={s.secondaryBtnText}>{cancelLabel}</Text>
-            </Pressable>
-            <Pressable style={s.primaryBtn} accessibilityRole="button" onPress={onConfirm}>
-              <Text style={s.primaryBtnText}>{confirmLabel}</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-/**
- * Every value below comes from the token file. No literal colour, size, radius
- * or spacing appears in this StyleSheet — that is asserted by
- * src/utils/dailyJobsiteStepper.test.cjs, which fails on a raw hex, rgba(), or
- * a numeric fontSize.
- *
- * Not theme-dependent, so it is built once: the outdoor palette deliberately
- * does not flip (see theme.js).
- */
 function buildStyles() {
   return StyleSheet.create({
-    container: { flex: 1 },
-    loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-
-    header: {
-      flexDirection: 'row', alignItems: 'center', gap: spacing.md,
-      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    },
-    // GlassButton's icon variant is a 44x44 circular pill. Same look here, but
-    // the 56pt floor wins over the visual size: the constraint is a gloved
-    // thumb outdoors, not the component.
-    headerBack: {
-      minWidth: touchTarget.min, minHeight: touchTarget.min,
-      alignItems: 'center', justifyContent: 'center',
-      borderRadius: borderRadius.full,
-      backgroundColor: outdoor.surface,
-      borderWidth: 1, borderColor: outdoor.line,
-    },
-    headerText: { flex: 1 },
-    headerTitle: {
-      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
-    },
-    headerSub: { fontSize: typography.sizes.fine, color: outdoor.textDim },
-
-    progressRow: {
-      flexDirection: 'row', gap: spacing.xs, paddingHorizontal: spacing.md,
-      paddingBottom: spacing.sm,
-    },
-    progressPip: {
-      flex: 1, height: spacing.xs, borderRadius: borderRadius.sm,
-      backgroundColor: outdoor.line,
-    },
-    progressPipOn: { backgroundColor: outdoor.surfaceSelected },
-    // Reached, left, and still incomplete. Last in the style array so it
-    // wins over progressPipOn — an incomplete step he has walked past is
-    // the more important of the two things the pip can say.
-    progressPipWarn: { backgroundColor: outdoor.warn },
-    // ── COMPACT STEP 1 ────────────────────────────────────────────────
-    // 40pt: two 13pt lines plus 4pt padding. NOT a touch target, because the
-    // row is not tappable — see the note above renderStep1. Anything that
-    // makes it interactive goes back to touchTarget.min and the fit
-    // arithmetic has to be redone.
+    // The 51 CHROME keys now live in buildStepperStyles() and are spread in
+    // above — header, pips, footer, cards, chips, inputs, modals. They were
+    // lifted verbatim, so this screen renders exactly what it rendered before.
+    // Only the keys BELOW are specific to the Daily Jobsite Log.
+    ...buildStepperStyles(),
     crewRow: {
       paddingVertical: spacing.xs, paddingHorizontal: spacing.sm,
       borderBottomWidth: 1, borderBottomColor: outdoor.line,
@@ -2331,35 +2115,7 @@ function buildStyles() {
     // NO background colour. The flat grey was covering AnimatedBackground's
     // blue-tinted gradient, which is what made this screen read as foreign
     // beside every other one.
-    scroll: { flex: 1 },
-    scrollContent: { padding: spacing.md, paddingBottom: spacing.xxl },
-
-    stepHeader: { marginBottom: spacing.md },
-    stepCount: {
-      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
-      letterSpacing: spacing.xs / 4, textTransform: 'uppercase',
-    },
-    stepTitle: {
-      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.text,
-    },
-
-    // Shadow on the outer view, gradient on the inner - see Card.
-    cardShadow: {
-      borderRadius: borderRadius.xxl,
-      marginBottom: spacing.md,
-      backgroundColor: outdoor.cardTop,
-      ...outdoorShadow,
-    },
-    cardFill: {
-      borderRadius: borderRadius.xxl,
-      borderWidth: 1,
-      borderColor: outdoor.line,
-      padding: spacing.xl,
-      gap: spacing.sm,
-      overflow: 'hidden',
-    },
     cardFlagged: { borderColor: outdoor.warnBorder },
-    cardWarn: { backgroundColor: outdoor.warnBg },
     crewTop: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
       gap: spacing.sm, flexWrap: 'wrap',
@@ -2398,64 +2154,6 @@ function buildStyles() {
     warnCard: {
       flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
     },
-    warnBody: { flex: 1, gap: spacing.xs },
-    warnTitle: {
-      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
-    },
-    warnText: { fontSize: typography.sizes.sm, color: outdoor.textSoft },
-
-    question: {
-      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
-      marginTop: spacing.sm,
-    },
-    noteText: { fontSize: typography.sizes.dense, color: outdoor.textDim },
-    emptyText: {
-      fontSize: typography.sizes.md, color: outdoor.textSoft, paddingVertical: spacing.md,
-    },
-    errorText: {
-      fontSize: typography.sizes.dense, fontWeight: '600', color: outdoor.danger,
-    },
-    lockedHint: {
-      fontSize: typography.sizes.sm, color: outdoor.textSoft,
-      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
-      padding: spacing.md,
-    },
-
-    chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-    chip: {
-      minHeight: touchTarget.min, justifyContent: 'center',
-      paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
-      borderRadius: borderRadius.full, borderWidth: 1,
-      borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
-    },
-    chipSelected: {
-      backgroundColor: outdoor.surfaceSelected, borderColor: outdoor.surfaceSelected,
-    },
-    chipText: {
-      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
-    },
-    chipTextSelected: { color: outdoor.textOnSelected },
-
-    input: {
-      minHeight: touchTarget.min, borderRadius: borderRadius.lg, borderWidth: 1,
-      borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
-      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-      fontSize: typography.sizes.md, color: outdoor.text,
-    },
-
-    toggleRow: {
-      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-      minHeight: touchTarget.min, paddingHorizontal: spacing.md,
-      borderRadius: borderRadius.full, borderWidth: 1,
-      borderColor: outdoor.lineStrong,
-    },
-    toggleRowOn: { borderColor: outdoor.okBorder, backgroundColor: outdoor.okBg },
-    toggleBox: {
-      width: spacing.lg, height: spacing.lg, borderRadius: borderRadius.sm,
-      borderWidth: 2, borderColor: outdoor.lineStrong,
-    },
-    toggleText: { fontSize: typography.sizes.md, color: outdoor.text, flex: 1 },
-
     photoBlock: { gap: spacing.sm },
     taggedWith: {
       fontSize: typography.sizes.fine, color: outdoor.textSoft,
@@ -2499,64 +2197,9 @@ function buildStyles() {
       fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
     },
 
-    readOnlyValue: {
-      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
-      padding: spacing.md, gap: spacing.xs,
-    },
-    readOnlyText: {
-      fontSize: typography.sizes.lg, fontWeight: '600', color: outdoor.text,
-    },
     reviewCrew: {
       fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
     },
-    reviewLabel: {
-      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
-      textTransform: 'uppercase',
-    },
-    reviewValue: { fontSize: typography.sizes.md, color: outdoor.text },
-
-    secondaryBtn: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-      gap: spacing.sm, minHeight: touchTarget.min,
-      paddingHorizontal: spacing.lg, borderRadius: borderRadius.full,
-      borderWidth: 1, borderColor: outdoor.lineStrong,
-      backgroundColor: outdoor.surface,
-    },
-    secondaryBtnText: {
-      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
-    },
-
-    footer: { padding: spacing.md },
-    primaryBtn: {
-      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-      gap: spacing.sm, minHeight: touchTarget.primary,
-      borderRadius: borderRadius.full, backgroundColor: outdoor.surfaceSelected,
-      paddingHorizontal: spacing.xl,
-      ...outdoorShadow,
-    },
-    primaryBtnText: {
-      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.textOnSelected,
-    },
-
-    autosaveNote: {
-      fontSize: typography.sizes.fine, color: outdoor.textDim,
-      textAlign: 'center', paddingVertical: spacing.sm,
-    },
-
-    modalOverlay: {
-      flex: 1, alignItems: 'center', justifyContent: 'center',
-      backgroundColor: outdoor.scrim, padding: spacing.md,
-    },
-    modalCard: {
-      width: '100%', backgroundColor: outdoor.cardTop,
-      borderRadius: borderRadius.xxl,
-      padding: spacing.xl, gap: spacing.sm, ...outdoorShadow,
-    },
-    modalTitle: {
-      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
-    },
-    modalActions: { flexDirection: 'row', gap: spacing.sm },
-
     lightboxOverlay: {
       flex: 1, alignItems: 'center', justifyContent: 'center',
       backgroundColor: outdoor.scrim,

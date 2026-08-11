@@ -18,6 +18,17 @@ const path = require('path');
 const FRONTEND = path.join(__dirname, '..', '..');
 const SCREEN = path.join(FRONTEND, 'app', 'logbooks', 'daily_jobsite.jsx');
 const src = fs.readFileSync(SCREEN, 'utf8');
+
+// THE SCREEN IS NOW TWO FILES. Its chrome — header, pips, footer, lock bar —
+// and the 51 shared style keys were extracted to src/components/logbookStepper
+// so that ten forms cannot each drift. The rules below are unchanged; they are
+// simply read from wherever the code they describe now lives, because this
+// suite asserts SOURCE TEXT and the text moved. Nothing about what the CP sees
+// changed, which is what the mount smoke and the executable model tests check.
+const STEPPER_DIR = path.join(FRONTEND, 'src', 'components', 'logbookStepper');
+const chromeRaw = fs.readFileSync(path.join(STEPPER_DIR, 'LogbookStepper.jsx'), 'utf8');
+const primitivesRaw = fs.readFileSync(path.join(STEPPER_DIR, 'primitives.jsx'), 'utf8');
+const sharedStylesRaw = fs.readFileSync(path.join(STEPPER_DIR, 'styles.js'), 'utf8');
 const model = fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8');
 const theme = fs.readFileSync(path.join(FRONTEND, 'src', 'styles', 'theme.js'), 'utf8');
 
@@ -44,13 +55,20 @@ function stripComments(text) {
     .replace(/\s\/\/[^\n'"`]*$/gm, '');
 }
 const code = stripComments(src);
+// Comment-stripped for the reason this file's own header gives: these modules
+// DOCUMENT the patterns they ban ("no raw hex, no rgba()"), and an absence
+// test that reads prose fails on the documentation of the fix it is checking.
+const chromeSrc = stripComments(chromeRaw);
+const primitivesSrc = stripComments(primitivesRaw);
+const sharedStyles = stripComments(sharedStylesRaw);
 ok(/work_description/.test(code) && !/WHY THIS IS NOT IN THE SCREEN/.test(code),
   'the comment stripper removes prose but keeps code');
 
 /** The buildStyles() body — where every literal would hide. */
 const stylesBody = (() => {
   const i = code.indexOf('function buildStyles()');
-  return i === -1 ? '' : code.slice(i);
+  // Both halves: the form's own keys and the shared chrome it spreads in.
+  return (i === -1 ? '' : code.slice(i)) + '\n' + sharedStyles;
 })();
 /** Everything ABOVE buildStyles — the component itself. */
 const componentBody = code.slice(0, code.indexOf('function buildStyles()'));
@@ -95,11 +113,12 @@ console.log('\n── One primary action, and it is the largest thing on screen 
 
 // The footer holds exactly one button: Next, or (on the last step) sign.
 // lastIndexOf: the FIRST </SafeAreaView> closes the loading branch, not this one.
-const footer = code.slice(code.indexOf('<View style={s.footer}>'), code.lastIndexOf('</SafeAreaView>'));
+const footer = chromeSrc.slice(
+  chromeSrc.indexOf('<View style={s.footer}>'), chromeSrc.lastIndexOf('</SafeAreaView>'));
 const footerPressables = (footer.match(/<Pressable/g) || []).length;
 ok(footerPressables === 2,
   `the footer renders one button per branch — Next XOR sign (got ${footerPressables} across both branches)`);
-ok(/step < TOTAL_STEPS \?/.test(footer),
+ok(/step < total \?/.test(footer),
   'the two branches are mutually exclusive, so only one is ever on screen');
 
 const primaryBlock = stylesBody.match(/\n\s{4}primaryBtn:\s*\{([\s\S]*?)\n\s{4}\}/);
@@ -341,17 +360,17 @@ ok(jsxHex.length === 0, `no hardcoded icon colours${jsxHex.length ? ` — ${JSON
 console.log('\n── It looks like the rest of the app ──');
 
 // 1. BACKGROUND — AnimatedBackground's blue gradient, not a flat grey.
-ok(/<AnimatedBackground>/.test(src), 'the screen still renders AnimatedBackground');
+ok(/<AnimatedBackground>/.test(chromeSrc), 'the screen still renders AnimatedBackground');
 const scrollBlock = stylesBody.match(/\n\s{4}scroll:\s*\{([\s\S]*?)\n?\s{4}\},/);
 ok(scrollBlock && !/backgroundColor/.test(scrollBlock[1]),
   'the scroll view paints NO background — the flat grey was hiding the gradient');
 
 // 2. CARD FILL — a white->blue vertical gradient, not a flat white.
-ok(/import \{ LinearGradient \} from 'expo-linear-gradient';/.test(src),
+ok(/import \{ LinearGradient \} from 'expo-linear-gradient';/.test(primitivesRaw),
   'the card uses a real gradient');
-ok(/colors=\{\[outdoor\.cardTop, outdoor\.cardBottom\]\}/.test(src),
+ok(/colors=\{\[outdoor\.cardTop, outdoor\.cardBottom\]\}/.test(primitivesSrc),
   'from outdoor.cardTop to outdoor.cardBottom, the values GlassCard uses');
-ok(/function Card\(\{ s, style, children \}\)/.test(src),
+ok(/export function Card\(\{ s, style, children \}\)/.test(primitivesSrc),
   'and it is one Card component, so every surface matches');
 
 // 3. CORNER RADIUS — 32, the app's card corner, not 12.
@@ -555,7 +574,7 @@ ok(/import \{[^}]*stepComplete[^}]*\} from '\.\.\/\.\.\/src\/utils\/dailyJobsite
   .test(code), 'and imports it from the model rather than restating the rule');
 ok(/n < step && !stepComplete\(n, state\)/.test(code),
   'a step he is STANDING ON is work in progress, not an omission — n < step, not n <= step');
-ok(/stepsLeftIncomplete\.includes\(n\) && s\.progressPipWarn/.test(code),
+ok(/incompleteSteps\.includes\(n\) && s\.progressPipWarn/.test(chromeSrc),
   'the third pip state is applied');
 ok(/progressPipWarn: \{ backgroundColor: outdoor\.warn \}/.test(stylesBody),
   'and it comes from the token file, not a literal');
@@ -564,14 +583,14 @@ ok(/progressPipWarn: \{ backgroundColor: outdoor\.warn \}/.test(stylesBody),
 // earlier version of this test sliced up to the first 'progressPipWarn', so a
 // swapped array left indexOf('progressPipOn') at -1 and the assertion passed
 // on the mutation it existed to catch.
-const pipStart = code.indexOf('s.progressPip,');
-const pipArr = code.slice(pipStart, code.indexOf(']}', pipStart));
+const pipStart = chromeSrc.indexOf('s.progressPip,');
+const pipArr = chromeSrc.slice(pipStart, chromeSrc.indexOf(']}', pipStart));
 const onAt = pipArr.indexOf('progressPipOn');
 const warnAt = pipArr.indexOf('progressPipWarn');
 ok(onAt > -1 && warnAt > -1 && onAt < warnAt,
   'an incomplete step he walked past outranks "reached" in the style array');
 // Colour alone is a weak signal outdoors in sunlight.
-ok(/accessibilityRole="progressbar"/.test(code) && /stepsIncomplete/.test(code),
+ok(/accessibilityRole="progressbar"/.test(chromeSrc) && /stepsIncomplete/.test(code),
   'the row says it out loud too, rather than relying on colour alone');
 ok(/state = \{ activities, observations, checklistItems, cpSignature \}/.test(code),
   'and every input the rule reads is supplied — a missing one reads as complete');

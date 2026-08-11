@@ -1,0 +1,207 @@
+import { StyleSheet } from 'react-native';
+import {
+  spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
+} from '../../styles/theme';
+
+/**
+ * The stepper's CHROME styles — every value a logbook form needs to look like
+ * the approved Daily Jobsite Log, and nothing specific to that form.
+ *
+ * LIFTED VERBATIM from app/logbooks/daily_jobsite.jsx, which is the only
+ * implementation an operator has device-tested and approved. Nothing here was
+ * redesigned during the extraction: the numbers are the numbers that shipped.
+ *
+ * Not theme-dependent, so it is built once — the outdoor palette deliberately
+ * does not flip (see theme.js). Every value comes from the token file; a raw
+ * hex, rgba() or numeric fontSize fails src/styles/tokens.test.cjs.
+ *
+ * A form adds its OWN keys by spreading this into its own StyleSheet, so the
+ * shared names cannot drift apart across ten screens while the form-specific
+ * ones stay where they are used.
+ */
+export function buildStepperStyles() {
+  return StyleSheet.create({
+    container: { flex: 1 },
+    loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+
+    header: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.md,
+      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    },
+    // GlassButton's icon variant is a 44x44 circular pill. Same look here, but
+    // the 56pt floor wins over the visual size: the constraint is a gloved
+    // thumb outdoors, not the component.
+    headerBack: {
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: borderRadius.full,
+      backgroundColor: outdoor.surface,
+      borderWidth: 1, borderColor: outdoor.line,
+    },
+    headerText: { flex: 1 },
+    headerTitle: {
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+    },
+    headerSub: { fontSize: typography.sizes.fine, color: outdoor.textDim },
+
+    progressRow: {
+      flexDirection: 'row', gap: spacing.xs, paddingHorizontal: spacing.md,
+      paddingBottom: spacing.sm,
+    },
+    progressPip: {
+      flex: 1, height: spacing.xs, borderRadius: borderRadius.sm,
+      backgroundColor: outdoor.line,
+    },
+    progressPipOn: { backgroundColor: outdoor.surfaceSelected },
+    // Reached, left, and still incomplete. Last in the style array so it
+    // wins over progressPipOn — an incomplete step he has walked past is
+    // the more important of the two things the pip can say.
+    progressPipWarn: { backgroundColor: outdoor.warn },
+    // ── COMPACT STEP 1 ────────────────────────────────────────────────
+    // 40pt: two 13pt lines plus 4pt padding. NOT a touch target, because the
+    // row is not tappable — see the note above renderStep1. Anything that
+    // makes it interactive goes back to touchTarget.min and the fit
+    // arithmetic has to be redone.
+    scroll: { flex: 1 },
+    scrollContent: { padding: spacing.md, paddingBottom: spacing.xxl },
+
+    stepHeader: { marginBottom: spacing.md },
+    stepCount: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+      letterSpacing: spacing.xs / 4, textTransform: 'uppercase',
+    },
+    stepTitle: {
+      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.text,
+    },
+
+    // Shadow on the outer view, gradient on the inner - see Card.
+    cardShadow: {
+      borderRadius: borderRadius.xxl,
+      marginBottom: spacing.md,
+      backgroundColor: outdoor.cardTop,
+      ...outdoorShadow,
+    },
+    cardFill: {
+      borderRadius: borderRadius.xxl,
+      borderWidth: 1,
+      borderColor: outdoor.line,
+      padding: spacing.xl,
+      gap: spacing.sm,
+      overflow: 'hidden',
+    },
+    cardWarn: { backgroundColor: outdoor.warnBg },
+    warnBody: { flex: 1, gap: spacing.xs },
+    warnTitle: {
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
+    },
+    warnText: { fontSize: typography.sizes.sm, color: outdoor.textSoft },
+
+    question: {
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.text,
+      marginTop: spacing.sm,
+    },
+    noteText: { fontSize: typography.sizes.dense, color: outdoor.textDim },
+    emptyText: {
+      fontSize: typography.sizes.md, color: outdoor.textSoft, paddingVertical: spacing.md,
+    },
+    errorText: {
+      fontSize: typography.sizes.dense, fontWeight: '600', color: outdoor.danger,
+    },
+    lockedHint: {
+      fontSize: typography.sizes.sm, color: outdoor.textSoft,
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
+      padding: spacing.md,
+    },
+
+    chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+    chip: {
+      minHeight: touchTarget.min, justifyContent: 'center',
+      paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+      borderRadius: borderRadius.full, borderWidth: 1,
+      borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+    },
+    chipSelected: {
+      backgroundColor: outdoor.surfaceSelected, borderColor: outdoor.surfaceSelected,
+    },
+    chipText: {
+      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
+    },
+    chipTextSelected: { color: outdoor.textOnSelected },
+
+    input: {
+      minHeight: touchTarget.min, borderRadius: borderRadius.lg, borderWidth: 1,
+      borderColor: outdoor.lineStrong, backgroundColor: outdoor.surface,
+      paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+      fontSize: typography.sizes.md, color: outdoor.text,
+    },
+
+    toggleRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      minHeight: touchTarget.min, paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.full, borderWidth: 1,
+      borderColor: outdoor.lineStrong,
+    },
+    toggleRowOn: { borderColor: outdoor.okBorder, backgroundColor: outdoor.okBg },
+    toggleBox: {
+      width: spacing.lg, height: spacing.lg, borderRadius: borderRadius.sm,
+      borderWidth: 2, borderColor: outdoor.lineStrong,
+    },
+    toggleText: { fontSize: typography.sizes.md, color: outdoor.text, flex: 1 },
+
+    readOnlyValue: {
+      backgroundColor: outdoor.surfaceSunk, borderRadius: borderRadius.lg,
+      padding: spacing.md, gap: spacing.xs,
+    },
+    readOnlyText: {
+      fontSize: typography.sizes.lg, fontWeight: '600', color: outdoor.text,
+    },
+    reviewLabel: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+      textTransform: 'uppercase',
+    },
+    reviewValue: { fontSize: typography.sizes.md, color: outdoor.text },
+
+    secondaryBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.min,
+      paddingHorizontal: spacing.lg, borderRadius: borderRadius.full,
+      borderWidth: 1, borderColor: outdoor.lineStrong,
+      backgroundColor: outdoor.surface,
+    },
+    secondaryBtnText: {
+      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
+    },
+
+    footer: { padding: spacing.md },
+    primaryBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.primary,
+      borderRadius: borderRadius.full, backgroundColor: outdoor.surfaceSelected,
+      paddingHorizontal: spacing.xl,
+      ...outdoorShadow,
+    },
+    primaryBtnText: {
+      fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.textOnSelected,
+    },
+
+    autosaveNote: {
+      fontSize: typography.sizes.fine, color: outdoor.textDim,
+      textAlign: 'center', paddingVertical: spacing.sm,
+    },
+
+    modalOverlay: {
+      flex: 1, alignItems: 'center', justifyContent: 'center',
+      backgroundColor: outdoor.scrim, padding: spacing.md,
+    },
+    modalCard: {
+      width: '100%', backgroundColor: outdoor.cardTop,
+      borderRadius: borderRadius.xxl,
+      padding: spacing.xl, gap: spacing.sm, ...outdoorShadow,
+    },
+    modalTitle: {
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+    },
+    modalActions: { flexDirection: 'row', gap: spacing.sm },
+
+  });
+}
