@@ -8424,8 +8424,32 @@ async def get_projects(
     # Marked-for-deletion projects vanish from the admin list; only the
     # owner sees them, via GET /projects/pending-deletion.
     query = dict(ACTIVE_PROJECT_FILTER)
+
+    # THE TENANT FILTER WAS CONDITIONAL, and this is where foreign project ids
+    # came from. `if company_id:` — so a caller with NO company_id skipped it
+    # and received EVERY company's projects, ids included.
+    #
+    # That is not an exotic account state, it is the DEFAULT one: self-serve
+    # registration sets `user_dict["company_id"] = None` outright, and a
+    # company is only attached later by POST /onboarding/company. So every
+    # freshly registered account, before onboarding, could list the whole
+    # platform's projects.
+    #
+    # A caller with no company has no projects, so the honest answer is an
+    # empty list. `_id: None` cannot match any document — an unsatisfiable
+    # filter rather than a second return path, so pagination, the defcon
+    # augmentation below and the response shape stay identical to a company
+    # that simply owns nothing. A pre-onboarding user still has GET
+    # /demo/project, which is what they are meant to see.
+    #
+    # The platform operator keeps the unfiltered list: the one deliberate
+    # cross-company path, the same carve-out validate_assignable_projects
+    # makes, and never inferred from `role` — role "owner" is what every
+    # self-serve signup receives.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
 
     result = await paginated_query(
         db.projects, query, sort_field="name", sort_dir=1,
@@ -16091,18 +16115,52 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     await _remember_other_activities(data.project_id, data.data)
     return serialize_id(created)
 
+async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
+    """Load the logbook, load ITS project, then authorize. Returns the doc.
+
+    THE GAP THIS CLOSES. update / finalize / amend each gated `cp` on
+    assigned_projects and every other role on NOTHING — not the company, not
+    the project, nothing. Any authenticated non-CP holding a logbook id could
+    edit, freeze or amend another company's filed compliance record. #110
+    closed the same hole on create, which takes a project id in the body;
+    these take a logbook id in the path, so the shape differs.
+
+    THE IDIOM IS get_logbook's, not create_logbook's, and the guard is
+    `user_can_act_on_project` for the same reason: the id names a DOCUMENT, so
+    its project has to be loaded before anything can be decided about it.
+
+    WHO THAT ALLOWS — admin/owner of the project's company, or anyone
+    assigned to the project. Deliberately narrower than project_access_ok,
+    which also admits a site device: no screen under frontend/app/site calls
+    update, finalize, amend or delete, so a kiosk has no logbook write to
+    lose. A CP of the right company who is NOT assigned stays refused, which
+    is what create_logbook already does.
+
+    Reads the ACTIVE doc only, matching every call site's existing find_one —
+    a soft-deleted logbook was already a 404 on all four.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project or not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this logbook")
+    return logbook
+
+
 @api_router.put("/logbooks/{logbook_id}")
 async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = Depends(get_current_user)):
     """Update an existing logbook entry"""
-    # CP write-scope gate: load the target doc first so we can assert
-    # the requesting CP is assigned to its project before mutating.
-    # Other roles are unaffected (existing broader access retained).
+    # Tenant + project gate. Returns the doc, so the CP branch and the lock
+    # check below reuse it instead of re-reading.
+    existing_lb = await _authorize_logbook_write(logbook_id, current_user)
+
+    # CP write-scope gate: kept ahead of the general rule for its specific
+    # message. Subsumed by the assigned branch above, and cheap.
     if current_user.get("role") == "cp":
-        existing_lb = await db.logbooks.find_one(
-            {"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}}
-        )
-        if not existing_lb:
-            raise HTTPException(status_code=404, detail="Logbook not found")
         assigned = current_user.get("assigned_projects", []) or []
         if existing_lb.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
@@ -16309,9 +16367,10 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     to bilingual copy) — there is no server-side bilingual error precedent.
     """
     now = datetime.now(timezone.utc)
-    existing = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Logbook not found")
+    # Tenant + project gate, BEFORE the idempotent early-return below: an
+    # outsider must not be able to learn that another company's log is already
+    # finalized by getting the document back instead of a 403.
+    existing = await _authorize_logbook_write(logbook_id, current_user)
     if current_user.get("role") == "cp":
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
@@ -16373,9 +16432,7 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     if not reason or not str(reason).strip():
         raise HTTPException(status_code=400, detail="Reason for Amendment is required.")
     now = datetime.now(timezone.utc)
-    original = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
-    if not original:
-        raise HTTPException(status_code=404, detail="Logbook not found")
+    original = await _authorize_logbook_write(logbook_id, current_user)
     if current_user.get("role") == "cp":
         assigned = current_user.get("assigned_projects", []) or []
         if original.get("project_id") not in assigned:
@@ -16637,11 +16694,13 @@ async def get_activity_chips(
 @api_router.delete("/logbooks/{logbook_id}")
 async def delete_logbook(logbook_id: str, current_user = Depends(get_current_user)):
     """Soft delete a logbook entry — only by admins or the user who created it"""
-    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
-    if not logbook:
-        raise HTTPException(status_code=404, detail="Logbook not found")
+    # "admin/owner can delete any" meant ANY COMPANY'S. The tenant gate runs
+    # first and narrows "any" to "any on a project this user can act on"; the
+    # created_by rule below is unchanged and still decides who, WITHIN that
+    # project, may delete a log they did not write.
+    logbook = await _authorize_logbook_write(logbook_id, current_user)
 
-    # Authorization: admin/owner can delete any, others only their own
+    # Authorization: admin/owner can delete any on this project, others only their own
     user_role = current_user.get("role", "")
     user_id = str(current_user.get("_id", ""))
     if user_role not in ("admin", "owner") and logbook.get("created_by") != user_id:
