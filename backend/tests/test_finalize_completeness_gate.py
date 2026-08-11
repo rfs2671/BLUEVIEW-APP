@@ -105,6 +105,13 @@ def _mk_db(**overrides):
     log.update(overrides)
     db = _FakeDb()
     db.logbooks.set_find_one(lambda q: log)
+    # The logbook write endpoints authorize against the logbook's PROJECT now
+    # (load doc, load project, authorize — get_logbook's idiom), so a fixture
+    # with no project row is a 403. Same company as the users below, which is
+    # what makes them authorized; a missing project row deliberately fails
+    # CLOSED, and that is asserted in test_logbook_write_guards.py.
+    db.projects.set_find_one(lambda q: {"_id": "proj1", "name": "5 Beekman",
+                                        "company_id": "co_a"})
     return db
 
 

@@ -216,6 +216,9 @@ export default {
     // signal outdoors, so the row says it out loud to a screen reader.
     stepsIncomplete: 'Steps {steps} are started but not finished.',
     stepsAllComplete: 'Every step you have been through is complete.',
+    // Nothing ticked is NOT the same as nothing on site. Matches
+    // logbookView.fNotRecorded and the server's NOT_RECORDED.
+    notRecorded: '— Not recorded',
     inspectionsHint: 'Tap Pass or Fail for each. Leave an item blank if you did not walk it.',
     inspectionPass: 'Pass',
     inspectionFail: 'Fail',

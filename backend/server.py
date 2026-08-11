@@ -3424,6 +3424,37 @@ def _same_company(actor: dict, target: dict) -> bool:
 # exact same check — FastAPI can only resolve `require_project_access` as a
 # dependency when {project_id} is in the path. `require_project_access` below is
 # a thin Depends wrapper over it; every existing dependency site is unchanged.
+def project_access_ok(project: dict, project_id: str, current_user: dict) -> bool:
+    """The three-branch rule, separated from the lookup that precedes it.
+
+    Extracted so a caller that must do its OWN project lookup can still reach
+    the same decision instead of restating it. create_logbook is that caller:
+    its project id arrives in the BODY, so FastAPI cannot resolve
+    Depends(require_project_access), and it deliberately does NOT apply
+    ACTIVE_PROJECT_FILTER — see the note at its call site.
+
+    The branches, and the decision each one encodes, are unchanged:
+      1. a site device may act on the project it was provisioned for, and no
+         other;
+      2. same company, derived from auth and NEVER from the request;
+      3. explicitly assigned to this project — validated same-company at every
+         write site by validate_assignable_projects, but historical rows
+         predate that, so the branch stays.
+
+    There is no platform-operator branch, and this does not add one: the
+    operator appears in user administration, project deletion and
+    assignable-project validation, and in no logbook flow.
+    """
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        return str(current_user.get("project_id") or "") == str(project_id)
+
+    user_company = get_user_company_id(current_user)
+    if user_company and str(project.get("company_id") or "") == str(user_company):
+        return True
+
+    return str(project_id) in (current_user.get("assigned_projects") or [])
+
+
 async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     project = await db.projects.find_one({
         "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
@@ -3431,24 +3462,11 @@ async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # 1. Site device — its own project only.
-    if current_user.get("site_mode") or current_user.get("role") == "site_device":
-        if str(current_user.get("project_id") or "") == str(project_id):
-            return project
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(
             status_code=403, detail="Not authorized for this project",
         )
-
-    # 2. Same company (derived from auth, never from the request).
-    user_company = get_user_company_id(current_user)
-    if user_company and str(project.get("company_id") or "") == str(user_company):
-        return project
-
-    # 3. Explicitly assigned to this project.
-    if str(project_id) in (current_user.get("assigned_projects") or []):
-        return project
-
-    raise HTTPException(status_code=403, detail="Not authorized for this project")
+    return project
 
 
 async def require_project_access(
@@ -5440,6 +5458,26 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
             detail="company_id is required when creating a CP user. "
                    "Assign them to a company first.",
         )
+
+    # STAMPED, not left absent. This path wrote NO account_status at all, so an
+    # admin-created CP had none until the next process restart, when
+    # run_account_status_startup_migration backfills every field-less user to
+    # "approved". In between, they passed require_approved only because
+    # ALLOW_LEGACY_NULL_STATUS admits a null — a flag whose own header calls it
+    # TEMPORARY and gives a removal procedure.
+    #
+    # That was survivable while no gate sat on a CP's daily work. It is not now
+    # that POST/PUT /logbooks carry require_approved: turning that flag off
+    # would stop any CP created since the last restart from FILING HIS DAY, on
+    # site, with no way for him to fix it.
+    #
+    # This is not a policy change. The startup migration already resolves these
+    # accounts to "approved" at every boot; stamping makes that deterministic
+    # instead of restart-dependent, and closes the window rather than relying
+    # on the grace flag to cover it. An admin creating a user is itself the
+    # approval — the review gate exists for SELF-SERVE signup, which is the
+    # only writer of "pending".
+    user_dict["account_status"] = "approved"
 
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -8406,8 +8444,32 @@ async def get_projects(
     # Marked-for-deletion projects vanish from the admin list; only the
     # owner sees them, via GET /projects/pending-deletion.
     query = dict(ACTIVE_PROJECT_FILTER)
+
+    # THE TENANT FILTER WAS CONDITIONAL, and this is where foreign project ids
+    # came from. `if company_id:` — so a caller with NO company_id skipped it
+    # and received EVERY company's projects, ids included.
+    #
+    # That is not an exotic account state, it is the DEFAULT one: self-serve
+    # registration sets `user_dict["company_id"] = None` outright, and a
+    # company is only attached later by POST /onboarding/company. So every
+    # freshly registered account, before onboarding, could list the whole
+    # platform's projects.
+    #
+    # A caller with no company has no projects, so the honest answer is an
+    # empty list. `_id: None` cannot match any document — an unsatisfiable
+    # filter rather than a second return path, so pagination, the defcon
+    # augmentation below and the response shape stay identical to a company
+    # that simply owns nothing. A pre-onboarding user still has GET
+    # /demo/project, which is what they are meant to see.
+    #
+    # The platform operator keeps the unfiltered list: the one deliberate
+    # cross-company path, the same carve-out validate_assignable_projects
+    # makes, and never inferred from `role` — role "owner" is what every
+    # self-serve signup receives.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
 
     result = await paginated_query(
         db.projects, query, sort_field="name", sort_dir=1,
@@ -8869,16 +8931,39 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
 
 @api_router.get("/projects/pending-deletion")
 async def list_pending_deletion_projects(owner = Depends(get_owner_user)):
-    """Owner-ONLY review list of projects an admin has marked for deletion.
+    """Review list of projects an admin has marked for deletion.
 
     MUST stay registered ABOVE GET /projects/{project_id} — FastAPI matches
     in registration order, so declaring it after would make the literal
     "pending-deletion" bind to {project_id} and 404.
+
+    THIS LISTED EVERY COMPANY'S. `get_owner_user` is role == "owner", which is
+    what EVERY self-serve signup receives — a company owner, i.e. a customer —
+    so any customer could read the ids of every other company's projects
+    awaiting purge. Together with the hard-delete gate below, that was the
+    discovery half of a working cross-tenant purge.
+
+    SCOPED THE SAME WAY GET /projects IS: the platform operator sees across
+    companies, everyone else sees their own. `is_platform_operator` is the
+    PURE FUNCTION, deliberately — `require_platform_operator` is in shadow
+    mode until PLATFORM_GATES_ENFORCED is set, so a gate written on the
+    dependency would log, allow, and pass its tests while protecting nothing.
     """
-    projects = await db.projects.find({
+    _q = {
         "marked_for_deletion": True,
         "is_deleted": {"$ne": True},
-    }).sort("marked_at", -1).to_list(500)
+    }
+    if not is_platform_operator(owner):
+        _company = get_user_company_id(owner)
+        if _company:
+            _q["company_id"] = _company
+        else:
+            # ABSENCE IS NOT AUTHORIZATION. `company_id: None` would MATCH
+            # every project that has no company — an orphan row is not "mine".
+            # `_id: None` matches nothing, which is the honest answer for a
+            # caller who owns nothing.
+            _q["_id"] = None
+    projects = await db.projects.find(_q).sort("marked_at", -1).to_list(500)
 
     items = []
     for p in projects:
@@ -9130,6 +9215,29 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # ── TENANT GATE ON AN IRREVERSIBLE PURGE ────────────────────────────────
+    # This compared NOTHING. The decorator's require_platform_operator is in
+    # SHADOW MODE while PLATFORM_GATES_ENFORCED is unset — it logs the
+    # non-operator and lets them through — so the only live gate was
+    # `get_owner_user`, i.e. role == "owner", which is what every self-serve
+    # signup receives. Any customer owner could physically purge any company's
+    # project, and GET /projects/pending-deletion handed them the ids.
+    #
+    # is_platform_operator is the PURE FUNCTION on purpose. Writing this on
+    # the dependency would inherit the shadow and gate nothing, while passing
+    # its own tests. That is asserted with the flag unset.
+    #
+    # Not narrowed to operator-only: that would lock the real operator out
+    # until is_platform_operator is bootstrapped on their account, which is
+    # the very hazard shadow mode exists to avoid. Operator purges anything;
+    # anyone else is confined to their own company.
+    if not is_platform_operator(owner):
+        _caller_company = str(get_user_company_id(owner) or "")
+        if not _caller_company or _caller_company != str(project.get("company_id") or ""):
+            raise HTTPException(
+                status_code=403, detail="Not authorized to delete this project",
+            )
 
     owner_id = str(owner.get("_id", owner.get("id", "")))
     company_id = str(project.get("company_id") or "")
@@ -15856,7 +15964,23 @@ def _submit_missing_trade_detail(log_type, payload):
     }
 
 
-@api_router.post("/logbooks")
+# COST-BEARING, so it carries the activation gate. Both this and PUT below
+# fire _enhance_logbook_photos, which is AI image work on the platform's bill,
+# and they were the only two spending endpoints in the codebase without
+# require_approved.
+#
+# THIS REFUSES NOBODY WHO CAN FILE TODAY. A pending account is, by
+# construction, a self-registered `owner` with company_id = None: /auth/register
+# is the ONLY writer of "pending", and it forces both. A CP can only be made by
+# POST /admin/users, which never writes account_status at all, and
+# account_status is not in ALLOWED_USER_FIELDS so no admin can set an existing
+# CP pending. A company-less account already fails the tenant gate inside both
+# handlers, so it could not reach a logbook anyway.
+#
+# THE ONE THING THAT WOULD CHANGE THAT is ALLOW_LEGACY_NULL_STATUS. See the
+# stamp added to POST /admin/users, which is what keeps this gate off a CP's
+# filing path when that flag is eventually turned off.
+@api_router.post("/logbooks", dependencies=[Depends(require_approved)])
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
     # CP write-scope gate: a Competent Person may only create/upsert
@@ -15876,6 +16000,30 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     project = await db.projects.find_one({"_id": to_query_id(data.project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # ── TENANT GATE ─────────────────────────────────────────────────────────
+    # THIS USED TO CHECK EXISTENCE AND NOTHING ELSE for every role but `cp`.
+    # The project id arrives in the BODY, so a caller who held another
+    # company's id reached the dedupe below, matched that company's unlocked
+    # row and $set over it: their content replaced, the document still
+    # labelled with their company_id, still carrying their instance_seq.
+    # Silent destruction of another company's compliance record.
+    #
+    # `project_access_ok` is the same three-branch rule the 57
+    # require_project_access call sites use, extracted from
+    # _assert_project_access so this one can keep its OWN lookup.
+    #
+    # WHY NOT Depends(require_project_access): no {project_id} in the path for
+    # FastAPI to resolve — the same reason get_logbook uses the by-id idiom.
+    #
+    # WHY THE LOOKUP ABOVE IS DELIBERATELY UNFILTERED: _assert_project_access
+    # applies ACTIVE_PROJECT_FILTER, which also excludes marked_for_deletion.
+    # Adopting that here would newly 404 an OFFLINE DRAFT syncing after an
+    # admin marked the project — a CP losing a filed day to an admin action
+    # taken while he was out of signal. Authorization is what was missing; the
+    # existence semantics are left exactly as they were.
+    if not project_access_ok(project, data.project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this project")
 
     # ── SUBMIT GATE ─────────────────────────────────────────────────────────
     # For the nine IMMEDIATE types the signature IS the freeze: `is_locked` is
@@ -15926,6 +16074,19 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     # data.worker_id, matching the check-in path's per-worker identity.
     dedupe_filter = {
         "project_id": data.project_id,
+        # DEFENCE IN DEPTH, and the second half of the tenant fix above. The
+        # gate should mean no foreign project id ever gets this far, but a
+        # match that CAN cross tenants is one bug away from overwriting
+        # another company's filed record — so the query itself is scoped.
+        # Taken from auth (`company_id`, resolved above), never from the body.
+        #
+        # A row written before this field existed would have no company_id and
+        # would no longer match, inserting a second row rather than editing the
+        # first. Both writers set it today — create_logbook here, and the gate's
+        # orientation insert in register_and_checkin — and historical rows
+        # cannot be checked from here without a production read. A duplicate
+        # filing is visible and recoverable; a cross-tenant overwrite is not.
+        "company_id": company_id,
         "log_type": data.log_type,
         "date": data.date,
         "is_deleted": {"$ne": True},
@@ -16036,18 +16197,53 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     await _remember_other_activities(data.project_id, data.data)
     return serialize_id(created)
 
-@api_router.put("/logbooks/{logbook_id}")
+async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
+    """Load the logbook, load ITS project, then authorize. Returns the doc.
+
+    THE GAP THIS CLOSES. update / finalize / amend each gated `cp` on
+    assigned_projects and every other role on NOTHING — not the company, not
+    the project, nothing. Any authenticated non-CP holding a logbook id could
+    edit, freeze or amend another company's filed compliance record. #110
+    closed the same hole on create, which takes a project id in the body;
+    these take a logbook id in the path, so the shape differs.
+
+    THE IDIOM IS get_logbook's, not create_logbook's, and the guard is
+    `user_can_act_on_project` for the same reason: the id names a DOCUMENT, so
+    its project has to be loaded before anything can be decided about it.
+
+    WHO THAT ALLOWS — admin/owner of the project's company, or anyone
+    assigned to the project. Deliberately narrower than project_access_ok,
+    which also admits a site device: no screen under frontend/app/site calls
+    update, finalize, amend or delete, so a kiosk has no logbook write to
+    lose. A CP of the right company who is NOT assigned stays refused, which
+    is what create_logbook already does.
+
+    Reads the ACTIVE doc only, matching every call site's existing find_one —
+    a soft-deleted logbook was already a 404 on all four.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project or not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this logbook")
+    return logbook
+
+
+# Cost-bearing for the same reason as POST above — see the note there.
+@api_router.put("/logbooks/{logbook_id}", dependencies=[Depends(require_approved)])
 async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = Depends(get_current_user)):
     """Update an existing logbook entry"""
-    # CP write-scope gate: load the target doc first so we can assert
-    # the requesting CP is assigned to its project before mutating.
-    # Other roles are unaffected (existing broader access retained).
+    # Tenant + project gate. Returns the doc, so the CP branch and the lock
+    # check below reuse it instead of re-reading.
+    existing_lb = await _authorize_logbook_write(logbook_id, current_user)
+
+    # CP write-scope gate: kept ahead of the general rule for its specific
+    # message. Subsumed by the assigned branch above, and cheap.
     if current_user.get("role") == "cp":
-        existing_lb = await db.logbooks.find_one(
-            {"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}}
-        )
-        if not existing_lb:
-            raise HTTPException(status_code=404, detail="Logbook not found")
         assigned = current_user.get("assigned_projects", []) or []
         if existing_lb.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
@@ -16254,9 +16450,10 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     to bilingual copy) — there is no server-side bilingual error precedent.
     """
     now = datetime.now(timezone.utc)
-    existing = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
-    if not existing:
-        raise HTTPException(status_code=404, detail="Logbook not found")
+    # Tenant + project gate, BEFORE the idempotent early-return below: an
+    # outsider must not be able to learn that another company's log is already
+    # finalized by getting the document back instead of a 403.
+    existing = await _authorize_logbook_write(logbook_id, current_user)
     if current_user.get("role") == "cp":
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
@@ -16318,9 +16515,7 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     if not reason or not str(reason).strip():
         raise HTTPException(status_code=400, detail="Reason for Amendment is required.")
     now = datetime.now(timezone.utc)
-    original = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
-    if not original:
-        raise HTTPException(status_code=404, detail="Logbook not found")
+    original = await _authorize_logbook_write(logbook_id, current_user)
     if current_user.get("role") == "cp":
         assigned = current_user.get("assigned_projects", []) or []
         if original.get("project_id") not in assigned:
@@ -16582,11 +16777,13 @@ async def get_activity_chips(
 @api_router.delete("/logbooks/{logbook_id}")
 async def delete_logbook(logbook_id: str, current_user = Depends(get_current_user)):
     """Soft delete a logbook entry — only by admins or the user who created it"""
-    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
-    if not logbook:
-        raise HTTPException(status_code=404, detail="Logbook not found")
+    # "admin/owner can delete any" meant ANY COMPANY'S. The tenant gate runs
+    # first and narrows "any" to "any on a project this user can act on"; the
+    # created_by rule below is unchanged and still decides who, WITHIN that
+    # project, may delete a log they did not write.
+    logbook = await _authorize_logbook_write(logbook_id, current_user)
 
-    # Authorization: admin/owner can delete any, others only their own
+    # Authorization: admin/owner can delete any on this project, others only their own
     user_role = current_user.get("role", "")
     user_id = str(current_user.get("_id", ""))
     if user_role not in ("admin", "owner") and logbook.get("created_by") != user_id:
@@ -16647,10 +16844,24 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         if wid not in covered_worker_ids:
             worker = await db.workers.find_one({"_id": to_query_id(wid)})
             if worker:
+                # THE COMPANY IS PER PROJECT, and the workers document
+                # deliberately does not carry one — see the note at the
+                # register_and_checkin insert: "no `trade` / `company` here.
+                # Those are per-project and live in worker_project_trades; a
+                # worker-level copy is what bled across jobs."
+                #
+                # So worker.get("company") was ALWAYS None, and the CP home
+                # rendered "Andre Duval ()" — a worker nobody can place,
+                # against a Tool Box Talk somebody has to go and give.
+                #
+                # _get_worker_project_trade returns None rather than reaching
+                # for the worker doc, so an absent pairing stays absent: the
+                # client is told there is no company, not given a wrong one.
+                _pairing = await _get_worker_project_trade(wid, project_id)
                 missing_toolbox.append({
                     "worker_id": wid,
                     "worker_name": worker.get("name"),
-                    "company": worker.get("company"),
+                    "company": (_pairing or {}).get("company") or None,
                 })
 
     # Count orientation docs that haven't been CP-signed yet

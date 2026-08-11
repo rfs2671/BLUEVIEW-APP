@@ -260,8 +260,16 @@ class OrientationUpsertWorkerKey(unittest.TestCase):
 
     # 5 — every other log_type still upserts on (project_id, log_type, date).
     def test_daily_jobsite_upsert_unchanged(self):
+        # company_id is part of the dedupe key now, so that a create can never
+        # match — and $set over — another company's row. This fixture was
+        # hand-written without it; every real row has one. create_logbook has
+        # written company_id since the first version of it in this repo's
+        # history, and the gate's orientation insert in register_and_checkin
+        # writes it too. The assertions below are about the dedupe KEY and are
+        # unchanged.
         existing = {
-            "_id": "dj1", "project_id": PROJECT_ID, "log_type": "daily_jobsite",
+            "_id": "dj1", "project_id": PROJECT_ID, "company_id": "co1",
+            "log_type": "daily_jobsite",
             "date": DATE, "data": {"weather": "clear", "activities": [{"crew_id": "C-1"}]},
             "cp_signature": None, "cp_name": None, "status": "draft",
             "created_at": "x", "updated_at": "x", "is_deleted": False,

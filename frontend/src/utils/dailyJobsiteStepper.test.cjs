@@ -175,13 +175,39 @@ ok(/getActivityChips\(projectId, date, tr \|\| null\)/.test(code),
   'the crew trade is sent to the endpoint');
 // A crew with no trade keys on '', which is the UNFILTERED list — the right
 // list for a crew whose trade nobody recorded.
-ok(/wanted\.length === 0\) wanted\.push\(''\)/.test(code),
-  "and an empty roster still fetches the unfiltered list");
+ok(/if \(!wanted\.includes\(''\)\) wanted\.push\(''\)/.test(code),
+  'the unfiltered list is ALWAYS fetched too, so "All activities" can mean all');
 ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(\)\]/.test(code),
   'each crew reads its OWN trade list, keyed on its trade');
-ok(/const myChips = chipsFor\(a\);/.test(code),
+ok(/const \{ sequenced, tradeWork, rest \} = chipBandsFor\(a\);/.test(code),
   'Step 2 renders that list, not a shared one');
-ok(!/chips\.filter\(/.test(code),
+
+// ── THE TRADE'S WORK IS VISIBLE WITHOUT A TAP ────────────────────────────────
+// Found on a device: the filter worked, all 16 electrical chips came back, and
+// every one landed in the CATALOG band, which renders COLLAPSED. The suggested
+// band was empty — and for the 249 taxonomy activities it is empty by
+// construction, because they carry no edges. The card showed "Other" alone.
+const step2band = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
+ok(/\{tradeWork\.map\(/.test(step2band),
+  "the crew's own trade renders INLINE, not behind the catalogue toggle");
+// A real prior still outranks a trade list — that ordering is the engine's job.
+ok(step2band.indexOf('{sequenced.map(') > -1
+  && step2band.indexOf('{sequenced.map(') < step2band.indexOf('{tradeWork.map('),
+  'sequenced chips keep priority ABOVE the trade list');
+ok(/band === 'catalog' && c\.id !== OTHER_ACTIVITY_ID/.test(code),
+  'the promoted band is the trade catalogue, and never Other');
+// Only when a trade actually resolved. A crew with no trade would otherwise
+// get the ENTIRE catalogue inlined onto its card.
+ok(/const filtered = Array\.isArray\(resolved\) && resolved\.length > 0;/.test(code),
+  'promotion is gated on the trade having RESOLVED, not merely being non-empty');
+ok(/const tradeWork = filtered/.test(code),
+  'so an untraded crew keeps the collapsed catalogue it had');
+// "All activities" must mean all of them, not the rest of this one trade.
+ok(/const everything = filtered \? \(chipsByTrade\[''\] \|\| mine\) : mine;/.test(code),
+  'the remainder is drawn from the UNFILTERED list');
+ok(/!shown\.has\(c\.id\)/.test(code),
+  'and never repeats a chip already shown inline');
+ok(!/\bchips\.filter\(/.test(code),
   'no single project-wide chip list survives');
 // One fetch per DISTINCT trade, not one per crew.
 ok(/\[\.\.\.new Set\(/.test(code) && /wanted\.map/.test(code),
@@ -627,6 +653,51 @@ ok(/onPress=\{\(\) => updateObservation\(i, 'responsible_party', crewName\(a\)\)
   'the responsible party is PICKED from the crews on site');
 ok(!/onChangeText=\{\(v\) => updateObservation\(i, 'responsible_party'/.test(step3),
   'the responsible party can NOT be free-typed');
+
+// COMPACT STEP 1, and the flagged worker inside it.
+console.log('\n-- Step 1 is dense, and the flagged man still stands out --');
+
+const step1c = code.slice(code.indexOf('const renderStep1'), code.indexOf('const renderStep2'));
+
+// The crew CARD is gone. Rows, not cards.
+ok(!/<Card s=\{s\} key=\{a\.activity_id/.test(step1c),
+  'crews render as rows, not full cards');
+ok(/style=\{\[s\.crewRow, flagged && s\.crewRowFlagged\]\}/.test(step1c),
+  'and the unassigned worker gets a DISTINCT row, not a crew row');
+ok(/crewRowFlagged: \{[^}]*borderLeftColor: outdoor\.warn/s.test(stylesBody),
+  'he is marked with the warn token, so compaction does not bury him');
+ok(/\{flagged \? t\('unassignedTitle'\) : crewName\(a\)\}/.test(step1c),
+  'he is named as unassigned rather than as a crew');
+
+// 40pt is only honest because nothing here is tappable.
+ok(!/crewRow[^:]*onPress/.test(step1c), 'crew rows are NOT tappable');
+const crewRowBlock = (stylesBody.match(new RegExp(`\\n\\s{4}crewRow:\\s*\\{([\\s\\S]*?)\\n\\s{4}\\}`)) || [, ''])[1];
+ok(/paddingVertical: spacing\.xs/.test(crewRowBlock) && !/touchTarget/.test(crewRowBlock),
+  'the row is 4pt padding on two dense lines, NOT a 56pt target');
+
+// The gate badge shrinks but survives.
+ok(/a\.gate_sourced && \(/.test(step1c) && /Lock size=\{12\}/.test(step1c),
+  'the gate badge stays, smaller — it is the only thing saying this is locked');
+
+// Equipment folds; crews never do.
+ok(/setEquipmentOpen/.test(step1c), 'equipment collapses behind a summary row');
+// BOUNDED to the summaryRow block. An open-ended slice runs to the end of the
+// stylesheet and finds some LATER minHeight — that exact mistake let this
+// mutation survive once already.
+const summaryBlock = (stylesBody.match(new RegExp(`\\n\\s{4}summaryRow:\\s*\\{([\\s\\S]*?)\\n\\s{4}\\}`)) || [, ''])[1];
+ok(/minHeight: touchTarget\.min/.test(summaryBlock),
+  'and that summary row IS tappable, so it carries the full 56pt');
+ok(/equipmentSummary/.test(step1c), 'the summary NAMES the plant');
+ok(/on\.length \? on\.join\(', '\) : t\('notRecorded'\)/.test(code),
+  'nothing ticked reads as NOT RECORDED, never as none');
+ok(/\{activities\.map\(\(a, i\) => \{/.test(step1c) && !/activities\.slice\(/.test(step1c),
+  'every crew renders — none hidden behind a "+N more", which is what Step 1 is for');
+
+// The sentinel never reaches the screen.
+ok(/tradeLabel\(a\.trade\)/.test(step1c), 'Step 1 renders the trade through the label rule');
+ok(!/\{!!a\.trade &&/.test(code), 'and the raw trade render is gone everywhere');
+ok((code.match(/tradeLabel\(a\.trade\)/g) || []).length === 2,
+  'both surfaces that show a roster trade use it — Step 1 and the Step 2 crew line');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
