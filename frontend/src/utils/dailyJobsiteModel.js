@@ -33,6 +33,28 @@ export const isUnassignedCompany = (v) => {
   return !k || k === UNASSIGNED_SENTINEL;
 };
 
+/**
+ * THE SAME RULE, FOR TRADE. The gate writes "UNASSIGNED" into a check-in's
+ * `trade` as well as its `company` (backend/server.py:10043-10044,
+ * :10055-10056, :10687-10688), and only the company was ever sanitised — so
+ * the placeholder rendered on Step 1 as though it were the man's trade.
+ *
+ * `cleanTrade` returns '' for the sentinel, matching what buildCrewsFromRoster
+ * already does to company. Callers that DISPLAY it use `tradeLabel`, which
+ * names the absence rather than leaving a gap: an empty cell on a record
+ * somebody signs cannot be told from a question nobody asked.
+ */
+export const isUnassignedTrade = (v) => {
+  const k = rosterKey(v);
+  return !k || k === UNASSIGNED_SENTINEL;
+};
+
+export const cleanTrade = (v) => (isUnassignedTrade(v) ? '' : String(v).trim());
+
+export const NO_TRADE_LABEL = 'No trade assigned';
+
+export const tradeLabel = (v) => (cleanTrade(v) || NO_TRADE_LABEL);
+
 // Client-minted stable ids. Deliberately not server-owned: a row can be
 // created with no signal at all (the whole point of the offline draft), so an
 // id needing a round-trip would not exist for the rows that need it most.
@@ -124,7 +146,10 @@ export function buildCrewsFromRoster(workers, headcount) {
   for (const w of rows) {
     if (!w || w.blocked === true) continue;   // rule 1
     const company = isUnassignedCompany(w.company) ? '' : String(w.company).trim();
-    const trade = String(w.trade || '').trim();
+    // Sanitised at the boundary, exactly as company is on the line above:
+    // the sentinel must not travel into a crew row, a cache key, or
+    // data.activities[].trade on a filed log.
+    const trade = cleanTrade(w.trade);
     const at = parseInstant(w.check_in_time);
 
     if (!company) {
@@ -492,6 +517,10 @@ export function stepComplete(step, state) {
 export default {
   rosterKey,
   isUnassignedCompany,
+  isUnassignedTrade,
+  cleanTrade,
+  tradeLabel,
+  NO_TRADE_LABEL,
   newActivityId,
   EMPTY_ACTIVITY,
   EMPTY_OBSERVATION,

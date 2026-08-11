@@ -44,6 +44,7 @@ const M = new Function(`
            isUnassignedWorkerRow, workRows,
            observationComplete, incompleteObservations, formatLogDate,
            formatCheckInTime, stepComplete,
+           isUnassignedTrade, cleanTrade, tradeLabel, NO_TRADE_LABEL,
            INSPECTION_PASS, INSPECTION_FAIL, EMPTY_INSPECTION, inspectionRow,
            inspectionComplete, incompleteInspections };
 `)();
@@ -472,5 +473,38 @@ ok(M.stepComplete(4, { weather: 'Sunny' }) === true,
   'weather no longer decides step 4');
 
 console.log(`\n${passed} passed, ${failed} failed`);
+// THE "UNASSIGNED" SENTINEL ON TRADE
+console.log('\n-- The sentinel is a placeholder, not a trade --');
+
+ok(M.isUnassignedTrade('UNASSIGNED'), 'the literal is recognised');
+ok(M.isUnassignedTrade('unassigned') && M.isUnassignedTrade('  Unassigned  '),
+  'case and padding do not smuggle it through');
+ok(M.isUnassignedTrade('') && M.isUnassignedTrade(null),
+  'and an absent trade is the same absence');
+ok(!M.isUnassignedTrade('Electrical'), 'a real trade is not the sentinel');
+
+ok(M.cleanTrade('UNASSIGNED') === '', 'cleanTrade strips it, as company already was');
+ok(M.cleanTrade('  Electrical ') === 'Electrical', 'and trims a real one');
+
+// THE DISPLAY RULE. Blank is ambiguous on a record somebody signs.
+ok(M.tradeLabel('UNASSIGNED') === 'No trade assigned',
+  'the absence is NAMED, never left blank');
+ok(M.tradeLabel('') === M.NO_TRADE_LABEL && M.tradeLabel(null) === M.NO_TRADE_LABEL,
+  'every empty form reads the same way');
+ok(M.tradeLabel('Electrical') === 'Electrical', 'and a real trade reads as itself');
+ok(!/none/i.test(M.NO_TRADE_LABEL), 'it does not say "none" - he has no trade YET');
+
+// The boundary: it must not travel into a crew row at all.
+const builtSentinel = M.buildCrewsFromRoster(
+  [{ worker_id: 'w1', name: 'A', company: 'Kestrel Electric', trade: 'UNASSIGNED' }], [],
+);
+ok(builtSentinel.length === 1 && builtSentinel[0].trade === '',
+  'buildCrewsFromRoster strips it, so it never reaches data.activities[].trade');
+ok(M.buildCrewsFromRoster(
+  [{ worker_id: 'w2', name: 'B', company: 'X', trade: 'Electrical' }], [],
+)[0].trade === 'Electrical', 'and a real trade still survives the boundary');
+
+console.log(`
+${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

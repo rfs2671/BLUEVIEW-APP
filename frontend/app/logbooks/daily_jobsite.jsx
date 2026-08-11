@@ -85,7 +85,7 @@ import * as ImagePicker from 'expo-image-picker';
 import {
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
-  isUnassignedWorkerRow, workRows,
+  isUnassignedWorkerRow, workRows, tradeLabel,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   deriveGeneralDescription,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
@@ -324,6 +324,7 @@ export default function DailyJobsiteLog() {
   const [chipsByTrade, setChipsByTrade] = useState({});
   const [chipsMetaByTrade, setChipsMetaByTrade] = useState({});
   const [expandedChips, setExpandedChips] = useState({});   // activity_id -> bool
+  const [equipmentOpen, setEquipmentOpen] = useState(false);
 
   const rosterIdsRef = useRef(new Map());
   const activitiesRef = useRef([]);
@@ -632,6 +633,19 @@ export default function DailyJobsiteLog() {
   );
 
   const toggleEquipment = (key) => setEquipmentOnSite((p) => ({ ...p, [key]: !p[key] }));
+
+  /**
+   * What the collapsed equipment row says. NAMES the plant rather than
+   * counting it, so a CP scanning Step 1 sees the hoist without expanding.
+   *
+   * Nothing ticked reads as NOT RECORDED, never as "none": an empty equipment
+   * list and an unanswered one are different facts on a filed document — the
+   * same distinction _display_weather draws server-side.
+   */
+  const equipmentSummary = useMemo(() => {
+    const on = EQUIPMENT_ITEMS.filter((it) => equipmentOnSite[it.key]).map((it) => it.label);
+    return on.length ? on.join(', ') : t('notRecorded');
+  }, [equipmentOnSite, t]);
 
   /**
    * Set one inspection's result. Tapping the result it already holds clears
@@ -1276,7 +1290,20 @@ export default function DailyJobsiteLog() {
   // is no card for him rather than simply omitting him without explanation.
   const unassignedWorkerCount = activities.filter(isUnassignedWorkerRow).length;
 
-  // ── STEP 1 — who was here ─────────────────────────────────────────────
+  // ── STEP 1 — what was on site ─────────────────────────────────────────
+  //
+  // COMPACT BY RULING. This step has no editable field in the ordinary case —
+  // it is a confirmation — so it must not cost a full scrolling screen to
+  // read. Measured against the real tokens on 390x844: chrome takes 188pt
+  // (header 72, pips 12, footer 104), leaving 527pt; fixed content is 228pt
+  // (step header 28, add-crew 64, equipment summary 56, weather 80), so 299pt
+  // remains and a 40pt row fits SEVEN crews before scrolling. On a 4.7" SE the
+  // same arithmetic gives FOUR.
+  //
+  // 40pt IS ONLY HONEST BECAUSE THE ROWS ARE NOT TAPPABLE. They display locked
+  // gate data and there is nothing to tap. Anything that makes a row
+  // interactive has to go back to touchTarget.min and the arithmetic above has
+  // to be redone.
   const renderStep1 = () => (
     <View>
       <StepHeader title={t('step1Title')} />
@@ -1298,53 +1325,47 @@ export default function DailyJobsiteLog() {
         <Text style={s.emptyText}>{t('noCrews')}</Text>
       )}
 
-      {activities.map((a, i) => (
-        <Card s={s} key={a.activity_id || i}>
-          <View style={s.crewTop}>
-            <Text style={s.crewName}>{crewName(a)}</Text>
-            {a.gate_sourced && (
-              <View style={s.gateBadge}>
-                <Lock size={14} strokeWidth={2} color={outdoor.textSoft} />
-                <Text style={s.gateBadgeText}>{t('fromGate')}</Text>
-              </View>
+      {/* One row per crew. Two lines at 13pt, not a card. */}
+      {activities.map((a, i) => {
+        const flagged = isUnassignedWorkerRow(a);
+        return (
+          <View
+            key={a.activity_id || i}
+            style={[s.crewRow, flagged && s.crewRowFlagged]}
+          >
+            <View style={s.crewRowMain}>
+              <Text style={s.crewRowName} numberOfLines={1}>
+                {flagged ? t('unassignedTitle') : crewName(a)}
+              </Text>
+              {/* The badge shrinks but does not go: it is the only thing
+                  saying this data is locked and came from the gate. */}
+              {a.gate_sourced && (
+                <Lock size={12} strokeWidth={2} color={outdoor.textSoft} />
+              )}
+            </View>
+            <Text style={s.crewRowMeta} numberOfLines={1}>
+              {[
+                tradeLabel(a.trade),
+                plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
+                a.check_in_time ? formatCheckInTime(a.check_in_time) : t('checkInTimeUnknown'),
+              ].join(' · ')}
+            </Text>
+            {/* He is the one row here that needs attention, so compaction
+                must not bury him: he keeps his own line at full contrast. */}
+            {flagged && (
+              <Text style={s.crewRowFlag} numberOfLines={2}>{t('unassignedHint')}</Text>
+            )}
+            {isUnboundCrew(a) && (
+              <Text style={s.crewRowFlag} numberOfLines={2}>{t('unboundCrewHint')}</Text>
+            )}
+            {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
+              <Text style={s.crewRowFlag} numberOfLines={1}>
+                {t('correctedFrom')}: {a.company_gate}
+              </Text>
             )}
           </View>
-
-          {!!a.trade && <Text style={s.crewMeta}>{a.trade}</Text>}
-          <Text style={s.crewMeta}>
-            {plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0)}
-          </Text>
-          <Text style={s.crewMeta}>
-            {a.check_in_time
-              ? t('checkedInAt').replace('{time}', formatCheckInTime(a.check_in_time) || '')
-              : t('checkInTimeUnknown')}
-          </Text>
-
-          {/* BOTH values, attributed. The gate name is never overwritten, so
-              the signed log and the check-in record cannot contradict. */}
-          {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
-            <Text style={s.correctedNote}>
-              {t('correctedFrom')}: {a.company_gate}
-            </Text>
-          )}
-
-          {isUnboundCrew(a) && (
-            <View style={s.unboundBox}>
-              <Text style={s.unboundTitle}>{t('unboundCrew')}</Text>
-              <Text style={s.unboundText}>{t('unboundCrewHint')}</Text>
-            </View>
-          )}
-
-          {/* Present, and not a unit of work. Stated on his own row so the CP
-              knows he was counted and knows nothing is being asked of him. */}
-          {isUnassignedWorkerRow(a) && (
-            <View style={s.unboundBox}>
-              <Text style={s.unboundTitle}>{t('unassignedTitle')}</Text>
-              <Text style={s.unboundText}>{t('unassignedHint')}</Text>
-            </View>
-          )}
-        </Card>
-      ))}
+        );
+      })}
 
       <Pressable
         style={s.secondaryBtn}
@@ -1355,24 +1376,30 @@ export default function DailyJobsiteLog() {
         <Text style={s.secondaryBtnText}>{t('addCrew')}</Text>
       </Pressable>
 
-      {/* A HOIST BEING PRESENT IS THE SAME KIND OF FACT AS A MAN BEING
-          PRESENT, so equipment is answered here with the crews rather than on
-          a conditions step. Equipment being ON site and equipment being
-          INSPECTED are different statements and are not merged: the
-          inspections are Step 4.
-
-          The key stays `equipment_on_site` and the value stays a plain
-          tick. Both PDF renderers read it, and the section goes blank on the
-          filed document if either changes. */}
-      <Text style={s.question}>{t('sectionEquipment')}</Text>
-      <View style={s.chipWrap}>
-        {EQUIPMENT_ITEMS.map((it) => (
-          <Chip
-            key={it.key} label={it.label} selected={!!equipmentOnSite[it.key]}
-            onPress={() => toggleEquipment(it.key)}
-          />
-        ))}
-      </View>
+      {/* EQUIPMENT — one summary line, expanding to the chips. Folded rather
+          than the crews because Step 1 exists to confirm WHO was on site.
+          It NAMES the plant, so a CP scanning sees it without expanding, and
+          an empty list reads as not recorded rather than as none: those are
+          different facts on a filed record. */}
+      <Pressable
+        style={s.summaryRow}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: equipmentOpen }}
+        onPress={() => setEquipmentOpen((v) => !v)}
+      >
+        <Text style={s.summaryLabel}>{t('sectionEquipment')}</Text>
+        <Text style={s.summaryValue} numberOfLines={1}>{equipmentSummary}</Text>
+      </Pressable>
+      {equipmentOpen && (
+        <View style={s.chipWrap}>
+          {EQUIPMENT_ITEMS.map((it) => (
+            <Chip
+              key={it.key} label={it.label} selected={!!equipmentOnSite[it.key]}
+              onPress={() => toggleEquipment(it.key)}
+            />
+          ))}
+        </View>
+      )}
 
       {/* READ-ONLY. Weather is observed and fetched, never chosen: the CP is
           reporting what the sky did, and a tappable list invites him to record
@@ -1386,7 +1413,6 @@ export default function DailyJobsiteLog() {
           <Text style={s.readOnlyText}>
             {[weather, weatherTemp, weatherWind].filter(Boolean).join(' · ')}
           </Text>
-          <Text style={s.noteText}>{t('weatherAutoNote')}</Text>
         </View>
       ) : (
         <Card s={s} style={s.cardWarn}>
@@ -1462,7 +1488,7 @@ export default function DailyJobsiteLog() {
               )}
             </View>
             <Text style={s.crewMeta}>
-              {[a.trade, plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
+              {[tradeLabel(a.trade), plural('workers_one', 'workers_other', parseInt(a.num_workers, 10) || 0),
                 a.check_in_time ? formatCheckInTime(a.check_in_time) : null]
                 .filter(Boolean).join(' · ')}
             </Text>
@@ -2220,6 +2246,39 @@ function buildStyles() {
       backgroundColor: outdoor.line,
     },
     progressPipOn: { backgroundColor: outdoor.surfaceSelected },
+    // ── COMPACT STEP 1 ────────────────────────────────────────────────
+    // 40pt: two 13pt lines plus 4pt padding. NOT a touch target, because the
+    // row is not tappable — see the note above renderStep1. Anything that
+    // makes it interactive goes back to touchTarget.min and the fit
+    // arithmetic has to be redone.
+    crewRow: {
+      paddingVertical: spacing.xs, paddingHorizontal: spacing.sm,
+      borderBottomWidth: 1, borderBottomColor: outdoor.line,
+    },
+    crewRowFlagged: {
+      backgroundColor: outdoor.warnBg,
+      borderLeftWidth: 2, borderLeftColor: outdoor.warn,   // bw2
+    },
+    crewRowMain: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    crewRowName: {
+      flex: 1, fontSize: typography.sizes.dense, fontWeight: '700',
+      color: outdoor.text,
+    },
+    crewRowMeta: { fontSize: typography.sizes.fine, color: outdoor.textSoft },
+    crewRowFlag: { fontSize: typography.sizes.fine, color: outdoor.warn },
+    // The equipment summary IS tappable, so it carries the full minimum.
+    summaryRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      minHeight: touchTarget.min, paddingHorizontal: spacing.sm,
+      marginTop: spacing.md,
+    },
+    summaryLabel: {
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+    },
+    summaryValue: {
+      flex: 1, fontSize: typography.sizes.dense, color: outdoor.text,
+      textAlign: 'right',
+    },
 
     // NO background colour. The flat grey was covering AnimatedBackground's
     // blue-tinted gradient, which is what made this screen read as foreign
