@@ -84,7 +84,18 @@ export default function SettingsScreen() {
   // the bundle — a UUID, not a SHA, so it cannot be COMPARED to the backend
   // commit. The card says which of the two it is showing rather than implying
   // a comparison it cannot make.
-  const jsCommit = Constants.expoConfig?.extra?.jsCommit || null;
+  // TYPE-GUARDED, and this is not defensive padding — it is a fix.
+  // app.json carried `"jsCommit": null` and the Expo config pipeline handed it
+  // back as `{}`. An empty object is TRUTHY, so it flowed straight into the
+  // rendered value and crashed /settings with React error #31, "objects are
+  // not valid as a React child". Caught by the mount smoke, not by any unit
+  // test, because only a real render exercises it.
+  //
+  // Only a non-empty string is a commit. Anything else is "not injected".
+  const _rawCommit = Constants.expoConfig?.extra?.jsCommit;
+  const jsCommit = (typeof _rawCommit === 'string' && _rawCommit.trim())
+    ? _rawCommit.trim()
+    : null;
   const appVersion = Constants.expoConfig?.version || 'unknown';
   const jsBundle = jsCommit
     || (Updates.updateId ? `${Updates.updateId.slice(0, 8)} (OTA id)` : 'embedded in build');

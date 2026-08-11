@@ -44,8 +44,15 @@ ok(/Updates\.createdAt/.test(code),
 // was not given.
 ok(Object.prototype.hasOwnProperty.call(appJson.expo.extra, 'jsCommit'),
   'app.json carries the jsCommit slot');
-ok(appJson.expo.extra.jsCommit === null,
-  'and it is null until a build injects one — never a stale literal');
+// NOT null. `null` came back from the Expo config pipeline as `{}`, which is
+// TRUTHY, rendered as a React child, and crashed /settings — React error #31,
+// caught by the mount smoke. An empty string is falsy and stays a string.
+ok(appJson.expo.extra.jsCommit === '',
+  'the slot is an empty STRING until a build injects one — never null, never a literal');
+ok(/typeof _rawCommit === 'string'/.test(code),
+  'and the reader accepts only a non-empty string, whatever the pipeline hands back');
+ok(!/extra\?\.jsCommit \|\| null/.test(code),
+  'the unguarded `|| null` that let an object through is gone');
 
 console.log('\n-- It never claims a match it cannot make --');
 
