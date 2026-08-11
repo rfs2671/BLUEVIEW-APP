@@ -25,7 +25,8 @@
       "eas": {
         "projectId": "818dd5ed-c372-4582-aea9-846381063a51"
       },
-      "router": {}
+      "router": {},
+      "jsCommit": ""
     },
     "ios": {
       "supportsTablet": true,

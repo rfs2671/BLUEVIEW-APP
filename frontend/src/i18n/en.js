@@ -212,6 +212,9 @@ export default {
     // Step 4 — the nine items, walked. A tick could only say the CP LOOKED;
     // on a filed 3301-02 that reads as "this is fine", with no way to say
     // otherwise. Pass, fail, or not walked — and a fail says what failed.
+    // Nothing ticked is NOT the same as nothing on site. Matches
+    // logbookView.fNotRecorded and the server's NOT_RECORDED.
+    notRecorded: '— Not recorded',
     inspectionsHint: 'Tap Pass or Fail for each. Leave an item blank if you did not walk it.',
     inspectionPass: 'Pass',
     inspectionFail: 'Fail',

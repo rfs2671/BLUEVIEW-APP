@@ -16844,10 +16844,24 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         if wid not in covered_worker_ids:
             worker = await db.workers.find_one({"_id": to_query_id(wid)})
             if worker:
+                # THE COMPANY IS PER PROJECT, and the workers document
+                # deliberately does not carry one — see the note at the
+                # register_and_checkin insert: "no `trade` / `company` here.
+                # Those are per-project and live in worker_project_trades; a
+                # worker-level copy is what bled across jobs."
+                #
+                # So worker.get("company") was ALWAYS None, and the CP home
+                # rendered "Andre Duval ()" — a worker nobody can place,
+                # against a Tool Box Talk somebody has to go and give.
+                #
+                # _get_worker_project_trade returns None rather than reaching
+                # for the worker doc, so an absent pairing stays absent: the
+                # client is told there is no company, not given a wrong one.
+                _pairing = await _get_worker_project_trade(wid, project_id)
                 missing_toolbox.append({
                     "worker_id": wid,
                     "worker_name": worker.get("name"),
-                    "company": worker.get("company"),
+                    "company": (_pairing or {}).get("company") or None,
                 })
 
     # Count orientation docs that haven't been CP-signed yet
