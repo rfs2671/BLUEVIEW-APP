@@ -59,10 +59,28 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         declared = set(re.findall(r'"([a-z_]+)":\s*"(?:immediate|end_of_day)"', timing))
         self.assertEqual(declared, set(ALL_LOG_TYPES))
 
-    def test_only_the_two_row_records_are_gated(self):
-        self.assertEqual(
-            set(S._SUBMIT_ROW_CONTENT_RULES), {"osha_log", "preshift_signin"},
-        )
+    def test_only_osha_log_is_gated_today(self):
+        self.assertEqual(set(S._SUBMIT_ROW_CONTENT_RULES), {"osha_log"})
+
+    def test_preshift_is_DEFERRED_not_forgotten(self):
+        """It qualifies on every technical ground and is held back on
+        operational ones: the form has no client gate, so the refusal would
+        reach a live CP mid-shift on a screen nobody has device-tested. Named
+        in code so it reads as a decision, and so the next person porting that
+        form finds the one line to add."""
+        self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES_DEFERRED, ("preshift_signin",))
+        self.assertNotIn("preshift_signin", S._SUBMIT_ROW_CONTENT_RULES)
+        # Deferred means it passes through, exactly like the untouched nine.
+        rows = [{"name": ""}, {"name": "   "}]
+        self.assertIsNone(S._submit_no_content_detail("preshift_signin", {"workers": rows}))
+
+    def test_the_preshift_form_still_has_no_client_gate(self):
+        """The stated reason for the deferral, asserted rather than trusted. If
+        that form gains one, this fails and the deferral gets revisited."""
+        screen = (_BACKEND / ".." / "frontend" / "app" / "logbooks"
+                  / "preshift_signin.jsx").resolve().read_text(encoding="utf-8")
+        self.assertNotIn("filledWorkers.length === 0", screen)
+        self.assertNotIn("submitDisabled=", screen)
 
     def test_osha_fields_match_the_renderer(self):
         """render_logbook_html's osha_log branch skips a row with none of five
@@ -74,11 +92,11 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         renderer_fields = tuple(re.findall(r'"([a-z_]+)"', m.group(1)))
         self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["osha_log"][1], renderer_fields)
 
-    def test_preshift_field_matches_both_renderers(self):
-        """A worker row is real when it has a NAME — asserted in the single-doc
-        renderer and again in generate_combined_report."""
+    def test_the_preshift_rule_exists_in_the_renderers_and_is_ready(self):
+        """The rule preshift WOULD use is shipped in both renderers already —
+        a worker row is real when it has a NAME. Pinned so the deferral stays a
+        one-line change and does not need re-deriving later."""
         self.assertEqual(_SRC.count('if w.get("name", "").strip():'), 2)
-        self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["preshift_signin"], ("workers", ("name",)))
 
     def test_row_has_mirrors_the_renderers_has(self):
         """_row_has is a copy of a nested helper. If they diverge, the gate
@@ -130,15 +148,6 @@ class ItFiresOnTheProductionShape(unittest.TestCase):
 
     def test_an_empty_register_is_refused(self):
         self.assertIsNotNone(S._submit_no_content_detail("osha_log", {"entries": []}))
-
-    def test_a_preshift_sheet_with_no_named_worker_is_refused(self):
-        rows = [{"name": "", "company": "AAZ"}, {"name": "   "}]
-        detail = S._submit_no_content_detail("preshift_signin", {"workers": rows})
-        self.assertEqual(detail["code"], "SUBMIT_NO_CONTENT")
-
-    def test_a_preshift_sheet_with_one_named_worker_passes(self):
-        rows = [{"name": ""}, {"name": "Ray Fisher"}]
-        self.assertIsNone(S._submit_no_content_detail("preshift_signin", {"workers": rows}))
 
     def test_the_detail_names_the_log_type_beside_the_code(self):
         """Data alongside the code, never prose — the same shape

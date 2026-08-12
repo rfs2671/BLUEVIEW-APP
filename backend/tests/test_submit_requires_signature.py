@@ -401,21 +401,26 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                     "if this ever becomes true the empty gate starts catching it"
                 )
 
-    # THREE FORMS ARE NO LONGER IN THE HOLE, for two different reasons.
+    # TWO FORMS ARE NO LONGER IN THE HOLE, for two different reasons.
     #
     # subcontractor_orientation has a per-form content requirement: it cannot
     # be SUBMITTED without a trade (SUBMIT_MISSING_TRADE). That is the only
     # per-form minimum-content rule in the codebase.
     #
-    # osha_log and preshift_signin are caught by SUBMIT_NO_CONTENT, which is
-    # NOT a per-form rule and does not narrow the deferred question at all.
-    # Those two records ARE a list of rows and contain nothing else, and both
-    # PDF renderers already drop a row that says nothing — so "every row would
-    # be dropped" means the document prints blank. The rule is lifted from the
-    # renderers rather than decided here (see _SUBMIT_ROW_CONTENT_RULES and
-    # test_submit_no_content_gate.py).
+    # osha_log is caught by SUBMIT_NO_CONTENT, which is NOT a per-form rule and
+    # does not narrow the deferred question at all. That record IS a list of
+    # rows and contains nothing else, and both PDF renderers already drop a row
+    # that says nothing — so "every row would be dropped" means the document
+    # prints blank. The rule is lifted from the renderers rather than decided
+    # here (see _SUBMIT_ROW_CONTENT_RULES and test_submit_no_content_gate.py).
     #
-    # THE HOLE IS STILL OPEN FOR THE OTHER EIGHT, which is why this class still
+    # preshift_signin QUALIFIES on the same grounds and is DEFERRED anyway: it
+    # has no client-side gate, so the refusal would meet a live CP mid-shift at
+    # the gate, on a form nobody has device-tested. It returns when that form is
+    # ported and has a client gate in front of it. Asserted as deferred in
+    # test_submit_no_content_gate.py, so it stays a decision rather than a gap.
+    #
+    # THE HOLE IS STILL OPEN FOR THE OTHER NINE, which is why this class still
     # exists. Nothing here decides what a hot-work permit or a pour record must
     # contain; that is still the operator's deferred call.
     #
@@ -424,7 +429,6 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
     _HAS_CONTENT_RULE = {
         "subcontractor_orientation": "SUBMIT_MISSING_TRADE",
         "osha_log": "SUBMIT_NO_CONTENT",
-        "preshift_signin": "SUBMIT_NO_CONTENT",
     }
 
     def test_a_signed_but_untouched_submit_is_ACCEPTED(self):
@@ -452,7 +456,7 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                 self.assertEqual(resp.status_code, 400, resp.text)
                 self.assertEqual(resp.json()["detail"]["code"], code)
 
-    def test_the_hole_is_still_open_for_eight_of_the_eleven_types(self):
+    def test_the_hole_is_still_open_for_nine_of_the_eleven_types(self):
         """The count is the point. Measured against LOGBOOK_TIMING_CLASS — the
         real list of types on this submit path — not against the fixture above,
         which covers nine of them. If a later change narrows or widens the
@@ -461,12 +465,14 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
         all_types = set(_S.LOGBOOK_TIMING_CLASS)
         self.assertEqual(len(all_types), 11)
         still_open = all_types - set(self._HAS_CONTENT_RULE)
-        self.assertEqual(len(still_open), 8, sorted(still_open))
-        # And the three that are covered really are the three named above.
+        self.assertEqual(len(still_open), 9, sorted(still_open))
+        # And the two that are covered really are the two named above.
         self.assertEqual(
-            all_types - still_open,
-            {"subcontractor_orientation", "osha_log", "preshift_signin"},
+            all_types - still_open, {"subcontractor_orientation", "osha_log"},
         )
+        # preshift is in the open set BY DECISION, not by omission.
+        self.assertIn("preshift_signin", still_open)
+        self.assertIn("preshift_signin", _S._SUBMIT_ROW_CONTENT_RULES_DEFERRED)
 
     def test_the_untouched_orientation_payload_really_has_no_trade(self):
         """Guards the test above from passing for the wrong reason."""

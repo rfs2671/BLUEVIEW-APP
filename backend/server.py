@@ -15928,12 +15928,14 @@ def _finalize_cp_signature(sig, doc_date, now):
 # completeness gate and it does not encode what any form must contain.
 #
 # WHAT IT IS. Two of the eleven log types are records that ARE a list of rows —
-# a certification register and a sign-in sheet. They contain nothing else. For
-# those two, and only those two, the server ALREADY decides per row whether the
-# row says anything, because both PDF renderers drop a contentless row rather
-# than print it. The rules below are LIFTED FROM THOSE RENDERERS, not written
-# here, and test_submit_no_content_gate.py asserts they still match the
-# renderer's own list.
+# a certification register and a sign-in sheet. They contain nothing else, so
+# for those two the server ALREADY decides per row whether the row says
+# anything: both PDF renderers drop a contentless row rather than print it. The
+# rules below are LIFTED FROM THOSE RENDERERS, not written here, and
+# test_submit_no_content_gate.py asserts they still match the renderer's list.
+#
+# ONE OF THE TWO IS GATED TODAY. preshift_signin qualifies technically and is
+# held back on operational grounds only — see the note under the table.
 #
 # So the condition is not "is this log complete". It is: EVERY row this record
 # consists of is one the renderer would refuse to print — the document would
@@ -15979,13 +15981,36 @@ def _row_has(d, key):
 _SUBMIT_ROW_CONTENT_RULES = {
     # server.py render_logbook_html, osha_log branch: a row with none of these
     # five is "an untouched EMPTY_ENTRY seed" and is skipped.
+    #
+    # SAFE TO GATE because osha_log.jsx already refuses this on the device
+    # (submitDisabled={!cpSignature || filledRows === 0}), so no CP can reach
+    # the refusal through the app. Here it is a pure backstop: an old build, a
+    # replayed draft, a direct API call.
     "osha_log": ("entries", (
         "worker_name", "company", "certification_type", "card_number", "expiration",
     )),
-    # Both renderers gate a worker row on `if w.get("name", "").strip()`, and
-    # the editor counts the same thing into total_count.
-    "preshift_signin": ("workers", ("name",)),
 }
+
+# ── preshift_signin IS DELIBERATELY ABSENT, and this is not an oversight ─────
+#
+# It QUALIFIES on every technical ground: it is a record that is a list of
+# rows, and both renderers already gate a worker row on
+# `if w.get("name", "").strip()` — the rule is shipped, not invented, and the
+# editor counts the same thing into total_count.
+#
+# It is left out because the FORM has no client-side gate. preshift_signin.jsx
+# guards only `disabled={!cpSignature}`, so turning this on would create a
+# refusal a live CP meets for the first time mid-shift, at the gate, on a
+# screen nobody has device-tested — and on the one form where being stopped
+# costs a man the start of his day. This codebase has ruled against that shape
+# repeatedly; the whole reason the signature guard is client-first is that "a
+# rejection with no on-screen reason stops a man at the start of his shift with
+# nothing to act on" (see tests/test_submit_requires_signature.py).
+#
+# IT COMES BACK when preshift_signin is ported onto the shared stepper and has
+# a client gate in front of it, exactly as osha_log did. That is a one-line
+# addition here plus its own test case; nothing else about this gate changes.
+_SUBMIT_ROW_CONTENT_RULES_DEFERRED = ("preshift_signin",)
 
 
 def _submit_no_content_detail(log_type, payload):
