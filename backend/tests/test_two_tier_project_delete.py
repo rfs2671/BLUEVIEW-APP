@@ -389,11 +389,12 @@ class HardDeleteCascadeTest(unittest.TestCase):
         self.assertEqual(u, {"$pull": {"assigned_projects": _PID}})
 
     def test_no_drop_used(self):
-        src = (_BACKEND / "server.py").read_text(encoding="utf-8")
-        code = "\n".join(
-            l for l in src.splitlines() if not l.strip().startswith("#")
-        )
-        self.assertNotIn(".drop()", code)
+        # code_of strips DOCSTRINGS as well as # comments. This stripped
+        # only the latter, and hard_delete_project's own docstring promises
+        # it never uses drop() — so the assertion was reading the promise
+        # alongside the code. Fourth occurrence of that shape on this repo.
+        from tests.source_text import code_of
+        self.assertNotIn(".drop()", code_of("server.py"))
 
 
 class LandmineTest(unittest.TestCase):
