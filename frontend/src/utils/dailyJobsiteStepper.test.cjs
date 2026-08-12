@@ -436,8 +436,15 @@ ok(!/const TRANSLATIONS/.test(code), 'no screen-local translation map');
 ok(/useT\('dailyJobsite'\)/.test(src), 'copy comes from the i18n layer');
 // The step titles are what a CP reads to know what to do. Keep them short.
 const en = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
-const titles = [...en.matchAll(/step[1-5]Title: '([^']+)'/g)].map((m) => m[1]);
-ok(titles.length === 5, `all five step titles exist (got ${titles.length})`);
+// SCOPED TO THE dailyJobsite NAMESPACE. This used to scan the whole catalogue,
+// which was right while dailyJobsite was the only stepper form; the ported
+// forms carry their own step titles (oshaLog has 2, scaffoldMaintenance 3) and
+// an unscoped count picked up all ten. The assertion is unchanged — THIS
+// screen has five — it is now asked of the right block.
+const djBlock = en.slice(en.indexOf('\n  dailyJobsite: {'), en.indexOf('\n  oshaLog: {'));
+const titles = [...djBlock.matchAll(/step[1-5]Title: '([^']+)'/g)].map((m) => m[1]);
+ok(djBlock.length > 0 && titles.length === 5,
+  `all five step titles exist in the dailyJobsite namespace (got ${titles.length})`);
 const longTitle = titles.filter((x) => x.split(/\s+/).length > 12);
 ok(longTitle.length === 0,
   `no step title exceeds twelve words${longTitle.length ? ` — ${JSON.stringify(longTitle)}` : ''}`);

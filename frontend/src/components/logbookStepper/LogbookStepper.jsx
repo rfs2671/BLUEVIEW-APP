@@ -48,6 +48,15 @@ export default function LogbookStepper({
   nextLabel,
   submitLabel,
   submitting = false,
+  // THE SUBMIT GATE, client side. For an IMMEDIATE log type the signature IS
+  // the freeze — the server locks the record on `status: "submitted"` alone —
+  // so an unsigned submit must be UNREACHABLE, not merely discouraged. A form
+  // whose signature is missing passes true here and the button cannot be
+  // pressed at all. See src/utils/submitSignatureGate.test.cjs.
+  //
+  // Distinct from `incompleteSteps`, which only marks: an incomplete step
+  // never disables anything, because a CP must be able to finish his day.
+  submitDisabled = false,
   onSubmit,
   // Lock bar.
   logType,
@@ -163,10 +172,11 @@ export default function LogbookStepper({
               </Pressable>
             ) : (
               <Pressable
-                style={s.primaryBtn}
+                style={[s.primaryBtn, submitDisabled && s.primaryBtnDisabled]}
                 accessibilityRole="button"
                 accessibilityLabel={submitLabel}
-                disabled={submitting}
+                accessibilityState={{ disabled: submitting || submitDisabled }}
+                disabled={submitting || submitDisabled}
                 onPress={onSubmit}
               >
                 {submitting

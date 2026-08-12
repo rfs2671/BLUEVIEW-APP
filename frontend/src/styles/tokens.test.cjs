@@ -160,7 +160,14 @@ const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 ok(FILES.length === 16, `scanner reads 16 CP screens (found ${FILES.length})`);
 ok(sum(measured.fontSize) > 150,
   `scanner still finds fontSize literals (${sum(measured.fontSize)})`);
-ok(sum(measured.withAlphaPairs) > 80,
+// LOWERED from 80 to 50 by the osha_log + scaffold_maintenance port, which
+// moved two more screens onto the token file (88 -> 67). This is a
+// SCANNER-IS-ALIVE guard, not a debt ceiling: its job is to fail loudly if a
+// regex silently stops matching, because every assertion below is vacuously
+// true against an empty measurement. The threshold tracks the migration
+// downwards, and the direction of travel is the point — it is expected to keep
+// falling as the remaining eight forms are ported.
+ok(sum(measured.withAlphaPairs) > 50,
   `scanner still finds withAlpha() calls (${sum(measured.withAlphaPairs)})`);
 ok(sum(measured.opaqueHex) > 50,
   `scanner still finds opaque hex literals (${sum(measured.opaqueHex)})`);
@@ -320,19 +327,24 @@ const distinctOpaque = [...measured.opaqueHex.keys()];
 const exactMatches = distinctOpaque.filter((h) => themeHexes.has(h));
 const colourMatches = distinctOpaque.filter((h) => themeHexes.has(expand(h))
   || [...themeHexes].some((t) => expand(t) === expand(h)));
-// Was 18 before U1. The rebuild removed the last standalone '#000000' from the
-// CP screens (it survives only as a tint base), leaving 17.
-ok(distinctOpaque.length === 17,
-  `finding (c): 17 distinct opaque hex literals (got ${distinctOpaque.length})`);
+// Was 18 before U1, then 17 (the rebuild removed the last standalone '#000000'
+// from the CP screens; it survives only as a tint base). Now 15: the osha_log
+// and scaffold_maintenance port took '#22d3ee' and '#ef4444' with it, and both
+// are gone from the palette for the same reason.
+ok(distinctOpaque.length === 15,
+  `finding (c): 15 distinct opaque hex literals (got ${distinctOpaque.length})`);
 // Was 5. The U1 restyle added `outdoor.accent: '#60a5fa'` to theme.js — the
 // blue the app's count and status pills are drawn in — so that literal now has
 // a token where it did not before. The finding's POINT is unchanged (the
 // original research claimed 9, and it was never 9); the count moved because
 // one more literal became tokenised, which is the direction of travel.
-ok(exactMatches.length === 6,
-  `finding (c): 6 of 17 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
-ok(colourMatches.length === 7,
-  `finding (c): 7 of 17 match by colour once #fff is expanded (got ${colourMatches.length})`);
+// Was 6 of 17. Now 5 of 15: '#ef4444' was one of the six (an exact match for
+// theme state.critical) and left the measured set with osha_log. The finding's
+// POINT is unchanged — the original research claimed 9, and it was never 9.
+ok(exactMatches.length === 5,
+  `finding (c): 5 of 15 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
+ok(colourMatches.length === 6,
+  `finding (c): 6 of 15 match by colour once #fff is expanded (got ${colourMatches.length})`);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -64,9 +64,37 @@ for (const t of IMMEDIATE) {
   // disabling a button — structurally unreachable, which is stronger.
   const derives = /const status = newCpSignature \? 'submitted' : 'draft'/.test(src);
   const disables = /disabled=\{!cpSignature/.test(src);
-  ok(derives || disables,
-    `${t}: an unsigned submit is unreachable (${derives ? 'status derived' : 'button disabled'})`);
+  // A form ported onto the shared stepper does not own its footer button, so it
+  // cannot write `disabled=` itself — it passes the same condition through
+  // LogbookStepper's `submitDisabled`, which the chrome applies to the one
+  // submit Pressable. THE GUARANTEE IS IDENTICAL and is asserted end to end
+  // below: this only recognises where the expression now lives.
+  const stepperGated = /submitDisabled=\{!cpSignature\}/.test(src);
+  ok(derives || disables || stepperGated,
+    `${t}: an unsigned submit is unreachable (${derives ? 'status derived' : (disables ? 'button disabled' : 'stepper submitDisabled')})`);
 }
+
+// ── 1b. the shared stepper HONOURS submitDisabled ────────────────────────────
+//
+// Without this, `submitDisabled={!cpSignature}` above would be a prop nobody
+// reads and the recognition in 1 would be a hole in the gate rather than a
+// second spelling of it. Asserted on the chrome, once, for every form that
+// will ever be ported onto it.
+const chromeSrc = fs.readFileSync(
+  path.join(SRC, 'components', 'logbookStepper', 'LogbookStepper.jsx'), 'utf8');
+ok(/submitDisabled = false,/.test(chromeSrc),
+  'stepper: submitDisabled is a declared prop, defaulting to enabled');
+ok(/disabled=\{submitting \|\| submitDisabled\}/.test(chromeSrc),
+  'stepper: the submit button is disabled when the form says so');
+ok(/accessibilityState=\{\{ disabled: submitting \|\| submitDisabled \}\}/.test(chromeSrc),
+  'stepper: and it says so to a screen reader, not only in the styling');
+// The gate must sit on the SUBMIT branch, never on Next — a CP with no
+// signature must still be able to walk the form.
+const footerSrc = chromeSrc.slice(chromeSrc.indexOf('<View style={s.footer}>'),
+  chromeSrc.lastIndexOf('</SafeAreaView>'));
+const nextBranch = footerSrc.slice(0, footerSrc.indexOf(') : ('));
+ok(!/submitDisabled/.test(nextBranch),
+  'stepper: an unsigned CP can still page through the form — only Submit is gated');
 
 // ── 2. the guard is not a dead end ───────────────────────────────────────────
 for (const t of NEWLY_GUARDED) {

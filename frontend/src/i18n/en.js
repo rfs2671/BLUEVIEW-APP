@@ -315,6 +315,140 @@ export default {
     savedAutomatically: 'Saved automatically',
   },
 
+  // ── app/logbooks/osha_log.jsx — the certification register, 2 steps ────────
+  //
+  // EN-ONLY, like every other logbook namespace: this is a legal record filed
+  // with the DOB and a DOB inspector reads English. See EN_ONLY_NAMESPACES in
+  // src/i18n/i18n.test.cjs, where adding a namespace is a deliberate decision.
+  //
+  // DELIBERATELY ABSENT: the certification NAMES (OSHA 10, SST, Flagman…).
+  // They are identifiers on a physical card, identical in every language, and
+  // this catalogue forbids an ES value equal to its EN one — correctly. They
+  // live in oshaLogModel.CERT_TYPES.
+  oshaLog: {
+    screenTitle: 'OSHA Log Book',
+    screenSub: 'Worker Certifications Register',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'Certifications',
+    step2Title: 'Review and sign',
+
+    // Step 1 — the register.
+    registerHint: 'Built from the workers who checked in today. Correct anything the gate got wrong, and add anyone it missed.',
+    noEntries: 'No workers checked in for this date. Add a row for anyone on site.',
+    addEntry: 'Add a worker',
+    removeEntry: 'Remove this row',
+    entryOf: 'Worker {n} of {m}',
+
+    colWorker: 'Worker',
+    colCompany: 'Company',
+    colCert: 'Certification',
+    colCard: 'Card number',
+    colExpiration: 'Expires',
+
+    phWorker: 'Name',
+    phCompany: 'Company',
+    phCert: 'Tap to choose',
+    phCard: 'Card number',
+    phExpiration: 'Tap to choose a date',
+
+    certPickTitle: 'Which certification?',
+    signedOnFile: 'Signature on file',
+    signedMark: 'Mark signature on file',
+
+    // A worker the gate turned away for missing OSHA. He is on the register as
+    // DENIED — never as a certification — because the one fact the gate
+    // established is that he had none.
+    deniedBadge: 'DENIED — MISSING OSHA (turned away at gate, not admitted)',
+
+    // Step 2 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewEntries: 'Certifications recorded',
+    reviewNothingYet: 'Nothing recorded yet',
+    entriesCount_one: '{n} row',
+    entriesCount_other: '{n} rows',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the register before filing it.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This register is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
+  // ── app/logbooks/scaffold_maintenance.jsx — the shed inspection, 3 steps ───
+  //
+  // EN-ONLY for the same reason as oshaLog above.
+  //
+  // DELIBERATELY ABSENT: the 19 inspection questions and the four shed types.
+  // They are the DOB form's own wording, printed verbatim on the filed PDF by
+  // backend/server.py:13329-13349, and the label must be the SAME string on
+  // the device and on the document. They live in scaffoldMaintenanceModel and
+  // are asserted against the renderer's copy.
+  scaffoldMaintenance: {
+    screenTitle: 'Scaffold Maintenance Log',
+    screenSub: 'NYC DOB — Daily Inspection',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The scaffold',
+    step2Title: 'The checks',
+    step3Title: 'Review and sign',
+
+    // Step 1 — the shed.
+    shedHint: 'Carried over from the last inspection on this project. Change anything that is no longer true.',
+    fErector: 'Name of scaffold erector',
+    fRenter: 'Renters name',
+    fPermit: 'Permit #',
+    fInstalled: 'Installation date',
+    fExpires: 'Expiration',
+    fPhone: 'Phone #',
+    fHeight: 'Scaffold height',
+    fPlatforms: 'Number of platforms decked',
+    fShedType: 'Shed type',
+    phField: 'Not recorded',
+    phDate: 'Tap to choose a date',
+
+    // Step 2 — the 19 checks.
+    checksHint: 'Answer every item. N/A is a real answer — an item left blank is not.',
+    answeredOf: '{n} of {m} answered',
+    questionOf: 'Item {n} of {m}',
+
+    // Step 3 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewShed: 'The scaffold',
+    reviewChecks: 'The checks',
+    reviewUnanswered: '{n} still unanswered',
+    reviewAllAnswered: 'All {m} answered',
+    reviewNothingYet: 'Nothing recorded yet',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the inspection before filing it.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This inspection is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   // Only the affirmation UI is localized. The rest of the pad (title, "SIGNER
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)
