@@ -17940,6 +17940,52 @@ def _display_inspections(chk) -> str:
     return "<br />".join(out)
 
 
+def _report_date_long(date_str: str) -> str:
+    """`2026-08-11` -> `August 11, 2026`.
+
+    A machine date on a page an investor reads looks like a database dump. The
+    calendar day is already a calendar day — no timezone is involved at either
+    end, so none is introduced: the string is split, not parsed into a datetime
+    that would shift a day west of Greenwich.
+    """
+    parts = str(date_str or "").split("-")
+    if len(parts) != 3:
+        return str(date_str or "")
+    try:
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+        return f"{_MONTHS[m - 1]} {d}, {y}"
+    except (ValueError, IndexError):
+        return str(date_str or "")
+
+
+_MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def _headcount_by_sub(checkins) -> "Tuple[List[Tuple[str, int]], int]":
+    """Workers per subcontractor, and the total — FROM CHECK-INS.
+
+    Check-ins are the source of truth for headcount everywhere on this page.
+    The hand-entered numbers on the Site Superintendent and SSC logs stay in
+    their own sections on page 2, where they are that form's record.
+
+    A worker with no company is counted in the total and shown under an
+    explicit heading rather than dropped: he was on site.
+    """
+    counts: Dict[str, int] = {}
+    for c in checkins or []:
+        if c.get("blocked") is True:
+            continue          # turned away at the gate; he did no work
+        name = str(c.get("company") or "").strip()
+        if not name or name.upper() == "UNASSIGNED":
+            name = "Not yet assigned"
+        counts[name] = counts.get(name, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    return ordered, sum(counts.values())
+
+
 def _display_weather(data):
     """Render weather for a report or PDF. NEVER a blank.
 
@@ -18195,6 +18241,168 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  DAILY JOBSITE (CP Logbook)
     # ==========================================================
     daily_jobsite = next((l for l in logbooks if l.get("log_type") == "daily_jobsite"), None)
+    # PAGE 1 - THE PROGRESS REPORT
+    #
+    # WHO THIS IS FOR. An investor or a bank, who asked "what was really done
+    # today" and was handed a compliance filing. Page 2 onward IS that filing,
+    # unchanged and unmoved - it is the legal record and an inspector reads it.
+    # This page answers the question and stops.
+    #
+    # DELIBERATELY ABSENT: percent complete, which cannot be computed honestly
+    # and is worse than nothing in front of a lender; and anything about cost
+    # or draw status, which this app does not hold and must not imply.
+    _pg1_date = _report_date_long(date)
+    _subs, _sub_total = _headcount_by_sub(checkins)
+
+    _dj = ((daily_jobsite or {}).get("data") or {}) if daily_jobsite else {}
+    _dj_id = str(daily_jobsite["_id"]) if daily_jobsite else ""
+    _pg1_weather = _display_weather(_dj) if _dj else NOT_RECORDED
+
+    # Headcount, by sub and total. From CHECK-INS, as ruled.
+    _sub_rows = "".join(
+        f'<tr><td {TD}>{_capitalize_first(_name)}</td>'
+        f'<td {TD} align="right">{_n}</td></tr>'
+        for _name, _n in _subs
+    ) or f'<tr><td colspan="2" {TD}>{NOT_RECORDED}</td></tr>'
+
+    # ONE LINE PER SUBCONTRACTOR - placeholder. The generated sentence is the
+    # next brief; the verifier that makes it safe to auto-send is already on
+    # main (lib/ai/sub_summary.py). Until then each sub gets the plain facts,
+    # which is exactly what a refused line falls back to anyway.
+    _pg1_lines = ""
+    for _a in (_dj.get("activities") or []):
+        _co = str(_a.get("company") or "").strip()
+        if not _co:
+            continue
+        _facts = ", ".join(
+            _x for _x in [
+                _sentence_case(_a.get("work_description") or ""),
+                _capitalize_first(_a.get("work_locations") or ""),
+            ] if _x
+        )
+        _pg1_lines += (
+            '<p style="margin:0 0 8px;font-size:14px;color:#334155;">'
+            f'<strong style="color:#0A1929;">'
+            f'{_capitalize_first(_display_sub_company(_co))}</strong>'
+            f'{" - " + _facts if _facts else ""}</p>'
+        )
+
+    # Photos, grouped by subcontractor, captioned from what the CP tapped.
+    # ALL of them: four subs at five to seven each is the ordinary day and it
+    # fits. Same URL scheme and the same renderable test the logbook section
+    # uses, so a photo that vanishes there vanishes here - never a broken image
+    # standing in for evidence.
+    _pg1_photos = ""
+    for _ai, _a in enumerate(_dj.get("activities") or []):
+        _shots = ""
+        for _pi, _photo in enumerate(_a.get("photos") or []):
+            if not _logbook_photo_is_renderable(_photo):
+                continue
+            _orig = (
+                f"{BASE_URL}/api/reports/logbook-photo/"
+                f"{_dj_id}/{_ai}/{_pi}"
+            )
+            _done = _photo.get("enhance_status") == "done"
+            _thumb = f"{_orig}?v=thumb" if _done else _orig
+            _full = f"{_orig}?v=enhanced" if _done else _orig
+            _shots += (
+                f'<a href="{_full}" target="_blank" '
+                'style="text-decoration:none;display:inline-block;">'
+                f'<img src="{_thumb}" width="160" height="120" '
+                'style="width:160px;height:120px;object-fit:cover;'
+                'border-radius:4px;border:1px solid #e2e8f0;'
+                'display:inline-block;margin:3px;" /></a>'
+            )
+        if not _shots:
+            continue
+        _cap = " - ".join(
+            _x for _x in [
+                _capitalize_first(_display_sub_company(_a.get("company"))),
+                _sentence_case(_a.get("work_description") or ""),
+                _capitalize_first(_a.get("work_locations") or ""),
+            ] if _x
+        )
+        _pg1_photos += (
+            f'<p style="margin:12px 0 4px;font-size:12px;color:#64748b;">'
+            f'{_cap}</p><div>{_shots}</div>'
+        )
+
+    # Anything flagged. Safety observations the CP recorded, and inspections he
+    # marked FAILED - the two things a reader must not have to hunt for.
+    _flags = ""
+    for _o in (_dj.get("observations") or []):
+        _desc = _sentence_case(_o.get("description") or "")
+        if not _desc:
+            continue
+        _who = _capitalize_first(_o.get("responsible_party") or "")
+        _fix = _sentence_case(_o.get("remedy") or "")
+        _flags += (
+            f'<li style="margin:0 0 6px;">{_desc}'
+            f'{" - " + _who if _who else ""}'
+            f'{". Action: " + _fix if _fix else ""}</li>'
+        )
+    for _k, _v in (_dj.get("checklist_items") or {}).items():
+        if isinstance(_v, dict) and _v.get("result") == "fail":
+            _note = str(_v.get("note") or "").strip()
+            _flags += (
+                '<li style="margin:0 0 6px;">Failed inspection: '
+                f'{_inspection_label(_k)}{" - " + _note if _note else ""}</li>'
+            )
+    _flags_html = (
+        '<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+        'Flagged today</h3>'
+        '<ul style="margin:0 0 8px;padding-left:20px;font-size:14px;'
+        f'color:#334155;">{_flags}</ul>'
+    ) if _flags else ""
+
+    # ONE line of compliance status. The detail is page 2; this says only
+    # whether a reader needs to go there.
+    _real_logs = [_l for _l in logbooks if not _l.get("is_amendment")]
+    _total_logs = len(_real_logs)
+    _signed = sum(1 for _l in _real_logs if _l.get("cp_signature"))
+    if _total_logs and _signed == _total_logs:
+        _compliance = f"All {_total_logs} required logs filed and signed."
+    elif _total_logs:
+        _compliance = (
+            f"{_signed} of {_total_logs} logs filed and signed; "
+            f"{_total_logs - _signed} awaiting signature."
+        )
+    else:
+        _compliance = "No logs filed for this date."
+
+    progress_html = (
+        '<h2 style="color:#0A1929;margin:0 0 4px;font-size:20px;">'
+        'Daily Progress Report</h2>'
+        '<p style="margin:0 0 16px;font-size:14px;color:#64748b;">'
+        f'{project_name} &nbsp;&middot;&nbsp; '
+        f'{project_address or NOT_RECORDED} &nbsp;&middot;&nbsp; {_pg1_date}</p>'
+        + info_box(
+            f'<strong style="color:#0A1929;">Weather:</strong> '
+            f'{_pg1_weather}<br />'
+            '<strong style="color:#0A1929;">'
+            f'Workers checked in at the gate:</strong> {_sub_total}'
+        )
+        + '<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+          'Headcount by subcontractor</h3>'
+        + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+          'style="border-collapse:collapse;font-size:13px;">'
+        + f'<tr><th {TH}>Subcontractor</th>'
+          f'<th {TH} align="right">Workers</th></tr>'
+        + _sub_rows
+        + f'<tr><td {TD}><strong>Total</strong></td>'
+          f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
+        + '</table>'
+        + (('<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+            'Work today</h3>' + _pg1_lines) if _pg1_lines else "")
+        + (('<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+            'Photos</h3>' + _pg1_photos) if _pg1_photos else "")
+        + _flags_html
+        + '<p style="margin:20px 0 0;font-size:14px;color:#334155;">'
+          f'<strong style="color:#0A1929;">Compliance:</strong> {_compliance}</p>'
+        # Page 2 starts a new sheet in the PDF. Inert in email.
+        + '<div style="page-break-after:always;"></div>'
+    )
+
     jobsite_html = ""
     if daily_jobsite:
         logbook_id = str(daily_jobsite["_id"])
@@ -19204,7 +19412,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         <tr>
           <td width="33%" valign="top" style="vertical-align:top;">
             <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">DATE</span><br />
-            <span style="font-size:15px;color:#0A1929;font-weight:500;">{date}</span>
+            <span style="font-size:15px;color:#0A1929;font-weight:500;">{_pg1_date}</span>
           </td>
           <td width="34%" valign="top" style="vertical-align:top;">
             <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">ADDRESS</span><br />
@@ -19222,6 +19430,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
   <!-- CONTENT -->
   <tr>
     <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
+      {progress_html}
       {jobsite_html}
       {toolbox_html}
       {preshift_html}
