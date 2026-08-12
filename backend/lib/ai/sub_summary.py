@@ -295,6 +295,18 @@ def generate_sentence(payload: Dict[str, object]) -> Optional[str]:
     plain_facts, which is what a reader would have got anyway.
     """
     if not GEMINI_API_KEY:
+        # SAID OUT LOUD, once per row. Without this the no-key path was the
+        # only one of the three outcomes that left NO trace: a failure logs at
+        # ERROR and a refusal at INFO, but a missing key returned None in
+        # silence — so a report full of plain facts looked identical whether
+        # the model was never called, had failed, or had been correctly
+        # refused. That is exactly the question the operator had to ask about
+        # a live report, and it should have been answerable from the logs.
+        logger.warning(
+            "Sub-summary SKIPPED for %r: GEMINI_API_KEY is not set, so no "
+            "sentence was generated and the plain facts were rendered.",
+            payload.get("company"),
+        )
         return None
 
     try:
