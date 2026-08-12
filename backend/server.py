@@ -19160,6 +19160,22 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     .wrapper {{ background-color: #ffffff !important; }}
     .content-cell {{ background-color: #ffffff !important; color: #1a2332 !important; }}
   }}
+
+  /* PRINT / PDF. ONE HTML SERVES TWO MEDIA and they want opposite things.
+     The wrapper is width="680" with max-width:680px because that is the
+     right column for an email client. The SAME string is handed to
+     WeasyPrint (get_combined_report_pdf), where 680px sits on a ~794px A4
+     page and leaves a dead strip down the right — which is what made the
+     Activity Details table stop mid-page and read, on a phone, as though
+     the document had been trimmed.
+
+     Email clients ignore @media print, so releasing the width here costs
+     the email nothing. */
+  @page {{ size: A4; margin: 12mm; }}
+  @media print {{
+    .wrapper {{ width: 100% !important; max-width: 100% !important; }}
+    body, .body {{ background-color: #ffffff !important; }}
+  }}
 </style>
 </head>
 <body class="body" style="margin:0;padding:0;background-color:#f0f4f8;font-family:{font};-webkit-font-smoothing:antialiased;" bgcolor="#f0f4f8">
