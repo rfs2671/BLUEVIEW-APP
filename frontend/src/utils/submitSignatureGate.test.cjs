@@ -140,15 +140,23 @@ ok(!/^\s*finalize:\s*\{/m.test(es),
 const SUBMIT_CODES = [...new Set(
   [...serverSrc.matchAll(/"code":\s*"(SUBMIT_[A-Z_]+)"/g)].map((m) => m[1]),
 )].sort();
-// Three now. SUBMIT_MISSING_TRADE joined them: a safety orientation may be
+// Four now. SUBMIT_MISSING_TRADE joined first: a safety orientation may be
 // CREATED without a trade (the gate check-in writes one that way, and a worker
 // at the turnstile is never blocked for an admin's unfinished roster) but may
-// not be SUBMITTED without one. Same machine-code convention, no new mechanism.
-ok(SUBMIT_CODES.length === 3
+// not be SUBMITTED without one.
+//
+// SUBMIT_NO_CONTENT is the fourth, and it is NOT a completeness rule — those
+// belong to the editors, as finalize_logbook's docstring rules. It fires only
+// for the two records that ARE a list of rows (osha_log, preshift_signin) when
+// every row is one the PDF renderer would already refuse to print, i.e. the
+// document would come out blank. Same machine-code convention, no new
+// mechanism.
+ok(SUBMIT_CODES.length === 4
   && SUBMIT_CODES.includes('SUBMIT_EMPTY_LOG')
   && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE')
-  && SUBMIT_CODES.includes('SUBMIT_MISSING_TRADE'),
-  `server.py returns exactly the 3 submit codes (${SUBMIT_CODES.join(', ')})`);
+  && SUBMIT_CODES.includes('SUBMIT_MISSING_TRADE')
+  && SUBMIT_CODES.includes('SUBMIT_NO_CONTENT'),
+  `server.py returns exactly the 4 submit codes (${SUBMIT_CODES.join(', ')})`);
 for (const c of SUBMIT_CODES) {
   ok(en.includes(`code_${c}:`),
     `${c}: has mapped copy, so it never falls back to the generic message`);
@@ -164,10 +172,17 @@ const gateHits = (
   serverSrc.match(/detail=\{"code": "SUBMIT_MISSING_CP_SIGNATURE"\}/g) || []
 ).length;
 ok(gateHits === 2, `the signature gate exists in BOTH endpoints (${gateHits} sites)`);
+// 6000, not 4000: SUBMIT_NO_CONTENT added a gate between the signature check
+// and the write, pushing `update = {"updated_at"` past the old window. A
+// too-short slice makes indexOf return -1 and the comparison below passes or
+// fails for the wrong reason, so the window is asserted to contain both
+// landmarks before they are compared.
 const updateFn = serverSrc.slice(
   serverSrc.indexOf('async def update_logbook'),
-  serverSrc.indexOf('async def update_logbook') + 4000,
+  serverSrc.indexOf('async def update_logbook') + 6000,
 );
+ok(updateFn.includes('SUBMIT_MISSING_CP_SIGNATURE') && updateFn.includes('update = {"updated_at"'),
+  'the update_logbook window holds both the gate and the write it must precede');
 ok(/SUBMIT_MISSING_CP_SIGNATURE/.test(updateFn),
   'update_logbook — the path the CP actually walks — carries the gate');
 ok(updateFn.indexOf('SUBMIT_MISSING_CP_SIGNATURE') < updateFn.indexOf('update = {"updated_at"')

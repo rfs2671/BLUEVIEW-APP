@@ -401,18 +401,31 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                     "if this ever becomes true the empty gate starts catching it"
                 )
 
-    # ONE FORM IS NO LONGER IN THE HOLE.
+    # THREE FORMS ARE NO LONGER IN THE HOLE, for two different reasons.
     #
-    # subcontractor_orientation now has a per-form content requirement: it
-    # cannot be SUBMITTED without a trade (SUBMIT_MISSING_TRADE). Its untouched
-    # payload has a blank `worker_trade`, so it is caught. That is the first
-    # per-form minimum-content rule in the codebase and it narrows this hole by
-    # exactly one form — it does not close it for the other ten, which is why
-    # this class still exists.
+    # subcontractor_orientation has a per-form content requirement: it cannot
+    # be SUBMITTED without a trade (SUBMIT_MISSING_TRADE). That is the only
+    # per-form minimum-content rule in the codebase.
     #
-    # Deliberately not folded into the loop as a skip: the exception is named,
-    # and the reason it is refused is asserted, so the boundary stays readable.
-    _HAS_CONTENT_RULE = {"subcontractor_orientation"}
+    # osha_log and preshift_signin are caught by SUBMIT_NO_CONTENT, which is
+    # NOT a per-form rule and does not narrow the deferred question at all.
+    # Those two records ARE a list of rows and contain nothing else, and both
+    # PDF renderers already drop a row that says nothing — so "every row would
+    # be dropped" means the document prints blank. The rule is lifted from the
+    # renderers rather than decided here (see _SUBMIT_ROW_CONTENT_RULES and
+    # test_submit_no_content_gate.py).
+    #
+    # THE HOLE IS STILL OPEN FOR THE OTHER EIGHT, which is why this class still
+    # exists. Nothing here decides what a hot-work permit or a pour record must
+    # contain; that is still the operator's deferred call.
+    #
+    # Deliberately not folded into the loop as a skip: each exception is named
+    # with the code that refuses it, so the boundary stays readable.
+    _HAS_CONTENT_RULE = {
+        "subcontractor_orientation": "SUBMIT_MISSING_TRADE",
+        "osha_log": "SUBMIT_NO_CONTENT",
+        "preshift_signin": "SUBMIT_NO_CONTENT",
+    }
 
     def test_a_signed_but_untouched_submit_is_ACCEPTED(self):
         for log_type in UNTOUCHED_PAYLOADS:
@@ -426,18 +439,34 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                     "this branch does NOT close the blank-content case",
                 )
 
-    def test_the_one_form_that_DOES_have_a_content_rule_is_refused(self):
+    def test_the_forms_that_DO_have_a_content_rule_are_refused(self):
         """An orientation with no trade names no scope of work, and the record
-        is entirely about what this man was oriented TO do. Refused by code, so
-        the client can name the worker and offer the fix."""
-        for log_type in self._HAS_CONTENT_RULE:
+        is entirely about what this man was oriented TO do. A register or a
+        sign-in sheet whose every row is blank prints as an empty document.
+        Both refused by CODE, so the client can name the row and offer the fix
+        on the screen that owns it."""
+        for log_type, code in self._HAS_CONTENT_RULE.items():
             with self.subTest(log_type=log_type):
                 db = _db_for_create()
                 resp = _post(db, _create_body(log_type, status="submitted", signature=_SIG))
                 self.assertEqual(resp.status_code, 400, resp.text)
-                self.assertEqual(
-                    resp.json()["detail"]["code"], "SUBMIT_MISSING_TRADE",
-                )
+                self.assertEqual(resp.json()["detail"]["code"], code)
+
+    def test_the_hole_is_still_open_for_eight_of_the_eleven_types(self):
+        """The count is the point. Measured against LOGBOOK_TIMING_CLASS — the
+        real list of types on this submit path — not against the fixture above,
+        which covers nine of them. If a later change narrows or widens the
+        boundary, this fails and it gets re-stated rather than drifting."""
+        import server as _S
+        all_types = set(_S.LOGBOOK_TIMING_CLASS)
+        self.assertEqual(len(all_types), 11)
+        still_open = all_types - set(self._HAS_CONTENT_RULE)
+        self.assertEqual(len(still_open), 8, sorted(still_open))
+        # And the three that are covered really are the three named above.
+        self.assertEqual(
+            all_types - still_open,
+            {"subcontractor_orientation", "osha_log", "preshift_signin"},
+        )
 
     def test_the_untouched_orientation_payload_really_has_no_trade(self):
         """Guards the test above from passing for the wrong reason."""

@@ -94,6 +94,12 @@ export default {
     // is the fallback for anywhere else the code surfaces (the reconnect drain
     // has no screen and no row to point at).
     code_SUBMIT_MISSING_TRADE: 'This worker has no trade assigned. Assign one before submitting the orientation.',
+    // Raised for the two records that ARE a list of rows — the certification
+    // register and the sign-in sheet — when every row is one the PDF renderer
+    // would refuse to print. The document would come out blank. Not a
+    // completeness rule: it says the record contains nothing at all, which is
+    // the one thing that is true of it regardless of which form it is.
+    code_SUBMIT_NO_CONTENT: 'Every row on this log is empty, so there is nothing to file. Fill in at least one before submitting.',
     // Shown under a Submit button disabled because no signature is on file. A
     // CP sets his signature by signing on the log itself — there is no separate
     // profile screen for it (nothing under app/settings or app/profile writes
