@@ -84,7 +84,17 @@ export default function ScaffoldMaintenanceLog() {
     scaffold_erector: '', renters_name: '', permit_number: '',
     installation_date: '', expiration_date: '', phone: '',
     scaffold_height: '', num_platforms: '', shed_type: 'Heavy',
-    drawings_on_site: 'YES',
+    // `drawings_on_site` is NOT seeded here any more, and is not a general_info
+    // key at all. It was initialised to 'YES' with no control anywhere on the
+    // screen that could change it — the app asserting, on every scaffold log,
+    // that drawings were on site for inspection when nobody had said so.
+    //
+    // The same name is ALSO one of the 19 inspection questions, which is where
+    // it belongs and where the CP actually answers it. Both PDF renderers
+    // already read only that one and say so
+    // (backend/server.py:13369 and :18801, "a dead duplicate of the answers
+    // question of the same key"), so nothing printed changes — an unanswered
+    // question renders "Not recorded", never a silent YES.
   });
 
   const [answers, setAnswers] = useState({});
@@ -194,7 +204,16 @@ export default function ScaffoldMaintenanceLog() {
     const data = { general_info: generalInfo, answers };
     try {
       // Save scaffold info to project memory
-      await logbooksAPI.saveScaffoldInfo(projectId, generalInfo).catch(() => {});
+      // Only the keys this screen actually holds. update_scaffold_info writes
+      // every key it is given, so an ABSENT drawings_on_site would be sent as
+      // undefined and stored as null — replacing whatever the project already
+      // had with nothing. Dropping it from the payload leaves it untouched.
+      await logbooksAPI.saveScaffoldInfo(
+        projectId,
+        Object.fromEntries(
+          Object.entries(generalInfo).filter(([, v]) => v !== undefined),
+        ),
+      ).catch(() => {});
 
       // Phase A — write the LOCAL draft first. Source of truth, needs no network,
       // so an offline CP completes the log without the "could not save" failure.
