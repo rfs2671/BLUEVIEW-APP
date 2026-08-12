@@ -233,10 +233,28 @@ class ItIsNotWiredToAnyLogbook(unittest.TestCase):
         for banned in ("db.logbooks", "db.", "insert_one", "update_one"):
             self.assertNotIn(banned, self.SRC, banned)
 
-    def test_and_makes_no_model_call_yet(self):
-        """The check ships before the call, deliberately."""
-        for banned in ("genai", "generate_content", "GEMINI"):
-            self.assertNotIn(banned, self.SRC, banned)
+    def test_no_model_result_can_return_without_the_check(self):
+        """SUPERSEDES `test_and_makes_no_model_call_yet`, which banned the
+        strings "genai" / "generate_content" / "GEMINI" outright.
+
+        That assertion was a SEQUENCING guard and said so — the check ships
+        before the call, deliberately — and it held that line until the
+        generator landed. It is not the durable invariant, and keeping it would
+        have meant deleting a real guard to land the feature it was guarding.
+
+        The durable invariant is the one below: the module may call a model,
+        but no model result may reach a caller without passing verify_sentence
+        first. Asserted on code with docstrings and comments stripped, so this
+        cannot pass by reading the paragraph that describes it.
+        """
+        body = self.SRC.split("def generate_sentence")[1]
+        self.assertIn("generate_content", body, "the call moved out of here")
+        self.assertIn("verify_sentence", body, "the generator skips the check")
+        # The check must run BEFORE the only success return, not after it.
+        self.assertLess(
+            body.index("verify_sentence"), body.rindex("return sentence"),
+            "verify_sentence runs after the sentence is already returned",
+        )
 
 
 if __name__ == "__main__":

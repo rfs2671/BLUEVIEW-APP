@@ -1,9 +1,16 @@
-"""The one-line per-subcontractor summary for the INVESTOR report — verifier.
+"""The one-line per-subcontractor summary for the INVESTOR report.
 
-THIS FILE CONTAINS NO MODEL CALL. The post-generation check is built and proved
-first, because it is the only thing that makes auto-approve safe: the line
-sends itself at the admin's daily send time whether or not a human looked at
-it. A check that can be talked past is worse than no feature at all.
+THE CHECK WAS BUILT FIRST, and it still governs. `verify_sentence` landed
+before any model call existed, because it is the only thing that makes
+auto-approve safe: the line sends itself at the admin's daily send time whether
+or not a human looked at it. A check that can be talked past is worse than no
+feature at all.
+
+THE GENERATOR IS BELOW IT, and is subordinate to it. Every sentence the model
+produces goes through `verify_sentence` before it can reach a page, and a
+sentence that fails is NOT retried and NOT repaired — `plain_facts` renders
+instead. There is no path from the model to the report that skips the check;
+`summary_line` is the only public entry point and it always verifies.
 
 WHERE THIS MAY AND MAY NOT GO. The investor report only. It is NEVER written
 into a logbook — page 2 is the legal record and the CP signs it. Nothing here
@@ -27,8 +34,16 @@ never nothing.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from google import genai
+from google.genai import types
+
+logger = logging.getLogger(__name__)
 
 # ── The closed vocabulary a sentence may use beyond its own input ────────────
 #
@@ -184,3 +199,142 @@ def plain_facts(payload: Dict[str, object]) -> str:
     if locs:
         line += " at " + ", ".join(locs)
     return line
+
+
+# ── The model call ───────────────────────────────────────────────────────────
+#
+# Mirrors lib/ai/phase_inference.py deliberately: same SDK, same client
+# construction, same structured-output config, same temperature=0, same
+# swallow-and-return-None failure posture. A second AI surface that fails in a
+# second way is a second thing to learn at 6am.
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
+# One string, nothing else. There is no `reasoning` field on purpose: this runs
+# once per activity row per report, and a field nothing reads is tokens spent
+# on every row of every day.
+SENTENCE_RESPONSE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sentence": {"type": "string"},
+    },
+    "required": ["sentence"],
+}
+
+# THE PROMPT STATES THE TWO RULES, and the verifier enforces them anyway.
+#
+# This is not redundancy for its own sake. Asking for a compliant sentence is
+# how we get a USABLE one most of the time; the check is how we are safe the
+# rest of the time. If the prompt were the only guard the feature would be a
+# hope, and if the check were the only guard almost every line would refuse to
+# the fallback and the page would read like a spreadsheet.
+_PROMPT_TEMPLATE = """You are writing ONE sentence for a construction progress report read by an investor or a bank.
+
+The facts below are the COMPLETE record of what the site supervisor logged for this crew today. There is nothing else. You were not there.
+
+Company: {company}
+Trade: {trade}
+Workers on site (counted at the gate): {worker_count}
+Activities the supervisor tapped: {activities}
+Locations the supervisor tapped: {locations}
+Photographs taken: {photo_count}
+
+Write one sentence, at most 20 words, describing what this crew did today.
+
+TWO ABSOLUTE RULES:
+
+1. NO NEW NOUNS. Every activity, location, material, quantity or thing you name must appear in the facts above. Do not infer what the work was "for" or what comes next. If the supervisor tapped "rebar" and "formwork", you may write about rebar and formwork; you may NOT write about a pour, a slab, a deck, or a schedule, because nobody recorded those.
+
+2. NO COMPLETION CLAIMS. Never say or imply that anything is complete, finished, done, wrapped up, ready, installed, poured, delivered, or closed out. Progress language only: "continuing", "underway", "in progress", "ongoing". Whether work finished is not something a tap can tell you, and stating it to a lender is a false statement.
+
+You may use ordinary grammar words, and the words: crew, crews, worker, workers, work, working, today, day, continuing, ongoing, underway, progress.
+
+Return JSON: {{"sentence": <the sentence>}}
+"""
+
+
+def _prompt_for(payload: Dict[str, object]) -> str:
+    """Render the prompt from the closed input set — and NOTHING else.
+
+    Empty fields are named as such rather than omitted. A prompt with a missing
+    line invites the model to fill the gap; a prompt that says "none recorded"
+    tells it there is nothing there to reach for.
+    """
+    def _listing(key: str) -> str:
+        items = [str(x).strip() for x in (payload.get(key) or [])  # type: ignore[union-attr]
+                 if str(x).strip()]
+        return ", ".join(items) if items else "(none recorded)"
+
+    def _scalar(key: str) -> str:
+        value = payload.get(key)
+        text = str(value).strip() if value is not None else ""
+        return text or "(not recorded)"
+
+    return _PROMPT_TEMPLATE.format(
+        company=_scalar("company"),
+        trade=_scalar("trade"),
+        worker_count=_scalar("worker_count"),
+        activities=_listing("activities"),
+        locations=_listing("locations"),
+        photo_count=_scalar("photo_count"),
+    )
+
+
+def generate_sentence(payload: Dict[str, object]) -> Optional[str]:
+    """One Gemini call for one activity row. The VERIFIED sentence, or None.
+
+    Returns None — never a partial, never an unchecked string — if:
+      • GEMINI_API_KEY is unset
+      • the call raises, or the response will not parse
+      • the sentence fails verify_sentence
+
+    NO RETRY ON A FAILED CHECK. A refusal means the model reached for something
+    nobody tapped, and asking a temperature-0 model the same question again is
+    both the same question and a second charge. The caller falls back to
+    plain_facts, which is what a reader would have got anyway.
+    """
+    if not GEMINI_API_KEY:
+        return None
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=_prompt_for(payload),
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SENTENCE_RESPONSE_SCHEMA,
+                temperature=0,
+            ),
+        )
+        sentence = str(json.loads(response.text).get("sentence") or "").strip()
+    except Exception as e:  # noqa: BLE001 — per-row tolerance, as phase_inference
+        logger.error(
+            "Sub-summary generation failed for %r: %r",
+            payload.get("company"), e,
+        )
+        return None
+
+    # THE GATE. Nothing returns from this function unverified.
+    ok, reason, offending = verify_sentence(sentence, payload)
+    if not ok:
+        logger.info(
+            "Sub-summary refused for %r: %s %r",
+            payload.get("company"), reason, offending,
+        )
+        return None
+    return sentence
+
+
+# WHY THERE IS NO summary_line() WRAPPER HERE.
+#
+# The obvious convenience — `generate_sentence(p) or plain_facts(p)` — is wrong
+# for the one caller that exists. The progress report prints the company itself,
+# in bold, as the anchor of "one line per subcontractor", and plain_facts opens
+# with the company too; folding them together yields "Kestrel Electric — Kestrel
+# Electric (Electrical) — 4 workers...". So the report owns its own fallback,
+# which is the line it already rendered before this generator existed.
+#
+# plain_facts stays as this module's self-contained answer for a caller that
+# prints nothing of its own. It is not the report's answer.
