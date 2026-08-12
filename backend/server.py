@@ -18265,26 +18265,75 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         for _name, _n in _subs
     ) or f'<tr><td colspan="2" {TD}>{NOT_RECORDED}</td></tr>'
 
-    # ONE LINE PER SUBCONTRACTOR - placeholder. The generated sentence is the
-    # next brief; the verifier that makes it safe to auto-send is already on
-    # main (lib/ai/sub_summary.py). Until then each sub gets the plain facts,
-    # which is exactly what a refused line falls back to anyway.
+    # ONE LINE PER SUBCONTRACTOR. One Gemini call per row, every sentence
+    # through the verifier before it can reach this page, and a refusal falls
+    # back to the plain facts - which is exactly what this rendered before the
+    # generator existed (#121), so the worst case here is the previous best case.
+    #
+    # AUTO-APPROVE. There is no human in this path: the report sends at the
+    # admin's daily send time whether or not anyone read it. That is precisely
+    # why generate_sentence is the ONLY thing called here - it runs
+    # verify_sentence internally and returns None rather than an unchecked
+    # string, so there is no way to render a sentence that did not pass.
+    #
+    # The closed input set is assembled below and is the whole of what the model
+    # sees. Headcount comes from the GATE (_subs, via check-ins), not from the
+    # row's hand-typed num_workers, matching the headcount table directly above.
+    #
+    # Imported here, not at module scope, matching how phase_inference is pulled
+    # in (:11943) - the google-genai import stays off the boot path.
+    from lib.ai.sub_summary import generate_sentence as _gen_sub_sentence
+    import html as _html
+
+    _gate_counts = {_n.strip().lower(): _c for _n, _c in _subs}
+
     _pg1_lines = ""
     for _a in (_dj.get("activities") or []):
         _co = str(_a.get("company") or "").strip()
         if not _co:
             continue
+        # work_description / work_locations are the tapped chip labels, already
+        # resolved and comma-joined by the stepper (composeSelection in
+        # frontend/src/utils/dailyJobsiteModel.js). Splitting them back apart is
+        # what gives the verifier one label per item to trace.
+        _payload = {
+            "company":      _display_sub_company(_co),
+            "trade":        str(_a.get("trade") or "").strip(),
+            "worker_count": _gate_counts.get(_co.lower()),
+            "activities":   [_s.strip() for _s in
+                             str(_a.get("work_description") or "").split(",")
+                             if _s.strip()],
+            "locations":    [_s.strip() for _s in
+                             str(_a.get("work_locations") or "").split(",")
+                             if _s.strip()],
+            "photo_count":  sum(
+                1 for _p in (_a.get("photos") or [])
+                if _logbook_photo_is_renderable(_p)
+            ),
+        }
+        # THE FALLBACK IS THE #121 LINE, unchanged. A refused sentence renders
+        # exactly what this page rendered before the generator existed, so the
+        # worst case of adding AI here is the status quo ante - never a gap.
         _facts = ", ".join(
             _x for _x in [
                 _sentence_case(_a.get("work_description") or ""),
                 _capitalize_first(_a.get("work_locations") or ""),
             ] if _x
         )
+        # The generated sentence is ESCAPED and the fallback is not, and that
+        # asymmetry is deliberate. verify_sentence is a vocabulary gate, not a
+        # sanitizer - it tokenizes on [A-Za-z0-9]+ and ignores punctuation
+        # completely, so angle brackets are invisible to it. CP free text is
+        # already rendered raw here and on page 2 and that is this page's
+        # established trust level; a model is a new writer and does not inherit
+        # it. Escaping costs nothing on a sentence that traces.
+        _gen = _gen_sub_sentence(_payload)
+        _line = _sentence_case(_html.escape(_gen)) if _gen else _facts
         _pg1_lines += (
             '<p style="margin:0 0 8px;font-size:14px;color:#334155;">'
             f'<strong style="color:#0A1929;">'
             f'{_capitalize_first(_display_sub_company(_co))}</strong>'
-            f'{" - " + _facts if _facts else ""}</p>'
+            f'{" - " + _line if _line else ""}</p>'
         )
 
     # Photos, grouped by subcontractor, captioned from what the CP tapped.
