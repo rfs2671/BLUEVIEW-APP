@@ -2,6 +2,8 @@ import { StyleSheet } from 'react-native';
 import {
   spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
 } from '../../styles/theme';
+// o50 is the app's existing disabled/busy dim (tokens.js:265), not a new value.
+import { opacity } from '../../styles/tokens';
 
 /**
  * The stepper's CHROME styles — every value a logbook form needs to look like
@@ -183,6 +185,10 @@ export function buildStepperStyles() {
     primaryBtnText: {
       fontSize: typography.sizes.xl, fontWeight: '700', color: outdoor.textOnSelected,
     },
+    // Unreachable, and it LOOKS unreachable. Dimmed rather than hidden: a
+    // button that vanishes reads as a broken screen, and the CP needs to see
+    // the action he is one signature away from.
+    primaryBtnDisabled: { opacity: opacity.o50 },
 
     autosaveNote: {
       fontSize: typography.sizes.fine, color: outdoor.textDim,
@@ -202,6 +208,42 @@ export function buildStepperStyles() {
       fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
     },
     modalActions: { flexDirection: 'row', gap: spacing.sm },
+
+    // ── Labelled field block — a label above its control ──────────────────
+    // Used by DateField and by both ported forms' text rows. The label is
+    // ABOVE rather than beside: a right-aligned value next to a left-aligned
+    // label is unreadable at arm's length once either one wraps.
+    fieldBlock: { gap: spacing.xs, marginBottom: spacing.sm },
+    fieldValueText: { fontSize: typography.sizes.md, color: outdoor.text },
+    fieldPlaceholderText: { fontSize: typography.sizes.md, color: outdoor.textDim },
+
+    // ── DateField's calendar ──────────────────────────────────────────────
+    calHead: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      gap: spacing.sm,
+    },
+    calMonth: {
+      flex: 1, textAlign: 'center',
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+    },
+    calRow: { flexDirection: 'row' },
+    calDayLabel: {
+      flex: 1, textAlign: 'center',
+      fontSize: typography.sizes.fine, fontWeight: '600', color: outdoor.textDim,
+    },
+    // Capped so a 6-row month cannot push the Clear/Done actions off a short
+    // screen — the calendar scrolls, the actions stay reachable.
+    calScroll: { maxHeight: spacing.xxl * 5 },
+    calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+    // 1/7th of the row. Percentage rather than a measured width so it holds on
+    // every screen size without a second set of numbers.
+    calCell: { width: '14.28%', aspectRatio: 1, padding: spacing.xs / 2 },
+    calCellDay: { alignItems: 'center', justifyContent: 'center' },
+    calCellSelected: {
+      backgroundColor: outdoor.surfaceSelected, borderRadius: borderRadius.full,
+    },
+    calCellText: { fontSize: typography.sizes.md, color: outdoor.text },
+    calCellTextSelected: { color: outdoor.textOnSelected, fontWeight: '700' },
 
   });
 }

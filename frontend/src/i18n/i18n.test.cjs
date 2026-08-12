@@ -107,6 +107,14 @@ const EN_ONLY_NAMESPACES = [
   // app/logbooks/review.jsx — the CP's approve / send-home / assign-trade
   // decisions on flagged workers.
   'review',
+  // app/logbooks/osha_log.jsx — the OSHA/SST certification register. The CP
+  // signs it; the certification NAMES are card identifiers and stay in
+  // oshaLogModel, not here.
+  'oshaLog',
+  // app/logbooks/scaffold_maintenance.jsx — the DOB sidewalk-shed daily
+  // inspection. The 19 question labels stay in scaffoldMaintenanceModel
+  // because the filed PDF prints the same strings.
+  'scaffoldMaintenance',
   // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
   // and signature prompts. CP-facing.
   'finalize',

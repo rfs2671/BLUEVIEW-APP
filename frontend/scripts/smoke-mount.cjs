@@ -74,6 +74,14 @@ const ROUTES = [
   '/workers/w1',                        // worker detail — cert/OSHA expiry
   '/logbooks',
   '/logbooks/daily_jobsite?projectId=p1',
+  // The two forms ported onto the shared stepper. They are here for the same
+  // reason daily_jobsite is: this job is the ONLY thing that executes a logbook
+  // screen, and the port moved every one of their constants into a model and
+  // their whole chrome into a shared component. A bad import or a stale
+  // reference in either would mount to an error boundary and nothing else in
+  // the suite would notice.
+  '/logbooks/osha_log?projectId=p1',
+  '/logbooks/scaffold_maintenance?projectId=p1',
   '/admin/site-devices',
   '/admin/users',
   '/reports',

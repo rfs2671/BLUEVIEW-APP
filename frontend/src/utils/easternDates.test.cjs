@@ -84,17 +84,26 @@ ok(D.easternDayOffset(-1, new Date('2026-08-10T01:00:00Z')) === '2026-08-08',
 // ── 3. every fixed caller uses the helper and NOT toISOString ───────────────
 // TIER 1 writes a date onto a persisted record; TIER 2 only queries with it.
 const SITES = [
-  ['TIER 1', 'app/logbooks/osha_log.jsx', /date: easternToday\(\)/],
+  // RE-POINTED, not weakened. EMPTY_ENTRY moved out of the screen and into
+  // src/utils/oshaLogModel.js when osha_log was ported onto the shared stepper
+  // — same call, same guarantee, one address further in. Both ends are still
+  // checked: the model must make the call, the screen must consume the model,
+  // and NEITHER may carry a UTC calendar date.
+  // The model is a sibling of dates.js, so its import is './dates'.
+  ['TIER 1', 'src/utils/oshaLogModel.js', /date: easternToday\(\)/, /from '\.\/dates'/],
+  ['TIER 1', 'app/logbooks/osha_log.jsx', /EMPTY_ENTRY/, /from '.*utils\/oshaLogModel'/],
   ['TIER 2', 'app/daily-log.jsx', /const todayISO = \(\) => easternToday\(\)/],
   ['TIER 2', 'app/logbooks/subcontractor_orientation.jsx', /const todayISO = \(\) => easternToday\(\)/],
   ['TIER 2', 'app/site/daily-logs.jsx', /const todayStr = \(\) => easternToday\(\)/],
   ['TIER 2', 'app/site/index.jsx', /const today = easternToday\(\)/],
   ['TIER 2', 'app/reports.jsx', /useState\(easternToday\(\)\)/],
 ];
-for (const [tier, rel, re] of SITES) {
+for (const [tier, rel, re, importRe] of SITES) {
   const src = fs.readFileSync(path.join(FRONTEND, rel), 'utf8');
   ok(re.test(src), `${tier} ${rel}: uses the helper`);
-  ok(/from '.*utils\/dates'/.test(src), `${tier} ${rel}: imports it`);
+  // Most sites import dates.js directly; a site that reaches the helper
+  // through a model declares the import it actually has.
+  ok((importRe || /from '.*utils\/dates'/).test(src), `${tier} ${rel}: imports it`);
   ok(!/toISOString\(\)\.split\('T'\)\[0\]/.test(src),
     `${tier} ${rel}: no UTC calendar date left`);
 }

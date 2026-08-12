@@ -48,42 +48,55 @@ import { withAlpha } from './semanticColors';
 
 // ─── Opaque colour bases ─────────────────────────────────────────────────────
 //
-// 18 distinct opaque literals, 74 occurrences. Counts are occurrences across
-// the 16 measured files.
+// 15 distinct opaque literals, 57 occurrences, plus `black` which survives
+// only as a tint base. Counts are occurrences across the 16 measured files.
 //
-// FIVE of these 18 are an exact string match for a hex already defined in
+// RE-MEASURED after the osha_log + scaffold_maintenance port onto the shared
+// stepper, exactly as the U1 daily-jobsite rebuild required before it. Those
+// two screens moved onto the token file and took their literals with them, so
+// `cyan400` (#22d3ee) and `red500` (#ef4444) now have NO use anywhere in the
+// measured set and are GONE from this palette. A measured scale may not keep
+// shipping a value nothing measures — the same rule that removed `shadow`.
+//
+// NOT A CLAIM ABOUT THE WHOLE APP. Both colours are still written elsewhere
+// (CameraOverlay, LogbookLockBar, RiskScoreCircle); this file measures the 16
+// CP screens and says nothing about the rest.
+//
+// FIVE of these are an exact string match for a hex already defined in
 // theme.js and should resolve to that token, not to this palette, when the
 // migration happens: blue500 (theme colors.primary), amber400 (colors.warning
 // / state.attention), green400 (colors.success), red400 (colors.error /
-// state.criticalText), red500 (state.critical). `white` is a SIXTH match by
-// colour but not by string — the screens write '#fff', theme.js writes
-// '#ffffff'. The remaining 12 have no equivalent anywhere in theme.js.
+// state.criticalText), and blue400 (outdoor.accent). `white` is a SIXTH match
+// by colour but not by string — the screens write '#fff', theme.js writes
+// '#ffffff'.
 export const palette = Object.freeze({
-  blue500:   '#3b82f6', // 17 uses, 8 files — exact match: theme colors.primary
-  white:     '#fff',    // 15 uses, 11 files — same COLOUR as theme colors.white ('#ffffff'), different literal
-  blue400:   '#60a5fa', // 8 uses, 4 files
-  blue300:   '#93c5fd', // 5 uses, 2 files
-  cyan500:   '#06b6d4', // 4 uses, 2 files
+  blue500:   '#3b82f6', // 13 uses, 6 files — exact match: theme colors.primary
+  blue300:   '#93c5fd', // 9 uses, 3 files
+  white:     '#fff',    // 9 uses, 8 files — same COLOUR as theme colors.white ('#ffffff'), different literal
+  blue400:   '#60a5fa', // 6 uses, 3 files — exact match: theme outdoor.accent
   amber400:  '#fbbf24', // 4 uses, 2 files — exact match: theme colors.warning / state.attention
   green400:  '#4ade80', // 3 uses, 1 file  — exact match: theme colors.success
   red400:    '#f87171', // 3 uses, 2 files — exact match: theme colors.error / state.criticalText
-  slate400:  '#94a3b8', // 3 uses, 2 files
-  violet500: '#8b5cf6', // 2 uses, 2 files
-  cyan400:   '#22d3ee', // 2 uses, 1 file
   gray500:   '#6b7280', // 2 uses, 1 file
-  black:     '#000000', // 1 use,  1 file
+  violet500: '#8b5cf6', // 2 uses, 2 files
+  cyan500:   '#06b6d4', // 1 use,  1 file
   emerald500:'#10b981', // 1 use,  1 file
-  amber500:  '#f59e0b', // 1 use,  1 file
+  slate400:  '#94a3b8', // 1 use,  1 file
   pink500:   '#ec4899', // 1 use,  1 file
-  red500:    '#ef4444', // 1 use,  1 file  — exact match: theme state.critical
   pink400:   '#f472b6', // 1 use,  1 file
+  amber500:  '#f59e0b', // 1 use,  1 file
+  black:     '#000000', // 0 standalone uses — survives as a TINT BASE only
 });
 
 // ─── Alpha steps ─────────────────────────────────────────────────────────────
 //
-// The union of every opacity in use on a colour: 101 withAlpha() calls plus 47
-// hand-written rgba() literals = 20 distinct steps. This is NOT a designed
-// ramp — 0.02/0.03/0.07/0.92 are one-offs, kept because they ship.
+// The union of every opacity in use on a colour: 67 withAlpha() calls plus 34
+// hand-written rgba() literals = 17 distinct steps. This is NOT a designed
+// ramp — 0.02/0.03/0.07 are one-offs, kept because they ship.
+//
+// EVERY STEP SURVIVED the osha_log + scaffold_maintenance port. The two
+// screens took colours out of the measured set but no alpha value with them,
+// which is why this block is unchanged while the palette above lost two bases.
 //
 // NOTE the overlap with semanticColors.js's canonical STATE steps (fill 0.12,
 // border 0.3). Those two are the only steps with a stated meaning; every other
@@ -107,56 +120,50 @@ export const tint = withAlpha;
 // migration checklist, and a test can assert that `palette` × `alpha` still
 // covers all of it. `uses` is the occurrence count.
 //
-// RE-MEASURED after the U1 daily-jobsite rebuild, which moved that screen onto
-// the token file and took 14 withAlpha calls and 3 rgba() literals out of the
-// measurement with it. These numbers are the CURRENT source, not the original
-// audit snapshot.
+// RE-MEASURED after the osha_log + scaffold_maintenance port onto the shared
+// stepper, which moved two more screens onto the token file and took 21
+// withAlpha calls and 10 rgba() literals out of the measurement with them.
+// The U1 daily-jobsite rebuild did the same before it. These numbers are the
+// CURRENT source, not the original audit snapshot.
 //
 // `via` records HOW the value is written today:
-//   'withAlpha' — already the sanctioned helper idiom (88 occurrences).
-//   'rgba'      — a hand-written rgba() string literal (44 occurrences).
+//   'withAlpha' — already the sanctioned helper idiom (67 occurrences).
+//   'rgba'      — a hand-written rgba() string literal (34 occurrences).
 // Keeping them apart matters: counting the withAlpha bases as raw colour
-// literals inflates the apparent colour debt from 47 to 148.
+// literals inflates the apparent colour debt from 34 to 101.
 export const MEASURED_TINTS = Object.freeze([
-  { base: 'black',    step: 'a04',  uses: 2,   via: 'withAlpha' },
-  { base: 'black',    step: 'a06',  uses: 2,   via: 'withAlpha' },
-  { base: 'black',    step: 'a60',  uses: 2,   via: 'withAlpha' },
-  { base: 'black',    step: 'a90',  uses: 1,   via: 'withAlpha' },
-  { base: 'blue300',  step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'blue300',  step: 'a35',  uses: 1,   via: 'rgba' },
-  { base: 'blue300',  step: 'a40',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',  step: 'a10',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',  step: 'a15',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',  step: 'a25',  uses: 1,   via: 'rgba' },
-  { base: 'blue400',  step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'blue500',  step: 'a08',  uses: 1,   via: 'rgba' },
-  { base: 'blue500',  step: 'a10',  uses: 4,   via: 'rgba' },
-  { base: 'blue500',  step: 'a15',  uses: 5,   via: 'rgba' },
-  { base: 'blue500',  step: 'a20',  uses: 7,   via: 'rgba' },
-  { base: 'blue500',  step: 'a30',  uses: 3,   via: 'rgba' },
-  { base: 'blue500',  step: 'a40',  uses: 3,   via: 'rgba' },
-  { base: 'blue500',  step: 'a50',  uses: 3,   via: 'rgba' },
-  { base: 'cyan500',  step: 'a15',  uses: 2,   via: 'rgba' },
-  { base: 'cyan500',  step: 'a20',  uses: 1,   via: 'rgba' },
-  { base: 'cyan500',  step: 'a30',  uses: 2,   via: 'rgba' },
-  { base: 'red500',   step: 'a15',  uses: 1,   via: 'withAlpha' },
-  { base: 'red500',   step: 'a40',  uses: 1,   via: 'withAlpha' },
-  { base: 'slate400', step: 'a10',  uses: 1,   via: 'withAlpha' },
-  { base: 'slate400', step: 'a30',  uses: 1,   via: 'withAlpha' },
-  { base: 'violet500',step: 'a15',  uses: 1,   via: 'rgba' },
-  { base: 'violet500',step: 'a20',  uses: 2,   via: 'rgba' },
-  { base: 'violet500',step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'violet500',step: 'a40',  uses: 2,   via: 'rgba' },
-  { base: 'white',    step: 'a02',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',    step: 'a03',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',    step: 'a04',  uses: 18,  via: 'withAlpha' },
-  { base: 'white',    step: 'a05',  uses: 20,  via: 'withAlpha' },
-  { base: 'white',    step: 'a06',  uses: 4,   via: 'withAlpha' },
-  { base: 'white',    step: 'a07',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',    step: 'a08',  uses: 11,  via: 'withAlpha' },
-  { base: 'white',    step: 'a10',  uses: 17,  via: 'withAlpha' },
-  { base: 'white',    step: 'a15',  uses: 2,   via: 'withAlpha' },
-  { base: 'white',    step: 'a20',  uses: 2,   via: 'withAlpha' },
+  { base: 'black',      step: 'a04',  uses: 2,   via: 'withAlpha' },
+  { base: 'black',      step: 'a06',  uses: 2,   via: 'withAlpha' },
+  { base: 'black',      step: 'a60',  uses: 1,   via: 'withAlpha' },
+  { base: 'black',      step: 'a90',  uses: 1,   via: 'withAlpha' },
+  { base: 'blue300',    step: 'a30',  uses: 1,   via: 'rgba' },
+  { base: 'blue300',    step: 'a35',  uses: 1,   via: 'rgba' },
+  { base: 'blue300',    step: 'a40',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',    step: 'a10',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',    step: 'a15',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',    step: 'a25',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',    step: 'a30',  uses: 1,   via: 'rgba' },
+  { base: 'blue500',    step: 'a08',  uses: 1,   via: 'rgba' },
+  { base: 'blue500',    step: 'a10',  uses: 4,   via: 'rgba' },
+  { base: 'blue500',    step: 'a15',  uses: 4,   via: 'rgba' },
+  { base: 'blue500',    step: 'a20',  uses: 5,   via: 'rgba' },
+  { base: 'blue500',    step: 'a30',  uses: 2,   via: 'rgba' },
+  { base: 'blue500',    step: 'a40',  uses: 2,   via: 'rgba' },
+  { base: 'blue500',    step: 'a50',  uses: 3,   via: 'rgba' },
+  { base: 'violet500',  step: 'a15',  uses: 1,   via: 'rgba' },
+  { base: 'violet500',  step: 'a20',  uses: 2,   via: 'rgba' },
+  { base: 'violet500',  step: 'a30',  uses: 1,   via: 'rgba' },
+  { base: 'violet500',  step: 'a40',  uses: 2,   via: 'rgba' },
+  { base: 'white',      step: 'a02',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',      step: 'a03',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',      step: 'a04',  uses: 15,  via: 'withAlpha' },
+  { base: 'white',      step: 'a05',  uses: 16,  via: 'withAlpha' },
+  { base: 'white',      step: 'a06',  uses: 4,   via: 'withAlpha' },
+  { base: 'white',      step: 'a07',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',      step: 'a08',  uses: 7,   via: 'withAlpha' },
+  { base: 'white',      step: 'a10',  uses: 13,  via: 'withAlpha' },
+  { base: 'white',      step: 'a15',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',      step: 'a20',  uses: 2,   via: 'withAlpha' },
 ]);
 
 // ─── Type sizes ──────────────────────────────────────────────────────────────

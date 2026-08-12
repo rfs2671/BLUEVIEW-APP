@@ -1,146 +1,149 @@
-import React, { useState, useEffect } from 'react';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  View, Text, StyleSheet, Pressable, TextInput,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  ArrowLeft, HardHat, CheckCircle, XCircle, MinusCircle,
-  Save, Download, Calendar,
-} from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard, IconPod } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
-import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { useTheme } from '../../src/context/ThemeContext';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { recordSignatureEvent } from '../../src/utils/signatureAudit';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen files for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+import { isOfflineError } from '../../src/utils/offlineState';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
+import DateField from '../../src/components/logbookStepper/DateField';
+import {
+  GENERAL_INFO_FIELDS, SHED_TYPES, MAINTENANCE_QUESTIONS, ANSWER_OPTIONS,
+  EMPTY_GENERAL_INFO, prefillFromScaffoldInfo, scaffoldInfoForSave,
+  answeredCount, incompleteSteps as computeIncomplete, draftBody,
+} from '../../src/utils/scaffoldMaintenanceModel';
+import { useT } from '../../src/i18n';
+import { spacing, borderRadius, typography, outdoor, touchTarget } from '../../src/styles/theme';
 
-// All maintenance questions exactly as per NYC DOB form
-const GENERAL_INFO_FIELDS = [
-  { key: 'scaffold_erector', label: 'Name of Scaffold Erector' },
-  { key: 'renters_name', label: 'Renters Name' },
-  { key: 'permit_number', label: 'Permit #' },
-  { key: 'installation_date', label: 'Installation Date' },
-  { key: 'expiration_date', label: 'Expiration' },
-  { key: 'phone', label: 'Phone #' },
-  { key: 'scaffold_height', label: 'Scaffold Height' },
-  { key: 'num_platforms', label: 'Number of Platforms Decked' },
-];
-
-const SHED_TYPES = ['Light', 'Med.', 'Heavy', 'Duty'];
-
-const MAINTENANCE_QUESTIONS = [
-  { key: 'signs_on_parapets', label: 'Are the signs on the parapets?' },
-  { key: 'base_plates_mudsills', label: 'Are the base plates and mudsills secured?' },
-  { key: 'scaffold_pins_bolts', label: 'Are the scaffold pins and bolts installed?' },
-  { key: 'legs_poles_plumb', label: 'Are the legs and poles plumb, braced and not displaced?' },
-  { key: 'tie_ins_spaced', label: 'Are tie-ins correctly spaced, properly secured and the correct amount?' },
-  { key: 'cross_braces', label: 'Are cross braces fully attached, not bent, and not missing?' },
-  { key: 'pipe_clamps_tight', label: 'Are pipe clamps tight?' },
-  { key: 'window_jacks_tight', label: 'Are window jacks tight?' },
-  { key: 'planks_secured', label: 'Are all the planks secured?' },
-  { key: 'decking_planks_condition', label: 'Are decking and planks in good condition?' },
-  { key: 'deck_fully_planked', label: 'Is deck fully planked?' },
-  { key: 'gaps_open_spaces', label: 'Are there gaps or open spaces on decking?' },
-  { key: 'guardrails_toe_boards', label: 'Are the guardrails and toe boards secured at all places where required?' },
-  { key: 'netting_extension', label: 'Is the netting extension of full length and height?' },
-  { key: 'netting_secured', label: 'Is the netting secured?' },
-  { key: 'parapet_height', label: 'Is the parapet the proper height and secured?' },
-  { key: 'lights_working', label: 'Are the lights working?' },
-  { key: 'deck_clean', label: 'Is the deck clean and free of debris?' },
-  { key: 'drawings_on_site', label: 'Drawings on site for inspection?' },
-];
-
-const ANSWER_OPTIONS = ['YES', 'NO', 'N/A'];
+/**
+ * SCAFFOLD MAINTENANCE LOG — the NYC DOB sidewalk-shed daily inspection, on the
+ * shared stepper.
+ *
+ * THREE STEPS, as approved: the scaffold (8 fields + shed type, prefilled from
+ * project memory), the 19 checks, then review and sign. The chrome is
+ * LogbookStepper's — nothing about the header, pips, lock bar or footer is
+ * decided here.
+ *
+ * WHAT CARRIED FORWARD from the reference (daily_jobsite.jsx), unchanged:
+ *   draft lifecycle          readDraft / writeDraft / setDraftBackendId /
+ *                            markPending / clearPending / markFinalized
+ *   signature client guard   no signature, no file — and it says why
+ *   gateCopy                 the server names the condition, the client owns
+ *                            the wording; the server's English never renders
+ *   recordFinalizeError      a foreground refusal leaves the same durable
+ *                            banner a background one does
+ *
+ * NOT CARRIED, because this form has no camera: persistPhoto and
+ * compressUnderCap. There is no photo on the shed inspection. See the PR note.
+ *
+ * THE PAYLOAD IS UNCHANGED — `{ general_info, answers }`, the same nine info
+ * keys and nineteen answer keys backend/server.py:13321 renders.
+ *
+ * drawings_on_site IS A QUESTION AND NOTHING ELSE. It is not a general_info
+ * key, nothing seeds it, and it appears in this screen only as one of the 19.
+ * See scaffoldMaintenanceModel for the whole account.
+ */
+const LOG_TYPE = 'scaffold_maintenance';
+const TOTAL_STEPS = 3;
 
 export default function ScaffoldMaintenanceLog() {
-  // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
-  // at import (the DARK palette), so on the light theme this screen rendered
-  // near-white text on a pale background. Same tokens, live values.
-  const { colors, isDark } = useTheme();
-  const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
+  const t = useT('scaffoldMaintenance');
+  const tFinalize = useT('finalize');
   const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
 
+  const s = useMemo(() => buildStyles(), []);
+
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
+  const [signing, setSigning] = useState(false);
+  const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
-
-  const [generalInfo, setGeneralInfo] = useState({
-    scaffold_erector: '', renters_name: '', permit_number: '',
-    installation_date: '', expiration_date: '', phone: '',
-    scaffold_height: '', num_platforms: '', shed_type: 'Heavy',
-    // `drawings_on_site` is NOT seeded here any more, and is not a general_info
-    // key at all. It was initialised to 'YES' with no control anywhere on the
-    // screen that could change it — the app asserting, on every scaffold log,
-    // that drawings were on site for inspection when nobody had said so.
-    //
-    // The same name is ALSO one of the 19 inspection questions, which is where
-    // it belongs and where the CP actually answers it. Both PDF renderers
-    // already read only that one and say so
-    // (backend/server.py:13369 and :18801, "a dead duplicate of the answers
-    // question of the same key"), so nothing printed changes — an unanswered
-    // question renders "Not recorded", never a silent YES.
-  });
-
+  const [existingLogId, setExistingLogId] = useState(null);
+  const [generalInfo, setGeneralInfo] = useState(EMPTY_GENERAL_INFO);
   const [answers, setAnswers] = useState({});
 
-  useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date }),
+    [projectId, date],
+  );
 
-  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
-  // Debounced so typing doesn't thrash storage; makes no server call. This is
-  // what lets the CP fill with zero network and reopen to the same draft.
-  // `status` is intentionally omitted so an autosave never downgrades a
-  // submitted log back to draft.
+  const bodyRef = useRef({ generalInfo, answers });
+  useEffect(() => { bodyRef.current = { generalInfo, answers }; }, [generalInfo, answers]);
+
+  /**
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
+   */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
+
+  // ── Draft ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (loading) return undefined;
-    const t = setTimeout(() => {
-      writeDraft(
-        draftKey({ projectId, logType: 'scaffold_maintenance', date }),
-        {
-          data: { general_info: generalInfo, answers },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        },
-      ).catch(() => {});
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      const b = bodyRef.current;
+      writeDraft(_key, {
+        data: draftBody(b.generalInfo, b.answers),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
     }, 800);
-    return () => clearTimeout(t);
-  }, [loading, projectId, date, generalInfo, answers, cpSignature, cpName]);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, generalInfo, answers, cpSignature, cpName]);
 
-  const fetchData = async () => {
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
+    try {
+      const b = bodyRef.current;
+      await writeDraft(_key, {
+        data: draftBody(b.generalInfo, b.answers),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort */ }
+  }, [locked, _key, cpSignature, cpName]);
+
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      // Phase A — local-first: read the on-device draft first. A local draft
-      // wins over both the project-memory prefill and the server copy, so an
-      // offline CP reopens to exactly what they filled.
-      const key = draftKey({ projectId, logType: 'scaffold_maintenance', date });
-      const draft = await readDraft(key);
-      if (draft) {
-        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
-        if (draft.finalized) {
-          setLocked(true);
-          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-        }
-        setExistingLogId(draft.backend_id);
-        const d = draft.data || {};
-        if (d.general_info) setGeneralInfo(d.general_info);
-        if (d.answers) setAnswers(d.answers);
+      // LOCAL-FIRST. A local draft wins over both the project-memory prefill
+      // and the server copy, so an offline CP reopens to what he filled.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
+        if (draft.finalized) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(draft.backend_id || null);
+        if (draft.data.general_info) setGeneralInfo(draft.data.general_info);
+        if (draft.data.answers) setAnswers(draft.data.answers);
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
         setLoading(false);
@@ -149,37 +152,18 @@ export default function ScaffoldMaintenanceLog() {
 
       const [scaffoldInfo, existingLogs] = await Promise.all([
         logbooksAPI.getScaffoldInfo(projectId).catch(() => ({})),
-        logbooksAPI.getByProject(projectId, 'scaffold_maintenance', date).catch(() => []),
+        logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []),
       ]);
 
-      // Pre-fill scaffold info from project memory
-      if (scaffoldInfo) {
-        setGeneralInfo(prev => ({
-          ...prev,
-          scaffold_erector: scaffoldInfo.scaffold_erector || '',
-          renters_name: scaffoldInfo.renters_name || '',
-          permit_number: scaffoldInfo.permit_number || '',
-          installation_date: scaffoldInfo.installation_date || '',
-          expiration_date: scaffoldInfo.expiration_date || '',
-          phone: scaffoldInfo.phone || '',
-          scaffold_height: scaffoldInfo.scaffold_height || '',
-          num_platforms: scaffoldInfo.num_platforms || '',
-          shed_type: scaffoldInfo.shed_type || 'Heavy',
-        }));
-      }
+      // PREFILLED FROM PROJECT MEMORY. The shed does not change from day to
+      // day; retyping the erector's name and the permit number every morning
+      // is how those fields end up blank.
+      setGeneralInfo(prefillFromScaffoldInfo(scaffoldInfo));
 
-      // CP profile is auto-loaded by useCpProfile hook — no manual fetch needed
-
-      // Load existing log for this date. Prefer the EDITABLE (non-locked) doc —
-      // an amendment child — over a locked original that shares (project, type, date).
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
       if (existing) {
-        // Tier 1 (1)b: a server doc's is_locked locks the form read-only.
-        if (existing.is_locked) {
-          setLocked(true);
-          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-        }
+        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
         if (d.general_info) setGeneralInfo(d.general_info);
@@ -192,416 +176,330 @@ export default function ScaffoldMaintenanceLog() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [_key, projectId, date, setCpName, setCpSignature]);
 
-  const setAnswer = (key, value) => {
-    setAnswers(prev => ({ ...prev, [key]: value }));
-  };
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    const key = draftKey({ projectId, logType: 'scaffold_maintenance', date });
-    const data = { general_info: generalInfo, answers };
+  const setField = (key, value) => setGeneralInfo((p) => ({ ...p, [key]: value }));
+  const setAnswer = (key, value) => setAnswers((p) => ({ ...p, [key]: value }));
+
+  // ── Save ──────────────────────────────────────────────────────────────
+  const persistAndPush = async (submitStatus) => {
+    const b = bodyRef.current;
+    const data = draftBody(b.generalInfo, b.answers);
+
+    // Project memory, so tomorrow's inspection opens prefilled.
+    // update_scaffold_info writes every key it is HANDED, so an undefined key
+    // would be stored as null over whatever the project already had. Dropping
+    // undefined keys leaves them untouched.
+    await logbooksAPI.saveScaffoldInfo(
+      projectId, scaffoldInfoForSave(b.generalInfo),
+    ).catch(() => {});
+
+    await writeDraft(_key, {
+      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+    });
+
+    let created = null;
+    let savedId = existingLogId;
     try {
-      // Save scaffold info to project memory
-      // Only the keys this screen actually holds. update_scaffold_info writes
-      // every key it is given, so an ABSENT drawings_on_site would be sent as
-      // undefined and stored as null — replacing whatever the project already
-      // had with nothing. Dropping it from the payload leaves it untouched.
-      await logbooksAPI.saveScaffoldInfo(
-        projectId,
-        Object.fromEntries(
-          Object.entries(generalInfo).filter(([, v]) => v !== undefined),
-        ),
-      ).catch(() => {});
-
-      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
-      // so an offline CP completes the log without the "could not save" failure.
-      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
-
-      const payload = {
-        project_id: projectId,
-        log_type: 'scaffold_maintenance',
-        date: date,
-        data,
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
-
-      // FIX (PR F): `created` MUST be declared OUTSIDE the else. Referencing it
-      // at `docId = existingLogId || created?.id` below (a different block)
-      // threw ReferenceError on the FIRST submit of a new log — the record was
-      // written but the client errored, so recordSignatureEvent never fired and
-      // the CP was trained to press Submit twice. Hoisting fixes both.
-      let created = null;
-      let pushOk = true;
-      // Best-effort server push. Offline this throws and is swallowed — the key
-      // is recorded in the pending-push list for the Phase B reconnect flush.
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data: payload.data,
-            cp_signature: cpSignature,
-            cp_name: cpName,
-            status: submitStatus,
-          });
-          await setDraftBackendId(key, existingLogId);
-        } else {
-          created = await logbooksAPI.create(payload);
-          setExistingLogId(created.id || created._id);
-          await setDraftBackendId(key, created.id || created._id);
-        }
-        await clearPending(key);
-      } catch (pushErr) {
-        pushOk = false;
-        await markPending(key);
-        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: LOG_TYPE, date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
       }
-
-      // FREEZE MODEL — scaffold_maintenance is an IMMEDIATE log: THE SIGNATURE IS
-      // THE FREEZE. Submitting finalizes the inspection in one action; there is no
-      // separate Finalize step and it is never reopened (a post-alteration
-      // re-inspection is a NEW log; corrections go through the amendment-as-child
-      // path). This runs AFTER the local writeDraft (so the frozen draft holds the
-      // signed content) and AFTER the server push attempt — on SUCCESS OR FAILURE,
-      // so a sidewalk-shed inspection signed with no signal still freezes. It sits
-      // ahead of the autoSave below on purpose: that call is unguarded, and a CP
-      // profile hiccup must not be what leaves a signed inspection unfrozen.
-      if (submitStatus === 'submitted') {
-        await freezeIfImmediate(key, 'scaffold_maintenance');
-        setLocked(true);
+      if (savedId) await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+      if (savedId) await clearFinalizeError(savedId);
+    } catch (pushErr) {
+      // REFUSAL IS NOT OFFLINE — see the same note in osha_log.jsx.
+      // scaffold_maintenance is an IMMEDIATE type, so a submitted push IS the
+      // finalize and a 4xx is the server JUDGING the inspection.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('Scaffold inspection REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
       }
-
-      await autoSave(cpName, cpSignature).catch(() => {});  // guarded: a CP-PROFILE save failure must never report "Could not save log" on a log that was already saved (and, for immediate types, already FROZEN)
-
-      if (submitStatus === 'submitted' && cpSignature) {
-        const docId = existingLogId || created?.id || created?._id;
-        if (docId) {
-          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
-          recordSignatureEvent({
-            documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
-            signerName: cpName, signerRole: user?.role || 'cp',
-            signatureData: cpSignature,
-            contentSnapshot: { log_type: 'scaffold_maintenance', date, project_id: projectId, data: payload.data, status: submitStatus },
-            user,
-          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
-        }
+      if (!offline && !refused) {
+        console.warn('Scaffold inspection push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
       }
+      await markPending(_key);
+      console.warn('Scaffold inspection push deferred (will sync on reconnect):', pushErr?.message);
+    }
 
+    // Guarded: a CP-PROFILE save failure must never report a failure on a log
+    // that was already saved (and, for an immediate type, already FROZEN).
+    await autoSave(cpName, cpSignature).catch(() => {});
+
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
+        recordSignatureEvent({
+          documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+          signerName: cpName, signerRole: user?.role || 'cp',
+          signatureData: cpSignature,
+          contentSnapshot: {
+            log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
+          },
+          user,
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
+      }
+    }
+    return savedId || null;
+  };
+
+  /**
+   * scaffold_maintenance is an IMMEDIATE log: THE SIGNATURE IS THE FREEZE.
+   * Submitting finalizes the inspection in one action and it is never
+   * reopened — a post-alteration re-inspection is a NEW log, and corrections
+   * go through the amendment-as-child path.
+   */
+  const handleSubmitAndSign = async () => {
+    if (signing) return;
+    // SIGNATURE CLIENT GUARD — see osha_log.jsx.
+    if (!cpSignature) {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    setSigning(true);
+    try {
+      const savedId = await persistAndPush('submitted');
+      if (savedId === undefined) return;
+      await freezeIfImmediate(_key, LOG_TYPE);
+      setLocked(true);
       toast.success(
-        submitStatus === 'submitted' ? 'Signed & Locked' : 'Saved',
-        submitStatus === 'submitted'
-          ? (pushOk
-            ? 'Scaffold inspection signed and locked. Corrections require an amendment.'
-            : 'Scaffold inspection signed and locked on this device. It will sync when you reconnect.')
-          : 'Scaffold log saved'
+        t('submittedTitle'),
+        savedId ? t('submittedBody') : t('submittedOfflineBody'),
       );
-      if (submitStatus === 'submitted') router.back();
+      router.back();
     } catch (e) {
       console.error(e);
-      toast.error('Error', 'Could not save log');
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
-      setSaving(false);
+      setSigning(false);
     }
   };
 
-  const AnswerToggle = ({ questionKey }) => {
-    const current = answers[questionKey];
+  const onStepChange = async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  };
+
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
+
+  const incomplete = computeIncomplete({ generalInfo, answers, cpSignature })
+    .filter((n) => n !== step);
+  const answered = answeredCount(answers);
+  const totalQuestions = MAINTENANCE_QUESTIONS.length;
+
+  // ── STEP 1 — the scaffold ─────────────────────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      <StepHeader title={t('step1Title')} />
+      <Text style={s.noteText}>{t('shedHint')}</Text>
+
+      <Card s={s}>
+        {GENERAL_INFO_FIELDS.map((f) => (f.kind === 'date' ? (
+          <DateField
+            key={f.key}
+            s={s}
+            label={t(f.labelKey)}
+            placeholder={t('phDate')}
+            value={generalInfo[f.key] || ''}
+            today={date}
+            clearLabel={t('dateClear')}
+            doneLabel={t('dateDone')}
+            onChange={(v) => setField(f.key, v)}
+          />
+        ) : (
+          <View key={f.key} style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+            <TextInput
+              style={s.input}
+              value={generalInfo[f.key] || ''}
+              onChangeText={(v) => setField(f.key, v)}
+              placeholder={t('phField')}
+              placeholderTextColor={outdoor.textDim}
+              keyboardType={f.kind === 'phone' ? 'phone-pad'
+                : (f.kind === 'number' ? 'number-pad' : 'default')}
+            />
+          </View>
+        )))}
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fShedType')}</Text>
+          <View style={s.chipWrap}>
+            {SHED_TYPES.map((type) => (
+              <Chip
+                key={type}
+                label={type}
+                selected={generalInfo.shed_type === type}
+                onPress={() => setField('shed_type', type)}
+              />
+            ))}
+          </View>
+        </View>
+      </Card>
+    </View>
+  );
+
+  // ── STEP 2 — the 19 checks ────────────────────────────────────────────
+  //
+  // ONE QUESTION PER BLOCK with its three answers beneath it, rather than a
+  // dense table. The question text runs long ("Are the guardrails and toe
+  // boards secured at all places where required?") and a right-aligned answer
+  // strip beside it is unreadable at arm's length outdoors.
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+      <Text style={s.noteText}>{t('checksHint')}</Text>
+      <Text style={s.noteText}>
+        {t('answeredOf').replace('{n}', String(answered)).replace('{m}', String(totalQuestions))}
+      </Text>
+
+      {MAINTENANCE_QUESTIONS.map((q, i) => (
+        <Card s={s} key={q.key}>
+          <Text style={s.reviewLabel}>
+            {t('questionOf').replace('{n}', String(i + 1)).replace('{m}', String(totalQuestions))}
+          </Text>
+          <Text style={s.question}>{q.label}</Text>
+          <View style={s.chipWrap}>
+            {ANSWER_OPTIONS.map((opt) => (
+              <Chip
+                key={opt}
+                label={opt}
+                selected={answers[q.key] === opt}
+                onPress={() => setAnswer(q.key, opt)}
+              />
+            ))}
+          </View>
+        </Card>
+      ))}
+    </View>
+  );
+
+  // ── STEP 3 — review and sign ──────────────────────────────────────────
+  const renderStep3 = () => {
+    const unanswered = totalQuestions - answered;
     return (
-      <View style={styles.answerRow}>
-        {ANSWER_OPTIONS.map((opt) => (
-          <Pressable
-            key={opt}
-            onPress={() => setAnswer(questionKey, opt)}
-            style={[styles.answerBtn, current === opt && getAnswerActive(opt)]}
-          >
-            {opt === 'YES' && <CheckCircle size={14} strokeWidth={2} color={current === 'YES' ? semantic.verified : colors.text.muted} />}
-            {opt === 'NO' && <XCircle size={14} strokeWidth={2} color={current === 'NO' ? semantic.attention : colors.text.muted} />}
-            {opt === 'N/A' && <MinusCircle size={14} strokeWidth={2} color={current === 'N/A' ? '#94a3b8' : colors.text.muted} />}
-            <Text style={[styles.answerBtnText, current === opt && getAnswerTextStyle(opt)]}>{opt}</Text>
-          </Pressable>
-        ))}
+      <View>
+        <StepHeader title={t('step3Title')} />
+        <Text style={s.noteText}>{t('reviewHeading')}</Text>
+
+        <Card s={s}>
+          <Text style={s.reviewLabel}>{t('reviewShed')}</Text>
+          {GENERAL_INFO_FIELDS.map((f) => (
+            <View key={f.key} style={s.reviewRow}>
+              <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+              <Text style={s.reviewValue}>
+                {String(generalInfo[f.key] || '').trim() || t('notRecorded')}
+              </Text>
+            </View>
+          ))}
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fShedType')}</Text>
+            <Text style={s.reviewValue}>{generalInfo.shed_type || t('notRecorded')}</Text>
+          </View>
+        </Card>
+
+        <Card s={s} style={unanswered > 0 ? s.cardWarn : undefined}>
+          <Text style={s.reviewLabel}>{t('reviewChecks')}</Text>
+          <Text style={s.reviewValue}>
+            {unanswered > 0
+              ? t('reviewUnanswered').replace('{n}', String(unanswered))
+              : t('reviewAllAnswered').replace('{m}', String(totalQuestions))}
+          </Text>
+        </Card>
+
+        <Card s={s}>
+          <Text style={s.reviewLabel}>
+            {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
+          </Text>
+          <SignaturePad
+            title="Competent Person Signature"
+            signerName={cpName}
+            onNameChange={setCpName}
+            existingSignature={cpSignature}
+            onSignatureCapture={setCpSignature}
+          />
+        </Card>
       </View>
     );
   };
 
-  const getAnswerActive = (opt) => {
-    if (opt === 'YES') return styles.answerBtnYes;
-    if (opt === 'NO') return styles.answerBtnNo;
-    return styles.answerBtnNA;
-  };
-  const getAnswerTextStyle = (opt) => {
-    if (opt === 'YES') return { color: semantic.verified };
-    if (opt === 'NO') return { color: semantic.attention };
-    return { color: '#94a3b8' };
-  };
-
-  const answeredCount = Object.keys(answers).length;
-  const totalQuestions = MAINTENANCE_QUESTIONS.length;
-
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={styles.container} edges={['top']}>
-          <View style={styles.loadingCenter}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+  const STEPS = [
+    { render: renderStep1 },
+    { render: renderStep2 },
+    { render: renderStep3 },
+  ];
 
   return (
-    <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/logbooks')}
-            />
-            <View>
-              <Text style={styles.headerTitle}>Scaffold Maintenance Log</Text>
-              <Text style={styles.headerSub}>NYC DOB — Daily Inspection</Text>
-            </View>
-          </View>
-          <View style={styles.progressBadge}>
-            <Text style={styles.progressText}>{answeredCount}/{totalQuestions}</Text>
-          </View>
-        </View>
-
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (no per-field editable flags
-              to miss). Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-          {/* Date */}
-          <GlassCard style={styles.dateCard}>
-            <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-            <Text style={styles.dateText}>
-              {new Date(date + 'T12:00:00').toLocaleDateString('en-US', {
-                weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-              })}
-            </Text>
-          </GlassCard>
-
-          {/* General Information */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionHeader}>General Information</Text>
-            {GENERAL_INFO_FIELDS.map((field) => (
-              <View key={field.key} style={styles.fieldRow}>
-                <Text style={styles.fieldLabel}>{field.label}</Text>
-                <TextInput
-                  style={styles.fieldInput}
-                  value={generalInfo[field.key] || ''}
-                  onChangeText={(v) => setGeneralInfo(prev => ({ ...prev, [field.key]: v }))}
-                  placeholder="—"
-                  placeholderTextColor={colors.text.subtle}
-                />
-              </View>
-            ))}
-
-            {/* Shed Type */}
-            <View style={styles.fieldRow}>
-              <Text style={styles.fieldLabel}>Shed Type</Text>
-              <View style={styles.shedTypeRow}>
-                {SHED_TYPES.map((type) => (
-                  <Pressable
-                    key={type}
-                    onPress={() => setGeneralInfo(prev => ({ ...prev, shed_type: type }))}
-                    style={[styles.shedTypeBtn, generalInfo.shed_type === type && styles.shedTypeBtnActive]}
-                  >
-                    <Text style={[styles.shedTypeBtnText, generalInfo.shed_type === type && styles.shedTypeBtnTextActive]}>
-                      {type}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          </GlassCard>
-
-          {/* Specific & Maintenance Information */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionHeader}>Specific & Maintenance Information</Text>
-            <Text style={styles.sectionSubtitle}>Answer YES, NO, or N/A for each item</Text>
-            {MAINTENANCE_QUESTIONS.map((q, i) => (
-              <View key={q.key} style={[styles.questionRow, i < MAINTENANCE_QUESTIONS.length - 1 && styles.questionBorder]}>
-                <Text style={styles.questionText}>{q.label}</Text>
-                <AnswerToggle questionKey={q.key} />
-              </View>
-            ))}
-          </GlassCard>
-
-          {/* CP Signature */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
-              <HardHat size={18} strokeWidth={1.5} color="#3b82f6" />
-              <Text style={styles.sectionHeader}>Competent Person Sign-Off</Text>
-            </View>
-            <SignaturePad
-              title="Competent Person Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-            />
-          </GlassCard>
-          </View>
-
-          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
-          {!locked && (
-          <View style={styles.actions}>
-            <GlassButton
-              title={saving ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving}
-              style={styles.draftBtn}
-            />
-            <GlassButton
-              title={saving ? 'Submitting...' : 'Submit & Sign'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={() => handleSave('submitted')}
-              loading={saving}
-              disabled={!cpSignature || answeredCount === 0}
-              style={styles.submitBtn}
-            />
-          </View>
-          )}
-
-          {/* logType drives the freeze model: for an IMMEDIATE log the LockBar
-              hides Finalize (the signature already froze it) and offers only the
-              Amend path. No canFinalize prop — it would contradict that. */}
-          <LogbookLockBar
-            locked={locked}
-            logId={existingLogId}
-            logType="scaffold_maintenance"
-            onFinalized={() => setLocked(true)}
-            onAmended={fetchData}
-          />
-        </ScrollView>
-      </SafeAreaView>
-    </AnimatedBackground>
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={t('screenSub')}
+      step={step}
+      steps={STEPS}
+      onStepChange={onStepChange}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={incomplete}
+      a11yProgressLabel={t('stepOf')
+        .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      /* scaffold_maintenance is IMMEDIATE — the server locks on `submitted`
+         alone — so an unsigned submit must be UNREACHABLE, not merely warned
+         about. The handler keeps its guard as a backstop. */
+      submitDisabled={!cpSignature}
+      onSubmit={handleSubmitAndSign}
+      logType={LOG_TYPE}
+      logId={existingLogId}
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+    />
   );
 }
 
-function buildStyles(colors, isDark) {
+function buildStyles() {
   return StyleSheet.create({
-  container: { flex: 1 },
-  loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.08),
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
-  headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
-  headerSub: { fontSize: 11, color: colors.text.muted },
-  progressBadge: {
-    backgroundColor: 'rgba(59,130,246,0.15)',
-    borderRadius: borderRadius.full,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.3)',
-  },
-  progressText: { fontSize: 13, color: '#60a5fa', fontWeight: '600' },
-  scrollView: { flex: 1 },
-  scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: 100,
-    maxWidth: 720,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  dateCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-    padding: spacing.md,
-  },
-  dateText: { fontSize: 14, color: colors.text.secondary },
-  section: { marginBottom: spacing.md, padding: spacing.lg },
-  sectionHeader: { fontSize: 16, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
-  sectionSubtitle: { fontSize: 12, color: colors.text.muted, marginBottom: spacing.md, marginTop: -spacing.sm },
-  fieldRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.05),
-    gap: spacing.md,
-  },
-  fieldLabel: { flex: 1, fontSize: 13, color: colors.text.secondary },
-  fieldInput: {
-    flex: 1,
-    fontSize: 14,
-    color: colors.text.primary,
-    textAlign: 'right',
-    padding: spacing.xs,
-    backgroundColor: withAlpha('#ffffff', 0.04),
-    borderRadius: borderRadius.sm,
-  },
-  shedTypeRow: { flexDirection: 'row', gap: spacing.xs },
-  shedTypeBtn: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.sm,
-    borderWidth: 1,
-    borderColor: withAlpha('#ffffff', 0.1),
-  },
-  shedTypeBtnActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: '#3b82f6' },
-  shedTypeBtnText: { fontSize: 12, color: colors.text.muted },
-  shedTypeBtnTextActive: { color: '#60a5fa', fontWeight: '600' },
-  questionRow: {
-    paddingVertical: spacing.md,
-    gap: spacing.sm,
-  },
-  questionBorder: {
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.05),
-  },
-  questionText: { fontSize: 13, color: colors.text.secondary, lineHeight: 18 },
-  answerRow: { flexDirection: 'row', gap: spacing.xs },
-  answerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.sm,
-    borderWidth: 1,
-    borderColor: withAlpha('#ffffff', 0.1),
-    backgroundColor: withAlpha('#ffffff', 0.04),
-  },
-  answerBtnYes: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
-  answerBtnNo: { backgroundColor: semantic.criticalBg, borderColor: semantic.criticalBorder },
-  answerBtnNA: { backgroundColor: withAlpha('#94a3b8', 0.1), borderColor: withAlpha('#94a3b8', 0.3) },
-  answerBtnText: { fontSize: 12, color: colors.text.muted, fontWeight: '500' },
-  autoSignBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    marginBottom: spacing.md,
-    padding: spacing.sm,
-    backgroundColor: semantic.verifiedBg,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: semantic.verifiedBorder,
-  },
-  autoSignText: { fontSize: 12, color: semantic.verified },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
-  draftBtn: { flex: 1 },
-  submitBtn: { flex: 2, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.4)' },
+    ...buildStepperStyles(),
+    reviewRow: {
+      gap: spacing.xs / 2,
+      paddingVertical: spacing.xs,
+    },
+    shedBtn: {
+      minHeight: touchTarget.min,
+      paddingHorizontal: spacing.lg,
+      borderRadius: borderRadius.full,
+    },
+    shedBtnText: { fontSize: typography.sizes.md, color: outdoor.text },
   });
 }
