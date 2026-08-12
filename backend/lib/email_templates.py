@@ -52,14 +52,25 @@ def _card(
     header_title: str,
     header_subtitle: str,
     body_html: str,
-    action_label: str,
-    action_url: str,
+    # OPTIONAL. A template whose recipients have no account gets no button —
+    # see render_project_daily_report. Supply both or neither; neither renders
+    # the card with no action at all, which is the point.
+    action_label: str = "",
+    action_url: str = "",
 ) -> str:
     """Shared HTML wrapper. All templates produce a card with a
     colored header, body content, primary action button, and the
     LeveLog footer. Renders well in Gmail/Outlook/iOS Mail (tested
     visually against the existing _send_health_check_alert template
     which uses the same shell)."""
+    action_block = (
+        f'<div style="text-align:center;margin-top:24px;">'
+        f'<a href="{action_url}"'
+        f' style="display:inline-block;background:#3b82f6;color:#fff;'
+        f'padding:12px 24px;border-radius:6px;text-decoration:none;'
+        f'font-size:14px;font-weight:600;">{action_label}</a></div>'
+    ) if (action_label and action_url) else ""
+
     return f"""
 <div style="font-family:{_FONT_STACK};max-width:600px;margin:0 auto;">
   <div style="background:{header_color};color:white;padding:20px 24px;border-radius:8px 8px 0 0;">
@@ -68,14 +79,7 @@ def _card(
   </div>
   <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px;">
     {body_html}
-    <div style="text-align:center;margin-top:24px;">
-      <a href="{action_url}"
-         style="display:inline-block;background:#3b82f6;color:#fff;
-                padding:12px 24px;border-radius:6px;text-decoration:none;
-                font-size:14px;font-weight:600;">
-        {action_label}
-      </a>
-    </div>
+    {action_block}
   </div>
   <p style="text-align:center;font-size:10px;color:#cbd5e1;margin-top:16px;letter-spacing:2px;">
     LEVELOG COMPLIANCE
@@ -421,8 +425,15 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
         header_title="Daily Construction Report",
         header_subtitle=f"{project} — {date}",
         body_html=body,
-        action_label="View in LeveLog",
-        action_url=link,
+        # NO CALL TO ACTION. This template's recipients come from
+        # project.report_email_list — an arbitrary list an admin types, never
+        # derived from user accounts (server.py update_report_settings). An
+        # investor or a bank on that list has no login, so "View in LeveLog"
+        # sends them to a wall. Nothing in this path looks a recipient up in
+        # `users`, so the system cannot tell them apart, and a per-recipient
+        # lookup is not worth adding to keep a button.
+        #
+        # What they actually need is attached: the PDF rides on the same email.
     )
 
     text = (
@@ -439,7 +450,6 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
         + (f"Permits expiring within 30 days: {expiring}\n" if expiring else "")
         + f"\n"
         f"{'The full report is attached as a PDF.' if attached else 'The full report is available in LeveLog.'}\n"
-        f"View in LeveLog: {link}\n\n"
         f"— LeveLog Compliance"
     )
     return subject, html, text
