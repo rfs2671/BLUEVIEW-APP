@@ -15918,6 +15918,133 @@ def _finalize_cp_signature(sig, doc_date, now):
     return out
 
 
+# ── SUBMIT_NO_CONTENT — the row-register backstop ────────────────────────────
+#
+# WHY THIS IS NARROW, AND STAYS NARROW.
+#
+# finalize_logbook says it plainly (see its docstring): "There are no per-field
+# rules here; what counts as a complete `data` payload differs per log type and
+# belongs to the editors, not to the lock." That ruling stands. This is NOT a
+# completeness gate and it does not encode what any form must contain.
+#
+# WHAT IT IS. Two of the eleven log types are records that ARE a list of rows —
+# a certification register and a sign-in sheet. They contain nothing else, so
+# for those two the server ALREADY decides per row whether the row says
+# anything: both PDF renderers drop a contentless row rather than print it. The
+# rules below are LIFTED FROM THOSE RENDERERS, not written here, and
+# test_submit_no_content_gate.py asserts they still match the renderer's list.
+#
+# ONE OF THE TWO IS GATED TODAY. preshift_signin qualifies technically and is
+# held back on operational grounds only — see the note under the table.
+#
+# So the condition is not "is this log complete". It is: EVERY row this record
+# consists of is one the renderer would refuse to print — the document would
+# come out blank. That is a record of nothing, and it is what reached
+# production (project 6a5f63bc147407d3261df2c7, 2026-08-11: an entry with no
+# name, no card number, no certification).
+#
+# WHY THE OTHER NINE ARE NOT HERE.
+#   concrete_operations (slump_tests) and crane_operations (load_entries) also
+#   carry a seed-skip rule, but their row list is ONE SECTION of the record,
+#   not the record. A pour with no slump test is still a pour. Gating them
+#   would assert a minimum content those forms have never declared.
+#   The remaining seven have no shipped notion of an empty row at all.
+# Defining "empty" for any of them needs the per-form minimum content that is
+# still deferred to the operator, so they are left OPEN and pass through
+# untouched.
+#
+def _row_has(d, key):
+    """Does this row field carry anything? A MIRROR of the `has()` helper
+    inside render_logbook_html, which is nested there and not importable.
+
+    Kept semantically identical on purpose — including that a bool counts as
+    content (False is an answer) — so a field added to a rule below behaves
+    exactly as the renderer would treat it. test_submit_no_content_gate.py
+    checks the two against each other case by case.
+    """
+    if not isinstance(d, dict) or key not in d:
+        return False
+    v = d[key]
+    if isinstance(v, bool):
+        return True
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return v.strip() != ""
+    if isinstance(v, (list, dict, tuple, set)):
+        return len(v) > 0
+    return True
+
+
+# `container` is the payload key holding the rows; `fields` is any-of — one
+# non-blank field makes the row real.
+_SUBMIT_ROW_CONTENT_RULES = {
+    # server.py render_logbook_html, osha_log branch: a row with none of these
+    # five is "an untouched EMPTY_ENTRY seed" and is skipped.
+    #
+    # SAFE TO GATE because osha_log.jsx already refuses this on the device
+    # (submitDisabled={!cpSignature || filledRows === 0}), so no CP can reach
+    # the refusal through the app. Here it is a pure backstop: an old build, a
+    # replayed draft, a direct API call.
+    "osha_log": ("entries", (
+        "worker_name", "company", "certification_type", "card_number", "expiration",
+    )),
+}
+
+# ── preshift_signin IS DELIBERATELY ABSENT, and this is not an oversight ─────
+#
+# It QUALIFIES on every technical ground: it is a record that is a list of
+# rows, and both renderers already gate a worker row on
+# `if w.get("name", "").strip()` — the rule is shipped, not invented, and the
+# editor counts the same thing into total_count.
+#
+# It is left out because the FORM has no client-side gate. preshift_signin.jsx
+# guards only `disabled={!cpSignature}`, so turning this on would create a
+# refusal a live CP meets for the first time mid-shift, at the gate, on a
+# screen nobody has device-tested — and on the one form where being stopped
+# costs a man the start of his day. This codebase has ruled against that shape
+# repeatedly; the whole reason the signature guard is client-first is that "a
+# rejection with no on-screen reason stops a man at the start of his shift with
+# nothing to act on" (see tests/test_submit_requires_signature.py).
+#
+# IT COMES BACK when preshift_signin is ported onto the shared stepper and has
+# a client gate in front of it, exactly as osha_log did. That is a one-line
+# addition here plus its own test case; nothing else about this gate changes.
+_SUBMIT_ROW_CONTENT_RULES_DEFERRED = ("preshift_signin",)
+
+
+def _submit_no_content_detail(log_type, payload):
+    """Would this record print as a blank document? Then it is not a record.
+
+    Returns the HTTPException detail to raise, or None to allow. Same machine-
+    code convention as SUBMIT_EMPTY_LOG / SUBMIT_MISSING_CP_SIGNATURE — the
+    server names the condition, the client owns the wording.
+
+    RETURNS None FOR EVERY TYPE NOT IN THE TABLE, deliberately and by default.
+    A log type this does not know about is allowed through unchanged.
+
+    The type check comes BEFORE any coercion, matching
+    _submit_missing_trade_detail: a malformed or empty body is
+    SUBMIT_EMPTY_LOG's business and that gate runs first.
+    """
+    if not isinstance(payload, dict):
+        return None
+    rule = _SUBMIT_ROW_CONTENT_RULES.get(log_type)
+    if rule is None:
+        return None
+    container, fields = rule
+    rows = payload.get(container)
+    # A missing or malformed container is NOT this gate's business. Refusing it
+    # here would report "no content" for a body that is the wrong shape
+    # entirely, which is a different problem with a different fix.
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and any(_row_has(row, f) for f in fields):
+            return None
+    return {"code": "SUBMIT_NO_CONTENT", "log_type": log_type}
+
+
 def _submit_missing_trade_detail(log_type, payload):
     """A safety orientation may be CREATED without a trade. It may not be SUBMITTED.
 
@@ -16058,6 +16185,12 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         # contract is unchanged. The CP is not made to sign and THEN be refused
         # for a missing trade either — subcontractor_orientation.jsx checks it
         # before it will even open the signature pad.
+        # AFTER the signature check, like the trade gate below and for the same
+        # reason: an unsigned submit is not a submit at all, so that condition
+        # is reported first and the existing contract is unchanged.
+        _no_content = _submit_no_content_detail(data.log_type, data.data)
+        if _no_content:
+            raise HTTPException(status_code=400, detail=_no_content)
         _no_trade = _submit_missing_trade_detail(data.log_type, data.data)
         if _no_trade:
             raise HTTPException(status_code=400, detail=_no_trade)
@@ -16293,6 +16426,13 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
             )
         # After the signature check — same reasoning as create_logbook.
+        # _eff_data, not data.data: the ordinary flow is create-then-submit, so
+        # a submit that patches only `status` must still be judged on the
+        # content already stored. Gating on the request body alone would let a
+        # blank register through on exactly the path a CP actually walks.
+        _no_content = _submit_no_content_detail(_cur.get("log_type"), _eff_data)
+        if _no_content:
+            raise HTTPException(status_code=400, detail=_no_content)
         _no_trade = _submit_missing_trade_detail(_cur.get("log_type"), _eff_data)
         if _no_trade:
             raise HTTPException(status_code=400, detail=_no_trade)
