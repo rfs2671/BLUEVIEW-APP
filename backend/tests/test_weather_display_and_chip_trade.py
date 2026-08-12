@@ -117,8 +117,9 @@ class TestWeatherIsNeverBlank(unittest.TestCase):
         """The three call sites must not drift back to their own defaults."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         self.assertEqual(
-            src.count('_display_weather('), 4,
-            "expected 1 definition + 3 call sites",
+            src.count('_display_weather('), 5,
+            "expected 1 definition + 4 call sites: the two PDF renderers, the "
+            "SSC section, and the investor progress page",
         )
         # The exact bug shape, gone.
         self.assertNotIn('f\'{data.get("weather", "N/A")} ', src)
