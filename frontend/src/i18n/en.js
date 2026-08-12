@@ -356,6 +356,18 @@ export default {
     signedOnFile: 'Signature on file',
     signedMark: 'Mark signature on file',
 
+    // Two rows for one man are his two CARDS. Said out loud because a CP who
+    // reads them as a duplicate types a different worker's name over one —
+    // which is how a certification came to be filed against the wrong worker
+    // record on a signed register.
+    sameWorkerNote: 'Same worker as another row — one row per certification, not a duplicate. To record a different worker, use Add a worker.',
+    // Shown once a gate-recorded name has been edited: the row has stopped
+    // claiming to know who this is, which is the honest state.
+    unlinkedNote: 'Not linked to a gate check-in. This row records the name as typed.',
+    // The register cannot be filed with nothing in it.
+    nothingToFileTitle: 'Nothing to file',
+    nothingToFileBody: 'Every row is empty. Add a worker and a certification before signing.',
+
     // A worker the gate turned away for missing OSHA. He is on the register as
     // DENIED — never as a certification — because the one fact the gate
     // established is that he had none.

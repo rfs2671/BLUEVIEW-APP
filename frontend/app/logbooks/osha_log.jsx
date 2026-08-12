@@ -33,6 +33,7 @@ import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStep
 import DateField from '../../src/components/logbookStepper/DateField';
 import {
   CERT_TYPES, EMPTY_ENTRY, buildEntriesFromCheckins, entryHasContent,
+  applyEntryEdit, entriesForFiling, sharedWorkerIds,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/oshaLogModel';
 import { useT } from '../../src/i18n';
@@ -194,8 +195,13 @@ export default function OshaLogBook() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   // ── Rows ──────────────────────────────────────────────────────────────
+  // applyEntryEdit, NOT a spread. Editing the NAME on a row detaches its
+  // worker_id: an id is a claim about who this row is, and it is only good for
+  // the name the gate attached it to. A signed register in production carried
+  // one man's certification against another man's worker record because this
+  // edit used to touch `worker_name` alone. See oshaLogModel.applyEntryEdit.
   const updateEntry = (index, field, value) => {
-    setEntries((prev) => prev.map((e, i) => (i === index ? { ...e, [field]: value } : e)));
+    setEntries((prev) => prev.map((e, i) => (i === index ? applyEntryEdit(e, field, value) : e)));
   };
   const addEntry = () => setEntries((prev) => [...prev, EMPTY_ENTRY()]);
   const removeEntry = (index) => setEntries((prev) => prev.filter((_, i) => i !== index));
@@ -209,7 +215,20 @@ export default function OshaLogBook() {
    */
   const persistAndPush = async (submitStatus) => {
     const rows = entriesRef.current?.length ? entriesRef.current : entries;
-    const data = draftBody(rows);
+    // AN ABANDONED ROW IS NOT A RECORD, and one was filed in production: no
+    // name, no card number, no certification, company only. On SUBMIT the
+    // register is trimmed to the rows that say something — the same rule the
+    // PDF renderer already drops rows by, so what is filed and what is printed
+    // are the same register.
+    //
+    // A DRAFT KEEPS EVERYTHING. A half-typed row the CP is still working on
+    // must survive a save; it is only at the moment of FILING that an empty
+    // row becomes a false entry on a compliance document.
+    const filed = submitStatus === 'submitted' ? entriesForFiling(rows) : rows;
+    // What he signed is what he sees: the trimmed register is written back to
+    // state, so the screen never shows a row the filed document does not have.
+    if (submitStatus === 'submitted' && filed.length !== rows.length) setEntries(filed);
+    const data = draftBody(filed);
 
     await writeDraft(_key, {
       data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
@@ -298,6 +317,14 @@ export default function OshaLogBook() {
       toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
       return;
     }
+    // AN EMPTY REGISTER IS NOT A RECORD. The footer button is already disabled
+    // for this, so reaching here means the state moved under the press; the
+    // check stands anyway rather than filing a document that asserts nothing.
+    if (entriesForFiling(entriesRef.current || entries).length === 0) {
+      setStep(1);
+      toast.warning(t('nothingToFileTitle'), t('nothingToFileBody'));
+      return;
+    }
     setSigning(true);
     try {
       const savedId = await persistAndPush('submitted');
@@ -342,6 +369,11 @@ export default function OshaLogBook() {
   const incomplete = computeIncomplete({ entries, cpSignature })
     .filter((n) => n !== step);
   const filledRows = entries.filter(entryHasContent).length;
+  // Rows that share a worker_id are the SAME MAN's second certification, not a
+  // duplicate. Labelling them is the fix for how the identity defect started:
+  // two identical-looking rows read as a mistake, and the CP typed a different
+  // man's name over one of them.
+  const sharedIds = sharedWorkerIds(entries);
   const plural = (n, base) => t(`${base}_${n === 1 ? 'one' : 'other'}`).replace('{n}', String(n));
 
   // ── STEP 1 — the certifications ───────────────────────────────────────
@@ -374,6 +406,21 @@ export default function OshaLogBook() {
             <View style={[s.cardWarn, s.deniedBox]}>
               <Text style={s.warnTitle}>{t('deniedBadge')}</Text>
             </View>
+          )}
+
+          {/* NOT A DUPLICATE — the same man's second card. Said out loud
+              because a CP who reads two identical rows as a mistake types over
+              one of them, which is exactly how a certification ended up filed
+              against the wrong worker record. */}
+          {entry.worker_id && sharedIds.has(String(entry.worker_id)) && (
+            <Text style={s.noteText}>{t('sameWorkerNote')}</Text>
+          )}
+
+          {/* The row no longer claims to know who this is. Shown only once the
+              CP has edited a gate-recorded name, so it reads as a consequence
+              of what he just did rather than as an error. */}
+          {entry.worker_id == null && !entry.blocked && entryHasContent(entry) && (
+            <Text style={s.noteText}>{t('unlinkedNote')}</Text>
           )}
 
           <View style={s.fieldBlock}>
@@ -509,8 +556,12 @@ export default function OshaLogBook() {
       submitting={signing}
       /* osha_log is IMMEDIATE — the server locks on `submitted` alone — so an
          unsigned submit must be UNREACHABLE, not merely warned about. The
-         handler keeps its guard as a backstop. */
-      submitDisabled={!cpSignature}
+         handler keeps its guard as a backstop.
+         The second half restores a guard the #123 port dropped: the old screen
+         carried `disabled={!cpSignature || entries.length === 0}`. Counting
+         rows WITH CONTENT rather than rows is strictly stronger — a register
+         of nothing but abandoned rows asserts nothing and cannot be filed. */
+      submitDisabled={!cpSignature || filledRows === 0}
       onSubmit={handleSubmitAndSign}
       logType={LOG_TYPE}
       logId={existingLogId}
