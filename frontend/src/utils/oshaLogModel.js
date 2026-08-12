@@ -136,6 +136,80 @@ export function entryHasContent(entry) {
 }
 
 /**
+ * EDITING THE NAME ON A ROW DETACHES ITS worker_id.
+ *
+ * THE DEFECT THIS EXISTS TO STOP, from production (project
+ * 6a5f63bc147407d3261df2c7, 2026-08-11): one worker_id appeared TWICE in a
+ * signed register — once as the man the gate recorded, once as a different man
+ * entirely. A subcontractor's certification was filed against another
+ * subcontractor's worker record. On a compliance document that is a false
+ * statement about who holds that card.
+ *
+ * HOW IT HAPPENED. The register auto-builds ONE ROW PER CERTIFICATION, so a
+ * worker holding two cards gets two rows carrying the same worker_id and the
+ * same name. That reads as a duplicate. The CP typed a second man's name over
+ * what looked like a spare row — and the row kept the first man's id, because
+ * the edit only ever touched `worker_name`.
+ *
+ * It was NOT the "add a worker" button: that mints EMPTY_ENTRY, whose
+ * worker_id is null, and never could have inherited one.
+ *
+ * THE RULE. A worker_id is a claim about WHO this row is, and it is only good
+ * for the name the gate attached it to. The moment that name is edited the app
+ * can no longer stand behind the claim, so it stops making it. null is honest:
+ * the app cannot identify him. Another man's id is not.
+ *
+ * THE COST, accepted deliberately: correcting a typo in a gate-recorded name
+ * also detaches the id, because nothing here can tell a typo from a different
+ * person. Losing a link is recoverable; filing a certification against the
+ * wrong worker record is not.
+ */
+export function applyEntryEdit(entry, field, value) {
+  const next = { ...entry, [field]: value };
+  if (
+    field === 'worker_name'
+    && entry
+    && entry.worker_id !== null
+    && entry.worker_id !== undefined
+    && String(value ?? '').trim() !== String(entry.worker_name ?? '').trim()
+  ) {
+    next.worker_id = null;
+  }
+  return next;
+}
+
+/**
+ * The rows that may be FILED. An entry with no name, no company, no
+ * certification, no card number and no expiry is not a record of anything —
+ * it is an abandoned row — and one was filed on the production log above.
+ *
+ * Uses the SAME rule the PDF renderer already drops rows by
+ * (backend/server.py:13472), so the register that is filed and the register
+ * that is printed contain exactly the same rows.
+ */
+export function entriesForFiling(entries) {
+  return (Array.isArray(entries) ? entries : []).filter(entryHasContent);
+}
+
+/**
+ * worker_ids carried by more than one row.
+ *
+ * NOT AN ERROR — it is the approved shape. One row per certification means a
+ * man with two cards is two rows, and both are his. The screen labels them so
+ * they read as two CARDS rather than as one worker listed twice, which is the
+ * misreading that produced the defect above.
+ */
+export function sharedWorkerIds(entries) {
+  const counts = new Map();
+  for (const e of (Array.isArray(entries) ? entries : [])) {
+    const id = e && e.worker_id;
+    if (id === null || id === undefined || id === '') continue;
+    counts.set(String(id), (counts.get(String(id)) || 0) + 1);
+  }
+  return new Set([...counts.entries()].filter(([, n]) => n > 1).map(([id]) => id));
+}
+
+/**
  * Which steps the CP has LEFT incomplete. Never gates — the stepper marks, and
  * a CP who cannot complete a step because the data is not there must still be
  * able to finish and sign his day.
@@ -162,6 +236,9 @@ export default {
   EMPTY_ENTRY,
   buildEntriesFromCheckins,
   entryHasContent,
+  applyEntryEdit,
+  entriesForFiling,
+  sharedWorkerIds,
   incompleteSteps,
   draftBody,
 };

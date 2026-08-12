@@ -136,6 +136,76 @@ ok(JSON.stringify(OSHA.incompleteSteps({ entries: [], cpSignature: '' })) === '[
 ok(JSON.stringify(OSHA.incompleteSteps({ entries: built, cpSignature: 'sig' })) === '[]',
   'a filled and signed register marks none');
 
+// ── THE PRODUCTION DEFECT: a certification filed against the wrong man ───────
+//
+// Project 6a5f63bc147407d3261df2c7, 2026-08-11. worker_id
+// 6a79b9f19d8cee518e4712c4 appeared TWICE in a signed register — once as the
+// man the gate recorded, once as a different man entirely — and a third row
+// was wholly empty. Reproduced here from that shape, not paraphrased.
+console.log('\n-- osha_log: a row never carries another man\'s id --');
+
+const WID = '6a79b9f19d8cee518e4712c4';
+
+// The register auto-builds ONE ROW PER CERTIFICATION, which is how one
+// worker_id legitimately reaches two rows. That is the shape the CP misread.
+const wilmerTwoCards = OSHA.buildEntriesFromCheckins([{
+  worker_id: WID,
+  worker_name: 'WILMER CARRILLO',
+  company: 'AAZ',
+  certifications: [{ name: 'SST' }, { name: 'OSHA 30' }],
+}], '2026-08-11');
+ok(wilmerTwoCards.length === 2 && wilmerTwoCards.every((e) => e.worker_id === WID),
+  'two certifications produce two rows carrying the SAME worker_id — the approved shape');
+ok(OSHA.sharedWorkerIds(wilmerTwoCards).has(WID),
+  'and the screen can see they are the same man, so it can say so instead of looking duplicated');
+ok(OSHA.sharedWorkerIds(wilmerTwoCards.slice(0, 1)).size === 0,
+  'one row for a worker is not flagged as shared');
+ok(OSHA.sharedWorkerIds([{ worker_id: null }, { worker_id: null }]).size === 0,
+  'and unlinked rows are never treated as the same man');
+
+// THE DEFECT. Typing a second man's name over one of those rows used to leave
+// the first man's id on it.
+const overtyped = OSHA.applyEntryEdit(wilmerTwoCards[1], 'worker_name', 'Segundo pilamunga ');
+ok(overtyped.worker_id === null,
+  'editing the name DETACHES the worker_id — the row stops claiming to be Wilmer');
+ok(overtyped.worker_name === 'Segundo pilamunga ',
+  'and the typed name is kept exactly as entered, trailing space and all');
+
+// The old behaviour, stated as the thing that must never come back.
+ok(!(OSHA.applyEntryEdit(wilmerTwoCards[1], 'worker_name', 'Segundo').worker_id === WID),
+  "Segundo's certification can never be filed against Wilmer's worker record");
+
+// Editing anything ELSE is not an identity change and must not detach.
+for (const f of ['company', 'certification_type', 'card_number', 'expiration', 'signed']) {
+  ok(OSHA.applyEntryEdit(wilmerTwoCards[0], f, 'x').worker_id === WID,
+    `editing "${f}" does NOT detach the id — it is not a claim about who this is`);
+}
+// A no-op edit is not an edit.
+ok(OSHA.applyEntryEdit(wilmerTwoCards[0], 'worker_name', 'WILMER CARRILLO').worker_id === WID,
+  're-entering the same name detaches nothing');
+ok(OSHA.applyEntryEdit(wilmerTwoCards[0], 'worker_name', '  WILMER CARRILLO  ').worker_id === WID,
+  'and neither does whitespace around it');
+// A row that never had an id cannot lose one, and must not gain one.
+ok(OSHA.applyEntryEdit(OSHA.EMPTY_ENTRY(), 'worker_name', 'Anyone').worker_id === null,
+  'a manually added row stays unlinked — null is honest, the app cannot identify him');
+
+console.log('\n-- osha_log: an empty row cannot be filed --');
+
+// The third production row: worker_id null, every field blank, company only.
+const abandoned = { ...OSHA.EMPTY_ENTRY(), company: 'AAZ' };
+ok(OSHA.entryHasContent(abandoned) === true,
+  'a row with only a company still counts as content — the CP typed something');
+const trulyEmpty = OSHA.EMPTY_ENTRY();
+ok(OSHA.entryHasContent(trulyEmpty) === false, 'a row with nothing typed does not');
+const mixed = [...wilmerTwoCards, trulyEmpty, OSHA.EMPTY_ENTRY()];
+ok(OSHA.entriesForFiling(mixed).length === 2,
+  'filing drops the abandoned rows and keeps the real ones');
+ok(OSHA.entriesForFiling([]).length === 0 && OSHA.entriesForFiling(null).length === 0,
+  'and it is safe on an empty or missing register');
+// The filed register and the printed register must contain the same rows.
+ok(OSHA.entriesForFiling(mixed).every((e) => OSHA.entryHasContent(e)),
+  'every filed row passes the same rule the PDF renderer drops rows by');
+
 // ═══ SCAFFOLD MAINTENANCE ════════════════════════════════════════════════════
 console.log('\n-- scaffold_maintenance: data.general_info + data.answers --');
 
@@ -233,6 +303,31 @@ ok(SCAF.answeredCount({ signs_on_parapets: 'N/A' }) === 1,
   'N/A counts as answered — it is a real answer');
 ok(SCAF.answeredCount({ signs_on_parapets: '' }) === 0,
   'a blank does not');
+
+// ── THE SCREEN IS ACTUALLY WIRED TO ALL THAT ────────────────────────────────
+//
+// A correct model behind an unwired screen ships the same defect. These assert
+// the editor reaches identity and filing through the model and nowhere else.
+console.log('\n-- osha_log.jsx uses the model, not its own spread --');
+
+const OSHA_SCREEN = fs.readFileSync(
+  path.join(FRONTEND, 'app', 'logbooks', 'osha_log.jsx'), 'utf8');
+
+ok(/applyEntryEdit\(e, field, value\)/.test(OSHA_SCREEN),
+  'updateEntry goes through applyEntryEdit');
+ok(!/i === index \? \{ \.\.\.e, \[field\]: value \}/.test(OSHA_SCREEN),
+  'and the raw spread that lost the id is GONE — it cannot come back unnoticed');
+ok(/entriesForFiling\(rows\)/.test(OSHA_SCREEN),
+  'the submitted payload is trimmed to rows with content');
+ok(/submitStatus === 'submitted' \? entriesForFiling\(rows\) : rows/.test(OSHA_SCREEN),
+  'a DRAFT keeps every row — a half-typed row must survive a save');
+ok(/submitDisabled=\{!cpSignature \|\| filledRows === 0\}/.test(OSHA_SCREEN),
+  'an empty register cannot be filed, restoring the guard the #123 port dropped');
+ok(/sharedWorkerIds\(entries\)/.test(OSHA_SCREEN)
+  && /sameWorkerNote/.test(OSHA_SCREEN),
+  'two rows for one man are labelled as his two cards, not left looking duplicated');
+ok(/unlinkedNote/.test(OSHA_SCREEN),
+  'and a row that has lost its id says so');
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════
 console.log('\n-- the kiosk inspector reads the same keys --');
