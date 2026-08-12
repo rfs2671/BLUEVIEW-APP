@@ -350,6 +350,27 @@ export default function PreShiftSignIn() {
 
   const filledWorkers = workers.filter(w => w.name.trim());
 
+  /**
+   * INJURY AND PPE ARE REQUIRED, per operator ruling.
+   *
+   * Both are null until the CP taps one — `null | 'yes' | 'no'` — so an
+   * untouched row submitted a sign-in sheet asserting nothing about either,
+   * and the report printed an em-dash. On a pre-shift sign-in those two
+   * questions are the point of the form.
+   *
+   * ONLY ROWS WITH A NAME. A blank spare row is not a worker and must not
+   * block the CP; the same rule filledWorkers already uses.
+   *
+   * CLIENT-SIDE ONLY, deliberately. This form has no server gate and one was
+   * held back on purpose (see _SUBMIT_ROW_CONTENT_RULES_DEFERRED in
+   * backend/server.py): a refusal from the server would meet a CP mid-shift at
+   * the gate with nothing on screen to act on. The button names the fix and
+   * the offending rows outline in red.
+   */
+  const answeredBoth = (w) => w.had_injury !== null && w.inspected_ppe !== null;
+  const rowNeedsAnswers = (w) => !!w.name.trim() && !answeredBoth(w);
+  const unansweredCount = workers.filter(rowNeedsAnswers).length;
+
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
     try {
@@ -762,19 +783,34 @@ export default function PreShiftSignIn() {
 
                 {/* Y/N Questions */}
                 <View style={styles.ynBlock}>
-                  <View style={styles.ynItem}>
+                  {/* Required. Outlined red and labelled only once the row
+                      has a NAME — an untouched spare row is not a worker and
+                      must not be scolded. */}
+                  <View style={[
+                    styles.ynItem,
+                    !!worker.name.trim() && worker.had_injury === null && styles.ynItemRequired,
+                  ]}>
                     <Text style={styles.ynLabel}>Injury / Incident last time?</Text>
                     <YesNoToggle
                       value={worker.had_injury}
                       onChange={(v) => updateWorker(index, 'had_injury', v)}
                     />
+                    {!!worker.name.trim() && worker.had_injury === null && (
+                      <Text style={styles.requiredText}>Required field</Text>
+                    )}
                   </View>
-                  <View style={styles.ynItem}>
+                  <View style={[
+                    styles.ynItem,
+                    !!worker.name.trim() && worker.inspected_ppe === null && styles.ynItemRequired,
+                  ]}>
                     <Text style={styles.ynLabel}>Inspected PPE today?</Text>
                     <YesNoToggle
                       value={worker.inspected_ppe}
                       onChange={(v) => updateWorker(index, 'inspected_ppe', v)}
                     />
+                    {!!worker.name.trim() && worker.inspected_ppe === null && (
+                      <Text style={styles.requiredText}>Required field</Text>
+                    )}
                   </View>
                 </View>
 
@@ -827,10 +863,21 @@ export default function PreShiftSignIn() {
               icon={<CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />}
               onPress={() => handleSave('submitted')}
               loading={saving}
-              disabled={!cpSignature}
+              disabled={!cpSignature || unansweredCount > 0}
               style={styles.submitBtn}
             />
           </View>
+          {/* A disabled button with no reason stops a CP at the start of his
+              shift. The signature hint below already says this; the same rule
+              applies to the new required answers, so the count and the fix are
+              named rather than left to be discovered by tapping. */}
+          {!!cpSignature && unansweredCount > 0 && (
+            <Text style={styles.requiredSummary}>
+              {unansweredCount === 1
+                ? '1 worker still needs the injury and PPE answers.'
+                : `${unansweredCount} workers still need the injury and PPE answers.`}
+            </Text>
+          )}
           {/* Pre-shift sign-in is an IMMEDIATE log: it freezes the moment it is
               submitted, so submitting unsigned would mint a locked, unsigned
               legal record. This is the morning screen, so the hint matters more
@@ -1096,6 +1143,24 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 2,
+  },
+  ynItemRequired: {
+    borderWidth: 1,
+    borderColor: semantic.critical,
+    borderRadius: borderRadius.sm,
+    padding: spacing.xs,
+  },
+  requiredText: {
+    fontSize: 11,
+    color: semantic.critical,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  requiredSummary: {
+    fontSize: 12,
+    color: semantic.critical,
+    textAlign: 'center',
+    marginTop: spacing.sm,
   },
   ynLabel: { flex: 1, fontSize: 12, color: colors.text.secondary },
   ynRow: { flexDirection: 'row', gap: 4 },
