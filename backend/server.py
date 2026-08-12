@@ -13006,7 +13006,14 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             )
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>Workers</th>'
+            # "CP's count", not "Workers". This number is HAND-TYPED by the CP
+            # on the crew row (activities[].num_workers); page 1's headcount is
+            # counted at the GATE from check-ins. They disagree — 4 here, 3 there
+            # — and both are true statements about different things. Labelled at
+            # the point of use rather than reconciled: a CP who counts four men
+            # on his crew and a turnstile that recorded three are each reporting
+            # something real, and silently picking one would delete a fact.
+            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>CP&#39;s count</th>'
               f'<th {TH}>Description</th><th {TH}>Location</th></tr>'
             + (act_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
             + '</table>'
@@ -17347,7 +17354,22 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         raise HTTPException(status_code=400, detail="Invalid date format")
 
     result: List[Dict[str, Any]] = []
+    # NORMALISED IDENTITY KEYS for the three-pass merge below.
+    #
+    # The passes read the company from different places — the gate pass from
+    # the enrollment's `sub_name`, the legacy pass from the check-in's
+    # `worker_company` (or the worker doc) — so a trailing or doubled space on
+    # either side made the raw lowercased pair miss and emitted the SAME MAN
+    # twice: once from the gate WITH his card id, once from legacy WITHOUT one.
+    # That is the duplicate row found on a production pre-shift sheet.
+    def _norm_key(v):
+        return " ".join(str(v or "").split()).casefold()
+
     seen_name_keys: set = set()
+    # Names seen so far, company ignored. Used ONLY as a fallback for a row
+    # that carries no company at all: a blank company distinguishes nobody, so
+    # it must not be what mints a second row for a name already reported.
+    seen_names_only: set = set()
     # Roster-integrity accounting for the envelope. Every one of these is a way
     # the list below can come back SHORT while still looking complete.
     _degraded: List[str] = []        # a pass raised and contributed nothing
@@ -17410,8 +17432,9 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 continue
             name = (e.get("worker_name") or "").strip()
             company = (e.get("sub_name") or "").strip()
-            name_key = (name.lower(), company.lower())
+            name_key = (_norm_key(name), _norm_key(company))
             seen_name_keys.add(name_key)
+            seen_names_only.add(name_key[0])
             first_ts = first_checkin_at.get(eid)
             # Use the first sign_in of the day as the stable reference —
             # the frontend builds /api/signatures/{signin_id} from this.
@@ -17485,8 +17508,10 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
         name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
         company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
-        name_key = (name.lower(), company.lower())
-        if name_key in seen_name_keys:
+        name_key = (_norm_key(name), _norm_key(company))
+        if name_key in seen_name_keys or (
+            not name_key[1] and name_key[0] in seen_names_only
+        ):
             # Usually correct: the same man, already listed from the gate pass.
             # But it is ALSO what happens to a second, different worker who
             # shares a name with him at the same sub, and nothing on either row
@@ -17494,6 +17519,7 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             _collapsed += 1
             continue   # already represented by a gate sign-in
         seen_name_keys.add(name_key)
+        seen_names_only.add(name_key[0])
         result.append({
             "worker_id": wid,
             "worker_name": name or "Unknown",
@@ -17569,13 +17595,14 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             seen_blocked_wids.add(wid)
         name = (a.get("worker_name") or "").strip()
         company = (a.get("worker_company") or "").strip()
-        name_key = (name.lower(), company.lower())
+        name_key = (_norm_key(name), _norm_key(company))
         if name_key in seen_name_keys:
             # Same ambiguity as pass 2: normally a worker who was blocked then
             # cleared, but indistinguishable from a same-named second man.
             _collapsed += 1
             continue  # already cleared/represented today — never double-list
         seen_name_keys.add(name_key)
+        seen_names_only.add(name_key[0])
         result.append({
             "worker_id": wid,
             "worker_name": name or "Unknown",
@@ -18315,6 +18342,17 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     project_name = project.get("name", "Unknown") if project else "Unknown"
     project_address = project.get("address", "") if project else ""
 
+    # THE NAME AND THE ADDRESS ARE OFTEN THE SAME STRING. Projects are created
+    # from an address, so `name` and `address` frequently hold identical text —
+    # and the header printed both, in different fields, as though they were two
+    # different facts. When they match, the band carries no subtitle and the
+    # address is printed once, in the summary row beneath it.
+    _header_project_line = (
+        "" if (" ".join(str(project_name or "").split()).casefold()
+               == " ".join(str(project_address or "").split()).casefold())
+        else project_name
+    )
+
     logbooks = await db.logbooks.find({
         "project_id": project_id,
         "date": date,
@@ -18559,12 +18597,18 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     else:
         _compliance = "No logs filed for this date."
 
+    # ONE HEADER. The address and the date are printed by the document header
+    # above this section and are NOT repeated here.
+    #
+    # They used to appear three times over: the dark band (which prints
+    # project_name, and on this project the name IS the address), the summary
+    # row (ADDRESS / DATE), and this subtitle — which printed project_name AND
+    # project_address, i.e. the same string twice inside one line, formatted as
+    # though they were two different facts. A reader counting fields on a
+    # compliance document reads a repeat as a discrepancy.
     progress_html = (
-        '<h2 style="color:#0A1929;margin:0 0 4px;font-size:20px;">'
+        '<h2 style="color:#0A1929;margin:0 0 16px;font-size:20px;">'
         'Daily Progress Report</h2>'
-        '<p style="margin:0 0 16px;font-size:14px;color:#64748b;">'
-        f'{project_name} &nbsp;&middot;&nbsp; '
-        f'{project_address or NOT_RECORDED} &nbsp;&middot;&nbsp; {_pg1_date}</p>'
         + info_box(
             f'<strong style="color:#0A1929;">Weather:</strong> '
             f'{_pg1_weather}<br />'
@@ -18682,19 +18726,44 @@ async def generate_combined_report(project_id: str, date: str) -> str:
 
         weather_str = _display_weather(d)
 
+        # Only the ones that carry a value. All three empty renders nothing at
+        # all rather than a row of "N/A" — see the note in the info box below.
+        _t_in = str(d.get("time_in") or "").strip()
+        _t_out = str(d.get("time_out") or "").strip()
+        _areas = str(d.get("areas_visited") or "").strip()
+        _pg2_bits = []
+        if _t_in or _t_out:
+            _pg2_bits.append(
+                f'<strong style="color:#0A1929;">Time In:</strong> {_t_in or NOT_RECORDED}'
+                f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {_t_out or NOT_RECORDED}'
+            )
+        if _areas:
+            _pg2_bits.append(
+                f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(_areas)}'
+            )
+        _pg2_times = ("<br />" + "<br />".join(_pg2_bits)) if _pg2_bits else ""
+
         jobsite_html = (
             section_title("Daily Jobsite Log (NYC DOB 3301-02)")
             + info_box(
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(d.get("general_description", "N/A"))}<br />'
-                f'<strong style="color:#0A1929;">Time In:</strong> {d.get("time_in") or "N/A"}'
-                f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {d.get("time_out") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(d.get("areas_visited") or "N/A")}'
+                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(d.get("general_description", "N/A"))}'
+                # PRINTED ONLY WHEN SET. Nothing in the app writes these three:
+                # daily_jobsite.jsx holds timeIn/timeOut/areasVisited in state and
+                # hydrates them from a stored log, but no control anywhere sets
+                # them, so on every report since the U1 rebuild they printed a
+                # permanent "N/A". A field that is always N/A on a compliance
+                # record teaches a reader to skip the row. The state and the
+                # payload keys are untouched, so the day a control is added these
+                # reappear on their own — see the PR note.
+                f'{_pg2_times}'
             )
             + sub_title("Activity Details")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>Workers</th>'
+            # "CP's count", not "Workers" — the same label the single-document
+            # renderer now carries, for the same reason. See the note there.
+            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>CP&#39;s count</th>'
               f'<th {TH}>Description</th><th {TH}>Location</th></tr>'
             + (act_rows or EMPTY_5)
             + '</table>'
@@ -18720,6 +18789,13 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
         att_rows = ""
         for a in td_data.get("attendees", []):
+            # AN ATTENDEE WITH NO NAME IS NOT AN ATTENDEE. A seed row the CP
+            # never filled rendered as a blank line on a signed attendance
+            # record — a person who was at the talk and cannot be identified.
+            # Same rule the pre-shift sheet and the OSHA register already use;
+            # this table was the one that never got it.
+            if not str(a.get("name") or "").strip():
+                continue
             # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
             # Workers are not required to sign a toolbox talk — the CP signature
             # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
@@ -19589,7 +19665,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       <table cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr><td style="color:rgba(255,255,255,0.5);font-size:10px;letter-spacing:3px;text-transform:uppercase;padding-bottom:16px;font-family:{font};">LEVELOG</td></tr>
         <tr><td style="color:#ffffff;font-size:22px;font-weight:600;letter-spacing:0.5px;padding-bottom:4px;font-family:{font};">Daily Construction Report</td></tr>
-        <tr><td style="color:rgba(255,255,255,0.7);font-size:13px;font-weight:400;font-family:{font};">{project_name}</td></tr>
+        <tr><td style="color:rgba(255,255,255,0.7);font-size:13px;font-weight:400;font-family:{font};">{_header_project_line}</td></tr>
       </table>
     </td>
   </tr>
@@ -19608,7 +19684,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             <span style="font-size:15px;color:#0A1929;font-weight:500;">{project_address or 'N/A'}</span>
           </td>
           <td width="33%" valign="top" style="vertical-align:top;">
-            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">WORKERS</span><br />
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">WORKERS AT THE GATE</span><br />
             <span style="font-size:15px;color:#0A1929;font-weight:500;">{checkin_count}</span>
           </td>
         </tr>
