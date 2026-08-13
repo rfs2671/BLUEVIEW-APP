@@ -17365,6 +17365,26 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
     def _norm_key(v):
         return " ".join(str(v or "").split()).casefold()
 
+    # THE ONLY RELIABLE IDENTITY IN THIS MERGE. A worker_id is an id; the
+    # (name, company) pair below is a STRING STANDING IN for one, and it has
+    # now produced four separate defects on this project.
+    #
+    # THE DEFECT THIS CLOSES, from production (project 6a5f63bc147407d3261df2c7,
+    # preshift_signin, 2026-08-12): worker_id 6a79b9f19d8cee518e4712c4 appeared
+    # TWICE in one stored roster — once complete from pass 2 (company "AAZ",
+    # OSHA number, signature) and once stripped from pass 3 (company "", no
+    # number, no signature). Pass 3 reads compliance_alerts, whose rows often
+    # carry NO worker_company, so its key was ('wilmer carrillo', '') against
+    # pass 2's ('wilmer carrillo', 'aaz') — a miss, and the same man was
+    # emitted again. There were ZERO worker_enrollments for him, so pass 1
+    # never ran; this was never a two-card case.
+    #
+    # SAME worker_id IS THE SAME MAN, whatever company string came back with
+    # him. This does NOT collapse two men who share a name — they have
+    # different worker_ids — so it is strictly safer than the string key and
+    # runs BEFORE it. The string key stays as the fallback for a row that
+    # carries no id at all.
+    seen_worker_ids: set = set()
     seen_name_keys: set = set()
     # Names seen so far, company ignored. Used ONLY as a fallback for a row
     # that carries no company at all: a blank company distinguishes nobody, so
@@ -17435,6 +17455,10 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             name_key = (_norm_key(name), _norm_key(company))
             seen_name_keys.add(name_key)
             seen_names_only.add(name_key[0])
+            # Registered so a LATER pass carrying the same id skips him. Pass 1
+            # itself still dedupes per ENROLLMENT, which is unique per card, so
+            # two cards remain two rows.
+            seen_worker_ids.add(str(eid))
             first_ts = first_checkin_at.get(eid)
             # Use the first sign_in of the day as the stable reference —
             # the frontend builds /api/signatures/{signin_id} from this.
@@ -17505,6 +17529,9 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         if wid in seen_legacy_wids:
             continue
         seen_legacy_wids.add(wid)
+        if wid and str(wid) in seen_worker_ids:
+            _collapsed += 1
+            continue          # same id, already emitted by an earlier pass
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
         name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
         company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
@@ -17520,6 +17547,8 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             continue   # already represented by a gate sign-in
         seen_name_keys.add(name_key)
         seen_names_only.add(name_key[0])
+        if wid:
+            seen_worker_ids.add(str(wid))
         result.append({
             "worker_id": wid,
             "worker_name": name or "Unknown",
@@ -17593,6 +17622,12 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             continue
         if wid:
             seen_blocked_wids.add(wid)
+        if wid and str(wid) in seen_worker_ids:
+            # THE PRODUCTION DUPLICATE. A CERT_BLOCK alert usually carries no
+            # worker_company, so the string key below could never match the row
+            # pass 2 had already emitted for the same man.
+            _collapsed += 1
+            continue
         name = (a.get("worker_name") or "").strip()
         company = (a.get("worker_company") or "").strip()
         name_key = (_norm_key(name), _norm_key(company))
@@ -17603,6 +17638,8 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             continue  # already cleared/represented today — never double-list
         seen_name_keys.add(name_key)
         seen_names_only.add(name_key[0])
+        if wid:
+            seen_worker_ids.add(str(wid))
         result.append({
             "worker_id": wid,
             "worker_name": name or "Unknown",
