@@ -18642,42 +18642,19 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         d = daily_jobsite.get("data", {})
         activities = d.get("activities", [])
 
+        # PHOTOS ARE PAGE 1 ONLY. Operator ruling, reversing the earlier one:
+        # site photos are PROGRESS EVIDENCE and belong on the investor page.
+        # The logbook is the legal record and NYC DOB 3301-02 does not require
+        # a photograph, so page 2 stops carrying a second copy of the same
+        # images.
+        #
+        # NOTHING ELSE LOSES THEM. The photo endpoint stays live because page 1
+        # still uses it (server.py:15589), the per-logbook PDF an inspector
+        # downloads renders its own (generate_single_logbook_html), and the
+        # kiosk inspector renders from the device. This removes ONE of four
+        # surfaces — see the PR.
         act_rows = ""
-        for ai, act in enumerate(activities):
-            # Photos as URL-based <img> tags
-            photos = ""
-            for pi, photo in enumerate(act.get("photos") or []):
-                # Emit on ANY surviving copy, not on base64. The full-size
-                # inline copy is dropped at finalize once R2 is proven to hold
-                # the derivatives, and a photo skipped here does not render as
-                # a broken image — it vanishes, so the report reads "no photos
-                # taken" on a day photos were taken. That is a false
-                # compliance record, which is worse than a missing image.
-                if _logbook_photo_is_renderable(photo):
-                    # Grid cell shows the THUMBNAIL (long edge 400, ~25-40KB)
-                    # and links to the full-size ENHANCED image. Previously the
-                    # 140px cell pointed at the full original, so an email with
-                    # 5 photos downloaded 5 full images to render 5 thumbnails.
-                    #
-                    # Both fall back to the original endpoint when enhancement
-                    # has not run or failed: enhance_status is only "done" once
-                    # BOTH derivatives are in R2, so a half-finished or failed
-                    # enhance can never point at a missing object.
-                    original = f"{BASE_URL}/api/reports/logbook-photo/{logbook_id}/{ai}/{pi}"
-                    if photo.get("enhance_status") == "done":
-                        thumb_url = f"{original}?v=thumb"
-                        full_url = f"{original}?v=enhanced"
-                    else:
-                        thumb_url = full_url = original
-                    photos += (
-                        f'<a href="{full_url}" target="_blank" '
-                        'style="text-decoration:none;display:inline-block;">'
-                        f'<img src="{thumb_url}" width="140" height="105" '
-                        'style="width:140px;height:105px;object-fit:cover;'
-                        'border-radius:4px;border:1px solid #e2e8f0;'
-                        'display:inline-block;margin:3px;" /></a>'
-                    )
-
+        for act in activities:
             # PR G + PR B (combined-report parity): company is short-entry AND the
             # UNASSIGNED sentinel renders as pending here too; description is prose;
             # location short-entry. crew_id/num_workers excluded.
@@ -18690,11 +18667,6 @@ async def generate_combined_report(project_id: str, date: str) -> str:
                 f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td>'
                 f'</tr>'
             )
-            if photos:
-                act_rows += (
-                    '<tr><td colspan="5" style="padding:8px 12px;border-bottom:1px solid #e2e8f0;'
-                    f'background-color:#f8fafc;" bgcolor="#f8fafc">{photos}</td></tr>'
-                )
 
         equip = d.get("equipment_on_site", {})
         equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
