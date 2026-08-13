@@ -530,6 +530,8 @@ const TRANSLATIONS = {
     completeOrientation: 'Complete Safety Orientation',
     enterName: 'Please enter your name',
     selectTradeCompanyErr: 'Please select your trade and company',
+    tradeNotRecorded: 'We have no trade recorded for you on this project. Please pick your trade and company below.',
+    tradeOffRoster: 'Your trade and company are no longer on this project. Please pick a current one below.',
     completeAllItems: 'Please complete all safety orientation items',
     signatureRequired: 'Signature required',
     checkInPoint: 'Check-In Point',
@@ -625,6 +627,8 @@ const TRANSLATIONS = {
     completeOrientation: 'Completar Orientación de Seguridad',
     enterName: 'Ingrese su nombre',
     selectTradeCompanyErr: 'Seleccione su oficio y empresa',
+    tradeNotRecorded: 'No tenemos un oficio registrado para usted en esta obra. Seleccione su oficio y empresa abajo.',
+    tradeOffRoster: 'Su oficio y empresa ya no figuran en esta obra. Seleccione uno actual abajo.',
     completeAllItems: 'Complete todos los elementos de orientación',
     signatureRequired: 'Se requiere firma',
     checkInPoint: 'Punto de Registro',
@@ -1117,8 +1121,31 @@ async function quickCheckIn() {
   // entry, the stored pair is no longer on the project roster (the backend would
   // 400 the strict-match). Route them into the picker to choose a current entry
   // — or "My company isn't listed" — instead of hitting a dead-end.
+  //
+  // TWO CONDITIONS, NOT ONE. They were collapsed into a single silent exit,
+  // and a man holding a valid SST was turned back for the wrong one.
+  //
+  //   NO PAIR RECORDED  lookup-worker returns trade/company as NULL when the
+  //                     worker has no worker_project_trades row for THIS
+  //                     project (server.py:10541). _get_worker_project_trade
+  //                     NEVER falls back to the workers document, on purpose —
+  //                     a value from another project is silently wrong. So
+  //                     null here is an ADMIN-DATA GAP, not a roster miss, and
+  //                     the picker is the intended flow for it.
+  //
+  //   OFF ROSTER        a real stored pair the admin has since renamed or
+  //                     removed. This is the case FEATURE 1.5 was written for.
+  //
+  // rosterKey(null) is '', so the old .some() compared '' against every real
+  // entry, missed, and rerouted every unpaired worker as though his trade had
+  // been deleted.
+  //
+  // NO FALLBACK TO THE WORKERS DOC — that is exactly what the per-project rule
+  // exists to prevent.
+  const hasStoredPair = Boolean(rosterKey(returningWorker.trade))
+    && Boolean(rosterKey(returningWorker.company));
   if (tradeAssignments.length) {
-    const stillOnRoster = tradeAssignments.some(
+    const stillOnRoster = hasStoredPair && tradeAssignments.some(
       (a) =>
         rosterKey(a.trade) === rosterKey(returningWorker.trade) &&
         rosterKey(a.company) === rosterKey(returningWorker.company)
@@ -1131,6 +1158,12 @@ async function quickCheckIn() {
       // returning worker already has a card on file and is only re-picking a
       // current roster entry, so that gate must not trap them here.
       revealStep(2);
+      // NEVER SILENT. This was the only exit in this file that changed screen
+      // without displaying anything; every other branch surfaces. A man turned
+      // back with no reason cannot fix it and the CP cannot help him.
+      // Persistent, not a 4s toast — he needs it while he picks. AFTER
+      // revealStep, because the screen switch is what would clear it.
+      showError(t(hasStoredPair ? 'tradeOffRoster' : 'tradeNotRecorded'), true);
       return;
     }
   }
