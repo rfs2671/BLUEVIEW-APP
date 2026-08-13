@@ -264,6 +264,94 @@ class TestCollapseIsCounted(unittest.TestCase):
         self.assertEqual(body["collapsed"], 0)
 
 
+class TestTheSameManIsNeverListedTwice(unittest.TestCase):
+    """THE PRODUCTION DUPLICATE, reproduced from the stored roster.
+
+    Project 6a5f63bc147407d3261df2c7, preshift_signin, 2026-08-12:
+    worker_id 6a79b9f19d8cee518e4712c4 appeared TWICE in data.workers — once
+    complete (company "AAZ", OSHA number, signature) and once stripped of all
+    three. Both rows carried auto_filled: true, so both came from
+    buildWorkerList, i.e. from this endpoint. There were ZERO
+    worker_enrollments for him, so pass 1 never ran.
+
+    The cause was pass 3: a CERT_BLOCK alert carries no worker_company, so its
+    key was ('wilmer carrillo', '') against pass 2's ('wilmer carrillo', 'aaz').
+    A miss, and the same man was emitted again.
+    """
+
+    WID = "6a79b9f19d8cee518e4712c4"
+
+    def test_a_blocked_alert_with_no_company_does_not_re_emit_him(self):
+        body = _get(_db(
+            checkins=[_legacy_row(worker_id=self.WID,
+                                  worker_name="WILMER CARRILLO",
+                                  worker_company="AAZ")],
+            alerts=[{"_id": "al1", "alert_type": "CERT_BLOCK",
+                     "worker_id": self.WID, "worker_name": "WILMER CARRILLO",
+                     "worker_company": ""}],          # <- the empty company
+        ), envelope=True).json()
+        ids = [w["worker_id"] for w in body["workers"]]
+        self.assertEqual(ids.count(self.WID), 1,
+                         "the same worker_id was emitted twice")
+        self.assertEqual(len(body["workers"]), 1)
+        self.assertEqual(body["collapsed"], 1, "the drop is reported, not silent")
+
+    def test_the_row_that_SURVIVES_is_the_complete_one(self):
+        """Pass 2 runs first and carries the company, the OSHA number and the
+        signature. Dropping IT and keeping the stripped alert row would be a
+        worse document than the duplicate."""
+        body = _get(_db(
+            checkins=[_legacy_row(worker_id=self.WID,
+                                  worker_name="WILMER CARRILLO",
+                                  worker_company="AAZ")],
+            alerts=[{"_id": "al1", "alert_type": "CERT_BLOCK",
+                     "worker_id": self.WID, "worker_name": "WILMER CARRILLO",
+                     "worker_company": ""}],
+        ), envelope=True).json()
+        row = body["workers"][0]
+        self.assertEqual(row["company"], "AAZ")
+        self.assertTrue(row.get("osha_number"))
+
+    def test_a_company_MISMATCH_no_longer_splits_him_either(self):
+        """The id wins over the string, so "AAZ" against "AAZ Construction" —
+        one of the paths reported as still open — is closed too whenever both
+        rows carry the same worker_id."""
+        body = _get(_db(
+            checkins=[_legacy_row(worker_id=self.WID,
+                                  worker_name="WILMER CARRILLO",
+                                  worker_company="AAZ")],
+            alerts=[{"_id": "al1", "alert_type": "CERT_BLOCK",
+                     "worker_id": self.WID, "worker_name": "Wilmer J Carrillo",
+                     "worker_company": "AAZ Construction"}],
+        ), envelope=True).json()
+        self.assertEqual(len(body["workers"]), 1)
+
+    def test_two_different_men_sharing_a_name_are_NOT_collapsed_by_the_id(self):
+        """The whole point of preferring the id: different men have different
+        worker_ids, so the safer key cannot delete a worker."""
+        body = _get(_db(
+            checkins=[_legacy_row(_id="c1", worker_id="w_one",
+                                  worker_name="Luis Alvarez",
+                                  worker_company="Vanguard"),
+                      _legacy_row(_id="c2", worker_id="w_two",
+                                  worker_name="Luis Alvarez",
+                                  worker_company="Ironworks")],
+        ), envelope=True).json()
+        self.assertEqual(len(body["workers"]), 2)
+
+    def test_a_row_with_NO_id_still_falls_back_to_the_string_key(self):
+        """A gate-sourced alert can carry no worker_id at all; the old guard
+        remains for exactly that row."""
+        body = _get(_db(
+            checkins=[_legacy_row(worker_id="w_one", worker_name="Marta Reyes",
+                                  worker_company="Vanguard")],
+            alerts=[{"_id": "al1", "alert_type": "CERT_BLOCK",
+                     "worker_id": None, "worker_name": "Marta Reyes",
+                     "worker_company": "Vanguard"}],
+        ), envelope=True).json()
+        self.assertEqual(len(body["workers"]), 1)
+
+
 class TestTruncationIsReported(unittest.TestCase):
     def test_legacy_ceiling_marks_partial(self):
         rows = [_legacy_row(_id=f"chk_{i}", worker_id=f"w{i}",
