@@ -1,203 +1,190 @@
-import React, { useState, useEffect } from 'react';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  View, Text, StyleSheet, Pressable, TextInput,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  ArrowLeft, BookOpen, Check, CheckCircle, Save, Users, Calendar,
-} from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard, IconPod } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
+import { Check, Plus, Trash2 } from 'lucide-react-native';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
-import { withGateSnapshot, reconcileRoster } from '../../src/utils/rosterReconcile';
-import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
-import { useTheme } from '../../src/context/ThemeContext';
+import { recordSignatureEvent } from '../../src/utils/signatureAudit';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen files for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+import { isOfflineError } from '../../src/utils/offlineState';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
+import TimeField from '../../src/components/logbookStepper/TimeField';
+import {
+  TOPICS, TOPIC_GROUPS, EMPTY_ATTENDEE, formatClock, buildAttendees,
+  reconcileAttendees, topicCount, namedAttendees,
+  incompleteSteps as computeIncomplete, draftBody,
+} from '../../src/utils/toolboxTalkModel';
+import { useT } from '../../src/i18n';
+import { spacing, borderRadius, outdoor, touchTarget } from '../../src/styles/theme';
 
-const TOPICS = {
-  'PPE': [
-    { key: 'hard_hats', label: 'Hard Hats' },
-    { key: 'safety_boots', label: 'Safety Boots' },
-    { key: 'safety_glasses', label: 'Safety Glasses' },
-    { key: 'harness', label: 'Harness' },
-    { key: 'gloves', label: 'Gloves' },
-    { key: 'covid19', label: 'Covid-19' },
-  ],
-  'Fall Protection': [
-    { key: 'ladder_safety', label: 'Ladder Safety' },
-    { key: 'harness_fp', label: 'Harness' },
-    { key: 'guard_rails', label: 'Guard Rails' },
-    { key: 'slopes', label: 'Slopes' },
-  ],
-  'Hazards': [
-    { key: 'tripping_hazards', label: 'Tripping Hazards' },
-    { key: 'fire_hazards', label: 'Fire Hazards' },
-    { key: 'egress', label: 'Egress' },
-    { key: 'flammables', label: 'Flammables' },
-  ],
-  'Equipment': [
-    { key: 'electric_tool_safety', label: 'Electric Tool Safety' },
-    { key: 'scaffold_safety', label: 'Scaffold Safety' },
-    { key: 'excavator', label: 'Excavator' },
-    { key: 'generator', label: 'Generator' },
-  ],
-  'Public Safety': [
-    { key: 'flags_man_regulations', label: 'Flags / Man Regulations' },
-    { key: 'sidewalk', label: 'Side Walk' },
-    { key: 'street_safety', label: 'Street Safety' },
-    { key: 'adjacent_property', label: 'Adjacent Property' },
-  ],
-};
-
-// Renders an ISO check-in timestamp as a short local clock time ("7:12 AM").
-// Falls back to the raw string so a legacy non-ISO value still shows something
-// rather than "Invalid Date" on a legal record.
-const formatClock = (value) => {
-  if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-};
+/**
+ * TOOL BOX TALK — NYC DOB §3301.12.3 / OSHA 29 CFR 1926.21 — on the shared
+ * stepper.
+ *
+ * FOUR STEPS, as approved: the talk, the topics, who attended, review and sign.
+ * The chrome is LogbookStepper's — header, pips, scroll, lock bar, autosave
+ * note and footer — so a port cannot quietly lose the 56pt target or the
+ * single primary action.
+ *
+ * WHAT CARRIED FORWARD, unchanged:
+ *   draft lifecycle          readDraft / writeDraft / setDraftBackendId /
+ *                            markPending / clearPending / markFinalized
+ *   signature client guard   toolbox_talk is IMMEDIATE — the server locks on
+ *                            `status: submitted` alone — so an unsigned submit
+ *                            must be UNREACHABLE, not merely warned about
+ *   gateCopy                 the server names the condition, the client owns
+ *                            the wording; the server's English never renders
+ *   recordFinalizeError      a foreground refusal leaves the same durable
+ *                            banner a background one does
+ *   THE #130 RECONCILE       both load paths re-check the stored roster against
+ *                            today's check-ins. This is the piece most at risk
+ *                            in a rewrite: without it a man who never checked
+ *                            in stays on a signed sheet. It is asserted in
+ *                            rosterReconcile.test.cjs and toolboxTalk.test.cjs.
+ *
+ * NOT CARRIED, because this form has no camera: persistPhoto and
+ * compressUnderCap. There is no photo on a toolbox talk.
+ *
+ * THE PAYLOAD IS UNCHANGED — the same seven keys both PDF renderers and the
+ * kiosk read. See toolboxTalkModel.
+ *
+ * A WORKER DOES NOT SIGN A TOOLBOX TALK. The CP's signature over the roster is
+ * the legal attestation; `signed` is his presence tick and `gate_confirmed` is
+ * the worker's voluntary tap. Neither is a signature and the copy says so.
+ */
+const LOG_TYPE = 'toolbox_talk';
+const TOTAL_STEPS = 4;
 
 export default function ToolboxTalkLog() {
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
+  const t = useT('toolboxTalk');
+  const tFinalize = useT('finalize');
   const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
 
+  const s = useMemo(() => buildStyles(), []);
+
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
+  const [signing, setSigning] = useState(false);
+  const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
-  const [project, setProject] = useState(null);
+  const [existingLogId, setExistingLogId] = useState(null);
 
   const [location, setLocation] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [typeOfWork, setTypeOfWork] = useState('');
   const [meetingTime, setMeetingTime] = useState(
-    new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+    () => new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
   );
   const [performedBy, setPerformedBy] = useState('');
   const [checkedTopics, setCheckedTopics] = useState({});
   const [attendees, setAttendees] = useState([]);
 
-  useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date }),
+    [projectId, date],
+  );
 
-  // Auto-fill Performed By from CP profile when available
+  // The form as of RIGHT NOW, for the debounced autosave and the save path.
+  // State read inside a timer is the value captured when the timer was set.
+  const bodyRef = useRef({});
   useEffect(() => {
-    if (cpName && !performedBy) {
-      setPerformedBy(cpName);
-    }
-  }, [cpName]);
+    bodyRef.current = {
+      location, companyName, typeOfWork, meetingTime, performedBy,
+      checkedTopics, attendees,
+    };
+  }, [location, companyName, typeOfWork, meetingTime, performedBy, checkedTopics, attendees]);
 
-  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
-  // Debounced so typing doesn't thrash storage; makes no server call. This is
-  // what lets the CP fill with zero network and reopen to the same draft.
-  // `status` is intentionally omitted so an autosave never downgrades a
-  // submitted log back to draft.
+  /**
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
+   */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
+
+  // ── Draft ─────────────────────────────────────────────────────────────
+  // `status` is deliberately omitted so an autosave never downgrades a filed
+  // log back to draft.
   useEffect(() => {
-    if (loading) return undefined;
-    const t = setTimeout(() => {
-      writeDraft(
-        draftKey({ projectId, logType: 'toolbox_talk', date }),
-        {
-          data: {
-            location,
-            company_name: companyName,
-            type_of_work: typeOfWork,
-            meeting_time: meetingTime,
-            performed_by: performedBy,
-            checked_topics: checkedTopics,
-            attendees,
-          },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        },
-      ).catch(() => {});
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      writeDraft(_key, {
+        data: draftBody(bodyRef.current),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
     }, 800);
-    return () => clearTimeout(t);
-  }, [
-    loading, projectId, date, location, companyName, typeOfWork, meetingTime,
-    performedBy, checkedTopics, attendees, cpSignature, cpName,
-  ]);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, location, companyName, typeOfWork, meetingTime,
+    performedBy, checkedTopics, attendees, cpSignature, cpName]);
 
-  // Toolbox had NO provenance marker of any kind before this — a hand-added
-  // attendee was shaped identically to a gate-built one. gate_sourced +
-  // gate_snapshot supply it. `signed` is the CP's present tick, which the gate
-  // never sets, so a tick is proof the row is his.
-  const TOOLBOX_GATE_FIELDS = ['name', 'title', 'company'];
-  const TOOLBOX_ANSWER_FIELDS = ['signed'];
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
+    try {
+      await writeDraft(_key, {
+        data: draftBody(bodyRef.current),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort; the next change retries */ }
+  }, [locked, _key, cpSignature, cpName]);
 
-  /** Re-check a stored roster against today's check-ins. `fresh` null (offline)
-   *  keeps everything — never delete a man because the server was unreachable. */
-  const _reconcileAttendees = (stored, fresh) => {
-    if (!Array.isArray(fresh)) return stored;
-    const built = fresh
-      .filter((c) => c && c.blocked !== true && c.source !== 'cert_block')
-      .map((c) => withGateSnapshot({
-        worker_id: c.worker_id,
-        name: c.worker_name || '',
-        title: c.trade || '',
-        company: c.company || '',
-        time: c.check_in_time || '',
-        gate_confirmed: c.toolbox_talk_confirmed === true,
-        gate_confirmed_at: c.toolbox_talk_confirmed_at || null,
-        signed: false,
-        signature: null,
-      }, TOOLBOX_GATE_FIELDS));
-    return reconcileRoster({
-      stored,
-      fresh: built,
-      fields: TOOLBOX_GATE_FIELDS,
-      answers: TOOLBOX_ANSWER_FIELDS,
-    }).rows;
+  const hydrate = (d) => {
+    if (d.location) setLocation(d.location);
+    if (d.company_name) setCompanyName(d.company_name);
+    if (d.type_of_work) setTypeOfWork(d.type_of_work);
+    if (d.meeting_time) setMeetingTime(d.meeting_time);
+    if (d.performed_by) setPerformedBy(d.performed_by);
+    if (d.checked_topics) setCheckedTopics(d.checked_topics);
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      // Phase A — local-first: read the on-device draft first. If a local copy
-      // exists, hydrate from it and skip the server fetch + check-in
-      // auto-populate entirely (works fully offline).
-      const key = draftKey({ projectId, logType: 'toolbox_talk', date });
-      const draft = await readDraft(key);
-      if (draft) {
-        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
-        if (draft.finalized) {
-          setLocked(true);
-          markFinalized(key);
-        }
-        setExistingLogId(draft.backend_id);
-        const d = draft.data || {};
-        if (d.location) setLocation(d.location);
-        if (d.company_name) setCompanyName(d.company_name);
-        if (d.type_of_work) setTypeOfWork(d.type_of_work);
-        if (d.meeting_time) setMeetingTime(d.meeting_time);
-        if (d.performed_by) setPerformedBy(d.performed_by);
-        if (d.checked_topics) setCheckedTopics(d.checked_topics);
-        // RE-CHECK AGAINST TODAY, even on the draft path. This early return
-        // used to skip /checkins-today entirely. Best-effort: offline the
-        // fetch fails and everything is kept, as before this change.
-        if (d.attendees && d.attendees.length > 0) {
-          const _fresh = await logbooksAPI
+      // LOCAL-FIRST. A local draft wins over the server copy, so an offline CP
+      // reopens to exactly what he filled.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
+        if (draft.finalized) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(draft.backend_id || null);
+        hydrate(draft.data);
+        // RE-CHECK AGAINST TODAY, even on the draft path (#130). This early
+        // return used to skip /checkins-today entirely, so a stored roster
+        // persisted unchecked — six men on a sheet on a day five checked in,
+        // the sixth having been refused at the gate. Offline the fetch fails,
+        // `fresh` is null, and reconcileAttendees keeps everything.
+        if (Array.isArray(draft.data.attendees) && draft.data.attendees.length > 0) {
+          const fresh = await logbooksAPI
             .getCheckinsForDate(projectId, date).catch(() => null);
-          setAttendees(_reconcileAttendees(d.attendees, _fresh));
+          setAttendees(reconcileAttendees(draft.data.attendees, fresh));
         }
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
@@ -208,643 +195,415 @@ export default function ToolboxTalkLog() {
       const [projectData, checkins, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
-        logbooksAPI.getByProject(projectId, 'toolbox_talk', date).catch(() => []),
+        logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []),
       ]);
-
-      if (projectData) {
-        setProject(projectData);
-        setLocation(projectData.address || projectData.location || '');
-      }
-
-      // ROSTER MODEL (counsel-approved) — the check-in list BUILDS the roster:
-      // a worker present on site today is on the roster. That is a record of
-      // presence, NOT a legal attestation. The CP's fresh, time-stamped
-      // signature at the conclusion of the talk is the sole legal anchor
-      // (NYC DOB §3301.12.3, OSHA 29 CFR 1926.21). Workers do not sign.
       const checkinList = Array.isArray(checkins) ? checkins : [];
-      const autoAttendees = checkinList
-        // Workers TURNED AWAY at the gate (cert block) never entered the site.
-        // They exist in this response so the OSHA log can prove who lacked a
-        // card — they must never appear on an ATTENDANCE roster.
-        .filter((c) => c.blocked !== true && c.source !== 'cert_block')
-        .map((c) => withGateSnapshot({
-          worker_id: c.worker_id,
-          // §3301.12.3 roster fields: name, title, company, time.
-          name: c.worker_name || '',
-          title: c.trade || '',
-          company: c.company || '',
-          time: c.check_in_time || '',
-          // Optional gate confirmation ("Confirm attending toolbox talk"). A
-          // worker who did NOT tap is still fully on the roster — this is a
-          // courtesy marker, never a deficiency flag.
-          gate_confirmed: c.toolbox_talk_confirmed === true,
-          gate_confirmed_at: c.toolbox_talk_confirmed_at || null,
-          // CP-tapped presence marker (see "Present" column) — not a signature.
-          signed: false,
-          // DELIBERATELY NULL. The worker's stored gate signature attests to the
-          // §3301.11 site orientation captured once on day one; site/logbooks.jsx
-          // renders any non-null `signature`/`worker_signature` under a heading
-          // reading "Worker Signatures", so carrying it here would misrepresent
-          // its provenance on a toolbox-talk record. Gate confirmation is
-          // recorded as name + timestamp instead.
-          signature: null,
-        }, TOOLBOX_GATE_FIELDS));
 
-      // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
-      // over a locked original that shares (project, type, date).
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
+
       if (existing) {
-        if (existing.is_locked) {
-          setLocked(true);
-          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-        }
+        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
-        if (d.location) setLocation(d.location);
-        if (d.company_name) setCompanyName(d.company_name);
-        if (d.type_of_work) setTypeOfWork(d.type_of_work);
-        if (d.meeting_time) setMeetingTime(d.meeting_time);
-        if (d.performed_by) setPerformedBy(d.performed_by);
-        if (d.checked_topics) setCheckedTopics(d.checked_topics);
-        if (d.attendees && d.attendees.length > 0) {
-          setAttendees(_reconcileAttendees(d.attendees, checkinList));
-        } else {
-        setAttendees(autoAttendees);
-          
-        // Auto-fill company name from project or user
-        if (projectData?.company) {
-          setCompanyName(projectData.company);
-        } else if (user?.company_name) {
-          setCompanyName(user.company_name);
-        } else if (user?.name) {
-          setCompanyName(user.name.split(' ')[0]); // fallback
-        }
-      }
+        hydrate(d);
+        setAttendees(
+          Array.isArray(d.attendees) && d.attendees.length > 0
+            ? reconcileAttendees(d.attendees, checkinList)   // #130
+            : buildAttendees(checkinList),
+        );
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       } else {
-        setAttendees(autoAttendees);
+        setAttendees(buildAttendees(checkinList));
+      }
+
+      // Company falls back through the same chain it always did.
+      if (!existing?.data?.company_name) {
+        if (projectData?.company) setCompanyName(projectData.company);
+        else if (user?.company_name) setCompanyName(user.company_name);
+        else if (user?.name) setCompanyName(user.name.split(' ')[0]);
       }
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  };
+  }, [_key, projectId, date, user, setCpName, setCpSignature]);
 
-  const toggleTopic = (key) => {
-    setCheckedTopics(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  // "Present" toggle — a CP-tapped boolean, NOT a worker signature. The stored
-  // field stays `signed` so already-saved logs (and the record viewer in
-  // site/logbooks.jsx) keep reading the same key.
-  const toggleAttendeePresent = (index) => {
-    setAttendees(prev => prev.map((a, i) =>
-      i === index ? { ...a, signed: !a.signed } : a
-    ));
-  };
+  // ── Edits ─────────────────────────────────────────────────────────────
+  const toggleTopic = (key) => setCheckedTopics((p) => ({ ...p, [key]: !p[key] }));
+  const updateAttendee = (i, field, value) => setAttendees(
+    (p) => p.map((a, n) => (n === i ? { ...a, [field]: value } : a)),
+  );
+  const addAttendee = () => setAttendees((p) => [...p, EMPTY_ATTENDEE()]);
+  const removeAttendee = (i) => setAttendees((p) => p.filter((_, n) => n !== i));
 
-  const addAttendee = () => {
-    setAttendees(prev => [...prev, {
-      worker_id: null,
-      name: '',
-      title: '',
-      company: '',
-      time: '',
-      gate_confirmed: false,
-      gate_confirmed_at: null,
-      signed: false,
-      signature: null,
-    }]);
-  };
+  // ── Save ──────────────────────────────────────────────────────────────
+  const persistAndPush = async (submitStatus) => {
+    const data = draftBody(bodyRef.current);
+    await writeDraft(_key, {
+      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+    });
 
-  const updateAttendee = (index, field, value) => {
-    setAttendees(prev => prev.map((a, i) =>
-      i === index ? { ...a, [field]: value } : a
-    ));
-  };
-
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    const key = draftKey({ projectId, logType: 'toolbox_talk', date });
-    const data = {
-      location,
-      company_name: companyName,
-      type_of_work: typeOfWork,
-      meeting_time: meetingTime,
-      performed_by: performedBy,
-      checked_topics: checkedTopics,
-      attendees,
-    };
+    let created = null;
+    let savedId = existingLogId;
     try {
-      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
-      // so an offline CP completes the log without the "could not save" failure.
-      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
-
-      // Best-effort server push. Offline this throws and is swallowed — the key
-      // is recorded in the pending-push list for the Phase B reconnect flush.
-      // NOTE: a submit made offline has no server id yet, so the signature-audit
-      // record below is skipped until the draft syncs (a Phase B reconcile item).
-      let savedId = existingLogId;
-      let pushOk = true;
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-        } else {
-          const created = await logbooksAPI.create({
-            project_id: projectId, log_type: 'toolbox_talk', date,
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-          savedId = created.id || created._id;
-          setExistingLogId(savedId);
-        }
-        await setDraftBackendId(key, savedId);
-        await clearPending(key);
-      } catch (pushErr) {
-        pushOk = false;
-        await markPending(key);
-        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: LOG_TYPE, date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
       }
-
-      // FREEZE ON SIGN — toolbox_talk is an IMMEDIATE log: the SIGNATURE IS THE
-      // FREEZE. "Submit & Sign" finalizes the record in one action (there is no
-      // separate Finalize step, and it is never reopened). This runs after the
-      // local writeDraft above — so the frozen draft holds the SIGNED content —
-      // and after the push attempt on BOTH paths, because the talk is signed at
-      // the muster point with no signal: the freeze must not need the server. A
-      // later talk that day is a NEW log; corrections go through Amend.
-      if (submitStatus === 'submitted') {
-        await freezeIfImmediate(key, 'toolbox_talk');
-        setLocked(true);
+      if (savedId) await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+      if (savedId) await clearFinalizeError(savedId);
+    } catch (pushErr) {
+      // REFUSAL IS NOT OFFLINE. toolbox_talk is an IMMEDIATE type, so a
+      // submitted push IS the finalize — a 4xx is the server judging the
+      // record, not failing to reach it. Freezing on a judgement would tell
+      // the CP it was filed, make the draft immutable so he could not fix what
+      // was refused, and leave nothing pending for the drain to retry.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('Toolbox talk REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
       }
+      if (!offline && !refused) {
+        console.warn('Toolbox talk push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
+      }
+      await markPending(_key);
+      console.warn('Toolbox talk push deferred (will sync on reconnect):', pushErr?.message);
+    }
 
-      await autoSave(cpName, cpSignature).catch(() => {});
+    // Guarded: a CP-PROFILE save failure must never report a failure on a log
+    // that was already saved (and, for an immediate type, already FROZEN).
+    await autoSave(cpName, cpSignature).catch(() => {});
 
-      if (submitStatus === 'submitted' && cpSignature && savedId) {
-        const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
         recordSignatureEvent({
-          documentType: 'logbook', documentId: savedId, eventType: 'cp_sign',
+          documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
           signerName: cpName, signerRole: user?.role || 'cp',
           signatureData: cpSignature,
-          contentSnapshot: { log_type: 'toolbox_talk', date, project_id: projectId, data, status: submitStatus },
+          contentSnapshot: {
+            log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
+          },
           user,
-        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
+    }
+    return savedId || null;
+  };
 
+  /**
+   * toolbox_talk is an IMMEDIATE log: THE SIGNATURE IS THE FREEZE. There is no
+   * separate Finalize step and the record is never reopened — a later talk that
+   * day is a NEW log, and corrections go through Amend.
+   */
+  const handleSubmitAndSign = async () => {
+    if (signing) return;
+    // SIGNATURE CLIENT GUARD, backing up the disabled button below.
+    if (!cpSignature) {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    setSigning(true);
+    try {
+      const savedId = await persistAndPush('submitted');
+      // `undefined` = refused or failed, already reported. Nothing may be
+      // frozen or announced on a record the server would not take. `null` is
+      // the offline path and DOES freeze — a talk given at the muster point
+      // with no signal must still hold.
+      if (savedId === undefined) return;
+      await freezeIfImmediate(_key, LOG_TYPE);
+      setLocked(true);
       toast.success(
-        submitStatus === 'submitted' ? 'Signed & Locked' : 'Saved',
-        submitStatus !== 'submitted'
-          ? 'Tool Box Talk saved'
-          : pushOk
-            ? 'Signed — this log is now locked. Corrections require an amendment.'
-            : 'Signed — locked on this device and will sync when you are back online.');
-      if (submitStatus === 'submitted') router.back();
+        t('submittedTitle'),
+        savedId ? t('submittedBody') : t('submittedOfflineBody'),
+      );
+      router.back();
     } catch (e) {
       console.error(e);
-      toast.error('Error', 'Could not save log');
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
-      setSaving(false);
+      setSigning(false);
     }
   };
 
-  const checkedCount = Object.values(checkedTopics).filter(Boolean).length;
-  const presentCount = attendees.filter(a => a.signed).length;
+  const onStepChange = async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  };
 
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.loadingCenter}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
 
-  return (
-    <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
-        <View style={s.header}>
-          <View style={s.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/logbooks')}
-            />
-            <View>
-              <Text style={s.headerTitle}>Tool Box Talk</Text>
-              <Text style={s.headerSub}>OSHA — Weekly Safety Meeting</Text>
-            </View>
-          </View>
-          <View style={s.statRow}>
-            <View style={s.statBadge}>
-              <Text style={s.statText}>{checkedCount} topics</Text>
-            </View>
-            <View style={s.statBadge}>
-              <Text style={s.statText}>{presentCount} present</Text>
-            </View>
-          </View>
-        </View>
+  const incomplete = computeIncomplete({
+    location, performedBy, checkedTopics, attendees, cpSignature,
+  }).filter((n) => n !== step);
+  const nTopics = topicCount(checkedTopics);
+  const named = namedAttendees(attendees);
+  const plural = (n, base) => t(`${base}_${n === 1 ? 'one' : 'other'}`).replace('{n}', String(n));
 
-        <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
+  const textRow = (labelKey, value, onChangeText, phKey = 'phField') => (
+    <View style={s.fieldBlock}>
+      <Text style={s.reviewLabel}>{t(labelKey)}</Text>
+      <TextInput
+        style={s.input}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={t(phKey)}
+        placeholderTextColor={outdoor.textDim}
+      />
+    </View>
+  );
 
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (no per-field editable flags
-              to miss). Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
+  // ── STEP 1 — the talk ─────────────────────────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      <StepHeader title={t('step1Title')} />
+      <Card s={s}>
+        {textRow('fLocation', location, setLocation)}
+        {textRow('fCompany', companyName, setCompanyName)}
+        {textRow('fTypeOfWork', typeOfWork, setTypeOfWork)}
+        <TimeField
+          s={s}
+          label={t('fMeetingTime')}
+          placeholder={t('phTime')}
+          value={meetingTime}
+          clearLabel={t('dateClear')}
+          doneLabel={t('dateDone')}
+          onChange={setMeetingTime}
+        />
+        {textRow('fPerformedBy', performedBy, setPerformedBy)}
+      </Card>
+    </View>
+  );
 
-          {/* Date */}
-          <GlassCard style={s.dateCard}>
-            <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-            <Text style={s.dateText}>
-              {new Date(date + 'T12:00:00').toLocaleDateString('en-US', {
-                weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-              })}
-            </Text>
-          </GlassCard>
-
-          {/* Header Info */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionHeader}>Meeting Information</Text>
-            {[
-              { label: 'Location', value: location, setter: setLocation },
-              { label: 'Company Name', value: companyName, setter: setCompanyName },
-              { label: 'Type of Work', value: typeOfWork, setter: setTypeOfWork },
-              { label: 'Time', value: meetingTime, setter: setMeetingTime },
-              { label: 'Performed By (CP)', value: performedBy, setter: setPerformedBy },
-            ].map((f) => (
-              <View key={f.label} style={s.fieldRow}>
-                <Text style={s.fieldLabel}>{f.label}</Text>
-                <TextInput
-                  style={s.fieldInput}
-                  value={f.value}
-                  onChangeText={f.setter}
-                  placeholder="—"
-                  placeholderTextColor={colors.text.subtle}
-                />
-              </View>
+  // ── STEP 2 — the topics ───────────────────────────────────────────────
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+      <Text style={s.noteText}>{t('topicsHint')}</Text>
+      <Text style={s.noteText}>{t('topicsCount').replace('{n}', String(nTopics))}</Text>
+      {TOPIC_GROUPS.map((group) => (
+        <Card s={s} key={group}>
+          <Text style={s.question}>{group}</Text>
+          <View style={s.chipWrap}>
+            {TOPICS[group].map((topic) => (
+              <Chip
+                key={topic.key}
+                label={topic.label}
+                selected={checkedTopics[topic.key] === true}
+                onPress={() => toggleTopic(topic.key)}
+              />
             ))}
-          </GlassCard>
+          </View>
+        </Card>
+      ))}
+    </View>
+  );
 
-          {/* Topics Grid */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionHeader}>Topics Covered</Text>
-            <Text style={s.sectionSubtitle}>Check all topics discussed in this meeting</Text>
-            {Object.entries(TOPICS).map(([category, items]) => (
-              <View key={category} style={s.topicCategory}>
-                <Text style={s.topicCategoryLabel}>{category}</Text>
-                <View style={s.topicGrid}>
-                  {items.map((item) => {
-                    const isChecked = !!checkedTopics[item.key];
-                    return (
-                      <Pressable
-                        key={item.key}
-                        onPress={() => toggleTopic(item.key)}
-                        style={[s.topicItem, isChecked && s.topicItemActive]}
-                      >
-                        <View style={[s.topicCheckbox, isChecked && s.topicCheckboxActive]}>
-                          {isChecked && <Check size={12} strokeWidth={2.5} color="#fff" />}
-                        </View>
-                        <Text style={[s.topicLabel, isChecked && s.topicLabelActive]}>
-                          {item.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </View>
-            ))}
-          </GlassCard>
+  // ── STEP 3 — who attended ─────────────────────────────────────────────
+  const renderStep3 = () => (
+    <View>
+      <StepHeader title={t('step3Title')} />
+      <Text style={s.noteText}>{t('rosterHint')}</Text>
+      {attendees.length === 0 && <Text style={s.emptyText}>{t('noAttendees')}</Text>}
 
-          {/* Attendance Roster — §3301.12.3 name / title / company / time.
-              The roster records WHO WAS PRESENT; the CP signature below is the
-              attestation. No worker signature is captured or displayed here. */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <Users size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionHeader}>Attendance Roster</Text>
-              <Text style={s.attendeeCount}>{attendees.length} workers</Text>
-            </View>
-            <Text style={s.sectionSubtitle}>
-              Roster auto-built from today's check-ins. The Competent Person's
-              signature below is the required attestation — workers are not
-              required to sign.
+      {attendees.map((a, i) => (
+        <Card s={s} key={`${a.worker_id || 'row'}-${i}`}>
+          <View style={s.rowHead}>
+            <Text style={s.reviewLabel}>
+              {t('attendeeOf').replace('{n}', String(i + 1)).replace('{m}', String(attendees.length))}
             </Text>
-
-            {/* Table Header */}
-            <View style={s.tableHeader}>
-              <Text style={[s.tableHeaderText, { flex: 2 }]}>Name / Title</Text>
-              <Text style={[s.tableHeaderText, { flex: 2 }]}>Company / Time In</Text>
-              <Text style={[s.tableHeaderText, { flex: 1, textAlign: 'center' }]}>Present</Text>
-            </View>
-
-            {attendees.map((attendee, index) => {
-              const timeIn = formatClock(attendee.time);
-              const confirmedAt = formatClock(attendee.gate_confirmed_at || attendee.time);
-              return (
-              <View key={index} style={s.attendeeRow}>
-                <View style={s.attendeeMain}>
-                  <View style={s.attendeeLine}>
-                    <TextInput
-                      style={[s.attendeeInput, { flex: 2 }]}
-                      value={attendee.name}
-                      onChangeText={(v) => updateAttendee(index, 'name', v)}
-                      placeholder="Name"
-                      placeholderTextColor={colors.text.subtle}
-                    />
-                    <TextInput
-                      style={[s.attendeeInput, { flex: 2 }]}
-                      value={attendee.company}
-                      onChangeText={(v) => updateAttendee(index, 'company', v)}
-                      placeholder="Company"
-                      placeholderTextColor={colors.text.subtle}
-                    />
-                  </View>
-                  {/* Secondary line keeps title + check-in time on the record
-                      without a fifth column crushing the phone layout. */}
-                  <View style={s.attendeeLine}>
-                    <TextInput
-                      style={[s.attendeeMetaInput, { flex: 2 }]}
-                      value={attendee.title || ''}
-                      onChangeText={(v) => updateAttendee(index, 'title', v)}
-                      placeholder="Title / Trade"
-                      placeholderTextColor={colors.text.subtle}
-                    />
-                    <Text style={[s.attendeeMetaText, { flex: 2 }]} numberOfLines={1}>
-                      {timeIn ? `In ${timeIn}` : '—'}
-                    </Text>
-                  </View>
-                  {/* Optional, honest marker. Its absence means only that the
-                      worker did not tap at the gate — never a deficiency. */}
-                  {attendee.gate_confirmed ? (
-                    <Text style={s.gateConfirmText} numberOfLines={1}>
-                      {confirmedAt ? `Confirmed at gate · ${confirmedAt}` : 'Confirmed at gate'}
-                    </Text>
-                  ) : null}
-                </View>
-                <Pressable
-                  onPress={() => toggleAttendeePresent(index)}
-                  style={[s.signedToggle, attendee.signed && s.signedToggleActive]}
-                >
-                  {attendee.signed
-                    ? <CheckCircle size={20} strokeWidth={1.5} color={semantic.verified} />
-                    : <View style={s.unsignedCircle} />
-                  }
-                </Pressable>
-              </View>
-              );
-            })}
-
-            <GlassButton
-              title="+ Add Worker"
-              onPress={addAttendee}
-              style={s.addWorkerBtn}
-            />
-          </GlassCard>
-
-          {/* CP Signature */}
-          <GlassCard style={s.section}>
-            <View style={s.sectionHeaderRow}>
-              <BookOpen size={16} strokeWidth={1.5} color="#3b82f6" />
-              <Text style={s.sectionHeader}>Performed By — CP Signature</Text>
-            </View>
-            <SignaturePad
-              title="Competent Person Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-            />
-          </GlassCard>
+            <Pressable
+              style={s.rowRemove}
+              accessibilityRole="button"
+              accessibilityLabel={t('removeAttendee')}
+              onPress={() => removeAttendee(i)}
+            >
+              <Trash2 size={20} strokeWidth={2} color={outdoor.danger} />
+            </Pressable>
           </View>
 
-          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
-          {!locked && (
-          <View style={s.actions}>
-            <GlassButton
-              title={saving ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving}
-              style={s.draftBtn}
-            />
-            <GlassButton
-              title={saving ? 'Submitting...' : 'Submit & Sign'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={() => handleSave('submitted')}
-              loading={saving}
-              disabled={!cpSignature || attendees.length === 0}
-              style={s.submitBtn}
+          <View style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t('colName')}</Text>
+            <TextInput
+              style={s.input}
+              value={a.name}
+              onChangeText={(v) => updateAttendee(i, 'name', v)}
+              placeholder={t('phName')}
+              placeholderTextColor={outdoor.textDim}
             />
           </View>
+          <View style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t('colTitle')}</Text>
+            <TextInput
+              style={s.input}
+              value={a.title}
+              onChangeText={(v) => updateAttendee(i, 'title', v)}
+              placeholder={t('phTitle')}
+              placeholderTextColor={outdoor.textDim}
+            />
+          </View>
+          <View style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t('colCompany')}</Text>
+            <TextInput
+              style={s.input}
+              value={a.company}
+              onChangeText={(v) => updateAttendee(i, 'company', v)}
+              placeholder={t('phCompany')}
+              placeholderTextColor={outdoor.textDim}
+            />
+          </View>
+
+          {!!formatClock(a.time) && (
+            <Text style={s.noteText}>
+              {`${t('colTime')}: ${formatClock(a.time)}`}
+            </Text>
+          )}
+          {a.gate_confirmed && (
+            <Text style={s.noteText}>{t('gateConfirmed')}</Text>
           )}
 
-          {/* logType drives the FREEZE MODEL: toolbox_talk is IMMEDIATE, so the
-              bar hides Finalize (the signature already froze the log) and offers
-              only Amend once locked. canFinalize stays false for that reason. */}
-          <LogbookLockBar
-            locked={locked}
-            logId={existingLogId}
-            logType="toolbox_talk"
-            canFinalize={false}
-            onFinalized={() => setLocked(true)}
-            onAmended={fetchData}
-          />
-        </ScrollView>
-      </SafeAreaView>
-    </AnimatedBackground>
+          {/* The CP's presence tick. NOT a signature — a worker is not required
+              to sign a toolbox talk, and the copy must not imply he did. */}
+          <Pressable
+            style={[s.toggleRow, a.signed && s.toggleRowOn]}
+            accessibilityRole="button"
+            accessibilityState={{ selected: !!a.signed }}
+            onPress={() => updateAttendee(i, 'signed', !a.signed)}
+          >
+            <View style={[s.toggleBox, a.signed && s.toggleBoxOn]}>
+              {a.signed && <Check size={18} strokeWidth={3} color={outdoor.ok} />}
+            </View>
+            <Text style={s.toggleText}>{a.signed ? t('presentOn') : t('presentMark')}</Text>
+          </Pressable>
+        </Card>
+      ))}
+
+      <Text style={s.noteText}>{t('gateNote')}</Text>
+      <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={addAttendee}>
+        <Plus size={22} strokeWidth={2.5} color={outdoor.text} />
+        <Text style={s.secondaryBtnText}>{t('addAttendee')}</Text>
+      </Pressable>
+    </View>
+  );
+
+  // ── STEP 4 — review and sign ──────────────────────────────────────────
+  const renderStep4 = () => (
+    <View>
+      <StepHeader title={t('step4Title')} />
+      <Text style={s.noteText}>{t('reviewHeading')}</Text>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewTopics')}</Text>
+        <Text style={s.reviewValue}>
+          {nTopics > 0 ? t('topicsCount').replace('{n}', String(nTopics)) : t('reviewNothingYet')}
+        </Text>
+      </Card>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewAttendees')}</Text>
+        <Text style={s.reviewValue}>
+          {named.length > 0 ? plural(named.length, 'attendeesCount') : t('reviewNothingYet')}
+        </Text>
+      </Card>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>
+          {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
+        </Text>
+        <Text style={s.noteText}>{t('signAttests')}</Text>
+        <SignaturePad
+          title="Competent Person Signature"
+          signerName={cpName}
+          onNameChange={setCpName}
+          existingSignature={cpSignature}
+          onSignatureCapture={setCpSignature}
+        />
+      </Card>
+    </View>
+  );
+
+  const STEPS = [
+    { render: renderStep1 },
+    { render: renderStep2 },
+    { render: renderStep3 },
+    { render: renderStep4 },
+  ];
+
+  return (
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={t('screenSub')}
+      step={step}
+      steps={STEPS}
+      onStepChange={onStepChange}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={incomplete}
+      a11yProgressLabel={t('stepOf')
+        .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      /* toolbox_talk is IMMEDIATE — the server locks on `submitted` alone — so
+         an unsigned submit must be UNREACHABLE, not merely warned about. */
+      submitDisabled={!cpSignature}
+      onSubmit={handleSubmitAndSign}
+      logType={LOG_TYPE}
+      logId={existingLogId}
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+    />
   );
 }
 
-function buildStyles(colors, isDark) {
+function buildStyles() {
   return StyleSheet.create({
-  container: { flex: 1 },
-  loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.08),
-  },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
-  headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
-  headerSub: { fontSize: 11, color: colors.text.muted },
-  statRow: { flexDirection: 'row', gap: spacing.xs },
-  statBadge: {
-    backgroundColor: 'rgba(59,130,246,0.15)',
-    borderRadius: borderRadius.full,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-    borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.3)',
-  },
-  statText: { fontSize: 11, color: '#60a5fa', fontWeight: '600' },
-  scrollView: { flex: 1 },
-  scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: 100,
-    maxWidth: 720,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  dateCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-    padding: spacing.md,
-  },
-  dateText: { fontSize: 14, color: colors.text.secondary },
-  section: { marginBottom: spacing.md, padding: spacing.lg },
-  sectionHeader: { fontSize: 16, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
-  sectionSubtitle: { fontSize: 12, color: colors.text.muted, marginBottom: spacing.md, marginTop: -spacing.sm },
-  attendeeCount: { marginLeft: 'auto', fontSize: 12, color: colors.text.muted },
-  fieldRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.05),
-    gap: spacing.md,
-  },
-  fieldLabel: { flex: 1, fontSize: 13, color: colors.text.secondary },
-  fieldInput: {
-    flex: 1.5,
-    fontSize: 14,
-    color: colors.text.primary,
-    textAlign: 'right',
-    padding: spacing.xs,
-    backgroundColor: withAlpha('#ffffff', 0.04),
-    borderRadius: borderRadius.sm,
-  },
-  topicCategory: { marginBottom: spacing.md },
-  topicCategoryLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.text.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: spacing.sm,
-  },
-  topicGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  topicItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: withAlpha('#ffffff', 0.1),
-    backgroundColor: withAlpha('#ffffff', 0.04),
-  },
-  topicItemActive: {
-    backgroundColor: 'rgba(59,130,246,0.15)',
-    borderColor: 'rgba(59,130,246,0.4)',
-  },
-  topicCheckbox: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: withAlpha('#ffffff', 0.2),
-    backgroundColor: withAlpha('#ffffff', 0.05),
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topicCheckboxActive: { backgroundColor: '#3b82f6', borderColor: '#3b82f6' },
-  topicLabel: { fontSize: 13, color: colors.text.muted },
-  topicLabelActive: { color: '#93c5fd', fontWeight: '500' },
-  tableHeader: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    paddingBottom: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.08),
-    marginBottom: spacing.xs,
-  },
-  tableHeaderText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.text.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  attendeeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: withAlpha('#ffffff', 0.04),
-  },
-  // Roster row: name/company on the primary line, title/time-in beneath, so
-  // the four §3301.12.3 fields fit a phone without a horizontal scroll.
-  attendeeMain: { flex: 4, gap: 2 },
-  attendeeLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  attendeeInput: {
-    fontSize: 13,
-    color: colors.text.primary,
-    padding: spacing.xs,
-    backgroundColor: withAlpha('#ffffff', 0.04),
-    borderRadius: borderRadius.sm,
-  },
-  attendeeMetaInput: {
-    fontSize: 11,
-    color: colors.text.muted,
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 2,
-    backgroundColor: withAlpha('#ffffff', 0.02),
-    borderRadius: borderRadius.sm,
-  },
-  attendeeMetaText: {
-    fontSize: 11,
-    color: colors.text.muted,
-    paddingHorizontal: spacing.xs,
-  },
-  gateConfirmText: {
-    fontSize: 10,
-    color: semantic.verified,
-    paddingHorizontal: spacing.xs,
-  },
-  signedToggle: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.xs,
-  },
-  signedToggleActive: {},
-  unsignedCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: withAlpha('#ffffff', 0.2),
-  },
-  addWorkerBtn: { marginTop: spacing.md, borderStyle: 'dashed' },
-  autoSignBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    marginBottom: spacing.md,
-    padding: spacing.sm,
-    backgroundColor: semantic.verifiedBg,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: semantic.verifiedBorder,
-  },
-  autoSignText: { fontSize: 12, color: semantic.verified },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
-  draftBtn: { flex: 1 },
-  submitBtn: { flex: 2, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.4)' },
-});
+    ...buildStepperStyles(),
+    rowHead: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      gap: spacing.sm,
+    },
+    rowRemove: {
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: borderRadius.full,
+    },
+    toggleBoxOn: { borderColor: outdoor.okBorder },
+  });
 }

@@ -115,6 +115,9 @@ const EN_ONLY_NAMESPACES = [
   // inspection. The 19 question labels stay in scaffoldMaintenanceModel
   // because the filed PDF prints the same strings.
   'scaffoldMaintenance',
+  // app/logbooks/toolbox_talk.jsx — the safety talk. The 24 topic labels stay
+  // in toolboxTalkModel for the same reason.
+  'toolboxTalk',
   // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
   // and signature prompts. CP-facing.
   'finalize',

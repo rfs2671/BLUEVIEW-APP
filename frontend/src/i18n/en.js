@@ -410,6 +410,86 @@ export default {
     notRecorded: 'Not recorded',
   },
 
+  // ── app/logbooks/toolbox_talk.jsx — the safety talk, 4 steps ──────────────
+  //
+  // EN-ONLY, like every other logbook namespace: NYC DOB §3301.12.3 and OSHA
+  // 29 CFR 1926.21 records are filed in English. See EN_ONLY_NAMESPACES.
+  //
+  // DELIBERATELY ABSENT: the 24 topic labels and the 5 group names. They are
+  // printed verbatim on the filed PDF by the backend renderer, so the label
+  // must be the SAME string on the device and on the document. They live in
+  // toolboxTalkModel.TOPICS.
+  toolboxTalk: {
+    screenTitle: 'Tool Box Talk',
+    screenSub: 'NYC DOB §3301.12.3 — Safety Meeting',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The talk',
+    step2Title: 'Topics covered',
+    step3Title: 'Who attended',
+    step4Title: 'Review and sign',
+
+    // Step 1.
+    fLocation: 'Location',
+    fCompany: 'Company',
+    fTypeOfWork: 'Type of work',
+    fMeetingTime: 'Time of the talk',
+    fPerformedBy: 'Performed by',
+    phField: 'Not recorded',
+    phTime: 'Tap to choose a time',
+
+    // Step 2.
+    topicsHint: 'Tick what you covered. Anything not ticked is not on the record.',
+    topicsCount: '{n} covered',
+
+    // Step 3.
+    rosterHint: 'Built from the workers who checked in today. Add anyone the gate missed.',
+    noAttendees: 'Nobody has checked in yet. Add anyone who attended.',
+    addAttendee: 'Add someone',
+    removeAttendee: 'Remove this row',
+    attendeeOf: 'Attendee {n} of {m}',
+    colName: 'Name',
+    colTitle: 'Title',
+    colCompany: 'Company',
+    colTime: 'Checked in',
+    phName: 'Name',
+    phTitle: 'Trade or title',
+    phCompany: 'Company',
+    // A worker is NOT required to sign a toolbox talk — the CP's signature over
+    // the roster is the legal attestation. These two are markers, not
+    // signatures, and the copy must not imply otherwise.
+    presentMark: 'Mark present',
+    presentOn: 'Marked present',
+    gateConfirmed: 'Confirmed at the gate',
+    gateNote: 'A worker who did not tap at the gate is still on the roster.',
+
+    // Step 4.
+    reviewHeading: 'Check this before you sign',
+    reviewTopics: 'Topics covered',
+    reviewAttendees: 'On the roster',
+    reviewNothingYet: 'Nothing recorded yet',
+    attendeesCount_one: '{n} worker',
+    attendeesCount_other: '{n} workers',
+    signAttests: 'Your signature attests that this talk was delivered to the workers listed.',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the talk before filing it.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This talk is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
   // ── app/logbooks/scaffold_maintenance.jsx — the shed inspection, 3 steps ───
   //
   // EN-ONLY for the same reason as oshaLog above.

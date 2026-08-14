@@ -158,7 +158,14 @@ const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 // regex that silently stops matching would turn this file green while
 // measuring nothing.
 ok(FILES.length === 16, `scanner reads 16 CP screens (found ${FILES.length})`);
-ok(sum(measured.fontSize) > 150,
+// SCANNER-IS-ALIVE guards, not debt ceilings. Every assertion below is
+// vacuously true against an empty measurement, so these exist to fail loudly
+// if a regex silently stops matching. The thresholds track the migration
+// DOWNWARDS as screens move onto the token file — 150 -> 120 with the
+// toolbox_talk port — and are expected to keep falling as the remaining forms
+// are ported. A threshold that never moves would be a debt ceiling, which is
+// not what this is.
+ok(sum(measured.fontSize) > 120,
   `scanner still finds fontSize literals (${sum(measured.fontSize)})`);
 // LOWERED from 80 to 50 by the osha_log + scaffold_maintenance port, which
 // moved two more screens onto the token file (88 -> 67). This is a
@@ -169,7 +176,7 @@ ok(sum(measured.fontSize) > 150,
 // falling as the remaining eight forms are ported.
 ok(sum(measured.withAlphaPairs) > 50,
   `scanner still finds withAlpha() calls (${sum(measured.withAlphaPairs)})`);
-ok(sum(measured.opaqueHex) > 50,
+ok(sum(measured.opaqueHex) > 40,
   `scanner still finds opaque hex literals (${sum(measured.opaqueHex)})`);
 
 // ── COVERAGE + HONESTY, per scale ────────────────────────────────────────────

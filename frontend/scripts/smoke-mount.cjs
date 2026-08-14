@@ -82,6 +82,9 @@ const ROUTES = [
   // the suite would notice.
   '/logbooks/osha_log?projectId=p1',
   '/logbooks/scaffold_maintenance?projectId=p1',
+  // Ported onto the shared stepper in batch 1a. Same reason as the pair
+  // above: this job is the only thing that executes a logbook screen.
+  '/logbooks/toolbox_talk?projectId=p1',
   '/admin/site-devices',
   '/admin/users',
   '/reports',
