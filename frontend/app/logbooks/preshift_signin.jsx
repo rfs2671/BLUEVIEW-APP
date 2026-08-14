@@ -143,10 +143,22 @@ export default function PreShiftSignIn() {
         // having been refused at the gate. Best-effort: offline the fetch
         // fails, `fresh` is empty, and reconcileRoster keeps everything, which
         // is the same behaviour as before this change.
-        if (d.workers && d.workers.length > 0) {
-          const _fresh = await logbooksAPI
-            .getCheckinsForDate(projectId, date).catch(() => null);
-          setWorkers(_reconcileWorkers(d.workers, _fresh));
+        // AN EMPTY STORED ROSTER MUST STILL REBUILD — same defect as
+        // toolbox_talk, same origin (#130's `length > 0` guard), and this form
+        // trips it more easily: the draft branch is entered on
+        // `(d.workers?.length || d.company)`, and `company` is prefilled from
+        // the project, so an empty roster with a prefilled company was enough.
+        // The morning sign-in sheet listing nobody while men are at the gate is
+        // the worst version of it.
+        const _fresh = await logbooksAPI
+          .getCheckinsForDate(projectId, date).catch(() => null);
+        const _stored = Array.isArray(d.workers) ? d.workers : [];
+        if (_stored.length > 0) {
+          setWorkers(_reconcileWorkers(_stored, _fresh));
+        } else if (Array.isArray(_fresh)) {
+          // Offline (`_fresh` null) there is nothing to build from, and an
+          // empty list is both honest and unchanged from what was on screen.
+          buildWorkerList(_fresh);
         }
         if (_draft.cp_signature) setCpSignature(_draft.cp_signature);
         if (_draft.cp_name) setCpName(_draft.cp_name);

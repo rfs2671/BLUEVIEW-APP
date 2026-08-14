@@ -135,6 +135,25 @@ for (const [file, helper, stored] of [
   const draftBlock = s2.slice(0, s2.indexOf('setLoading(false);'));
   ok(draftBlock.includes('getCheckinsForDate(projectId, date)'),
     file + ': the draft path fetches check-ins before returning');
+
+  // AN EMPTY STORED ROSTER MUST STILL REBUILD — device round 4, findings
+  // 6/17/3, one mechanism. The `length > 0` guard came in with THIS change and
+  // was the bug: it only re-checked when there was something stored, so an
+  // empty roster returned without fetching anything and could never rebuild.
+  // This form trips it more easily than toolbox_talk, because the draft branch
+  // is entered on `(d.workers?.length || d.company)` and `company` is prefilled
+  // from the project — an empty roster with a prefilled company was enough.
+  // A morning sign-in sheet listing nobody while men are at the gate.
+  ok(draftBlock.includes('buildWorkerList(_fresh)'),
+    file + ': an EMPTY stored roster is BUILT from today check-ins, not left empty');
+  ok(draftBlock.indexOf('getCheckinsForDate') < draftBlock.indexOf('_stored.length > 0'),
+    file + ': and the fetch happens BEFORE the empty/non-empty decision');
+  ok(!draftBlock.includes('if (d.workers && d.workers.length > 0) {'),
+    file + ': the fetch is no longer conditional on there being something stored');
+  // The rebuild must not become a new way to LOSE men: offline the fetch fails
+  // and there is nothing to build from, so the stored (empty) roster stands.
+  ok(draftBlock.includes('} else if (Array.isArray(_fresh)) {'),
+    file + ': offline builds nothing rather than clearing the screen');
 }
 
 // TOOLBOX_TALK MOVED. The port put its reconcile in src/utils/toolboxTalkModel

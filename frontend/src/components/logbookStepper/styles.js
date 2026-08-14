@@ -190,6 +190,14 @@ export function buildStepperStyles() {
     // the action he is one signature away from.
     primaryBtnDisabled: { opacity: opacity.o50 },
 
+    // The required-field marking, matching preshift_signin's ynItemRequired /
+    // requiredText so one app does not mark a missing answer two ways.
+    inputRequired: { borderColor: outdoor.danger, borderWidth: 2 },
+    requiredText: {
+      fontSize: typography.sizes.fine, color: outdoor.danger,
+      fontWeight: '600', marginTop: spacing.xs,
+    },
+
     submitHint: {
       fontSize: typography.sizes.fine, color: outdoor.attention,
       textAlign: 'center', paddingBottom: spacing.sm,

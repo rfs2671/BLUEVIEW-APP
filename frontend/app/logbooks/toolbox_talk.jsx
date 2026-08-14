@@ -31,6 +31,7 @@ import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStep
 import TimeField from '../../src/components/logbookStepper/TimeField';
 import {
   TOPICS, TOPIC_GROUPS, EMPTY_ATTENDEE, formatClock, buildAttendees,
+  ATTENDEE_SOURCES, missingStepOneFields, weeklyGapWorkers, weeklyGapAttendee,
   reconcileAttendees, topicCount, namedAttendees,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/toolboxTalkModel';
@@ -102,6 +103,9 @@ export default function ToolboxTalkLog() {
   const [performedBy, setPerformedBy] = useState('');
   const [checkedTopics, setCheckedTopics] = useState({});
   const [attendees, setAttendees] = useState([]);
+  // Men who worked THIS WEEK and have not had a talk. Ruling C: today's
+  // check-ins stay the default roster; these are offered beneath it.
+  const [weeklyMissing, setWeeklyMissing] = useState([]);
 
   const _key = useMemo(
     () => draftKey({ projectId, logType: LOG_TYPE, date }),
@@ -182,23 +186,50 @@ export default function ToolboxTalkLog() {
         // persisted unchecked — six men on a sheet on a day five checked in,
         // the sixth having been refused at the gate. Offline the fetch fails,
         // `fresh` is null, and reconcileAttendees keeps everything.
-        if (Array.isArray(draft.data.attendees) && draft.data.attendees.length > 0) {
-          const fresh = await logbooksAPI
-            .getCheckinsForDate(projectId, date).catch(() => null);
-          setAttendees(reconcileAttendees(draft.data.attendees, fresh));
-        }
+        // AN EMPTY STORED ROSTER MUST STILL REBUILD.
+        //
+        // The `length > 0` guard came in with #130 and was the bug: it only
+        // reconciled when there was something stored to reconcile against, and
+        // an empty roster is precisely the case that needs building. The
+        // autosave writes `attendees: []` 800ms after load, so merely OPENING
+        // this form before anyone had tapped in wrote a permanent empty roster
+        // for that project and date — men arrived, the CP reopened, and the
+        // list could never rebuild because the branch that would rebuild it
+        // never ran. Production: 13 checked in, step 3 listed nobody, and four
+        // men were added by hand to work around it.
+        //
+        // The fetch is unconditional now; what differs is what to do with it.
+        const [fresh, notif] = await Promise.all([
+          logbooksAPI.getCheckinsForDate(projectId, date).catch(() => null),
+          logbooksAPI.getNotifications(projectId).catch(() => null),
+        ]);
+        setWeeklyMissing(notif?.missing_toolbox_talk || []);
+        const storedRoster = Array.isArray(draft.data.attendees)
+          ? draft.data.attendees : [];
+        setAttendees(
+          storedRoster.length > 0
+            // Something stored: RECONCILE, so a man refused at the gate does
+            // not stay on the sheet and a man who arrived later is added.
+            ? reconcileAttendees(storedRoster, fresh)
+            // Nothing stored: BUILD. Offline (`fresh` null) there is nothing
+            // to build from and an empty list is the honest answer — it is
+            // also what was already on screen.
+            : buildAttendees(Array.isArray(fresh) ? fresh : []),
+        );
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
         setLoading(false);
         return;
       }
 
-      const [projectData, checkins, existingLogs] = await Promise.all([
+      const [projectData, checkins, existingLogs, notif] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
         logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []),
+        logbooksAPI.getNotifications(projectId).catch(() => null),
       ]);
       const checkinList = Array.isArray(checkins) ? checkins : [];
+      setWeeklyMissing(notif?.missing_toolbox_talk || []);
 
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
       // locked original that shares (project, type, date).
@@ -226,6 +257,26 @@ export default function ToolboxTalkLog() {
         if (projectData?.company) setCompanyName(projectData.company);
         else if (user?.company_name) setCompanyName(user.company_name);
         else if (user?.name) setCompanyName(user.name.split(' ')[0]);
+      }
+
+      // LOCATION AND PERFORMED BY AUTOFILL — device round 4, finding 7. Both
+      // are known and nobody should be typing either: the location is the
+      // project the CP is standing on, and the man performing the talk is the
+      // man holding the phone. Same fallback chain shape the company already
+      // used, and the same rule — a value already on the record WINS, so this
+      // can never overwrite what a CP typed or what was filed.
+      if (!existing?.data?.location) {
+        const _loc = projectData?.address || projectData?.location || projectData?.name;
+        if (_loc) setLocation(_loc);
+      }
+      if (!existing?.data?.performed_by) {
+        // `user`, not cpName: cpName arrives asynchronously from useCpProfile
+        // and reading it here would either capture '' in a stale closure or
+        // force fetchData to re-run when the profile lands, re-fetching the
+        // whole screen. The logged-in user is the same man and is already a
+        // dependency.
+        const _by = user?.full_name || user?.name;
+        if (_by) setPerformedBy(_by);
       }
     } catch (e) {
       console.error(e);
@@ -367,33 +418,62 @@ export default function ToolboxTalkLog() {
   ), [s, step, t]);
 
   const incomplete = computeIncomplete({
-    location, performedBy, checkedTopics, attendees, cpSignature,
+    location, companyName, typeOfWork, meetingTime, performedBy,
+    checkedTopics, attendees, cpSignature,
   }).filter((n) => n !== step);
+  // Which of step 1's five are still empty. Drives both the per-control marking
+  // and the Next gate, so the button and the fields can never disagree.
+  const missingStep1 = missingStepOneFields({
+    location, companyName, typeOfWork, meetingTime, performedBy,
+  });
   const nTopics = topicCount(checkedTopics);
   const named = namedAttendees(attendees);
+  // RULING C. Today's check-ins are the default roster; these are the men who
+  // worked this WEEK without a talk and are not already on the sheet. A toolbox
+  // talk is a weekly obligation built from a daily roster, so without this the
+  // CP was never offered the men who worked Monday-Wednesday and not today —
+  // production had 26 on the week against 13 on the day.
+  const weeklyGap = useMemo(
+    () => weeklyGapWorkers(weeklyMissing, attendees),
+    [weeklyMissing, attendees],
+  );
+
+  // Adding him is the CP ASSERTING he attended — `added_from` records that, and
+  // `signed` starts false so adding is still not the same as marking present.
+  const addFromWeeklyGap = (w) => setAttendees((prev) => [...prev, weeklyGapAttendee(w)]);
+  const addAllFromWeeklyGap = () => setAttendees(
+    (prev) => [...prev, ...weeklyGap.map(weeklyGapAttendee)],
+  );
+
   const plural = (n, base) => t(`${base}_${n === 1 ? 'one' : 'other'}`).replace('{n}', String(n));
 
-  const textRow = (labelKey, value, onChangeText, phKey = 'phField') => (
-    <View style={s.fieldBlock}>
-      <Text style={s.reviewLabel}>{t(labelKey)}</Text>
-      <TextInput
-        style={s.input}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={t(phKey)}
-        placeholderTextColor={outdoor.textDim}
-      />
-    </View>
-  );
+  // `field` names the STEP 1 key this row edits; passing it turns on the
+  // required marking. A row with no field name is not a gated control.
+  const textRow = (labelKey, value, onChangeText, phKey = 'phField', field = null) => {
+    const missing = !!field && missingStep1.includes(field);
+    return (
+      <View style={s.fieldBlock}>
+        <Text style={s.reviewLabel}>{t(labelKey)}</Text>
+        <TextInput
+          style={[s.input, missing && s.inputRequired]}
+          value={value}
+          onChangeText={onChangeText}
+          placeholder={t(phKey)}
+          placeholderTextColor={outdoor.textDim}
+        />
+        {missing && <Text style={s.requiredText}>{t('requiredField')}</Text>}
+      </View>
+    );
+  };
 
   // ── STEP 1 — the talk ─────────────────────────────────────────────────
   const renderStep1 = () => (
     <View>
       <StepHeader title={t('step1Title')} />
       <Card s={s}>
-        {textRow('fLocation', location, setLocation)}
-        {textRow('fCompany', companyName, setCompanyName)}
-        {textRow('fTypeOfWork', typeOfWork, setTypeOfWork)}
+        {textRow('fLocation', location, setLocation, 'phField', 'location')}
+        {textRow('fCompany', companyName, setCompanyName, 'phField', 'companyName')}
+        {textRow('fTypeOfWork', typeOfWork, setTypeOfWork, 'phField', 'typeOfWork')}
         <TimeField
           s={s}
           label={t('fMeetingTime')}
@@ -402,8 +482,10 @@ export default function ToolboxTalkLog() {
           clearLabel={t('dateClear')}
           doneLabel={t('dateDone')}
           onChange={setMeetingTime}
+          required={missingStep1.includes('meetingTime')}
+          requiredLabel={t('requiredField')}
         />
-        {textRow('fPerformedBy', performedBy, setPerformedBy)}
+        {textRow('fPerformedBy', performedBy, setPerformedBy, 'phField', 'performedBy')}
       </Card>
     </View>
   );
@@ -494,6 +576,13 @@ export default function ToolboxTalkLog() {
           {a.gate_confirmed && (
             <Text style={s.noteText}>{t('gateConfirmed')}</Text>
           )}
+          {/* WHOSE CLAIM THIS ROW IS. The gate saying a man was on site and the
+              CP saying a man attended are different assertions, and a signed
+              sheet that shows them identically is the stronger one borrowing
+              the weaker one's authority. */}
+          {a.added_from === ATTENDEE_SOURCES.WEEKLY_GAP && (
+            <Text style={s.noteText}>{t('addedFromWeek')}</Text>
+          )}
 
           {/* The CP's presence tick. NOT a signature — a worker is not required
               to sign a toolbox talk, and the copy must not imply he did. */}
@@ -510,6 +599,45 @@ export default function ToolboxTalkLog() {
           </Pressable>
         </Card>
       ))}
+
+      {/* THE WEEKLY GAP. Named, not silently absent: the CP home screen counts
+          these men against him and until now the form gave him no way to put
+          any of them on a sheet. Each row is one tap; a man added this way is
+          marked in the payload as the CP's assertion, never the gate's. */}
+      {weeklyGap.length > 0 && (
+        <Card s={s}>
+          <Text style={s.question}>
+            {plural(weeklyGap.length, 'weeklyGapCount')}
+          </Text>
+          <Text style={s.noteText}>{t('weeklyGapHint')}</Text>
+          {weeklyGap.map((w, i) => (
+            <Pressable
+              key={`${w.worker_id || w.worker_name}-${i}`}
+              style={s.secondaryBtn}
+              accessibilityRole="button"
+              accessibilityLabel={t('weeklyGapAdd').replace('{name}', w.worker_name || '')}
+              onPress={() => addFromWeeklyGap(w)}
+            >
+              <Plus size={20} strokeWidth={2.5} color={outdoor.text} />
+              <Text style={s.secondaryBtnText}>
+                {w.company ? `${w.worker_name} — ${w.company}` : w.worker_name}
+              </Text>
+            </Pressable>
+          ))}
+          {weeklyGap.length > 1 && (
+            <Pressable
+              style={s.secondaryBtn}
+              accessibilityRole="button"
+              onPress={addAllFromWeeklyGap}
+            >
+              <Plus size={20} strokeWidth={2.5} color={outdoor.text} />
+              <Text style={s.secondaryBtnText}>
+                {t('weeklyGapAddAll').replace('{n}', String(weeklyGap.length))}
+              </Text>
+            </Pressable>
+          )}
+        </Card>
+      )}
 
       <Text style={s.noteText}>{t('gateNote')}</Text>
       <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={addAttendee}>
@@ -577,6 +705,11 @@ export default function ToolboxTalkLog() {
       a11yProgressLabel={t('stepOf')
         .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
       nextLabel={t('next')}
+      /* STEP 1 IS THE ONE GATED STEP, by ruling. All five fields identify the
+         talk on a filed record; two of them autofill. Steps 2-4 page freely. */
+      nextDisabled={step === 1 && missingStep1.length > 0}
+      nextHint={step === 1 && missingStep1.length > 0
+        ? t('step1Required').replace('{n}', String(missingStep1.length)) : ''}
       submitLabel={t('submitAndSign')}
       submitting={signing}
       /* toolbox_talk is IMMEDIATE — the server locks on `submitted` alone — so

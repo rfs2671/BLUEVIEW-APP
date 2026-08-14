@@ -66,6 +66,10 @@ export function timeOptions(step = MINUTE_STEP) {
 
 export default function TimeField({
   s, value, onChange, label, placeholder, clearLabel, doneLabel,
+  // Marks the control itself when a gated step is missing this value — the
+  // same red outline + "Required field" the text rows use, so one screen does
+  // not mark two ways.
+  required = false, requiredLabel = '',
 }) {
   const [open, setOpen] = useState(false);
   const options = useMemo(() => timeOptions(), []);
@@ -76,7 +80,7 @@ export default function TimeField({
     <View style={s.fieldBlock}>
       <Text style={s.reviewLabel}>{label}</Text>
       <Pressable
-        style={s.input}
+        style={[s.input, required && s.inputRequired]}
         accessibilityRole="button"
         accessibilityLabel={`${label}. ${shown || placeholder}`}
         onPress={() => setOpen(true)}
@@ -85,6 +89,9 @@ export default function TimeField({
           {shown || placeholder}
         </Text>
       </Pressable>
+      {required && !!requiredLabel && (
+        <Text style={s.requiredText}>{requiredLabel}</Text>
+      )}
 
       <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
         <View style={s.modalOverlay}>

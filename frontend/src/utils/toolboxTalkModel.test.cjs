@@ -135,6 +135,129 @@ ok(draftBlock.includes('getCheckinsForDate(projectId, date)'),
 ok(!SCREEN.includes('setAttendees(d.attendees);'),
   'the stored payload is never trusted unchecked');
 
+// ── THE CASE THAT WAS NEVER TESTED ──────────────────────────────────────────
+//
+// DEVICE ROUND 4, findings 6/17/3, all one mechanism. The draft path only
+// re-checked when the stored roster was NON-EMPTY:
+//
+//     if (draft.data.attendees.length > 0) { ...fetch and reconcile... }
+//     // no else — and the function returns here
+//
+// so an EMPTY stored roster returned without fetching anything at all. And an
+// empty stored roster is trivial to create: draftBody always writes
+// `attendees: []` and the autosave fires 800ms after load, so merely OPENING
+// this form before anyone tapped in wrote a permanent empty roster for that
+// project and date. Production: 13 men checked in, step 3 listed nobody, four
+// were added by hand — which is why their In and Title columns printed blank.
+//
+// The `length > 0` guard came in with #130. It was mine, and this is the case
+// it never considered: nothing stored is exactly when the roster must BUILD.
+ok(draftBlock.includes('buildAttendees('),
+  'the DRAFT path can BUILD, not only reconcile — an empty stored roster rebuilds');
+ok(draftBlock.includes('storedRoster.length > 0')
+  && draftBlock.indexOf('getCheckinsForDate') < draftBlock.indexOf('storedRoster.length > 0'),
+  'and it fetches BEFORE deciding which of the two to do');
+// The fetch must not be inside the non-empty branch again.
+ok(!/attendees\.length > 0\) \{[\s\S]{0,200}getCheckinsForDate/.test(draftBlock),
+  'the fetch is no longer conditional on there being something stored');
+
+// Executed, not grepped: build-from-empty is the behaviour, not the wiring.
+ok(M.buildAttendees(FRESH).length === FRESH.length && M.buildAttendees(FRESH).length > 0,
+  'buildAttendees turns the day check-ins into a roster');
+ok(M.buildAttendees([]).length === 0 && M.buildAttendees(null).length === 0,
+  'and an absent check-in list builds nothing rather than throwing');
+// OFFLINE STILL KEEPS EVERYONE. The rebuild must not become a new way to lose
+// men: `fresh` null means the fetch failed, and the screen passes [] to
+// buildAttendees only when there was nothing stored to lose in the first place.
+ok(draftBlock.includes('Array.isArray(fresh) ? fresh : []'),
+  'offline builds an empty roster only when the stored one was already empty');
+ok(M.reconcileAttendees([{ name: 'Kept', worker_id: 'k1' }], null).length === 1,
+  'a stored roster is still never dropped when the fetch fails');
+
+// ── 3b. THE WEEKLY GAP — ruling C ───────────────────────────────────────────
+console.log('\n-- the weekly gap --');
+
+// A toolbox talk is a WEEKLY obligation and the roster is built from TODAY's
+// check-ins, so the men who worked Monday-Wednesday and not today were counted
+// against the CP on the home screen and never offered to him on the form.
+// Production: 26 worked the week, 13 were on site the day.
+const MISSING = [
+  { worker_id: 'm1', worker_name: 'Andre Duval', company: 'AAZ' },
+  { worker_id: 'm2', worker_name: 'Luis Alvarez', company: 'Vanguard' },
+];
+ok(M.weeklyGapWorkers(MISSING, []).length === 2,
+  'with nobody on the sheet, everyone in the gap is offered');
+ok(M.weeklyGapWorkers(MISSING, [{ worker_id: 'm1', name: 'Andre Duval' }]).length === 1,
+  'a man already on the roster is NOT offered again');
+ok(M.weeklyGapWorkers(MISSING, [{ worker_id: null, name: '  andre   DUVAL ' }]).length === 1,
+  'matched by normalised NAME too — the two lists come from different queries');
+ok(M.weeklyGapWorkers([...MISSING, MISSING[0]], []).length === 2,
+  'and the gap list itself is deduped');
+ok(M.weeklyGapWorkers(null, null).length === 0, 'null in, empty out');
+ok(M.weeklyGapWorkers([{ worker_id: null, worker_name: '' }], []).length === 0,
+  'a row with neither an id nor a name is not a man');
+
+// THE PAYLOAD MUST TELL THE TWO CLAIMS APART. The gate saying a man was on site
+// and the CP saying a man attended are different assertions, and a signed sheet
+// that renders them identically is the stronger one borrowing the weaker one's
+// authority.
+const gapRow = M.weeklyGapAttendee(MISSING[0]);
+ok(gapRow.added_from === M.ATTENDEE_SOURCES.WEEKLY_GAP,
+  'a weekly-gap row is marked as the CP assertion it is');
+ok(M.buildAttendees(FRESH)[0].added_from === M.ATTENDEE_SOURCES.GATE,
+  'a row built from today check-ins is marked as the gate');
+ok(M.EMPTY_ATTENDEE().added_from === M.ATTENDEE_SOURCES.MANUAL,
+  'and a hand-typed row is marked as neither');
+ok(gapRow.time === '' && gapRow.gate_confirmed === false,
+  'a weekly-gap row claims NO check-in time and no gate confirmation — it has none');
+ok(gapRow.signed === false,
+  'and starts UNTICKED: adding a man to the list is not marking him present');
+ok(gapRow.gate_snapshot === undefined,
+  'no gate snapshot either — the gate never supplied this row');
+ok(M.ATTENDEE_KEYS.includes('added_from'),
+  'added_from is part of the asserted payload, so it cannot be dropped silently');
+
+// ── 3c. STEP 1 IS THE ONE GATED STEP ────────────────────────────────────────
+console.log('\n-- step 1 --');
+const FULL = {
+  location: 'Gate', companyName: 'AAZ', typeOfWork: 'Demo',
+  meetingTime: '07:30 AM', performedBy: 'CP',
+};
+ok(M.missingStepOneFields(FULL).length === 0, 'a complete step 1 is complete');
+ok(M.STEP_ONE_FIELDS.length === 5, 'all five fields are gated');
+for (const k of M.STEP_ONE_FIELDS) {
+  ok(M.missingStepOneFields({ ...FULL, [k]: '' })[0] === k,
+    `${k} empty is reported BY NAME, so the control can mark itself`);
+}
+ok(M.missingStepOneFields({ ...FULL, location: '   ' }).includes('location'),
+  'whitespace is not a value');
+ok(M.missingStepOneFields({}).length === 5 && M.missingStepOneFields(null).length === 5,
+  'an absent form is entirely incomplete rather than throwing');
+
+// The screen must mark AND gate from the same list, or the button and the
+// fields disagree about what is missing.
+ok(SCREEN.includes('const missingStep1 = missingStepOneFields({'),
+  'the screen derives the missing list once');
+ok(SCREEN.includes('nextDisabled={step === 1 && missingStep1.length > 0}'),
+  'Next is gated on step 1 from that list');
+ok(SCREEN.includes('missing && s.inputRequired') || SCREEN.includes('missing && <Text style={s.requiredText}>'),
+  'and each empty control marks itself rather than one blanket error');
+// GATED ONLY ON STEP 1. Steps 2-4 must page freely — everywhere else in this
+// app an incomplete step marks and never gates.
+ok(!/nextDisabled=\{(?!step === 1)/.test(SCREEN),
+  'no other step is gated');
+
+// ── 3d. AUTOFILL ────────────────────────────────────────────────────────────
+console.log('\n-- autofill --');
+ok(/if \(!existing\?\.data\?\.location\) \{/.test(SCREEN),
+  'location autofills only when the record does not already carry one');
+ok(/if \(!existing\?\.data\?\.performed_by\) \{/.test(SCREEN),
+  'and so does performed_by — a filed value always wins');
+ok(/projectData\?\.address \|\| projectData\?\.location \|\| projectData\?\.name/.test(SCREEN),
+  'location comes from the project the CP is standing on');
+ok(/user\?\.full_name \|\| user\?\.name/.test(SCREEN),
+  'performed_by comes from the man holding the phone');
+
 // ── 4. THE PORT CARRIED THE REST ────────────────────────────────────────────
 console.log('\n-- what the port had to carry --');
 
@@ -166,18 +289,34 @@ ok(!/¿|¡|á|é|í|ó|ú|ñ/.test(SCREEN), 'no Spanish — a logbook is an Engl
 const en = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
 ok(!en.includes('Hard Hats') && !en.includes('Ladder Safety'),
   'topic labels live in the model, not i18n — the PDF prints the same strings');
-ok(M.ALL_TOPIC_KEYS.length === 22,
+// 21, not 22: 'covid19' was removed by ruling (device round 4, finding 9).
+ok(M.ALL_TOPIC_KEYS.length === 21,
   `all topic keys are enumerated (got ${M.ALL_TOPIC_KEYS.length})`);
+ok(!M.ALL_TOPIC_KEYS.includes('covid19'), 'covid19 is gone from the picker');
+// HISTORICAL RECORDS ARE NOT REWRITTEN. The PDF prints whichever checked_topics
+// keys are true rather than looking them up here, so a filed talk that carries
+// covid19 still renders it. Removing a chip must not edit the past.
+ok(SERVER.includes('for k, v in topics.items() if v'),
+  'the renderer prints whichever stored topics are true, so a filed talk keeps covid19');
 
 // ── 5. The step pips ────────────────────────────────────────────────────────
 console.log('\n-- the pips mark, they never gate --');
 ok(JSON.stringify(M.incompleteSteps({
   location: '', performedBy: '', checkedTopics: {}, attendees: [], cpSignature: '',
 })) === '[1,2,3,4]', 'an untouched talk marks all four steps');
+// STEP 1 NOW NEEDS ALL FIVE — it is the one gated step, so the pip and the
+// gate must agree about what "complete" means or the CP is marked incomplete
+// on a step the button let him leave.
 ok(JSON.stringify(M.incompleteSteps({
-  location: 'Gate', performedBy: 'CP', checkedTopics: { hard_hats: true },
+  location: 'Gate', companyName: 'AAZ', typeOfWork: 'Demo',
+  meetingTime: '07:30 AM', performedBy: 'CP', checkedTopics: { hard_hats: true },
   attendees: [{ name: 'W' }], cpSignature: 'sig',
 })) === '[]', 'a complete, signed talk marks none');
+ok(M.incompleteSteps({
+  location: 'Gate', companyName: '', typeOfWork: 'Demo',
+  meetingTime: '07:30 AM', performedBy: 'CP', checkedTopics: { hard_hats: true },
+  attendees: [{ name: 'W' }], cpSignature: 'sig',
+}).includes(1), 'one empty step-1 field marks step 1');
 ok(M.topicCount({ hard_hats: true, gloves: false }) === 1, 'an unticked topic is not counted');
 ok(M.namedAttendees([{ name: '' }, { name: 'W' }]).length === 1,
   'a nameless row is not an attendee — the same rule the renderer drops it by');
