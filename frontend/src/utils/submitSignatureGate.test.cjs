@@ -343,6 +343,66 @@ const refusal = (code, status = 400) => ({
       'drain: a 5xx records NOTHING — the server FAILED, it did not judge');
   }
 
+  // ── THE DRAIN REFUSES INCOMPLETE CONTENT TOO (option B) ─────────────────
+  //
+  // #127's client gate cannot reach the drain: a pre-shift draft written on an
+  // older build replays with injury/PPE null and the server accepts it. These
+  // run the REAL syncPendingDrafts against a draft carrying that shape.
+  {
+    const KEY_PS = 'logbook_draft:proj1:preshift_signin:2026-08-13';
+    const mkPs = (workers, logType = 'preshift_signin') => {
+      const store = {};
+      const calls = { created: [], cleared: [] };
+      const k = 'logbook_draft:proj1:' + logType + ':2026-08-13';
+      return { calls, env: {
+        console: { log: () => {}, warn: () => {} },
+        NetInfo: { addEventListener: () => () => {} },
+        AsyncStorage: {
+          getItem: async (kk) => (kk in store ? store[kk] : null),
+          setItem: async (kk, v) => { store[kk] = v; },
+        },
+        getPendingKeys: async () => [k],
+        readDraft: async () => ({
+          data: { company: 'AAZ', workers },
+          cp_signature: 'sig', cp_name: 'CP', status: 'submitted',
+          backend_id: null, finalized: false,
+        }),
+        setDraftBackendId: async () => {},
+        clearPending: async (kk) => { calls.cleared.push(kk); },
+        logbooksAPI: {
+          update: async (id) => ({ id }),
+          create: async (b) => { calls.created.push(b); return { id: 'ps1' }; },
+          finalize: async (id) => ({ id }),
+        },
+      } };
+    };
+
+    let h = mkPs([{ name: 'Wilmer Carrillo', had_injury: null, inspected_ppe: null }]);
+    let mod = loadDraftSync(h.env);
+    await mod.syncPendingDrafts();
+    ok(h.calls.created.length === 0,
+      'drain: a signed pre-shift draft with null injury/PPE is NOT pushed');
+    ok(h.calls.cleared.length === 0,
+      'drain: the key stays PENDING, so answering it still gets the log filed');
+    const recPs = await mod.readFinalizeError(KEY_PS);
+    ok(recPs && recPs.code === 'SUBMIT_INCOMPLETE_WORKER_ANSWERS',
+      'drain: recorded, so the durable banner has something to read');
+
+    h = mkPs([{ name: 'Wilmer Carrillo', had_injury: 'no', inspected_ppe: 'yes' }]);
+    await loadDraftSync(h.env).syncPendingDrafts();
+    ok(h.calls.created.length === 1, 'drain: an ANSWERED pre-shift draft is still pushed');
+
+    h = mkPs([{ name: '', had_injury: null, inspected_ppe: null },
+      { name: 'Wilmer Carrillo', had_injury: 'no', inspected_ppe: 'no' }]);
+    await loadDraftSync(h.env).syncPendingDrafts();
+    ok(h.calls.created.length === 1, 'drain: a nameless spare row never blocks the push');
+
+    h = mkPs([{ name: 'X', had_injury: null, inspected_ppe: null }], 'toolbox_talk');
+    await loadDraftSync(h.env).syncPendingDrafts();
+    ok(h.calls.created.length === 1,
+      'drain: the gate is scoped to preshift_signin and touches no other type');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
   console.log('ALL PASSED');

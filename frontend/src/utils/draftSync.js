@@ -216,6 +216,38 @@ async function pushOne(key) {
     return { key, ok: false, reason: 'unsigned-submit', code: 'SUBMIT_MISSING_CP_SIGNATURE', logId: draft.backend_id || null };
   }
 
+  // THE SAME REPLAY, FOR INCOMPLETE CONTENT — option B, as ruled.
+  //
+  // #127 made injury and PPE required on the pre-shift sheet, client-side. A
+  // client gate cannot reach THIS path by construction: a draft written on an
+  // older build, or before the OTA was applied, drains straight through with
+  // both answers null and the server accepts it (preshift_signin has no server
+  // gate, deliberately — a refusal must never meet a CP mid-shift).
+  //
+  // Refusing HERE rather than server-side is what keeps that promise: the
+  // drain runs in the background, after he has left the screen, so it cannot
+  // stop a man at the gate. And it fails into a state that already exists —
+  // durable banner, editable draft, indefinite retry — so it invents no new
+  // failure mode. `clearPending` is not called, exactly as above.
+  //
+  // ONLY ROWS WITH A NAME, matching the client gate: a blank spare row is not
+  // a worker. An old payload with no `workers` array at all is not this gate's
+  // business and passes through.
+  if (body.status === 'submitted' && parsed && parsed.logType === 'preshift_signin') {
+    const _rows = (body.data && Array.isArray(body.data.workers)) ? body.data.workers : [];
+    const _unanswered = _rows.filter((w) => w && String(w.name || '').trim()
+      && (w.had_injury === null || w.had_injury === undefined
+        || w.inspected_ppe === null || w.inspected_ppe === undefined)).length;
+    if (_unanswered > 0) {
+      const target = draft.backend_id || key;
+      await recordFinalizeError(target, 'SUBMIT_INCOMPLETE_WORKER_ANSWERS', key);
+      return {
+        key, ok: false, reason: 'incomplete-worker-answers',
+        code: 'SUBMIT_INCOMPLETE_WORKER_ANSWERS', logId: draft.backend_id || null,
+      };
+    }
+  }
+
   // Re-apply the freeze server-side once the content has landed, so a log signed
   // offline is locked on the server too. This covers the END_OF_DAY logs, whose
   // freeze is an explicit /finalize (an immediate type auto-locks on
