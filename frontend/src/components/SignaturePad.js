@@ -5,6 +5,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { useT, useLocale } from '../i18n';
+import { isAffirmedSignature } from '../utils/signatureAffirmed';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -50,9 +51,12 @@ function PathRenderer({ paths, strokeColor = '#000000', strokeWidth = 2 }) {
 
 // A signature counts as affirmed for THIS document only when it carries a
 // per-document affirmation stamp. An inherited profile credential does NOT.
-function sigIsAffirmed(sig) {
-  return !!(sig && typeof sig === 'object' && sig.affirmed === true);
-}
+//
+// MOVED to src/utils/signatureAffirmed.js and aliased here. It was private to
+// this component, so the nine submit gates could not ask the question and asked
+// `!cpSignature` instead — which `{}` satisfies. Same rule, one address, now
+// reachable by the gates that need it.
+const sigIsAffirmed = isAffirmedSignature;
 
 const SignaturePad = ({
   onSignatureCapture,

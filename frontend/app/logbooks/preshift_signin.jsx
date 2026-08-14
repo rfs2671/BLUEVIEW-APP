@@ -26,6 +26,7 @@ import { colors, spacing, borderRadius, typography } from '../../src/styles/them
 import { useTheme } from '../../src/context/ThemeContext';
 import { useT } from '../../src/i18n';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -416,7 +417,14 @@ export default function PreShiftSignIn() {
    * the gate with nothing on screen to act on. The button names the fix and
    * the offending rows outline in red.
    */
-  const answeredBoth = (w) => w.had_injury !== null && w.inspected_ppe !== null;
+  // `!= null` CATCHES BOTH null AND undefined, and the difference is not
+  // academic: a row that never carried the key at all — an old payload, a
+  // hand-built row from another build — reads `undefined`, and `!== null` let
+  // it through as answered. The reconcile returns kept rows VERBATIM by
+  // ruling, so a row missing the key keeps missing it forever. The drain has
+  // always checked both (draftSync.js); this closes the client side to match,
+  // so the two gates cannot disagree about the same draft.
+  const answeredBoth = (w) => w.had_injury != null && w.inspected_ppe != null;
   const rowNeedsAnswers = (w) => !!w.name.trim() && !answeredBoth(w);
   const unansweredCount = workers.filter(rowNeedsAnswers).length;
 
@@ -837,27 +845,27 @@ export default function PreShiftSignIn() {
                       must not be scolded. */}
                   <View style={[
                     styles.ynItem,
-                    !!worker.name.trim() && worker.had_injury === null && styles.ynItemRequired,
+                    !!worker.name.trim() && worker.had_injury == null && styles.ynItemRequired,
                   ]}>
                     <Text style={styles.ynLabel}>Injury / Incident last time?</Text>
                     <YesNoToggle
                       value={worker.had_injury}
                       onChange={(v) => updateWorker(index, 'had_injury', v)}
                     />
-                    {!!worker.name.trim() && worker.had_injury === null && (
+                    {!!worker.name.trim() && worker.had_injury == null && (
                       <Text style={styles.requiredText}>Required field</Text>
                     )}
                   </View>
                   <View style={[
                     styles.ynItem,
-                    !!worker.name.trim() && worker.inspected_ppe === null && styles.ynItemRequired,
+                    !!worker.name.trim() && worker.inspected_ppe == null && styles.ynItemRequired,
                   ]}>
                     <Text style={styles.ynLabel}>Inspected PPE today?</Text>
                     <YesNoToggle
                       value={worker.inspected_ppe}
                       onChange={(v) => updateWorker(index, 'inspected_ppe', v)}
                     />
-                    {!!worker.name.trim() && worker.inspected_ppe === null && (
+                    {!!worker.name.trim() && worker.inspected_ppe == null && (
                       <Text style={styles.requiredText}>Required field</Text>
                     )}
                   </View>
@@ -912,7 +920,7 @@ export default function PreShiftSignIn() {
               icon={<CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />}
               onPress={() => handleSave('submitted')}
               loading={saving}
-              disabled={!cpSignature || unansweredCount > 0}
+              disabled={!isAffirmedSignature(cpSignature) || unansweredCount > 0}
               style={styles.submitBtn}
             />
           </View>
@@ -934,9 +942,9 @@ export default function PreShiftSignIn() {
               the start of his shift. There is no separate profile screen for the
               signature (nothing under app/settings writes cp_signature), so the
               hint names the pad directly above. */}
-          {!cpSignature && (
+          {!!affirmationHintKey(cpSignature, profileLoaded) && (
             <Text style={styles.signHint}>
-              {tFinalize(profileLoaded ? 'submitNeedsSignature' : 'submitSignatureLoading')}
+              {tFinalize(affirmationHintKey(cpSignature, profileLoaded))}
             </Text>
           )}
           </>

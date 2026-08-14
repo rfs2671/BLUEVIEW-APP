@@ -9,6 +9,11 @@ on:
       - 'frontend/src/**'
       - 'frontend/App.js'
       - 'frontend/app.json'
+      # The config that injects the commit into the bundle. Without it here a
+      # change to the injection itself would not trigger a publish, so the fix
+      # would sit on main unshipped — the exact failure the build card exists
+      # to make visible.
+      - 'frontend/app.config.js'
       - 'frontend/package.json'
 
 jobs:
@@ -44,6 +49,10 @@ jobs:
         working-directory: ./frontend
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
+          # Read by frontend/app.config.js into extra.jsCommit, which is what
+          # the BUILD card in settings prints and compares against /api/version.
+          # This is the commit being published, not the one checked out later.
+          JS_COMMIT: ${{ github.sha }}
         run: |
           # Truncate to first line and sanitize for shell safety
           MSG=$(echo "$COMMIT_MSG" | head -1 | tr -d '"' | cut -c1-100)

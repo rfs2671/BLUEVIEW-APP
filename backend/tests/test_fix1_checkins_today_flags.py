@@ -251,6 +251,45 @@ class TestGatePassHasNoCheckinId(unittest.TestCase):
         self.assertEqual(r["worker_id"], "enr_1")
         self.assertNotEqual(r["checkin_id"], r["worker_id"])
 
+    def test_gate_row_carries_the_toolbox_keys_at_all(self):
+        """DEVICE ROUND 4, finding 3 (second half).
+
+        The two toolbox keys were ABSENT from this row — the legacy pass below
+        emits them, this one did not — so the client read `undefined` and the
+        toolbox roster's Confirmed column was unreachable for every gate-enrolled
+        worker rather than merely false. Emitting them makes the two passes the
+        same shape, which is what the roster builder assumes.
+        """
+        with patch.object(server, "ObjectId", lambda v: v):
+            r = _get(self._db()).json()[0]
+        self.assertIn("toolbox_talk_confirmed", r)
+        self.assertIn("toolbox_talk_confirmed_at", r)
+
+    def test_gate_row_toolbox_confirmation_is_false_and_says_why(self):
+        """AND IT CANNOT YET BE TRUE, which is the honest part.
+
+        The optional confirmation is offered on ONE path: checkin.html posts
+        `toolbox_talk_confirm` to /checkin/register-and-checkin, which writes it
+        onto a `checkins` row. card_audit.py — the card/enrollment path that
+        produces THIS row — contains no reference to a toolbox confirmation at
+        all: no control on the page, no field on the sign-in. So False here is a
+        report of a gap, not a value read from a row, and this test pins the gap
+        so closing it upstream is visible rather than silent.
+        """
+        with patch.object(server, "ObjectId", lambda v: v):
+            r = _get(self._db()).json()[0]
+        self.assertIs(r["toolbox_talk_confirmed"], False)
+        self.assertIsNone(r["toolbox_talk_confirmed_at"])
+
+        card_audit_src = (
+            Path(server.__file__).parent / "card_audit.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn(
+            "toolbox", card_audit_src.lower(),
+            "the enrollment path now mentions a toolbox confirmation — if it "
+            "captures one, this row must READ it instead of hardcoding False",
+        )
+
     def test_gate_row_reports_no_flag_state_rather_than_guessing(self):
         with patch.object(server, "ObjectId", lambda v: v):
             r = _get(self._db()).json()[0]

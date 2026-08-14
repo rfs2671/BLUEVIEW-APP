@@ -43,6 +43,8 @@ import { colors, spacing, borderRadius, typography } from '../../src/styles/them
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { easternToday } from '../../src/utils/dates';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
+import { useT } from '../../src/i18n';
 
 const LANGUAGE_LABELS = {
   en: 'English',
@@ -568,7 +570,7 @@ export default function SubcontractorOrientation() {
       date: todayISO(),
     };
     const key = draftKey({ projectId, logType: LOG_TYPE, date: ident.date, workerId: ident.workerId });
-    const status = newCpSignature ? 'submitted' : 'draft';
+    const status = isAffirmedSignature(newCpSignature) ? 'submitted' : 'draft';
     const data = {
       worker_id: ident.workerId,
       worker_name: newName.trim(),
@@ -1070,11 +1072,13 @@ export default function SubcontractorOrientation() {
 function OrientationSignaturePanel({ onSign }) {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave: innerAutoSave } = useCpProfile();
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave: innerAutoSave } = useCpProfile();
+  const tFinalize = useT('finalize');
+  const hintKey = affirmationHintKey(cpSignature, profileLoaded);
   const [saving, setSaving] = useState(false);
 
   const handleSign = async () => {
-    if (!cpSignature) return;
+    if (!isAffirmedSignature(cpSignature)) return;
     setSaving(true);
     try {
       await innerAutoSave(cpName, cpSignature);
@@ -1099,9 +1103,13 @@ function OrientationSignaturePanel({ onSign }) {
         icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
         onPress={handleSign}
         loading={saving}
-        disabled={!cpSignature}
+        disabled={!isAffirmedSignature(cpSignature)}
         style={s.signBtn}
       />
+      {/* This panel FREEZES the record — status is derived from the signature,
+          so there is no draft to come back to. A dead button here with no
+          reason is the worst version of the dead button. */}
+      {!!hintKey && <Text style={s.signHint}>{tFinalize(hintKey)}</Text>}
     </View>
   );
 }
@@ -1326,6 +1334,10 @@ function buildStyles(colors, isDark) {
     borderRadius: 2,
   },
   signPanel: { marginTop: spacing.md },
+  signHint: {
+    fontSize: typography.sizes.fine, color: semantic.attention,
+    textAlign: 'center', marginTop: spacing.sm,
+  },
   signBtn: {
     marginTop: spacing.md,
     backgroundColor: 'rgba(139,92,246,0.2)',

@@ -21,6 +21,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import { useT } from '../../src/i18n';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 
 const LOG_TYPE = 'hot_work';
 
@@ -480,7 +481,7 @@ export default function HotWorkPermitLog() {
               icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
               onPress={() => handleSave('submitted')}
               loading={saving}
-              disabled={!cpSignature}
+              disabled={!isAffirmedSignature(cpSignature)}
               style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
           </View>
@@ -489,9 +490,9 @@ export default function HotWorkPermitLog() {
               button alone is a dead end — the CP has no separate profile screen
               to set a signature on (nothing under app/settings writes
               cp_signature), so the hint names the pad directly above. */}
-          {!cpSignature && (
+          {!!affirmationHintKey(cpSignature, profileLoaded) && (
             <Text style={s.signHint}>
-              {tFinalize(profileLoaded ? 'submitNeedsSignature' : 'submitSignatureLoading')}
+              {tFinalize(affirmationHintKey(cpSignature, profileLoaded))}
             </Text>
           )}
           </>

@@ -190,6 +190,11 @@ export function buildStepperStyles() {
     // the action he is one signature away from.
     primaryBtnDisabled: { opacity: opacity.o50 },
 
+    submitHint: {
+      fontSize: typography.sizes.fine, color: outdoor.attention,
+      textAlign: 'center', paddingBottom: spacing.sm,
+    },
+
     autosaveNote: {
       fontSize: typography.sizes.fine, color: outdoor.textDim,
       textAlign: 'center', paddingVertical: spacing.sm,

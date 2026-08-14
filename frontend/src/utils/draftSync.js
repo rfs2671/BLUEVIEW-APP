@@ -32,6 +32,17 @@ import {
  * confirmed success.
  */
 
+/**
+ * Affirmed for THIS document. Duplicated from src/utils/signatureAffirmed.js
+ * ON PURPOSE: this module is loaded by its tests with `new Function` over the
+ * stripped source, so every import has to be hand-stubbed by each harness. One
+ * three-line predicate is cheaper than five stubs, and signatureAffirmed.test
+ * asserts the two definitions still agree.
+ */
+function isAffirmedSignature(sig) {
+  return !!(sig && typeof sig === 'object' && sig.affirmed === true);
+}
+
 const PREFIX = 'logbook_draft:';
 // Handled by dailyLogsAPI with a different payload shape — see note above.
 const SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log']);
@@ -210,7 +221,14 @@ async function pushOne(key) {
   // before the request means the CP gets the same durable banner whether or not
   // he ever had signal. The draft is untouched and still editable — signing the
   // log rewrites it and the next drain sends it.
-  if (body.status === 'submitted' && !body.cp_signature) {
+  //
+  // AFFIRMED, not merely present. `!body.cp_signature` is the same predicate
+  // the nine forms used to gate on, and production held `cp_signature: {}` —
+  // an empty object, truthy, which satisfied it. The drain must ask the
+  // question the PDF renderer asks, or a draft the CP can no longer submit
+  // still drains through behind him. Same rule as the injury/PPE drain gate
+  // below and for the same reason.
+  if (body.status === 'submitted' && !isAffirmedSignature(body.cp_signature)) {
     const target = draft.backend_id || key;
     await recordFinalizeError(target, 'SUBMIT_MISSING_CP_SIGNATURE', key);
     return { key, ok: false, reason: 'unsigned-submit', code: 'SUBMIT_MISSING_CP_SIGNATURE', logId: draft.backend_id || null };

@@ -36,6 +36,7 @@ import {
 } from '../../src/utils/toolboxTalkModel';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, outdoor, touchTarget } from '../../src/styles/theme';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 
 /**
  * TOOL BOX TALK — NYC DOB §3301.12.3 / OSHA 29 CFR 1926.21 — on the shared
@@ -82,7 +83,7 @@ export default function ToolboxTalkLog() {
   const toast = useToast();
   const t = useT('toolboxTalk');
   const tFinalize = useT('finalize');
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
 
   const s = useMemo(() => buildStyles(), []);
 
@@ -580,7 +581,9 @@ export default function ToolboxTalkLog() {
       submitting={signing}
       /* toolbox_talk is IMMEDIATE — the server locks on `submitted` alone — so
          an unsigned submit must be UNREACHABLE, not merely warned about. */
-      submitDisabled={!cpSignature}
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
       onSubmit={handleSubmitAndSign}
       logType={LOG_TYPE}
       logId={existingLogId}

@@ -54,6 +54,73 @@ ok(/typeof _rawCommit === 'string'/.test(code),
 ok(!/extra\?\.jsCommit \|\| null/.test(code),
   'the unguarded `|| null` that let an object through is gone');
 
+console.log('\n-- The slot is actually FILLED at publish time --');
+
+// DEVICE ROUND 4, finding 5. The card printed "Bundle commit not injected at
+// build time" on every bundle ever published, because nothing wrote the slot.
+// A card that exists to make a device test unambiguous could not answer the one
+// question it was built for — the round-4 report spent a finding saying so.
+//
+// EXECUTED against a stubbed environment, because the whole failure was a
+// config that was never wired: asserting the file's TEXT would have passed just
+// as happily on a file Expo never calls.
+const CONFIG = path.join(FRONTEND, 'app.config.js');
+ok(fs.existsSync(CONFIG), 'app.config.js exists — app.json alone cannot compute a value');
+const base = { ...appJson.expo };
+
+const withEnv = (env) => {
+  const keys = ['EAS_BUILD_GIT_COMMIT_HASH', 'JS_COMMIT', 'EXPO_PUBLIC_JS_COMMIT'];
+  const saved = {};
+  keys.forEach((k) => { saved[k] = process.env[k]; delete process.env[k]; });
+  Object.entries(env).forEach(([k, v]) => { process.env[k] = v; });
+  try {
+    delete require.cache[require.resolve(CONFIG)];
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    return require(CONFIG)({ config: base });
+  } finally {
+    keys.forEach((k) => {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    });
+  }
+};
+
+ok(withEnv({ JS_COMMIT: 'abc1234def5678' }).extra.jsCommit === 'abc1234def5678',
+  'JS_COMMIT (the OTA workflow path) reaches extra.jsCommit');
+ok(withEnv({ EAS_BUILD_GIT_COMMIT_HASH: 'eas9999' }).extra.jsCommit === 'eas9999',
+  "EAS Build's own variable reaches it too — a native binary is identifiable as well");
+ok(withEnv({ EAS_BUILD_GIT_COMMIT_HASH: 'fromEas', JS_COMMIT: 'fromCi' })
+  .extra.jsCommit === 'fromEas',
+  'EAS Build wins when both are set — it is the process actually producing the artifact');
+// The honest default. A missing value must stay a falsy STRING, never null:
+// `null` came back from the config pipeline as `{}`, which is truthy, and
+// crashed /settings with React error #31.
+const none = withEnv({});
+ok(none.extra.jsCommit === '', 'with NO environment value the slot stays an empty string');
+ok(typeof none.extra.jsCommit === 'string', 'and is still a string, never null or {}');
+// COMMENTS STRIPPED: app.config.js explains in prose why it does NOT shell out
+// to `git rev-parse`, and matching raw source made the file fail an assertion
+// about its own explanation.
+ok(!/rev-parse|execSync|child_process/.test(
+  fs.readFileSync(CONFIG, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
+  'it never reads the local git tree — a dirty checkout must not claim a clean commit');
+// Everything else must survive the spread, or injecting a commit silently drops
+// the EAS project id, the plugins, or the runtimeVersion policy.
+ok(withEnv({ JS_COMMIT: 'x' }).extra.eas.projectId === appJson.expo.extra.eas.projectId,
+  'the EAS project id survives the merge');
+ok(JSON.stringify(withEnv({ JS_COMMIT: 'x' }).runtimeVersion)
+   === JSON.stringify(appJson.expo.runtimeVersion),
+  'and so does the runtimeVersion policy — an OTA must not change channel over this');
+
+// The workflow has to SET it, and has to re-run when the injection changes.
+const ota = fs.readFileSync(
+  path.join(FRONTEND, '..', '.github', 'workflows', 'ota-update.yml'), 'utf8');
+ok(/JS_COMMIT: \$\{\{ github\.sha \}\}/.test(ota),
+  'the publish step exports the commit being published');
+ok(/- 'frontend\/app\.config\.js'/.test(ota),
+  'and a change to app.config.js triggers a publish — otherwise the fix sits on main unshipped');
+
 console.log('\n-- It never claims a match it cannot make --');
 
 ok(/Boolean\(jsCommit && backendCommit\)/.test(code),

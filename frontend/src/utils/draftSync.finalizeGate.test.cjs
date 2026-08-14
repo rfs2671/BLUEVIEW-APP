@@ -196,7 +196,11 @@ function makeEnv({ finalizeError, hasBackendId = true } = {}) {
       getPendingKeys: async () => [KEY],
       readDraft: async () => ({
         data: { note: 'below-grade pre-work' },
-        cp_signature: 'sig',
+        // AFFIRMED, not a bare string. The drain now asks the same question
+        // the PDF renderer asks, so a fixture that merely has *something* in
+        // cp_signature is refused before it reaches the transport this file is
+        // about. See signatureAffirmed.test.cjs.
+        cp_signature: { affirmed: true },
         cp_name: 'CP',
         status: 'submitted',
         backend_id: hasBackendId ? 'log123' : null,

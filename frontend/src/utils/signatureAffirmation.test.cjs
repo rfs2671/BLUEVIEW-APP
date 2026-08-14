@@ -39,7 +39,17 @@ function extractFn(file, fnName) {
 const SIG = path.join(__dirname, '..', 'components', 'SignaturePad.js');
 const HOOK = path.join(__dirname, '..', 'hooks', 'useCpProfile.js');
 
-const sigIsAffirmed = extractFn(SIG, 'sigIsAffirmed');
+// MOVED. The predicate was private to SignaturePad, which is exactly why the
+// nine submit gates could not use it and asked `!cpSignature` instead — a
+// question `{}` answers yes to. It now lives in src/utils/signatureAffirmed.js
+// and the pad aliases it. This file keeps asserting the RULE (and that
+// useCpProfile still strips the stamp, so it can never be inherited); the gate
+// side is signatureAffirmed.test.cjs.
+const AFFIRMED_MOD = path.join(__dirname, 'signatureAffirmed.js');
+const sigIsAffirmed = extractFn(AFFIRMED_MOD, 'isAffirmedSignature');
+// The pad must still USE it, or the VERIFIED stamp it renders and the rule
+// asserted here would drift apart.
+const PAD_SRC = fs.readFileSync(SIG, 'utf8');
 const stripAffirmation = extractFn(HOOK, 'stripAffirmation');
 
 let passed = 0, failed = 0;
@@ -47,6 +57,11 @@ function ok(cond, label) {
   if (cond) { passed += 1; console.log(`  PASS  ${label}`); }
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
+
+ok(/import \{ isAffirmedSignature \} from '\.\.\/utils\/signatureAffirmed'/.test(PAD_SRC),
+  'SignaturePad imports the shared predicate rather than owning a copy');
+ok(/const sigIsAffirmed = isAffirmedSignature;/.test(PAD_SRC),
+  'and its local name is an ALIAS, so every use in the pad is the shared rule');
 
 // ── sigIsAffirmed ──
 ok(sigIsAffirmed({ affirmed: true }) === true, 'affirmed:true -> affirmed');
