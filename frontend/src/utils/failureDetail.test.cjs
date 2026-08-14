@@ -86,6 +86,40 @@ ok(/detailError \|\| 'Could not load this worker/.test(SCREEN),
 ok(/NOT a statement that the worker has no SST card/.test(SCREEN),
   'and the offline branch keeps its load-bearing disclaimer');
 
+console.log('\n-- the three screens adopted it --');
+const APP = path.join(__dirname, '..', '..', 'app');
+const ADOPTERS = [
+  ['site/checkins.jsx', "today's check-ins"],
+  ['logbooks/review.jsx', 'the flagged check-ins'],
+  ['projects/index.jsx', 'your projects'],
+];
+for (const [rel, subject] of ADOPTERS) {
+  const src = fs.readFileSync(path.join(APP, ...rel.split('/')), 'utf8');
+  ok(src.includes("failureDetail } from '../../src/utils/offlineState'"),
+    rel + ': imports failureDetail');
+  ok(src.includes('failureDetail('), rel + ': calls it');
+  ok(src.includes(subject), rel + ': names WHAT failed');
+}
+
+// What each screen used to do instead.
+const checkinsSrc = fs.readFileSync(path.join(APP, 'site', 'checkins.jsx'), 'utf8');
+ok(!checkinsSrc.includes('toast.error(title, fetchFailureMessage('),
+  'checkins: no longer discards the error for a status-only sentence');
+
+const reviewSrc = fs.readFileSync(path.join(APP, 'logbooks', 'review.jsx'), 'utf8');
+ok(!reviewSrc.includes("r.error?.response?.data?.detail || t('errorLoad')"),
+  'review: no longer renders a RAW detail, which on this route can be a code dict');
+
+const projectsSrc = fs.readFileSync(path.join(APP, 'projects', 'index.jsx'), 'utf8');
+ok(!projectsSrc.includes('The server could not return your projects. Pull to refresh.'),
+  'projects: the fixed error sentence is gone');
+ok(projectsSrc.includes('No cached projects'),
+  'projects: the OFFLINE copy stays - it says what failureDetail cannot know');
+
+const utilSrc = fs.readFileSync(path.join(__dirname, 'offlineState.js'), 'utf8');
+ok(utilSrc.includes('SUPERSEDED BY failureDetail'),
+  'the status-only helper is marked superseded, not left as a trap');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

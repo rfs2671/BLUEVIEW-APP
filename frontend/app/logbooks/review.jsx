@@ -61,7 +61,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
 import OfflineNotice from '../../src/components/OfflineNotice';
-import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
+import { settleFetch, isOfflineError, failureDetail } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useT } from '../../src/i18n';
@@ -152,9 +152,13 @@ export default function CheckInReviewScreen() {
       setRoster([]);
       toast.error(
         t('loadError'),
+        // This ALREADY reached for the server's detail — but rendered it RAW,
+        // and a refusal on this route carries a machine-code DICT, so it could
+        // print {"code": "..."} at a CP. failureDetail surfaces a string detail
+        // and falls back to plain copy for a dict.
         r.status === 'offline'
           ? t('offlineLoad')
-          : (r.error?.response?.data?.detail || t('errorLoad')),
+          : failureDetail(r.status, r.error, 'the flagged check-ins'),
       );
     }
     setLoading(false);

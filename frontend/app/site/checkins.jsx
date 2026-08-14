@@ -24,7 +24,7 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
-import { settleFetch, isOfflineError, fetchFailureMessage } from '../../src/utils/offlineState';
+import { settleFetch, isOfflineError, failureDetail } from '../../src/utils/offlineState';
 import {
   queueCheckInReview,
   getQueuedCheckInReviews,
@@ -184,7 +184,10 @@ export default function SiteCheckInsScreen() {
         if (cached.length > 0) {
           toast.warning(title, 'Showing the roster saved on this device.');
         } else {
-          toast.error(title, fetchFailureMessage(result.status));
+          // failureDetail, not fetchFailureMessage: the latter reads only the
+          // STATUS and threw the error away, so a 500 and a 403 said the same
+          // thing. The server's own detail is what names the cause.
+          toast.error(title, failureDetail(result.status, result.error, "today's check-ins"));
         }
       }
       return false;

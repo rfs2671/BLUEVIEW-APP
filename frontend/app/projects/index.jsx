@@ -36,7 +36,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import { cacheProjectList, readCachedProjectList } from '../../src/utils/projectCache';
 import OfflineNotice from '../../src/components/OfflineNotice';
-import { isOfflineError } from '../../src/utils/offlineState';
+import { isOfflineError, failureDetail } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
@@ -120,11 +120,15 @@ export default function ProjectsScreen() {
           `Loaded ${_cached.length} cached project${_cached.length === 1 ? '' : 's'}`,
         );
       } else {
+        // The offline copy stays as-is: it says something failureDetail
+        // cannot know — that no cached copy exists on THIS VERSION. The error
+        // branch gives up its fixed sentence, which was identical for a 500,
+        // a 403 and a 404.
         toast.error(
           offline ? 'Offline' : 'Could not load',
           offline
             ? 'No cached projects — open once online on this version first'
-            : 'The server could not return your projects. Pull to refresh.',
+            : failureDetail('error', error, 'your projects'),
         );
       }
     } finally {
