@@ -100,6 +100,12 @@ export default {
     // completeness rule: it says the record contains nothing at all, which is
     // the one thing that is true of it regardless of which form it is.
     code_SUBMIT_NO_CONTENT: 'Every row on this log is empty, so there is nothing to file. Fill in at least one before submitting.',
+    // Raised by the reconnect DRAIN, not by a screen — a pre-shift draft
+    // written before the injury/PPE gate shipped replays with both answers
+    // null, and no client gate can reach that path. It names the fix rather
+    // than the failure: the CP is reading this on a banner, away from the
+    // form, and "something went wrong" gives him nothing to do.
+    code_SUBMIT_INCOMPLETE_WORKER_ANSWERS: 'Answer injury and PPE for every worker, then resubmit.',
     // Shown under a Submit button disabled because no signature is on file. A
     // CP sets his signature by signing on the log itself — there is no separate
     // profile screen for it (nothing under app/settings or app/profile writes

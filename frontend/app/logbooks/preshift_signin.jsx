@@ -18,6 +18,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, checkinsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { withGateSnapshot, reconcileRoster } from '../../src/utils/rosterReconcile';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { capitalizeFirst } from '../../src/utils/textFormat';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
@@ -135,7 +136,17 @@ export default function PreShiftSignIn() {
         setExistingLogId(_draft.backend_id || null);
         if (d.company) setCompany(d.company);
         if (d.project_location) setProjectLocation(d.project_location);
-        if (d.workers && d.workers.length > 0) setWorkers(d.workers);
+        // RE-CHECK AGAINST TODAY, even on the draft path. This early return
+        // used to skip /checkins-today entirely, so a stored roster persisted
+        // unchecked — six men on a sheet on a day five checked in, the sixth
+        // having been refused at the gate. Best-effort: offline the fetch
+        // fails, `fresh` is empty, and reconcileRoster keeps everything, which
+        // is the same behaviour as before this change.
+        if (d.workers && d.workers.length > 0) {
+          const _fresh = await logbooksAPI
+            .getCheckinsForDate(projectId, date).catch(() => null);
+          setWorkers(_reconcileWorkers(d.workers, _fresh));
+        }
         if (_draft.cp_signature) setCpSignature(_draft.cp_signature);
         if (_draft.cp_name) setCpName(_draft.cp_name);
         setLoading(false);
@@ -185,8 +196,9 @@ export default function PreShiftSignIn() {
         if (d.company) setCompany(d.company);
         if (d.project_location) setProjectLocation(d.project_location);
         if (d.workers && d.workers.length > 0) {
-          // Saved log already has full worker data — use it
-          setWorkers(d.workers);
+          // Saved log already has full worker data — but re-check it against
+          // today's check-ins before trusting it. See _reconcileWorkers.
+          setWorkers(_reconcileWorkers(d.workers, checkinList));
         } else {
           buildWorkerList(checkinList);
         }
@@ -202,6 +214,43 @@ export default function PreShiftSignIn() {
     }
   };
 
+  // What the GATE supplies and the CP can then change. A field differing from
+  // its snapshot proves he edited the row; `had_injury` / `inspected_ppe` /
+  // `signed` are things the gate NEVER supplies, so any value there is his too.
+  // See src/utils/rosterReconcile.js.
+  const PRESHIFT_GATE_FIELDS = ['name', 'company', 'osha_number'];
+  const PRESHIFT_ANSWER_FIELDS = ['had_injury', 'inspected_ppe', 'signed'];
+
+  /**
+   * Re-check a stored roster against today's check-ins.
+   *
+   * `fresh` null means the fetch failed (offline). Everything is kept — the
+   * app must never delete a man because it could not reach the server.
+   */
+  const _reconcileWorkers = (stored, fresh) => {
+    if (!Array.isArray(fresh)) return stored;
+    const built = fresh
+      .filter((c) => c && c.blocked !== true && c.source !== 'cert_block')
+      .map((c) => withGateSnapshot({
+        worker_id: c.worker_id,
+        name: c.worker_name || '',
+        company: c.company || '',
+        osha_number: c.osha_number || '',
+        signin_id: c.signin_id || null,
+        worker_signature: c.worker_signature || c.signature || null,
+        had_injury: null,
+        inspected_ppe: null,
+        signed: false,
+        auto_filled: true,
+      }, PRESHIFT_GATE_FIELDS));
+    return reconcileRoster({
+      stored,
+      fresh: built,
+      fields: PRESHIFT_GATE_FIELDS,
+      answers: PRESHIFT_ANSWER_FIELDS,
+    }).rows;
+  };
+
   /**
    * Builds the worker list from today's check-ins.
    * Captures: name, company, osha_number, and worker_signature — all locked (read-only).
@@ -210,7 +259,7 @@ export default function PreShiftSignIn() {
    * rather than five empty numbered slots.
    */
   const buildWorkerList = (checkins) => {
-    const list = checkins.map((c) => ({
+    const list = checkins.map((c) => withGateSnapshot({
       worker_id: c.worker_id,
       name: c.worker_name || '',
       company: c.company || '',
@@ -225,7 +274,7 @@ export default function PreShiftSignIn() {
       auto_filled: true, // Lock identity fields — came from sign-in system
       // NOTE: no flag/reason fields here on purpose. See the `flags` state
       // above — this object is persisted verbatim into the logbook.
-    }));
+    }, PRESHIFT_GATE_FIELDS));
     setWorkers(list);
   };
 

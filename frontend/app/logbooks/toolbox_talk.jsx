@@ -16,6 +16,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { withGateSnapshot, reconcileRoster } from '../../src/utils/rosterReconcile';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -136,6 +137,38 @@ export default function ToolboxTalkLog() {
     performedBy, checkedTopics, attendees, cpSignature, cpName,
   ]);
 
+  // Toolbox had NO provenance marker of any kind before this — a hand-added
+  // attendee was shaped identically to a gate-built one. gate_sourced +
+  // gate_snapshot supply it. `signed` is the CP's present tick, which the gate
+  // never sets, so a tick is proof the row is his.
+  const TOOLBOX_GATE_FIELDS = ['name', 'title', 'company'];
+  const TOOLBOX_ANSWER_FIELDS = ['signed'];
+
+  /** Re-check a stored roster against today's check-ins. `fresh` null (offline)
+   *  keeps everything — never delete a man because the server was unreachable. */
+  const _reconcileAttendees = (stored, fresh) => {
+    if (!Array.isArray(fresh)) return stored;
+    const built = fresh
+      .filter((c) => c && c.blocked !== true && c.source !== 'cert_block')
+      .map((c) => withGateSnapshot({
+        worker_id: c.worker_id,
+        name: c.worker_name || '',
+        title: c.trade || '',
+        company: c.company || '',
+        time: c.check_in_time || '',
+        gate_confirmed: c.toolbox_talk_confirmed === true,
+        gate_confirmed_at: c.toolbox_talk_confirmed_at || null,
+        signed: false,
+        signature: null,
+      }, TOOLBOX_GATE_FIELDS));
+    return reconcileRoster({
+      stored,
+      fresh: built,
+      fields: TOOLBOX_GATE_FIELDS,
+      answers: TOOLBOX_ANSWER_FIELDS,
+    }).rows;
+  };
+
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -158,7 +191,14 @@ export default function ToolboxTalkLog() {
         if (d.meeting_time) setMeetingTime(d.meeting_time);
         if (d.performed_by) setPerformedBy(d.performed_by);
         if (d.checked_topics) setCheckedTopics(d.checked_topics);
-        if (d.attendees && d.attendees.length > 0) setAttendees(d.attendees);
+        // RE-CHECK AGAINST TODAY, even on the draft path. This early return
+        // used to skip /checkins-today entirely. Best-effort: offline the
+        // fetch fails and everything is kept, as before this change.
+        if (d.attendees && d.attendees.length > 0) {
+          const _fresh = await logbooksAPI
+            .getCheckinsForDate(projectId, date).catch(() => null);
+          setAttendees(_reconcileAttendees(d.attendees, _fresh));
+        }
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
         setLoading(false);
@@ -187,7 +227,7 @@ export default function ToolboxTalkLog() {
         // They exist in this response so the OSHA log can prove who lacked a
         // card — they must never appear on an ATTENDANCE roster.
         .filter((c) => c.blocked !== true && c.source !== 'cert_block')
-        .map((c) => ({
+        .map((c) => withGateSnapshot({
           worker_id: c.worker_id,
           // §3301.12.3 roster fields: name, title, company, time.
           name: c.worker_name || '',
@@ -208,7 +248,7 @@ export default function ToolboxTalkLog() {
           // its provenance on a toolbox-talk record. Gate confirmation is
           // recorded as name + timestamp instead.
           signature: null,
-        }));
+        }, TOOLBOX_GATE_FIELDS));
 
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
@@ -228,7 +268,7 @@ export default function ToolboxTalkLog() {
         if (d.performed_by) setPerformedBy(d.performed_by);
         if (d.checked_topics) setCheckedTopics(d.checked_topics);
         if (d.attendees && d.attendees.length > 0) {
-          setAttendees(d.attendees);
+          setAttendees(_reconcileAttendees(d.attendees, checkinList));
         } else {
         setAttendees(autoAttendees);
           
