@@ -99,7 +99,15 @@ export function failureDetail(status, error, subject = 'this') {
     : 'Could not load. Pull to refresh or try again.';
 }
 
-/** Human copy for a failed load, so screens don't invent their own wording. */
+/**
+ * Human copy for a failed load, so screens don't invent their own wording.
+ *
+ * SUPERSEDED BY failureDetail, and it has no callers left. It reads only the
+ * STATUS, so a 500, a 403 and a 404 all produce the same sentence — which is
+ * the defect failureDetail exists to fix. Kept rather than deleted because it
+ * is an exported util and removing an export is a separate decision; do not
+ * reach for it in new code.
+ */
 export function fetchFailureMessage(status) {
   if (status === 'offline') return 'Unavailable offline — reconnect to load this.';
   if (status === 'error') return 'Could not load. Pull to refresh or try again.';
