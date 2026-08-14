@@ -54,6 +54,61 @@ export const EMPTY_ENTRY = () => ({
 });
 
 /**
+ * THE KEYS THE BACKEND ACTUALLY SENDS.
+ *
+ * This read `cert.name` and `cert.expiry`. A stored certification carries
+ * neither: it is `{type, card_number, issue_date, expiration_date, verified,
+ * needs_review, ...}` (backend/server.py:2006-2016, 2061-2071), and
+ * /checkins-today passes the stored dicts through UNTOUCHED (server.py:17559).
+ * So every auto-built row on every OSHA register carried a blank certification
+ * type and a blank expiry — only card_number ever matched — and that is what
+ * printed on the filed document.
+ *
+ * `expiry` and `name` are still read as fallbacks. Nothing in the current
+ * backend writes them, but a hand-entered or legacy row may, and dropping a
+ * value that IS there would trade one blank column for another.
+ */
+
+// The stored enum -> what a DOB inspector should read. Translation only: every
+// value here is one of the seven the backend can store (server.py:1894-1901).
+// An UNKNOWN code passes through VERBATIM rather than being guessed at — this
+// deliberately infers no card class, which is Part 3A's job.
+const CERT_TYPE_LABELS = Object.freeze({
+  OSHA_10: 'OSHA 10',
+  OSHA_30: 'OSHA 30',
+  OSHA_UNSPECIFIED: 'OSHA',
+  SST_FULL: 'SST',
+  SST_LIMITED: 'SST Limited',
+  SST_SUPERVISOR: 'SST Supervisor',
+  SST_TEMPORARY: 'SST Temporary',
+  // SST_UNSPECIFIED is deliberately absent: "an SST card is present but its
+  // class could not be read" must not print as a class. It falls through to
+  // the verbatim branch below and reads SST_UNSPECIFIED, which is ugly and
+  // true. Part 3A decides what it should say.
+});
+
+export function certLabel(cert) {
+  if (!cert || typeof cert !== 'object') return '';
+  const raw = String(cert.type ?? cert.name ?? '').trim();
+  if (!raw) return '';
+  return CERT_TYPE_LABELS[raw] || raw;
+}
+
+/**
+ * `expiration_date` is a datetime the API serialises to an ISO string, and the
+ * register prints a date. Anything unparseable is echoed as stored — a value
+ * this function does not understand is still a value the CP may need to see.
+ */
+export function certExpiration(cert) {
+  if (!cert || typeof cert !== 'object') return '';
+  const raw = cert.expiration_date ?? cert.expiry ?? '';
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  return m ? m[1] : s;
+}
+
+/**
  * ONE ROW PER CERTIFICATION, which is the shape the operator approved.
  *
  * A worker holding OSHA 30 and an SST card is TWO rows, not one row listing
@@ -98,9 +153,9 @@ export function buildEntriesFromCheckins(checkins, date) {
           worker_id: c.worker_id ?? null,
           worker_name: c.worker_name || '',
           company: c.company || '',
-          certification_type: (cert && cert.name) || '',
+          certification_type: certLabel(cert),
           card_number: (cert && cert.card_number) || c.osha_number || '',
-          expiration: (cert && cert.expiry) || '',
+          expiration: certExpiration(cert),
           signed: false,
           date,
         });
@@ -232,6 +287,9 @@ export function draftBody(entries) {
 
 export default {
   CERT_TYPES,
+  CERT_TYPE_LABELS,
+  certLabel,
+  certExpiration,
   ENTRY_KEYS,
   EMPTY_ENTRY,
   buildEntriesFromCheckins,

@@ -19036,8 +19036,29 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             "NEEDS_REVIEW": "Needs review",
         }
 
+        # THE SAME SEED-SKIP THE PER-LOGBOOK PDF ALREADY APPLIES.
+        #
+        # THE DIVERGENCE THIS CLOSES. generate_single_logbook_html drops a row
+        # carrying none of five fields as "an untouched EMPTY_ENTRY seed"; this
+        # renderer did not. Same stored register, two different documents — and
+        # THIS is the one the operator emails, so a blank row that the
+        # per-logbook PDF refuses was printing on the investor's copy as a
+        # certification row for nobody.
+        #
+        # THE DEFINITION IS NOT REWRITTEN HERE. It is read from
+        # _SUBMIT_ROW_CONTENT_RULES, the rule #125 already enforces at submit,
+        # through _row_has, the module-level mirror of this file's own `has()`.
+        # One definition, three consumers: the submit gate, the per-logbook PDF
+        # and this report. That is the whole point — this pair has drifted
+        # twice before (weather, then drawings_on_site).
+        _osha_content_fields = _SUBMIT_ROW_CONTENT_RULES["osha_log"][1]
+
         osha_rows = ""
         for e in osha_entries:
+            if not isinstance(e, dict):
+                continue
+            if not any(_row_has(e, _k) for _k in _osha_content_fields):
+                continue      # an untouched EMPTY_ENTRY seed — says nothing
             wid = str(e.get("worker_id") or "")
             cn = str(e.get("card_number") or "")
             reason = review_by_key.get((wid, cn)) if cn else None

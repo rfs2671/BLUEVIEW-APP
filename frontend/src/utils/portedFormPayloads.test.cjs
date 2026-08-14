@@ -136,6 +136,55 @@ ok(JSON.stringify(OSHA.incompleteSteps({ entries: [], cpSignature: '' })) === '[
 ok(JSON.stringify(OSHA.incompleteSteps({ entries: built, cpSignature: 'sig' })) === '[]',
   'a filled and signed register marks none');
 
+// ── THE KEYS THE BACKEND ACTUALLY SENDS ─────────────────────────────────────
+//
+// This model read cert.name and cert.expiry. A stored certification carries
+// `type` and `expiration_date` (server.py:2006-2016), passed through untouched
+// by /checkins-today (:17559). So every auto-built row printed a BLANK
+// certification type and a BLANK expiry on the filed register.
+console.log('\n-- osha_log: the cert keys --');
+
+const REAL_CERT = {
+  type: 'SST_SUPERVISOR', card_number: '4YU1RY8KKM',
+  issue_date: null, expiration_date: '2030-04-01T00:00:00Z',
+  verified: false, needs_review: false,
+};
+const built1 = OSHA.buildEntriesFromCheckins([{
+  worker_id: 'w1', worker_name: 'WILMER CARRILLO', company: 'AAZ',
+  certifications: [REAL_CERT],
+}], '2026-08-14')[0];
+
+ok(built1.certification_type === 'SST Supervisor',
+  `the stored type reaches the register (got ${JSON.stringify(built1.certification_type)})`);
+ok(built1.expiration === '2030-04-01',
+  `and so does the expiry (got ${JSON.stringify(built1.expiration)})`);
+ok(built1.card_number === '4YU1RY8KKM', 'the card number still matches, as it always did');
+
+// The regression itself, stated as a thing that must not come back.
+ok(built1.certification_type !== '' && built1.expiration !== '',
+  'neither column is blank — that blank pair is what printed on the filed document');
+
+// Legacy / hand-entered rows may carry the OLD keys. Reading the new ones must
+// not throw away a value that IS there.
+const legacyCert = { name: 'SST', card_number: 'L1', expiry: '2029-01-15' };
+const built2 = OSHA.buildEntriesFromCheckins([{
+  worker_id: 'w2', worker_name: 'Legacy Man', certifications: [legacyCert],
+}], '2026-08-14')[0];
+ok(built2.certification_type === 'SST', 'a legacy `name` is still read');
+ok(built2.expiration === '2029-01-15', 'and a legacy `expiry` is still read');
+
+// NO CLASS IS INFERRED — that is Part 3A, deliberately not touched here.
+ok(OSHA.certLabel({ type: 'SST_UNSPECIFIED' }) === 'SST_UNSPECIFIED',
+  'an unreadable class is NOT dressed up as a class — it prints verbatim');
+ok(OSHA.certLabel({ type: 'SOMETHING_NEW' }) === 'SOMETHING_NEW',
+  'and an unknown code passes through rather than being guessed at');
+ok(OSHA.certLabel({}) === '' && OSHA.certExpiration({}) === '',
+  'a cert with neither key yields blanks, not "undefined"');
+ok(OSHA.certExpiration({ expiration_date: null }) === '',
+  'a null expiry is blank, not the string "null"');
+ok(OSHA.certExpiration({ expiration_date: 'not a date' }) === 'not a date',
+  'an unparseable value is echoed as stored — the CP may still need to see it');
+
 // ── THE PRODUCTION DEFECT: a certification filed against the wrong man ───────
 //
 // Project 6a5f63bc147407d3261df2c7, 2026-08-11. worker_id
