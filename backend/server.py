@@ -2258,11 +2258,30 @@ class WorkerCreate(BaseModel):
     device_id: Optional[str] = None
 
 class WorkerResponse(BaseModel):
+    """What GET /workers/{id} returns.
+
+    `company` AND `trade` ARE OPTIONAL, and that is the per-project ruling
+    showing through rather than laxity. A worker document created at check-in
+    deliberately carries neither — register_and_checkin says so where it builds
+    the doc: "no `trade` / `company` here. Those are per-project and live in
+    worker_project_trades; a worker-level copy is what bled across jobs."
+
+    `company` stayed REQUIRED here after that writer changed, so
+    `WorkerResponse(**worker)` raised a pydantic ValidationError INSIDE the
+    handler — an unhandled 500, for every worker created at a gate. The list
+    endpoint has no response_model and never validated, which is why the roster
+    listed workers whose detail screen could not open.
+
+    A model must not demand a fact the writers deliberately stopped recording.
+    Resolving company per-project is NOT done here: a worker with pairings on
+    two projects has two companies, and this endpoint has no project context to
+    choose between them. That is a per-project view.
+    """
     id: str
     name: str
     phone: Optional[str] = None
     trade: Optional[str] = None
-    company: str
+    company: Optional[str] = None
     company_id: Optional[str] = None
     status: str = "active"
     osha_number: Optional[str] = None
