@@ -426,6 +426,17 @@ export default {
   // must be the SAME string on the device and on the document. They live in
   // toolboxTalkModel.TOPICS.
   toolboxTalk: {
+    // Device round 4. Step 1 is the one gated step (finding 8) and the weekly
+    // gap is ruling C — the men who worked this week without a talk, whom the
+    // daily roster never offered.
+    requiredField: 'Required field',
+    step1Required: '{n} still to fill in before you can continue.',
+    weeklyGapCount_one: '1 other worked this week without a talk',
+    weeklyGapCount_other: '{n} others worked this week without a talk',
+    weeklyGapHint: 'A toolbox talk covers the week. These men were on site this week but are not on today’s check-in list. Add anyone who attended this talk.',
+    weeklyGapAdd: 'Add {name} to the roster',
+    weeklyGapAddAll: 'Add all {n}',
+    addedFromWeek: 'Added from this week — your assertion, not a gate check-in',
     screenTitle: 'Tool Box Talk',
     screenSub: 'NYC DOB §3301.12.3 — Safety Meeting',
 

@@ -61,6 +61,18 @@ export default function LogbookStepper({
   // so a form that gates without explaining itself shows a bare button and
   // the gate test catches it.
   submitHint = '',
+  // GATING *NEXT* — the exception, not the rule.
+  //
+  // Everywhere else an incomplete step MARKS and never gates, because a CP
+  // must be able to finish his day (see incompleteSteps above). The operator
+  // ruled one exception: toolbox_talk step 1, whose five fields identify the
+  // talk on a filed §3301.12.3 record and none of which depend on anything he
+  // might not have yet. A form that passes nothing here is unaffected.
+  //
+  // `nextHint` is required in practice for the same reason submitHint is: a
+  // dead button with no sentence is where a CP stops.
+  nextDisabled = false,
+  nextHint = '',
   onSubmit,
   // Lock bar.
   logType,
@@ -173,11 +185,16 @@ export default function LogbookStepper({
             {step === total && submitDisabled && !!submitHint && (
               <Text style={s.submitHint}>{submitHint}</Text>
             )}
+            {step < total && nextDisabled && !!nextHint && (
+              <Text style={s.submitHint}>{nextHint}</Text>
+            )}
             {step < total ? (
               <Pressable
-                style={s.primaryBtn}
+                style={[s.primaryBtn, nextDisabled && s.primaryBtnDisabled]}
                 accessibilityRole="button"
                 accessibilityLabel={nextLabel}
+                accessibilityState={{ disabled: nextDisabled }}
+                disabled={nextDisabled}
                 onPress={() => onStepChange(step + 1)}
               >
                 <Text style={s.primaryBtnText}>{nextLabel}</Text>

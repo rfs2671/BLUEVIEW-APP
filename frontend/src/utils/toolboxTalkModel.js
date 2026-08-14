@@ -28,7 +28,12 @@ export const TOPICS = Object.freeze({
     { key: 'safety_glasses', label: 'Safety Glasses' },
     { key: 'harness', label: 'Harness' },
     { key: 'gloves', label: 'Gloves' },
-    { key: 'covid19', label: 'Covid-19' },
+    // 'covid19' REMOVED — operator ruling, device round 4 finding 9. It is not
+    // PPE and it is not a talk topic any more. The key is deliberately NOT
+    // reinstated anywhere: an old filed record that carries `covid19: true` in
+    // checked_topics still renders, because the PDF prints whatever keys are
+    // true rather than looking them up here. Historical records are not
+    // rewritten.
   ],
   'Fall Protection': [
     { key: 'ladder_safety', label: 'Ladder Safety' },
@@ -70,10 +75,26 @@ export const TOOLBOX_GATE_FIELDS = Object.freeze(['name', 'title', 'company']);
 // proof the row is his.
 export const TOOLBOX_ANSWER_FIELDS = Object.freeze(['signed']);
 
+/**
+ * WHERE A ROW CAME FROM. Three provenances, and they are three different
+ * claims about the same man:
+ *
+ *   'gate'         he checked in TODAY. The gate says he was on site.
+ *   'weekly_gap'   he worked THIS WEEK, not necessarily today, and the CP is
+ *                  asserting he attended this talk.
+ *   'manual'       the CP typed him in. The app knows nothing about him.
+ *
+ * A signed attendance sheet that cannot tell these apart is asserting the gate
+ * vouched for a man it never saw. Operator ruling, device round 4.
+ */
+export const ATTENDEE_SOURCES = Object.freeze({
+  GATE: 'gate', WEEKLY_GAP: 'weekly_gap', MANUAL: 'manual',
+});
+
 /** The keys every attendee row carries, for the payload-survival assertion. */
 export const ATTENDEE_KEYS = Object.freeze([
   'worker_id', 'name', 'title', 'company', 'time',
-  'gate_confirmed', 'gate_confirmed_at', 'signed', 'signature',
+  'gate_confirmed', 'gate_confirmed_at', 'signed', 'signature', 'added_from',
 ]);
 
 /** A hand-added attendee. No worker_id — the app cannot identify him. */
@@ -87,6 +108,7 @@ export const EMPTY_ATTENDEE = () => ({
   gate_confirmed_at: null,
   signed: false,
   signature: null,
+  added_from: ATTENDEE_SOURCES.MANUAL,
 });
 
 /**
@@ -124,6 +146,7 @@ export function buildAttendees(checkins) {
       gate_confirmed_at: c.toolbox_talk_confirmed_at || null,
       // CP-tapped presence marker, not a signature.
       signed: false,
+      added_from: ATTENDEE_SOURCES.GATE,
       // DELIBERATELY NULL. The worker's stored gate signature attests to the
       // §3301.11 site orientation, and app/site/logbooks.jsx renders any
       // non-null signature under "Worker Signatures" — carrying it here would
@@ -169,10 +192,102 @@ export function namedAttendees(attendees) {
  *
  * 1 the talk · 2 the topics · 3 who attended · 4 the signature.
  */
-export function incompleteSteps({ location, performedBy, checkedTopics, attendees, cpSignature }) {
+/**
+ * STEP 1 IS ALL-OR-NOTHING, by operator ruling (device round 4, finding 8).
+ *
+ * Every one of these five identifies the talk on a filed §3301.12.3 record —
+ * where it happened, whose talk it was, what work it covered, when. A record
+ * missing any of them is a record that cannot be placed. Two of them now
+ * autofill (location, performed_by), so this asks the CP for three things he
+ * is standing in the middle of.
+ *
+ * NOTE THE TENSION, deliberately accepted: everywhere else in this app an
+ * incomplete step MARKS and never GATES, because a CP must be able to finish
+ * his day. Step 1 is the exception the operator ruled — these are identity
+ * fields, not observations, and none of them depends on anything he might not
+ * have yet.
+ *
+ * Returns the FIELD NAMES still empty, so each control can mark itself rather
+ * than the screen showing one blanket error.
+ */
+export const STEP_ONE_FIELDS = Object.freeze([
+  'location', 'companyName', 'typeOfWork', 'meetingTime', 'performedBy',
+]);
+
+export function missingStepOneFields(f) {
+  const v = f || {};
+  return STEP_ONE_FIELDS.filter((k) => String(v[k] ?? '').trim() === '');
+}
+
+/**
+ * The men who worked THIS WEEK, have not had a talk, and are not already on
+ * today's roster — device round 4, ruling C.
+ *
+ * A toolbox talk is a WEEKLY obligation and the roster is built from TODAY's
+ * check-ins, so a CP giving Thursday's talk was never offered the men who
+ * worked Monday to Wednesday. Production: 26 worked the week, 13 were on site
+ * the day. The card counted 13 he had no way to put on the sheet.
+ *
+ * `missing` is the notifications payload's `missing_toolbox_talk`. Anyone
+ * already on the roster is filtered out BY WORKER ID and, failing that, by
+ * normalised name — a man must not appear twice on an attendance record, and
+ * the two lists come from different queries with no guarantee of the same
+ * shape.
+ */
+export function weeklyGapWorkers(missing, attendees) {
+  const rows = Array.isArray(missing) ? missing : [];
+  const onSheet = new Set();
+  for (const a of (Array.isArray(attendees) ? attendees : [])) {
+    if (!a) continue;
+    if (a.worker_id) onSheet.add(`id:${String(a.worker_id)}`);
+    const n = String(a.name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    if (n) onSheet.add(`name:${n}`);
+  }
+  const seen = new Set();
+  return rows.filter((w) => {
+    if (!w) return false;
+    const id = w.worker_id ? `id:${String(w.worker_id)}` : '';
+    const nm = String(w.worker_name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!id && !nm) return false;
+    if ((id && onSheet.has(id)) || (nm && onSheet.has(`name:${nm}`))) return false;
+    const k = id || `name:${nm}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/**
+ * A weekly-gap worker as an attendee row.
+ *
+ * NO GATE SNAPSHOT and no `time`: the gate did not put him here and has nothing
+ * to say about today. `added_from` records that this is the CP's assertion, and
+ * `signed` starts FALSE — adding a man to the list is not the same as marking
+ * him present, and the CP still has to say he was there.
+ */
+export function weeklyGapAttendee(w) {
+  return {
+    worker_id: (w && w.worker_id) || null,
+    name: (w && w.worker_name) || '',
+    title: (w && w.trade) || '',
+    company: (w && w.company) || '',
+    time: '',
+    gate_confirmed: false,
+    gate_confirmed_at: null,
+    signed: false,
+    signature: null,
+    added_from: ATTENDEE_SOURCES.WEEKLY_GAP,
+  };
+}
+
+export function incompleteSteps({
+  location, companyName, typeOfWork, meetingTime, performedBy,
+  checkedTopics, attendees, cpSignature,
+}) {
   const out = [];
-  const anyDetail = [location, performedBy].some((v) => String(v ?? '').trim() !== '');
-  if (!anyDetail) out.push(1);
+  if (missingStepOneFields({
+    location, companyName, typeOfWork, meetingTime, performedBy,
+  }).length > 0) out.push(1);
   if (topicCount(checkedTopics) === 0) out.push(2);
   if (namedAttendees(attendees).length === 0) out.push(3);
   if (!String(cpSignature || '').trim()) out.push(4);
@@ -199,6 +314,11 @@ export default {
   TOOLBOX_GATE_FIELDS,
   TOOLBOX_ANSWER_FIELDS,
   ATTENDEE_KEYS,
+  ATTENDEE_SOURCES,
+  STEP_ONE_FIELDS,
+  missingStepOneFields,
+  weeklyGapWorkers,
+  weeklyGapAttendee,
   EMPTY_ATTENDEE,
   formatClock,
   buildAttendees,
