@@ -122,25 +122,40 @@ console.log('\n-- both screens are actually wired --');
 const APP = path.join(__dirname, '..', '..', 'app', 'logbooks');
 for (const [file, helper, stored] of [
   ['preshift_signin.jsx', '_reconcileWorkers', 'd.workers'],
-  ['toolbox_talk.jsx', '_reconcileAttendees', 'd.attendees'],
 ]) {
   const s2 = fs.readFileSync(path.join(APP, file), 'utf8');
   ok(/from '\.\.\/\.\.\/src\/utils\/rosterReconcile'/.test(s2),
     file + ': imports the module');
   ok(s2.includes('withGateSnapshot({'), file + ': gate-stamps the rows it builds');
-  // Defined once, CALLED TWICE — the draft path and the server-copy path.
-  // The draft path is the one that used to return early, so two is the number
-  // that matters: one call would mean the early return is still unchecked.
   ok(new RegExp('const ' + helper + ' = ').test(s2), file + ': ' + helper + ' is defined');
   ok((s2.match(new RegExp('\\b' + helper + '\\(', 'g')) || []).length === 2,
     file + ': ' + helper + ' is called on BOTH load paths');
   ok(!s2.includes('setWorkers(' + stored + ');') && !s2.includes('setAttendees(' + stored + ');'),
     file + ': the stored payload is never trusted unchecked');
-  // The draft path must FETCH before it can reconcile — that early return was
-  // the whole defect.
   const draftBlock = s2.slice(0, s2.indexOf('setLoading(false);'));
   ok(draftBlock.includes('getCheckinsForDate(projectId, date)'),
     file + ': the draft path fetches check-ins before returning');
+}
+
+// TOOLBOX_TALK MOVED. The port put its reconcile in src/utils/toolboxTalkModel
+// as `reconcileAttendees`, so the screen no longer defines a local helper. Same
+// guarantee, one address further in — re-pointed rather than dropped, and
+// toolboxTalkModel.test.cjs asserts the behaviour end to end.
+{
+  const s2 = fs.readFileSync(path.join(APP, 'toolbox_talk.jsx'), 'utf8');
+  const model = fs.readFileSync(path.join(__dirname, 'toolboxTalkModel.js'), 'utf8');
+  ok(/reconcileAttendees[\s\S]{0,120}from '\.\.\/\.\.\/src\/utils\/toolboxTalkModel'/.test(s2),
+    'toolbox_talk.jsx: imports reconcileAttendees from its model');
+  ok(model.includes('withGateSnapshot({'),
+    'toolboxTalkModel: gate-stamps the rows it builds');
+  ok((s2.match(/reconcileAttendees\(/g) || []).length === 2,
+    'toolbox_talk.jsx: reconciles on BOTH load paths');
+  ok(!s2.includes('setAttendees(d.attendees);')
+    && !s2.includes('setAttendees(draft.data.attendees);'),
+    'toolbox_talk.jsx: the stored payload is never trusted unchecked');
+  const draftBlock = s2.slice(0, s2.indexOf('setLoading(false);'));
+  ok(draftBlock.includes('getCheckinsForDate(projectId, date)'),
+    'toolbox_talk.jsx: the draft path fetches check-ins before returning');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

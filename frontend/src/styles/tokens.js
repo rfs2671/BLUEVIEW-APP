@@ -90,19 +90,19 @@ export const palette = Object.freeze({
 
 // ─── Alpha steps ─────────────────────────────────────────────────────────────
 //
-// The union of every opacity in use on a colour: 67 withAlpha() calls plus 34
-// hand-written rgba() literals = 17 distinct steps. This is NOT a designed
-// ramp — 0.02/0.03/0.07 are one-offs, kept because they ship.
+// The union of every opacity in use on a colour: 55 withAlpha() calls plus 28
+// hand-written rgba() literals = 16 distinct steps. This is NOT a designed
+// ramp — 0.03/0.07 are one-offs, kept because they ship.
 //
-// EVERY STEP SURVIVED the osha_log + scaffold_maintenance port. The two
-// screens took colours out of the measured set but no alpha value with them,
-// which is why this block is unchanged while the palette above lost two bases.
+// RE-MEASURED after the toolbox_talk port. `a02` (0.02) was that screen's
+// alone and now has NO use in the measured set, so it is gone — a measured
+// scale may not keep shipping a value nothing measures.
 //
 // NOTE the overlap with semanticColors.js's canonical STATE steps (fill 0.12,
 // border 0.3). Those two are the only steps with a stated meaning; every other
 // step below is decorative chrome.
 export const alpha = Object.freeze({
-  a02: 0.02, a03: 0.03, a04: 0.04, a05: 0.05, a06: 0.06,
+  a03: 0.03, a04: 0.04, a05: 0.05, a06: 0.06,
   a07: 0.07, a08: 0.08, a10: 0.1,  a15: 0.15,
   a20: 0.2,  a25: 0.25, a30: 0.3,  a35: 0.35, a40: 0.4,
   a50: 0.5,  a60: 0.6,  a90: 0.9,
@@ -120,17 +120,16 @@ export const tint = withAlpha;
 // migration checklist, and a test can assert that `palette` × `alpha` still
 // covers all of it. `uses` is the occurrence count.
 //
-// RE-MEASURED after the osha_log + scaffold_maintenance port onto the shared
-// stepper, which moved two more screens onto the token file and took 21
-// withAlpha calls and 10 rgba() literals out of the measurement with them.
-// The U1 daily-jobsite rebuild did the same before it. These numbers are the
-// CURRENT source, not the original audit snapshot.
+// RE-MEASURED after the toolbox_talk port — the third screen onto the shared
+// stepper, after U1's daily_jobsite and #123's osha_log + scaffold_maintenance.
+// It took 12 withAlpha calls and 6 rgba() literals out of the measurement with
+// it. These numbers are the CURRENT source, not the original audit snapshot.
 //
 // `via` records HOW the value is written today:
-//   'withAlpha' — already the sanctioned helper idiom (67 occurrences).
-//   'rgba'      — a hand-written rgba() string literal (34 occurrences).
+//   'withAlpha' — already the sanctioned helper idiom (55 occurrences).
+//   'rgba'      — a hand-written rgba() string literal (28 occurrences).
 // Keeping them apart matters: counting the withAlpha bases as raw colour
-// literals inflates the apparent colour debt from 34 to 101.
+// literals inflates the apparent colour debt from 28 to 83.
 export const MEASURED_TINTS = Object.freeze([
   { base: 'black',      step: 'a04',  uses: 2,   via: 'withAlpha' },
   { base: 'black',      step: 'a06',  uses: 2,   via: 'withAlpha' },
@@ -145,25 +144,22 @@ export const MEASURED_TINTS = Object.freeze([
   { base: 'blue400',    step: 'a30',  uses: 1,   via: 'rgba' },
   { base: 'blue500',    step: 'a08',  uses: 1,   via: 'rgba' },
   { base: 'blue500',    step: 'a10',  uses: 4,   via: 'rgba' },
-  { base: 'blue500',    step: 'a15',  uses: 4,   via: 'rgba' },
-  { base: 'blue500',    step: 'a20',  uses: 5,   via: 'rgba' },
-  { base: 'blue500',    step: 'a30',  uses: 2,   via: 'rgba' },
-  { base: 'blue500',    step: 'a40',  uses: 2,   via: 'rgba' },
+  { base: 'blue500',    step: 'a15',  uses: 2,   via: 'rgba' },
+  { base: 'blue500',    step: 'a20',  uses: 4,   via: 'rgba' },
+  { base: 'blue500',    step: 'a30',  uses: 1,   via: 'rgba' },
   { base: 'blue500',    step: 'a50',  uses: 3,   via: 'rgba' },
   { base: 'violet500',  step: 'a15',  uses: 1,   via: 'rgba' },
   { base: 'violet500',  step: 'a20',  uses: 2,   via: 'rgba' },
   { base: 'violet500',  step: 'a30',  uses: 1,   via: 'rgba' },
   { base: 'violet500',  step: 'a40',  uses: 2,   via: 'rgba' },
-  { base: 'white',      step: 'a02',  uses: 1,   via: 'withAlpha' },
   { base: 'white',      step: 'a03',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',      step: 'a04',  uses: 15,  via: 'withAlpha' },
-  { base: 'white',      step: 'a05',  uses: 16,  via: 'withAlpha' },
+  { base: 'white',      step: 'a04',  uses: 11,  via: 'withAlpha' },
+  { base: 'white',      step: 'a05',  uses: 14,  via: 'withAlpha' },
   { base: 'white',      step: 'a06',  uses: 4,   via: 'withAlpha' },
   { base: 'white',      step: 'a07',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',      step: 'a08',  uses: 7,   via: 'withAlpha' },
-  { base: 'white',      step: 'a10',  uses: 13,  via: 'withAlpha' },
+  { base: 'white',      step: 'a08',  uses: 5,   via: 'withAlpha' },
+  { base: 'white',      step: 'a10',  uses: 12,  via: 'withAlpha' },
   { base: 'white',      step: 'a15',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',      step: 'a20',  uses: 2,   via: 'withAlpha' },
 ]);
 
 // ─── Type sizes ──────────────────────────────────────────────────────────────
@@ -229,7 +225,6 @@ export const radius = Object.freeze({
   r4:  4,  // 3 uses, 3 files
   r5:  5,  // 1 use   — half of a 10x10 dot
   r8:  8,  // 1 use   — theme borderRadius.sm
-  r10: 10, // 1 use
   r11: 11, // 5 uses, 5 files — half of a 22x22 toggle dot (circle, not a step)
   r20: 20, // 1 use
 });
