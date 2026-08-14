@@ -57,6 +57,10 @@ export default function LogbookStepper({
   // Distinct from `incompleteSteps`, which only marks: an incomplete step
   // never disables anything, because a CP must be able to finish his day.
   submitDisabled = false,
+  // Why Submit is unavailable. Rendered only when submitDisabled is true,
+  // so a form that gates without explaining itself shows a bare button and
+  // the gate test catches it.
+  submitHint = '',
   onSubmit,
   // Lock bar.
   logType,
@@ -160,6 +164,15 @@ export default function LogbookStepper({
         {/* ONE PRIMARY ACTION, and it is the largest element on the screen. */}
         {!locked && (
           <View style={s.footer}>
+            {/* A DISABLED SUBMIT MUST SAY WHY. The ported forms had no way to
+                explain themselves — they do not own their footer, so the hint
+                the five unported forms render above their own button had
+                nowhere to live here and the CP met a dead grey button. Shown
+                only on the submit step: a reason to finish is not a reason to
+                stop paging. */}
+            {step === total && submitDisabled && !!submitHint && (
+              <Text style={s.submitHint}>{submitHint}</Text>
+            )}
             {step < total ? (
               <Pressable
                 style={s.primaryBtn}

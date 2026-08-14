@@ -17500,6 +17500,29 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 "worker_signature": None,               # new system: frontend uses signin_id
                 "signin_id": first_signin_id,           # → /api/signatures/{signin_id}
                 "source": "gate_checkin",
+                # TOOLBOX ROSTER — EMITTED, AND ALWAYS FALSE ON THIS PASS.
+                #
+                # The key was absent entirely, so the client read `undefined`
+                # and the toolbox roster's Confirmed column was unreachable for
+                # this population rather than merely false. Emitting it makes
+                # the shape match the legacy pass below.
+                #
+                # IT CANNOT YET BE TRUE, and that is the real defect: the
+                # optional confirmation is offered on ONE check-in path only —
+                # checkin.html posts `toolbox_talk_confirm` to
+                # /checkin/register-and-checkin (server.py:9955), which writes
+                # it onto a `checkins` row. The card/enrollment path in
+                # card_audit.py writes `sign_ins` + `worker_enrollments` and
+                # contains no reference to a toolbox confirmation at all — no
+                # control on the page, no field on the row. So a worker who
+                # arrives by card can never confirm, and this hardcoded False
+                # is the honest report of that, NOT a value read from a row.
+                #
+                # Closing it means capturing the tap on the enrollment flow —
+                # a change to the gate page itself, which is the turnstile.
+                # Scoped separately rather than smuggled in here.
+                "toolbox_talk_confirmed": False,
+                "toolbox_talk_confirmed_at": None,
                 # ── Flag fields (FIX 1) ──────────────────────────────────────
                 # The gate system writes `sign_ins` + `worker_enrollments` ONLY:
                 # card_audit.py contains no reference to the `checkins`

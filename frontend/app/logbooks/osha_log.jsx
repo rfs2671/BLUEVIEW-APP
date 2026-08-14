@@ -38,6 +38,7 @@ import {
 } from '../../src/utils/oshaLogModel';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography, outdoor, touchTarget } from '../../src/styles/theme';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 
 /**
  * OSHA / SST CERTIFICATION REGISTER — on the shared stepper.
@@ -78,7 +79,7 @@ export default function OshaLogBook() {
   const toast = useToast();
   const t = useT('oshaLog');
   const tFinalize = useT('finalize');
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
 
   const s = useMemo(() => buildStyles(), []);
 
@@ -561,7 +562,9 @@ export default function OshaLogBook() {
          carried `disabled={!cpSignature || entries.length === 0}`. Counting
          rows WITH CONTENT rather than rows is strictly stronger — a register
          of nothing but abandoned rows asserts nothing and cannot be filed. */
-      submitDisabled={!cpSignature || filledRows === 0}
+      submitDisabled={!isAffirmedSignature(cpSignature) || filledRows === 0}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
       onSubmit={handleSubmitAndSign}
       logType={LOG_TYPE}
       logId={existingLogId}

@@ -55,23 +55,31 @@ const NEWLY_GUARDED = [
   'crane_operations', 'excavation_monitoring',
 ];
 
-// ── 1. every immediate form blocks an unsigned submit ────────────────────────
+// ── 1. every immediate form blocks an UNAFFIRMED submit ──────────────────────
+//
+// STRENGTHENED by device round 4. This used to test `!cpSignature` — is
+// anything there — and production held `cp_signature: {}`, an empty object,
+// which is truthy and passed. Three logs were filed that way and every
+// rendered section said "UNAFFIRMED — inherited signature". The predicate is
+// now the renderer's own: affirmed FOR THIS DOCUMENT. Full coverage of the
+// rule itself is in signatureAffirmed.test.cjs; this keeps the structural
+// assertion in the file that has always owned it.
 for (const t of IMMEDIATE) {
   const f = path.join(APP_LOGBOOKS, `${t}.jsx`);
   if (!fs.existsSync(f)) { ok(false, `${t}.jsx exists`); continue; }
   const src = fs.readFileSync(f, 'utf8');
   // subcontractor_orientation derives status FROM the signature rather than
   // disabling a button — structurally unreachable, which is stronger.
-  const derives = /const status = newCpSignature \? 'submitted' : 'draft'/.test(src);
-  const disables = /disabled=\{!cpSignature/.test(src);
+  const derives = /const status = isAffirmedSignature\(newCpSignature\) \? 'submitted' : 'draft'/.test(src);
+  const disables = /disabled=\{!isAffirmedSignature\(cpSignature\)/.test(src);
   // A form ported onto the shared stepper does not own its footer button, so it
   // cannot write `disabled=` itself — it passes the same condition through
   // LogbookStepper's `submitDisabled`, which the chrome applies to the one
   // submit Pressable. THE GUARANTEE IS IDENTICAL and is asserted end to end
   // below: this only recognises where the expression now lives.
-  const stepperGated = /submitDisabled=\{!cpSignature\}/.test(src);
+  const stepperGated = /submitDisabled=\{!isAffirmedSignature\(cpSignature\)/.test(src);
   ok(derives || disables || stepperGated,
-    `${t}: an unsigned submit is unreachable (${derives ? 'status derived' : (disables ? 'button disabled' : 'stepper submitDisabled')})`);
+    `${t}: an UNAFFIRMED submit is unreachable (${derives ? 'status derived' : (disables ? 'button disabled' : 'stepper submitDisabled')})`);
 }
 
 // ── 1b. the shared stepper HONOURS submitDisabled ────────────────────────────
@@ -92,17 +100,29 @@ ok(/accessibilityState=\{\{ disabled: submitting \|\| submitDisabled \}\}/.test(
 // signature must still be able to walk the form.
 const footerSrc = chromeSrc.slice(chromeSrc.indexOf('<View style={s.footer}>'),
   chromeSrc.lastIndexOf('</SafeAreaView>'));
-const nextBranch = footerSrc.slice(0, footerSrc.indexOf(') : ('));
+// THE NEXT BRANCH ONLY. The slice used to start at the top of the footer,
+// which now also holds the submit hint — and that hint names submitDisabled,
+// so a correct footer failed an assertion about the Next button. Anchored to
+// the ternary itself, it tests what it always meant to test.
+const nextBranch = footerSrc.slice(
+  footerSrc.indexOf('{step < total ? ('), footerSrc.indexOf(') : ('));
 ok(!/submitDisabled/.test(nextBranch),
-  'stepper: an unsigned CP can still page through the form — only Submit is gated');
+  'stepper: an unaffirmed CP can still page through the form — only Submit is gated');
+// And the hint itself must not appear beside Next: a man on step 2 being told
+// to sign is being told to fix something he has not reached.
+ok(/\{step === total && submitDisabled && !!submitHint && \(/.test(footerSrc),
+  'stepper: the hint is scoped to the submit step');
 
 // ── 2. the guard is not a dead end ───────────────────────────────────────────
 for (const t of NEWLY_GUARDED) {
   const src = fs.readFileSync(path.join(APP_LOGBOOKS, `${t}.jsx`), 'utf8');
-  ok(/\{!cpSignature && \(/.test(src) && /submitNeedsSignature/.test(src),
+  // The three-way choice moved into affirmationHintKey — one place, executed by
+  // signatureAffirmed.test.cjs, rather than the same ternary spelled out in
+  // nine screens where eight could stay right while one drifted.
+  ok(/\{!!affirmationHintKey\(cpSignature, profileLoaded\) && \(/.test(src),
     `${t}: tells the CP WHY submit is unavailable`);
-  ok(/profileLoaded \? 'submitNeedsSignature' : 'submitSignatureLoading'/.test(src),
-    `${t}: does not accuse a CP of being unsigned while the profile is still loading`);
+  ok(/tFinalize\(affirmationHintKey\(cpSignature, profileLoaded\)\)/.test(src),
+    `${t}: and the sentence is chosen by the shared helper, so "sign" and "affirm" cannot be confused`);
   ok(/useT\('finalize'\)/.test(src),
     `${t}: the hint goes through i18n, not a hardcoded English string`);
   // The pad it points at must actually be on this screen, above the button.
@@ -117,7 +137,7 @@ const en = fs.readFileSync(path.join(I18N, 'en.js'), 'utf8');
 const es = fs.readFileSync(path.join(I18N, 'es.js'), 'utf8');
 const NEW_KEYS = [
   'code_SUBMIT_EMPTY_LOG', 'code_SUBMIT_MISSING_CP_SIGNATURE',
-  'submitNeedsSignature', 'submitSignatureLoading',
+  'submitNeedsSignature', 'submitSignatureLoading', 'submitNeedsAffirmation',
   'notPushedTitle', 'notPushedHint',
 ];
 const valueOf = (src, key) => {
@@ -230,6 +250,10 @@ function loadDraftSync(env) {
 }
 
 const KEY = 'logbook_draft:proj1:hot_work:2026-08-09';
+// AFFIRMED. The drain asks the renderer's question now, so `'sig'` — a bare
+// string, and `{}` — would both be refused before the transport under test is
+// ever reached. Anywhere a VALID signature is meant, it is this.
+const AFFIRMED = { affirmed: true, signerName: 'CP', timestamp: '2026-08-09T12:00:00Z' };
 function makeEnv({ signature, status = 'submitted', backendId = null, createError } = {}) {
   const store = {};
   const calls = { cleared: [], created: [], updated: [] };
@@ -290,7 +314,7 @@ const refusal = (code, status = 400) => ({
 
   // A signed submit still goes out — the guard must not cost a correct CP.
   {
-    const h = makeEnv({ signature: 'sig', status: 'submitted' });
+    const h = makeEnv({ signature: AFFIRMED, status: 'submitted' });
     const mod = loadDraftSync(h.env);
     await mod.syncPendingDrafts();
     ok(h.calls.created.length === 1, 'drain: a SIGNED submit is still pushed');
@@ -308,7 +332,7 @@ const refusal = (code, status = 400) => ({
   // A server REFUSAL of a create is surfaced and stays pending.
   {
     const h = makeEnv({
-      signature: 'sig', status: 'submitted',
+      signature: AFFIRMED, status: 'submitted',
       createError: refusal('SUBMIT_EMPTY_LOG'),
     });
     const mod = loadDraftSync(h.env);
@@ -323,7 +347,7 @@ const refusal = (code, status = 400) => ({
   // A 5xx or a dead network is NOT a refusal and must not be reported as one.
   {
     const h = makeEnv({
-      signature: 'sig', status: 'submitted',
+      signature: AFFIRMED, status: 'submitted',
       createError: { message: 'Network Error' },
     });
     const mod = loadDraftSync(h.env);
@@ -334,7 +358,7 @@ const refusal = (code, status = 400) => ({
   }
   {
     const h = makeEnv({
-      signature: 'sig', status: 'submitted',
+      signature: AFFIRMED, status: 'submitted',
       createError: refusal('SUBMIT_EMPTY_LOG', 503),
     });
     const mod = loadDraftSync(h.env);
@@ -364,7 +388,7 @@ const refusal = (code, status = 400) => ({
         getPendingKeys: async () => [k],
         readDraft: async () => ({
           data: { company: 'AAZ', workers },
-          cp_signature: 'sig', cp_name: 'CP', status: 'submitted',
+          cp_signature: AFFIRMED, cp_name: 'CP', status: 'submitted',
           backend_id: null, finalized: false,
         }),
         setDraftBackendId: async () => {},
@@ -401,6 +425,49 @@ const refusal = (code, status = 400) => ({
     await loadDraftSync(h.env).syncPendingDrafts();
     ok(h.calls.created.length === 1,
       'drain: the gate is scoped to preshift_signin and touches no other type');
+  }
+
+  // ── 8. THE CLIENT GATE AND THE DRAIN AGREE ABOUT `undefined` ────────────
+  //
+  // Device round 4, finding 1. The filed record turned out NOT to be a defect —
+  // it was submitted twelve minutes before the gate reached that device — but
+  // the investigation found a real hole: the screen tested `w.had_injury !==
+  // null`, and `undefined !== null` is TRUE. A row that never carried the key
+  // at all walked through as answered.
+  //
+  // That row is reachable. `reconcileRoster` returns kept rows VERBATIM by
+  // ruling (nothing is re-hydrated), so a stored row missing the key keeps
+  // missing it for as long as the log exists. The drain has always checked both
+  // (`=== null || === undefined`), so the two gates disagreed about the same
+  // draft: the CP could not submit it, and the drain would not send it, but a
+  // row that reached the screen already missing the key passed the screen.
+  //
+  // EXECUTED, not grepped — the predicate is lifted out of the shipped screen
+  // and run, so a rewording of the source cannot pass this by accident.
+  {
+    const ps = fs.readFileSync(path.join(APP_LOGBOOKS, 'preshift_signin.jsx'), 'utf8');
+    const m = /const answeredBoth = (\(w\) => [^;]+);/.exec(ps);
+    ok(!!m, 'preshift_signin: answeredBoth is still a single extractable expression');
+    // eslint-disable-next-line no-new-func
+    const answeredBoth = m ? new Function(`return ${m[1]};`)() : () => false;
+    ok(answeredBoth({ had_injury: 'no', inspected_ppe: 'yes' }) === true,
+      'an answered row is answered');
+    ok(answeredBoth({ had_injury: null, inspected_ppe: null }) === false,
+      'a null row is not');
+    ok(answeredBoth({}) === false,
+      'AND NEITHER IS A ROW MISSING THE KEYS — the hole this closes');
+    ok(answeredBoth({ had_injury: 'no' }) === false, 'one answer is not both');
+    ok(answeredBoth({ had_injury: 'no', inspected_ppe: 'no' }) === true,
+      'and "no" to both is still a complete answer, not an absent one');
+
+    // The red outline and "Required field" marker must use the SAME test, or
+    // the CP is shown a clean row he cannot submit.
+    ok((ps.match(/worker\.had_injury == null/g) || []).length === 2,
+      'preshift_signin: the injury marker uses the same loose test in both places');
+    ok((ps.match(/worker\.inspected_ppe == null/g) || []).length === 2,
+      'preshift_signin: and so does the PPE marker');
+    ok(!/worker\.(had_injury|inspected_ppe) === null/.test(ps),
+      'preshift_signin: no strict-null test survives to disagree with the gate');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

@@ -165,7 +165,20 @@ export function buildEntriesFromCheckins(checkins, date) {
         worker_id: c.worker_id ?? null,
         worker_name: c.worker_name || '',
         company: c.company || '',
-        certification_type: c.osha_number ? 'OSHA 40hr' : '',
+        // NO FABRICATED CLASS. This branch used to write the literal
+        // 'OSHA 40hr' whenever a worker had an OSHA number — asserting a
+        // 40-hour credential onto a DOB record on the strength of a number
+        // being present, which establishes that a card exists and nothing
+        // whatever about its class. Device round 4 read it back off a filed
+        // register. Blank is honest; a credential nobody verified is not.
+        //
+        // The column stays blank until real card data exists to fill it.
+        // /checkins-today hardcodes `certifications: []` on the gate pass
+        // (server.py:17499) and worker_enrollments is empty on the tested
+        // project, so there is currently no source for either the class or
+        // the expiry. certLabel/certExpiration are still reached on any row
+        // that DOES carry certifications.
+        certification_type: '',
         card_number: c.osha_number || '',
         expiration: '',
         signed: false,

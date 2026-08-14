@@ -99,6 +99,38 @@ const bare = OSHA.buildEntriesFromCheckins([{ worker_id: 'w3', worker_name: 'Lee
 ok(bare.length === 1 && bare[0].certification_type === '',
   'a worker with no certification is still recorded — an absent row reads as an absent worker');
 
+// NO FABRICATED CARD CLASS — device round 4, finding 2, ruled.
+//
+// This branch used to write the literal 'OSHA 40hr' whenever a worker had an
+// OSHA number, asserting a 40-hour credential onto a DOB record on the strength
+// of a number being present. An OSHA number establishes that a card exists and
+// nothing whatever about its class. The operator ruled it deleted outright:
+// blank is honest, a credential nobody verified is not.
+//
+// It printed for real. /checkins-today hardcodes `certifications: []` on the
+// gate pass (server.py:17499), so EVERY gate-sourced row took this branch —
+// which is also why #131's certLabel/certExpiration fix looked half-applied:
+// those functions were never reached.
+const numbered = OSHA.buildEntriesFromCheckins(
+  [{ worker_id: 'w5', worker_name: 'Mora', osha_number: '4YU1RY8KKM' }], '2026-08-12');
+ok(numbered[0].certification_type === '',
+  'a worker with only an OSHA NUMBER gets NO card class — the number proves a card, not a class');
+ok(numbered[0].card_number === '4YU1RY8KKM',
+  'the number itself is still recorded — it is a fact, and the only one there is');
+ok(numbered[0].expiration === '',
+  'and the expiry stays blank until real card data exists to fill it');
+ok(!/OSHA 40hr/.test(String(OSHA.buildEntriesFromCheckins(
+  [{ worker_id: 'w6', worker_name: 'X', osha_number: '1' }], '2026-08-12')
+  .map((r) => r.certification_type).join('|'))),
+  'the literal cannot come back through this path unnoticed');
+// Still reached when a row DOES carry cards — the fix removed a fabrication,
+// not the real translation.
+ok(OSHA.buildEntriesFromCheckins([{
+  worker_id: 'w7', worker_name: 'Y', osha_number: '9',
+  certifications: [{ type: 'OSHA_30', card_number: 'C9', expiration_date: '2027-04-01T00:00:00Z' }],
+}], '2026-08-12')[0].certification_type === 'OSHA 30',
+  'a row with real certifications still translates through certLabel');
+
 // A gate refusal is recorded as DENIED and never as a certification.
 const blocked = OSHA.buildEntriesFromCheckins([{
   worker_id: 'w4', worker_name: 'Pat', blocked: true, blocks: ['CERT_BLOCK'],
@@ -370,7 +402,7 @@ ok(/entriesForFiling\(rows\)/.test(OSHA_SCREEN),
   'the submitted payload is trimmed to rows with content');
 ok(/submitStatus === 'submitted' \? entriesForFiling\(rows\) : rows/.test(OSHA_SCREEN),
   'a DRAFT keeps every row — a half-typed row must survive a save');
-ok(/submitDisabled=\{!cpSignature \|\| filledRows === 0\}/.test(OSHA_SCREEN),
+ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\) \|\| filledRows === 0\}/.test(OSHA_SCREEN),
   'an empty register cannot be filed, restoring the guard the #123 port dropped');
 ok(/sharedWorkerIds\(entries\)/.test(OSHA_SCREEN)
   && /sameWorkerNote/.test(OSHA_SCREEN),

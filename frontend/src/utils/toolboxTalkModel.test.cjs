@@ -140,7 +140,8 @@ console.log('\n-- what the port had to carry --');
 
 for (const [needle, label] of [
   ['LogbookStepper', 'uses the shared stepper'],
-  ['submitDisabled={!cpSignature}', 'an unsigned submit is UNREACHABLE (immediate type)'],
+  ['submitDisabled={!isAffirmedSignature(cpSignature)}',
+    'an UNAFFIRMED submit is UNREACHABLE (immediate type)'],
   ['gateCopy', 'gateCopy — the server never renders its own English'],
   ['recordFinalizeError', 'a foreground refusal leaves the durable banner'],
   ['freezeIfImmediate', 'the signature is the freeze'],

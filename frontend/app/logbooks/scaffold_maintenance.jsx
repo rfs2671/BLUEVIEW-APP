@@ -35,6 +35,7 @@ import {
 } from '../../src/utils/scaffoldMaintenanceModel';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography, outdoor, touchTarget } from '../../src/styles/theme';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 
 /**
  * SCAFFOLD MAINTENANCE LOG — the NYC DOB sidewalk-shed daily inspection, on the
@@ -74,7 +75,7 @@ export default function ScaffoldMaintenanceLog() {
   const toast = useToast();
   const t = useT('scaffoldMaintenance');
   const tFinalize = useT('finalize');
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
 
   const s = useMemo(() => buildStyles(), []);
 
@@ -476,7 +477,9 @@ export default function ScaffoldMaintenanceLog() {
       /* scaffold_maintenance is IMMEDIATE — the server locks on `submitted`
          alone — so an unsigned submit must be UNREACHABLE, not merely warned
          about. The handler keeps its guard as a backstop. */
-      submitDisabled={!cpSignature}
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
       onSubmit={handleSubmitAndSign}
       logType={LOG_TYPE}
       logId={existingLogId}

@@ -111,6 +111,12 @@ export default {
     // profile screen for it (nothing under app/settings or app/profile writes
     // cp_signature) — so the copy points at the pad directly above the button.
     submitNeedsSignature: 'Sign above to submit. Your signature is saved for next time.',
+    // A DIFFERENT SENTENCE, because it is a different fix. The signature above
+    // is his and it is on screen — what is missing is his affirmation that it
+    // applies to THIS document, which is the one thing that cannot be inherited
+    // from a previous log. Telling a man with a signature on screen that he has
+    // no signature is how he learns to ignore the hint.
+    submitNeedsAffirmation: 'Tap your signature above to affirm it for this log. An inherited signature cannot be reused.',
     submitSignatureLoading: 'Loading your saved signature...',
     // A queued draft the server REFUSED on the reconnect drain. Distinct from
     // notLocked* above: nothing was created, so nothing is frozen anywhere —
