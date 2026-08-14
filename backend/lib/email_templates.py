@@ -88,26 +88,55 @@ def _card(
 """.strip()
 
 
+# ── The detail rows ─────────────────────────────────────────────────────────
+#
+# A TABLE ROW, NOT A FLEX BOX. This rendered as "Project588 Thomas S Boyland
+# Street" — the label and the value with nothing between them — on the
+# operator's mail client, and on every row of every one of these templates.
+#
+# The cause was `display:flex; justify-content:space-between`. Flexbox is not
+# supported by Outlook's Word rendering engine and is unreliable across the
+# rest, so the two spans simply fell back to inline and ran together. The
+# report renderer already knows this and says so — generate_combined_report's
+# docstring: "table layout, zero flexbox".
+#
+# So: a two-cell row, the label column fixed and top-aligned so a long value
+# wraps beside it rather than under it, and real horizontal padding between
+# them. `_ROW_OPEN`/`_ROW_CLOSE` wrap the callers, because a <tr> outside a
+# <table> is not rendered at all.
+#
+# TYPOGRAPHY ONLY — every string these templates say is unchanged.
+_ROW_OPEN = (
+    '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+    'role="presentation" style="background:#f9fafb;border-radius:6px;'
+    'margin:16px 0;border-collapse:separate;">'
+)
+_ROW_CLOSE = '</table>'
+
+
 def _detail_row(label: str, value: str) -> str:
     return (
-        f'<div style="display:flex;justify-content:space-between;'
-        f'padding:8px 0;border-bottom:1px solid #f3f4f6;">'
-        f'<span style="font-size:12px;color:#6b7280;">{label}</span>'
-        f'<span style="font-size:13px;color:#111827;font-weight:500;">{value}</span>'
-        f'</div>'
+        '<tr>'
+        f'<td width="38%" valign="top" style="padding:8px 12px 8px 16px;'
+        f'border-bottom:1px solid #f3f4f6;font-size:12px;color:#6b7280;'
+        f'white-space:nowrap;">{label}</td>'
+        f'<td valign="top" align="right" style="padding:8px 16px 8px 12px;'
+        f'border-bottom:1px solid #f3f4f6;font-size:13px;color:#111827;'
+        f'font-weight:500;">{value}</td>'
+        '</tr>'
     )
 
 
 def _common_details_block(ctx: Dict[str, Any]) -> str:
     """Shared "permit details" block — same across all 5 templates."""
     return (
-        '<div style="background:#f9fafb;border-radius:6px;padding:16px;margin:16px 0;">'
+        _ROW_OPEN
         + _detail_row("Project", ctx.get("project_name") or "—")
         + _detail_row("Address", ctx.get("project_address") or "—")
         + _detail_row("Job Number", ctx.get("permit_job_number") or "—")
         + _detail_row("Work Type", ctx.get("permit_work_type") or "—")
         + _detail_row("Current Expiration", ctx.get("current_expiration") or "—")
-        + '</div>'
+        + _ROW_CLOSE
     )
 
 
@@ -393,14 +422,14 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
     )
 
     details = (
-        '<div style="background:#f9fafb;border-radius:6px;padding:16px;margin:16px 0;">'
+        _ROW_OPEN
         + _detail_row("Project", project)
         + _detail_row("Address", ctx.get("project_address") or "—")
         + _detail_row("Date", date)
         + _detail_row("Compliance logs", str(logs))
         + _detail_row("Worker check-ins", str(workers))
         + (_detail_row("Permits expiring (30d)", str(expiring)) if expiring else "")
-        + '</div>'
+        + _ROW_CLOSE
     )
 
     body = (

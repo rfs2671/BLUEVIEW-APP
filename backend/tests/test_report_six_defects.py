@@ -144,6 +144,20 @@ def _render(day, jobsite_extra=None):
         return asyncio.run(server.generate_combined_report("p1", "2026-08-12"))
 
 
+def _render_with_osha(day):
+    """Same fake db as _render, plus an osha_log in the logbook list."""
+    logbooks = [day["preshift"], day["toolbox"], day["jobsite"], day["osha"]]
+    db = _Db(
+        projects=_Coll(one={"_id": "p1", "name": "8 Walworth St", "address": "8 Walworth St"}),
+        logbooks=_Coll(docs=logbooks),
+        daily_logs=_Coll(one=None),
+        workers=_Coll(docs=[]),
+        checkins=_Coll(docs=[]),
+    )
+    with patch.object(server, "db", db):
+        return asyncio.run(server.generate_combined_report("p1", "2026-08-12"))
+
+
 class TheRenderedDocument(unittest.TestCase):
     """Assertions on the HTML the investor actually receives."""
 
@@ -402,6 +416,60 @@ class TheTwoHeadcountsAreLabelled(unittest.TestCase):
         """No arithmetic between them anywhere — they are different facts."""
         self.assertNotIn("num_workers) - ", _REPORT)
         self.assertNotIn("_sub_total - ", _REPORT)
+
+
+class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
+    """THE DIVERGENCE, closed. generate_single_logbook_html dropped a seed row;
+    generate_combined_report printed it. Same stored register, two documents,
+    and the combined one is what the operator emails.
+
+    This pair has drifted TWICE before — weather, then drawings_on_site — so
+    the fix is not a matching copy of the rule but the SAME rule: both now
+    resolve through _SUBMIT_ROW_CONTENT_RULES, which #125 already enforces at
+    submit."""
+
+    def test_the_combined_report_skips_the_seed(self):
+        self.assertIn('_SUBMIT_ROW_CONTENT_RULES["osha_log"][1]', _REPORT)
+        self.assertIn("_row_has(e, _k) for _k in _osha_content_fields", _REPORT)
+
+    def test_it_does_not_write_a_THIRD_copy_of_the_rule(self):
+        """A hand-typed field list here is how it drifts a third time."""
+        # ONLY THE GUARD, not the row builder below it — that legitimately
+        # names these fields in order to PRINT them.
+        guard = _REPORT[_REPORT.index("_osha_content_fields ="):]
+        guard = guard[:guard.index('wid = str(e.get("worker_id")')]
+        for f in ("worker_name", "certification_type", "card_number", "expiration"):
+            self.assertNotIn(f'"{f}"', guard,
+                             "the field list is re-typed instead of referenced")
+        # And the rule it references is the one #125 enforces at submit.
+        self.assertIn("worker_name", str(server._SUBMIT_ROW_CONTENT_RULES["osha_log"][1]))
+
+    def test_both_renderers_now_drop_the_same_row(self):
+        """Executed on the real document: a register of one seed row renders no
+        certification row at all."""
+        seed = {"worker_id": None, "worker_name": "", "company": "",
+                "certification_type": "", "card_number": "", "expiration": "",
+                "signed": False, "date": "2026-08-14"}
+        day = {
+            **_DAY_WITH_DUPLICATE,
+            "osha": {"_id": "lb_osha", "log_type": "osha_log",
+                     "date": "2026-08-12", "data": {"entries": [seed]}},
+        }
+        html = _render_with_osha(day)
+        self.assertIn("OSHA / SST Certification Log", html)
+        self.assertIn("No certifications recorded", html)
+
+    def test_a_real_row_still_prints(self):
+        real = {"worker_id": "w1", "worker_name": "WILMER CARRILLO",
+                "company": "AAZ", "certification_type": "SST Supervisor",
+                "card_number": "4YU1RY8KKM", "expiration": "2030-04-01",
+                "signed": True, "date": "2026-08-12"}
+        html = _render_with_osha({**_DAY_WITH_DUPLICATE,
+                                  "osha": {"_id": "lb_osha", "log_type": "osha_log",
+                                           "date": "2026-08-12",
+                                           "data": {"entries": [real]}}})
+        self.assertIn("4YU1RY8KKM", html)
+        self.assertIn("SST Supervisor", html)
 
 
 class TheAISentenceStillHasItsFallback(unittest.TestCase):
