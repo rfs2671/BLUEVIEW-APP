@@ -50,7 +50,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
-import { settleFetch } from '../../src/utils/offlineState';
+import { settleFetch, failureDetail } from '../../src/utils/offlineState';
 
 /**
  * OFFLINE SST/OSHA CARD.
@@ -111,6 +111,8 @@ export default function WorkerDetailScreen() {
   const [saving, setSaving] = useState(false);
   const [worker, setWorker] = useState(null);
   const { getWorkerById, updateWorker } = useWorkers();
+  // What actually went wrong, for the banner. Null until something does.
+  const [detailError, setDetailError] = useState(null);
   const [editMode, setEditMode] = useState(false);
   
   // Edit form fields
@@ -217,6 +219,13 @@ export default function WorkerDetailScreen() {
       cacheWorkerDetail(workerId, r.data); // write-through
     } else {
       console.error('Failed to fetch worker:', r.error);
+      // KEEP THE ERROR. It used to go to the console and nowhere else, so a
+      // 500, a 403, a 404 and a client-side throw all rendered the same
+      // sentence — and the 500 was a pydantic ValidationError the server had
+      // been naming in `detail` the whole time.
+      setDetailError(failureDetail(
+        r.status === 'ok' ? 'error' : r.status, r.error, 'this worker',
+      ));
       const cached = await readCachedWorkerDetail(workerId);
       if (cached) applyWorker(cached);
       setDetailState(r.status === 'ok' ? 'error' : r.status);
@@ -382,8 +391,10 @@ export default function WorkerDetailScreen() {
               mode={detailState === 'error' ? 'error' : 'offline'}
               detail={
                 detailState === 'error'
-                  ? 'Could not load this worker. Try again.'
-                  : "This worker has not been opened on this device while online, so there is no saved copy. Reconnect to load their card. This is NOT a statement that the worker has no SST card."
+                  ? (detailError || 'Could not load this worker. Try again.')
+                  : (detailError
+                    ? `${detailError} This is NOT a statement that the worker has no SST card.`
+                    : "This worker has not been opened on this device while online, so there is no saved copy. Reconnect to load their card. This is NOT a statement that the worker has no SST card.")
               }
             />
             <GlassButton
