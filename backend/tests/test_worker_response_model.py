@@ -122,13 +122,18 @@ class NoOtherResponseModelDemandsWhatNoWriterProduces(unittest.TestCase):
         self.assertIn('"Unknown Project"', fn)
 
     def test_subcontractor_response_requires_contact_name(self):
-        """RECORDED, NOT FIXED — see the PR. The startup TEST DATA SEED inserts
-        a subcontractor with no `contact_name`, and SubcontractorResponse
-        requires it, so GET /admin/subcontractors/{id} would 500 for exactly
-        that seeded row. Every real writer goes through SubcontractorCreate,
-        which requires it, so this is latent and scoped to seeded data."""
+        """NOW FIXED AT THE SEED, not at the model — the ruling was that the
+        model is right and every real writer already satisfies it.
+
+        This previously asserted the seed OMITTED contact_name, recording the
+        defect. It now asserts the opposite. The model's requirement is
+        unchanged, which is the point: loosening it to accommodate seed data
+        would have weakened a contract real writers already meet.
+
+        Full coverage of the guard and the seeded document lives in
+        tests/test_startup_seed_guard.py."""
         self.assertTrue(
             S.SubcontractorResponse.model_fields["contact_name"].is_required())
         i = _SRC.index("# 6. Create test subcontractor")
-        seed = _SRC[i:i + 700]
-        self.assertNotIn('"contact_name"', seed)
+        seed = _SRC[i:i + 900]
+        self.assertIn('"contact_name"', seed)
