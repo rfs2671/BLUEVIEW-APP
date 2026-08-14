@@ -31659,8 +31659,36 @@ async def startup_event():
         logger.info("Upgraded existing admin to owner role")
 
     # ── TEST DATA SEED (creates test accounts + project if missing) ──
-    test_user = await db.users.find_one({"email": "test@test.com"})
-    if not test_user:
+    # ENV-GATED, AND IT FAILS CLOSED.
+    #
+    # This block had NO environment check of any kind. Its only condition was
+    # "has this already run against this database", which is a question about
+    # state, not about environment — so it ran against PRODUCTION on first
+    # boot, and would run again on a fresh database, a restored backup, or a
+    # rename. It has already done so: the malformed subcontractor row that
+    # 500s GET /admin/subcontractors/{id} is one of the documents it left.
+    #
+    # FAILS CLOSED BY CONSTRUCTION. The variable must be explicitly set to a
+    # truthy value for any insert below to happen. Unset, empty, misspelled,
+    # or set to anything else means SKIP — there is no branch that treats an
+    # absent variable as permission. Same shape as OWNER_DEFAULT_PASSWORD
+    # above, which already gates its block on an env var being present.
+    #
+    # It is checked FIRST, before the db lookup, so a production boot does not
+    # even query for the test user.
+    _seed_enabled = os.environ.get("SEED_TEST_DATA", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not _seed_enabled:
+        logger.info(
+            "TEST DATA SEED skipped: SEED_TEST_DATA is not enabled. "
+            "This is the correct state for production."
+        )
+    test_user = (
+        await db.users.find_one({"email": "test@test.com"})
+        if _seed_enabled else True          # truthy -> the block below is skipped
+    )
+    if _seed_enabled and not test_user:
         now = datetime.now(timezone.utc)
         # 1. Create test company
         test_company = await db.companies.find_one({"name": "Test Construction Co"})
@@ -31762,6 +31790,13 @@ async def startup_event():
         await db.subcontractors.insert_one({
             "name": "Test Electrical Sub",
             "company_name": "Spark Electric LLC",
+            # REQUIRED by SubcontractorCreate, and therefore by
+            # SubcontractorResponse. Its absence here made
+            # GET /admin/subcontractors/{id} raise a ValidationError -> 500 for
+            # this row alone. The model is right and every real writer already
+            # satisfies it; the seed was the only thing producing an invalid
+            # document.
+            "contact_name": "Test Sub Contact",
             "company_id": test_company_id,
             "email": "sub@test.com",
             "phone": "+15557654321",
