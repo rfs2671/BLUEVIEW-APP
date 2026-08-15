@@ -101,7 +101,7 @@ def _mk_db(*, project=_DEFAULT, prior=None):
     return db
 
 
-def _get(db, *, date=None, role="cp"):
+def _get(db, *, date=None, role="cp", trade=None):
     async def _fake_user():
         return {
             "_id": "u1", "id": "u1", "role": role, "company_id": "co_a",
@@ -112,7 +112,12 @@ def _get(db, *, date=None, role="cp"):
     server.app.dependency_overrides[server.get_current_user] = _fake_user
     try:
         with patch.object(server, "db", db):
-            q = f"?date={date}" if date else ""
+            params = []
+            if date:
+                params.append(f"date={date}")
+            if trade:
+                params.append(f"trade={trade}")
+            q = ("?" + "&".join(params)) if params else ""
             return TestClient(server.app).get(f"/api/projects/proj1/activity-chips{q}")
     finally:
         server.app.dependency_overrides.clear()
@@ -407,3 +412,55 @@ class TheDefaultDayIsEasternNotUTC(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestUnresolvedTradeIsRecorded(unittest.TestCase):
+    """WE LEARN WHAT ADMINS TYPE, rather than guessing at synonyms.
+
+    The alias map is a FIXED LIST IN CODE by ruling. An unmapped trade falls
+    back to the whole catalogue — loud in the right way (too many chips) and
+    silent in the wrong way (nothing false). An admin-editable map would swap
+    that for a mis-mapping nobody sees: `Cleaning` pointed at Demolition looks
+    exactly like a correct suggestion and lands behind a signed daily log.
+
+    The real cost of a fixed list is that nobody FINDS OUT a string missed.
+    `Concrete / Cement` sat on a live project resolving to nothing and only
+    surfaced because someone read a roster by hand.
+    """
+
+    def test_an_unresolved_trade_is_logged_with_the_string(self):
+        with self.assertLogs(server.logger, level="INFO") as cap:
+            body = _get(_mk_db(), trade="Cleaning").json()
+        self.assertEqual(body["resolved_trades"], [])
+        joined = " ".join(cap.output)
+        self.assertIn("Cleaning", joined)
+        self.assertIn("unresolved roster trade", joined)
+
+    def test_a_resolved_trade_logs_nothing(self):
+        """A note, not a metric. It must not fire on the normal path."""
+        with self.assertLogs(server.logger, level="INFO") as cap:
+            server.logger.info("sentinel")     # assertLogs needs one record
+            body = _get(_mk_db(), trade="Electrician").json()
+        self.assertEqual(body["resolved_trades"], ["Electrical"])
+        self.assertNotIn("unresolved roster trade", " ".join(cap.output))
+
+    def test_no_trade_at_all_logs_nothing(self):
+        """A crew with no trade is the ordinary case, not a miss."""
+        with self.assertLogs(server.logger, level="INFO") as cap:
+            server.logger.info("sentinel")
+            _get(_mk_db()).json()
+        self.assertNotIn("unresolved roster trade", " ".join(cap.output))
+
+    def test_the_request_is_unchanged_by_the_logging(self):
+        """It records and returns; it never refuses, and the fallback to the
+        unfiltered catalogue is exactly what it was."""
+        body = _get(_mk_db(), trade="Cleaning").json()
+        self.assertGreater(len(body["chips"]), 0)
+        self.assertEqual(body["chips"][-1]["id"], "other")
+
+    def test_a_long_string_is_truncated_before_it_reaches_the_log(self):
+        with self.assertLogs(server.logger, level="INFO") as cap:
+            _get(_mk_db(), trade="Z" * 300).json()
+        for line in cap.output:
+            if "unresolved roster trade" in line:
+                self.assertLess(len(line), 400, line[:120])

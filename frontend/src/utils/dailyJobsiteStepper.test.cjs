@@ -198,34 +198,42 @@ ok(/if \(!wanted\.includes\(''\)\) wanted\.push\(''\)/.test(code),
   'the unfiltered list is ALWAYS fetched too, so "All activities" can mean all');
 ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(\)\]/.test(code),
   'each crew reads its OWN trade list, keyed on its trade');
-ok(/const \{ sequenced, tradeWork, rest \} = chipBandsFor\(a\);/.test(code),
+ok(/const \{ primary, always, rest, basis \} = chipBandsFor\(a\);/.test(code),
   'Step 2 renders that list, not a shared one');
 
-// ── THE TRADE'S WORK IS VISIBLE WITHOUT A TAP ────────────────────────────────
-// Found on a device: the filter worked, all 16 electrical chips came back, and
-// every one landed in the CATALOG band, which renders COLLAPSED. The suggested
-// band was empty — and for the 249 taxonomy activities it is empty by
-// construction, because they carry no edges. The card showed "Other" alone.
+// ── THE COMPOSITION MOVED INTO THE MODEL ────────────────────────────────────
+//
+// Device round 4, finding 11: the card offered the whole catalogue — 86 chips
+// on a cold start. Four slots per crew, composed, and the composing moved into
+// dailyJobsiteModel so it can be EXECUTED rather than grepped. These assertions
+// followed it: the guarantees are the ones this block always made, re-pointed
+// rather than dropped, and dailyJobsiteModel.test.cjs runs the behaviour end
+// to end.
 const step2band = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
-ok(/\{tradeWork\.map\(/.test(step2band),
-  "the crew's own trade renders INLINE, not behind the catalogue toggle");
-// A real prior still outranks a trade list — that ordering is the engine's job.
-ok(step2band.indexOf('{sequenced.map(') > -1
-  && step2band.indexOf('{sequenced.map(') < step2band.indexOf('{tradeWork.map('),
-  'sequenced chips keep priority ABOVE the trade list');
-ok(/band === 'catalog' && c\.id !== OTHER_ACTIVITY_ID/.test(code),
-  'the promoted band is the trade catalogue, and never Other');
-// Only when a trade actually resolved. A crew with no trade would otherwise
+ok(/\{primary\.map\(/.test(step2band),
+  "the crew's four render INLINE, not behind the catalogue toggle");
+// ALWAYS-AVAILABLE is outside the four AND outside the expander, by ruling.
+ok(/\{always\.map\(/.test(step2band),
+  'and so does the always-available band — burying "rain / no work" on a rain day is worse than a longer list');
+ok(step2band.indexOf('{primary.map(') < step2band.indexOf('{always.map('),
+  'the ranked four come first; always-available follows them');
+// A trade list is a fine suggestion, it is just not a sequenced one.
+ok(/basis === 'trade' && \(/.test(step2band) && /chipsFromTrade/.test(step2band),
+  'a trade-basis list says so, rather than implying yesterday informed it');
+// Only when a trade actually resolved — a crew with no trade would otherwise
 // get the ENTIRE catalogue inlined onto its card.
-ok(/const filtered = Array\.isArray\(resolved\) && resolved\.length > 0;/.test(code),
+const MODEL = fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8');
+ok(/const filtered = Array\.isArray\(resolvedTrades\) && resolvedTrades\.length > 0;/.test(MODEL),
   'promotion is gated on the trade having RESOLVED, not merely being non-empty');
-ok(/const tradeWork = filtered/.test(code),
+ok(/const tradeCatalog = filtered/.test(MODEL),
   'so an untraded crew keeps the collapsed catalogue it had');
 // "All activities" must mean all of them, not the rest of this one trade.
-ok(/const everything = filtered \? \(chipsByTrade\[''\] \|\| mine\) : mine;/.test(code),
+ok(/\? allChips\.filter\(notOther\) : mine;/.test(MODEL),
   'the remainder is drawn from the UNFILTERED list');
-ok(/!shown\.has\(c\.id\)/.test(code),
+ok(/!shown\.has\(c\.id\)/.test(MODEL),
   'and never repeats a chip already shown inline');
+ok(/allChips: chipsByTrade\[''\],/.test(code),
+  'and the screen actually passes that unfiltered list in');
 ok(!/\bchips\.filter\(/.test(code),
   'no single project-wide chip list survives');
 // One fetch per DISTINCT trade, not one per crew.

@@ -16936,7 +16936,34 @@ async def get_activity_chips(
     # list is authoritative. Empty means unfiltered.
     from app.scheduling.trade_taxonomy_v1 import trades_for_roster
     out["trade"] = trade or None
-    out["resolved_trades"] = trades_for_roster(trade)
+    _resolved = trades_for_roster(trade)
+    out["resolved_trades"] = _resolved
+
+    # LEARN WHAT ADMINS ACTUALLY TYPE, rather than guessing at synonyms.
+    #
+    # The alias map is a FIXED LIST IN CODE by ruling: an unmapped trade falls
+    # back to the whole catalogue, which is loud in the right way and silent in
+    # the wrong way — too many chips, but nothing false. An admin-editable map
+    # would trade that for a mis-mapping nobody sees: `Cleaning` pointed at
+    # Demolition looks exactly like a correct suggestion, and it lands on the
+    # chip list behind a signed daily log.
+    #
+    # The real cost of a fixed list is that NOBODY FINDS OUT a string missed.
+    # `Concrete / Cement` sat on a live project resolving to nothing, and it
+    # only surfaced because someone read a roster by hand. This is the cheap
+    # half of the fix: the string is recorded, aliases get shipped from
+    # evidence, and nothing about the request changes.
+    #
+    # Deliberately NOT an error and NOT a metric with a threshold — it is a
+    # note. A crew whose trade is genuinely not in the taxonomy (a laborer, an
+    # equipment operator) will log one of these every day and that is correct
+    # behaviour, not a fault to alert on.
+    if trade and not _resolved:
+        logger.info(
+            "activity-chips: unresolved roster trade %r (project %s) - "
+            "crew fell back to the unfiltered catalogue",
+            str(trade)[:80], project_id,
+        )
     return out
 
 
