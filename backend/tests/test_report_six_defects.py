@@ -495,3 +495,63 @@ class TheAISentenceStillHasItsFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
+    """WHOSE CLAIM PUT EACH MAN ON THE SHEET — device round 4, ruling C.
+
+    A toolbox talk is a WEEKLY obligation built from a DAILY roster, so the CP
+    can now add men who worked earlier in the week. That is a genuinely weaker
+    claim than a gate check-in: the gate SAW the first man, and the CP is
+    ASSERTING the second. Recording the difference in the payload and then
+    printing every row identically would defeat the reason for recording it —
+    the stronger claim lending its authority to the weaker, on a signed record
+    an inspector reads.
+
+    Rendered, not grepped: this calls the real generate_combined_report.
+    """
+
+    def _html(self):
+        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
+        day["toolbox"] = {
+            **day["toolbox"],
+            "data": {"checked_topics": {}, "attendees": [
+                {"name": "Gate Man", "company": "AAZ", "added_from": "gate"},
+                {"name": "Week Man", "company": "AAZ", "added_from": "weekly_gap"},
+                {"name": "Typed Man", "company": "AAZ", "added_from": "manual"},
+                {"name": "Legacy Man", "company": "AAZ"},   # filed before the field
+            ]},
+        }
+        return _render(day)
+
+    def test_the_column_exists(self):
+        self.assertIn("Added by", self._html())
+
+    def test_the_three_claims_render_differently(self):
+        html = self._html()
+        for label in ("Gate", "CP &mdash; this week", "CP &mdash; added"):
+            self.assertIn(label, html, f"{label} is missing from the sheet")
+
+    def test_a_cp_assertion_is_never_printed_as_a_gate_check_in(self):
+        """The one substitution that would matter."""
+        html = self._html()
+        week_row = html[html.index("Week Man"):]
+        week_row = week_row[:week_row.index("</tr>")]
+        self.assertIn("this week", week_row)
+        self.assertNotIn(">Gate<", week_row)
+
+    def test_an_old_record_is_not_given_a_label_it_never_earned(self):
+        """Every attendee filed before `added_from` existed came from the gate
+        or from the CP's typing with no way to tell which. An em-dash says we
+        do not know; anything else is a guess printed onto a legal record."""
+        html = self._html()
+        legacy = html[html.index("Legacy Man"):]
+        legacy = legacy[:legacy.index("</tr>")]
+        self.assertNotIn("Gate", legacy)
+        self.assertNotIn("CP ", legacy)
+        self.assertIn("&mdash;", legacy)
+
+    def test_the_table_is_not_left_one_column_short(self):
+        """A header row wider than its empty-state placeholder renders a
+        ragged table on the one document nobody re-renders."""
+        self.assertNotIn('colspan="6"', _SRC)

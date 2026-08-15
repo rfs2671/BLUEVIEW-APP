@@ -13065,7 +13065,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
                 f'<td {TD}>{gate}</td>'
-                f'<td {TD}>{present}</td></tr>'
+                f'<td {TD}>{present}</td>'
+                f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
             )
 
         tb_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -13082,8 +13083,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th></tr>'
-            + (att_rows or f'<tr><td colspan="6" {TD}>—</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th><th {TH}>Added by</th></tr>'
+            + (att_rows or f'<tr><td colspan="7" {TD}>—</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + tb_sig
@@ -18046,6 +18047,35 @@ def _signature_affirmation_html(sig):
     )
 
 
+def _attendee_source_label(a) -> str:
+    """WHOSE CLAIM PUT THIS MAN ON THE SHEET.
+
+    Three provenances, recorded by the app as `added_from`:
+
+      'gate'         he checked in TODAY - the gate says he was on site
+      'weekly_gap'   he worked this WEEK; the CP is asserting he attended
+      'manual'       the CP typed him in; the app knows nothing about him
+
+    A toolbox talk is a WEEKLY obligation built from a DAILY roster, so the CP
+    can now add men who worked earlier in the week. That is a genuinely weaker
+    claim than a gate check-in, and a signed attendance record that renders the
+    two identically is the stronger one lending its authority to the weaker -
+    which is the whole reason the field is stored.
+
+    AN OLD RECORD HAS NO `added_from`. Every attendee filed before the field
+    existed came from the gate or from the CP's own typing with no way to tell
+    which, and inventing a label for those would be the same false confidence
+    this column exists to remove. They read as an em-dash: we do not know, and
+    the record says so.
+    """
+    raw = str((a or {}).get("added_from") or "").strip().lower()
+    return {
+        "gate": "Gate",
+        "weekly_gap": "CP &mdash; this week",
+        "manual": "CP &mdash; added",
+    }.get(raw, "&mdash;")
+
+
 def _roster_clock(v) -> str:
     """HH:MM for a roster row's check-in time. The toolbox roster carries the
     §3301.12.3 required fields (name, title, company, date/time); this renders
@@ -18861,7 +18891,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
                 f'<td {TD}>{gate}</td>'
-                f'<td {TD}>{present}</td></tr>'
+                f'<td {TD}>{present}</td>'
+                f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
             )
 
         tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature")
@@ -18878,8 +18909,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th></tr>'
-            + (att_rows or f'<tr><td colspan="6" {TD}>&mdash;</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th><th {TH}>Added by</th></tr>'
+            + (att_rows or f'<tr><td colspan="7" {TD}>&mdash;</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
             + tb_sig

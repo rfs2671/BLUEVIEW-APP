@@ -61,13 +61,23 @@ export default function LogbookStepper({
   // so a form that gates without explaining itself shows a bare button and
   // the gate test catches it.
   submitHint = '',
-  // GATING *NEXT* — the exception, not the rule.
+  // GATING *NEXT* — THE IDENTITY-FIELD EXCEPTION.
   //
-  // Everywhere else an incomplete step MARKS and never gates, because a CP
-  // must be able to finish his day (see incompleteSteps above). The operator
-  // ruled one exception: toolbox_talk step 1, whose five fields identify the
-  // talk on a filed §3301.12.3 record and none of which depend on anything he
-  // might not have yet. A form that passes nothing here is unaffected.
+  // THE RULE, unchanged: an incomplete step MARKS and never GATES, because a CP
+  // must be able to finish his day. A step he cannot complete — because the
+  // inspection has not happened, because the work is not done, because the
+  // information does not exist yet — must never trap him. See incompleteSteps.
+  //
+  // THE EXCEPTION, ruled by the operator and scoped deliberately narrowly:
+  // fields that IDENTIFY the record rather than describe the work. Today that
+  // is toolbox_talk step 1 — where the talk happened, whose talk it was, what
+  // work it covered, when, and for which company. Two of the five autofill and
+  // the rest are things the CP is standing in the middle of; none of them can
+  // be "not known yet" in the way an inspection result can.
+  //
+  // THE TEST FOR A FUTURE CALLER: gate only when every field is known at the
+  // moment the screen opens. Gating a CP on work he has not done yet is the
+  // thing the rule exists to prevent, and it is not what this is.
   //
   // `nextHint` is required in practice for the same reason submitHint is: a
   // dead button with no sentence is where a CP stops.
