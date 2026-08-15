@@ -46,7 +46,8 @@ const M = new Function(`
            formatCheckInTime, stepComplete,
            isUnassignedTrade, cleanTrade, tradeLabel, NO_TRADE_LABEL,
            INSPECTION_PASS, INSPECTION_FAIL, EMPTY_INSPECTION, inspectionRow,
-           inspectionComplete, incompleteInspections };
+           inspectionComplete, incompleteInspections,
+           composeChipBands, CHIP_SLOTS, OTHER_CHIP_ID };
 `)();
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -503,6 +504,114 @@ ok(builtSentinel.length === 1 && builtSentinel[0].trade === '',
 ok(M.buildCrewsFromRoster(
   [{ worker_id: 'w2', name: 'B', company: 'X', trade: 'Electrical' }], [],
 )[0].trade === 'Electrical', 'and a real trade still survives the boundary');
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DEVICE ROUND 4, FINDING 11 — four slots per crew, composed
+// ═════════════════════════════════════════════════════════════════════════════
+console.log('\n-- four slots, composed --');
+
+// The card was offering the whole catalogue: 86 chips on a cold start, 78 with
+// a prior. Four cannot be a top-four slice of one band, because the bands
+// answer different questions.
+const chip = (id, band, label) => ({ id, band, label: label || id });
+const SUGG = (n) => Array.from({ length: n }, (_, i) => chip(`s${i}`, 'suggested'));
+const ALW = ['site_cleanup', 'material_delivery', 'rain_no_work']
+  .map((i) => chip(i, 'always_available'));
+const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'));
+
+// ── with a prior: four, in graph order ──────────────────────────────────────
+{
+  const r = M.composeChipBands({
+    chips: [...SUGG(8), ...ALW, ...CAT(50)], priorDate: '2026-08-13',
+  });
+  ok(r.primary.length === M.CHIP_SLOTS, `a prior gives exactly ${M.CHIP_SLOTS} (got ${r.primary.length})`);
+  ok(r.primary.map((c) => c.id).join() === 's0,s1,s2,s3',
+    'and they are the TOP four in the ranker order, not a resort');
+  ok(r.basis === 'sequence', 'ranked off yesterday, and it says so');
+}
+
+// ── COLD START: all five, by ruling ─────────────────────────────────────────
+{
+  const r = M.composeChipBands({ chips: [...SUGG(5), ...ALW, ...CAT(60)], priorDate: null });
+  ok(r.primary.length === 5,
+    'ALL FIVE on a cold start — which of the five a cap of four drops is alphabetical accident, not judgement');
+  ok(r.basis === 'cold_start', 'and the basis distinguishes it from a real prior');
+}
+
+// ── ALWAYS-AVAILABLE never competes for a slot ──────────────────────────────
+{
+  const r = M.composeChipBands({ chips: [...SUGG(8), ...ALW, ...CAT(20)], priorDate: '2026-08-13' });
+  ok(r.always.length === 3,
+    'always-available is returned in FULL — what any crew can log on any day');
+  ok(r.primary.every((c) => c.band !== 'always_available'),
+    'and never occupies one of the four');
+  ok(r.rest.every((c) => c.band !== 'always_available'),
+    'nor is it folded behind the expander — burying "rain / no work" on a rain day is worse than a longer list');
+  ok(r.always.some((c) => c.id === 'rain_no_work'), 'rain / no work stays on the card');
+}
+
+// ── a trade with NO sequenced successors says so ────────────────────────────
+{
+  const r = M.composeChipBands({
+    chips: [...ALW, ...CAT(14)], resolvedTrades: ['Carpentry (rough)'],
+    priorDate: '2026-08-13',
+  });
+  ok(r.primary.length === M.CHIP_SLOTS && r.primary.every((c) => c.band === 'catalog'),
+    'a trade whose activities carry no graph edges still gets four');
+  ok(r.basis === 'trade',
+    'but the basis is TRADE — declaration order encodes nothing about yesterday, and the card must not imply it did');
+  ok(r.basis !== 'sequence', 'it never claims a ranking it does not have');
+}
+
+// ── an unresolved trade is not narrowed, and does not inline the catalogue ──
+{
+  const all = [...SUGG(8), ...ALW, ...CAT(60)];
+  const r = M.composeChipBands({ chips: all, resolvedTrades: [], priorDate: '2026-08-13' });
+  ok(r.primary.length === M.CHIP_SLOTS && r.basis === 'sequence',
+    'an UNMAPPED trade still gets four sequenced chips — the slot cap makes an alias miss survivable');
+  ok(r.primary.every((c) => c.band === 'suggested'),
+    'and the catalogue is never promoted for a crew whose trade did not resolve');
+}
+
+// ── nothing is hidden, only folded ──────────────────────────────────────────
+{
+  const r = M.composeChipBands({ chips: [...SUGG(8), ...ALW, ...CAT(50)], priorDate: '2026-08-13' });
+  const shown = new Set([...r.primary, ...r.always].map((c) => c.id));
+  const reachable = new Set([...shown, ...r.rest.map((c) => c.id)]);
+  ok(r.rest.length === 54,
+    `everything else is still reachable through the expander (${r.rest.length})`);
+  ok([...SUGG(8), ...CAT(50)].every((c) => reachable.has(c.id)),
+    'EVERY chip is reachable — a cap on what is offered first is not a cap on what can be logged');
+  ok(r.hidden === r.rest.length, 'and the count of what is folded is reported, not silent');
+}
+
+// ── the expander shows ALL activities, not the rest of this trade's ─────────
+{
+  const mine = [...ALW, ...CAT(14)];
+  const everything = [...SUGG(8), ...ALW, ...CAT(60)];
+  const r = M.composeChipBands({
+    chips: mine, allChips: everything, resolvedTrades: ['Carpentry (rough)'],
+    priorDate: '2026-08-13',
+  });
+  ok(r.rest.length > 14,
+    '"All activities" is drawn from the UNFILTERED list, so it means all activities');
+}
+
+// ── "Other" is never in any band ────────────────────────────────────────────
+{
+  const withOther = [...SUGG(8), ...ALW, chip(M.OTHER_CHIP_ID, 'other')];
+  const r = M.composeChipBands({ chips: withOther, priorDate: '2026-08-13' });
+  ok(![...r.primary, ...r.always, ...r.rest].some((c) => c.id === M.OTHER_CHIP_ID),
+    'Other is never in a band — the screen renders it itself, always last and always visible');
+}
+
+// ── it never throws, whatever it is handed ──────────────────────────────────
+for (const junk of [undefined, null, {}, { chips: null }, { chips: 'x' },
+  { chips: [null, undefined] }]) {
+  const r = M.composeChipBands(junk || {});
+  ok(Array.isArray(r.primary) && Array.isArray(r.always) && Array.isArray(r.rest),
+    `a well-formed result for ${JSON.stringify(junk)} — chips must never stop a CP logging a day`);
+}
 
 console.log(`
 ${passed} passed, ${failed} failed`);

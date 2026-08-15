@@ -396,3 +396,141 @@ class TheClientSendsIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRosterAliasesFromProduction(unittest.TestCase):
+    """THE STRINGS THREE REAL PROJECTS ACTUALLY CARRY.
+
+    Device round 4. A roster query found only three projects with trades set,
+    and between them they broke the resolver two different ways:
+
+        588 Thomas    'Concrete / Cement'
+        857 Prescott  'Concrete', 'Formwork', 'Electrical',
+                      'HVAC / Mechanical', 'Carpentry'
+        9 Menahan     'Safety', 'Framing', 'Cleaning'
+
+    'Concrete' and 'Concrete / Cement' are the SAME TRADE typed by two admins,
+    and one of them resolved to nothing and fell back to all 86 chips.
+    """
+
+    def test_every_live_roster_string_that_should_resolve_does(self):
+        for typed, expected in [
+            ("Concrete / Cement", ["Foundation / Concrete"]),
+            ("Concrete", ["Foundation / Concrete"]),
+            ("Formwork", ["Foundation / Concrete"]),
+            ("Electrical", ["Electrical"]),
+            ("HVAC / Mechanical", ["HVAC", "Mechanical piping"]),
+            ("Carpentry", ["Carpentry (rough)", "Carpentry (finish)"]),
+            ("Framing", ["Interior framing", "Wood framing"]),
+            ("Safety", ["Site safety"]),
+        ]:
+            with self.subTest(typed=typed):
+                self.assertEqual(trades_for_roster(typed), expected)
+
+    def test_the_same_trade_typed_two_ways_resolves_the_same_way(self):
+        """The defect in one line."""
+        self.assertEqual(trades_for_roster("Concrete / Cement"),
+                         trades_for_roster("Concrete"))
+
+    def test_cleaning_stays_unmapped(self):
+        """RULED, and the reasoning matters more than the assertion.
+
+        There is no cleaning trade in the 39, and the nearest candidates would
+        offer a cleaning crew structural demo. The work they actually log —
+        site clean-up, debris removal — is in the always-available band every
+        crew already gets on every day, so falling back costs them nothing and
+        a forced mapping would cost them a wrong chip list on a signed log.
+        """
+        self.assertEqual(trades_for_roster("Cleaning"), [])
+
+    def test_the_worker_noun_forms_resolve(self):
+        """A roster is written by whoever is at the gate, and he writes what a
+        man IS, not what the taxonomy calls the work."""
+        for typed, expected in [
+            ("Electrician", ["Electrical"]),
+            ("Plumber", ["Plumbing"]),
+            ("Mason", ["Masonry"]),
+            ("Roofer", ["Roofing"]),
+            ("Carpenter", ["Carpentry (rough)", "Carpentry (finish)"]),
+        ]:
+            with self.subTest(typed=typed):
+                self.assertEqual(trades_for_roster(typed), expected)
+
+    def test_ironworker_is_structural_steel_only(self):
+        """RULED, and deliberately UNDER-mapped.
+
+        In NYC "ironworker" covers structural AND reinforcing, and reinforcing
+        lives inside Foundation / Concrete — so claiming both would hand a rebar
+        crew the whole concrete package: footings, pours, curing, stripping.
+        Under-mapping costs four sequenced chips. Over-mapping puts another
+        trade's work in front of a crew on a signed log. Not symmetric.
+        """
+        self.assertEqual(trades_for_roster("Ironworker"), ["Structural steel"])
+        self.assertNotIn("Foundation / Concrete", trades_for_roster("Ironworker"))
+
+    def test_laborer_and_operator_stay_unmapped(self):
+        """A laborer works for whichever trade needs him that morning; an
+        operator runs a machine for whoever booked it. Neither is a trade here,
+        and forcing 'Operator' onto Excavation would be a guess about which
+        machine. What they log is always-available work, which reaches every
+        crew regardless of trade."""
+        self.assertEqual(trades_for_roster("Laborer"), [])
+        self.assertEqual(trades_for_roster("Operator"), [])
+
+
+class TestSeparatorRuleNotSpellings(unittest.TestCase):
+    """The map had `hvac / mechanical` AND `hvac/mechanical` as two literal
+    keys beside `hvac` — the separator problem met once and patched per
+    spelling. `Concrete / Cement` proved it was a missing RULE, not a missing
+    synonym. Both literals were deleted; if the rule regresses, HVAC breaks
+    loudly, which is the point of deleting them."""
+
+    def test_the_deleted_hvac_spellings_still_resolve_through_the_rule(self):
+        from app.scheduling.trade_taxonomy_v1 import ROSTER_TRADE_MAP
+        self.assertNotIn("hvac / mechanical", ROSTER_TRADE_MAP)
+        self.assertNotIn("hvac/mechanical", ROSTER_TRADE_MAP)
+        for typed in ("HVAC / Mechanical", "HVAC/Mechanical", "hvac , mechanical"):
+            with self.subTest(typed=typed):
+                self.assertEqual(trades_for_roster(typed),
+                                 ["HVAC", "Mechanical piping"])
+
+    def test_canonical_names_containing_a_separator_still_match_whole(self):
+        """Whole string FIRST. Canonical trade names contain the very
+        characters used to join two trades, so an exact match must win before
+        anything is taken apart."""
+        for name in ("Foundation / Concrete", "Shoring / underpinning",
+                     "CFS (cold-formed steel)", "Landscaping / hardscape",
+                     "Waterproofing (interior)"):
+            with self.subTest(name=name):
+                self.assertEqual(trades_for_roster(name), [name])
+
+    def test_two_word_canonical_names_are_never_split_on_and(self):
+        """`Windows and doors` and `Tile and stone` ARE trade names. The
+        splitter does not know the word "and" at all, rather than relying on
+        whole-string matching running first."""
+        self.assertEqual(trades_for_roster("Windows and doors"), ["Windows and doors"])
+        self.assertEqual(trades_for_roster("Tile and stone"), ["Tile and stone"])
+
+    def test_every_separator(self):
+        for joined in ("Electrical / Plumbing", "Electrical, Plumbing",
+                       "Electrical & Plumbing", "Electrical + Plumbing",
+                       "Electrical; Plumbing"):
+            with self.subTest(joined=joined):
+                self.assertEqual(trades_for_roster(joined), ["Electrical", "Plumbing"])
+
+    def test_partial_match_wins(self):
+        """One unrecognized half must not discard the recognized one — a crew
+        typed 'Concrete / Cement' is doing concrete. 'Steel / Cleaning'
+        therefore resolves to Structural steel alone, and the cleaning half
+        lands in always-available where it already was."""
+        self.assertEqual(trades_for_roster("Steel / Cleaning"), ["Structural steel"])
+        self.assertEqual(trades_for_roster("Cleaning / Operator"), [])
+
+    def test_a_split_never_duplicates_a_trade(self):
+        self.assertEqual(trades_for_roster("Concrete / Formwork"),
+                         ["Foundation / Concrete"])
+
+    def test_it_still_never_raises(self):
+        for junk in (None, 123, [], {}, "   ", "/", "///", "&,;+"):
+            with self.subTest(junk=junk):
+                self.assertEqual(trades_for_roster(junk), [])

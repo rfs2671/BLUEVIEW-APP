@@ -48,6 +48,8 @@ THREE CALLS THE OPERATOR HAS NOT RULED ON, made here and flagged:
 
 from __future__ import annotations
 
+import re
+
 from typing import Dict, List, Tuple
 
 from app.scheduling.schedule_models import WorkPackage
@@ -491,12 +493,22 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "foundation": ["Foundation / Concrete"],
     "electrical": ["Electrical"],
     "electric": ["Electrical"],
+    # THE MAN, NOT THE TRADE. A roster is written by whoever is standing at
+    # the gate, and he writes what a man IS. Every worker-noun below was
+    # unmapped and fell back to all 86 chips.
+    "electrician": ["Electrical"],
     "low voltage": ["Low voltage"],
     "hvac": ["HVAC", "Mechanical piping"],
-    "hvac / mechanical": ["HVAC", "Mechanical piping"],
-    "hvac/mechanical": ["HVAC", "Mechanical piping"],
+    # "hvac / mechanical" and "hvac/mechanical" USED TO BE HERE, as two literal
+    # keys beside this one. They were the separator problem met and patched per
+    # spelling rather than fixed: `Concrete / Cement` on a live project resolved
+    # to NOTHING for exactly the same reason and nobody had patched that one.
+    # trades_for_roster now splits on separators, so both spellings resolve
+    # through "hvac" + "mechanical". Deleting them is the test of whether the
+    # rule is real — if the rule regresses, HVAC breaks loudly.
     "mechanical": ["HVAC", "Mechanical piping"],
     "plumbing": ["Plumbing"],
+    "plumber": ["Plumbing"],
     "fire protection": ["Fire protection"],
     "sprinkler": ["Fire protection"],
     "elevator": ["Elevator"],
@@ -514,16 +526,25 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "waterproofing": ["Waterproofing", "Waterproofing (interior)"],
     "structural steel": ["Structural steel"],
     "steel": ["Structural steel"],
+    # STRUCTURAL ONLY, by ruling. In NYC "ironworker" covers structural AND
+    # reinforcing, and reinforcing lives inside Foundation / Concrete — so
+    # claiming both would hand a rebar crew the whole concrete package:
+    # footings, pours, curing, stripping. Under-mapping costs four sequenced
+    # chips; over-mapping puts another trade's work in front of a crew on a
+    # signed log. Not symmetric.
+    "ironworker": ["Structural steel"],
     "cfs": ["CFS (cold-formed steel)"],
     "cold-formed steel": ["CFS (cold-formed steel)"],
     "wood framing": ["Wood framing"],
     "framing": ["Interior framing", "Wood framing"],
     "masonry": ["Masonry"],
+    "mason": ["Masonry"],
     "facade": ["Facade / cladding"],
     "cladding": ["Facade / cladding"],
     "windows and doors": ["Windows and doors"],
     "glazing": ["Windows and doors"],
     "roofing": ["Roofing"],
+    "roofer": ["Roofing"],
     "sheet metal": ["Exterior sheet metal"],
     "interior framing": ["Interior framing"],
     "insulation": ["Insulation"],
@@ -542,6 +563,9 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "hardscape": ["Landscaping / hardscape"],
     "site safety": ["Site safety"],
     "scaffold": ["Site safety"],
+    # A live roster string. The two-word form was here and the bare noun a CP
+    # actually types was not.
+    "safety": ["Site safety"],
     "general conditions": ["General conditions"],
     "gc": ["General conditions"],
     "general contractor": ["General conditions"],
@@ -553,17 +577,25 @@ def normalize_roster_trade(value) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
-def trades_for_roster(value) -> List[str]:
-    """Taxonomy trades a free-text roster string claims. [] when unrecognized.
+# Separators an admin puts between two trades in one field. NOT the word "and":
+# `Windows and doors` and `Tile and stone` are canonical TRADE NAMES, and while
+# whole-string matching below catches them first, a splitter that cannot break
+# them at all is safer than one that relies on the order of two checks.
+_ROSTER_SEPARATOR_RE = r"[/,&+;]"
 
-    An unrecognized string is NOT an error and must never empty a crew's chip
-    list — the caller falls back to the unfiltered catalogue. Offering
-    everything is worse than offering the right thing, and far better than
-    offering nothing.
-    """
-    key = normalize_roster_trade(value)
-    if not key:
-        return []
+
+def _split_roster(key: str) -> List[str]:
+    """`concrete / cement` -> ['concrete', 'cement']. Order kept, deduped."""
+    out: List[str] = []
+    for part in re.split(_ROSTER_SEPARATOR_RE, key):
+        p = " ".join(part.split())
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+def _lookup_one(key: str) -> List[str]:
+    """One already-normalized token -> trades, or []."""
     if key in ROSTER_TRADE_MAP:
         return list(ROSTER_TRADE_MAP[key])
     # A trade named exactly as the taxonomy names it.
@@ -571,6 +603,49 @@ def trades_for_roster(value) -> List[str]:
         if normalize_roster_trade(trade) == key:
             return [trade]
     return []
+
+
+def trades_for_roster(value) -> List[str]:
+    """Taxonomy trades a free-text roster string claims. [] when unrecognized.
+
+    An unrecognized string is NOT an error and must never empty a crew's chip
+    list — the caller falls back to the unfiltered catalogue. Offering
+    everything is worse than offering the right thing, and far better than
+    offering nothing.
+
+    WHOLE STRING FIRST, THEN SPLIT. Canonical trade names contain the very
+    characters used to join two trades — `Foundation / Concrete`,
+    `Shoring / underpinning`, `CFS (cold-formed steel)` — so an exact match must
+    win before anything is taken apart.
+
+    WHY SPLIT AT ALL. `normalize_roster_trade` only lowercased and collapsed
+    whitespace, so `Concrete` resolved to Foundation / Concrete and
+    `Concrete / Cement` — the same trade, typed by a different admin on a live
+    project — resolved to nothing and fell back to all 86 chips. The map had
+    been patched with two literal `hvac / mechanical` spellings by someone who
+    hit this and treated it as a missing synonym. It is a missing rule.
+
+    PARTIAL MATCH WINS. `Concrete / Cement` resolves to Foundation / Concrete:
+    a crew typed that way is doing concrete, and one unrecognized half must not
+    discard the recognized one. `Steel / Cleaning` therefore resolves to
+    Structural steel alone — cleaning is not a taxonomy trade, and the work that
+    crew actually logs is in the always-available band every crew already gets.
+    """
+    key = normalize_roster_trade(value)
+    if not key:
+        return []
+    whole = _lookup_one(key)
+    if whole:
+        return whole
+    parts = _split_roster(key)
+    if len(parts) < 2:
+        return []                       # nothing to split; already missed above
+    out: List[str] = []
+    for part in parts:
+        for trade in _lookup_one(part):
+            if trade not in out:
+                out.append(trade)
+    return out
 
 
 def node_ids_for_trades(trades) -> frozenset:

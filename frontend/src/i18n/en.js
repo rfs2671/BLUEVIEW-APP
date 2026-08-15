@@ -205,6 +205,12 @@ export default {
     chipsSuggested: 'Suggested from yesterday',
     chipsAlwaysAvailable: 'Always available',
     chipsCatalog: 'All activities',
+    // Shown when a crew's four come from its TRADE rather than from the
+    // sequence. Most trades' activities carry no edges in the graph, so a
+    // crew with a real prior can still get no sequenced chips — and
+    // presenting a declaration-ordered list as though yesterday informed it
+    // would claim a ranking that does not exist.
+    chipsFromTrade: 'This trade’s work — not ranked off yesterday.',
     chipsRemembered: 'Used on this project',
     chipOther: 'Other',
     chipOtherPrompt: 'What was the activity?',

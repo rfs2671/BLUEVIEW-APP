@@ -116,6 +116,13 @@ export function buildStepperStyles() {
     },
 
     chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+    // Says what the chips above are ranked BY. Advisory, not a warning —
+    // a trade list is a perfectly good suggestion, it is just not a
+    // sequenced one, and the card must not imply otherwise.
+    chipBasisNote: {
+      fontSize: typography.sizes.fine, color: outdoor.textDim,
+      marginBottom: spacing.xs,
+    },
     chip: {
       minHeight: touchTarget.min, justifyContent: 'center',
       paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,

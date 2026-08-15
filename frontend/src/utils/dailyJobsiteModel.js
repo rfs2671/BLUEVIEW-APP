@@ -514,6 +514,88 @@ export function stepComplete(step, state) {
   }
 }
 
+/**
+ * FOUR SLOTS PER CREW, composed — device round 4, finding 11, ruled.
+ *
+ * The card was offering the whole catalogue: 86 chips on a cold start, 78 with
+ * a prior. Four is the cap the operator set, and it CANNOT be a top-four slice
+ * of one band, because the bands answer different questions.
+ *
+ * THE RULINGS, each with the reason it was ruled:
+ *
+ *   ALL FIVE ON A COLD START. The project-start set is exactly five — site
+ *   prep, excavation, shoring, underpinning, piles — and which one a cap of
+ *   four would drop is alphabetical accident, not judgement. Five is a small
+ *   enough overrun to be worth more than a tidy number.
+ *
+ *   ALWAYS-AVAILABLE NEVER COUNTS AGAINST THE FOUR. Site clean-up, material
+ *   delivery, inspection, rain / no work are what ANY crew can log on ANY day.
+ *   They are not this crew's ranked work, and burying "rain / no work" behind
+ *   an expander on a rain day is worse than a longer list.
+ *
+ *   THE PRIOR ITSELF STAYS IN. The ranker re-emits yesterday's activity in the
+ *   suggested band because work continues across days; dropping it to save a
+ *   slot would make the CP re-find it every morning.
+ *
+ *   A TRADE WITH NO SEQUENCED SUCCESSORS SAYS SO. `suggested` is narrowed by
+ *   intersection with the trade's nodes, and most trades' activities carry no
+ *   edges in the sequence graph, so a carpentry crew with a real prior gets
+ *   ZERO suggested chips. Its four then come from the trade catalogue in
+ *   declaration order — which encodes nothing about yesterday. `basis` says
+ *   which of the two happened so the card can be honest instead of implying a
+ *   ranking that does not exist.
+ *
+ * NOTHING IS HIDDEN, only folded: `rest` still holds everything else and the
+ * expander still reaches it. A cap on what is offered first is not a cap on
+ * what can be logged, and "Other" is always reachable.
+ */
+export const CHIP_SLOTS = 4;
+
+export function composeChipBands({ chips, allChips, resolvedTrades, priorDate }) {
+  // A malformed chip is DROPPED FIRST, before anything reads `.band`. The
+  // ranker is total and never returns one, but this runs on a network response
+  // and a chip list that throws would stop a CP logging a day of work — the
+  // one thing the whole sequence layer is written not to do.
+  const notOther = (c) => c && typeof c === 'object' && c.id !== OTHER_CHIP_ID;
+  const mine = (Array.isArray(chips) ? chips : []).filter(notOther);
+  const filtered = Array.isArray(resolvedTrades) && resolvedTrades.length > 0;
+
+  const suggested = mine.filter((c) => c.band === 'suggested');
+  const always = mine.filter((c) => c.band === 'always_available');
+  const tradeCatalog = filtered ? mine.filter((c) => c.band === 'catalog') : [];
+
+  // COLD START is the ranker falling back to the project-start set because
+  // there was no prior (or every prior was a rule miss). `prior_date` is the
+  // day the suggestions came from, and its absence is the only honest signal —
+  // counting chips would guess.
+  const coldStart = !priorDate;
+
+  let primary;
+  let basis;
+  if (suggested.length > 0) {
+    // All five on a cold start; capped otherwise.
+    primary = coldStart ? suggested : suggested.slice(0, CHIP_SLOTS);
+    basis = coldStart ? 'cold_start' : 'sequence';
+  } else if (tradeCatalog.length > 0) {
+    primary = tradeCatalog.slice(0, CHIP_SLOTS);
+    basis = 'trade';          // NOT ranked off yesterday, and the card says so
+  } else {
+    primary = [];
+    basis = 'none';
+  }
+
+  const shown = new Set(primary.map((c) => c.id));
+  // The remainder comes from the UNFILTERED list, so "all activities" means all
+  // activities rather than "the rest of this trade's".
+  const pool = (filtered && Array.isArray(allChips) && allChips.length > 0)
+    ? allChips.filter(notOther) : mine;
+  const rest = pool.filter(
+    (c) => !shown.has(c.id) && c.band !== 'always_available',
+  );
+
+  return { primary, always, rest, basis, hidden: rest.length };
+}
+
 export default {
   rosterKey,
   isUnassignedCompany,
@@ -534,6 +616,8 @@ export default {
   workRows,
   deriveGeneralDescription,
   OTHER_CHIP_ID,
+  CHIP_SLOTS,
+  composeChipBands,
   isUnboundCrew,
   observationComplete,
   incompleteObservations,

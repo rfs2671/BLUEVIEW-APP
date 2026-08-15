@@ -83,6 +83,7 @@ import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../.
 import { isOfflineError, settleFetch } from '../../src/utils/offlineState';
 import * as ImagePicker from 'expo-image-picker';
 import {
+  composeChipBands,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
   isUnassignedWorkerRow, workRows, tradeLabel,
@@ -545,27 +546,19 @@ export default function DailyJobsiteLog() {
    * the trade list — that ordering is what the sequence engine is for, and
    * this must not cost it. Neither band is ever pre-selected.
    */
+  // FOUR SLOTS, COMPOSED — the composition lives in dailyJobsiteModel so it can
+  // be EXECUTED rather than grepped. Inlining ~80 chips was the defect; a
+  // top-four slice of one band would have been a different one, because the
+  // always-available chips a crew logs every day are not this crew's ranked
+  // work and must not compete for the four.
   const chipBandsFor = (a) => {
-    const mine = chipsFor(a);
-    const resolved = chipsMetaByTrade[String(a?.trade || '').trim()]?.resolved_trades;
-    const filtered = Array.isArray(resolved) && resolved.length > 0;
-
-    const sequenced = mine.filter((c) => c.band === 'suggested');
-    // Promoted ONLY when a trade actually resolved. For a crew with no trade
-    // `mine` IS the whole catalogue, and inlining it would put ~80 chips on
-    // the card — the opposite of the fix.
-    const tradeWork = filtered
-      ? mine.filter((c) => c.band === 'catalog' && c.id !== OTHER_ACTIVITY_ID)
-      : [];
-
-    const shown = new Set([...sequenced, ...tradeWork].map((c) => c.id));
-    // The remainder is drawn from the UNFILTERED list, so "All activities"
-    // means all activities rather than "the rest of this trade's".
-    const everything = filtered ? (chipsByTrade[''] || mine) : mine;
-    const rest = everything.filter(
-      (c) => !shown.has(c.id) && c.id !== OTHER_ACTIVITY_ID,
-    );
-    return { sequenced, tradeWork, rest };
+    const meta = chipsMetaByTrade[String(a?.trade || '').trim()];
+    return composeChipBands({
+      chips: chipsFor(a),
+      allChips: chipsByTrade[''],
+      resolvedTrades: meta?.resolved_trades,
+      priorDate: meta?.prior_date,
+    });
   };
 
   const hydrate = (d) => {
@@ -1474,7 +1467,7 @@ export default function DailyJobsiteLog() {
         if (isUnassignedWorkerRow(a)) return null;
         // THIS crew's chips, not the project's. An electrical crew must never
         // be offered drywall.
-        const { sequenced, tradeWork, rest } = chipBandsFor(a);
+        const { primary, always, rest, basis } = chipBandsFor(a);
         const open = !!expandedChips[a.activity_id];
         const ready = cameraReady(a);
         const customA = Object.entries(a.custom_activity_labels || {});
@@ -1500,18 +1493,28 @@ export default function DailyJobsiteLog() {
 
             {/* ACTIVITY. Ranked, never pre-selected. */}
             <Text style={s.question}>{t('activityQuestion')}</Text>
+            {/* WHAT THESE FOUR ARE RANKED BY, said plainly. A trade whose
+                activities carry no edges in the sequence graph gets no
+                sequenced chips at all, and presenting its catalogue as though
+                yesterday informed it would claim a ranking that does not
+                exist. */}
+            {basis === 'trade' && (
+              <Text style={s.chipBasisNote}>{t('chipsFromTrade')}</Text>
+            )}
             <View style={s.chipWrap}>
-              {/* Sequenced off the prior day FIRST — a real prior outranks a
-                  trade list, and that ordering is what the engine is for. */}
-              {sequenced.map((c) => (
+              {primary.map((c) => (
                 <Chip
                   key={c.id} label={c.label}
                   selected={(a.activity_ids || []).includes(c.id)}
                   onPress={() => toggleActivityChip(i, c.id)}
                 />
               ))}
-              {/* Then this crew's own trade. Empty unless a trade resolved. */}
-              {tradeWork.map((c) => (
+              {/* ALWAYS-AVAILABLE, OUTSIDE THE FOUR by ruling. Site clean-up,
+                  material delivery, inspection, rain / no work — what any crew
+                  can log on any day. They are not this crew's ranked work, so
+                  they never compete for a slot, and folding them behind the
+                  expander would bury "rain / no work" on a rain day. */}
+              {always.map((c) => (
                 <Chip
                   key={c.id} label={c.label}
                   selected={(a.activity_ids || []).includes(c.id)}
