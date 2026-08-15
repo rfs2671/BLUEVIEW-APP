@@ -67,27 +67,11 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const [backLens, setBackLens] = useState('wide'); // 'ultra' | 'wide' — default main wide sensor
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
-  // TEMP camera-speed diagnostic — remove after the bottleneck is found.
-  //
-  // STAGE BREAKDOWN, not one number. The previous badge only timed what happens
-  // INSIDE this modal (take + handoff) and therefore could not see the stage
-  // that is most likely to be the missing seconds: React 18 BATCHES the caller's
-  // setState calls, so the screen-wide re-render they trigger runs AFTER
-  // handleShutter has already returned and is invisible to `handoff`. The
-  // caller now closes that loop itself through the `report` callback handed to
-  // onCapture (see handleShutter), so the badge shows:
-  //   take     — the native capture call (takeSnapshot / takePhoto)
-  //   handoff  — everything else still on the synchronous capture path
-  //   paint    — caller's state update → the frame it actually paints on
-  //   compress — the caller's BACKGROUND compress ladder, end to end
-  const [captureTiming, setCaptureTiming] = useState(null);
-  // Which shot owns the badge. A late `report` from an older shot is dropped so
-  // the numbers on screen always describe one single capture.
+  // Numbers each capture, so a late `report` from an older shot is identifiable
+  // in the log rather than being attributed to the current one.
   const shotSeqRef = useRef(0);
   const currentZoomRef = useRef(1);
   const baseZoomRef = useRef(1);
-  // TEMP (item 6): guards the one-time capability dump below.
-  const loggedFormatsRef = useRef(false);
 
   const uwDevice = useCameraDevice('back', { physicalDevices: ['ultra-wide-angle-camera'] });
   const wideDevice = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
@@ -146,36 +130,6 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     return () => sub.remove();
   }, []);
 
-  // ─── TEMP (item 6 — motion blur diagnosis) ────────────────────────────────
-  // One-time dump of the MOUNTED back device's real capabilities so the Pixel
-  // 10 Pro's actual format list can be read off a preview build, and the final
-  // useCameraFormat targets (fps floor / photoHdr / low-light-boost) chosen
-  // from data instead of a guess. supportsPhotoHdr is PER-FORMAT in
-  // vision-camera (there is no device.supportsPhotoHdr), so it is logged on
-  // each format row. REMOVE this block once the format is locked in.
-  useEffect(() => {
-    if (!device || loggedFormatsRef.current) return;
-    loggedFormatsRef.current = true;
-    const fmts = device.formats || [];
-    console.log(
-      `[item6] device id=${device.id} position=${device.position}`,
-      `supportsLowLightBoost=${device.supportsLowLightBoost}`,
-      `hasFlash=${device.hasFlash} minZoom=${device.minZoom} maxZoom=${device.maxZoom}`,
-      `formats=${fmts.length}`,
-    );
-    fmts.forEach((f, i) => {
-      console.log(
-        `[item6] fmt#${i}`,
-        `photo=${f.photoWidth}x${f.photoHeight}`,
-        `video=${f.videoWidth}x${f.videoHeight}`,
-        `fps=${f.minFps}-${f.maxFps}`,
-        `iso=${f.minISO}-${f.maxISO}`,
-        `supportsPhotoHdr=${f.supportsPhotoHdr}`,
-        `supportsVideoHdr=${f.supportsVideoHdr}`,
-      );
-    });
-  }, [device]);
-  // ─── END TEMP (item 6) ────────────────────────────────────────────────────
 
   // LENS DEFAULT (item 1 — REVERTED): the "open at widest" effect defaulted this
   // device to ultra-wide, and ultra-wide takePhoto is BROKEN here (won't capture)
@@ -266,27 +220,22 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         : await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
       const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
-      // Handed to the caller so IT can time the stages this modal cannot see.
-      // `ms` is passed explicitly by the caller when it measured a span of its
-      // own (the compress ladder); omitted, it means "now, since handoff".
-      // Only ever called asynchronously (rAF / promise), so the initial
-      // setCaptureTiming below has always landed before the first report.
+      // THE BADGE IS GONE; THE LOG IS NOT. The on-screen timing overlay was
+      // TEMP instrumentation for a latency diagnosis that has concluded, and
+      // temporary instrumentation on a CP-facing screen is the shape that
+      // outlives its reason. `report` stays because the CALLER still calls it
+      // (`report?.('paint')`, `report?.('compress')`) — those stages happen
+      // after this function returns and are invisible from here — and because
+      // a capture that hangs still needs a record of how far it got.
       const report = (stage, ms) => {
-        if (seq !== shotSeqRef.current) return; // a newer shot owns the badge
         const elapsed = typeof ms === 'number' ? ms : Date.now() - tShot;
         console.log('[CAM] #%d %s=%dms', seq, stage, elapsed);
-        setCaptureTiming((prev) => (prev && prev.seq === seq ? { ...prev, [stage]: elapsed } : prev));
       };
       onCapture(srcUri, report);
       const tHandoff = Date.now();
       // take = the native capture call; handoff = everything else in the modal.
-      // paint/compress arrive later, via report(), from the caller.
-      const timing = {
-        seq, take: tShot - t0, handoff: tHandoff - tShot, total: tHandoff - t0,
-        paint: null, compress: null,
-      };
-      console.log('[CAM] #%d capture=%dms handoff=%dms total=%dms', seq, timing.take, timing.handoff, timing.total);
-      setCaptureTiming(timing);
+      console.log('[CAM] #%d capture=%dms handoff=%dms total=%dms',
+        seq, tShot - t0, tHandoff - tShot, tHandoff - t0);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
     } finally {
@@ -330,6 +279,48 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         lowLightBoost={device?.supportsLowLightBoost === true}
         isActive={active && appActive}
         photo={true}
+        // ── WHY THE PREVIEW WAS BLACK (device round 5, finding 28) ──────────
+        //
+        // VisionCamera v4 defaults androidPreviewViewType to SURFACE_VIEW
+        // (CameraView.kt:91) -> PreviewView.ImplementationMode.PERFORMANCE ->
+        // a real SurfaceView. A SurfaceView CANNOT BE ALPHA-COMPOSITED: it
+        // punches a hole through the window instead of drawing into the view
+        // hierarchy, so giving a parent alpha < 1 forces the subtree into a
+        // hardware layer the SurfaceView does not join — and coming back to
+        // opacity 1 does not reliably re-attach it.
+        //
+        // This screen hides the PRE-WARMED camera with exactly that: opacity 0
+        // (see overlayHidden). So the preview came back black with the chrome
+        // drawn correctly on top, which is precisely what the device showed.
+        //
+        // Capture failed for the SAME reason, not a second one: Android's
+        // takeSnapshot is `previewView.bitmap ?: throw SnapshotFailedError()`
+        // (CameraView+TakeSnapshot.kt) — getBitmap() returns null when the
+        // preview is not rendering, so the throw landed in handleShutter's
+        // catch and nothing happened.
+        //
+        // A TextureView is an ordinary view: it composites with alpha, it
+        // survives the opacity toggle, and getBitmap() works on it. The cost is
+        // some preview performance, which is the right trade against a camera
+        // that cannot take a photo. Pure JS — no rebuild, ships by OTA.
+        androidPreviewViewType="texture-view"
+        // ── WHAT HE SEES IS WHAT HE GETS (finding 29) ───────────────────────
+        //
+        // NOT a lens problem. The lens default is already 'wide' and Android
+        // hardcodes neutralZoom to 1.0 (CameraDeviceDetails.kt:100), so the
+        // camera opens at 1x, not 0.5x.
+        //
+        // takeSnapshot captures previewView.bitmap — what is ON SCREEN, at the
+        // VIEW's dimensions, cropped by resizeMode. The default 'cover' crops a
+        // 4:3 sensor frame to the phone's tall aspect, so the filed photo was a
+        // screen-shaped crop of what the CP framed. That is the distortion.
+        //
+        // 'contain' letterboxes the preview to the sensor's real aspect, so the
+        // snapshot carries the whole frame and the CP is looking at exactly the
+        // photo he will file. Ruled over switching Android back to takePhoto: a
+        // three-second shutter is how a CP stops taking photos, and the image
+        // is downscaled to ~1280px either way.
+        resizeMode="contain"
         // SPEED (measured variable): v4 moved the still speed/quality trade-off
         // from the takePhoto option `qualityPrioritization` (removed) to THIS
         // Camera prop, which defaults to 'balanced' — the reason takePhoto sat at
@@ -346,19 +337,6 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
           if (uwIsDistinct && backLens === 'ultra') setBackLens('wide');
         }}
       />
-      {captureTiming && (
-        <View pointerEvents="none" style={styles.timingBadge}>
-          {/* Two compact lines: the synchronous capture path on top, the stages
-              the caller reports back underneath. `…` = still running, so a
-              stage that never lands is visibly the one that hangs. */}
-          <Text style={styles.timingText}>
-            #{captureTiming.seq} take {captureTiming.take} · handoff {captureTiming.handoff} · total {captureTiming.total}ms
-          </Text>
-          <Text style={styles.timingText}>
-            paint {captureTiming.paint ?? '…'} · compress {captureTiming.compress ?? '…'}ms
-          </Text>
-        </View>
-      )}
       <CameraOverlay
         shots={shots}
         capturing={capturing}
@@ -439,12 +417,6 @@ export default function CameraCaptureModal({ visible, shots, onClose, onCapture,
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
-  // TEMP camera-speed diagnostic overlay (top-center). Remove with the timing state.
-  timingBadge: {
-    position: 'absolute', top: 48, alignSelf: 'center', zIndex: 200, elevation: 200,
-    backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
-  },
-  timingText: { color: '#f59e0b', fontSize: 12, fontWeight: '600' },
   // elevation only when shown: an elevated-but-invisible view still casts a
   // shadow on Android.
   overlayShown: { opacity: 1, zIndex: 100, elevation: 100 },
