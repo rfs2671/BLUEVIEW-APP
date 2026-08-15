@@ -48,6 +48,32 @@ function ok(cond, label) {
  * documentation of the very fix it is checking for. Comments describe;
  * code behaves. Only code is asserted.
  */
+/**
+ * NO SOURCE FILE IS READ TWICE — and never raw, past the header.
+ *
+ * The raw reads above exist only to feed stripComments; everything below
+ * asserts against the stripped bindings. A later assertion that re-reads a file
+ * itself gets the comments back, and the modules under test DOCUMENT the very
+ * patterns being asserted — so an absence test reads the fix's own explanation
+ * and passes on code that is gone.
+ *
+ * That happened here, to the keyboard assertions, and only a mutation found it:
+ * a green suite cannot tell you it asserted the wrong string. The guard being
+ * present was never the problem — using it was, so this checks that it is used.
+ */
+function lateRawSourceReads(selfSrc) {
+  const header = selfSrc.indexOf('const code = stripComments(src);');
+  const late = selfSrc.slice(header);
+  const reads = [...late.matchAll(/fs\.readFileSync\([\s\S]{0,160}?'([^']+\.(?:jsx|js))'/g)]
+    .map((m) => m[1]);
+  // package.json, en.js and the model are DATA here — parsed, or matched on key
+  // names that never appear in prose. The screen and the stepper chrome are
+  // source whose comments can shadow an assertion about their code.
+  const SHADOWABLE = ['LogbookStepper.jsx', 'primitives.jsx',
+    'logbookStepper/styles.js', 'daily_jobsite.jsx'];
+  return reads.filter((r) => SHADOWABLE.some((s) => r.endsWith(s)));
+}
+
 function stripComments(text) {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -748,14 +774,17 @@ console.log('DEVICE ROUND 4 -- group 3');
 // handling at all: the keyboard covered it, and with taps not persisting the
 // first tap on it while another field held focus only dismissed the keyboard.
 {
-  // COMMENTS STRIPPED. The stepper's own comment quotes the prop it explains,
-  // so matching raw source passed with the prop DELETED — the mutation survived
-  // and only showed up because it was mutation-tested. Third time this project
-  // has hit a source assertion matching its own explanation.
-  const CHROME = fs.readFileSync(
-    path.join(__dirname, '..', 'components', 'logbookStepper', 'LogbookStepper.jsx'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  // `chromeSrc` — THIS FILE'S OWN STRIPPED BINDING, declared at the top.
+  //
+  // I re-read LogbookStepper.jsx raw here instead of using it, and the
+  // assertion below then matched the stepper's own COMMENT quoting the prop it
+  // explains. Deleting the actual prop left the test green. The guard existed,
+  // was applied to this exact file, and was sitting three lines from the
+  // binding I ignored — which is worse than not having one.
+  //
+  // Then I "fixed" it with a second, slightly different stripper inline, so
+  // this file briefly had two that could drift. There is one, and it is above.
+  const CHROME = chromeSrc;
   ok(/keyboardShouldPersistTaps="handled"/.test(CHROME),
     'stepper: a tap reaches the control while the keyboard is up');
   ok(/<KeyboardAvoidingView/.test(CHROME) && /<\/KeyboardAvoidingView>/.test(CHROME),
@@ -821,6 +850,18 @@ ok(/phInspectionOther/.test(code), 'and asks what was inspected');
   ok(/export const OTHER_INSPECTION_KEY = 'other_checklist';/.test(MODEL),
     'the key is unchanged — other_checklist, as every filed log already spells it');
   ok(/result: null, note: ''/.test(MODEL), 'and the row shape is unchanged');
+}
+
+
+// ── THE GUARD MUST ACTUALLY BE USED ─────────────────────────────────────────
+{
+  const selfSrc = fs.readFileSync(__filename, 'utf8');
+  const late = lateRawSourceReads(selfSrc);
+  ok(late.length === 0,
+    'no assertion re-reads a shadowable source file raw past the header — use '
+    + 'the stripped bindings (found: ' + (late.join(', ') || 'none') + ')');
+  ok((selfSrc.match(/function stripComments\(/g) || []).length === 1,
+    'and there is exactly ONE comment stripper in this file, not two that drift');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
