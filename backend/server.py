@@ -13018,7 +13018,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         body_html = (
             info_box(
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description", "N/A"))}<br />'
+                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description") or NOT_RECORDED)}<br />'
                 f'<strong style="color:#0A1929;">Time In:</strong> {data.get("time_in") or "N/A"}'
                 f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {data.get("time_out") or "N/A"}<br />'
                 f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(data.get("areas_visited") or "N/A")}'
@@ -18164,6 +18164,10 @@ NOT_RECORDED = "— Not recorded"
 
 # The nine daily inspections, in the order the CP walks them. Order lives here
 # so the PDF does not print them in whatever order a dict happened to be built.
+# "Other" names no specific thing, so pass/fail says nothing about anything.
+# It carries what the CP wrote instead. See _display_inspections.
+OTHER_INSPECTION_KEY = "other_checklist"
+
 INSPECTION_ORDER = [
     "street_frontage", "fire_safety", "perimeter_fence", "fall_protections",
     "neighbors_property", "license_spot_check", "plans", "permits",
@@ -18210,12 +18214,27 @@ def _display_inspections(chk) -> str:
         # Legacy tick shape, byte-identical to what it printed before.
         return ", ".join(_inspection_label(k) for k, v in rows if v)
 
-    passed, failed, unwalked = [], [], []
+    passed, failed, unwalked, other = [], [], [], []
     for key, value in rows:
         label = _inspection_label(key)
         if isinstance(value, dict):
             result = value.get("result")
             note = str(value.get("note") or "").strip()
+            # "OTHER" IS NOT A PASS/FAIL ITEM — device round 4, finding 13.
+            #
+            # The other eight name a specific thing to look at, so pass and
+            # fail mean something about that thing. "Other" names nothing, so
+            # a green "Passed: Other" on a DOB document asserts that an
+            # unnamed inspection was fine — a claim with no subject. It is now
+            # the CP writing WHAT he inspected, and the note is the record.
+            #
+            # A stored pass/fail from before this change still renders, in the
+            # branch below: an already-filed document does not change because
+            # the app later learned to record something better.
+            if key == OTHER_INSPECTION_KEY and not result:
+                if note:
+                    other.append(note)
+                continue
             if result == "fail":
                 failed.append((label, note))
             elif result == "pass":
@@ -18240,6 +18259,8 @@ def _display_inspections(chk) -> str:
         )
     if unwalked:
         out.append(f'Not inspected: {", ".join(unwalked)}')
+    for note in other:
+        out.append(f'Also inspected: {_html.escape(note)}')
     return "<br />".join(out)
 
 
@@ -18855,7 +18876,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             section_title("Daily Jobsite Log (NYC DOB 3301-02)")
             + info_box(
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(d.get("general_description", "N/A"))}'
+                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(d.get("general_description") or NOT_RECORDED)}'
                 # PRINTED ONLY WHEN SET. Nothing in the app writes these three:
                 # daily_jobsite.jsx holds timeIn/timeOut/areasVisited in state and
                 # hydrates them from a stored log, but no control anywhere sets
