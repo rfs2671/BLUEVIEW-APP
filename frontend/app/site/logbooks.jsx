@@ -540,6 +540,9 @@ export default function SiteLogbooksViewer() {
     const topics = data.checked_topics || {};
     const topicList = Object.entries(topics).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
     const attendees = data.attendees || [];
+  // `added_from` — see backend/server.py:_attendee_source_label. Only the two
+  // CP-asserted provenances mark; 'gate' and an absent value do not.
+  const cpAdded = (a) => a && (a.added_from === 'weekly_gap' || a.added_from === 'manual');
 
     return (
       <View style={s.docContent}>
@@ -572,7 +575,7 @@ export default function SiteLogbooksViewer() {
                 read "Signed", which told an inspector the opposite. */}
             <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Title', flex: 1 }, { text: 'Company', flex: 1 }, { text: 'In', flex: 0.8 }, { text: 'Present', flex: 0.7 }]} />
             {attendees.map((a, i) => (
-              <DocTableRow key={i} cells={[{ text: `${a.name || 'Unknown'}${a.gate_confirmed ? ' †' : ''}`, flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }, { text: a.signed ? '✓' : '—', flex: 0.7 }]} />
+              <DocTableRow key={i} cells={[{ text: `${a.name || 'Unknown'}${a.gate_confirmed ? ' †' : ''}${cpAdded(a) ? ' ‡' : ''}`, flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }, { text: a.signed ? '✓' : '—', flex: 0.7 }]} />
             ))}
             {/* The PDF carries gate-confirm as its own column; this phone-width
                 viewer would be unreadable at 6 columns, so it rides as a dagger
@@ -580,6 +583,23 @@ export default function SiteLogbooksViewer() {
             {attendees.some(a => a.gate_confirmed) && (
               <Text style={s.rosterLegend}>
                 † Confirmed attending at gate check-in (optional; not a required signature)
+              </Text>
+            )}
+            {/* WHOSE CLAIM PUT HIM HERE. The gate saying a man was on site and
+                the CP saying a man attended are different assertions, and a
+                roster that renders them identically is the stronger one lending
+                its authority to the weaker.
+
+                COMPRESSED TO A MARKER, for the same reason gate-confirm is: at
+                phone width this table cannot carry a sixth column. The PDF
+                splits `weekly_gap` from `manual` in its own column; here they
+                share one mark, because the distinction that matters on a
+                narrow screen is gate-versus-CP. A row filed before the field
+                existed carries no mark — we do not know, and guessing would be
+                the false confidence this exists to remove. */}
+            {attendees.some(cpAdded) && (
+              <Text style={s.rosterLegend}>
+                ‡ Added by the CP — not a gate check-in today
               </Text>
             )}
           </>

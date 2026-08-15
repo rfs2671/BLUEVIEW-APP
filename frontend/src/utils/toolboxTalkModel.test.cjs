@@ -258,6 +258,52 @@ ok(/projectData\?\.address \|\| projectData\?\.location \|\| projectData\?\.name
 ok(/user\?\.full_name \|\| user\?\.name/.test(SCREEN),
   'performed_by comes from the man holding the phone');
 
+// ── 3e. THE RECORD CAN TELL THE TWO CLAIMS APART ────────────────────────────
+console.log('\n-- added_from is RENDERED, not just stored --');
+
+// Storing the provenance and printing every row identically defeats the reason
+// for storing it: the gate saying a man was on site and the CP saying a man
+// attended are different assertions, and a signed sheet that renders them the
+// same way is the stronger one lending its authority to the weaker.
+ok((SERVER.match(/def _attendee_source_label\(a\) -> str:/g) || []).length === 1,
+  'the label is ONE helper, so the two PDF renderers cannot drift apart');
+// The braces matter: `_attendee_source_label(a)` also matches the def line.
+ok((SERVER.match(/\{_attendee_source_label\(a\)\}/g) || []).length === 2,
+  'and BOTH toolbox renderers call it');
+ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 2,
+  'both carry the column header');
+ok(!/colspan="6"/.test(SERVER),
+  'and both empty-roster placeholders widened with the table');
+// The three labels must be distinguishable, and an OLD record must not be
+// given one it never earned.
+for (const [k, v] of [['gate', 'Gate'], ['weekly_gap', 'CP &mdash; this week'],
+  ['manual', 'CP &mdash; added']]) {
+  ok(SERVER.includes(`"${k}": "${v}"`), `${k} renders as "${v}"`);
+}
+ok(/\}\.get\(raw, "&mdash;"\)/.test(SERVER),
+  'a row filed BEFORE the field existed reads as unknown, never as a guess');
+
+// The in-app viewer carries it too, compressed the way it already compresses
+// gate-confirm — at phone width the table cannot take a sixth column.
+const SITE = fs.readFileSync(
+  path.join(__dirname, '..', '..', 'app', 'site', 'logbooks.jsx'), 'utf8');
+ok(/const cpAdded = \(a\) =>/.test(SITE), 'the viewer has the predicate');
+ok(/added_from === 'weekly_gap' \|\| a\.added_from === 'manual'/.test(SITE),
+  'and marks only the two CP-asserted provenances');
+ok(/cpAdded\(a\) \? ' ‡' : ''/.test(SITE), 'the mark rides on the name');
+ok(/attendees\.some\(cpAdded\) && \(/.test(SITE),
+  'with a legend shown only when there is something to explain');
+
+// ── 3f. THE NEXT GATE IS LABELLED AS THE EXCEPTION ──────────────────────────
+const CHROME = fs.readFileSync(
+  path.join(__dirname, '..', 'components', 'logbookStepper', 'LogbookStepper.jsx'), 'utf8');
+ok(/THE IDENTITY-FIELD EXCEPTION/.test(CHROME),
+  'the stepper names what kind of exception this is');
+ok(/THE RULE, unchanged/.test(CHROME) && /THE TEST FOR A FUTURE CALLER/.test(CHROME),
+  'and gives a future caller a test rather than a precedent');
+ok(/incomplete step MARKS and never GATES/.test(CHROME),
+  'the rule it is an exception TO is still stated at the same place');
+
 // ── 4. THE PORT CARRIED THE REST ────────────────────────────────────────────
 console.log('\n-- what the port had to carry --');
 

@@ -705,8 +705,12 @@ export default function ToolboxTalkLog() {
       a11yProgressLabel={t('stepOf')
         .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
       nextLabel={t('next')}
-      /* STEP 1 IS THE ONE GATED STEP, by ruling. All five fields identify the
-         talk on a filed record; two of them autofill. Steps 2-4 page freely. */
+      /* STEP 1 IS THE ONE GATED STEP IN THE APP, and it is the IDENTITY-FIELD
+         exception rather than a change of rule — see LogbookStepper's
+         nextDisabled. All five identify the talk on a filed §3301.12.3 record,
+         two autofill, and none can be "not known yet". Steps 2-4 page freely,
+         because the topics covered, who attended and the signature are work,
+         and a CP is never trapped on work. */
       nextDisabled={step === 1 && missingStep1.length > 0}
       nextHint={step === 1 && missingStep1.length > 0
         ? t('step1Required').replace('{n}', String(missingStep1.length)) : ''}
