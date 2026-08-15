@@ -423,6 +423,22 @@ export const INSPECTION_FAIL = 'fail';
 
 export const EMPTY_INSPECTION = () => ({ result: null, note: '' });
 
+/**
+ * "OTHER" IS NOT A PASS/FAIL ITEM — device round 4, finding 13.
+ *
+ * The other eight name a specific thing to look at, so pass and fail mean
+ * something about that thing. "Other" names nothing. A green "Passed: Other"
+ * on a filed 3301-02 asserts that an unnamed inspection was fine — a claim
+ * with no subject, which is exactly the emptiness the tick-chips were replaced
+ * to remove.
+ *
+ * It carries the CP writing WHAT he inspected instead. Same {result, note}
+ * shape, so nothing about the payload changes; `result` simply stays null and
+ * the note is the record.
+ */
+export const OTHER_INSPECTION_KEY = 'other_checklist';
+export const isOtherInspection = (key) => key === OTHER_INSPECTION_KEY;
+
 /** One item's row, whatever shape the stored log used. See migrateChecklist. */
 export const inspectionRow = (items, key) => {
   const row = (items || {})[key];
@@ -624,6 +640,8 @@ export default {
   INSPECTION_PASS,
   INSPECTION_FAIL,
   EMPTY_INSPECTION,
+  OTHER_INSPECTION_KEY,
+  isOtherInspection,
   inspectionRow,
   inspectionComplete,
   incompleteInspections,

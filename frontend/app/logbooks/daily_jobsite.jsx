@@ -88,6 +88,7 @@ import {
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
   isUnassignedWorkerRow, workRows, tradeLabel,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
+  isOtherInspection,
   deriveGeneralDescription,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
   stepComplete,
@@ -450,8 +451,26 @@ export default function DailyJobsiteLog() {
       if (!roster) {
         setRosterPartial(true);
       } else {
-        setRosterPartial(Boolean(roster.partial));
-        setRosterCollapsed(roster.collapsed || 0);
+        // A COLLAPSE IS NOT A FAILURE TO CONFIRM — device round 4, finding 12.
+        //
+        // The server returns ONE boolean: `partial` is
+        // `bool(_degraded or _truncated or _collapsed)`. But a collapse is the
+        // opposite of a degradation — the server DID read the roster and merged
+        // two rows it could not tell apart. Gating the "could not confirm the
+        // full list" banner on it told the CP the read had failed on a day
+        // nothing failed and nobody was dropped.
+        //
+        // FORWARD-COMPATIBILITY IS PRESERVED, which is the point of the
+        // server's single boolean: anything that sets `partial` still raises
+        // the banner UNLESS the only reason given is a collapse. A degradation
+        // mode added server-side with no client change still warns.
+        const degraded = (roster.degraded_passes || []).length > 0;
+        const truncated = (roster.truncated_passes || []).length > 0;
+        const collapsed = roster.collapsed || 0;
+        const onlyCollapse = Boolean(roster.partial)
+          && collapsed > 0 && !degraded && !truncated;
+        setRosterPartial(Boolean(roster.partial) && !onlyCollapse);
+        setRosterCollapsed(collapsed);
       }
 
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
@@ -1306,6 +1325,9 @@ export default function DailyJobsiteLog() {
     <View>
       <StepHeader title={t('step1Title')} />
 
+      {/* THE READ FAILED. "May be incomplete" is a statement about the
+          SERVER, not about the roster, and it must only appear when the
+          server could genuinely not confirm the list. */}
       {rosterPartial && (
         <Card s={s} style={s.cardWarn}>
           <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
@@ -1315,6 +1337,21 @@ export default function DailyJobsiteLog() {
             {rosterCollapsed > 0 && (
               <Text style={s.warnText}>{t('rosterCollapsedBody')}</Text>
             )}
+          </View>
+        </Card>
+      )}
+
+      {/* TWO ROWS WERE MERGED. A different fact and a different sentence: the
+          server read the roster fine and could not tell two men apart. It is
+          worth telling the CP — the headcount may be one short — but it is not
+          a failed read, and dressing it as one taught him to ignore the
+          banner that means the read actually failed. */}
+      {!rosterPartial && rosterCollapsed > 0 && (
+        <Card s={s} style={s.cardWarn}>
+          <AlertTriangle size={20} strokeWidth={2} color={outdoor.warn} />
+          <View style={s.warnBody}>
+            <Text style={s.warnTitle}>{t('rosterCollapsedTitle')}</Text>
+            <Text style={s.warnText}>{t('rosterCollapsedBody')}</Text>
           </View>
         </Card>
       )}
@@ -1785,22 +1822,36 @@ export default function DailyJobsiteLog() {
               <Text style={s.noteText}>{t('inspectionLegacyTicked')}</Text>
             )}
 
-            <View style={s.chipWrap}>
-              <Chip
-                label={t('inspectionPass')}
-                selected={row.result === INSPECTION_PASS}
-                onPress={() => setInspection(it.key, INSPECTION_PASS)}
+            {/* "OTHER" NAMES NOTHING, so pass/fail says nothing about
+                anything — a green "Passed: Other" on a filed 3301-02 is a
+                claim with no subject. The CP writes what he inspected. */}
+            {isOtherInspection(it.key) ? (
+              <TextInput
+                style={s.input}
+                value={row.note}
+                onChangeText={(v) => setInspectionNote(it.key, v)}
+                placeholder={t('phInspectionOther')}
+                placeholderTextColor={outdoor.textDim}
+                multiline
               />
-              <Chip
-                label={t('inspectionFail')}
-                selected={failed}
-                onPress={() => setInspection(it.key, INSPECTION_FAIL)}
-              />
-            </View>
+            ) : (
+              <View style={s.chipWrap}>
+                <Chip
+                  label={t('inspectionPass')}
+                  selected={row.result === INSPECTION_PASS}
+                  onPress={() => setInspection(it.key, INSPECTION_PASS)}
+                />
+                <Chip
+                  label={t('inspectionFail')}
+                  selected={failed}
+                  onPress={() => setInspection(it.key, INSPECTION_FAIL)}
+                />
+              </View>
+            )}
 
             {/* A FAILED INSPECTION MUST SAY WHAT FAILED. Without this the fail
                 is the same empty record the tick was. */}
-            {failed && (
+            {failed && !isOtherInspection(it.key) && (
               <>
                 <Text style={s.question}>{t('inspectionNoteRequired')}</Text>
                 <TextInput

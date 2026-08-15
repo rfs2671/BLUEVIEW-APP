@@ -462,7 +462,10 @@ ok(/stepOf: 'Step \{n\} of \{m\}'/.test(en), 'the CP always knows where he is in
 console.log('\n── A short roster is never rendered as a complete one ──');
 
 ok(/getCheckinsRoster/.test(src), 'the screen asks for the roster ENVELOPE, not the bare list');
-ok(/setRosterPartial\(Boolean\(roster\.partial\)\)/.test(src),
+// NARROWED, not dropped. The flag is still carried; what changed is that a
+// pure COLLAPSE no longer counts as "the server could not confirm the list".
+// See the device-round-4 block below for the full rule.
+ok(/setRosterPartial\(Boolean\(roster\.partial\) && !onlyCollapse\);/.test(src),
   'the partial flag is carried into screen state');
 ok(/if \(!roster\) \{\s*setRosterPartial\(true\);/.test(src),
   'a roster read that FAILED is treated as partial, not as an empty jobsite');
@@ -732,6 +735,93 @@ ok(/tradeLabel\(a\.trade\)/.test(step1c), 'Step 1 renders the trade through the 
 ok(!/\{!!a\.trade &&/.test(code), 'and the raw trade render is gone everywhere');
 ok((code.match(/tradeLabel\(a\.trade\)/g) || []).length === 2,
   'both surfaces that show a roster trade use it — Step 1 and the Step 2 crew line');
+
+
+console.log('DEVICE ROUND 4 -- group 3');
+
+// ── 10. THE KEYBOARD MUST NOT SIT ON THE FIELD ──────────────────────────────
+//
+// The general description read as "not editable" on a device. It types fine on
+// web — I drove the exported build and it accepted input — so nothing in CI
+// could see it. It is the LAST multiline field on the longest step, directly
+// above the signature pad, and the stepper's ScrollView had no keyboard
+// handling at all: the keyboard covered it, and with taps not persisting the
+// first tap on it while another field held focus only dismissed the keyboard.
+{
+  // COMMENTS STRIPPED. The stepper's own comment quotes the prop it explains,
+  // so matching raw source passed with the prop DELETED — the mutation survived
+  // and only showed up because it was mutation-tested. Third time this project
+  // has hit a source assertion matching its own explanation.
+  const CHROME = fs.readFileSync(
+    path.join(__dirname, '..', 'components', 'logbookStepper', 'LogbookStepper.jsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  ok(/keyboardShouldPersistTaps="handled"/.test(CHROME),
+    'stepper: a tap reaches the control while the keyboard is up');
+  ok(/<KeyboardAvoidingView/.test(CHROME) && /<\/KeyboardAvoidingView>/.test(CHROME),
+    'stepper: and the field is lifted clear of the keyboard');
+  ok(/behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\}/.test(CHROME),
+    'stepper: iOS pads; Android already resizes, and forcing a behavior there double-shifts');
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+  ok(!deps.some((d) => /keyboard-aware|keyboard-controller|keyboard-manager/i.test(d)),
+    'and NO keyboard package was added — a native module would end OTA delivery');
+  const kav = CHROME.indexOf('<KeyboardAvoidingView');
+  ok(kav > -1 && kav < CHROME.indexOf('<ScrollView')
+     && CHROME.indexOf('</KeyboardAvoidingView>') < CHROME.indexOf('<View style={s.footer}>'),
+    'stepper: it wraps the scroll and NOT the footer — the primary action stays put');
+}
+
+// ── 12. A COLLAPSE IS NOT A FAILED READ ─────────────────────────────────────
+//
+// partial = degraded OR truncated OR collapsed, server-side. A collapse is the
+// OPPOSITE of a degradation: the server read the roster and merged two rows it
+// could not tell apart. Gating "could not confirm the full list" on it told the
+// CP the read had failed on a day nothing failed and nobody was dropped.
+ok(/const onlyCollapse = Boolean\(roster\.partial\)/.test(code),
+  'the two causes are separated');
+// FORWARD COMPATIBILITY is the point of the server's single boolean: a NEW
+// degradation mode must start warning with no client change.
+ok(/const degraded = \(roster\.degraded_passes \|\| \[\]\)\.length > 0;/.test(code)
+   && /const truncated = \(roster\.truncated_passes \|\| \[\]\)\.length > 0;/.test(code),
+  'the exemption is narrow: ONLY a collapse with nothing else reported');
+ok(/collapsed > 0 && !degraded && !truncated/.test(code),
+  'so anything else that sets partial still raises the banner, client unchanged');
+ok(/\{!rosterPartial && rosterCollapsed > 0 && \(/.test(code),
+  'a collapse gets its OWN disclosure rather than being silently dropped');
+ok(/rosterCollapsedTitle/.test(code),
+  'with its own heading — the two say different things about the server');
+{
+  const en = fs.readFileSync(path.join(__dirname, '..', 'i18n', 'en.js'), 'utf8');
+  const title = /rosterCollapsedTitle: '([^']+)'/.exec(en);
+  ok(title && !/incomplete|could not/i.test(title[1]),
+    'and it does not claim the read failed: ' + JSON.stringify(title && title[1]));
+}
+
+// ── 13. "OTHER" IS NOT A PASS/FAIL ITEM ─────────────────────────────────────
+//
+// The other eight name a specific thing, so pass and fail mean something about
+// it. "Other" names nothing, so a green "Passed: Other" on a filed 3301-02
+// asserts an unnamed inspection was fine — a claim with no subject, which is
+// the emptiness the tick-chips were replaced to remove.
+ok(/\{isOtherInspection\(it\.key\) \? \(/.test(code),
+  'Other renders a text field, not pass/fail chips');
+ok(/phInspectionOther/.test(code), 'and asks what was inspected');
+{
+  const step4 = code.slice(code.indexOf('CHECKLIST_ITEMS.map'), code.indexOf('const renderStep5'));
+  const otherAt = step4.indexOf('isOtherInspection(it.key) ? (');
+  const chipsAt = step4.indexOf("label={t('inspectionPass')}");
+  ok(otherAt > -1 && chipsAt > otherAt,
+    'the pass/fail chips are in the ELSE branch — unreachable for Other');
+  ok(/\{failed && !isOtherInspection\(it\.key\) && \(/.test(step4),
+    'and the fail-note block cannot fire for it either');
+}
+{
+  const MODEL = fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8');
+  ok(/export const OTHER_INSPECTION_KEY = 'other_checklist';/.test(MODEL),
+    'the key is unchanged — other_checklist, as every filed log already spells it');
+  ok(/result: null, note: ''/.test(MODEL), 'and the row shape is unchanged');
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -555,3 +555,89 @@ class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
         """A header row wider than its empty-state placeholder renders a
         ragged table on the one document nobody re-renders."""
         self.assertNotIn('colspan="6"', _SRC)
+
+
+class TestGroupThreeRendering(unittest.TestCase):
+    """Device round 4, group 3 — the two halves that live in the renderer."""
+
+    def _html(self, jobsite_data):
+        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
+        day["jobsite"] = {**day["jobsite"],
+                          "data": {**day["jobsite"]["data"], **jobsite_data}}
+        return _render(day)
+
+    # ── 14. AN EMPTY DESCRIPTION IS NOT A BLANK LABEL ────────────────────────
+    def test_an_empty_description_says_it_was_not_recorded(self):
+        """`data.get("general_description", "N/A")` returns "" for a stored
+        empty string — the default only fires when the KEY is absent. So a log
+        whose description was never written printed `Description:` with nothing
+        after it: a labelled void on a filed 3301-02, which reads as a document
+        that lost something rather than one that recorded nothing.
+
+        The description only lands when the CP has been on the review step to
+        see it — deliberately, since he is attesting to that sentence — so an
+        empty one is a NORMAL state and the document has to be able to say so.
+        """
+        html = self._html({"general_description": ""})
+        i = html.index("Description:")
+        self.assertIn("Not recorded", html[i:i + 200])
+
+    def test_BOTH_renderers_stopped_defaulting_to_a_key_that_is_present(self):
+        """The single-log PDF and the combined report each print this line, and
+        only one of them is reachable from _render. `.get(key, "N/A")` returns
+        "" for a stored empty string — the default fires only when the KEY is
+        ABSENT, which it never is once the screen has saved once. So the
+        fallback that looked like it was there was doing nothing in both.
+        """
+        for src, label in ((_SINGLE, "single-log PDF"), (_REPORT, "combined report")):
+            with self.subTest(renderer=label):
+                self.assertNotIn('general_description", "N/A"', src)
+                self.assertIn('general_description") or NOT_RECORDED', src)
+
+    def test_a_written_description_is_untouched(self):
+        html = self._html({"general_description": "Rebar and formwork on L4"})
+        self.assertIn("Rebar and formwork on L4", html)
+        i = html.index("Description:")
+        self.assertNotIn("Not recorded", html[i:i + 200])
+
+    # ── 13. "OTHER" IS NOT A PASS/FAIL ITEM ──────────────────────────────────
+    def test_other_prints_what_was_inspected_not_a_verdict(self):
+        """The other eight name a specific thing, so pass and fail say
+        something about it. "Other" names nothing — a green "Passed: Other" on
+        a DOB document asserts an unnamed inspection was fine, a claim with no
+        subject."""
+        html = self._html({"checklist_items": {
+            "fall_protections": {"result": "pass", "note": ""},
+            "other_checklist": {"result": None, "note": "hoist gate latch"},
+        }})
+        self.assertIn("Also inspected: hoist gate latch", html)
+        self.assertIn("Passed: Fall Protections", html)
+        # It must not be listed as unwalked either — it WAS inspected.
+        self.assertNotIn("Not inspected: Other", html)
+
+    def test_an_empty_other_prints_nothing_at_all(self):
+        """Nothing typed is nothing to report — not an unwalked item, because
+        "Other" is not an item anybody walks."""
+        html = self._html({"checklist_items": {
+            "fall_protections": {"result": "pass", "note": ""},
+            "other_checklist": {"result": None, "note": ""},
+        }})
+        self.assertNotIn("Also inspected", html)
+        self.assertNotIn("Not inspected: Other", html)
+
+    def test_a_pass_fail_STORED_ON_OTHER_still_renders(self):
+        """An already-filed document does not change because the app later
+        learned to record something better. A log filed while Other carried a
+        verdict keeps printing that verdict."""
+        html = self._html({"checklist_items": {
+            "other_checklist": {"result": "fail", "note": "gate left open"},
+        }})
+        self.assertIn("FAILED", html)
+        self.assertIn("gate left open", html)
+
+    def test_the_note_is_escaped(self):
+        html = self._html({"checklist_items": {
+            "other_checklist": {"result": None, "note": "<script>x</script>"},
+        }})
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)

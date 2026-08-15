@@ -115,6 +115,8 @@ export function buildStepperStyles() {
       padding: spacing.md,
     },
 
+    flex1: { flex: 1 },
+
     chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
     // Says what the chips above are ranked BY. Advisory, not a warning —
     // a trade list is a perfectly good suggestion, it is just not a

@@ -210,6 +210,9 @@ export default {
     // crew with a real prior can still get no sequenced chips — and
     // presenting a declaration-ordered list as though yesterday informed it
     // would claim a ranking that does not exist.
+    // "Other" is not a pass/fail item — it names nothing, so the CP names
+    // what he inspected and the note IS the record.
+    phInspectionOther: 'What else did you inspect?',
     chipsFromTrade: 'This trade’s work — not ranked off yesterday.',
     chipsRemembered: 'Used on this project',
     chipOther: 'Other',
@@ -291,6 +294,9 @@ export default {
     // shown as complete is a fabricated record, so the CP is told plainly.
     rosterPartialTitle: 'This roster may be incomplete',
     rosterPartialBody: 'The server could not confirm the full list of who was on site. Check the crews below and add anyone missing before you sign.',
+    // A MERGE, NOT A FAILED READ. Its own heading, because the two say
+    // different things about the server and only one of them is a fault.
+    rosterCollapsedTitle: 'Two workers may have been counted once',
     rosterCollapsedBody: 'Two workers with the same name at one company can be counted once. Check the worker counts below.',
 
     // Step 2 — activity, location, then the camera.

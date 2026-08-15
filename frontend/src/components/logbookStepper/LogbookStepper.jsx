@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   View, Text, Pressable, ScrollView, ActivityIndicator,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react-native';
@@ -163,7 +164,32 @@ export default function LogbookStepper({
           })}
         </View>
 
-        <ScrollView style={s.scroll} contentContainerStyle={s.scrollContent}>
+        {/* THE KEYBOARD MUST NOT SIT ON THE FIELD BEING TYPED INTO.
+            Device round 4, finding 10: the general description on the daily
+            jobsite log read as "not editable". It is the LAST multiline field
+            on the longest step, directly above the signature pad, and this
+            ScrollView had neither behaviour below — so on a phone the keyboard
+            covered it and, with taps not persisting, the first tap on it while
+            another field held focus only dismissed the keyboard. It types fine
+            on web, which is why nothing in CI could see it.
+
+            `keyboardShouldPersistTaps="handled"` — a tap on a control still
+            reaches the control while the keyboard is up; a tap on nothing still
+            dismisses it.
+
+            Pure JS on both counts. A keyboard-aware scroll PACKAGE would carry
+            a native module, and a native module ends OTA delivery — the same
+            rule DateField and TimeField were hand-built under. */}
+        <KeyboardAvoidingView
+          style={s.flex1}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+        <ScrollView
+          style={s.scroll}
+          contentContainerStyle={s.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+        >
           {/* A finalized log renders read-only. pointerEvents 'none' makes
               EVERY control below non-interactive — no per-field flags to miss.
               Scrolling still works; the LockBar stays interactive. */}
@@ -182,6 +208,7 @@ export default function LogbookStepper({
           />
           <Text style={s.autosaveNote}>{autosaveNote}</Text>
         </ScrollView>
+        </KeyboardAvoidingView>
 
         {/* ONE PRIMARY ACTION, and it is the largest element on the screen. */}
         {!locked && (
