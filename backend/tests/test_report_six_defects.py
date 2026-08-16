@@ -19,6 +19,7 @@ import re
 import sys
 import textwrap
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -641,3 +642,78 @@ class TestGroupThreeRendering(unittest.TestCase):
         }})
         self.assertNotIn("<script>", html)
         self.assertIn("&lt;script&gt;", html)
+
+
+class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
+    """DEVICE ROUND 5, FINDING 19 — the report half.
+
+    `amend_logbook` creates the amendment as a SECOND document sharing
+    (project_id, log_type, date). The renderer picked each type with
+    `next((l for l in logbooks if ...))` over a query with NO sort, so it
+    resolved to whatever Mongo returned first — insertion order, i.e. the
+    original. Once a log was amended the correction was invisible on the one
+    document that goes to investors and lenders.
+
+    THE RULING: the latest SIGNED record. An unsigned amendment is not a
+    correction, it is an intention to correct.
+    """
+
+    def _day(self, toolbox_docs):
+        """The real renderer, same fake db shape as _render — the toolbox slot
+        is replaced with whichever documents the case is about."""
+        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
+        db = _Db(
+            projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
+                                "address": "8 Walworth St"}),
+            logbooks=_Coll(docs=[day["preshift"], day["jobsite"], *toolbox_docs]),
+            daily_logs=_Coll(one=None),
+            checkins=_Coll(docs=[]),
+        )
+        with patch.object(server, "db", db):
+            return asyncio.run(server.generate_combined_report("p1", "2026-08-12"))
+
+    def _tb(self, _id, *, text, locked, status, created):
+        return {
+            "_id": _id, "log_type": "toolbox_talk", "date": "2026-08-12",
+            "is_locked": locked, "status": status,
+            "created_at": datetime(2026, 8, 12, created, tzinfo=timezone.utc),
+            "data": {"checked_topics": {}, "location": text,
+                     "attendees": [{"name": "Gate Man", "added_from": "gate"}]},
+        }
+
+    def test_an_UNSIGNED_amendment_does_not_replace_the_signed_original(self):
+        """The case that decided the ruling: a CP taps Amend at 4pm and has not
+        finished. Nothing has been corrected yet, and the report must not assert
+        that it has."""
+        original = self._tb("orig", text="ORIGINAL", locked=True, status="submitted", created=9)
+        child = self._tb("child", text="AMENDMENT", locked=False, status="draft", created=16)
+        html = self._day([original, child])
+        self.assertIn("ORIGINAL", html)
+        self.assertNotIn("AMENDMENT", html)
+
+    def test_a_SIGNED_amendment_supersedes_and_the_original_never_returns(self):
+        original = self._tb("orig", text="ORIGINAL", locked=True, status="submitted", created=9)
+        child = self._tb("child", text="AMENDMENT", locked=True, status="submitted", created=16)
+        html = self._day([original, child])
+        self.assertIn("AMENDMENT", html)
+        self.assertNotIn("ORIGINAL", html)
+
+    def test_insertion_order_does_not_decide_it(self):
+        """The whole defect in one assertion: the query has no sort, so the
+        renderer must not depend on which document comes back first."""
+        original = self._tb("orig", text="ORIGINAL", locked=True, status="submitted", created=9)
+        child = self._tb("child", text="AMENDMENT", locked=True, status="submitted", created=16)
+        self.assertIn("AMENDMENT", self._day([original, child]))
+        self.assertIn("AMENDMENT", self._day([child, original]))
+
+    def test_a_day_with_only_an_unfiled_draft_still_renders_it(self):
+        """Unchanged behaviour: nothing filed falls back to the first match
+        rather than blanking the section."""
+        draft = self._tb("d1", text="ONLY DRAFT", locked=False, status="draft", created=9)
+        self.assertIn("ONLY DRAFT", self._day([draft]))
+
+    def test_every_call_site_goes_through_the_resolver(self):
+        """Ten hand-written picks is how this pair drifted twice. One resolver,
+        and no `next(...)` survives to drift again."""
+        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 10)
+        self.assertNotIn('next((l for l in logbooks', _REPORT)

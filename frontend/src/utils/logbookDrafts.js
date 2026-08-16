@@ -168,7 +168,23 @@ export async function writeDraft(key, patch) {
     // Tier 1 (1): a FINALIZED (locked) log is immutable — the offline draft store
     // refuses further edits, mirroring the backend 423 guard. Only a patch that
     // explicitly sets `finalized` (the markFinalized call) passes, so the lock
-    // itself can be recorded. Corrections happen through an amendment (a NEW key).
+    // itself can be recorded.
+    //
+    // CORRECTED (device round 5, finding 19). This used to say "corrections
+    // happen through an amendment (a NEW key)" — and that was never true. The
+    // key is (project, logType, date) and `amend_logbook` copies all three onto
+    // the child, so parent and amendment collide on ONE key. Nothing ever
+    // produced a new one. The lock was made absolute on the strength of an
+    // escape hatch that did not exist, and for months the amendment a CP was
+    // handed could not be reached: the editor read this finalized draft, locked,
+    // and returned before asking the server for the child.
+    //
+    // WHAT ACTUALLY HAPPENS NOW: the lock stays absolute — a finalized draft is
+    // never edited in place — and the correction escapes by REPLACING this
+    // draft, not by writing beside it. `discardFinalizedDraft` below deletes the
+    // record once the server confirms an unlocked child exists, and the next
+    // load rebuilds from that child. See src/utils/amendmentAdopt.js.
+    //
     // A finalized draft's CONTENT is immutable. Two exceptions, both metadata:
     //   • `finalized` itself (so markFinalized can set the flag), and
     //   • `backend_id` — binding the server id after a deferred push is
@@ -209,6 +225,27 @@ export async function setDraftBackendId(key, backendId) {
  */
 export async function markFinalized(key) {
   return writeDraft(key, { finalized: true });
+}
+
+/**
+ * DELETE a draft outright, finalized or not.
+ *
+ * The ONE way past the finalize lock, and deliberately not a write: writeDraft
+ * refuses to edit a finalized draft's content, and it should — a filed record
+ * must never be mutated in place. An amendment is not an edit of the original;
+ * it is a DIFFERENT server document. So the local record of the original is
+ * discarded and the next load rebuilds from the child.
+ *
+ * Callers must have SERVER CONFIRMATION that the child exists before calling
+ * this. Discarding on a hunch would drop the only offline copy of a filed log.
+ */
+export async function discardFinalizedDraft(key) {
+  try {
+    await AsyncStorage.removeItem(key);
+    return true;
+  } catch (_e) {
+    return false;
+  }
 }
 
 // ── pending-push index (Phase B drains this; Phase A only records) ──────────

@@ -27,6 +27,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import { useT } from '../../src/i18n';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -130,6 +131,19 @@ export default function PreShiftSignIn() {
       if (_draft && _draft.data && (_draft.data.workers?.length || _draft.data.company)) {
         const d = _draft.data;
         // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked. amendmentAdopt discards the frozen parent ONLY
+        // on server confirmation; offline it is a no-op and the log stays
+        // locked, which is honest.
+        const _amended = _draft.finalized && await adoptAmendment({
+          key: draftKey({ projectId, logType: 'preshift_signin', date }), projectId, logType: 'preshift_signin', date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server
+          // path, which already prefers the unlocked document.
+        } else {
         if (_draft.finalized) {
           setLocked(true);
           markFinalized(draftKey({ projectId, logType: 'preshift_signin', date }));
@@ -164,6 +178,7 @@ export default function PreShiftSignIn() {
         if (_draft.cp_name) setCpName(_draft.cp_name);
         setLoading(false);
         return;
+        }
       }
 
       const [projectData, checkins, existingLogs, flaggedData] = await Promise.all([

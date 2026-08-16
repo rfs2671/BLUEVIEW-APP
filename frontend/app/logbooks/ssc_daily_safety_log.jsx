@@ -13,6 +13,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -116,6 +117,19 @@ export default function SSCDailySafetyLog() {
       const draft = await readDraft(key);
       if (draft) {
         // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked. amendmentAdopt discards the frozen parent ONLY
+        // on server confirmation; offline it is a no-op and the log stays
+        // locked, which is honest.
+        const _amended = draft.finalized && await adoptAmendment({
+          key: key, projectId, logType: LOG_TYPE, date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server
+          // path, which already prefers the unlocked document.
+        } else {
         if (draft.finalized) {
           setLocked(true);
           markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
@@ -140,6 +154,7 @@ export default function SSCDailySafetyLog() {
         if (draft.cp_name) setCpName(draft.cp_name);
         setLoading(false);
         return;
+        }
       }
 
       const [projectData, existingLogs] = await Promise.all([
