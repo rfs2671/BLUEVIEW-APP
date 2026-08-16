@@ -144,6 +144,13 @@ export default function OshaLogBook() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    // THE LOCK IS RE-DERIVED ON EVERY LOAD — device round 5. `locked` could
+    // only ever be set TRUE: no path set it back, so once a log was filed the
+    // screen stayed read-only for the life of the mount. After an amendment
+    // that is exactly wrong — #143 makes the editable child reachable, and
+    // this is what lets the screen show it without the CP backing out and
+    // re-entering. Everything below decides locked-ness from what it loads.
+    setLocked(false);
     try {
       // LOCAL-FIRST. A local draft wins over the server copy and over the
       // check-in rebuild, so an offline CP reopens to exactly what he filled
