@@ -58,7 +58,10 @@ ok(/androidPreviewViewType/.test(src) && !/punches a hole/.test(src),
 
 console.log('\n-- the preview is a TextureView, so opacity cannot black it out --');
 
-ok(/androidPreviewViewType="texture-view"/.test(src),
+// The literal moved into a named constant so the diagnostic can REPORT the
+// value that is actually passed rather than a second copy that could drift.
+ok(/const PREVIEW_TYPE = 'texture-view';/.test(src)
+   && /androidPreviewViewType=\{PREVIEW_TYPE\}/.test(src),
   'the Camera renders into a TextureView, not the default SurfaceView');
 // The prewarm is what makes this necessary. If the hiding mechanism ever stops
 // being opacity-based, this prop stops being load-bearing — and whoever changes
@@ -122,6 +125,58 @@ ok(pkg.dependencies['react-native-vision-camera'].includes('4'),
   'still vision-camera v4 — no dependency change, so no new native module');
 ok(!/require\(|import\(/.test(src.split('export default')[1] || ''),
   'and nothing is lazily pulled in at render time');
+
+console.log('\n-- the readout, because the diagnosis has to come from the device --');
+
+ok(/onPreviewStarted=\{/.test(src) && /onPreviewStopped=\{/.test(src),
+  'the preview lifecycle is observed — onPreviewStarted separates "not streaming" from "streaming but not painting"');
+ok(/onInitialized=\{/.test(src) && /onStarted=\{/.test(src) && /onStopped=\{/.test(src),
+  'and so is the session lifecycle');
+ok(/noteDiag\(\{ error: /.test(src) && /err\?\.code/.test(src),
+  'onError is recorded VERBATIM with its code — a paraphrase is a second diagnosis');
+ok(/FAILED — /.test(src), 'a failed capture is recorded with its message');
+ok(/shutter: `#\$\{seq\} ok /.test(src),
+  'and a successful one, so "not tried" and "tried and worked" are distinguishable');
+
+for (const [needle, label] of [
+  ['device: ${device ?', 'which device was found, or NONE'],
+  ['previewType: ${PREVIEW_TYPE}', 'the preview view type ACTUALLY in use'],
+  ['isActive: ${isActiveNow}', 'whether the camera was told to be active'],
+  ['appState=${AppState.currentState}', 'the AppState input to that, read live'],
+  ['error: ${diag.error', 'any error, verbatim'],
+  ['shutter: ${diag.shutter', 'the last shutter result'],
+  ['permission: ${hasPermission}', 'the permission state'],
+]) {
+  ok(src.includes(needle), 'the readout reports ' + label);
+}
+
+console.log('\n-- gated, and labelled as temporary --');
+
+ok(/\{active && previewFailed && \(/.test(src),
+  'the panel shows only when the preview has FAILED, never in normal use');
+ok(/const previewFailed = !!diag\.error/.test(src) && /graceOver && !diag\.previewStarted/.test(src),
+  'failure is something the library or the OS said, not a guess');
+ok(/setGraceOver\(true\), 2500\)/.test(src),
+  'with a grace period, so a healthy camera never flashes it');
+ok(/CAMERA DIAGNOSTIC \(temporary\)/.test(raw), 'it says on its face that it is temporary');
+ok(/TEMPORARY DIAGNOSTIC/.test(raw) && /REMOVE THIS with the finding it exists for/.test(raw),
+  'and the code says when to delete it — the last two were removed in #142');
+ok(/Clipboard\.setStringAsync\(diagText\)/.test(src),
+  'the readout is copyable — the operator has no logcat and has to relay it');
+
+console.log('\n-- the lock is re-derived on every load --');
+
+const APP = path.join(__dirname, '..', '..', 'app', 'logbooks');
+for (const f of ['daily_jobsite', 'toolbox_talk', 'osha_log', 'scaffold_maintenance',
+  'preshift_signin', 'ssc_daily_safety_log']) {
+  const form = fs.readFileSync(path.join(APP, f + '.jsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(/setLocked\(false\);/.test(form), f + ': a load can UNLOCK, not only lock');
+  const reset = form.indexOf('setLocked(false)');
+  const firstLock = form.indexOf('setLocked(true)');
+  ok(reset > -1 && (firstLock === -1 || reset < firstLock),
+    f + ': and it resets BEFORE anything decides to lock');
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

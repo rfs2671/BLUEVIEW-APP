@@ -5,6 +5,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
+import * as Clipboard from 'expo-clipboard';
 import CameraOverlay from './CameraOverlay';
 
 /**
@@ -52,6 +53,10 @@ export function useCameraPrewarmPermission() {
   return hasPermission;
 }
 
+// The value passed to <Camera> below. Named so the diagnostic reports what is
+// ACTUALLY in use rather than what someone believes is in use.
+const PREVIEW_TYPE = 'texture-view';
+
 function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const camera = useRef(null);
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -70,6 +75,35 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // Numbers each capture, so a late `report` from an older shot is identifiable
   // in the log rather than being attributed to the current one.
   const shotSeqRef = useRef(0);
+  /**
+   * WHY THE PREVIEW IS BLACK — the readout, because the diagnosis has to come
+   * from the device.
+   *
+   * TEMPORARY. This is instrumentation on a CP-facing screen, and it is gated:
+   * it appears only once the preview has DEMONSTRABLY failed, never in normal
+   * use. Remove it with the finding it exists for.
+   *
+   * `previewStarted` is the fact that matters. VisionCamera fires
+   * onPreviewStarted when the preview surface begins receiving frames, so it
+   * separates the two halves cleanly: never started means the session is not
+   * streaming (permission, device, isActive, a competing holder), started and
+   * still black means it IS streaming and something above it is not painting.
+   */
+  const [diag, setDiag] = useState({
+    initialized: false, started: false, previewStarted: false,
+    stopped: false, previewStopped: false, error: null, shutter: null,
+  });
+  const noteDiag = useCallback((patch) => setDiag((p) => ({ ...p, ...patch })), []);
+  // Grace period: a healthy camera takes a moment to start, and a panel that
+  // flashed on every open would be noise the CP learns to ignore.
+  const [graceOver, setGraceOver] = useState(false);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!active) { setGraceOver(false); return undefined; }
+    const h = setTimeout(() => setGraceOver(true), 2500);
+    return () => clearTimeout(h);
+  }, [active]);
+
   const currentZoomRef = useRef(1);
   const baseZoomRef = useRef(1);
 
@@ -218,6 +252,7 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
       const photo = Platform.OS === 'android'
         ? await camera.current.takeSnapshot({ quality: 90 })
         : await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
+      noteDiag({ shutter: `#${seq} ok ${photo?.width || '?'}x${photo?.height || '?'}` });
       const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
       // THE BADGE IS GONE; THE LOG IS NOT. The on-screen timing overlay was
@@ -238,10 +273,33 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         seq, tShot - t0, tHandoff - tShot, tHandoff - t0);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
+      noteDiag({ shutter: `#${seq} FAILED — ${e?.code || ''} ${e?.message || String(e)}` });
     } finally {
       setCapturing(false);
     }
-  }, [capturing, onCapture, device, position, backLens]);
+  }, [capturing, onCapture, device, position, backLens, noteDiag]);
+
+  // ── the readout ──────────────────────────────────────────────────────────
+  // FAILED means: the session said so, a capture said so, or the preview never
+  // started. Not "looks wrong" — every branch here is something the library or
+  // the OS told us.
+  const previewFailed = !!diag.error
+    || (diag.shutter || '').includes('FAILED')
+    || (graceOver && !diag.previewStarted);
+  const isActiveNow = active && appActive;
+  const diagText = [
+    `preview: ${diag.previewStarted ? 'started' : 'NEVER STARTED'}${diag.previewStopped ? ' (then stopped)' : ''}`,
+    `session: init=${diag.initialized} started=${diag.started} stopped=${diag.stopped}`,
+    `isActive: ${isActiveNow} (visible=${active} appState=${AppState.currentState})`,
+    `device: ${device ? `${device.id} ${device.position}` : 'NONE FOUND'}`,
+    device ? `physical: ${(device.physicalDevices || []).join('+') || 'n/a'} zoom ${device.minZoom}-${device.maxZoom}` : '',
+    `lens: ${position}/${backLens}  previewType: ${PREVIEW_TYPE}`,
+    `permission: ${hasPermission}`,
+    `format: ${format ? `${format.photoWidth}x${format.photoHeight}` : 'device default'} fps=${fps ?? 'default'} exposure=${exposure ?? 'default'}`,
+    `lowLightBoost: ${device?.supportsLowLightBoost === true}`,
+    `error: ${diag.error || 'none'}`,
+    `shutter: ${diag.shutter || 'not tried'}`,
+  ].filter(Boolean).join('\n');
 
   if (!hasPermission) {
     return (
@@ -303,7 +361,7 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         // survives the opacity toggle, and getBitmap() works on it. The cost is
         // some preview performance, which is the right trade against a camera
         // that cannot take a photo. Pure JS — no rebuild, ships by OTA.
-        androidPreviewViewType="texture-view"
+        androidPreviewViewType={PREVIEW_TYPE}
         // ── WHAT HE SEES IS WHAT HE GETS (finding 29) ───────────────────────
         //
         // NOT a lens problem. The lens default is already 'wide' and Android
@@ -328,8 +386,16 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         // MINIMIZE_LATENCY on Android). This is the single change to re-measure.
         photoQualityBalance="speed"
         zoom={zoom}
+        onInitialized={() => noteDiag({ initialized: true })}
+        onStarted={() => noteDiag({ started: true, stopped: false })}
+        onStopped={() => noteDiag({ stopped: true })}
+        onPreviewStarted={() => noteDiag({ previewStarted: true, previewStopped: false })}
+        onPreviewStopped={() => noteDiag({ previewStopped: true })}
         onError={(err) => {
           console.warn('vision-camera error:', err?.message);
+          // VERBATIM. A paraphrased error is a second diagnosis on top of the
+          // first, and the code is the part that names the cause.
+          noteDiag({ error: `${err?.code || 'unknown'}: ${err?.message || String(err)}` });
           // Untested-OEM safety net: if a DISTINCT ultra-wide device
           // fails to start, drop to the wide lens so the user never sees
           // a dead/black camera. (The zoom-based UW path is unaffected —
@@ -337,6 +403,32 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
           if (uwIsDistinct && backLens === 'ultra') setBackLens('wide');
         }}
       />
+      {/* ── TEMPORARY DIAGNOSTIC — device round 5, finding 28 ───────────────
+          The preview is black on the operator's device and logcat is not
+          available, so the state has to be readable ON the screen.
+
+          GATED: it appears only once the preview has demonstrably failed —
+          an error, a failed capture, or no onPreviewStarted after the grace
+          period. A healthy camera never shows it.
+
+          REMOVE THIS with the finding it exists for. Temporary instrumentation
+          on a CP-facing screen is the shape that outlives its reason, which is
+          why the last two were deleted in #142. */}
+      {active && previewFailed && (
+        <View style={styles.diagPanel} pointerEvents="box-none">
+          <Text style={styles.diagTitle}>CAMERA DIAGNOSTIC (temporary)</Text>
+          <Text style={styles.diagText} selectable>{diagText}</Text>
+          <Pressable
+            style={styles.diagCopy}
+            accessibilityRole="button"
+            onPress={() => Clipboard.setStringAsync(diagText).then(
+              () => setCopied(true), () => {},
+            )}
+          >
+            <Text style={styles.diagCopyText}>{copied ? 'Copied' : 'Copy'}</Text>
+          </Pressable>
+        </View>
+      )}
       <CameraOverlay
         shots={shots}
         capturing={capturing}
@@ -421,6 +513,21 @@ const styles = StyleSheet.create({
   // shadow on Android.
   overlayShown: { opacity: 1, zIndex: 100, elevation: 100 },
   overlayHidden: { opacity: 0, zIndex: -1, elevation: 0 },
+  // TEMPORARY diagnostic panel — remove with the finding it exists for.
+  // Deliberately plain and unbranded: it is not part of the product, and it must
+  // not read as one. Positioned top-left so it never covers the shutter.
+  diagPanel: {
+    position: 'absolute', top: 40, left: 12, right: 12, zIndex: 300, elevation: 300,
+    backgroundColor: 'rgba(0,0,0,0.82)', borderRadius: 8, padding: 10,
+    borderWidth: 1, borderColor: '#f59e0b',
+  },
+  diagTitle: { color: '#f59e0b', fontSize: 11, fontWeight: '700', marginBottom: 6 },
+  diagText: { color: '#e2e8f0', fontSize: 11, lineHeight: 16, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  diagCopy: {
+    marginTop: 8, alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 8,
+    borderRadius: 6, backgroundColor: '#334155',
+  },
+  diagCopyText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#000' },
   msg: { color: '#fff', fontSize: 15, textAlign: 'center', marginBottom: 24, lineHeight: 22 },
   primaryBtn: {
