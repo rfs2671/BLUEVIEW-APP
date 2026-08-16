@@ -62,14 +62,24 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const [position, setPosition] = useState('back'); // 'back' | 'front'
-  // MEASURED CHANGE (camera diag): rear default was 'ultra' (ultra-wide), and the
-  // device measured the ultra-wide REAR capture hanging 60s+ (never returned)
-  // while the front returned in ~5s. The ultra-wide is a distinct physical sensor
-  // with a slower/quirkier still path; the main WIDE sensor is the fast, reliable
-  // one and is what a jobsite compliance photo should use. Change ONE variable
-  // (ultra→wide) and re-measure before touching the format criteria — so we learn
-  // whether the hang was the ultra-wide sensor or the format selection.
-  const [backLens, setBackLens] = useState('wide'); // 'ultra' | 'wide' — default main wide sensor
+  // ULTRA-WIDE IS THE DEFAULT — operator ruling. He uses it for every site
+  // photo and finds it holds detail across a large site.
+  //
+  // THE OLD REASON FOR 'wide' NO LONGER STANDS. It was measured against
+  // `takePhoto` hanging on the ultra-wide sensor — but that was measured while
+  // `lowLightBoost` was routing the session through the NIGHT vendor extension,
+  // which is the configuration that could not bind at all on this device.
+  // Extensions routinely do not cover a phone's auxiliary physical cameras, so
+  // "ultra-wide cannot capture" was very likely the same fault wearing a
+  // different hat, and it was never re-measured with a session that configures.
+  //
+  // AND IT IS MOOT ON ANDROID: capture there is `takeSnapshot`, which reads
+  // `previewView.bitmap` and never touches ImageCapture. Whatever the preview
+  // shows, the snapshot gets — on any lens.
+  //
+  // A phone with no ultra-wide degrades to its widest available framing through
+  // the zoom logic below; nothing here assumes the sensor exists.
+  const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide'
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
   // Numbers each capture, so a late `report` from an older shot is identifiable
@@ -165,17 +175,13 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   }, []);
 
 
-  // LENS DEFAULT (item 1 — REVERTED): the "open at widest" effect defaulted this
-  // device to ultra-wide, and ultra-wide takePhoto is BROKEN here (won't capture)
-  // even with photoQualityBalance:'speed' — the same failure ultra-wide had
-  // before. Measured verdict: on this device the widest lens that actually
-  // CAPTURES is the WIDE (1×) lens, so the default stays 'wide' (useState above).
-  // A wider VIEW, if ever wanted, comes from zooming OUT on the wide lens — never
-  // by auto-switching to the ultra-wide sensor that can't take a photo. The
-  // [CAM] shutter log (before takePhoto) records the device+lens+format attempted,
-  // and the `vision-camera capture failed:` warn in the catch records the error —
-  // together they show WHY ultra-wide fails, but the fix is: default to the lens
-  // that works.
+  // SUPERSEDED. This block used to argue for defaulting to 'wide' because
+  // ultra-wide `takePhoto` would not capture. That measurement was taken with
+  // the NIGHT vendor extension in the session configuration — the one that
+  // could not bind at all — and it was never repeated once the session could
+  // configure. It is also moot on Android, where capture is takeSnapshot and
+  // never reaches ImageCapture. The default is 'ultra' by ruling; the shutter
+  // log and the diagnostic panel record what any future capture actually does.
 
   // Framing for the current lens: distinct-device UW → device neutral;
   // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
@@ -296,7 +302,9 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     `lens: ${position}/${backLens}  previewType: ${PREVIEW_TYPE}`,
     `permission: ${hasPermission}`,
     `format: ${format ? `${format.photoWidth}x${format.photoHeight}` : 'device default'} fps=${fps ?? 'default'} exposure=${exposure ?? 'default'}`,
-    `lowLightBoost: ${device?.supportsLowLightBoost === true}`,
+    // What is PASSED, and what the device CLAIMS — they disagreed, and the
+    // disagreement is the whole finding.
+    `lowLightBoost: passed=false deviceClaims=${device?.supportsLowLightBoost === true}`,
     `error: ${diag.error || 'none'}`,
     `shutter: ${diag.shutter || 'not tried'}`,
   ].filter(Boolean).join('\n');
@@ -334,7 +342,37 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         fps={fps}
         exposure={exposure}
         photoHdr={false}
-        lowLightBoost={device?.supportsLowLightBoost === true}
+        // ── WHY THE SESSION NEVER STARTED (device round 5, and the readout
+        //    named it) ────────────────────────────────────────────────────────
+        //
+        //   preview: NEVER STARTED   session: init=false started=false
+        //   error: Pixel extensions not supported in framework path
+        //
+        // `lowLightBoost` is not a setting — it swaps the whole cameraSelector
+        // for an EXTENSION-backed one:
+        //
+        //   cameraSelector = cameraSelector.withExtension(..., ExtensionMode.NIGHT, "NIGHT")
+        //   camera = provider.bindToLifecycle(this, cameraSelector, *useCases)
+        //   callback.onInitialized()      <- the line AFTER the bind
+        //
+        // (CameraSession+Configuration.kt:261-282). The bind threw, so nothing
+        // below it ever ran — which is exactly the init=false/started=false the
+        // panel reported. #142 was correct and simply could not matter: the
+        // session never got far enough for compositing to be reached.
+        //
+        // THE LIBRARY DOES EXPOSE A CHECK, AND WE WERE ALREADY USING IT.
+        // `device.supportsLowLightBoost` is
+        // `extensionsManager.isExtensionAvailable(selector, ExtensionMode.NIGHT)`
+        // (CameraDeviceDetails.kt:80) — and on this device it returned TRUE and
+        // the bind then failed. The extensions manager advertises what the
+        // vendor declares; the framework path is where it has to actually work.
+        // A check that says yes and then throws is not a check.
+        //
+        // So: OFF, unconditionally. A camera that opens beats a camera with
+        // night mode. If low-light capture is ever wanted back, it needs a
+        // configure-then-recover path (bind, catch, rebind without the
+        // extension) — not a boolean anyone can trust up front.
+        lowLightBoost={false}
         isActive={active && appActive}
         photo={true}
         // ── WHY THE PREVIEW WAS BLACK (device round 5, finding 28) ──────────

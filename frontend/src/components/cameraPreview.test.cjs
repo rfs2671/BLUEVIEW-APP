@@ -85,8 +85,9 @@ ok(/resizeMode="contain"/.test(src),
 ok(!/resizeMode="cover"/.test(src), 'and never the cropping default');
 // The lens default was already right and must stay right: Android hardcodes
 // neutralZoom to 1.0, so 'wide' opens at 1x.
-ok(/useState\('wide'\)/.test(src),
-  "the back lens still defaults to the main wide sensor, not the ultra-wide");
+ok(/useState\('ultra'\)/.test(src),
+  'the back lens defaults to ULTRA-WIDE, by ruling');
+ok(!/useState\('wide'\)/.test(src), 'and the superseded default is gone, not merely bypassed');
 ok(/const showLensToggle = false/.test(src),
   'and the lens chips stay gone — zoom is pinch-only');
 
@@ -177,6 +178,31 @@ for (const f of ['daily_jobsite', 'toolbox_talk', 'osha_log', 'scaffold_maintena
   ok(reset > -1 && (firstLock === -1 || reset < firstLock),
     f + ': and it resets BEFORE anything decides to lock');
 }
+
+console.log('\n-- the extension that stopped the session ever starting --');
+
+// The readout named it: preview NEVER STARTED, session init=false started=false,
+// error "Pixel extensions not supported in framework path". lowLightBoost is not
+// a setting — it swaps the cameraSelector for an EXTENSION-backed one and binds
+// with it, and onInitialized is the line AFTER that bind
+// (CameraSession+Configuration.kt:261-282). The bind threw, so nothing ran.
+ok(/lowLightBoost=\{false\}/.test(src),
+  'lowLightBoost is OFF unconditionally — a camera that opens beats night mode');
+// THE CHECK EXISTS AND WE WERE ALREADY USING IT. supportsLowLightBoost is
+// extensionsManager.isExtensionAvailable(..., NIGHT); it returned TRUE on this
+// device and the bind then failed. A check that says yes and then throws is not
+// a check, so it must not gate this prop again.
+ok(!/lowLightBoost=\{device\?\.supportsLowLightBoost/.test(src),
+  'and it is NOT gated on supportsLowLightBoost, which claimed support then threw');
+ok(/photoHdr=\{false\}/.test(src),
+  'the other vendor extension stays off too — the library throws if both are on');
+ok(/passed=false deviceClaims=/.test(src),
+  'and the readout reports what is PASSED beside what the device CLAIMS');
+
+console.log('\n-- the panel stays until the device says the preview starts --');
+
+ok(/\{active && previewFailed && \(/.test(src),
+  'the diagnostic is still here — it goes when the operator confirms the preview starts');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
