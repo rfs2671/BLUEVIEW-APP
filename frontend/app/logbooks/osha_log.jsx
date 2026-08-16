@@ -173,7 +173,28 @@ export default function OshaLogBook() {
         } else {
         if (draft.finalized) { setLocked(true); markFinalized(_key); }
         setExistingLogId(draft.backend_id || null);
-        setEntries(draft.data.entries);
+
+        // AN EMPTY REGISTER MUST STILL REBUILD — the FOURTH form with this
+        // trap (toolbox_talk and preshift_signin in #137, daily_jobsite in
+        // this PR). The branch condition is `Array.isArray(draft.data.entries)`,
+        // which an EMPTY array satisfies, so opening the register before
+        // anyone had checked in stored `entries: []` and every reopen set the
+        // list to that and returned. buildEntriesFromCheckins was never
+        // reached and the register could not recover.
+        //
+        // REBUILT IN PLACE, not by falling through: falling through would
+        // re-hydrate from the server and discard local work. Offline the fetch
+        // fails and the empty list stands, which is honest and unchanged.
+        const _stored = Array.isArray(draft.data.entries) ? draft.data.entries : [];
+        if (_stored.length > 0) {
+          setEntries(_stored);
+        } else {
+          const _fresh = await logbooksAPI
+            .getCheckinsForDate(projectId, date).catch(() => null);
+          const _built = Array.isArray(_fresh)
+            ? buildEntriesFromCheckins(_fresh, date) : [];
+          setEntries(_built.length > 0 ? _built : [EMPTY_ENTRY()]);
+        }
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
         setLoading(false);
