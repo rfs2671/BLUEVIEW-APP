@@ -36,6 +36,7 @@ import {
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography, outdoor, touchTarget } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 
 /**
  * SCAFFOLD MAINTENANCE LOG — the NYC DOB sidewalk-shed daily inspection, on the
@@ -141,6 +142,20 @@ export default function ScaffoldMaintenanceLog() {
       // and the server copy, so an offline CP reopens to what he filled.
       const draft = await readDraft(_key);
       if (draft?.data && Object.keys(draft.data).length) {
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked: the child sat there unlocked and unreachable
+        // while the logbook list showed it as a Draft. amendmentAdopt discards
+        // the frozen parent ONLY on server confirmation; offline it is a no-op
+        // and the log stays locked, which is honest.
+        const _amended = draft.finalized && await adoptAmendment({
+          key: _key, projectId, logType: LOG_TYPE, date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server
+          // path, which already prefers the unlocked document.
+        } else {
         if (draft.finalized) { setLocked(true); markFinalized(_key); }
         setExistingLogId(draft.backend_id || null);
         if (draft.data.general_info) setGeneralInfo(draft.data.general_info);
@@ -149,6 +164,7 @@ export default function ScaffoldMaintenanceLog() {
         if (draft.cp_name) setCpName(draft.cp_name);
         setLoading(false);
         return;
+        }
       }
 
       const [scaffoldInfo, existingLogs] = await Promise.all([

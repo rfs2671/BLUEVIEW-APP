@@ -18482,6 +18482,52 @@ def render_signature_html(sig, label="CP Signature"):
     return ""
 
 
+def _filed_log(logbooks, log_type):
+    """The log of this type the report should print: THE LATEST SIGNED RECORD.
+
+    WHY THIS EXISTS. Ten call sites did `next((l for l in logbooks if ...))` on
+    a query with NO sort, so each type resolved to whatever Mongo returned
+    first — insertion order. `amend_logbook` creates the amendment as a SECOND
+    document sharing (project_id, log_type, date), so once a log was amended the
+    report kept printing the original and the correction was invisible. Ten
+    hand-written picks is how the client and this renderer drifted apart twice;
+    there is one now, and every call site goes through it.
+
+    AN UNSIGNED AMENDMENT IS NOT A CORRECTION — it is an intention to correct.
+    Replacing a signed record with it on a document that goes to investors and
+    lenders would assert a change nobody has attested to. So supersession waits
+    for the signature: the original prints until the amendment is FILED, and
+    from that moment the amendment prints and the original never appears again.
+    An in-progress amendment is not surfaced at all — "amendment in progress"
+    tells a reader nothing actionable and invites being read as an admission.
+
+    FILED means `is_locked` (the finalize flag) or `status == "submitted"` (the
+    freeze for the immediate types). A cp_signature on an open draft is not a
+    filed record. Ties break on created_at, newest first, then on _id so the
+    choice is deterministic when timestamps collide.
+
+    NOTHING FILED YET falls back to the first match, which is exactly the old
+    behaviour: a day with only an unfiled draft still renders that draft rather
+    than a blank section.
+    """
+    same_type = [l for l in logbooks if l.get("log_type") == log_type]
+    if not same_type:
+        return None
+
+    def _is_filed(l):
+        return bool(l.get("is_locked")) or l.get("status") == "submitted"
+
+    def _order(l):
+        created = l.get("created_at")
+        return (created if isinstance(created, datetime) else datetime.min.replace(tzinfo=timezone.utc),
+                str(l.get("_id", "")))
+
+    filed = [l for l in same_type if _is_filed(l)]
+    if filed:
+        return max(filed, key=_order)
+    return same_type[0]
+
+
 async def generate_combined_report(project_id: str, date: str) -> str:
     """Generate email-safe HTML report. Uses table-based layout, bgcolor attrs,
     and URL-based images for Gmail/Outlook/Apple Mail compatibility.
@@ -18575,7 +18621,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     # ==========================================================
     #  DAILY JOBSITE (CP Logbook)
     # ==========================================================
-    daily_jobsite = next((l for l in logbooks if l.get("log_type") == "daily_jobsite"), None)
+    daily_jobsite = _filed_log(logbooks, "daily_jobsite")
     # PAGE 1 - THE PROGRESS REPORT
     #
     # WHO THIS IS FOR. An investor or a bank, who asked "what was really done
@@ -18910,7 +18956,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     # ==========================================================
     #  TOOLBOX TALK
     # ==========================================================
-    toolbox = next((l for l in logbooks if l.get("log_type") == "toolbox_talk"), None)
+    toolbox = _filed_log(logbooks, "toolbox_talk")
     toolbox_html = ""
     if toolbox:
         td_data = toolbox.get("data", {})
@@ -18967,7 +19013,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     # ==========================================================
     #  PRE-SHIFT SIGN-IN
     # ==========================================================
-    preshift = next((l for l in logbooks if l.get("log_type") == "preshift_signin"), None)
+    preshift = _filed_log(logbooks, "preshift_signin")
     preshift_html = ""
     if preshift:
         pd = preshift.get("data", {})
@@ -19128,7 +19174,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     # shown as a clean row. The osha_log snapshot itself carries no review state,
     # so we look it up now; match is by (worker_id, card_number).
     osha_html = ""
-    osha_lb = next((l for l in logbooks if l.get("log_type") == "osha_log"), None)
+    osha_lb = _filed_log(logbooks, "osha_log")
     if osha_lb:
         osha_entries = (osha_lb.get("data") or {}).get("entries") or []
 
@@ -19217,7 +19263,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  HOT WORK PERMIT
     # ==========================================================
     hot_work_html = ""
-    hw_lb = next((l for l in logbooks if l.get("log_type") == "hot_work"), None)
+    hw_lb = _filed_log(logbooks, "hot_work")
     if hw_lb:
         d = hw_lb.get("data") or {}
 
@@ -19277,7 +19323,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  CRANE OPERATIONS
     # ==========================================================
     crane_html = ""
-    crane_lb = next((l for l in logbooks if l.get("log_type") == "crane_operations"), None)
+    crane_lb = _filed_log(logbooks, "crane_operations")
     if crane_lb:
         d = crane_lb.get("data") or {}
 
@@ -19351,7 +19397,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  EXCAVATION MONITORING
     # ==========================================================
     exc_html = ""
-    exc_lb = next((l for l in logbooks if l.get("log_type") == "excavation_monitoring"), None)
+    exc_lb = _filed_log(logbooks, "excavation_monitoring")
     if exc_lb:
         d = exc_lb.get("data") or {}
 
@@ -19414,7 +19460,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  SCAFFOLD MAINTENANCE INSPECTION
     # ==========================================================
     scaffold_html = ""
-    scaffold_lb = next((l for l in logbooks if l.get("log_type") == "scaffold_maintenance"), None)
+    scaffold_lb = _filed_log(logbooks, "scaffold_maintenance")
     if scaffold_lb:
         d = scaffold_lb.get("data") or {}
         gi = d.get("general_info") or {}
@@ -19596,7 +19642,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  SSC DAILY SAFETY LOG
     # ==========================================================
     ssc_html = ""
-    ssc_lb = next((l for l in logbooks if l.get("log_type") == "ssc_daily_safety_log"), None)
+    ssc_lb = _filed_log(logbooks, "ssc_daily_safety_log")
     if ssc_lb:
         d = ssc_lb.get("data") or {}
 
@@ -19653,7 +19699,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #  CONCRETE OPERATIONS
     # ==========================================================
     concrete_html = ""
-    concrete_lb = next((l for l in logbooks if l.get("log_type") == "concrete_operations"), None)
+    concrete_lb = _filed_log(logbooks, "concrete_operations")
     if concrete_lb:
         d = concrete_lb.get("data") or {}
 

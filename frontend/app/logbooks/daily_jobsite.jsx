@@ -81,6 +81,7 @@ import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../.
 // The app-wide OFFLINE discriminator — the same one settleFetch is built on.
 // "Offline" here has to mean what it means everywhere else: no response at all.
 import { isOfflineError, settleFetch } from '../../src/utils/offlineState';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import * as ImagePicker from 'expo-image-picker';
 import {
   composeChipBands,
@@ -423,6 +424,20 @@ export default function DailyJobsiteLog() {
       const draft = await readDraft(_key);
       if (draft?.data && Object.keys(draft.data).length) {
         hydrate(draft.data);
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked: the child sat there unlocked and unreachable
+        // while the logbook list showed it as a Draft. amendmentAdopt discards
+        // the frozen parent ONLY on server confirmation; offline it is a no-op
+        // and the log stays locked, which is honest.
+        const _amended = draft.finalized && await adoptAmendment({
+          key: _key, projectId, logType: 'daily_jobsite', date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server
+          // path, which already prefers the unlocked document.
+        } else {
         if (draft.finalized) { setLocked(true); markFinalized(_key); }
         setExistingLogId(draft.backend_id || null);
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
@@ -431,6 +446,7 @@ export default function DailyJobsiteLog() {
         loadProjectShell();
         setLoading(false);
         return;
+        }
       }
 
       const [projectData, roster, headcount, existingLogs] = await Promise.all([

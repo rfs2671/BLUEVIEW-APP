@@ -3,6 +3,7 @@ import { View, Text, Pressable, Modal, TextInput, StyleSheet, ActivityIndicator 
 import { Lock, FileEdit, CheckCircle2, X, AlertTriangle } from 'lucide-react-native';
 import { logbooksAPI } from '../utils/api';
 import { finalizeErrorCode, readFinalizeError, clearFinalizeError } from '../utils/draftSync';
+import { discardFinalizedDraft } from '../utils/logbookDrafts';
 import { isImmediateLog } from '../utils/logbookTiming';
 import { useT } from '../i18n';
 import { useToast } from './Toast';
@@ -136,6 +137,13 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
     setBusy(true);
     try {
       await logbooksAPI.amend(logId, reason.trim());
+      // DISCARD THE FROZEN PARENT — device round 5, finding 19. The editor is
+      // local-first and the parent and its amendment share ONE draft key, so
+      // without this the very next load reads the finalized parent, locks, and
+      // returns before asking the server for the child the CP was just handed.
+      // The server has confirmed the child by returning from amend(), which is
+      // exactly the confirmation discardFinalizedDraft requires.
+      if (draftKey) await discardFinalizedDraft(draftKey);
       setAmendOpen(false);
       setReason('');
       toast.success('Amendment created', 'Editable copy opened; the original stays locked.');
