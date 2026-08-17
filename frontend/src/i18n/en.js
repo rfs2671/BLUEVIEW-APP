@@ -733,6 +733,160 @@ export default {
     notRecorded: 'Not recorded',
   },
 
+  // ── app/logbooks/excavation_monitoring.jsx — the cut, 4 steps ─────────────
+  //
+  // EN-ONLY for the same reason as oshaLog above.
+  //
+  // DELIBERATELY ABSENT: the soil types and protection systems. They are enum
+  // VALUES stored in the payload and printed verbatim by both renderers, so the
+  // string on the device has to be the string on the document. They live in
+  // excavationMonitoringModel.
+  excavationMonitoring: {
+    screenTitle: 'Excavation Monitoring Log',
+    screenSub: 'Adjacent-Structure and Vibration Readings',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The excavation',
+    step2Title: 'Adjacent structures',
+    step3Title: 'Vibration and conditions',
+    step4Title: 'Review and sign',
+
+    // Step 1 — the cut.
+    cutHint: 'How deep, what you are digging in, and what is holding the sides up.',
+    // No unit is offered because the form captures none — both renderers print
+    // the depth exactly as typed.
+    fDepth: 'Excavation depth',
+    fSoilType: 'Soil type',
+    fProtection: 'Protection system',
+    phField: 'Not recorded',
+
+    // Step 2 — the monitoring points.
+    pointsHint: 'One row per building you are watching. Movement is worked out from the two readings.',
+    pointOf: 'Point {n} of {m}',
+    addPoint: 'Add a building',
+    removePoint: 'Remove this building',
+    fAddress: 'Address',
+    fBaseline: 'Baseline reading',
+    fCurrent: 'Current reading',
+    fMovement: 'Movement',
+    movementDerived: 'Worked out from the two readings above.',
+    phAddress: 'Building address',
+    phReading: 'Not recorded',
+
+    // Step 3 — vibration and conditions.
+    vibrationHint: 'A current reading only means something next to a threshold. Record both or neither.',
+    fThreshold: 'Threshold',
+    fCurrentReading: 'Current reading',
+    overThresholdTitle: 'Over threshold',
+    overThresholdBody: 'The current reading is above the threshold. Review and take corrective action.',
+    withinThreshold: 'Within threshold',
+    conditionsLabel: 'Conditions',
+    fGroundwater: 'Groundwater observed',
+    fAtmospheric: 'Atmospheric testing performed',
+    yes: 'Yes',
+    no: 'No',
+
+    // Step 4 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewCut: 'The excavation',
+    reviewPoints: 'Monitoring points recorded',
+    reviewVibration: 'Vibration',
+    reviewConditions: 'Conditions',
+    reviewNothingYet: 'Nothing recorded yet',
+    pointCount_one: '{n} building',
+    pointCount_other: '{n} buildings',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the readings before filing them.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'These readings are now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
+  // ── app/logbooks/hot_work.jsx — the burn permit, 4 steps ──────────────────
+  //
+  // EN-ONLY for the same reason as oshaLog above.
+  //
+  // DELIBERATELY ABSENT: the seven precaution labels and the five work types.
+  // The precautions are printed verbatim on the filed permit by
+  // backend/server.py:13260-13268 and again at :19509-19517, and work_type is
+  // an enum VALUE stored in the payload — so both must be the SAME string on
+  // the device and on the document. They live in hotWorkModel.
+  hotWork: {
+    screenTitle: 'Hot Work Permit',
+    screenSub: 'Burn Permit and Fire Watch',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The work',
+    step2Title: 'Timing',
+    step3Title: 'Precautions',
+    step4Title: 'Review and sign',
+
+    // A failed load with no local draft. Said out loud: a blank permit reads as
+    // "none exists for today" and invites a second one for the same burn.
+    offlineDetail: 'Could not check for an existing permit. You can still fill this in — it saves on this device and syncs when you reconnect.',
+
+    // Step 1 — the work.
+    workHint: 'What is being burned, where, and by whom.',
+    fWorkType: 'Type of hot work',
+    fLocation: 'Location',
+    fWorkerName: 'Worker name',
+    fWorkerCert: 'Worker certification number',
+    phField: 'Not recorded',
+
+    // Step 2 — the timing.
+    timingHint: 'When the work runs, and who watches for fire after it stops.',
+    fStartTime: 'Start time',
+    fEndTime: 'End time',
+    fFireWatchUntil: 'Fire watch until',
+    fireWatchDerived: '(default: work end + 30 min)',
+    needsEndTime: 'Choose an end time above',
+    fFireWatchName: 'Fire watch person',
+    phTime: 'Tap to choose a time',
+
+    // Step 3 — the seven precautions.
+    precautionsHint: 'Answer every item before the first spark. A NO is a real answer — an item left blank prints as not recorded.',
+    answeredOf: '{n} of {m} answered',
+    itemOf: 'Item {n} of {m}',
+
+    // Step 4 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewWork: 'The work',
+    reviewTiming: 'Timing',
+    reviewPrecautions: 'Precautions',
+    reviewUnanswered: '{n} still unanswered',
+    reviewAllAnswered: 'All {m} answered',
+    reviewNothingYet: 'Nothing recorded yet',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the permit before filing it.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This permit is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   // Only the affirmation UI is localized. The rest of the pad (title, "SIGNER
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)

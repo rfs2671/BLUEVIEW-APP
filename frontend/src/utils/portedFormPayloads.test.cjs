@@ -65,6 +65,17 @@ const CHECKLIST_SRC = modelSource('checklistMap.js');
 const CHK = loadModel('checklistMap.js');
 const CONC = loadModel('concreteOperationsModel.js', CHECKLIST_SRC);
 const CRANE = loadModel('craneOperationsModel.js', CHECKLIST_SRC);
+const EXC = loadModel('excavationMonitoringModel.js');
+// hotWorkModel reaches into TimeField for the clock parser — the REAL one, not
+// a stub, because the fire-watch default is derived from whatever the picker
+// wrote and a stub that disagreed about the format would prove nothing. The
+// component's two pure exports are lifted the same way the models are.
+const TIMEFIELD_SRC = fs.readFileSync(
+  path.join(FRONTEND, 'src', 'components', 'logbookStepper', 'TimeField.jsx'), 'utf8')
+  .replace(/^import .*$/gm, '')
+  .replace(/^export default [\s\S]*$/m, '')
+  .replace(/^export (const|function) /gm, '$1 ');
+const HW = loadModel('hotWorkModel.js', TIMEFIELD_SRC);
 
 // ═══ OSHA LOG ════════════════════════════════════════════════════════════════
 console.log('\n-- osha_log: data.entries[] --');
@@ -724,6 +735,253 @@ ok(CRANE.incompleteSteps({
   cpSignature: 'sig',
 }).includes(2), 'ONE of fifteen checks answered still marks the pre-lift walk incomplete');
 
+// ═══ EXCAVATION MONITORING ═══════════════════════════════════════════════════
+console.log('\n-- excavation_monitoring: the nine top-level keys --');
+
+const excPdf = pdfBranch('excavation_monitoring', 'concrete_operations');
+const excReport = reportBranch('excavation_monitoring', '_filed_log(logbooks, "scaffold_maintenance")');
+const excKiosk = kioskBranch('renderExcavationMonitoring', 'renderConcreteOperations');
+
+ok(kioskSpecs(excKiosk).length > 0,
+  'excavation_monitoring: the kiosk DocFields specs list was found, not silently empty');
+const excBody = EXC.draftBody({}, []);
+const excKeys = assertPayloadCovers('excavation_monitoring', excBody, [
+  ['PDF renderer', excPdf, pdfTopKeys(excPdf)],
+  ['combined report', excReport, reportTopKeys(excReport)],
+  ['kiosk inspector', excKiosk, kioskTopKeys(excKiosk)],
+]);
+ok(excKeys.length === 9,
+  `all three readers together open 9 keys (${excKeys.join(', ')})`);
+
+// ── THE TWO DERIVED VALUES ARE IN THE PAYLOAD FROM THE FIRST AUTOSAVE ───────
+//
+// THE DEFECT THIS CLOSES. The screen computed `delta` and
+// `vibration_over_threshold` in its SAVE handler only, so the debounced
+// autosave wrote a draft carrying neither. The offline drain pushes the DRAFT,
+// and server.py gates the whole Status line on `has(data,
+// "vibration_over_threshold")` — so a log that reached the server through the
+// drain rather than through Submit printed "— Not recorded" over two perfectly
+// good readings. draftBody derives both, so there is no second shape.
+console.log('\n-- excavation_monitoring: the derived pair, on every path --');
+
+ok(Object.prototype.hasOwnProperty.call(excBody, 'vibration_over_threshold'),
+  'an UNTOUCHED log already carries vibration_over_threshold — the autosave path '
+  + 'used to omit it, and the drain pushes what the autosave wrote');
+ok(excBody.vibration_over_threshold === false,
+  'and it is a real boolean, which is what the renderer branches on');
+const excGate = /has\(data, "vibration_over_threshold"\)/.test(excPdf);
+ok(excGate,
+  'the renderer still gates the Status line on the key being present');
+
+const excWithRows = EXC.draftBody(
+  { vibration_threshold: '0.50', vibration_current: '0.75' },
+  [{ address: '12 Bond', baseline_reading: '1.000', current_reading: '1.004' }],
+);
+ok(excWithRows.vibration_over_threshold === true,
+  '0.75 over a 0.50 threshold is over');
+ok(excWithRows.adjacent_buildings[0].delta === '0.004',
+  'and every row carries its computed delta, on the autosave path too');
+ok(EXC.draftBody({ vibration_threshold: '0.50', vibration_current: '0.50' }, [])
+  .vibration_over_threshold === false, 'exactly at the threshold is not over');
+ok(EXC.draftBody({ vibration_threshold: '', vibration_current: '0.75' }, [])
+  .vibration_over_threshold === false,
+  'a reading with NO threshold is not over — there is nothing to be over');
+// ...and that false is precisely why the renderers refuse to print it alone.
+ok(EXC.thresholdStatusIsMeaningful('', '0.75') === false,
+  'and the model agrees it must not be shown: a bare "within threshold" over a '
+  + 'missing threshold is a finding the CP never made');
+ok(EXC.thresholdStatusIsMeaningful('0.50', '0.75') === true,
+  'with both readings the status IS meaningful');
+
+console.log('\n-- excavation_monitoring: delta, and the rows that file --');
+
+ok(EXC.calcDelta('1.000', '1.004') === '0.004', 'movement is the gap between the readings');
+ok(EXC.calcDelta('1.004', '1.000') === '0.004',
+  'and it is ABSOLUTE — 4 thou down is the same finding as 4 thou up');
+ok(EXC.calcDelta('1.000', '') === '' && EXC.calcDelta('', '1.000') === '',
+  'one reading yields a BLANK, not a zero — "no reading" and "no movement" are '
+  + 'opposite findings on an excavation record');
+ok(EXC.calcDelta('abc', '1.000') === '', 'and so does an unparseable one');
+ok(EXC.calcDelta('1', '2') === '1.000', 'always three decimals, as the column has always printed');
+
+const bldDropFields = uniq([
+  ...grab(excPdf, /\bb\.get\("([a-z_]+)"/g),
+  ...grab(excReport, /\bb\.get\("([a-z_]+)"/g),
+  ...grab(excKiosk, /\bb\.([a-z_]+)/g),
+]);
+ok(bldDropFields.length === 4,
+  `the renderers read 4 monitoring-point fields (${bldDropFields.join(', ')})`);
+ok(JSON.stringify([...EXC.BUILDING_KEYS].sort()) === JSON.stringify(bldDropFields),
+  'and the model names exactly those four');
+// delta is DERIVED, so it is absent from the seed and present in the payload.
+// Both are asserted, because a seeded blank delta would make a row with no
+// readings look like a row whose readings agreed.
+ok(!Object.prototype.hasOwnProperty.call(EXC.EMPTY_ADJACENT_BUILDING(), 'delta'),
+  'a fresh row carries NO delta — it is derived, not typed');
+for (const f of bldDropFields) {
+  ok(Object.prototype.hasOwnProperty.call(excWithRows.adjacent_buildings[0], f),
+    `the FILED row carries "${f}" — the renderer reads it`);
+  ok(EXC.buildingHasContent({ ...EXC.EMPTY_ADJACENT_BUILDING(), [f]: 'x' }) === true,
+    `buildingHasContent agrees with the renderer on "${f}"`);
+}
+ok(EXC.buildingHasContent(EXC.EMPTY_ADJACENT_BUILDING()) === false,
+  'an untouched row is NOT a monitoring point — the same rule the renderer drops it by');
+
+const excMixed = [
+  { address: '12 Bond', baseline_reading: '1.000', current_reading: '1.004' },
+  EXC.EMPTY_ADJACENT_BUILDING(),
+  { address: '', baseline_reading: '', current_reading: '2.000' },
+];
+ok(EXC.buildingsForFiling(excMixed).length === 2,
+  'filing drops the untouched seed and keeps both surveyed points');
+ok(EXC.draftBody({}, excMixed).adjacent_buildings.length === 3,
+  'but a DRAFT keeps all three — a half-typed row must survive a save');
+ok(EXC.draftBody({}, excMixed, { forFiling: true }).adjacent_buildings.length === 2,
+  'and the filing flag is what trims it');
+
+// ── TWO REAL BOOLEANS, DELIBERATELY NOT A THREE-STATE MAP ───────────────────
+//
+// The combined report prints a bare Yes/No for these with NO not-recorded
+// branch (server.py:19677-19678), so giving them a third state would file
+// "unrecorded" into a renderer with no way to print it. Asserted, because the
+// obvious next move after checklistMap is to run these through it too.
+console.log('\n-- excavation_monitoring: the two switches have TWO states --');
+
+ok(/\{"Yes" if d\.get\("groundwater_observed"\) else "No"\}/.test(excReport),
+  'the combined report has no not-recorded branch for groundwater');
+ok(/\{"Yes" if d\.get\("atmospheric_testing"\) else "No"\}/.test(excReport),
+  'nor for atmospheric testing');
+for (const k of ['groundwater_observed', 'atmospheric_testing']) {
+  ok(excBody[k] === false, `${k} is present and FALSE on a blank log, never absent`);
+  ok(EXC.draftBody({ [k]: true }, [])[k] === true, `${k} records a real true`);
+  ok(EXC.draftBody({ [k]: undefined }, [])[k] === false,
+    `${k} coerces a missing value to false rather than passing undefined through`);
+}
+
+console.log('\n-- excavation_monitoring: the pips --');
+
+ok(JSON.stringify(EXC.incompleteSteps({
+  details: {}, adjacentBuildings: [], cpSignature: '',
+})) === '[1,2,3,4]', 'an untouched log marks all four steps incomplete');
+ok(JSON.stringify(EXC.incompleteSteps({
+  details: {
+    excavation_depth: '12', soil_type: 'Sand',
+    vibration_threshold: '0.50', vibration_current: '0.20',
+  },
+  adjacentBuildings: excMixed,
+  cpSignature: 'sig',
+})) === '[]', 'a filled and signed log marks none');
+ok(EXC.incompleteSteps({
+  details: { excavation_depth: '12', vibration_threshold: '0.50' },
+  adjacentBuildings: excMixed,
+  cpSignature: 'sig',
+}).includes(3), 'a threshold with no current reading leaves the vibration step incomplete');
+
+// ═══ HOT WORK ════════════════════════════════════════════════════════════════
+console.log('\n-- hot_work: the nine top-level keys --');
+
+const hwPdf = pdfBranch('hot_work', 'crane_operations');
+const hwReport = reportBranch('hot_work', '_filed_log(logbooks, "crane_operations")');
+const hwKiosk = kioskBranch('renderHotWork', 'renderCraneOperations');
+
+const hwBody = HW.draftBody({}, {});
+// The kiosk builds hot work's specs as a `const specs = [` rather than inline,
+// so the DocFields slice is anchored on that instead.
+const hwSpecs = hwKiosk.slice(hwKiosk.indexOf('const specs = ['), hwKiosk.indexOf('];'));
+ok(hwSpecs.length > 0, 'hot_work: the kiosk specs list was found, not silently empty');
+const hwKioskKeys = uniq([
+  ...grab(hwKiosk, /\bdata\.([a-z_]+)/g),
+  ...grab(hwSpecs, /\['([a-z_]+)',\s*t\(/g),
+]);
+const hwKeys = assertPayloadCovers('hot_work', hwBody, [
+  ['PDF renderer', hwPdf, pdfTopKeys(hwPdf)],
+  ['combined report', hwReport, reportTopKeys(hwReport)],
+  ['kiosk inspector', hwKiosk, hwKioskKeys],
+]);
+ok(hwKeys.length === 9,
+  `all three readers together open 9 keys (${hwKeys.join(', ')})`);
+ok(hwBody.precautions && !Object.keys(hwBody.precautions).length,
+  'precautions is an empty MAP — every item unrecorded, which is where it starts');
+
+// ── THE DEVICE ASKED A DIFFERENT QUESTION THAN THE DOCUMENT PRINTED ────────
+//
+// The screen this replaces said "(35ft)" and "Covered/Protected"; both server
+// renderers and the kiosk all said "(35 ft)" and "Covered / Protected". Only
+// the editor disagreed, so the CP ticked one sentence and the inspector read
+// another. All THREE readers are checked here, not two, because the kiosk holds
+// its copy in the i18n catalogue rather than inline.
+console.log('\n-- hot_work: one sentence, on the device and on the permit --');
+
+const EN = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
+for (const [name, branch] of [['PDF renderer', hwPdf], ['combined report', hwReport]]) {
+  const items = tupleList(branch);
+  ok(items.length === 7, `${name} lists 7 precautions (got ${items.length})`);
+  const bad = items.filter((q, i) => (
+    HW.PRECAUTION_ITEMS[i]?.key !== q.key || HW.PRECAUTION_ITEMS[i]?.label !== q.label
+  ));
+  ok(bad.length === 0,
+    `the model matches the ${name}, key and label and ORDER${bad.length ? ` — ${JSON.stringify(bad)}` : ''}`);
+}
+for (const it of HW.PRECAUTION_ITEMS) {
+  const m = new RegExp(`\\n\\s*p_${it.key}: '((?:[^'\\\\]|\\\\.)*)'`).exec(EN);
+  ok(!!m, `the kiosk catalogue carries p_${it.key}`);
+  ok(m && m[1] === it.label,
+    `and it reads word for word as the permit prints it (${JSON.stringify(m && m[1])})`);
+}
+// The two the editor got wrong, named so they cannot drift back.
+ok(HW.PRECAUTION_ITEMS[0].label === 'Area Cleared of Combustibles (35 ft)',
+  'the 35 ft precaution has the SPACE the document prints');
+ok(HW.PRECAUTION_ITEMS[3].label === 'Combustibles Covered / Protected',
+  'and the covered/protected one has the spaces around the slash');
+
+console.log('\n-- hot_work: the fire watch is DERIVED, and never guessed --');
+
+// server.py labels this as a computed DEFAULT in both renderers because FDNY
+// can require sixty minutes. The number itself is read out of the model.
+ok(HW.FIRE_WATCH_MINUTES === 30, 'the default watch is 30 minutes past work end');
+ok(/default: work end \+ 30 min/.test(hwPdf) && /default: work end \+ 30 min/.test(hwReport),
+  'and both renderers label it as the default it is, never as a recorded watch-until');
+
+ok(HW.calcFireWatchEnd('02:00 PM') === '02:30 PM', 'half an hour past the end of work');
+ok(HW.calcFireWatchEnd('11:45 PM') === '12:15 AM',
+  'and it wraps past midnight, because hot work does');
+// READS THE OLD FORMAT. This field held 24-hour "HH:MM" before it became a
+// tap-only picker, so a permit drafted on an older build must still derive.
+ok(HW.calcFireWatchEnd('14:00') === '02:30 PM',
+  'a 24-hour end time from an older draft still derives correctly');
+ok(HW.calcFireWatchEnd('23:45') === '12:15 AM', 'including across midnight');
+ok(HW.calcFireWatchEnd('') === '' && HW.calcFireWatchEnd(null) === '',
+  'no end time yields a BLANK, which the renderers print as an em dash');
+ok(HW.calcFireWatchEnd('sometime this afternoon') === '',
+  'and an unparseable one is blank too — never a guessed watch-until on an FDNY permit');
+ok(HW.draftBody({ end_time: '02:00 PM' }, {}).fire_watch_end_time === '02:30 PM',
+  'draftBody derives it, so the autosave and the submit write the same permit');
+ok(HW.draftBody({}, {}).fire_watch_end_time === '',
+  'and a permit with no end time carries the key, blank, rather than omitting it');
+
+console.log('\n-- hot_work: the pips --');
+
+ok(JSON.stringify(HW.incompleteSteps({
+  details: {}, precautions: {}, cpSignature: '',
+})) === '[1,2,3,4]', 'an untouched permit marks all four steps incomplete');
+const hwFull = {};
+for (const it of HW.PRECAUTION_ITEMS) hwFull[it.key] = true;
+ok(JSON.stringify(HW.incompleteSteps({
+  details: { work_type: 'Welding', start_time: '08:00 AM' },
+  precautions: hwFull,
+  cpSignature: 'sig',
+})) === '[]', 'a filled and signed permit marks none');
+ok(HW.incompleteSteps({
+  details: { work_type: 'Welding', start_time: '08:00 AM' },
+  precautions: { area_cleared: false },
+  cpSignature: 'sig',
+}).includes(3), 'ONE of seven answered still marks the precautions incomplete');
+ok(!HW.incompleteSteps({
+  details: { work_type: 'Welding', start_time: '08:00 AM' },
+  precautions: Object.fromEntries(HW.PRECAUTION_ITEMS.map((it) => [it.key, false])),
+  cpSignature: 'sig',
+}).includes(3), 'seven NOs is a COMPLETE walk — a No is an answer');
+
 // ═══ THE SPARSE TOGGLE MAP — three states, and all three reachable ═══════════
 //
 // backend/server.py:13029-13043 says it: "key present and False is an explicit
@@ -780,14 +1038,23 @@ function stripComments(text) {
     .replace(/^\s*\/\/.*$/gm, '')
     .replace(/\s\/\/[^\n'"`]*$/gm, '');
 }
-const CONC_SCREEN = stripComments(fs.readFileSync(
-  path.join(FRONTEND, 'app', 'logbooks', 'concrete_operations.jsx'), 'utf8'));
-const CRANE_SCREEN = stripComments(fs.readFileSync(
-  path.join(FRONTEND, 'app', 'logbooks', 'crane_operations.jsx'), 'utf8'));
+const screenSrc = (f) => stripComments(fs.readFileSync(
+  path.join(FRONTEND, 'app', 'logbooks', `${f}.jsx`), 'utf8'));
+const CONC_SCREEN = screenSrc('concrete_operations');
+const CRANE_SCREEN = screenSrc('crane_operations');
+const EXC_SCREEN = screenSrc('excavation_monitoring');
+const HW_SCREEN = screenSrc('hot_work');
 ok(/LogbookStepper/.test(CONC_SCREEN) && !/THE PAYLOAD IS UNCHANGED/.test(CONC_SCREEN),
   'the comment stripper removes prose but keeps code');
 
-for (const [name, src] of [['concrete_operations', CONC_SCREEN], ['crane_operations', CRANE_SCREEN]]) {
+const PORTED_SCREENS = [
+  ['concrete_operations', CONC_SCREEN],
+  ['crane_operations', CRANE_SCREEN],
+  ['excavation_monitoring', EXC_SCREEN],
+  ['hot_work', HW_SCREEN],
+];
+
+for (const [name, src] of PORTED_SCREENS) {
   // On the shared stepper, with the chrome it owns.
   ok(/<LogbookStepper/.test(src), `${name}: renders the shared stepper`);
   ok(!/<AnimatedBackground>/.test(src) && !/<ScrollView/.test(src),
@@ -797,12 +1064,27 @@ for (const [name, src] of [['concrete_operations', CONC_SCREEN], ['crane_operati
   ok(!/GlassCard|GlassButton|LogbookLockBar/.test(src),
     `${name}: the old glass chrome is GONE, lock bar included`);
   // The carried-forward lifecycle, each named because each was a separate fix.
+  //
+  // CHECKED BELOW THE IMPORTS, and that is the point: an import line mentions
+  // the name whether or not anything calls it, so asserting on the whole file
+  // passes for a screen that imports adoptAmendment and never reaches it —
+  // which is exactly the shape a mutation ran through here. `const LOG_TYPE` is
+  // the first line of code in every one of these screens.
+  const importsAt = src.indexOf('const LOG_TYPE');
+  ok(importsAt > 0, `${name}: the import block ends where it always has`);
+  const body = src.slice(importsAt);
   for (const fn of ['readDraft', 'writeDraft', 'setDraftBackendId', 'markPending',
     'clearPending', 'markFinalized', 'adoptAmendment', 'freezeIfImmediate',
     'recordFinalizeError', 'clearFinalizeError', 'finalizeErrorCode',
     'isOfflineError', 'recordSignatureEvent']) {
-    ok(new RegExp(`\\b${fn}\\b`).test(src), `${name}: carries ${fn}`);
+    ok(new RegExp(`\\b${fn}\\s*\\(`).test(body), `${name}: CALLS ${fn}`);
   }
+  // And the payload is built in ONE place. A screen that assembles a `data: {}`
+  // literal anywhere has a second shape the model does not decide — which is
+  // how excavation_monitoring's autosave came to omit two derived keys the
+  // renderers gate whole sections on.
+  ok(!/data: \{/.test(body),
+    `${name}: no path hand-builds a data object — draftBody decides the shape`);
   // The affirmation gate — this is an IMMEDIATE type, so submit must be
   // UNREACHABLE without one, not merely warned about.
   ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\)\}/.test(src),
@@ -822,9 +1104,16 @@ for (const [name, src] of [['concrete_operations', CONC_SCREEN], ['crane_operati
   // No roster, so the empty-roster trap has no surface here.
   ok(!/getCheckinsForDate|getCheckinsRoster|buildEntriesFromCheckins/.test(src),
     `${name}: builds no roster, so it cannot carry the empty-roster trap`);
-  // A time-of-day field is TAPPED, not typed.
-  ok(/<TimeField/.test(src) && !/placeholder="HH:MM"/.test(src),
-    `${name}: times are chosen with TimeField, not typed into a free-text box`);
+  // A time-of-day field is TAPPED, not typed — on the three forms that have
+  // one. excavation_monitoring records no time of day at all, so it must not
+  // grow a picker for a field that does not exist.
+  if (name === 'excavation_monitoring') {
+    ok(!/<TimeField/.test(src) && !/placeholder="HH:MM"/.test(src),
+      `${name}: has no time-of-day field, and no picker for one`);
+  } else {
+    ok(/<TimeField/.test(src) && !/placeholder="HH:MM"/.test(src),
+      `${name}: times are chosen with TimeField, not typed into a free-text box`);
+  }
 }
 
 // The two edits that are the whole point of the models.
@@ -839,12 +1128,44 @@ ok(/slumpTestsForFiling\(b\.slumpTests\)/.test(CONC_SCREEN)
 ok(/loadEntriesForFiling\(b\.loadEntries\)/.test(CRANE_SCREEN)
   && /submitStatus === 'submitted'\s*\?\s*loadEntriesForFiling/.test(CRANE_SCREEN),
   'crane_operations: SUBMIT trims the abandoned rows; a draft keeps them');
-for (const [name, src] of [['concrete_operations', CONC_SCREEN], ['crane_operations', CRANE_SCREEN]]) {
+for (const [name, src] of [['concrete_operations', CONC_SCREEN],
+  ['crane_operations', CRANE_SCREEN], ['hot_work', HW_SCREEN]]) {
   ok(/applyChecklistAnswer\(p, key, value\)/.test(src),
     `${name}: the checklist goes through applyChecklistAnswer`);
   ok(!/\[key\]: !p\[key\]/.test(src) && !/!prev\[key\]/.test(src),
     `${name}: the binary flip that could not express "not recorded" is GONE`);
 }
+
+// excavation_monitoring's two switches are the DELIBERATE exception — real
+// booleans, because the combined report prints a bare Yes/No for them and has
+// no not-recorded branch to print. Asserted so the obvious next move (running
+// them through checklistMap too) cannot be made silently.
+ok(/const toggleFlag = \(key\) => setDetails\(\(p\) => \(\{ \.\.\.p, \[key\]: !p\[key\] \}\)\);/
+  .test(EXC_SCREEN),
+  'excavation_monitoring: the two condition switches stay a plain boolean flip');
+ok(!/applyChecklistAnswer/.test(EXC_SCREEN),
+  'and they are NOT routed through the three-state helper');
+
+// The two derived values must reach the payload through the model, on every
+// path — that is the whole point of the excavation port.
+ok((EXC_SCREEN.match(/draftBody\(b\.details, b\.adjacentBuildings\)/g) || []).length === 2,
+  'excavation_monitoring: BOTH the debounced autosave and the step-change flush '
+  + 'build the payload with draftBody — one of the two was where the derived keys '
+  + 'went missing');
+ok(/draftBody\(b\.details, b\.adjacentBuildings, \{ forFiling: filing \}\)/.test(EXC_SCREEN),
+  'and so does the submit, with the same function and one flag');
+ok(!/vibration_over_threshold:/.test(EXC_SCREEN) && !/delta:/.test(EXC_SCREEN),
+  'neither derived value is spelled out in the screen — one place computes them');
+
+// hot_work's offline-aware hydrate is this screen's alone and must survive.
+ok(/settleFetch\(/.test(HW_SCREEN) && /<OfflineNotice/.test(HW_SCREEN),
+  'hot_work: a failed load still SAYS so instead of opening a blank permit');
+ok(!/getByProject\(projectId, LOG_TYPE, date\)\.catch\(\(\) => \[\]\)/.test(HW_SCREEN),
+  'and the swallow-into-empty-array that hid it is not back');
+ok(/setFetchState\(r\.status\)/.test(HW_SCREEN),
+  'the outcome of the load is what the notice is driven from');
+ok(!/calcFireWatchEnd = /.test(HW_SCREEN),
+  'hot_work: the fire-watch derivation lives in the model, not in the screen');
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════
 console.log('\n-- the kiosk inspector reads the same keys --');

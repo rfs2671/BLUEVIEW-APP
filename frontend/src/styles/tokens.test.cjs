@@ -174,12 +174,15 @@ ok(sum(measured.fontSize) > 120,
 // true against an empty measurement. The threshold tracks the migration
 // downwards, and the direction of travel is the point — it is expected to keep
 // falling as the remaining eight forms are ported.
-// LOWERED again, 50 -> 40, by the concrete_operations + crane_operations port
-// (67 -> 47). Same reason as the previous drop, and the direction of travel is
-// still the point.
-ok(sum(measured.withAlphaPairs) > 40,
+// LOWERED twice more: 50 -> 40 by concrete_operations + crane_operations
+// (67 -> 47), then 40 -> 30 by excavation_monitoring + hot_work (47 -> 38).
+// Same reason as every previous drop, and the direction of travel is still the
+// point. The hex floor comes down with it — at 44 against a floor of 40 it was
+// one port from failing for the RIGHT reason, which would read exactly like a
+// broken regex and defeat the purpose of the guard.
+ok(sum(measured.withAlphaPairs) > 30,
   `scanner still finds withAlpha() calls (${sum(measured.withAlphaPairs)})`);
-ok(sum(measured.opaqueHex) > 40,
+ok(sum(measured.opaqueHex) > 30,
   `scanner still finds opaque hex literals (${sum(measured.opaqueHex)})`);
 
 // ── COVERAGE + HONESTY, per scale ────────────────────────────────────────────
