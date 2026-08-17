@@ -1101,7 +1101,10 @@ export default function SiteLogbooksViewer() {
     );
   };
 
-  // frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206 (save)
+  // src/utils/sscDailySafetyLogModel.js — draftBody decides the payload shape,
+  // COMPLIANCE_FLAGS the five keys and NARRATIVE_FIELDS the three prompts.
+  // The keys below are asserted against that model by
+  // src/utils/portedFormPayloads.test.cjs.
   const renderSscDailySafetyLog = (log) => {
     const data = log.data || {};
     // The five compliance toggles are a fixed list: once ANY of them is on the

@@ -1,129 +1,167 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
+import {
+  View, Text, StyleSheet, Pressable, TextInput,
+} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, Shield, CheckCircle, Save, Calendar } from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
+import { Check } from 'lucide-react-native';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen files for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+// The app-wide OFFLINE discriminator — "offline" has to mean what it means
+// everywhere else: no response at all.
+import { isOfflineError } from '../../src/utils/offlineState';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
+import {
+  WEATHER_OPTIONS, PREFILLED_FIELDS, COMPLIANCE_FLAGS, NARRATIVE_FIELDS,
+  EMPTY_DETAILS, prefillFromProject, incidentDetailsApply, detailsFromData,
+  incompleteSteps as computeIncomplete, draftBody,
+} from '../../src/utils/sscDailySafetyLogModel';
+import { useT } from '../../src/i18n';
+import { spacing, outdoor } from '../../src/styles/theme';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
-import { useTheme } from '../../src/context/ThemeContext';
 
+/**
+ * SSC / SSM DAILY SAFETY LOG — the daily narrative, on the shared stepper.
+ *
+ * FOUR STEPS, in the order the filed document prints them: the site, the five
+ * compliance flags, the narrative, then review and sign. The chrome is
+ * LogbookStepper's — nothing about the header, pips, lock bar or footer is
+ * decided here.
+ *
+ * THIS IS AN END_OF_DAY LOG, NOT AN IMMEDIATE ONE. server.py:2933 puts it with
+ * daily_jobsite: the narrative stays open and accumulating all day and freezes
+ * ONCE, at the end-of-day Submit and Sign. So the closing action is the
+ * daily_jobsite one — persist, then an explicit /finalize, then a LOCAL
+ * markFinalized — and freezeIfImmediate is deliberately absent. It is the only
+ * one of the five ported forms in this part with that shape.
+ *
+ * THE SIGNATURE IS THIS LOG'S OWN. useCpProfile is deliberately NOT used: a
+ * cached personal CP signature would pre-lock the pad for a DIFFERENT signer.
+ * The SSC/SSM signs each day's log himself, so cpName/cpSignature are local
+ * state seeded only from the loaded document, and the pad opens editable
+ * (autoLock={false}).
+ *
+ * WHAT CARRIED FORWARD from the reference (daily_jobsite.jsx), unchanged:
+ *   draft lifecycle          readDraft / writeDraft / setDraftBackendId /
+ *                            markPending / clearPending / markFinalized
+ *   adoptAmendment           an amendment child must reach this screen
+ *   the three finalize outcomes  refused / failed / offline are different
+ *                            things and only one may promise a sync
+ *   gateCopy                 the server names the condition, the client owns
+ *                            the wording; the server's English never renders
+ *   recordFinalizeError      a foreground refusal leaves the same durable
+ *                            banner a background one does
+ *
+ * NOT CARRIED, because this form has no camera: persistPhoto and
+ * compressUnderCap. NOT CARRIED, because this form builds no roster: nothing
+ * here reads /checkins.
+ *
+ * THE PAYLOAD IS UNCHANGED — the same thirteen top-level keys
+ * backend/server.py:13526 renders. See sscDailySafetyLogModel.
+ */
 const LOG_TYPE = 'ssc_daily_safety_log';
-
-const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
+const TOTAL_STEPS = 4;
 
 export default function SSCDailySafetyLog() {
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
+  const t = useT('sscDailySafetyLog');
+  const tFinalize = useT('finalize');
+
+  const s = useMemo(() => buildStyles(), []);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  // The end-of-day Submit & Sign outlives handleSave's own `saving` window (it
-  // finalizes afterwards), so it carries its own busy flag — which also blocks
-  // a double-tap from double-finalizing.
   const [signing, setSigning] = useState(false);
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
+  const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
-
-  // SSC/SSM signature state — local to this logbook so a cached
-  // personal CP signature from useCpProfile doesn't pre-lock the pad.
-  // The pad opens empty on every new log; admin can type + draw from
-  // scratch. On load we seed only from the existing logbook document,
-  // never from the user-profile cache.
+  const [existingLogId, setExistingLogId] = useState(null);
+  const [details, setDetails] = useState(EMPTY_DETAILS);
+  // LOCAL to this logbook, never useCpProfile — see the header.
   const [cpName, setCpName] = useState('');
   const [cpSignature, setCpSignature] = useState(null);
 
-  // Form fields
-  const [projectAddress, setProjectAddress] = useState('');
-  const [sspNumber, setSspNumber] = useState('');
-  const [weather, setWeather] = useState('');
-  const [siteConditions, setSiteConditions] = useState('');
-  const [safetyViolations, setSafetyViolations] = useState('');
-  const [correctiveActions, setCorrectiveActions] = useState('');
-  const [incidentsReported, setIncidentsReported] = useState(false);
-  const [incidentDetails, setIncidentDetails] = useState('');
-  const [workersOnSiteCount, setWorkersOnSiteCount] = useState('');
-  const [safetyMeetingsHeld, setSafetyMeetingsHeld] = useState(false);
-  const [fireProtectionInPlace, setFireProtectionInPlace] = useState(false);
-  const [housekeepingSatisfactory, setHousekeepingSatisfactory] = useState(false);
-  const [ppeCompliance, setPpeCompliance] = useState(false);
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date }),
+    [projectId, date],
+  );
 
-  useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+  // The body as of RIGHT NOW, for the debounced autosave and the save path.
+  // State read inside a timer is the value captured when the timer was set,
+  // which is one keystroke stale — and this form is nothing but long prose.
+  const bodyRef = useRef(details);
+  useEffect(() => { bodyRef.current = details; }, [details]);
 
-  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
-  // Debounced so typing doesn't thrash storage; makes no server call. The cp
-  // fields come from this logbook's LOCAL state (never a profile cache), and
-  // `status` is intentionally omitted so an autosave never downgrades a
-  // submitted log back to draft.
+  /**
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
+   */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
+
+  // ── Draft ─────────────────────────────────────────────────────────────
+  // Debounced autosave on every change. `status` is deliberately omitted so an
+  // autosave never downgrades a filed log back to draft.
   useEffect(() => {
-    if (loading) return undefined;
-    const t = setTimeout(() => {
-      writeDraft(
-        draftKey({ projectId, logType: LOG_TYPE, date }),
-        {
-          data: {
-            project_address: projectAddress,
-            ssp_number: sspNumber,
-            weather,
-            site_conditions: siteConditions,
-            safety_violations_observed: safetyViolations,
-            corrective_actions_taken: correctiveActions,
-            incidents_reported: incidentsReported,
-            incident_details: incidentDetails,
-            workers_on_site_count: workersOnSiteCount,
-            safety_meetings_held: safetyMeetingsHeld,
-            fire_protection_in_place: fireProtectionInPlace,
-            housekeeping_satisfactory: housekeepingSatisfactory,
-            ppe_compliance: ppeCompliance,
-          },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        },
-      ).catch(() => {});
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      writeDraft(_key, {
+        data: draftBody(bodyRef.current),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
     }, 800);
-    return () => clearTimeout(t);
-  }, [
-    loading, projectId, date, projectAddress, sspNumber, weather, siteConditions,
-    safetyViolations, correctiveActions, incidentsReported, incidentDetails,
-    workersOnSiteCount, safetyMeetingsHeld, fireProtectionInPlace,
-    housekeepingSatisfactory, ppeCompliance, cpSignature, cpName,
-  ]);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, details, cpSignature, cpName]);
 
-  const fetchData = async () => {
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
+    try {
+      await writeDraft(_key, {
+        data: draftBody(bodyRef.current),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort; the next change retries */ }
+  }, [locked, _key, cpSignature, cpName]);
+
+  const fetchData = useCallback(async () => {
     setLoading(true);
     // THE LOCK IS RE-DERIVED ON EVERY LOAD — device round 5. `locked` could
     // only ever be set TRUE: no path set it back, so once a log was filed the
     // screen stayed read-only for the life of the mount. After an amendment
-    // that is exactly wrong — #143 makes the editable child reachable, and
-    // this is what lets the screen show it without the CP backing out and
-    // re-entering. Everything below decides locked-ness from what it loads.
+    // that is exactly wrong.
     setLocked(false);
     try {
-      // Phase A — local-first: read the on-device draft before touching the
-      // network. If one exists we hydrate purely from it (project prefill is
-      // skipped) so an offline SSC/SSM reopens to the same in-progress log.
-      const key = draftKey({ projectId, logType: LOG_TYPE, date });
-      const draft = await readDraft(key);
-      if (draft) {
-        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+      // LOCAL-FIRST. A local draft wins over both the project prefill and the
+      // server copy, so an offline SSC reopens to the same in-progress log.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
         // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
         // Parent and amendment share ONE draft key (project, logType, date), so
         // a finalized local draft used to lock the editor and return before the
@@ -131,72 +169,43 @@ export default function SSCDailySafetyLog() {
         // on server confirmation; offline it is a no-op and the log stays
         // locked, which is honest.
         const _amended = draft.finalized && await adoptAmendment({
-          key: key, projectId, logType: LOG_TYPE, date,
+          key: _key, projectId, logType: LOG_TYPE, date,
         });
         if (_amended) {
-          // The frozen parent is discarded; fall through to the server
-          // path, which already prefers the unlocked document.
+          // The frozen parent is discarded; fall through to the server path,
+          // which already prefers the unlocked document.
         } else {
-        if (draft.finalized) {
-          setLocked(true);
-          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-        }
-        setExistingLogId(draft.backend_id);
-        const d = draft.data || {};
-        if (d.project_address) setProjectAddress(d.project_address);
-        if (d.ssp_number) setSspNumber(d.ssp_number);
-        if (d.weather) setWeather(d.weather);
-        if (d.site_conditions) setSiteConditions(d.site_conditions);
-        if (d.safety_violations_observed) setSafetyViolations(d.safety_violations_observed);
-        if (d.corrective_actions_taken) setCorrectiveActions(d.corrective_actions_taken);
-        if (d.incidents_reported != null) setIncidentsReported(d.incidents_reported);
-        if (d.incident_details) setIncidentDetails(d.incident_details);
-        if (d.workers_on_site_count) setWorkersOnSiteCount(d.workers_on_site_count);
-        if (d.safety_meetings_held != null) setSafetyMeetingsHeld(d.safety_meetings_held);
-        if (d.fire_protection_in_place != null) setFireProtectionInPlace(d.fire_protection_in_place);
-        if (d.housekeeping_satisfactory != null) setHousekeepingSatisfactory(d.housekeeping_satisfactory);
-        if (d.ppe_compliance != null) setPpeCompliance(d.ppe_compliance);
-        // Seed the local cp state from the per-log draft only (never a profile cache).
-        if (draft.cp_signature) setCpSignature(draft.cp_signature);
-        if (draft.cp_name) setCpName(draft.cp_name);
-        setLoading(false);
-        return;
+          if (draft.finalized) { setLocked(true); markFinalized(_key); }
+          setExistingLogId(draft.backend_id || null);
+          setDetails(detailsFromData(draft.data));
+          // Seeded from THIS log only, never a profile cache.
+          if (draft.cp_signature) setCpSignature(draft.cp_signature);
+          if (draft.cp_name) setCpName(draft.cp_name);
+          setLoading(false);
+          return;
         }
       }
 
       const [projectData, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
+        // DATE-SCOPED. Fetching with no date returns the most recent prior-day
+        // doc, which would load yesterday's narrative onto today's screen and
+        // file today's signature against it.
         logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []),
       ]);
 
-      const fullAddress = projectData?.address || projectData?.location || '';
-      setProjectAddress(fullAddress);
-      if (projectData?.ssp_number) setSspNumber(projectData.ssp_number);
+      // The address and the SSP number are properties of the JOB. Retyping them
+      // every morning is how they end up wrong on a filed document.
+      setDetails((p) => ({ ...p, ...prefillFromProject(projectData) }));
 
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
       // locked original that shares (project, type, date).
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
       if (existing) {
-        if (existing.is_locked) {
-          setLocked(true);
-          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-        }
+        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
         setExistingLogId(existing.id || existing._id);
-        const d = existing.data || {};
-        if (d.project_address) setProjectAddress(d.project_address);
-        if (d.ssp_number) setSspNumber(d.ssp_number);
-        if (d.weather) setWeather(d.weather);
-        if (d.site_conditions) setSiteConditions(d.site_conditions);
-        if (d.safety_violations_observed) setSafetyViolations(d.safety_violations_observed);
-        if (d.corrective_actions_taken) setCorrectiveActions(d.corrective_actions_taken);
-        if (d.incidents_reported != null) setIncidentsReported(d.incidents_reported);
-        if (d.incident_details) setIncidentDetails(d.incident_details);
-        if (d.workers_on_site_count) setWorkersOnSiteCount(d.workers_on_site_count);
-        if (d.safety_meetings_held != null) setSafetyMeetingsHeld(d.safety_meetings_held);
-        if (d.fire_protection_in_place != null) setFireProtectionInPlace(d.fire_protection_in_place);
-        if (d.housekeeping_satisfactory != null) setHousekeepingSatisfactory(d.housekeeping_satisfactory);
-        if (d.ppe_compliance != null) setPpeCompliance(d.ppe_compliance);
+        setDetails(detailsFromData(existing.data || {}));
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       }
@@ -205,443 +214,467 @@ export default function SSCDailySafetyLog() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [_key, projectId, date]);
 
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    const key = draftKey({ projectId, logType: LOG_TYPE, date });
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  // ── Edits ─────────────────────────────────────────────────────────────
+  const setField = (key, value) => setDetails((p) => ({ ...p, [key]: value }));
+  // A PLAIN BOOLEAN FLIP, deliberately. These five are two-state on every
+  // reader — the combined report prints a bare Yes/No with no not-recorded
+  // branch — so a third state would file something it cannot print. See
+  // sscDailySafetyLogModel.
+  const toggleFlag = (key) => setDetails((p) => ({ ...p, [key]: !p[key] }));
+
+  // ── Save ──────────────────────────────────────────────────────────────
+  /**
+   * Local draft first, server push best-effort. Returns the doc id, `null`
+   * when it saved locally with no server id yet (the offline path), or
+   * `undefined` when the server REFUSED — which is not offline and must not
+   * freeze.
+   */
+  const persistAndPush = async (submitStatus) => {
+    const data = draftBody(bodyRef.current);
+
+    await writeDraft(_key, {
+      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+    });
+
+    let created = null;
+    let savedId = existingLogId;
     try {
-      const data = {
-        project_address: projectAddress,
-        ssp_number: sspNumber,
-        weather,
-        site_conditions: siteConditions,
-        safety_violations_observed: safetyViolations,
-        corrective_actions_taken: correctiveActions,
-        incidents_reported: incidentsReported,
-        incident_details: incidentDetails,
-        workers_on_site_count: workersOnSiteCount,
-        safety_meetings_held: safetyMeetingsHeld,
-        fire_protection_in_place: fireProtectionInPlace,
-        housekeeping_satisfactory: housekeepingSatisfactory,
-        ppe_compliance: ppeCompliance,
-      };
-      const payload = {
-        project_id: projectId,
-        log_type: LOG_TYPE,
-        date,
-        data,
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
-
-      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
-      // so an offline SSC/SSM completes the log without the "could not save" failure.
-      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
-
-      // Best-effort server push. Offline this throws and is swallowed — the key
-      // is recorded in the pending-push list for the Phase B reconnect flush.
-      let savedId = existingLogId;
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data: payload.data,
-            cp_signature: cpSignature,
-            cp_name: cpName,
-            status: submitStatus,
-          });
-        } else {
-          const created = await logbooksAPI.create(payload);
-          savedId = created.id || created._id;
-          setExistingLogId(savedId);
-        }
-        await setDraftBackendId(key, savedId);
-        await clearPending(key);
-      } catch (pushErr) {
-        await markPending(key);
-        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: LOG_TYPE, date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
       }
+      if (savedId) await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+    } catch (pushErr) {
+      // REFUSAL IS NOT OFFLINE. A 4xx is the server JUDGING the log, not
+      // failing to reach it — and on this end-of-day type the content push and
+      // the /finalize are two separate calls, so a refused push must not go on
+      // to finalize anything.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('Safety log REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
+      }
+      if (!offline && !refused) {
+        // 5xx — the server FAILED rather than judged. Retryable, and it must
+        // not be announced as filed.
+        console.warn('Safety log push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
+      }
+      await markPending(_key);
+      console.warn('Safety log push deferred (will sync on reconnect):', pushErr?.message);
+    }
 
-      if (submitStatus === 'submitted' && cpSignature && savedId) {
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
         recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'ssc_sign',
-          signerName: cpName,
-          signerRole: user?.role || 'ssc',
+          documentType: 'logbook', documentId: docId, eventType: 'ssc_sign',
+          signerName: cpName, signerRole: user?.role || 'ssc',
           signatureData: cpSignature,
           contentSnapshot: {
-            log_type: LOG_TYPE,
-            date,
-            project_id: projectId,
-            data: payload.data,
-            status: submitStatus,
+            log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
           },
           user,
-        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
-
-      // DAILY NARRATIVE: the only 'submitted' caller is the end-of-day
-      // Submit & Sign below, which still has to finalize + freeze AFTER this
-      // returns. Announcing "submitted" (or leaving the screen) from here would
-      // report success before the log is actually locked, so that path owns its
-      // own toast and navigation. Save Draft is untouched.
-      if (submitStatus !== 'submitted') {
-        toast.success('Draft Saved', 'Draft saved');
-      }
-      // Hand back the server id so the caller can /finalize THIS document.
-      // `null` = saved locally but not yet on the server (offline).
-      return savedId || null;
-    } catch (e) {
-      console.error(e);
-      toast.error('Error', 'Could not save safety log');
-      // `undefined` (not null) = the save itself failed and has already been
-      // reported — the caller must NOT freeze a log that was never written.
-      return undefined;
-    } finally {
-      setSaving(false);
     }
+    return savedId || null;
   };
 
   /**
-   * THE end-of-day action for this daily narrative log — one button, one freeze.
+   * THE end-of-day action — one button, one freeze. daily_jobsite's shape,
+   * because this is the other log that wears it.
    *
-   * Save Draft fills this log all day and never freezes it. There is deliberately
-   * no separate "Submit" any more: a log that could be submitted repeatedly and
-   * finalized separately can sit REQUIRED-but-unfrozen forever. This is the
-   * single closing action, and its order is what makes it hold OFFLINE:
-   *
-   *   1. handleSave('submitted') — content + signature into the local draft
-   *      first, server push best-effort (markPending on failure; draftSync
-   *      drains it and re-applies /finalize on reconnect).
-   *   2. server /finalize when the doc has an id — best-effort, never fatal.
-   *   3. LOCAL freeze, unconditionally: an EOD sign with no signal must still be
-   *      frozen on this device. It MUST come after (1) — writeDraft refuses
-   *      content patches once a draft is finalized.
+   *   1. content and signature into the local draft first; server push
+   *      best-effort (markPending on failure; the drain re-applies /finalize
+   *      on reconnect).
+   *   2. server /finalize when the doc has an id.
+   *   3. LOCAL freeze — but ONLY when the server never ANSWERED.
    *   4. flip the form read-only.
+   *
+   * REFUSAL IS NOT OFFLINE. Treating every finalize failure as offline
+   * produced three compounding lies on daily_jobsite: the CP was told the log
+   * was signed, locked and would sync when the server had said no and would
+   * keep saying no; markFinalized made the draft IMMUTABLE so he could not fix
+   * the very condition being refused; and the content push had SUCCEEDED, so
+   * no pending key existed and the drain would never retry.
+   *
+   * So there are THREE outcomes and only one of them may promise a sync.
    */
   const handleSubmitAndSign = async () => {
-    if (saving || signing) return;
-    // Signed record: no signature, no submit.
-    if (!cpSignature) {
-      toast.warning('Signature required', 'Sign the log before submitting — this is a signed record.');
+    if (signing) return;
+    // SIGNATURE CLIENT GUARD. The footer button is already disabled for this,
+    // so reaching here means the state moved under the press.
+    if (!isAffirmedSignature(cpSignature)) {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
       return;
     }
     setSigning(true);
     try {
-      const key = draftKey({ projectId, logType: LOG_TYPE, date });
-      const savedId = await handleSave('submitted');
-      if (savedId === undefined) return;  // save failed and already reported
-
+      const savedId = await persistAndPush('submitted');
+      // `undefined` = refused or failed, already reported. Nothing may be
+      // frozen or announced on a log that was never written. `null` is
+      // different: saved LOCALLY with no server id, which is the offline path
+      // and DOES freeze below.
+      if (savedId === undefined) return;
       let serverLocked = false;
       if (savedId) {
         try {
           await logbooksAPI.finalize(savedId);
           serverLocked = true;
+          await clearFinalizeError(savedId);
         } catch (finalizeErr) {
-          // Offline / server refused. The local freeze below still stands and
-          // the reconnect drain re-applies /finalize once the push lands.
+          const offline = isOfflineError(finalizeErr);
+          const status = finalizeErr?.response?.status;
+          const refused = typeof status === 'number' && status >= 400 && status < 500;
+          if (!offline && !refused) {
+            // 5xx — the server FAILED rather than judged. Nothing is queued and
+            // nothing is locked, so it is simply retryable and must not be
+            // announced as synced.
+            console.warn('Finalize FAILED server-side — not locked, not queued:',
+              status || finalizeErr?.message);
+            toast.error(tFinalize('errorTitle'), gateCopy(null));
+            return;
+          }
+          if (refused) {
+            // NOT frozen, NOT announced, NOT navigated away from: the SSC has to
+            // be able to fix what was refused, on this screen, right now. BOTH a
+            // toast and a record — the toast is gone in four seconds, and the
+            // record is what is still there when he comes back.
+            const code = finalizeErrorCode(finalizeErr);
+            console.warn('Finalize REFUSED by the server:', status, code);
+            await recordFinalizeError(savedId, code, _key, 'editor');
+            toast.error(tFinalize('errorTitle'), gateCopy(code));
+            return;
+          }
+          // GENUINELY OFFLINE. The local freeze below stands — an EOD sign with
+          // no signal must still hold — and the drain re-applies /finalize once
+          // the push lands, which is what makes the promise below true.
           console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
         }
       }
-
-      await markFinalized(key);
+      await markFinalized(_key);
       setLocked(true);
-
       toast.success(
-        'Submitted & Signed',
-        serverLocked
-          ? 'This log is now locked. Corrections require an amendment.'
-          : 'Signed and locked on this device. It will sync when you are back online.'
+        t('submittedTitle'),
+        serverLocked ? t('submittedBody') : t('submittedOfflineBody'),
       );
       router.back();
+    } catch (e) {
+      console.error(e);
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
       setSigning(false);
     }
   };
 
-  const ToggleRow = ({ label, value, onToggle }) => (
-    <View style={s.toggleRow}>
-      <Text style={s.toggleLabel}>{label}</Text>
-      <Pressable onPress={onToggle}>
-        <View style={[s.toggleDot, value && s.toggleDotActive]} />
-      </Pressable>
+  // Moving on is never BLOCKED — an SSC who cannot complete a step because the
+  // day is not over must still be able to close it out.
+  const onStepChange = async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  };
+
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
+
+  const incomplete = computeIncomplete({ details, cpSignature }).filter((n) => n !== step);
+  const showIncident = incidentDetailsApply(details);
+  // The other four ported forms read this from useCpProfile, which has a real
+  // loading window. THIS pad is the log's own and nothing is fetched for it, so
+  // the signature is either affirmed or it is not and the hint never has a
+  // "still loading" state to report. Named rather than passed inline so the
+  // five screens spell the gate the same way.
+  const profileLoaded = true;
+
+  // ── STEP 1 — the site ─────────────────────────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      <StepHeader title={t('step1Title')} />
+      <Text style={s.noteText}>{t('siteHint')}</Text>
+
+      <Card s={s}>
+        {/* Carried from the project record, not typed here. Shown read-only
+            because the SSP number and the address are properties of the JOB;
+            correcting them on one day's log would not correct the job. */}
+        {PREFILLED_FIELDS.map((f) => (
+          <View key={f.key} style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+            <View style={s.readOnlyValue}>
+              <Text style={s.readOnlyText}>{details[f.key] || t('notOnFile')}</Text>
+            </View>
+          </View>
+        ))}
+        <Text style={s.noteText}>{t('fromProjectNote')}</Text>
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fWeather')}</Text>
+          <View style={s.chipWrap}>
+            {WEATHER_OPTIONS.map((w) => (
+              <Chip
+                key={w}
+                label={w}
+                selected={details.weather === w}
+                onPress={() => setField('weather', details.weather === w ? '' : w)}
+              />
+            ))}
+          </View>
+        </View>
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fWorkers')}</Text>
+          <TextInput
+            style={s.input}
+            value={details.workers_on_site_count || ''}
+            onChangeText={(v) => setField('workers_on_site_count', v)}
+            placeholder={t('phField')}
+            placeholderTextColor={outdoor.textDim}
+            keyboardType="numeric"
+          />
+        </View>
+      </Card>
     </View>
   );
 
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+  // ── STEP 2 — compliance ───────────────────────────────────────────────
+  //
+  // FIVE TWO-STATE SWITCHES. Not the three-state chip pair the checklists on
+  // the other ported forms use: every reader of this document prints a bare
+  // Yes/No for these and has no "not recorded" to print. The note below says
+  // what an unticked one means on the filed page — the same caveat both PDF
+  // surfaces already print under the table.
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+      <Text style={s.noteText}>{t('complianceHint')}</Text>
 
-  return (
-    <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
-        {/* Header */}
-        <View style={s.header}>
-          <GlassButton
-            variant="icon"
-            icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => router.back()}
+      <Card s={s}>
+        {COMPLIANCE_FLAGS.map((f) => (
+          <Pressable
+            key={f.key}
+            style={[s.toggleRow, details[f.key] && s.toggleRowOn]}
+            accessibilityRole="button"
+            accessibilityState={{ selected: !!details[f.key] }}
+            onPress={() => toggleFlag(f.key)}
+          >
+            <View style={[s.toggleBox, details[f.key] && s.toggleBoxOn]}>
+              {details[f.key] && <Check size={18} strokeWidth={3} color={outdoor.ok} />}
+            </View>
+            <Text style={s.toggleText}>{f.label}</Text>
+          </Pressable>
+        ))}
+      </Card>
+      <Text style={s.noteText}>{t('complianceDefaultNote')}</Text>
+    </View>
+  );
+
+  // ── STEP 3 — the narrative ────────────────────────────────────────────
+  const renderStep3 = () => (
+    <View>
+      <StepHeader title={t('step3Title')} />
+      <Text style={s.noteText}>{t('narrativeHint')}</Text>
+
+      {NARRATIVE_FIELDS.map((f) => (
+        <Card s={s} key={f.key}>
+          <Text style={s.question}>{f.label}</Text>
+          <TextInput
+            style={[s.input, s.textArea]}
+            value={details[f.key] || ''}
+            onChangeText={(v) => setField(f.key, v)}
+            placeholder={t('phNarrative')}
+            placeholderTextColor={outdoor.textDim}
+            multiline
+            numberOfLines={4}
           />
-          <Text style={s.headerTitle}>SSC/SSM Daily Safety Log</Text>
-        </View>
+        </Card>
+      ))}
 
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={s.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (no per-field editable flags
-              to miss). Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-          {/* Date */}
-          <GlassCard style={s.section}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
-              <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>
-                {new Date(date).toLocaleDateString('en-US', {
-                  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-                })}
-              </Text>
-            </View>
-          </GlassCard>
+      {/* Only when an incident WAS reported — the same condition all three
+          readers print it under. If one was, a missing detail is an unanswered
+          question on the filed document, not silence, so the step stays
+          incomplete until it is written. */}
+      {showIncident && (
+        <Card s={s} style={String(details.incident_details || '').trim() ? undefined : s.cardWarn}>
+          <Text style={s.question}>{t('fIncidentDetails')}</Text>
+          <Text style={s.noteText}>{t('incidentDetailsHint')}</Text>
+          <TextInput
+            style={[s.input, s.textArea]}
+            value={details.incident_details || ''}
+            onChangeText={(v) => setField('incident_details', v)}
+            placeholder={t('phNarrative')}
+            placeholderTextColor={outdoor.textDim}
+            multiline
+            numberOfLines={4}
+          />
+        </Card>
+      )}
+    </View>
+  );
 
-          {/* Project Info */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Project Information</Text>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Project Address</Text>
-              <Text style={[s.input, { paddingVertical: spacing.sm }]}>{projectAddress || 'No address on file'}</Text>
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>SSP Number</Text>
-              <Text style={[s.input, { paddingVertical: spacing.sm }]}>{sspNumber || 'N/A'}</Text>
-            </View>
-          </GlassCard>
+  // ── STEP 4 — review and sign ──────────────────────────────────────────
+  const renderStep4 = () => (
+    <View>
+      <StepHeader title={t('step4Title')} />
+      <Text style={s.noteText}>{t('reviewHeading')}</Text>
 
-          {/* Weather */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Weather Conditions</Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
-              {WEATHER_OPTIONS.map((w) => (
-                <Pressable
-                  key={w}
-                  onPress={() => setWeather(weather === w ? '' : w)}
-                  style={[s.chip, weather === w && s.chipActive]}
-                >
-                  <Text style={[s.chipText, weather === w && s.chipTextActive]}>{w}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </GlassCard>
-
-          {/* Site Conditions */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Site Conditions</Text>
-            <TextInput
-              style={[s.input, s.textArea]}
-              value={siteConditions}
-              onChangeText={setSiteConditions}
-              placeholder="Describe current site conditions..."
-              placeholderTextColor={colors.text.subtle}
-              multiline
-              numberOfLines={4}
-            />
-          </GlassCard>
-
-          {/* Safety Violations */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Safety Violations Observed</Text>
-            <TextInput
-              style={[s.input, s.textArea]}
-              value={safetyViolations}
-              onChangeText={setSafetyViolations}
-              placeholder="Describe any safety violations observed..."
-              placeholderTextColor={colors.text.subtle}
-              multiline
-              numberOfLines={4}
-            />
-          </GlassCard>
-
-          {/* Corrective Actions */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Corrective Actions Taken</Text>
-            <TextInput
-              style={[s.input, s.textArea]}
-              value={correctiveActions}
-              onChangeText={setCorrectiveActions}
-              placeholder="Describe corrective actions taken..."
-              placeholderTextColor={colors.text.subtle}
-              multiline
-              numberOfLines={4}
-            />
-          </GlassCard>
-
-          {/* Incidents */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Incidents</Text>
-            <ToggleRow
-              label="Incidents Reported"
-              value={incidentsReported}
-              onToggle={() => setIncidentsReported(!incidentsReported)}
-            />
-            {incidentsReported && (
-              <TextInput
-                style={[s.input, s.textArea, { marginTop: spacing.sm }]}
-                value={incidentDetails}
-                onChangeText={setIncidentDetails}
-                placeholder="Provide incident details..."
-                placeholderTextColor={colors.text.subtle}
-                multiline
-                numberOfLines={4}
-              />
-            )}
-          </GlassCard>
-
-          {/* Workforce & Compliance */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Workforce & Compliance</Text>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Workers on Site</Text>
-              <TextInput
-                style={s.input}
-                value={workersOnSiteCount}
-                onChangeText={setWorkersOnSiteCount}
-                placeholder="0"
-                placeholderTextColor={colors.text.subtle}
-                keyboardType="numeric"
-              />
-            </View>
-            <ToggleRow
-              label="Safety Meetings Held"
-              value={safetyMeetingsHeld}
-              onToggle={() => setSafetyMeetingsHeld(!safetyMeetingsHeld)}
-            />
-            <ToggleRow
-              label="Fire Protection in Place"
-              value={fireProtectionInPlace}
-              onToggle={() => setFireProtectionInPlace(!fireProtectionInPlace)}
-            />
-            <ToggleRow
-              label="Housekeeping Satisfactory"
-              value={housekeepingSatisfactory}
-              onToggle={() => setHousekeepingSatisfactory(!housekeepingSatisfactory)}
-            />
-            <ToggleRow
-              label="PPE Compliance"
-              value={ppeCompliance}
-              onToggle={() => setPpeCompliance(!ppeCompliance)}
-            />
-          </GlassCard>
-
-          {/* SSC/SSM Signature */}
-          <GlassCard style={s.section}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm }}>
-              <Shield size={16} strokeWidth={1.5} color="#3b82f6" />
-              <Text style={s.sectionTitle}>SSC/SSM Sign-Off</Text>
-            </View>
-            <SignaturePad
-              title="SSC/SSM Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-              autoLock={false}
-            />
-          </GlassCard>
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewSite')}</Text>
+        {PREFILLED_FIELDS.map((f) => (
+          <View key={f.key} style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+            <Text style={s.reviewValue}>{details[f.key] || t('notRecorded')}</Text>
           </View>
+        ))}
+        <View style={s.reviewRow}>
+          <Text style={s.reviewLabel}>{t('fWeather')}</Text>
+          <Text style={s.reviewValue}>{details.weather || t('notRecorded')}</Text>
+        </View>
+        <View style={s.reviewRow}>
+          <Text style={s.reviewLabel}>{t('fWorkers')}</Text>
+          <Text style={s.reviewValue}>
+            {String(details.workers_on_site_count || '').trim() || t('notRecorded')}
+          </Text>
+        </View>
+      </Card>
 
-          {/* Actions — hidden when finalized; the LockBar handles amend.
-              TWO actions only: fill it all day (Save Draft, never freezes) and
-              close it once (Submit & Sign, freezes). There is no third
-              "Submit" that leaves a REQUIRED daily log unfrozen. */}
-          {!locked && (
-          <View style={s.buttonColumn}>
-            <GlassButton
-              title={saving && !signing ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving && !signing}
-              style={{ width: '100%' }}
-            />
-            <GlassButton
-              title={signing ? 'Submitting...' : 'Submit & Sign (End of Day)'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={handleSubmitAndSign}
-              loading={signing}
-              style={{ width: '100%', backgroundColor: semantic.verified, borderColor: semantic.verified }}
-            />
-            <Text style={s.signHint}>
-              Signing closes the day: this log locks and corrections then require an amendment.
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewCompliance')}</Text>
+        {COMPLIANCE_FLAGS.map((f) => (
+          <View key={f.key} style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{f.label}</Text>
+            <Text style={s.reviewValue}>{details[f.key] ? t('yes') : t('no')}</Text>
+          </View>
+        ))}
+      </Card>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewNarrative')}</Text>
+        {NARRATIVE_FIELDS.map((f) => (
+          <View key={f.key} style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{f.label}</Text>
+            <Text style={s.reviewValue}>
+              {String(details[f.key] || '').trim() || t('notRecorded')}
             </Text>
           </View>
-          )}
+        ))}
+        {showIncident && (
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fIncidentDetails')}</Text>
+            <Text style={s.reviewValue}>
+              {String(details.incident_details || '').trim() || t('notRecorded')}
+            </Text>
+          </View>
+        )}
+      </Card>
 
-          {/* DAILY NARRATIVE log: stays open and accumulating all day;
-              intermediate saves do NOT freeze it. It freezes once, at the
-              end-of-day Submit & Sign above — which is why canFinalize is
-              false: that single button owns finalization, and a second
-              "Finalize" here would be the same two-button trap. logType and the
-              Amend path stay so a locked narrative log can still be amended. */}
-          <LogbookLockBar
-            logType={LOG_TYPE}
-            locked={locked}
-            logId={existingLogId}
-            canFinalize={false}
-            onFinalized={() => setLocked(true)}
-            onAmended={fetchData}
-          />
-        </ScrollView>
-      </SafeAreaView>
-    </AnimatedBackground>
+      <Card s={s}>
+        <Text style={s.reviewLabel}>
+          {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
+        </Text>
+        <Text style={s.noteText}>{t('signingClosesDay')}</Text>
+        {/* THIS LOG'S OWN PAD. autoLock={false} keeps it editable so the
+            SSC/SSM signs each day himself rather than inheriting a cached
+            credential belonging to somebody else. */}
+        <SignaturePad
+          title="SSC/SSM Signature"
+          signerName={cpName}
+          onNameChange={setCpName}
+          existingSignature={cpSignature}
+          onSignatureCapture={setCpSignature}
+          autoLock={false}
+        />
+      </Card>
+    </View>
+  );
+
+  const STEPS = [
+    { render: renderStep1 },
+    { render: renderStep2 },
+    { render: renderStep3 },
+    { render: renderStep4 },
+  ];
+
+  return (
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={t('screenSub')}
+      step={step}
+      steps={STEPS}
+      onStepChange={onStepChange}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={incomplete}
+      a11yProgressLabel={t('stepOf')
+        .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      /* END_OF_DAY, so the signature is not itself the freeze — but this is
+         still the single irreversible closing action, and it mints a signed
+         legal record. An unaffirmed signature makes it UNREACHABLE rather than
+         merely warned about, which also refuses the `cp_signature: {}` that
+         satisfied the old presence check. */
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
+      onSubmit={handleSubmitAndSign}
+      logType={LOG_TYPE}
+      logId={existingLogId}
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+    />
   );
 }
 
-function buildStyles(colors, isDark) {
+/**
+ * The shared chrome plus the handful of keys only this form uses. Spreading
+ * rather than forking is what keeps the shared names identical across forms.
+ */
+function buildStyles() {
   return StyleSheet.create({
-    container: { flex: 1 },
-    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
-    header: { flexDirection: 'row', alignItems: 'center', padding: spacing.lg, gap: spacing.md },
-    headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text.primary, flex: 1 },
-    section: { marginBottom: spacing.md },
-    sectionTitle: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
-    inputGroup: { marginBottom: spacing.md },
-    inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
-    input: {
-      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
-      padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    ...buildStepperStyles(),
+    reviewRow: {
+      gap: spacing.xs / 2,
+      paddingVertical: spacing.xs,
     },
-    textArea: { minHeight: 80, textAlignVertical: 'top' },
-    toggleRow: {
-      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-      paddingVertical: spacing.sm,
+    // The narrative prompts are prose, not one-liners: this log IS the
+    // sentences the SSC writes, so the boxes are sized for them.
+    textArea: {
+      minHeight: spacing.xxl * 2,
+      paddingTop: spacing.sm,
+      textAlignVertical: 'top',
     },
-    toggleLabel: { color: colors.text.secondary, fontSize: 14 },
-    toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
-    toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-    // Stacked, not side-by-side: the end-of-day action is irreversible, so it
-    // gets its own full-width row and cannot be mistaken for the save next to it.
-    buttonColumn: { gap: spacing.sm, marginTop: spacing.lg },
-    signHint: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginTop: spacing.xs },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    chip: {
-      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-      backgroundColor: withAlpha('#ffffff', 0.04),
-    },
-    chipActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
-    chipText: { fontSize: 13, color: colors.text.muted },
-    chipTextActive: { color: '#3b82f6', fontWeight: '600' },
+    toggleBoxOn: { borderColor: outdoor.okBorder },
   });
 }

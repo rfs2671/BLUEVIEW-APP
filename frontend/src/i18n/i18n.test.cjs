@@ -135,6 +135,10 @@ const EN_ONLY_NAMESPACES = [
   // and the five work types stay in hotWorkModel because the filed permit
   // prints the same strings.
   'hotWork',
+  // app/logbooks/ssc_daily_safety_log.jsx — the site safety coordinator's
+  // daily narrative. The five compliance labels and the three narrative
+  // prompts stay in sscDailySafetyLogModel for the same reason.
+  'sscDailySafetyLog',
   // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
   // and signature prompts. CP-facing.
   'finalize',

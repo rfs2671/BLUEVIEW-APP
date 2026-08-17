@@ -13545,7 +13545,13 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         )
 
     elif log_type == "ssc_daily_safety_log":
-        # frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206 (save).
+        # frontend/src/utils/sscDailySafetyLogModel.js — draftBody decides the
+        # payload shape, COMPLIANCE_FLAGS the five keys and labels and
+        # NARRATIVE_FIELDS the three prompts. The screen
+        # (app/logbooks/ssc_daily_safety_log.jsx) holds none of it. Both lists
+        # below are duplicated here because this renderer has no access to that
+        # bundle; frontend/src/utils/portedFormPayloads.test.cjs asserts they
+        # agree, key for key and word for word.
         type_title = "SSC Daily Safety Log"
         SSC_FLAGS = [
             ("incidents_reported", "Incidents Reported"),
