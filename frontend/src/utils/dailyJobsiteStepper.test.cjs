@@ -864,6 +864,72 @@ ok(/phInspectionOther/.test(code), 'and asks what was inspected');
     'and there is exactly ONE comment stripper in this file, not two that drift');
 }
 
+console.log('DEVICE ROUND 5 -- the empty-roster trap, forms 3 and 4');
+
+// THE THIRD AND FOURTH TIME. #137 fixed toolbox_talk and preshift_signin; the
+// autosave writes an empty roster the moment the screen settles, so merely
+// OPENING a log before anyone checked in stored one — and every rebuild branch
+// was guarded on the roster being NON-empty, which is precisely the case that
+// needs building. Production: thirteen check-ins, step 1 listing nobody, across
+// two force-closes.
+//
+// THE SWEEP IS COMPLETE. Exactly four forms build a roster from a server fetch
+// — daily_jobsite, osha_log, preshift_signin, toolbox_talk. There is no fifth,
+// and this assertion fails if one appears.
+{
+  const dir = path.join(__dirname, '..', '..', 'app', 'logbooks');
+  const builders = fs.readdirSync(dir).filter((f) => f.endsWith('.jsx')).filter((f) => {
+    const t = stripComments(fs.readFileSync(path.join(dir, f), 'utf8'));
+    return /buildEntriesFromCheckins|buildAttendees|buildWorkerList|buildCrewsFromRoster/.test(t);
+  }).sort();
+  ok(builders.join(',') === 'daily_jobsite.jsx,osha_log.jsx,preshift_signin.jsx,toolbox_talk.jsx',
+    'exactly four forms build a roster from the server — a fifth must be checked '
+    + 'for this trap before it ships (' + builders.join(', ') + ')');
+}
+
+// daily_jobsite had the trap TWICE: the draft path returned before building,
+// and the server path built crews only when NO log existed — so a log already
+// saved with an empty roster never rebuilt either.
+const djDraft = code.slice(0, code.indexOf('const [projectData, roster, headcount, existingLogs]'));
+ok(/const _storedCrews = Array\.isArray\(draft\.data\.activities\)/.test(djDraft),
+  'daily_jobsite: the draft path looks at what the stored roster actually holds');
+ok(/if \(_storedCrews\.length === 0\) \{/.test(djDraft)
+   && /buildCrewsFromRoster\(_roster\.workers \|\| \[\], _headcount\)/.test(djDraft),
+  'and REBUILDS when it is empty, in place');
+ok(/getCheckinsRoster\(projectId, date\)/.test(djDraft),
+  'fetching the roster it needs to do that');
+// Rebuilt IN PLACE, not by falling through — falling through re-hydrates from
+// the server and would discard an offline CP's observations.
+ok(/setLoading\(false\);[\s\S]{0,40}return;/.test(djDraft),
+  'the draft path still returns — local work is never re-hydrated away');
+ok(/if \(_roster\) \{/.test(djDraft),
+  'and offline builds nothing rather than clearing the screen');
+// The server-path half.
+ok(/!existing\.is_locked[\s\S]{0,140}buildCrewsFromRoster\(roster\?\.workers/.test(code),
+  'daily_jobsite: a SERVER log saved with an empty roster rebuilds too');
+ok(/!existing\.is_locked/.test(code),
+  'but a FILED log is left alone — its roster is part of the record');
+
+// osha_log: the branch condition accepted an empty array, so the register set
+// itself to [] and returned.
+{
+  const osha = stripComments(fs.readFileSync(
+    path.join(__dirname, '..', '..', 'app', 'logbooks', 'osha_log.jsx'), 'utf8'));
+  ok(/const _stored = Array\.isArray\(draft\.data\.entries\)/.test(osha),
+    'osha_log: the draft path looks at what the stored register actually holds');
+  // The CONDITION, not just the presence of the builder: a branch that always
+  // takes the stored path leaves buildEntriesFromCheckins sitting there unread,
+  // and a source assertion that only looks for the call would pass on it.
+  ok(/if \(_stored\.length > 0\) \{\s*setEntries\(_stored\);\s*\} else \{/.test(osha),
+    'osha_log: the stored register is used ONLY when it has something in it');
+  ok(/buildEntriesFromCheckins\(_fresh, date\)/.test(osha),
+    'and rebuilds it from today check-ins when it is empty');
+  ok(!/setEntries\(draft\.data\.entries\);/.test(osha),
+    'the unconditional set of a possibly-empty array is gone');
+  ok(/\.catch\(\(\) => null\)/.test(osha),
+    'offline the fetch fails and nothing is built');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

@@ -449,7 +449,41 @@ export default function DailyJobsiteLog() {
         setExistingLogId(draft.backend_id || null);
         if (draft.cp_signature) setCpSignature(draft.cp_signature);
         if (draft.cp_name) setCpName(draft.cp_name);
-        loadChips(draft.data.activities || []);
+
+        // AN EMPTY CREW LIST MUST STILL REBUILD — the third form with this
+        // trap (toolbox_talk and preshift_signin were #137; osha_log is the
+        // fourth and is fixed in this PR too).
+        //
+        // The autosave writes `activities: []` the moment the screen settles,
+        // so merely OPENING the log before anyone had checked in stored an
+        // empty roster for that project and date. This branch then returned
+        // before buildCrewsFromRoster could ever run, and the crew list could
+        // never recover: thirteen men on site, step 1 listing nobody, across
+        // two force-closes.
+        //
+        // REBUILT IN PLACE rather than by falling through to the server path.
+        // Falling through would re-hydrate from the server and discard local
+        // work — an offline CP who wrote observations with no crews yet would
+        // lose them. Only the roster is rebuilt; everything else the draft
+        // holds is left exactly as he left it.
+        //
+        // Offline the fetches fail, nothing is built, and an empty list is the
+        // honest answer — it is also what was already on screen.
+        const _storedCrews = Array.isArray(draft.data.activities)
+          ? draft.data.activities : [];
+        let _rebuilt = [];
+        if (_storedCrews.length === 0) {
+          const [_roster, _headcount] = await Promise.all([
+            logbooksAPI.getCheckinsRoster(projectId, date).catch(() => null),
+            logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
+          ]);
+          if (_roster) {
+            rosterIdsRef.current = rosterIdIndex(_headcount);
+            _rebuilt = buildCrewsFromRoster(_roster.workers || [], _headcount);
+            if (_rebuilt.length > 0) setActivities(_rebuilt);
+          }
+        }
+        loadChips(_storedCrews.length > 0 ? _storedCrews : _rebuilt);
         loadProjectShell();
         setLoading(false);
         return;
@@ -508,6 +542,15 @@ export default function DailyJobsiteLog() {
         hydrate(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
+        // THE SAME TRAP, ONE LAYER OUT. Crews were built only in the `else` —
+        // so a SERVER log saved with an empty roster never rebuilt either, and
+        // a draft pushed before anyone checked in is exactly that log. A filed
+        // log is left alone: its roster is part of the record.
+        if (!existing.is_locked
+            && !(Array.isArray(existing.data?.activities) && existing.data.activities.length)) {
+          builtCrews = buildCrewsFromRoster(roster?.workers || [], headcount);
+          if (builtCrews.length > 0) setActivities(builtCrews);
+        }
       } else {
         builtCrews = buildCrewsFromRoster(roster?.workers || [], headcount);
         setActivities(builtCrews);
@@ -516,7 +559,10 @@ export default function DailyJobsiteLog() {
         // This is why they stay auto-populated while work_description does not.
         fetchWeather(fullAddress);
       }
-      loadChips(existing ? (existing.data || {}).activities || [] : builtCrews);
+      loadChips(existing
+        ? ((existing.data || {}).activities || []).concat(
+          ((existing.data || {}).activities || []).length ? [] : builtCrews)
+        : builtCrews);
     } catch (e) {
       console.error(e);
     } finally {
