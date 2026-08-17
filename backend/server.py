@@ -18528,7 +18528,9 @@ def _filed_log(logbooks, log_type):
     return same_type[0]
 
 
-async def generate_combined_report(project_id: str, date: str) -> str:
+async def generate_combined_report(
+    project_id: str, date: str, diagnostics: bool = False,
+) -> str:
     """Generate email-safe HTML report. Uses table-based layout, bgcolor attrs,
     and URL-based images for Gmail/Outlook/Apple Mail compatibility.
 
@@ -18663,11 +18665,14 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     #
     # Imported here, not at module scope, matching how phase_inference is pulled
     # in (:11943) - the google-genai import stays off the boot path.
-    from lib.ai.sub_summary import generate_sentence as _gen_sub_sentence
+    from lib.ai.sub_summary import generate_sentence_traced as _gen_sub_sentence
     import html as _html
 
     _gate_counts = {_n.strip().lower(): _c for _n, _c in _subs}
 
+    # Which of the four outcomes each row took. Rendered ONLY under
+    # `diagnostics` — see the block after this loop.
+    _ai_outcomes: List[tuple] = []
     _pg1_lines = ""
     for _a in (_dj.get("activities") or []):
         _co = str(_a.get("company") or "").strip()
@@ -18708,13 +18713,43 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         # already rendered raw here and on page 2 and that is this page's
         # established trust level; a model is a new writer and does not inherit
         # it. Escaping costs nothing on a sentence that traces.
-        _gen = _gen_sub_sentence(_payload)
+        _gen, _outcome = _gen_sub_sentence(_payload)
+        _ai_outcomes.append((_display_sub_company(_co), _outcome))
         _line = _sentence_case(_html.escape(_gen)) if _gen else _facts
         _pg1_lines += (
             '<p style="margin:0 0 8px;font-size:14px;color:#334155;">'
             f'<strong style="color:#0A1929;">'
             f'{_capitalize_first(_display_sub_company(_co))}</strong>'
             f'{" - " + _line if _line else ""}</p>'
+        )
+
+    # ── WHY THAT LINE SAYS WHAT IT SAYS — admin only ───────────────────────
+    #
+    # All four outcomes render the same fallback, so from the page alone a
+    # refusal, a failure, a missing key and "no model was ever asked" are
+    # indistinguishable. That is fine for a lender and useless for the person
+    # who has to fix it — and a diagnosis has now been blocked twice on runtime
+    # logs the operator cannot reach.
+    #
+    # NEVER ON THE SENT REPORT. `diagnostics` defaults False and only the two
+    # authenticated preview endpoints pass it, gated on role. The scheduled
+    # send — the copy that reaches investors and lenders — never sees this.
+    #
+    # It carries no key and no secret: an outcome is a branch name, an
+    # exception CLASS, or a refusal reason plus the offending words, which are
+    # the CP's own vocabulary or the model's.
+    _pg1_ai_note = ""
+    if diagnostics and _ai_outcomes:
+        _rows = "".join(
+            f'<div>{_html.escape(str(_c))} &mdash; {_html.escape(str(_o))}</div>'
+            for _c, _o in _ai_outcomes
+        )
+        _pg1_ai_note = (
+            '<div style="margin:12px 0;padding:8px 10px;border:1px solid #cbd5e1;'
+            'border-radius:6px;background:#f8fafc;font-size:11px;color:#475569;">'
+            '<strong style="color:#0A1929;">AI LINE &mdash; ADMIN VIEW ONLY, '
+            'NOT ON THE SENT REPORT</strong>'
+            f'{_rows}</div>'
         )
 
     # Photos, grouped by subcontractor, captioned from what the CP tapped.
@@ -18829,7 +18864,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
           f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
         + '</table>'
         + (('<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
-            'Work today</h3>' + _pg1_lines) if _pg1_lines else "")
+            'Work today</h3>' + _pg1_lines + _pg1_ai_note) if _pg1_lines else "")
         + (('<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
             'Photos</h3>' + _pg1_photos) if _pg1_photos else "")
         + _flags_html
@@ -19928,13 +19963,20 @@ async def generate_combined_report(project_id: str, date: str) -> str:
 async def get_combined_report(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Generate combined daily report for a project+date."""
     from fastapi.responses import HTMLResponse
-    html = await generate_combined_report(project_id, date)
+    # ADMIN PREVIEW ONLY. The scheduled send calls this with the default False.
+    html = await generate_combined_report(
+        project_id, date,
+        diagnostics=current_user.get("role") in ("admin", "owner"),
+    )
     return HTMLResponse(content=html)
 @api_router.get("/reports/project/{project_id}/date/{date}/pdf")
 async def get_combined_report_pdf(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Generate combined daily report as downloadable PDF."""
     from fastapi.responses import Response
-    html = await generate_combined_report(project_id, date)
+    html = await generate_combined_report(
+        project_id, date,
+        diagnostics=current_user.get("role") in ("admin", "owner"),
+    )
     try:
         from weasyprint import HTML
         pdf_bytes = HTML(string=html).write_pdf()

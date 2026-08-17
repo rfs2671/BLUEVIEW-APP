@@ -56,7 +56,23 @@ is are was were be been being has have had
 crew crews worker workers man men
 continuing continued continues ongoing underway progress progressing
 work working works today day
+worked performed performing carried out
 """.split())
+
+# WHY THOSE FIVE, and no more.
+#
+# The verifier was refusing on VERBS, not on nouns. `working` was allowed and
+# `worked` was not — the past tense of a word already in the list — so a model
+# writing the most natural sentence about tapped chips was refused for
+# literalism rather than for reaching beyond the record. Executed against a
+# real payload: "...worked on site clean-up and material delivery" came back
+# UNTRACED_TERM ['worked'].
+#
+# INFLECTIONS AND ONE PARTICLE. Every addition asserts that work HAPPENED and
+# none asserts that it FINISHED, which is the whole distinction this module
+# defends. `out` is here only to let "carried out" through; it is a preposition
+# and carries no claim on its own.
+#
 
 # ── Completion claims ────────────────────────────────────────────────────────
 #
@@ -78,6 +94,14 @@ installed
 delivered
 signoff
 """.split())
+
+# NOTHING HERE MAY ASSERT COMPLETION. Enforced below rather than trusted: the
+# two sets are checked disjoint at import, so a later addition like "finished"
+# cannot quietly become a connective and walk past the completion gate.
+_ASSERTED_ACTIVITY_VERBS = frozenset("worked performed performing carried out".split())
+assert not (_ASSERTED_ACTIVITY_VERBS & _COMPLETION_TERMS), (
+    "a connective may never be a completion term"
+)
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
 
@@ -281,33 +305,36 @@ def _prompt_for(payload: Dict[str, object]) -> str:
     )
 
 
-def generate_sentence(payload: Dict[str, object]) -> Optional[str]:
-    """One Gemini call for one activity row. The VERIFIED sentence, or None.
+def generate_sentence_traced(
+    payload: Dict[str, object],
+) -> Tuple[Optional[str], str]:
+    """The verified sentence AND which of the four outcomes produced it.
 
-    Returns None — never a partial, never an unchecked string — if:
-      • GEMINI_API_KEY is unset
-      • the call raises, or the response will not parse
-      • the sentence fails verify_sentence
+    WHY THIS EXISTS. All four branches returned None and differed only in what
+    they LOGGED, so from outside the process they were indistinguishable — and
+    the operator cannot reach Railway's runtime logs. A diagnosis has now been
+    blocked on unreadable logs twice, which is a design problem, not an
+    operations one: a decision the report makes on every row should be legible
+    from the report.
 
-    NO RETRY ON A FAILED CHECK. A refusal means the model reached for something
-    nobody tapped, and asking a temperature-0 model the same question again is
-    both the same question and a second charge. The caller falls back to
-    plain_facts, which is what a reader would have got anyway.
+    The outcome is a SHORT MACHINE STRING, never prose and never the key:
+
+        "generated"
+        "skipped: no key"
+        "failed: <ExceptionClass>"
+        "refused: UNTRACED_TERM worked"
+
+    generate_sentence() below is the same code with the outcome dropped, so
+    there is one implementation and callers that do not want the trace are
+    unchanged.
     """
     if not GEMINI_API_KEY:
-        # SAID OUT LOUD, once per row. Without this the no-key path was the
-        # only one of the three outcomes that left NO trace: a failure logs at
-        # ERROR and a refusal at INFO, but a missing key returned None in
-        # silence — so a report full of plain facts looked identical whether
-        # the model was never called, had failed, or had been correctly
-        # refused. That is exactly the question the operator had to ask about
-        # a live report, and it should have been answerable from the logs.
         logger.warning(
             "Sub-summary SKIPPED for %r: GEMINI_API_KEY is not set, so no "
-            "sentence was generated and the plain facts were rendered.",
+            "sentence was attempted and the plain facts render instead.",
             payload.get("company"),
         )
-        return None
+        return None, "skipped: no key"
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -326,7 +353,9 @@ def generate_sentence(payload: Dict[str, object]) -> Optional[str]:
             "Sub-summary generation failed for %r: %r",
             payload.get("company"), e,
         )
-        return None
+        # The CLASS, not the message: an exception string can carry a request
+        # id, a URL or a fragment of the payload, and this string is rendered.
+        return None, f"failed: {type(e).__name__}"
 
     # THE GATE. Nothing returns from this function unverified.
     ok, reason, offending = verify_sentence(sentence, payload)
@@ -335,18 +364,29 @@ def generate_sentence(payload: Dict[str, object]) -> Optional[str]:
             "Sub-summary refused for %r: %s %r",
             payload.get("company"), reason, offending,
         )
-        return None
-    return sentence
+        # The offending terms are the CP's own vocabulary or the model's, never
+        # anything secret, and they are the whole point: "refused" alone tells
+        # nobody what to change.
+        _terms = " ".join(offending[:4])
+        return None, f"refused: {reason}{(' ' + _terms) if _terms else ''}"
+    return sentence, "generated"
 
 
-# WHY THERE IS NO summary_line() WRAPPER HERE.
-#
-# The obvious convenience — `generate_sentence(p) or plain_facts(p)` — is wrong
-# for the one caller that exists. The progress report prints the company itself,
-# in bold, as the anchor of "one line per subcontractor", and plain_facts opens
-# with the company too; folding them together yields "Kestrel Electric — Kestrel
-# Electric (Electrical) — 4 workers...". So the report owns its own fallback,
-# which is the line it already rendered before this generator existed.
-#
-# plain_facts stays as this module's self-contained answer for a caller that
-# prints nothing of its own. It is not the report's answer.
+def generate_sentence(payload: Dict[str, object]) -> Optional[str]:
+    """One Gemini call for one activity row. The VERIFIED sentence, or None.
+
+    Returns None — never a partial, never an unchecked string — if:
+      • GEMINI_API_KEY is unset
+      • the call raises, or the response will not parse
+      • the sentence fails verify_sentence
+
+    NO RETRY ON A FAILED CHECK. A refusal means the model reached for something
+    nobody tapped, and asking a temperature-0 model the same question again is
+    both the same question and a second charge. The caller falls back to
+    plain_facts, which is what a reader would have got anyway.
+
+    A THIN WRAPPER, deliberately. generate_sentence_traced above is the one
+    implementation; this drops the outcome for callers that only want the
+    sentence, so the two can never disagree about what happened.
+    """
+    return generate_sentence_traced(payload)[0]
