@@ -76,6 +76,7 @@ const TIMEFIELD_SRC = fs.readFileSync(
   .replace(/^export default [\s\S]*$/m, '')
   .replace(/^export (const|function) /gm, '$1 ');
 const HW = loadModel('hotWorkModel.js', TIMEFIELD_SRC);
+const SSC = loadModel('sscDailySafetyLogModel.js');
 
 // ═══ OSHA LOG ════════════════════════════════════════════════════════════════
 console.log('\n-- osha_log: data.entries[] --');
@@ -982,6 +983,154 @@ ok(!HW.incompleteSteps({
   cpSignature: 'sig',
 }).includes(3), 'seven NOs is a COMPLETE walk — a No is an answer');
 
+// ═══ SSC DAILY SAFETY LOG ════════════════════════════════════════════════════
+console.log('\n-- ssc_daily_safety_log: the thirteen top-level keys --');
+
+const sscPdf = pdfBranch('ssc_daily_safety_log', 'osha_log');
+const sscReport = reportBranch('ssc_daily_safety_log', '_filed_log(logbooks, "concrete_operations")');
+const sscKiosk = kioskBranch('renderSscDailySafetyLog', 'renderOshaLog');
+
+/** A named tuple/array list inside a branch, sliced so its keys can be read. */
+function namedList(branch, name, open, close) {
+  const a = branch.indexOf(`${name} = ${open}`);
+  const b = branch.indexOf(close, a);
+  return (a > -1 && b > a) ? branch.slice(a, b) : '';
+}
+const listKeys = (src) => grab(src, /\("([a-z_]+)",\s*"[^"]+"\)/g);
+
+// This form has no nested checklist MAP — every one of the thirteen is a
+// top-level key — so the `['key', t(…)]` pairs the kiosk writes for its
+// compliance and narrative lists are payload keys too, and the whole block is
+// scanned rather than just the DocFields specs.
+const sscKioskKeys = uniq([
+  ...grab(sscKiosk, /\bdata\.([a-z_]+)/g),
+  ...grab(sscKiosk, /\['([a-z_]+)',\s*t\(/g),
+]);
+// The PDF branch keeps its flags and its narrative prompts in two named lists
+// that field_lines never sees, so both are read out by name.
+const sscPdfFlags = namedList(sscPdf, 'SSC_FLAGS', '[', ']');
+const sscPdfNarrative = namedList(sscPdf, 'NARRATIVE_FIELDS', '(', '\n        )');
+const sscReportFlags = namedList(sscReport, 'SSC_FLAGS', '[', ']');
+ok(sscPdfFlags.length > 0 && sscPdfNarrative.length > 0 && sscReportFlags.length > 0,
+  'ssc_daily_safety_log: the flag and narrative lists were found in both renderers');
+const sscPdfKeys = uniq([
+  ...pdfTopKeys(sscPdf), ...listKeys(sscPdfFlags), ...listKeys(sscPdfNarrative),
+]);
+const sscReportKeys = uniq([...reportTopKeys(sscReport), ...listKeys(sscReportFlags)]);
+
+const sscBody = SSC.draftBody({});
+const sscKeys = assertPayloadCovers('ssc_daily_safety_log', sscBody, [
+  ['PDF renderer', sscPdf, sscPdfKeys],
+  ['combined report', sscReport, sscReportKeys],
+  ['kiosk inspector', sscKiosk, sscKioskKeys],
+]);
+ok(sscKeys.length === 13,
+  `all three readers together open 13 keys (${sscKeys.join(', ')})`);
+ok(Object.keys(sscBody).length === 13,
+  'and the payload carries exactly those thirteen, no more');
+
+// THE FIVE FLAGS AND THE THREE PROMPTS, key AND label, out of both renderers'
+// own lists. The label must match word for word: the device and the filed PDF
+// have to ask the same thing.
+const SSC_EN = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
+for (const [name, src, model] of [
+  ['PDF renderer flags', sscPdfFlags, SSC.COMPLIANCE_FLAGS],
+  ['combined report flags', sscReportFlags, SSC.COMPLIANCE_FLAGS],
+  ['PDF renderer narrative', sscPdfNarrative, SSC.NARRATIVE_FIELDS],
+]) {
+  const items = [...src.matchAll(/\("([a-z_]+)",\s*"([^"]+)"\)/g)]
+    .map((m) => ({ key: m[1], label: m[2] }));
+  ok(items.length === model.length,
+    `${name} lists ${model.length} items (got ${items.length})`);
+  const bad = items.filter((q, i) => (
+    model[i]?.key !== q.key || model[i]?.label !== q.label
+  ));
+  ok(bad.length === 0,
+    `the model matches the ${name}, key and label and ORDER${bad.length ? ` — ${JSON.stringify(bad)}` : ''}`);
+}
+// The kiosk holds its copy in the catalogue rather than inline, so it is
+// checked against the catalogue.
+for (const f of SSC.COMPLIANCE_FLAGS) {
+  const m = new RegExp(`\\n\\s*s_${f.key}: '((?:[^'\\\\]|\\\\.)*)'`).exec(SSC_EN);
+  ok(!!m && m[1] === f.label,
+    `the kiosk catalogue reads s_${f.key} word for word as the document prints it`);
+}
+
+// ── FIVE TWO-STATE SWITCHES, DELIBERATELY NOT A THREE-STATE MAP ────────────
+//
+// The combined report prints a bare Yes/No for these (server.py:19905) with no
+// not-recorded branch and says so in as many words. Asserted, because the
+// obvious next move after checklistMap is to run these through it too — and
+// that would file a state that renderer cannot print.
+console.log('\n-- ssc_daily_safety_log: the five switches have TWO states --');
+
+ok(/Two-state ToggleRows \(seeded false, always present\)/.test(sscReport),
+  'the combined report still states the two-state convention these follow');
+ok(/\{"Yes" if d\.get\(key\) else "No"\}/.test(sscReport),
+  'and prints a bare Yes/No with nothing in between');
+for (const f of SSC.COMPLIANCE_FLAGS) {
+  ok(sscBody[f.key] === false,
+    `${f.key} is present and FALSE on a blank day, never absent`);
+  ok(SSC.draftBody({ [f.key]: true })[f.key] === true, `${f.key} records a real true`);
+  ok(SSC.draftBody({ [f.key]: undefined })[f.key] === false,
+    `${f.key} coerces a missing value to false rather than passing undefined through`);
+}
+// Both filed surfaces qualify a rendered "No" as possibly an untouched default,
+// and the screen says the same thing before the SSC signs.
+ok(/Compliance items default to "No" if not explicitly set by the reviewer/.test(sscPdf),
+  'the PDF still qualifies a bare "No" as a possible untouched default');
+
+console.log('\n-- ssc_daily_safety_log: the incident detail --');
+
+// THE RENDERERS' OWN RULE: the detail is printed only when an incident was
+// reported — but if one WAS, a missing detail is an unanswered question.
+ok(/show_incident = bool\(data\.get\("incidents_reported"\)\)/.test(sscPdf),
+  'the PDF gates the incident narrative on the flag');
+ok(SSC.incidentDetailsApply({ incidents_reported: true }) === true,
+  'the screen asks for the detail under exactly that condition');
+ok(SSC.incidentDetailsApply({ incidents_reported: false }) === false, 'and not otherwise');
+ok(SSC.incidentDetailsApply(null) === false, 'and it is safe on a missing document');
+// The key TRAVELS either way. Dropping it when the flag is off would delete a
+// detail the SSC typed before un-ticking the flag by mistake.
+ok(SSC.draftBody({ incidents_reported: false, incident_details: 'Cut hand, sent to clinic' })
+  .incident_details === 'Cut hand, sent to clinic',
+  'the detail survives the flag being turned off — the renderers decide what to '
+  + 'PRINT, and a typed sentence is not the app’s to throw away');
+
+console.log('\n-- ssc_daily_safety_log: prefill, and the pips --');
+
+ok(SSC.prefillFromProject({ address: '12 Bond St', ssp_number: 'SSP-9' }).project_address === '12 Bond St',
+  'the address comes off the project record');
+ok(SSC.prefillFromProject({ location: '12 Bond St' }).project_address === '12 Bond St',
+  'falling back to `location` when there is no `address`, as it always has');
+ok(Object.keys(SSC.prefillFromProject({ address: 'x', ssp_number: 'y', budget: 99 })).length === 2,
+  'and NOTHING else rides in from the project document');
+ok(SSC.prefillFromProject(null).project_address === '',
+  'a failed project fetch yields blanks, not a crash');
+
+ok(JSON.stringify(SSC.incompleteSteps({ details: {}, cpSignature: '' })) === '[1,3,4]',
+  'an untouched day marks the site, the narrative and the signature — NOT '
+  + 'compliance, whose five switches are meaningfully false');
+const sscFull = {
+  project_address: '12 Bond St', weather: 'Sunny', workers_on_site_count: '14',
+  site_conditions: 'Dry, clear', safety_violations_observed: 'None observed',
+  corrective_actions_taken: 'None required',
+};
+ok(JSON.stringify(SSC.incompleteSteps({ details: sscFull, cpSignature: 'sig' })) === '[]',
+  'a written and signed day marks none');
+ok(SSC.incompleteSteps({
+  details: { ...sscFull, corrective_actions_taken: '' }, cpSignature: 'sig',
+}).includes(3), 'one prompt left blank marks the narrative incomplete');
+ok(SSC.incompleteSteps({
+  details: { ...sscFull, incidents_reported: true }, cpSignature: 'sig',
+}).includes(3), 'and an INCIDENT with no detail does too — the document will ask for it');
+ok(!SSC.incompleteSteps({
+  details: { ...sscFull, incidents_reported: true, incident_details: 'Cut hand' },
+  cpSignature: 'sig',
+}).includes(3), 'once written, the step is complete');
+ok(SSC.narrativeWrittenCount({ site_conditions: '   ' }) === 0,
+  'whitespace is not a narrative');
+
 // ═══ THE SPARSE TOGGLE MAP — three states, and all three reachable ═══════════
 //
 // backend/server.py:13029-13043 says it: "key present and False is an explicit
@@ -1044,14 +1193,31 @@ const CONC_SCREEN = screenSrc('concrete_operations');
 const CRANE_SCREEN = screenSrc('crane_operations');
 const EXC_SCREEN = screenSrc('excavation_monitoring');
 const HW_SCREEN = screenSrc('hot_work');
+const SSC_SCREEN = screenSrc('ssc_daily_safety_log');
 ok(/LogbookStepper/.test(CONC_SCREEN) && !/THE PAYLOAD IS UNCHANGED/.test(CONC_SCREEN),
   'the comment stripper removes prose but keeps code');
+
+// The freeze classification, read out of server.py's own table rather than
+// typed here — the backend is authoritative and this suite must not carry a
+// second opinion about which logs freeze on signature.
+const TIMING_TABLE = SERVER.slice(
+  SERVER.indexOf('LOGBOOK_TIMING_CLASS = {'),
+  SERVER.indexOf('def logbook_timing_class'),
+);
+ok(TIMING_TABLE.length > 0, 'located LOGBOOK_TIMING_CLASS in server.py');
+const END_OF_DAY_TYPES = [...TIMING_TABLE.matchAll(/"([a-z_]+)":\s*"end_of_day"/g)]
+  .map((m) => m[1]);
+ok(END_OF_DAY_TYPES.length === 2
+  && END_OF_DAY_TYPES.includes('daily_jobsite')
+  && END_OF_DAY_TYPES.includes('ssc_daily_safety_log'),
+  `exactly two logs are daily narratives (${END_OF_DAY_TYPES.join(', ')})`);
 
 const PORTED_SCREENS = [
   ['concrete_operations', CONC_SCREEN],
   ['crane_operations', CRANE_SCREEN],
   ['excavation_monitoring', EXC_SCREEN],
   ['hot_work', HW_SCREEN],
+  ['ssc_daily_safety_log', SSC_SCREEN],
 ];
 
 for (const [name, src] of PORTED_SCREENS) {
@@ -1074,10 +1240,32 @@ for (const [name, src] of PORTED_SCREENS) {
   ok(importsAt > 0, `${name}: the import block ends where it always has`);
   const body = src.slice(importsAt);
   for (const fn of ['readDraft', 'writeDraft', 'setDraftBackendId', 'markPending',
-    'clearPending', 'markFinalized', 'adoptAmendment', 'freezeIfImmediate',
+    'clearPending', 'markFinalized', 'adoptAmendment',
     'recordFinalizeError', 'clearFinalizeError', 'finalizeErrorCode',
     'isOfflineError', 'recordSignatureEvent']) {
     ok(new RegExp(`\\b${fn}\\s*\\(`).test(body), `${name}: CALLS ${fn}`);
+  }
+  // THE FREEZE MODEL IS A LEGAL CLASSIFICATION, not a UI preference, and the
+  // five ported forms do not share one. Four are IMMEDIATE — the signature IS
+  // the freeze, so freezeIfImmediate runs and there is no separate /finalize.
+  // ssc_daily_safety_log is END_OF_DAY (server.py's LOGBOOK_TIMING_CLASS puts
+  // it with daily_jobsite): the narrative accumulates all day and freezes once,
+  // at an explicit /finalize plus a local markFinalized. Getting this backwards
+  // either freezes a day that is still being written or leaves a REQUIRED log
+  // unfrozen, so each form is asserted to carry ITS model and NOT the other.
+  const endOfDay = name === 'ssc_daily_safety_log';
+  ok(END_OF_DAY_TYPES.includes(name) === endOfDay,
+    `${name}: the backend agrees this is ${endOfDay ? 'END_OF_DAY' : 'IMMEDIATE'}`);
+  if (endOfDay) {
+    ok(!/freezeIfImmediate/.test(src),
+      `${name}: does NOT freeze on signature — it is a daily narrative`);
+    ok(/logbooksAPI\.finalize\(savedId\)/.test(body) && /markFinalized\(_key\)/.test(body),
+      `${name}: closes the day with an explicit finalize plus a local freeze`);
+  } else {
+    ok(/freezeIfImmediate\s*\(/.test(body),
+      `${name}: CALLS freezeIfImmediate — the signature IS the freeze`);
+    ok(!/logbooksAPI\.finalize\(/.test(body),
+      `${name}: and never calls /finalize separately, which would contradict that`);
   }
   // And the payload is built in ONE place. A screen that assembles a `data: {}`
   // literal anywhere has a second shape the model does not decide — which is
@@ -1104,10 +1292,10 @@ for (const [name, src] of PORTED_SCREENS) {
   // No roster, so the empty-roster trap has no surface here.
   ok(!/getCheckinsForDate|getCheckinsRoster|buildEntriesFromCheckins/.test(src),
     `${name}: builds no roster, so it cannot carry the empty-roster trap`);
-  // A time-of-day field is TAPPED, not typed — on the three forms that have
-  // one. excavation_monitoring records no time of day at all, so it must not
-  // grow a picker for a field that does not exist.
-  if (name === 'excavation_monitoring') {
+  // A time-of-day field is TAPPED, not typed — on the forms that have one.
+  // excavation_monitoring and ssc_daily_safety_log record no time of day at
+  // all, so neither may grow a picker for a field that does not exist.
+  if (name === 'excavation_monitoring' || name === 'ssc_daily_safety_log') {
     ok(!/<TimeField/.test(src) && !/placeholder="HH:MM"/.test(src),
       `${name}: has no time-of-day field, and no picker for one`);
   } else {
@@ -1166,6 +1354,70 @@ ok(/setFetchState\(r\.status\)/.test(HW_SCREEN),
   'the outcome of the load is what the notice is driven from');
 ok(!/calcFireWatchEnd = /.test(HW_SCREEN),
   'hot_work: the fire-watch derivation lives in the model, not in the screen');
+
+// ── ssc_daily_safety_log signs with ITS OWN pad ─────────────────────────────
+//
+// The other four ported forms take the CP's signature from useCpProfile, which
+// is right for them: one Competent Person signs his own logs all day. The
+// SSC/SSM log is signed by a DIFFERENT person, and a cached CP credential
+// pre-locking that pad would put one man's signature on another man's daily
+// record. This screen therefore holds cpName/cpSignature locally, seeds them
+// only from the loaded document, and leaves the pad editable.
+ok(!/useCpProfile/.test(SSC_SCREEN),
+  'ssc_daily_safety_log: does NOT reach for the cached CP profile signature');
+ok(/const \[cpSignature, setCpSignature\] = useState\(null\);/.test(SSC_SCREEN),
+  'the signature is this log’s own local state');
+ok(/autoLock=\{false\}/.test(SSC_SCREEN),
+  'and the pad opens editable so the SSC/SSM signs it himself');
+for (const [name, src] of PORTED_SCREENS) {
+  if (name === 'ssc_daily_safety_log') continue;
+  ok(/useCpProfile/.test(src),
+    `${name}: still takes the CP signature from the shared profile, as it always has`);
+}
+// The five compliance switches stay two-state — same deliberate exception as
+// excavation_monitoring's two, and for the same renderer-shaped reason.
+ok(/const toggleFlag = \(key\) => setDetails\(\(p\) => \(\{ \.\.\.p, \[key\]: !p\[key\] \}\)\);/
+  .test(SSC_SCREEN),
+  'ssc_daily_safety_log: the five compliance switches stay a plain boolean flip');
+ok(!/applyChecklistAnswer/.test(SSC_SCREEN),
+  'and they are NOT routed through the three-state helper');
+// The guard that refuses `cp_signature: {}` — the shape production actually
+// held, which the old `!cpSignature` presence check let straight through.
+ok(/if \(!isAffirmedSignature\(cpSignature\)\) \{/.test(SSC_SCREEN),
+  'ssc_daily_safety_log: the handler asks the renderer’s question, not "is anything there"');
+ok(!/if \(!cpSignature\) \{/.test(SSC_SCREEN),
+  'and the bare presence check that an empty object satisfied is gone');
+
+// ── THE THREE FINALIZE OUTCOMES, AND ONLY ONE MAY FREEZE ────────────────────
+//
+// This is the END_OF_DAY shape, so the content push and the /finalize are two
+// separate calls and the second one can fail on its own. Treating every
+// finalize failure as offline produced three compounding lies on daily_jobsite:
+// the CP was told the log was signed, locked and would sync when the server had
+// said no and would keep saying no; markFinalized made the draft IMMUTABLE so
+// he could not fix the very condition being refused; and the content push had
+// SUCCEEDED, so no pending key existed and the drain would never retry.
+//
+// Asserted on the CATCH BLOCK ITSELF rather than on the presence of the
+// helpers: recordFinalizeError is also called from the push path, so a screen
+// that dropped the refusal branch's `return` still mentioned every name. A
+// mutation walked straight through the earlier version of this.
+{
+  const a = SSC_SCREEN.indexOf('} catch (finalizeErr) {');
+  const b = SSC_SCREEN.indexOf('await markFinalized(_key);', a);
+  const catchBlock = (a > -1 && b > a) ? SSC_SCREEN.slice(a, b) : '';
+  ok(catchBlock.length > 0,
+    'ssc_daily_safety_log: located the finalize catch block');
+  ok((catchBlock.match(/\breturn;/g) || []).length === 2,
+    'a REFUSED and a FAILED finalize each return BEFORE the freeze — only the '
+    + 'genuinely offline path falls through to it');
+  ok(/if \(refused\) \{[\s\S]*?recordFinalizeError\(savedId, code, _key, 'editor'\);[\s\S]*?return;/
+    .test(catchBlock),
+    'and a refusal leaves the durable banner on its way out, so the toast is not '
+    + 'the only trace four seconds later');
+  ok(/if \(!offline && !refused\) \{[\s\S]*?return;/.test(catchBlock),
+    'a 5xx is retryable, is not queued and is not announced as synced');
+}
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════
 console.log('\n-- the kiosk inspector reads the same keys --');

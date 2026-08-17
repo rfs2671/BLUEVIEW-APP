@@ -887,6 +887,75 @@ export default {
     notRecorded: 'Not recorded',
   },
 
+  // ── app/logbooks/ssc_daily_safety_log.jsx — the daily narrative, 4 steps ──
+  //
+  // EN-ONLY for the same reason as oshaLog above.
+  //
+  // DELIBERATELY ABSENT: the five compliance labels and the three narrative
+  // prompts. They are printed verbatim on the filed PDF by
+  // backend/server.py:13529-13535 and :13585-13589, and again on the combined
+  // report, so the label must be the SAME string on the device and on the
+  // document. They live in sscDailySafetyLogModel.
+  sscDailySafetyLog: {
+    screenTitle: 'SSC/SSM Daily Safety Log',
+    screenSub: 'Site Safety Coordinator — Daily Record',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The site',
+    step2Title: 'Compliance',
+    step3Title: 'The narrative',
+    step4Title: 'Review and sign',
+
+    // Step 1 — the site.
+    siteHint: 'Where this is, how many men were on it, and what the weather did.',
+    fAddress: 'Project address',
+    fSsp: 'Site Safety Plan #',
+    fWeather: 'Weather',
+    fWorkers: 'Workers on site',
+    // The two above come off the project record, so correcting them here would
+    // correct one day's log and not the job. Said out loud rather than left as
+    // a field that mysteriously will not accept a tap.
+    fromProjectNote: 'Carried from the project record. Change it on the project, not on one day’s log.',
+    notOnFile: 'Not on file',
+    phField: 'Not recorded',
+
+    // Step 2 — the five compliance switches.
+    complianceHint: 'Mark what you confirmed today.',
+    // The same caveat both filed surfaces already print under this table: an
+    // unticked item is a default, not a finding.
+    complianceDefaultNote: 'An item you do not mark prints as “No”. It reads as an untouched default, not as a finding you made.',
+
+    // Step 3 — the narrative.
+    narrativeHint: 'This log IS these sentences. A prompt left blank prints as “Not recorded” on the filed document.',
+    fIncidentDetails: 'Incident Details',
+    incidentDetailsHint: 'You marked an incident on the previous step, so the document will ask for this.',
+    phNarrative: 'Not recorded',
+
+    // Step 4 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewSite: 'The site',
+    reviewCompliance: 'Compliance',
+    reviewNarrative: 'The narrative',
+    yes: 'Yes',
+    no: 'No',
+
+    next: 'Next',
+    submitAndSign: 'Sign and close the day',
+    signingClosesDay: 'Signing locks this log. Corrections then need an amendment.',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the log before closing the day.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This log is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    notRecorded: 'Not recorded',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   // Only the affirmation UI is localized. The rest of the pad (title, "SIGNER
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)

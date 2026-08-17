@@ -165,7 +165,9 @@ ok(FILES.length === 16, `scanner reads 16 CP screens (found ${FILES.length})`);
 // toolbox_talk port — and are expected to keep falling as the remaining forms
 // are ported. A threshold that never moves would be a debt ceiling, which is
 // not what this is.
-ok(sum(measured.fontSize) > 120,
+// LOWERED 120 -> 100 by the ssc_daily_safety_log port (124 -> 120). Same
+// scanner-is-alive guard as the two below and the same direction of travel.
+ok(sum(measured.fontSize) > 100,
   `scanner still finds fontSize literals (${sum(measured.fontSize)})`);
 // LOWERED from 80 to 50 by the osha_log + scaffold_maintenance port, which
 // moved two more screens onto the token file (88 -> 67). This is a
