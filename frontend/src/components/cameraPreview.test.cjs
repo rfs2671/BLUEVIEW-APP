@@ -101,6 +101,38 @@ ok(/Platform\.OS === 'android'[\s\S]{0,120}takeSnapshot/.test(src),
 ok(/takePhoto\(\{ flash: 'off'/.test(src),
   'and iOS still takes a real photo');
 
+console.log('\n-- ultra-wide is a ZOOM VALUE, not a device choice --');
+
+// #145 set the default and the camera still opened at 1x. The mounted device is
+// ONE logical camera carrying wide + ultra-wide + telephoto, zoom 0.5078-30, so
+// the lens IS a position in that range — and the old branch asked for
+// neutralZoom, which Android hardcodes to 1.0. Ultra now means the widest the
+// MOUNTED device can go, whatever the hardware arrangement.
+ok(/backLens === 'ultra'\)[\s\S]{0,60}lensDevice\?\.minZoom/.test(src),
+  'ultra framing is the mounted device MIN zoom, not its neutral zoom');
+ok(/lensDevice\?\.neutralZoom \?\? 1/.test(src), 'and wide is its neutral zoom, unchanged');
+// The bug lived entirely in branching on how the hardware is packaged.
+ok(!/uwViaZoom/.test(src), 'the exposure-shape branch is gone — the answer does not depend on it');
+ok(!/hasUltraWide/.test(src), 'and so is the flag that only fed the removed toggle');
+// The front camera must not be dragged to minZoom by the back-lens state.
+ok(/position !== 'front' && backLens === 'ultra'/.test(src),
+  'the ultra rule applies to the BACK lens only');
+ok(/const lensDevice = position === 'front' \? frontDevice : device;/.test(src),
+  'and it reads the zoom range off the device actually mounted');
+
+console.log('\n-- the diagnostic panel is gone, on schedule --');
+
+// It named the lowLightBoost failure in one round after two rounds of guessing,
+// and the preview is confirmed live. Temporary instrumentation on a CP-facing
+// screen is the shape that outlives its reason.
+for (const dead of ['previewFailed', 'diagText', 'noteDiag', 'CAMERA DIAGNOSTIC',
+  'diagPanel', 'graceOver', 'expo-clipboard']) {
+  ok(!raw.includes(dead), 'fully removed: no ' + dead);
+}
+// The SHUTTER LOG stays — console-only, never on the CP's screen, and a capture
+// that hangs leaves no other trace.
+ok(/\[CAM\] shutter/.test(src), 'the shutter log stays — it was never the panel');
+
 console.log('\n-- the concluded instrumentation is gone --');
 
 // TEMP instrumentation on a CP-facing screen is the shape that outlives its
@@ -126,44 +158,6 @@ ok(pkg.dependencies['react-native-vision-camera'].includes('4'),
   'still vision-camera v4 — no dependency change, so no new native module');
 ok(!/require\(|import\(/.test(src.split('export default')[1] || ''),
   'and nothing is lazily pulled in at render time');
-
-console.log('\n-- the readout, because the diagnosis has to come from the device --');
-
-ok(/onPreviewStarted=\{/.test(src) && /onPreviewStopped=\{/.test(src),
-  'the preview lifecycle is observed — onPreviewStarted separates "not streaming" from "streaming but not painting"');
-ok(/onInitialized=\{/.test(src) && /onStarted=\{/.test(src) && /onStopped=\{/.test(src),
-  'and so is the session lifecycle');
-ok(/noteDiag\(\{ error: /.test(src) && /err\?\.code/.test(src),
-  'onError is recorded VERBATIM with its code — a paraphrase is a second diagnosis');
-ok(/FAILED — /.test(src), 'a failed capture is recorded with its message');
-ok(/shutter: `#\$\{seq\} ok /.test(src),
-  'and a successful one, so "not tried" and "tried and worked" are distinguishable');
-
-for (const [needle, label] of [
-  ['device: ${device ?', 'which device was found, or NONE'],
-  ['previewType: ${PREVIEW_TYPE}', 'the preview view type ACTUALLY in use'],
-  ['isActive: ${isActiveNow}', 'whether the camera was told to be active'],
-  ['appState=${AppState.currentState}', 'the AppState input to that, read live'],
-  ['error: ${diag.error', 'any error, verbatim'],
-  ['shutter: ${diag.shutter', 'the last shutter result'],
-  ['permission: ${hasPermission}', 'the permission state'],
-]) {
-  ok(src.includes(needle), 'the readout reports ' + label);
-}
-
-console.log('\n-- gated, and labelled as temporary --');
-
-ok(/\{active && previewFailed && \(/.test(src),
-  'the panel shows only when the preview has FAILED, never in normal use');
-ok(/const previewFailed = !!diag\.error/.test(src) && /graceOver && !diag\.previewStarted/.test(src),
-  'failure is something the library or the OS said, not a guess');
-ok(/setGraceOver\(true\), 2500\)/.test(src),
-  'with a grace period, so a healthy camera never flashes it');
-ok(/CAMERA DIAGNOSTIC \(temporary\)/.test(raw), 'it says on its face that it is temporary');
-ok(/TEMPORARY DIAGNOSTIC/.test(raw) && /REMOVE THIS with the finding it exists for/.test(raw),
-  'and the code says when to delete it — the last two were removed in #142');
-ok(/Clipboard\.setStringAsync\(diagText\)/.test(src),
-  'the readout is copyable — the operator has no logcat and has to relay it');
 
 console.log('\n-- the lock is re-derived on every load --');
 
@@ -196,13 +190,8 @@ ok(!/lowLightBoost=\{device\?\.supportsLowLightBoost/.test(src),
   'and it is NOT gated on supportsLowLightBoost, which claimed support then threw');
 ok(/photoHdr=\{false\}/.test(src),
   'the other vendor extension stays off too — the library throws if both are on');
-ok(/passed=false deviceClaims=/.test(src),
-  'and the readout reports what is PASSED beside what the device CLAIMS');
-
-console.log('\n-- the panel stays until the device says the preview starts --');
-
-ok(/\{active && previewFailed && \(/.test(src),
-  'the diagnostic is still here — it goes when the operator confirms the preview starts');
+ok(!/lowLightBoost=\{[^}]*supportsLowLightBoost/.test(src),
+  'and supportsLowLightBoost can never gate the prop again');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

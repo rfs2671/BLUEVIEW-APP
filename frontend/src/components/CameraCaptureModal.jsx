@@ -5,7 +5,6 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
-import * as Clipboard from 'expo-clipboard';
 import CameraOverlay from './CameraOverlay';
 
 /**
@@ -53,8 +52,8 @@ export function useCameraPrewarmPermission() {
   return hasPermission;
 }
 
-// The value passed to <Camera> below. Named so the diagnostic reports what is
-// ACTUALLY in use rather than what someone believes is in use.
+// The value passed to <Camera> below, named rather than inlined so the one
+// place it is set is obvious to anyone tuning camera performance later.
 const PREVIEW_TYPE = 'texture-view';
 
 function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
@@ -85,34 +84,6 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // Numbers each capture, so a late `report` from an older shot is identifiable
   // in the log rather than being attributed to the current one.
   const shotSeqRef = useRef(0);
-  /**
-   * WHY THE PREVIEW IS BLACK — the readout, because the diagnosis has to come
-   * from the device.
-   *
-   * TEMPORARY. This is instrumentation on a CP-facing screen, and it is gated:
-   * it appears only once the preview has DEMONSTRABLY failed, never in normal
-   * use. Remove it with the finding it exists for.
-   *
-   * `previewStarted` is the fact that matters. VisionCamera fires
-   * onPreviewStarted when the preview surface begins receiving frames, so it
-   * separates the two halves cleanly: never started means the session is not
-   * streaming (permission, device, isActive, a competing holder), started and
-   * still black means it IS streaming and something above it is not painting.
-   */
-  const [diag, setDiag] = useState({
-    initialized: false, started: false, previewStarted: false,
-    stopped: false, previewStopped: false, error: null, shutter: null,
-  });
-  const noteDiag = useCallback((patch) => setDiag((p) => ({ ...p, ...patch })), []);
-  // Grace period: a healthy camera takes a moment to start, and a panel that
-  // flashed on every open would be noise the CP learns to ignore.
-  const [graceOver, setGraceOver] = useState(false);
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!active) { setGraceOver(false); return undefined; }
-    const h = setTimeout(() => setGraceOver(true), 2500);
-    return () => clearTimeout(h);
-  }, [active]);
 
   const currentZoomRef = useRef(1);
   const baseZoomRef = useRef(1);
@@ -121,14 +92,13 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const wideDevice = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
   const frontDevice = useCameraDevice('front');
 
-  // Two ways a phone exposes ultra-wide:
-  //   A) a DISTINCT physical ultra-wide device (different id from the wide)
-  //   B) ZOOM below 1× on the main back multi-cam device (minZoom < 1)
+  // `uwIsDistinct` now decides ONE thing: whether there is a separate ultra-wide
+  // DEVICE worth mounting. Where the lens sits in the zoom range is no longer
+  // its business — the framing effect below asks the mounted device how wide it
+  // can go rather than how its lenses happen to be packaged.
   const uwIsDistinct = !!(uwDevice && wideDevice && uwDevice.id !== wideDevice.id
     && uwDevice.physicalDevices?.includes('ultra-wide-angle-camera'));
   const backBase = wideDevice ?? uwDevice;
-  const uwViaZoom = !uwIsDistinct && (backBase?.minZoom ?? 1) < 0.99;
-  const hasUltraWide = uwIsDistinct || uwViaZoom;
 
   const device = position === 'front'
     ? frontDevice
@@ -181,18 +151,39 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // could not bind at all — and it was never repeated once the session could
   // configure. It is also moot on Android, where capture is takeSnapshot and
   // never reaches ImageCapture. The default is 'ultra' by ruling; the shutter
-  // log and the diagnostic panel record what any future capture actually does.
+  // log records what any future capture actually does.
 
-  // Framing for the current lens: distinct-device UW → device neutral;
-  // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
+  /**
+   * FRAMING: ULTRA-WIDE IS A ZOOM VALUE, NOT A DEVICE CHOICE.
+   *
+   * #145 made ultra-wide the default and the camera still opened at 1×. The
+   * readout said why: the mounted device is ONE logical camera carrying
+   * wide + ultra-wide + telephoto, with a zoom range of 0.5078 to 30. On a
+   * phone arranged like that the lens IS a position in that range.
+   *
+   * The old branch could not express it. It routed on how the ultra-wide was
+   * EXPOSED — a distinct device, or zoom below 1× — and the distinct-device
+   * branch asked for `neutralZoom`, which Android hardcodes to 1.0
+   * (CameraDeviceDetails.kt:100). Any path through that branch opened at 1×
+   * however wide the mounted device could actually go.
+   *
+   * ONE RULE, CORRECT IN EVERY ARRANGEMENT: ultra means the widest the MOUNTED
+   * device can go, which is `minZoom`.
+   *   multi-cam spanning all lenses  minZoom 0.5x  → the ultra-wide framing
+   *   a discrete ultra-wide device   minZoom 1.0   → its own native framing,
+   *                                                  already ultra-wide
+   *   a phone with no ultra-wide     minZoom 1.0   → unchanged, nothing to give
+   *
+   * No branch on how the hardware is packaged, because the answer does not
+   * depend on it — and the old code's bug was entirely in that branching.
+   */
   useEffect(() => {
-    let z;
-    if (position === 'front') z = frontDevice?.neutralZoom ?? 1;
-    else if (uwIsDistinct) z = device?.neutralZoom ?? 1;
-    else if (uwViaZoom) z = backLens === 'ultra' ? (backBase?.minZoom ?? 1) : (backBase?.neutralZoom ?? 1);
-    else z = device?.neutralZoom ?? 1;
+    const lensDevice = position === 'front' ? frontDevice : device;
+    const z = (position !== 'front' && backLens === 'ultra')
+      ? (lensDevice?.minZoom ?? lensDevice?.neutralZoom ?? 1)
+      : (lensDevice?.neutralZoom ?? 1);
     if (Number.isFinite(z)) { currentZoomRef.current = z; setZoom(z); }
-  }, [device, position, backLens, uwIsDistinct, uwViaZoom]);
+  }, [device, frontDevice, position, backLens]);
 
   useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
 
@@ -258,7 +249,6 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
       const photo = Platform.OS === 'android'
         ? await camera.current.takeSnapshot({ quality: 90 })
         : await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
-      noteDiag({ shutter: `#${seq} ok ${photo?.width || '?'}x${photo?.height || '?'}` });
       const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
       // THE BADGE IS GONE; THE LOG IS NOT. The on-screen timing overlay was
@@ -279,35 +269,10 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         seq, tShot - t0, tHandoff - tShot, tHandoff - t0);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
-      noteDiag({ shutter: `#${seq} FAILED — ${e?.code || ''} ${e?.message || String(e)}` });
     } finally {
       setCapturing(false);
     }
-  }, [capturing, onCapture, device, position, backLens, noteDiag]);
-
-  // ── the readout ──────────────────────────────────────────────────────────
-  // FAILED means: the session said so, a capture said so, or the preview never
-  // started. Not "looks wrong" — every branch here is something the library or
-  // the OS told us.
-  const previewFailed = !!diag.error
-    || (diag.shutter || '').includes('FAILED')
-    || (graceOver && !diag.previewStarted);
-  const isActiveNow = active && appActive;
-  const diagText = [
-    `preview: ${diag.previewStarted ? 'started' : 'NEVER STARTED'}${diag.previewStopped ? ' (then stopped)' : ''}`,
-    `session: init=${diag.initialized} started=${diag.started} stopped=${diag.stopped}`,
-    `isActive: ${isActiveNow} (visible=${active} appState=${AppState.currentState})`,
-    `device: ${device ? `${device.id} ${device.position}` : 'NONE FOUND'}`,
-    device ? `physical: ${(device.physicalDevices || []).join('+') || 'n/a'} zoom ${device.minZoom}-${device.maxZoom}` : '',
-    `lens: ${position}/${backLens}  previewType: ${PREVIEW_TYPE}`,
-    `permission: ${hasPermission}`,
-    `format: ${format ? `${format.photoWidth}x${format.photoHeight}` : 'device default'} fps=${fps ?? 'default'} exposure=${exposure ?? 'default'}`,
-    // What is PASSED, and what the device CLAIMS — they disagreed, and the
-    // disagreement is the whole finding.
-    `lowLightBoost: passed=false deviceClaims=${device?.supportsLowLightBoost === true}`,
-    `error: ${diag.error || 'none'}`,
-    `shutter: ${diag.shutter || 'not tried'}`,
-  ].filter(Boolean).join('\n');
+  }, [capturing, onCapture, device, position, backLens]);
 
   if (!hasPermission) {
     return (
@@ -424,16 +389,8 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         // MINIMIZE_LATENCY on Android). This is the single change to re-measure.
         photoQualityBalance="speed"
         zoom={zoom}
-        onInitialized={() => noteDiag({ initialized: true })}
-        onStarted={() => noteDiag({ started: true, stopped: false })}
-        onStopped={() => noteDiag({ stopped: true })}
-        onPreviewStarted={() => noteDiag({ previewStarted: true, previewStopped: false })}
-        onPreviewStopped={() => noteDiag({ previewStopped: true })}
         onError={(err) => {
           console.warn('vision-camera error:', err?.message);
-          // VERBATIM. A paraphrased error is a second diagnosis on top of the
-          // first, and the code is the part that names the cause.
-          noteDiag({ error: `${err?.code || 'unknown'}: ${err?.message || String(err)}` });
           // Untested-OEM safety net: if a DISTINCT ultra-wide device
           // fails to start, drop to the wide lens so the user never sees
           // a dead/black camera. (The zoom-based UW path is unaffected —
@@ -441,32 +398,6 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
           if (uwIsDistinct && backLens === 'ultra') setBackLens('wide');
         }}
       />
-      {/* ── TEMPORARY DIAGNOSTIC — device round 5, finding 28 ───────────────
-          The preview is black on the operator's device and logcat is not
-          available, so the state has to be readable ON the screen.
-
-          GATED: it appears only once the preview has demonstrably failed —
-          an error, a failed capture, or no onPreviewStarted after the grace
-          period. A healthy camera never shows it.
-
-          REMOVE THIS with the finding it exists for. Temporary instrumentation
-          on a CP-facing screen is the shape that outlives its reason, which is
-          why the last two were deleted in #142. */}
-      {active && previewFailed && (
-        <View style={styles.diagPanel} pointerEvents="box-none">
-          <Text style={styles.diagTitle}>CAMERA DIAGNOSTIC (temporary)</Text>
-          <Text style={styles.diagText} selectable>{diagText}</Text>
-          <Pressable
-            style={styles.diagCopy}
-            accessibilityRole="button"
-            onPress={() => Clipboard.setStringAsync(diagText).then(
-              () => setCopied(true), () => {},
-            )}
-          >
-            <Text style={styles.diagCopyText}>{copied ? 'Copied' : 'Copy'}</Text>
-          </Pressable>
-        </View>
-      )}
       <CameraOverlay
         shots={shots}
         capturing={capturing}
@@ -551,21 +482,6 @@ const styles = StyleSheet.create({
   // shadow on Android.
   overlayShown: { opacity: 1, zIndex: 100, elevation: 100 },
   overlayHidden: { opacity: 0, zIndex: -1, elevation: 0 },
-  // TEMPORARY diagnostic panel — remove with the finding it exists for.
-  // Deliberately plain and unbranded: it is not part of the product, and it must
-  // not read as one. Positioned top-left so it never covers the shutter.
-  diagPanel: {
-    position: 'absolute', top: 40, left: 12, right: 12, zIndex: 300, elevation: 300,
-    backgroundColor: 'rgba(0,0,0,0.82)', borderRadius: 8, padding: 10,
-    borderWidth: 1, borderColor: '#f59e0b',
-  },
-  diagTitle: { color: '#f59e0b', fontSize: 11, fontWeight: '700', marginBottom: 6 },
-  diagText: { color: '#e2e8f0', fontSize: 11, lineHeight: 16, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  diagCopy: {
-    marginTop: 8, alignSelf: 'flex-start', paddingHorizontal: 14, paddingVertical: 8,
-    borderRadius: 6, backgroundColor: '#334155',
-  },
-  diagCopyText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#000' },
   msg: { color: '#fff', fontSize: 15, textAlign: 'center', marginBottom: 24, lineHeight: 22 },
   primaryBtn: {
