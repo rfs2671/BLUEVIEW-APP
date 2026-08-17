@@ -259,6 +259,28 @@ select option{background:#1e293b;color:#f1f5f9}
         <div class="toolbox-hint" data-i18n="toolboxHint">Optional — you are already on the toolbox talk roster. Your check-in is complete either way.</div>
       </div>
     </div>
+    <!-- DAILY SIGNATURE AFFIRMATION — see /checkin/lookup-worker.
+         He signed ONCE, at orientation. Printing that image against today's
+         date asserts he signed today's sheet, which is the same overstatement
+         as the "UNAFFIRMED — inherited signature" warning already carried on
+         the CP's signatures. Affirming turns the stamp into a real daily
+         attestation.
+
+         NO IMAGE IS SHOWN. lookup-worker is public and keyed on a phone
+         number, so shipping the signature PNG here would make signature
+         images enumerable by phone. He is told a signature is on file and
+         WHEN he signed it; the attestation is his tap, not his eyes.
+
+         THE DATE IS SHOWN AND NEVER ENFORCED. Old is a fact, not a gate — the
+         standing rule is that the gate does not stop a man working, and this
+         control never delays or blocks the button below it. -->
+    <div id="affirmBlock" class="toolbox-opt hidden" onclick="toggleAffirm()">
+      <div class="check-box" id="affirmBox"></div>
+      <div>
+        <div class="toolbox-label" data-i18n="affirmLabel">By tapping Affirm, I confirm this is my signature and authorize its use on today's Pre-Shift Sign-In Log for this jobsite.</div>
+        <div class="toolbox-hint" id="affirmOnFile"></div>
+      </div>
+    </div>
     <button class="btn btn-success" style="margin-top:8px;padding:18px;font-size:17px" onclick="quickCheckIn()" data-i18n="retCheckIn">
       ✓ &nbsp;Check In Now
     </button>
@@ -509,6 +531,13 @@ const TRANSLATIONS = {
     clearSig: 'Clear',
     // ── OPTIONAL toolbox-talk roster confirmation (not a legal requirement) ──
     toolboxLabel: "Confirm attending today's toolbox talk (optional)",
+    // WORKER-FACING LEGAL COPY on a signed record. Approved wording, and it
+    // names the PRE-SHIFT SIGN-IN LOG and nothing else — the affirmation is
+    // scoped to that document. #135 ruled a worker does not sign a toolbox
+    // talk and this does not reverse it.
+    affirmLabel: "By tapping Affirm, I confirm this is my signature and authorize its use on today's Pre-Shift Sign-In Log for this jobsite.",
+    affirmOnFile: "Your signature is on file. Signed {date}.",
+    affirmOnFileNoDate: "Your signature is on file.",
     toolboxHint: 'Optional — you are already on the toolbox talk roster. Your check-in is complete either way.',
     // ── FIX 1: no trades configured — proceed and flag, never block ──
     noTradesProceed: 'No trades are set up yet for this project — you can still check in. Your CP will assign your trade later.',
@@ -606,6 +635,12 @@ const TRANSLATIONS = {
     clearSig: 'Borrar',
     // ── Confirmación OPCIONAL de la charla de seguridad (no es un requisito legal) ──
     toolboxLabel: 'Confirmar que asistí a la charla de seguridad de hoy (opcional)',
+    // Traducción revisada, no automática: es un texto legal que el trabajador
+    // acepta sobre un registro firmado. "Autorizo su uso" es la afirmación;
+    // nombra únicamente la Hoja de Registro de Entrada Previa al Turno.
+    affirmLabel: 'Al tocar Afirmar, confirmo que esta es mi firma y autorizo su uso en la Hoja de Registro de Entrada Previa al Turno de hoy para esta obra.',
+    affirmOnFile: 'Su firma está registrada. Firmada el {date}.',
+    affirmOnFileNoDate: 'Su firma está registrada.',
     toolboxHint: 'Opcional — usted ya figura en la lista de la charla de seguridad. Su registro queda completo de todos modos.',
     // ── FIX 1: sin oficios configurados — continuar y marcar, nunca bloquear ──
     noTradesProceed: 'Este proyecto aún no tiene oficios configurados — usted puede registrarse de todos modos. Su CP le asignará su oficio más adelante.',
@@ -1071,6 +1106,11 @@ function showReturningScreen(worker, needsOrientation = false) {
   document.getElementById('retAvatar').textContent = (worker.name || 'W').charAt(0).toUpperCase();
   document.getElementById('retName').textContent = worker.name;
   document.getElementById('retInfo').textContent = [worker.trade, worker.company].filter(Boolean).join(' • ');
+
+  // The affirmation control, shown only when there is a signature to affirm.
+  // Rendered HERE rather than at submit so the language he sees is the
+  // language he affirms in — see toggleAffirm.
+  renderAffirmBlock(worker);
   
   if (needsOrientation) {
     document.querySelector('#screenReturning .returning-badge').textContent = t('orientationNeeded');
@@ -1180,6 +1220,10 @@ async function quickCheckIn() {
       osha_number: returningWorker.osha_number,
       // OPTIONAL roster enhancement — false when untouched, never a gate.
       toolbox_talk_confirm: toolboxTalkConfirmed('tbtBoxRet'),
+      // The affirmation, and the language it was SHOWN in. Both false/null when
+      // untouched; neither ever blocks the check-in.
+      signature_affirmed: signatureAffirmed(),
+      signature_affirmed_lang: affirmedLang,
     });
     hideLoading();
 
@@ -1506,6 +1550,72 @@ function updateCheckCount() {
 // — the server records the worker's name plus its own timestamp. (The stored
 // signature attests to the §3301.11 site orientation from day one and must not
 // be replayed as toolbox-talk attendance.)
+/**
+ * THE AFFIRMATION CONTROL.
+ *
+ * FREEZES THE LANGUAGE AT THE MOMENT OF AFFIRMATION. `affirmedLang` is captured
+ * here, from what is on screen when he taps — not read back from `currentLang`
+ * on submit. He can flip the language toggle after affirming, and a record that
+ * changes after the fact is worse than one that records nothing. A worker
+ * affirming Spanish copy is evidence about what he read.
+ *
+ * Mirrors SignaturePad's affirmedLang precedent, which records the locale the
+ * affirmation was SHOWN in rather than the session's current one.
+ */
+let affirmedLang = null;
+
+function toggleAffirm() {
+  const el = document.getElementById('affirmBox');
+  if (!el) return;
+  el.classList.toggle('checked');
+  // Set on the way IN, cleared on the way out — never left pointing at a
+  // language he saw for a tap he then undid.
+  affirmedLang = el.classList.contains('checked') ? currentLang : null;
+}
+
+/** Total, like toolboxTalkConfirmed: any DOM surprise reads as NOT affirmed, so
+ *  this can never throw on the submit path and never blocks a check-in. */
+function signatureAffirmed() {
+  try {
+    const el = document.getElementById('affirmBox');
+    return !!(el && el.classList.contains('checked'));
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Show the control only when there IS a signature to affirm.
+ *
+ * A worker with nothing on file is offered nothing — the sheet will say NO
+ * SIGNATURE ON FILE, which is a different fact from not affirming and not
+ * something he can fix at a turnstile. `has_signature` and `signature_signed_at`
+ * are all lookup-worker returns; the image is never sent to this page.
+ */
+function renderAffirmBlock(worker) {
+  const block = document.getElementById('affirmBlock');
+  const box = document.getElementById('affirmBox');
+  const onFile = document.getElementById('affirmOnFile');
+  if (!block) return;
+  affirmedLang = null;
+  if (box) box.classList.remove('checked');
+  if (!worker || !worker.has_signature) {
+    block.classList.add('hidden');
+    return;
+  }
+  block.classList.remove('hidden');
+  if (onFile) {
+    // The DATE HE SIGNED, shown so a months-old stroke is visible as one. Never
+    // a gate: old is a fact. A missing date still shows the control — the
+    // signature is on file either way and that is what he is affirming.
+    const raw = worker.signature_signed_at;
+    const d = raw ? new Date(raw) : null;
+    onFile.textContent = (d && !isNaN(d.getTime()))
+      ? t('affirmOnFile').replace('{date}', d.toLocaleDateString())
+      : t('affirmOnFileNoDate');
+  }
+}
+
 function toggleToolboxTalk(boxId) {
   const el = document.getElementById(boxId);
   if (!el) return;
