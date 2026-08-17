@@ -59,6 +59,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
 
+from tests.source_text import code_of  # noqa: E402
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Harness
@@ -557,8 +559,15 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
             "slump_tests": [{"time": "11:00", "value": "5.0", "pass": None}],
         }, cp_name=None))
         self.assertIn("11:00", html)
-        self.assertNotIn("Fail", html)
-        self.assertNotIn("Pass", html)
+        # ANCHORED TO THE CELL, not to the word. `assertNotIn("Pass", html)`
+        # bans four characters anywhere on the page — "Bypass", "Passed", a
+        # worker called Passarelli — so a legitimate future addition would break
+        # a correct build and the fix reached for under time pressure is
+        # deleting the assertion. The renderer emits the result as
+        # `<span style="...">Pass</span>`, and THAT is the thing that must be
+        # absent. See tests/test_absence_literals_are_specific.py.
+        self.assertNotIn(">Fail</span>", html)
+        self.assertNotIn(">Pass</span>", html)
 
     def test_orientation_absent_signature_key_says_nothing(self):
         """Present-and-empty is UNSIGNED. ABSENT is silence — the two are
@@ -605,9 +614,14 @@ class CrewIdTest(unittest.TestCase):
 
     def test_no_reader_of_crew_name_is_left_anywhere_in_the_renderers(self):
         """Comments stripped first — the fix is DOCUMENTED in prose next to
-        both readers, and a prose mention is not a read."""
-        src = Path(server.__file__).read_text(encoding="utf-8")
-        code = "\n".join(re.sub(r"#.*$", "", line) for line in src.splitlines())
+        both readers, and a prose mention is not a read.
+
+        THROUGH code_of, not a local stripper. The hand-rolled one here removed
+        `#` comments and NOTHING ELSE, so a docstring mentioning crew_name would
+        have failed this on correct code — the same half-covered gap
+        tests/source_text.py was written to stop being re-derived per file.
+        """
+        code = code_of("server.py")
         self.assertNotIn("crew_name", code,
                          "something in server.py still reads the phantom crew_name")
 
