@@ -780,3 +780,93 @@ class TestAiOutcomeIsVisibleToTheAdminOnly(unittest.TestCase):
         # The scheduled send must call it with neither the flag nor a role.
         send = _SRC[_SRC.index("report_html = await generate_combined_report("):]
         self.assertNotIn("diagnostics", send[:200])
+
+
+class TestPageOneReadsLikeSomethingSentToALender(unittest.TestCase):
+    """B5 and B6 — page 1 goes to investors and lenders. Page 2 onward is a
+    filing and reads correctly as one."""
+
+    def _html(self, activities):
+        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
+        day["jobsite"] = {**day["jobsite"],
+                          "data": {**day["jobsite"]["data"], "activities": activities}}
+        db = _Db(
+            projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
+                                "address": "8 Walworth St"}),
+            logbooks=_Coll(docs=[day["preshift"], day["toolbox"], day["jobsite"]]),
+            daily_logs=_Coll(one=None),
+            checkins=_Coll(docs=[]),
+        )
+        with patch.object(server, "db", db):
+            return asyncio.run(server.generate_combined_report("p1", "2026-08-12"))
+
+    def _crew(self, company, trade, work):
+        return {"crew_id": company[:2], "company": company, "trade": trade,
+                "num_workers": "4", "work_description": work,
+                "work_locations": "1 floor", "photos": []}
+
+    # ── B6 ───────────────────────────────────────────────────────────────
+    def test_one_subcontractor_with_two_crews_is_disambiguated_by_trade(self):
+        """Both rows were correct — Concrete and Formwork — but a repeated name
+        with different work under it reads as a duplicate on a document somebody
+        is checking for errors."""
+        html = self._html([
+            self._crew("Vanguard", "Concrete", "pour slab"),
+            self._crew("Vanguard", "Formwork", "strip formwork"),
+        ])
+        self.assertIn("Concrete", html)
+        self.assertIn("Formwork", html)
+
+    def test_a_single_crew_is_NOT_labelled_with_its_trade(self):
+        """Only where it disambiguates. The page is a summary, not a schedule,
+        and a fact nobody asked for on every row is noise."""
+        html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
+        work = html[html.index("Work today"):html.index('page-break-after:always')]
+        self.assertIn("AAZ", work)
+        self.assertNotIn("Concrete", work)
+
+    def test_the_company_is_matched_on_the_SAME_normalisation_as_the_roster(self):
+        """"AAZ" and "aaz " are one subcontractor, as they are everywhere else
+        on this project."""
+        html = self._html([
+            self._crew("Vanguard", "Concrete", "pour slab"),
+            self._crew("vanguard ", "Formwork", "strip formwork"),
+        ])
+        self.assertIn("Formwork", html)
+
+    def test_a_crew_with_no_trade_is_not_labelled_with_an_empty_dash(self):
+        html = self._html([
+            self._crew("Vanguard", "", "pour slab"),
+            self._crew("Vanguard", "", "strip formwork"),
+        ])
+        self.assertNotIn("&mdash; </strong>", html)
+
+    # ── B5 ───────────────────────────────────────────────────────────────
+    def test_page_one_body_text_is_larger_than_the_filing(self):
+        """Typography only, no layout restructure. Page 2's 13px table is the
+        filing's size and stays; page 1's body does not."""
+        html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
+        # Sliced at the PAGE BREAK, not at a character count: page 2 is the
+        # filing and its 13px table is correct there. A fixed-length slice ran
+        # past the break and failed on page 2's type, which is the assertion
+        # being wrong rather than the page.
+        # The BODY, not the shell. The dark header band carries a 13px
+        # subtitle that is chrome, not body text, and B5 is about what a lender
+        # reads under the heading — so the slice starts at the report title.
+        page1 = html[html.index('<h2 style='):
+                     html.index('page-break-after:always')]
+        self.assertIn("font-size:24px", page1)      # the report title
+        self.assertIn("font-size:17px", page1)      # section heads
+        self.assertIn("font-size:16px", page1)      # body / per-sub lines
+        self.assertNotIn("font-size:13px", page1)   # nothing at filing size
+        # 14px was the OLD body size on this page. Asserting only that 16px
+        # is PRESENT was not enough: the info box is also 16px, so shrinking
+        # the per-sub lines back to 14px left the assertion satisfied. A
+        # mutation found that, which is the second time this round that
+        # "the string appears somewhere" stood in for "the thing is true".
+        self.assertNotIn("font-size:14px", page1)
+
+    def test_the_body_lines_carry_a_line_height(self):
+        """Size alone is not readability at paragraph width."""
+        html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
+        self.assertIn("font-size:16px;line-height:1.6", html)

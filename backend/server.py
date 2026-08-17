@@ -18607,7 +18607,7 @@ async def generate_combined_report(
             '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
             'style="margin:12px 0;" bgcolor="#f1f5f9">'
             '<tr><td style="background-color:#f1f5f9;padding:14px 18px;'
-            'border-left:4px solid #1565C0;font-size:14px;line-height:1.7;color:#475569;">'
+            'border-left:4px solid #1565C0;font-size:16px;line-height:1.7;color:#475569;">'
             + content + '</td></tr></table>'
         )
 
@@ -18673,6 +18673,26 @@ async def generate_combined_report(
     # Which of the four outcomes each row took. Rendered ONLY under
     # `diagnostics` — see the block after this loop.
     _ai_outcomes: List[tuple] = []
+
+    # ── TWO CREWS, ONE SUBCONTRACTOR ────────────────────────────────────────
+    #
+    # Vanguard appeared twice in Work today with nothing to tell the two rows
+    # apart. Both were correct — Concrete and Formwork — but a repeated name
+    # with different activities under it reads as a duplicate on a document
+    # somebody is checking for errors, and this page has already been through
+    # one round of real duplicates.
+    #
+    # The trade is named ONLY where it disambiguates. Printing it on every row
+    # would push a fact nobody asked for onto the rows that were never
+    # ambiguous, and the page is a summary, not a schedule. Counted on the
+    # normalised company so "AAZ" and "aaz " are one subcontractor, matching
+    # how every other roster comparison on this project is keyed.
+    _pg1_company_crews: Dict[str, int] = {}
+    for _a in (_dj.get("activities") or []):
+        _c = _roster_key(_a.get("company"))
+        if _c:
+            _pg1_company_crews[_c] = _pg1_company_crews.get(_c, 0) + 1
+
     _pg1_lines = ""
     for _a in (_dj.get("activities") or []):
         _co = str(_a.get("company") or "").strip()
@@ -18716,10 +18736,14 @@ async def generate_combined_report(
         _gen, _outcome = _gen_sub_sentence(_payload)
         _ai_outcomes.append((_display_sub_company(_co), _outcome))
         _line = _sentence_case(_html.escape(_gen)) if _gen else _facts
+        # The trade, only when this company has more than one crew today.
+        _trade = str(_a.get("trade") or "").strip()
+        _label = _capitalize_first(_display_sub_company(_co))
+        if _pg1_company_crews.get(_roster_key(_co), 0) > 1 and _trade:
+            _label += f' &mdash; {_capitalize_first(_trade)}'
         _pg1_lines += (
-            '<p style="margin:0 0 8px;font-size:14px;color:#334155;">'
-            f'<strong style="color:#0A1929;">'
-            f'{_capitalize_first(_display_sub_company(_co))}</strong>'
+            '<p style="margin:0 0 10px;font-size:16px;line-height:1.6;color:#334155;">'
+            f'<strong style="color:#0A1929;">{_label}</strong>'
             f'{" - " + _line if _line else ""}</p>'
         )
 
@@ -18814,7 +18838,7 @@ async def generate_combined_report(
                 f'{_inspection_label(_k)}{" - " + _note if _note else ""}</li>'
             )
     _flags_html = (
-        '<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+        '<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
         'Flagged today</h3>'
         '<ul style="margin:0 0 8px;padding-left:20px;font-size:14px;'
         f'color:#334155;">{_flags}</ul>'
@@ -18845,7 +18869,7 @@ async def generate_combined_report(
     # though they were two different facts. A reader counting fields on a
     # compliance document reads a repeat as a discrepancy.
     progress_html = (
-        '<h2 style="color:#0A1929;margin:0 0 16px;font-size:20px;">'
+        '<h2 style="color:#0A1929;margin:0 0 18px;font-size:24px;">'
         'Daily Progress Report</h2>'
         + info_box(
             f'<strong style="color:#0A1929;">Weather:</strong> '
@@ -18853,22 +18877,22 @@ async def generate_combined_report(
             '<strong style="color:#0A1929;">'
             f'Workers checked in at the gate:</strong> {_sub_total}'
         )
-        + '<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+        + '<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
           'Headcount by subcontractor</h3>'
         + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-          'style="border-collapse:collapse;font-size:13px;">'
+          'style="border-collapse:collapse;font-size:15px;">'
         + f'<tr><th {TH}>Subcontractor</th>'
           f'<th {TH} align="right">Workers</th></tr>'
         + _sub_rows
         + f'<tr><td {TD}><strong>Total</strong></td>'
           f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
         + '</table>'
-        + (('<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+        + (('<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
             'Work today</h3>' + _pg1_lines + _pg1_ai_note) if _pg1_lines else "")
-        + (('<h3 style="color:#0A1929;margin:20px 0 8px;font-size:15px;">'
+        + (('<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
             'Photos</h3>' + _pg1_photos) if _pg1_photos else "")
         + _flags_html
-        + '<p style="margin:20px 0 0;font-size:14px;color:#334155;">'
+        + '<p style="margin:22px 0 0;font-size:16px;line-height:1.6;color:#334155;">'
           f'<strong style="color:#0A1929;">Compliance:</strong> {_compliance}</p>'
         # Page 2 starts a new sheet in the PDF. Inert in email.
         + '<div style="page-break-after:always;"></div>'
