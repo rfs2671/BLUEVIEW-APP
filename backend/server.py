@@ -13293,8 +13293,13 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         )
 
     elif log_type == "crane_operations":
-        # frontend/app/logbooks/crane_operations.jsx:174-181 (save);
-        # PRE_OP_CHECKLIST_ITEMS :24-40; EMPTY_LOAD_ENTRY :42-47.
+        # frontend/src/utils/craneOperationsModel.js — draftBody decides the
+        # payload shape, PRE_OP_CHECKLIST_ITEMS the fifteen keys and labels,
+        # EMPTY_LOAD_ENTRY the lift row. The screen (app/logbooks/
+        # crane_operations.jsx) holds none of it. The list below is duplicated
+        # here because this renderer has no access to that bundle;
+        # frontend/src/utils/portedFormPayloads.test.cjs asserts the two agree,
+        # key for key and word for word.
         type_title = "Crane Operations"
         CRANE_PREOP = [
             ("wire_ropes", "Wire Ropes Inspected"),
@@ -13409,8 +13414,13 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         )
 
     elif log_type == "concrete_operations":
-        # frontend/app/logbooks/concrete_operations.jsx:171-179 (save);
-        # FORMWORK_ITEMS :26-31; EMPTY_SLUMP_TEST :33-37.
+        # frontend/src/utils/concreteOperationsModel.js — draftBody decides the
+        # payload shape, FORMWORK_ITEMS the four keys and labels,
+        # EMPTY_SLUMP_TEST the slump row. The screen (app/logbooks/
+        # concrete_operations.jsx) holds none of it. The list below is
+        # duplicated here because this renderer has no access to that bundle;
+        # frontend/src/utils/portedFormPayloads.test.cjs asserts the two agree,
+        # key for key and word for word.
         type_title = "Concrete Operations"
         FORMWORK_ITEMS = [
             ("shores_plumb", "Shores Plumb"),

@@ -582,6 +582,157 @@ export default {
     notRecorded: 'Not recorded',
   },
 
+  // ── app/logbooks/concrete_operations.jsx — the pour, 4 steps ──────────────
+  //
+  // EN-ONLY for the same reason as oshaLog above.
+  //
+  // DELIBERATELY ABSENT: the four formwork item labels. They are printed
+  // verbatim on the filed PDF by backend/server.py:13415-13420 and again on the
+  // combined report at :19932-19937, so the label must be the SAME string on
+  // the device and on the document. They live in concreteOperationsModel and
+  // are asserted against the renderers' copies.
+  concreteOperations: {
+    screenTitle: 'Concrete Operations Log',
+    screenSub: 'Pour Record and Formwork Inspection',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The pour',
+    step2Title: 'Slump tests',
+    step3Title: 'Formwork inspection',
+    step4Title: 'Review and sign',
+
+    // Step 1 — the pour.
+    pourHint: 'What was poured, where it came from, and the conditions it went in under.',
+    fPourLocation: 'Pour location',
+    fSupplier: 'Concrete supplier',
+    fMixDesign: 'Mix design',
+    // No unit is offered because the form captures none — the renderers print
+    // volume and temperature exactly as typed.
+    fVolumeOrdered: 'Volume ordered',
+    fTemperature: 'Temperature',
+    fWeather: 'Weather',
+    phField: 'Not recorded',
+
+    // Step 2 — the slump tests.
+    slumpHint: 'One row per test. A result you did not take stays blank — a blank prints as nothing, never as a fail.',
+    slumpOf: 'Test {n} of {m}',
+    addSlump: 'Add a slump test',
+    removeSlump: 'Remove this test',
+    fTime: 'Time',
+    phTime: 'Tap to choose a time',
+    fSlumpValue: 'Slump (in)',
+    phSlumpValue: 'Not recorded',
+    fResult: 'Result',
+    resultPass: 'PASS',
+    resultFail: 'FAIL',
+
+    // Step 3 — the formwork.
+    formworkHint: 'Answer every item. A NO is a real answer — an item left blank prints as not recorded.',
+    answeredOf: '{n} of {m} answered',
+
+    // Step 4 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewPour: 'The pour',
+    reviewSlumps: 'Slump tests recorded',
+    reviewFormwork: 'Formwork inspection',
+    reviewUnanswered: '{n} still unanswered',
+    reviewAllAnswered: 'All {m} answered',
+    reviewNothingYet: 'Nothing recorded yet',
+    slumpCount_one: '{n} test',
+    slumpCount_other: '{n} tests',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the pour record before filing it.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This pour record is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
+  // ── app/logbooks/crane_operations.jsx — the crane, 4 steps ────────────────
+  //
+  // EN-ONLY for the same reason as oshaLog above.
+  //
+  // DELIBERATELY ABSENT: the fifteen pre-operation check labels. They are
+  // printed verbatim on the filed PDF by backend/server.py:13299-13315 and
+  // again on the combined report at :19556-19574, so the label must be the SAME
+  // string on the device and on the document. They live in craneOperationsModel
+  // and are asserted against the renderers' copies.
+  craneOperations: {
+    screenTitle: 'Crane Operations Log',
+    screenSub: 'Pre-Lift Checks and Lift Log',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'The crane',
+    step2Title: 'Pre-operation checks',
+    step3Title: 'Lift log',
+    step4Title: 'Review and sign',
+
+    // Step 1 — the crane and its operator.
+    craneHint: 'The machine and the man on the sticks. The licence number is what an inspector checks first.',
+    fCraneType: 'Crane type',
+    fCraneId: 'Crane ID / serial number',
+    fOperatorName: 'Operator name',
+    fOperatorLicense: 'Operator licence number',
+    phField: 'Not recorded',
+
+    // Step 2 — the fifteen checks.
+    preOpHint: 'Answer every item before the first pick. A NO is a real answer — an item left blank prints as not recorded.',
+    answeredOf: '{n} of {m} answered',
+    itemOf: 'Item {n} of {m}',
+
+    // Step 3 — the lift log.
+    liftHint: 'One row per pick. Weight and radius are recorded exactly as you enter them.',
+    liftOf: 'Lift {n} of {m}',
+    addLift: 'Add a lift',
+    removeLift: 'Remove this lift',
+    fTime: 'Time',
+    phTime: 'Tap to choose a time',
+    fDescription: 'Description',
+    phDescription: 'What was picked',
+    fLoadWeight: 'Load weight',
+    fRadius: 'Radius',
+    phNumber: 'Not recorded',
+
+    // Step 4 — review and sign.
+    reviewHeading: 'Check this before you sign',
+    reviewCrane: 'The crane',
+    reviewPreOp: 'Pre-operation checks',
+    reviewLifts: 'Lifts recorded',
+    reviewUnanswered: '{n} still unanswered',
+    reviewAllAnswered: 'All {m} answered',
+    reviewNothingYet: 'Nothing recorded yet',
+    liftCount_one: '{n} lift',
+    liftCount_other: '{n} lifts',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+    stepsIncomplete: 'Some steps are still incomplete — you can still sign.',
+    stepsAllComplete: 'Every step is filled in.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the crane log before filing it.',
+    submittedTitle: 'Signed and locked',
+    submittedBody: 'This crane log is now locked. Corrections require an amendment.',
+    submittedOfflineBody: 'Signed and locked on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    notRecorded: 'Not recorded',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   // Only the affirmation UI is localized. The rest of the pad (title, "SIGNER
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)

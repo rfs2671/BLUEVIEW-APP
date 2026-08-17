@@ -118,6 +118,14 @@ const EN_ONLY_NAMESPACES = [
   // app/logbooks/toolbox_talk.jsx — the safety talk. The 24 topic labels stay
   // in toolboxTalkModel for the same reason.
   'toolboxTalk',
+  // app/logbooks/concrete_operations.jsx — the pour record. The four formwork
+  // item labels stay in concreteOperationsModel because the filed PDF prints
+  // the same strings.
+  'concreteOperations',
+  // app/logbooks/crane_operations.jsx — the crane log. The fifteen
+  // pre-operation check labels stay in craneOperationsModel for the same
+  // reason.
+  'craneOperations',
   // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
   // and signature prompts. CP-facing.
   'finalize',

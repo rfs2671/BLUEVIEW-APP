@@ -861,8 +861,10 @@ export default function SiteLogbooksViewer() {
     );
   };
 
-  // frontend/app/logbooks/crane_operations.jsx:174-181 (save);
-  // PRE_OP_CHECKLIST_ITEMS :24-40; EMPTY_LOAD_ENTRY :42-47
+  // src/utils/craneOperationsModel.js — draftBody decides the payload shape,
+  // PRE_OP_CHECKLIST_ITEMS the fifteen keys, EMPTY_LOAD_ENTRY the lift row.
+  // The keys below are asserted against that model by
+  // src/utils/portedFormPayloads.test.cjs.
   const renderCraneOperations = (log) => {
     const data = log.data || {};
     // load_weight / radius are unit-less strings as the operator typed them —
@@ -976,8 +978,10 @@ export default function SiteLogbooksViewer() {
     );
   };
 
-  // frontend/app/logbooks/concrete_operations.jsx:171-179 (save);
-  // FORMWORK_ITEMS :26-31; EMPTY_SLUMP_TEST :33-37
+  // src/utils/concreteOperationsModel.js — draftBody decides the payload
+  // shape, FORMWORK_ITEMS the four keys, EMPTY_SLUMP_TEST the slump row.
+  // The keys below are asserted against that model by
+  // src/utils/portedFormPayloads.test.cjs.
   const renderConcreteOperations = (log) => {
     const data = log.data || {};
     // `pass` is TRI-STATE (EMPTY_SLUMP_TEST seeds it null). Null renders as

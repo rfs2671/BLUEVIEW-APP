@@ -116,20 +116,44 @@ ok(/\{step === total && submitDisabled && !!submitHint && \(/.test(footerSrc),
 // ── 2. the guard is not a dead end ───────────────────────────────────────────
 for (const t of NEWLY_GUARDED) {
   const src = fs.readFileSync(path.join(APP_LOGBOOKS, `${t}.jsx`), 'utf8');
+  const ported = /<LogbookStepper/.test(src);
   // The three-way choice moved into affirmationHintKey — one place, executed by
   // signatureAffirmed.test.cjs, rather than the same ternary spelled out in
   // nine screens where eight could stay right while one drifted.
-  ok(/\{!!affirmationHintKey\(cpSignature, profileLoaded\) && \(/.test(src),
-    `${t}: tells the CP WHY submit is unavailable`);
+  //
+  // A form ported onto the shared stepper does not own its footer, so it cannot
+  // render the hint inline — it hands the same helper's key to LogbookStepper
+  // as `submitHint`, and the chrome draws it directly above the one submit
+  // button and ONLY on the submit step (both asserted in 1b). Same sentence,
+  // same helper, same place on screen; only the call site moved.
+  ok(ported
+    ? /submitHint=\{affirmationHintKey\(cpSignature, profileLoaded\)/.test(src)
+    : /\{!!affirmationHintKey\(cpSignature, profileLoaded\) && \(/.test(src),
+  `${t}: tells the CP WHY submit is unavailable (${ported ? 'stepper submitHint' : 'inline hint'})`);
   ok(/tFinalize\(affirmationHintKey\(cpSignature, profileLoaded\)\)/.test(src),
     `${t}: and the sentence is chosen by the shared helper, so "sign" and "affirm" cannot be confused`);
   ok(/useT\('finalize'\)/.test(src),
     `${t}: the hint goes through i18n, not a hardcoded English string`);
   // The pad it points at must actually be on this screen, above the button.
-  const padAt = src.indexOf('<SignaturePad');
-  const submitAt = src.indexOf("handleSave('submitted')");
-  ok(padAt !== -1 && padAt < submitAt,
-    `${t}: the SignaturePad the hint names is on-screen above Submit`);
+  if (ported) {
+    // On the stepper "above Submit" is a STEP, not a line number: the submit
+    // button exists only on the last step, and persistAndPush is declared above
+    // every render function, so textual order says nothing here. The real
+    // guarantee is that the pad is on the step the button is on.
+    const total = Number((/const TOTAL_STEPS = (\d+);/.exec(src) || [])[1] || 0);
+    const from = src.indexOf(`const renderStep${total} =`);
+    const to = src.indexOf('const STEPS = [');
+    const lastStep = (from > -1 && to > from) ? src.slice(from, to) : '';
+    ok(total > 0 && lastStep.length > 0,
+      `${t}: the final step's render body was located (step ${total})`);
+    ok(lastStep.includes('<SignaturePad'),
+      `${t}: the SignaturePad the hint names is on the submit step`);
+  } else {
+    const padAt = src.indexOf('<SignaturePad');
+    const submitAt = src.indexOf("handleSave('submitted')");
+    ok(padAt !== -1 && submitAt > -1 && padAt < submitAt,
+      `${t}: the SignaturePad the hint names is on-screen above Submit`);
+  }
 }
 
 // ── 3. bilingual, and actually translated ────────────────────────────────────
@@ -220,11 +244,27 @@ ok(/neverSaved \? 'notPushedTitle' : 'notLockedTitle'/.test(lockBar),
 ok(/\}, \[logId, draftKey\]\);/.test(lockBar),
   'LockBar: re-reads when either handle changes');
 
+// The stepper owns the lock bar for every ported form, so the key has to reach
+// it through the chrome. Without this, the `draftKey={_key}` recognised below
+// would be a prop nobody reads and the banner would be invisible on exactly
+// the logs the guard exists for.
+ok(/draftKey: draftKeyValue,/.test(chromeSrc)
+  && /draftKey=\{draftKeyValue\}/.test(chromeSrc),
+  'stepper: hands the form\'s draft key straight to LogbookLockBar');
+
 // Every form that can be refused must pass the draft key, or the banner is
 // invisible on exactly the logs that were never created.
 for (const t of [...NEWLY_GUARDED, 'daily_jobsite']) {
   const src = fs.readFileSync(path.join(APP_LOGBOOKS, `${t}.jsx`), 'utf8');
-  ok(/draftKey=\{draftKey\(\{/.test(src), `${t}: passes draftKey to LogbookLockBar`);
+  // A ported form builds the key ONCE into a memoised `_key` — it is read by
+  // the autosave, the flush, the save path and the lock bar, and four separate
+  // draftKey({...}) calls is four chances for one to drift — then hands that to
+  // the stepper. Same key, one call site.
+  const inline = /draftKey=\{draftKey\(\{/.test(src);
+  const viaStepper = /draftKey=\{_key\}/.test(src)
+    && /const _key = useMemo\(\s*\n?\s*\(\) => draftKey\(\{/.test(src);
+  ok(inline || viaStepper,
+    `${t}: passes draftKey to LogbookLockBar (${inline ? 'directly' : 'through the stepper'})`);
 }
 
 // ── 7. the drain, running for real ───────────────────────────────────────────

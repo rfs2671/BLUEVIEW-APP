@@ -1,152 +1,217 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
+import {
+  View, Text, StyleSheet, Pressable, TextInput,
+} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, CheckCircle, Save, Calendar, Trash2 } from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
+import { Plus, Trash2 } from 'lucide-react-native';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
-import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
-import { useTheme } from '../../src/context/ThemeContext';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen files for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+// The app-wide OFFLINE discriminator — "offline" has to mean what it means
+// everywhere else: no response at all.
+import { isOfflineError } from '../../src/utils/offlineState';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
+import TimeField from '../../src/components/logbookStepper/TimeField';
+import {
+  DETAIL_FIELDS, PRE_OP_CHECKLIST_ITEMS, CONFIRM_OPTIONS,
+  EMPTY_DETAILS, EMPTY_LOAD_ENTRY, loadEntriesForFiling, filledLiftCount,
+  preOpRecordedCount, detailsFromData,
+  incompleteSteps as computeIncomplete, draftBody,
+} from '../../src/utils/craneOperationsModel';
+import { applyChecklistAnswer } from '../../src/utils/checklistMap';
 import { useT } from '../../src/i18n';
+import { spacing, borderRadius, outdoor, touchTarget } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 
+/**
+ * CRANE OPERATIONS LOG — the crane, the pre-lift checks, and every lift, on the
+ * shared stepper.
+ *
+ * FOUR STEPS, in the order the filed document prints them: the crane and its
+ * operator, the fifteen pre-operation checks, the lift log, then review and
+ * sign. The chrome is LogbookStepper's — nothing about the header, pips, lock
+ * bar or footer is decided here.
+ *
+ * WHAT CARRIED FORWARD from the reference (daily_jobsite.jsx), unchanged:
+ *   draft lifecycle          readDraft / writeDraft / setDraftBackendId /
+ *                            markPending / clearPending / markFinalized
+ *   adoptAmendment           an amendment child must reach this screen
+ *   signature client guard   no signature, no file — and it says why
+ *   gateCopy                 the server names the condition, the client owns
+ *                            the wording; the server's English never renders
+ *   recordFinalizeError      a foreground refusal leaves the same durable
+ *                            banner a background one does
+ *
+ * NOT CARRIED, because this form has no camera: persistPhoto and
+ * compressUnderCap. There is no photo on the crane log.
+ *
+ * NOT CARRIED, because this form builds no roster: nothing here reads
+ * /checkins. The empty-roster trap has no surface to appear on.
+ *
+ * THERE IS NO SAVE DRAFT BUTTON. Every change autosaves to the local draft;
+ * the one primary action is Sign and file.
+ *
+ * THE PAYLOAD IS UNCHANGED — the same six top-level keys
+ * backend/server.py:13295 renders. See craneOperationsModel.
+ */
 const LOG_TYPE = 'crane_operations';
-
-const PRE_OP_CHECKLIST_ITEMS = [
-  { key: 'wire_ropes', label: 'Wire Ropes Inspected' },
-  { key: 'hooks_latches', label: 'Hooks & Latches Secure' },
-  { key: 'brakes', label: 'Brakes Functional' },
-  { key: 'outriggers', label: 'Outriggers Deployed' },
-  { key: 'load_chart', label: 'Load Chart Available' },
-  { key: 'boom_condition', label: 'Boom Condition OK' },
-  { key: 'anti_two_block', label: 'Anti Two-Block Device' },
-  { key: 'fire_extinguisher', label: 'Fire Extinguisher Present' },
-  { key: 'signals_reviewed', label: 'Signals Reviewed' },
-  { key: 'area_barricaded', label: 'Area Barricaded' },
-  { key: 'wind_speed_checked', label: 'Wind Speed Checked' },
-  { key: 'power_lines_clear', label: 'Power Lines Clear' },
-  { key: 'load_weight_known', label: 'Load Weight Known' },
-  { key: 'rigging_inspected', label: 'Rigging Inspected' },
-  { key: 'swing_radius_clear', label: 'Swing Radius Clear' },
-];
-
-const EMPTY_LOAD_ENTRY = () => ({
-  time: '',
-  description: '',
-  load_weight: '',
-  radius: '',
-});
+const TOTAL_STEPS = 4;
 
 export default function CraneOperationsLog() {
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+  const t = useT('craneOperations');
   const tFinalize = useT('finalize');
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+
+  const s = useMemo(() => buildStyles(), []);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
+  const [signing, setSigning] = useState(false);
+  const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
-
-  // Form fields
-  const [craneType, setCraneType] = useState('');
-  const [craneId, setCraneId] = useState('');
-  const [operatorName, setOperatorName] = useState('');
-  const [operatorLicense, setOperatorLicense] = useState('');
+  const [existingLogId, setExistingLogId] = useState(null);
+  const [details, setDetails] = useState(EMPTY_DETAILS);
   const [preOpChecklist, setPreOpChecklist] = useState({});
   const [loadEntries, setLoadEntries] = useState([EMPTY_LOAD_ENTRY()]);
 
-  useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date }),
+    [projectId, date],
+  );
 
-  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
-  // Debounced so typing doesn't thrash storage; makes no server call. This is
-  // what lets the CP fill with zero network and reopen to the same draft.
-  // `status` is intentionally omitted so an autosave never downgrades a
-  // submitted log back to draft.
+  // The body as of RIGHT NOW, for the debounced autosave and the save path.
+  // State read inside a timer is the value captured when the timer was set,
+  // which is one keystroke stale.
+  const bodyRef = useRef({ details, preOpChecklist, loadEntries });
   useEffect(() => {
-    if (loading) return undefined;
-    const t = setTimeout(() => {
-      writeDraft(
-        draftKey({ projectId, logType: LOG_TYPE, date }),
-        {
-          data: {
-            crane_type: craneType,
-            crane_id: craneId,
-            operator_name: operatorName,
-            operator_license: operatorLicense,
-            pre_operation_checklist: preOpChecklist,
-            load_entries: loadEntries,
-          },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        },
-      ).catch(() => {});
+    bodyRef.current = { details, preOpChecklist, loadEntries };
+  }, [details, preOpChecklist, loadEntries]);
+
+  /**
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
+   */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
+
+  // ── Draft ─────────────────────────────────────────────────────────────
+  // Debounced autosave on every change. `status` is deliberately omitted so an
+  // autosave never downgrades a filed log back to draft.
+  useEffect(() => {
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      const b = bodyRef.current;
+      writeDraft(_key, {
+        data: draftBody(b.details, b.preOpChecklist, b.loadEntries),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
     }, 800);
-    return () => clearTimeout(t);
-  }, [
-    loading, projectId, date, craneType, craneId, operatorName,
-    operatorLicense, preOpChecklist, loadEntries, cpSignature, cpName,
-  ]);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, details, preOpChecklist, loadEntries, cpSignature, cpName]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
     try {
-      // Phase A — local-first: read the on-device draft first. Only if there is
-      // no local copy do we hydrate once from the server (best-effort); offline
-      // that simply opens a blank log rather than erroring.
-      const key = draftKey({ projectId, logType: LOG_TYPE, date });
-      let existing = await readDraft(key);
-      // Tier 1 (1)b: a draft marked finalized locks; a server doc's is_locked locks.
-      let isLocked = !!existing?.finalized;
-      if (!existing) {
-        const serverLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
-        const arr = Array.isArray(serverLogs) ? serverLogs : [];
-        // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
-        // locked original that shares (project, type, date).
-        const s = arr.find(l => !l.is_locked) || arr[0] || null;
-        if (s) {
-          isLocked = !!s.is_locked;
-          existing = {
-            data: s.data || {},
-            cp_signature: s.cp_signature,
-            cp_name: s.cp_name,
-            status: s.status,
-            backend_id: s.id || s._id,
-          };
+      const b = bodyRef.current;
+      await writeDraft(_key, {
+        data: draftBody(b.details, b.preOpChecklist, b.loadEntries),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort; the next change retries */ }
+  }, [locked, _key, cpSignature, cpName]);
+
+  const applyLoaded = useCallback((d) => {
+    setDetails(detailsFromData(d));
+    if (d.pre_operation_checklist && typeof d.pre_operation_checklist === 'object') {
+      setPreOpChecklist(d.pre_operation_checklist);
+    }
+    if (Array.isArray(d.load_entries) && d.load_entries.length > 0) {
+      setLoadEntries(d.load_entries);
+    }
+  }, []);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    // THE LOCK IS RE-DERIVED ON EVERY LOAD — device round 5. `locked` could
+    // only ever be set TRUE: no path set it back, so once a log was filed the
+    // screen stayed read-only for the life of the mount. After an amendment
+    // that is exactly wrong. Everything below decides locked-ness from what it
+    // loads.
+    setLocked(false);
+    try {
+      // LOCAL-FIRST. A local draft wins over the server copy, so an offline CP
+      // reopens to exactly what he filled and unsynced edits are never
+      // clobbered.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked: the child sat there unlocked and unreachable
+        // while the logbook list showed it as a Draft. amendmentAdopt discards
+        // the frozen parent ONLY on server confirmation; offline it is a no-op
+        // and the log stays locked, which is honest.
+        const _amended = draft.finalized && await adoptAmendment({
+          key: _key, projectId, logType: LOG_TYPE, date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server path,
+          // which already prefers the unlocked document.
+        } else {
+          if (draft.finalized) { setLocked(true); markFinalized(_key); }
+          setExistingLogId(draft.backend_id || null);
+          applyLoaded(draft.data);
+          if (draft.cp_signature) setCpSignature(draft.cp_signature);
+          if (draft.cp_name) setCpName(draft.cp_name);
+          setLoading(false);
+          return;
         }
       }
-      if (isLocked) {
-        setLocked(true);
-        markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-      }
+
+      // DATE-SCOPED. Fetching with no date returns the most recent prior-day
+      // doc, which would load yesterday's lifts onto today's screen and file
+      // today's signature against it.
+      const existingLogs = await logbooksAPI
+        .getByProject(projectId, LOG_TYPE, date).catch(() => []);
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
       if (existing) {
-        setExistingLogId(existing.backend_id || null);
-        const d = existing.data || {};
-        if (d.crane_type) setCraneType(d.crane_type);
-        if (d.crane_id) setCraneId(d.crane_id);
-        if (d.operator_name) setOperatorName(d.operator_name);
-        if (d.operator_license) setOperatorLicense(d.operator_license);
-        if (d.pre_operation_checklist) setPreOpChecklist(d.pre_operation_checklist);
-        if (d.load_entries?.length > 0) setLoadEntries(d.load_entries);
+        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(existing.id || existing._id);
+        applyLoaded(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       }
@@ -155,387 +220,431 @@ export default function CraneOperationsLog() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [_key, projectId, date, applyLoaded, setCpName, setCpSignature]);
 
-  const togglePreOp = (key) => {
-    setPreOpChecklist(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const updateLoadEntry = (index, field, value) => {
-    setLoadEntries(prev => prev.map((entry, i) => i === index ? { ...entry, [field]: value } : entry));
-  };
+  // ── Edits ─────────────────────────────────────────────────────────────
+  const setDetail = (key, value) => setDetails((p) => ({ ...p, [key]: value }));
+  // applyChecklistAnswer, NOT `!prev[key]`: the map is TRI-STATE on the filed
+  // document — absent is "Not recorded", false is an explicit "No" — and the
+  // old dot could not tell those apart. See src/utils/checklistMap.js.
+  const setPreOp = (key, value) => setPreOpChecklist(
+    (p) => applyChecklistAnswer(p, key, value),
+  );
+  const setLiftField = (index, field, value) => setLoadEntries(
+    (p) => p.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
+  );
+  const addLoadEntry = () => setLoadEntries((p) => [...p, EMPTY_LOAD_ENTRY()]);
+  const removeLoadEntry = (index) => setLoadEntries((p) => p.filter((_, i) => i !== index));
 
-  const addLoadEntry = () => setLoadEntries(prev => [...prev, EMPTY_LOAD_ENTRY()]);
+  // ── Save ──────────────────────────────────────────────────────────────
+  /**
+   * Local draft first, server push best-effort. Returns the doc id, `null`
+   * when it saved locally with no server id yet (the offline path), or
+   * `undefined` when the server REFUSED — which is not offline and must not
+   * freeze.
+   */
+  const persistAndPush = async (submitStatus) => {
+    const b = bodyRef.current;
+    // AN ABANDONED ROW IS NOT A LIFT. On SUBMIT the lift log is trimmed to the
+    // rows that say something — the same rule all three renderers already drop
+    // rows by, so what is filed and what is printed are the same log.
+    //
+    // A DRAFT KEEPS EVERYTHING: a half-typed row the operator is still working
+    // on must survive a save.
+    const filed = submitStatus === 'submitted'
+      ? loadEntriesForFiling(b.loadEntries) : b.loadEntries;
+    // What he signed is what he sees.
+    if (submitStatus === 'submitted' && filed.length !== b.loadEntries.length) {
+      setLoadEntries(filed.length > 0 ? filed : [EMPTY_LOAD_ENTRY()]);
+    }
+    const data = draftBody(b.details, b.preOpChecklist, filed);
 
-  const removeLoadEntry = (index) => {
-    setLoadEntries(prev => prev.filter((_, i) => i !== index));
-  };
+    await writeDraft(_key, {
+      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+    });
 
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    const key = draftKey({ projectId, logType: LOG_TYPE, date });
-    const data = {
-      crane_type: craneType,
-      crane_id: craneId,
-      operator_name: operatorName,
-      operator_license: operatorLicense,
-      pre_operation_checklist: preOpChecklist,
-      load_entries: loadEntries,
-    };
+    let created = null;
+    let savedId = existingLogId;
     try {
-      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
-      // so an offline CP completes the log without the "could not save" failure.
-      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
-
-      // Best-effort server push. Offline this throws and is swallowed — the key
-      // is recorded in the pending-push list for the Phase B reconnect flush.
-      // NOTE: a submit made offline has no server id yet, so the signature-audit
-      // record below is skipped until the draft syncs (a Phase B reconcile item).
-      let savedId = existingLogId;
-      let pushed = true;
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-        } else {
-          const created = await logbooksAPI.create({
-            project_id: projectId, log_type: LOG_TYPE, date,
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-          savedId = created.id || created._id;
-          setExistingLogId(savedId);
-        }
-        await setDraftBackendId(key, savedId);
-        await clearPending(key);
-      } catch (pushErr) {
-        pushed = false;
-        await markPending(key);
-        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: LOG_TYPE, date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
       }
+      if (savedId) await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+      if (savedId) await clearFinalizeError(savedId);
+    } catch (pushErr) {
+      // REFUSAL IS NOT OFFLINE. crane_operations is an IMMEDIATE type, so a
+      // submitted push IS the finalize — a 4xx here is the server judging the
+      // log, not failing to reach it. Freezing on a judgement would tell the CP
+      // it was filed, make the draft immutable so he could not fix what was
+      // refused, and leave nothing pending for the drain to retry.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('Crane log REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
+      }
+      if (!offline && !refused) {
+        // 5xx — the server FAILED rather than judged. Retryable, and it must
+        // not be announced as filed.
+        console.warn('Crane log push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
+      }
+      await markPending(_key);
+      console.warn('Crane log push deferred (will sync on reconnect):', pushErr?.message);
+    }
 
-      await autoSave(cpName, cpSignature).catch(() => {});
+    // Guarded: a CP-PROFILE save failure must never report a failure on a log
+    // that was already saved (and, for an immediate type, already FROZEN).
+    await autoSave(cpName, cpSignature).catch(() => {});
 
-      if (submitStatus === 'submitted' && cpSignature && savedId) {
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
         recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'cp_sign',
-          signerName: cpName,
-          signerRole: user?.role || 'cp',
+          documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+          signerName: cpName, signerRole: user?.role || 'cp',
           signatureData: cpSignature,
           contentSnapshot: {
-            log_type: LOG_TYPE,
-            date,
-            project_id: projectId,
-            data,
-            status: submitStatus,
+            log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
           },
           user,
-        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
+    }
+    return savedId || null;
+  };
 
-      // FREEZE-ON-SIGN — crane_operations is an IMMEDIATE log: the SIGNATURE IS
-      // THE FREEZE. Submitting finalizes the record in one action (there is no
-      // separate "Finalize" step) and it is never reopened; a later lift record
-      // is a NEW discrete log, and a correction is an amendment.
-      //
-      // The draft above is written FIRST, then frozen, and the freeze runs on
-      // BOTH push outcomes — a CP signing with no signal must still end up with
-      // a locked record on device, so the freeze can never wait on the server.
-      // The backend applies the same lock when the deferred push lands.
-      if (submitStatus === 'submitted') {
-        await freezeIfImmediate(key, LOG_TYPE);
-        setLocked(true);
-      }
-
+  /**
+   * THE one action. crane_operations is an IMMEDIATE log: THE SIGNATURE IS THE
+   * FREEZE. Submitting finalizes the record in one action and it is never
+   * reopened — a later lift record is a NEW discrete log, and a correction is
+   * an amendment.
+   */
+  const handleSubmitAndSign = async () => {
+    if (signing) return;
+    // SIGNATURE CLIENT GUARD. draftSync refuses an unsigned submitted push and
+    // records SUBMIT_MISSING_CP_SIGNATURE against the key; catching it here
+    // means the CP is told on the screen that can fix it.
+    if (!cpSignature) {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    setSigning(true);
+    try {
+      const savedId = await persistAndPush('submitted');
+      // `undefined` = refused or failed, already reported. Nothing may be
+      // frozen or announced on a log the server would not take. `null` is
+      // different: saved LOCALLY with no server id, which is the offline path
+      // and DOES freeze — a lift signed off with no signal must still hold.
+      if (savedId === undefined) return;
+      await freezeIfImmediate(_key, LOG_TYPE);
+      setLocked(true);
       toast.success(
-        submitStatus === 'submitted' ? 'Signed & Locked' : 'Draft Saved',
-        submitStatus === 'submitted'
-          ? (pushed
-            ? 'Crane log signed and locked. Corrections require an amendment.'
-            : 'Crane log signed and locked on this device. It will sync when you are back online.')
-          : 'Draft saved'
+        t('submittedTitle'),
+        savedId ? t('submittedBody') : t('submittedOfflineBody'),
       );
-      if (submitStatus === 'submitted') router.back();
+      router.back();
     } catch (e) {
       console.error(e);
-      toast.error('Error', 'Could not save crane operations log');
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
-      setSaving(false);
+      setSigning(false);
     }
   };
 
-  const checklistComplete = PRE_OP_CHECKLIST_ITEMS.filter(item => preOpChecklist[item.key]).length;
-  const checklistTotal = PRE_OP_CHECKLIST_ITEMS.length;
+  // Moving on is never BLOCKED — a CP who cannot complete a step because the
+  // data is not there must still finish and sign.
+  const onStepChange = async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  };
 
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
+
+  const incomplete = computeIncomplete({
+    details, preOpChecklist, loadEntries, cpSignature,
+  }).filter((n) => n !== step);
+  const preOpAnswered = preOpRecordedCount(preOpChecklist);
+  const filledLifts = filledLiftCount(loadEntries);
+
+  // ── STEP 1 — the crane and its operator ───────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      <StepHeader title={t('step1Title')} />
+      <Text style={s.noteText}>{t('craneHint')}</Text>
+
+      <Card s={s}>
+        {DETAIL_FIELDS.map((f) => (
+          <View key={f.key} style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+            <TextInput
+              style={s.input}
+              value={details[f.key] || ''}
+              onChangeText={(v) => setDetail(f.key, v)}
+              placeholder={t('phField')}
+              placeholderTextColor={outdoor.textDim}
+            />
           </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+        ))}
+      </Card>
+    </View>
+  );
 
-  return (
-    <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
-        {/* Header */}
-        <View style={s.header}>
-          <GlassButton
-            variant="icon"
-            icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => router.back()}
+  // ── STEP 2 — the fifteen pre-operation checks ─────────────────────────
+  //
+  // ONE ITEM PER BLOCK with its two answers beneath it, the shape the scaffold
+  // inspection settled on: a right-aligned answer strip beside a wrapping label
+  // is unreadable at arm's length outdoors.
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+      <Text style={s.noteText}>{t('preOpHint')}</Text>
+      <Text style={s.noteText}>
+        {t('answeredOf')
+          .replace('{n}', String(preOpAnswered))
+          .replace('{m}', String(PRE_OP_CHECKLIST_ITEMS.length))}
+      </Text>
+
+      {PRE_OP_CHECKLIST_ITEMS.map((item, i) => (
+        <Card s={s} key={item.key}>
+          <Text style={s.reviewLabel}>
+            {t('itemOf')
+              .replace('{n}', String(i + 1))
+              .replace('{m}', String(PRE_OP_CHECKLIST_ITEMS.length))}
+          </Text>
+          <Text style={s.question}>{item.label}</Text>
+          <View style={s.chipWrap}>
+            {CONFIRM_OPTIONS.map((opt) => (
+              <Chip
+                key={opt.label}
+                label={opt.label}
+                selected={preOpChecklist[item.key] === opt.value}
+                onPress={() => setPreOp(item.key, opt.value)}
+              />
+            ))}
+          </View>
+        </Card>
+      ))}
+    </View>
+  );
+
+  // ── STEP 3 — the lift log ─────────────────────────────────────────────
+  const renderStep3 = () => (
+    <View>
+      <StepHeader title={t('step3Title')} />
+      <Text style={s.noteText}>{t('liftHint')}</Text>
+
+      {loadEntries.map((row, index) => (
+        <Card s={s} key={`lift-${index}`}>
+          <View style={s.rowHead}>
+            <Text style={s.reviewLabel}>
+              {t('liftOf').replace('{n}', String(index + 1)).replace('{m}', String(loadEntries.length))}
+            </Text>
+            <Pressable
+              style={s.rowRemove}
+              accessibilityRole="button"
+              accessibilityLabel={t('removeLift')}
+              onPress={() => removeLoadEntry(index)}
+            >
+              <Trash2 size={20} strokeWidth={2} color={outdoor.danger} />
+            </Pressable>
+          </View>
+
+          <TimeField
+            s={s}
+            label={t('fTime')}
+            placeholder={t('phTime')}
+            value={row.time}
+            clearLabel={t('dateClear')}
+            doneLabel={t('dateDone')}
+            onChange={(v) => setLiftField(index, 'time', v)}
           />
-          <Text style={s.headerTitle}>Crane Operations Log</Text>
-        </View>
 
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={s.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (no per-field editable flags
-              to miss). Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-          {/* Date */}
-          <GlassCard style={s.section}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
-              <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>
-                {new Date(date).toLocaleDateString('en-US', {
-                  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-                })}
+          <View style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t('fDescription')}</Text>
+            <TextInput
+              style={s.input}
+              value={row.description}
+              onChangeText={(v) => setLiftField(index, 'description', v)}
+              placeholder={t('phDescription')}
+              placeholderTextColor={outdoor.textDim}
+            />
+          </View>
+
+          <View style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t('fLoadWeight')}</Text>
+            <TextInput
+              style={s.input}
+              value={row.load_weight}
+              onChangeText={(v) => setLiftField(index, 'load_weight', v)}
+              placeholder={t('phNumber')}
+              placeholderTextColor={outdoor.textDim}
+              keyboardType="numeric"
+            />
+          </View>
+
+          <View style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t('fRadius')}</Text>
+            <TextInput
+              style={s.input}
+              value={row.radius}
+              onChangeText={(v) => setLiftField(index, 'radius', v)}
+              placeholder={t('phNumber')}
+              placeholderTextColor={outdoor.textDim}
+              keyboardType="numeric"
+            />
+          </View>
+        </Card>
+      ))}
+
+      <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={addLoadEntry}>
+        <Plus size={22} strokeWidth={2.5} color={outdoor.text} />
+        <Text style={s.secondaryBtnText}>{t('addLift')}</Text>
+      </Pressable>
+    </View>
+  );
+
+  // ── STEP 4 — review and sign ──────────────────────────────────────────
+  const renderStep4 = () => {
+    const unanswered = PRE_OP_CHECKLIST_ITEMS.length - preOpAnswered;
+    return (
+      <View>
+        <StepHeader title={t('step4Title')} />
+        <Text style={s.noteText}>{t('reviewHeading')}</Text>
+
+        <Card s={s}>
+          <Text style={s.reviewLabel}>{t('reviewCrane')}</Text>
+          {DETAIL_FIELDS.map((f) => (
+            <View key={f.key} style={s.reviewRow}>
+              <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+              <Text style={s.reviewValue}>
+                {String(details[f.key] || '').trim() || t('notRecorded')}
               </Text>
             </View>
-          </GlassCard>
+          ))}
+        </Card>
 
-          {/* Crane & Operator Info */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Crane Information</Text>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Crane Type</Text>
-              <TextInput
-                style={s.input}
-                value={craneType}
-                onChangeText={setCraneType}
-                placeholder="e.g., Tower Crane, Mobile Crane..."
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Crane ID / Serial Number</Text>
-              <TextInput
-                style={s.input}
-                value={craneId}
-                onChangeText={setCraneId}
-                placeholder="Equipment ID"
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Operator Name</Text>
-              <TextInput
-                style={s.input}
-                value={operatorName}
-                onChangeText={setOperatorName}
-                placeholder="Full name"
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Operator License Number</Text>
-              <TextInput
-                style={s.input}
-                value={operatorLicense}
-                onChangeText={setOperatorLicense}
-                placeholder="License #"
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-          </GlassCard>
+        <Card s={s} style={unanswered > 0 ? s.cardWarn : undefined}>
+          <Text style={s.reviewLabel}>{t('reviewPreOp')}</Text>
+          <Text style={s.reviewValue}>
+            {unanswered > 0
+              ? t('reviewUnanswered').replace('{n}', String(unanswered))
+              : t('reviewAllAnswered').replace('{m}', String(PRE_OP_CHECKLIST_ITEMS.length))}
+          </Text>
+        </Card>
 
-          {/* Pre-Operation Checklist */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>
-              Pre-Operation Checklist ({checklistComplete}/{checklistTotal})
-            </Text>
-            {PRE_OP_CHECKLIST_ITEMS.map((item) => (
-              <View key={item.key} style={s.toggleRow}>
-                <Text style={s.toggleLabel}>{item.label}</Text>
-                <Pressable onPress={() => togglePreOp(item.key)}>
-                  <View style={[s.toggleDot, preOpChecklist[item.key] && s.toggleDotActive]} />
-                </Pressable>
-              </View>
-            ))}
-          </GlassCard>
+        <Card s={s}>
+          <Text style={s.reviewLabel}>{t('reviewLifts')}</Text>
+          <Text style={s.reviewValue}>
+            {filledLifts > 0
+              ? t(`liftCount_${filledLifts === 1 ? 'one' : 'other'}`)
+                .replace('{n}', String(filledLifts))
+              : t('reviewNothingYet')}
+          </Text>
+        </Card>
 
-          {/* Load Log */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Load Log</Text>
-            {loadEntries.map((entry, i) => (
-              <View key={i} style={s.entryCard}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs }}>
-                  <Text style={[s.inputLabel, { marginBottom: 0 }]}>Lift #{i + 1}</Text>
-                  {loadEntries.length > 1 && (
-                    <Pressable onPress={() => removeLoadEntry(i)}>
-                      <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
-                    </Pressable>
-                  )}
-                </View>
-                <View style={s.entryRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.inputLabel}>Time</Text>
-                    <TextInput
-                      style={s.input}
-                      value={entry.time}
-                      onChangeText={(v) => updateLoadEntry(i, 'time', v)}
-                      placeholder="HH:MM"
-                      placeholderTextColor={colors.text.subtle}
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.inputLabel}>Weight (lbs)</Text>
-                    <TextInput
-                      style={s.input}
-                      value={entry.load_weight}
-                      onChangeText={(v) => updateLoadEntry(i, 'load_weight', v)}
-                      placeholder="0"
-                      placeholderTextColor={colors.text.subtle}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.inputLabel}>Radius (ft)</Text>
-                    <TextInput
-                      style={s.input}
-                      value={entry.radius}
-                      onChangeText={(v) => updateLoadEntry(i, 'radius', v)}
-                      placeholder="0"
-                      placeholderTextColor={colors.text.subtle}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                </View>
-                <View style={s.inputGroup}>
-                  <Text style={s.inputLabel}>Description</Text>
-                  <TextInput
-                    style={s.input}
-                    value={entry.description}
-                    onChangeText={(v) => updateLoadEntry(i, 'description', v)}
-                    placeholder="Load description..."
-                    placeholderTextColor={colors.text.subtle}
-                  />
-                </View>
-              </View>
-            ))}
-            <GlassButton
-              title="+ Add Load Entry"
-              onPress={addLoadEntry}
-              style={{ marginTop: spacing.xs }}
-            />
-          </GlassCard>
-
-          {/* CP Signature */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Competent Person Sign-Off</Text>
-            <SignaturePad
-              title="CP Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-            />
-          </GlassCard>
-          </View>
-
-          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
-          {!locked && (
-          <>
-          <View style={s.buttonRow}>
-            <GlassButton
-              title={saving ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving}
-              style={{ flex: 1 }}
-            />
-            <GlassButton
-              title={saving ? 'Saving...' : 'Submit'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={() => handleSave('submitted')}
-              loading={saving}
-              disabled={!isAffirmedSignature(cpSignature)}
-              style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
-            />
-          </View>
-          {/* An IMMEDIATE log freezes the moment it is submitted, so submitting
-              unsigned would mint a locked, unsigned legal record. Disabling the
-              button alone is a dead end — the CP has no separate profile screen
-              to set a signature on (nothing under app/settings writes
-              cp_signature), so the hint names the pad directly above. */}
-          {!!affirmationHintKey(cpSignature, profileLoaded) && (
-            <Text style={s.signHint}>
-              {tFinalize(affirmationHintKey(cpSignature, profileLoaded))}
-            </Text>
-          )}
-          </>
-          )}
-
-          {/* logType drives the freeze model: this is an IMMEDIATE log, so the
-              bar shows NO Finalize button (the submit already froze it) and
-              offers only the Amend path once locked. */}
-          <LogbookLockBar
-            locked={locked}
-            logId={existingLogId}
-            draftKey={draftKey({ projectId, logType: LOG_TYPE, date })}
-            logType={LOG_TYPE}
-            onAmended={fetchData}
+        <Card s={s}>
+          <Text style={s.reviewLabel}>
+            {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
+          </Text>
+          <SignaturePad
+            title="Competent Person Signature"
+            signerName={cpName}
+            onNameChange={setCpName}
+            existingSignature={cpSignature}
+            onSignatureCapture={setCpSignature}
           />
-        </ScrollView>
-      </SafeAreaView>
-    </AnimatedBackground>
+        </Card>
+      </View>
+    );
+  };
+
+  const STEPS = [
+    { render: renderStep1 },
+    { render: renderStep2 },
+    { render: renderStep3 },
+    { render: renderStep4 },
+  ];
+
+  return (
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={t('screenSub')}
+      step={step}
+      steps={STEPS}
+      onStepChange={onStepChange}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={incomplete}
+      a11yProgressLabel={t('stepOf')
+        .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      /* crane_operations is IMMEDIATE — the server locks on `submitted` alone
+         — so an unsigned submit must be UNREACHABLE, not merely warned about.
+         The handler keeps its guard as a backstop. */
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
+      onSubmit={handleSubmitAndSign}
+      logType={LOG_TYPE}
+      logId={existingLogId}
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+    />
   );
 }
 
-function buildStyles(colors, isDark) {
+/**
+ * The shared chrome plus the handful of keys only this form uses. Spreading
+ * rather than forking is what keeps the shared names identical across forms.
+ */
+function buildStyles() {
   return StyleSheet.create({
-    container: { flex: 1 },
-    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
-    header: { flexDirection: 'row', alignItems: 'center', padding: spacing.lg, gap: spacing.md },
-    headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text.primary, flex: 1 },
-    section: { marginBottom: spacing.md },
-    sectionTitle: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
-    inputGroup: { marginBottom: spacing.md },
-    inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
-    input: {
-      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
-      padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    ...buildStepperStyles(),
+    reviewRow: {
+      gap: spacing.xs / 2,
+      paddingVertical: spacing.xs,
     },
-    textArea: { minHeight: 80, textAlignVertical: 'top' },
-    toggleRow: {
-      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-      paddingVertical: spacing.sm,
+    rowHead: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      gap: spacing.sm,
     },
-    toggleLabel: { color: colors.text.secondary, fontSize: 14 },
-    toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
-    toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-    buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
-    signHint: {
-      fontSize: 13, fontWeight: '600', color: semantic.attention,
-      marginTop: spacing.sm, textAlign: 'center',
+    rowRemove: {
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: borderRadius.full,
     },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    entryCard: {
-      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
-      padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
-    },
-    entryRow: { flexDirection: 'row', gap: spacing.sm },
   });
 }

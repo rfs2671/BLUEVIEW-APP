@@ -174,7 +174,10 @@ ok(sum(measured.fontSize) > 120,
 // true against an empty measurement. The threshold tracks the migration
 // downwards, and the direction of travel is the point — it is expected to keep
 // falling as the remaining eight forms are ported.
-ok(sum(measured.withAlphaPairs) > 50,
+// LOWERED again, 50 -> 40, by the concrete_operations + crane_operations port
+// (67 -> 47). Same reason as the previous drop, and the direction of travel is
+// still the point.
+ok(sum(measured.withAlphaPairs) > 40,
   `scanner still finds withAlpha() calls (${sum(measured.withAlphaPairs)})`);
 ok(sum(measured.opaqueHex) > 40,
   `scanner still finds opaque hex literals (${sum(measured.opaqueHex)})`);
