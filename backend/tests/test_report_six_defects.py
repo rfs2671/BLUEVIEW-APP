@@ -478,15 +478,21 @@ class TheAISentenceStillHasItsFallback(unittest.TestCase):
     wiring is intact; what was missing was any way to tell WHY."""
 
     def test_the_wiring_is_still_there(self):
-        self.assertIn("from lib.ai.sub_summary import generate_sentence", _REPORT)
-        self.assertIn("_gen = _gen_sub_sentence(_payload)", _REPORT)
+        # RE-POINTED, not dropped. The report now calls the TRACED variant so
+        # it can name which of the four outcomes each row took; the sentence
+        # half of the contract is unchanged.
+        self.assertIn("from lib.ai.sub_summary import generate_sentence_traced", _REPORT)
+        self.assertIn("_gen, _outcome = _gen_sub_sentence(_payload)", _REPORT)
         self.assertIn("_line = _sentence_case(_html.escape(_gen)) if _gen else _facts", _REPORT)
 
     def test_all_three_outcomes_now_leave_a_trace(self):
         """A missing key was the only one of the three that returned None in
         silence, so a report of plain facts was unreadable as evidence."""
         mod = (_BACKEND / "lib" / "ai" / "sub_summary.py").read_text(encoding="utf-8")
-        gen = mod[mod.index("def generate_sentence("):]
+        # The one implementation is now generate_sentence_traced; the plain
+        # generate_sentence is a thin wrapper over it, so the branches to check
+        # are here.
+        gen = mod[mod.index("def generate_sentence_traced("):]
         no_key = gen[:gen.index("try:")]
         self.assertIn("logger.warning", no_key)
         self.assertIn("GEMINI_API_KEY is not set", no_key)
@@ -717,3 +723,60 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         and no `next(...)` survives to drift again."""
         self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 10)
         self.assertNotIn('next((l for l in logbooks', _REPORT)
+
+
+class TestAiOutcomeIsVisibleToTheAdminOnly(unittest.TestCase):
+    """WHY THE AI LINE DID WHAT IT DID — device round 5, B4.
+
+    All four outcomes render the same fallback, so from the page alone a
+    refusal, a failure, a missing key and "no model was ever asked" are
+    indistinguishable. That is correct for a lender and useless for the person
+    who has to fix it — and a diagnosis has now been blocked twice on runtime
+    logs the operator cannot reach.
+    """
+
+    def _html(self, *, diagnostics):
+        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
+        db = _Db(
+            projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
+                                "address": "8 Walworth St"}),
+            logbooks=_Coll(docs=[day["preshift"], day["toolbox"], day["jobsite"]]),
+            daily_logs=_Coll(one=None),
+            checkins=_Coll(docs=[]),
+        )
+        with patch.object(server, "db", db):
+            return asyncio.run(server.generate_combined_report(
+                "p1", "2026-08-12", diagnostics=diagnostics))
+
+    def test_the_sent_report_never_carries_it(self):
+        """The copy that reaches investors and lenders. `diagnostics` defaults
+        False and the scheduled send never passes it."""
+        html = self._html(diagnostics=False)
+        self.assertNotIn("ADMIN VIEW ONLY", html)
+        self.assertNotIn("skipped: no key", html)
+
+    def test_the_admin_preview_names_which_of_the_four_happened(self):
+        html = self._html(diagnostics=True)
+        self.assertIn("ADMIN VIEW ONLY", html)
+        # No key is set in the test environment, so this is the skipped branch —
+        # and naming it is the whole point.
+        self.assertIn("skipped: no key", html)
+        self.assertIn("AAZ", html)
+
+    def test_it_says_it_is_not_on_the_sent_report(self):
+        """A diagnostic an admin mistakes for part of the document is worse
+        than none."""
+        self.assertIn("NOT ON THE SENT REPORT", self._html(diagnostics=True))
+
+    def test_the_default_is_off(self):
+        """Signature-level, so a new caller gets the safe behaviour without
+        knowing this exists."""
+        import inspect
+        sig = inspect.signature(server.generate_combined_report)
+        self.assertIs(sig.parameters["diagnostics"].default, False)
+
+    def test_only_the_preview_endpoints_pass_it_and_only_for_an_admin(self):
+        self.assertEqual(_SRC.count("diagnostics=current_user.get(\"role\") in (\"admin\", \"owner\")"), 2)
+        # The scheduled send must call it with neither the flag nor a role.
+        send = _SRC[_SRC.index("report_html = await generate_combined_report("):]
+        self.assertNotIn("diagnostics", send[:200])

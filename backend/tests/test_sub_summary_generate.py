@@ -197,3 +197,125 @@ class AnEmptyRowCannotProduceASentence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestActivityVerbsTraceWithoutClaimingCompletion(unittest.TestCase):
+    """THE VERIFIER WAS REFUSING ON VERBS, not on nouns.
+
+    `working` was allowed and `worked` was not — the past tense of a word
+    already in the list — so the most natural sentence about tapped chips came
+    back UNTRACED_TERM ['worked']. That is literalism, not a guard.
+
+    The tokenizer was NOT the defect, and this is worth recording because it was
+    the first hypothesis: the allowed vocabulary is built by the SAME _tokens
+    call as the sentence, so splitting "MEP rough-in" into mep/rough/in makes
+    those words allowed. Splitting is permissive, not restrictive.
+    """
+
+    PAYLOAD = {
+        "company": "Air Star Mechanical",
+        "trade": "HVAC / Mechanical",
+        "worker_count": 3,
+        "activities": ["Sleeves and penetrations", "site clean-up",
+                       "material delivery", "MEP rough-in"],
+        "locations": ["1 floor"],
+        "photo_count": 2,
+    }
+
+    def test_the_tokenizer_was_never_the_defect(self):
+        from lib.ai.sub_summary import allowed_vocabulary, verify_sentence
+        self.assertIn("mep", allowed_vocabulary(self.PAYLOAD))
+        ok, reason, _ = verify_sentence(
+            "Air Star Mechanical had 3 workers on MEP rough-in on 1 floor.",
+            self.PAYLOAD)
+        self.assertTrue(ok, reason)
+
+    def test_activity_verbs_now_trace(self):
+        from lib.ai.sub_summary import verify_sentence
+        for sentence in (
+            "Air Star Mechanical worked on site clean-up and material delivery.",
+            "Air Star Mechanical carried out MEP rough-in on 1 floor.",
+            "Air Star Mechanical performed sleeves and penetrations.",
+        ):
+            with self.subTest(sentence=sentence):
+                ok, reason, offending = verify_sentence(sentence, self.PAYLOAD)
+                self.assertTrue(ok, f"{reason} {offending}")
+
+    def test_completion_claims_still_refuse(self):
+        """The half that protects the record, untouched."""
+        from lib.ai.sub_summary import verify_sentence
+        for sentence, term in (
+            ("Air Star Mechanical completed MEP rough-in.", "completed"),
+            ("Air Star Mechanical installed ductwork on 1 floor.", "installed"),
+            ("Air Star Mechanical finished site clean-up.", "finished"),
+        ):
+            with self.subTest(sentence=sentence):
+                ok, reason, offending = verify_sentence(sentence, self.PAYLOAD)
+                self.assertFalse(ok)
+                self.assertEqual(reason, "COMPLETION_CLAIM")
+                self.assertIn(term, offending)
+
+    def test_loosening_the_verbs_did_not_loosen_the_trace(self):
+        """The point of the whole module: a NOUN nobody tapped is still refused.
+        If this ever passes, the guard is gone whatever else still works."""
+        from lib.ai.sub_summary import verify_sentence
+        ok, reason, offending = verify_sentence(
+            "Air Star Mechanical worked on ductwork.", self.PAYLOAD)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "UNTRACED_TERM")
+        self.assertIn("ductwork", offending)
+
+    def test_no_connective_may_ever_assert_completion(self):
+        """Enforced at import, not trusted: a later addition like "finished"
+        cannot quietly become a connective and walk past the completion gate."""
+        from lib.ai.sub_summary import _CONNECTIVES, _COMPLETION_TERMS
+        self.assertEqual(_CONNECTIVES & _COMPLETION_TERMS, frozenset())
+
+    def test_exactly_the_five_ruled_verbs_were_added(self):
+        from lib.ai.sub_summary import _CONNECTIVES
+        for verb in ("worked", "performed", "performing", "carried", "out"):
+            self.assertIn(verb, _CONNECTIVES)
+
+
+class TestTheOutcomeNamesTheBranchItActuallyTook(unittest.TestCase):
+    """The outcome string is rendered on the admin preview, so it has to be
+    RIGHT — a mislabelled branch sends the operator after the wrong thing, which
+    is the failure this whole line exists to end."""
+
+    def _traced(self, *, key="k", json_text=None, raise_exc=None):
+        fake_genai, _ = _patch_gemini(json_text, raise_exc)
+        with mock.patch.object(SS, "GEMINI_API_KEY", key),              mock.patch.object(SS, "genai", fake_genai):
+            return SS.generate_sentence_traced(KESTREL)
+
+    def test_generated(self):
+        sentence, outcome = self._traced(json_text='{"sentence": "%s"}' % GOOD)
+        self.assertEqual(sentence, GOOD)
+        self.assertEqual(outcome, "generated")
+
+    def test_skipped_when_there_is_no_key(self):
+        sentence, outcome = self._traced(key="")
+        self.assertIsNone(sentence)
+        self.assertEqual(outcome, "skipped: no key")
+
+    def test_failed_names_the_exception_CLASS_and_not_its_message(self):
+        """An exception string can carry a request id, a URL, or a fragment of
+        the payload — and this string is rendered."""
+        sentence, outcome = self._traced(raise_exc=RuntimeError("token abc123 leaked"))
+        self.assertIsNone(sentence)
+        self.assertEqual(outcome, "failed: RuntimeError")
+        self.assertNotIn("abc123", outcome)
+
+    def test_refused_carries_the_reason_and_the_offending_terms(self):
+        """"Refused" alone tells nobody what to change."""
+        sentence, outcome = self._traced(
+            json_text='{"sentence": "Kestrel Electric installed ductwork."}')
+        self.assertIsNone(sentence)
+        self.assertTrue(outcome.startswith("refused: COMPLETION_CLAIM"), outcome)
+        self.assertIn("installed", outcome)
+
+    def test_the_plain_wrapper_agrees_with_the_traced_one(self):
+        """One implementation. If these ever disagree, one of them is lying."""
+        fake_genai, _ = _patch_gemini('{"sentence": "%s"}' % GOOD)
+        with mock.patch.object(SS, "GEMINI_API_KEY", "k"),              mock.patch.object(SS, "genai", fake_genai):
+            self.assertEqual(SS.generate_sentence(KESTREL),
+                             SS.generate_sentence_traced(KESTREL)[0])

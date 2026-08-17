@@ -79,7 +79,12 @@ class ThePdfPathStillUsesThisHtml(unittest.TestCase):
     def test_the_pdf_renders_the_combined_report(self):
         fn = SRC[SRC.index("async def get_combined_report_pdf"):]
         fn = fn[:2000]
-        self.assertIn("await generate_combined_report(project_id, date)", fn)
+        # RE-POINTED, not relaxed. The call now spans lines because it also
+        # passes the admin-only `diagnostics` flag; the guarantee asserted here
+        # — that the PDF path renders THIS html and not a second template — is
+        # unchanged, and the multi-line form is still an exact match.
+        self.assertIn("await generate_combined_report(", fn)
+        self.assertIn("project_id, date,", fn)
         self.assertIn("HTML(string=html).write_pdf()", fn)
 
 
