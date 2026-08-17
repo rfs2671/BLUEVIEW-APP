@@ -50,6 +50,21 @@ function loadModel(rel, extra = '') {
 const OSHA = loadModel('oshaLogModel.js',
   "const easternToday = () => '2026-08-12';");
 const SCAF = loadModel('scaffoldMaintenanceModel.js');
+// The same stripping, returned as SOURCE rather than evaluated — so a model
+// that imports a shared helper can be handed the helper's REAL code as its
+// preamble instead of a stub that could drift from it. checklistMap decides
+// what "not recorded" means on five filed documents; a stub of it here would
+// test the stub.
+function modelSource(rel) {
+  return fs.readFileSync(path.join(UTILS, rel), 'utf8')
+    .replace(/^import .*$/gm, '')
+    .replace(/^export default [\s\S]*$/m, '')
+    .replace(/^export (const|function) /gm, '$1 ');
+}
+const CHECKLIST_SRC = modelSource('checklistMap.js');
+const CHK = loadModel('checklistMap.js');
+const CONC = loadModel('concreteOperationsModel.js', CHECKLIST_SRC);
+const CRANE = loadModel('craneOperationsModel.js', CHECKLIST_SRC);
 
 // ═══ OSHA LOG ════════════════════════════════════════════════════════════════
 console.log('\n-- osha_log: data.entries[] --');
@@ -409,6 +424,427 @@ ok(/sharedWorkerIds\(entries\)/.test(OSHA_SCREEN)
   'two rows for one man are labelled as his two cards, not left looking duplicated');
 ok(/unlinkedNote/.test(OSHA_SCREEN),
   'and a row that has lost its id says so');
+
+// ═══ THE THREE READERS, PULLED OUT OF THEIR OWN SOURCE ═══════════════════════
+//
+// concrete_operations and crane_operations are read by THREE surfaces, not one:
+// the filed-PDF renderer, generate_combined_report, and the kiosk inspector.
+// None of them would crash on a renamed key — each would quietly print an empty
+// section on a document a DOB inspector reads.
+//
+// So the key lists below are not typed here. They are EXTRACTED from each
+// reader's own source, and the model is checked against the union. A key that
+// only two of the three read is still a key the payload must carry.
+
+/** The `elif log_type == "X":` arm of render_logbook_pdf. */
+function pdfBranch(logType, nextLogType) {
+  const a = SERVER.indexOf(`elif log_type == "${logType}":`);
+  const b = SERVER.indexOf(`elif log_type == "${nextLogType}":`);
+  return (a > -1 && b > a) ? SERVER.slice(a, b) : '';
+}
+/** The `X_lb = _filed_log(logbooks, "X")` arm of generate_combined_report. */
+function reportBranch(logType, endMarker) {
+  const a = SERVER.indexOf(`_filed_log(logbooks, "${logType}")`);
+  const b = SERVER.indexOf(endMarker, a + 1);
+  return (a > -1 && b > a) ? SERVER.slice(a, b) : '';
+}
+/** One `const renderX = (log) => {` block of app/site/logbooks.jsx. */
+function kioskBranch(name, nextName) {
+  const a = KIOSK.indexOf(`const ${name} = (log) => {`);
+  const b = KIOSK.indexOf(`const ${nextName} = (log) => {`);
+  return (a > -1 && b > a) ? KIOSK.slice(a, b) : '';
+}
+const uniq = (xs) => [...new Set(xs)].sort();
+const grab = (src, re) => [...src.matchAll(re)].map((m) => m[1]);
+
+/** Every TOP-LEVEL payload key a PDF branch reads. */
+function pdfTopKeys(branch) {
+  return uniq([
+    ...grab(branch, /data\.get\("([a-z_]+)"/g),
+    // field_lines' 3-tuples: ("key", "Label", _formatter),
+    ...grab(branch, /\("([a-z_]+)",\s*"[^"]*",\s*_/g),
+    ...grab(branch, /toggle_block\(data,\s*"([a-z_]+)"/g),
+  ]);
+}
+/** Every top-level key a combined-report branch reads. */
+const reportTopKeys = (branch) => uniq(grab(branch, /\bd\.get\("([a-z_]+)"/g));
+/**
+ * Every top-level key a kiosk renderer reads.
+ *
+ * The `['key', t('…')]` pair shape is used TWICE in these blocks: by DocFields
+ * for top-level payload fields, and by ToggleTable for the items INSIDE a
+ * checklist map. Scanning the whole block would hand back the fifteen crane
+ * check keys as if they were payload keys, so the pair scan is confined to the
+ * `specs={[…]}` list and the slice is asserted non-empty.
+ */
+function kioskSpecs(branch) {
+  const a = branch.indexOf('specs={[');
+  const b = branch.indexOf(']}', a);
+  return (a > -1 && b > a) ? branch.slice(a, b) : '';
+}
+function kioskTopKeys(branch) {
+  return uniq([
+    ...grab(branch, /\bdata\.([a-z_]+)/g),
+    ...grab(kioskSpecs(branch), /\['([a-z_]+)',\s*t\(/g),
+  ]);
+}
+/** The two-tuple checklists a renderer prints verbatim: [key, label]. */
+const tupleList = (branch) => [...branch.matchAll(/\("([a-z_]+)",\s*"([^"]+)"\),/g)]
+  .map((m) => ({ key: m[1], label: m[2] }));
+
+/**
+ * The model carries every key all three readers open, and the readers were
+ * actually FOUND — an empty branch would make every assertion below vacuous,
+ * which is the exact shape assertionsCanFail.test.cjs exists to catch.
+ */
+function assertPayloadCovers(label, body, sources) {
+  const all = uniq(sources.flatMap(([name, branch, keys]) => {
+    ok(branch.length > 0, `${label}: located the ${name}`);
+    ok(keys.length > 0, `${label}: the ${name} reads ${keys.length} top-level keys`);
+    return keys;
+  }));
+  const missing = all.filter((k) => !Object.prototype.hasOwnProperty.call(body, k));
+  ok(missing.length === 0,
+    `${label}: the payload carries every key the three readers open${missing.length ? ` — MISSING ${JSON.stringify(missing)}` : ''}`);
+  return all;
+}
+
+// ═══ CONCRETE OPERATIONS ═════════════════════════════════════════════════════
+console.log('\n-- concrete_operations: the eight top-level keys --');
+
+const concPdf = pdfBranch('concrete_operations', 'scaffold_maintenance');
+const concReport = reportBranch('concrete_operations', 'handled_types = {');
+const concKiosk = kioskBranch('renderConcreteOperations', 'renderScaffoldMaintenance');
+
+const concBody = CONC.draftBody({}, [], {});
+ok(kioskSpecs(concKiosk).length > 0,
+  'concrete_operations: the kiosk DocFields specs list was found, not silently empty');
+const concKeys = assertPayloadCovers('concrete_operations', concBody, [
+  ['PDF renderer', concPdf, pdfTopKeys(concPdf)],
+  ['combined report', concReport, reportTopKeys(concReport)],
+  ['kiosk inspector', concKiosk, kioskTopKeys(concKiosk)],
+]);
+ok(concKeys.length === 8,
+  `all three readers together open 8 keys (${concKeys.join(', ')})`);
+// A BLANK FORM ALREADY CARRIES THEM ALL. A scalar that only appears once it is
+// typed is a scalar that can go missing from a filed document.
+ok(CONC.DETAIL_KEYS.every((k) => concBody[k] === ''),
+  'every scalar is present and empty on an untouched pour, not absent');
+ok(Array.isArray(concBody.slump_tests) && !concBody.slump_tests.length,
+  'slump_tests is an empty ARRAY, the shape the renderers iterate');
+ok(concBody.formwork_checklist && !Object.keys(concBody.formwork_checklist).length,
+  'formwork_checklist is an empty MAP — every item unrecorded, which is where it starts');
+
+// THE FOUR FORMWORK ITEMS, key AND label, out of BOTH renderers' own lists.
+// The label must match word for word: the device and the filed PDF have to ask
+// the same thing, or the CP answered something the document does not say.
+for (const [name, branch] of [['PDF renderer', concPdf], ['combined report', concReport]]) {
+  const items = tupleList(branch);
+  ok(items.length === 4, `${name} lists 4 formwork items (got ${items.length})`);
+  const bad = items.filter((q, i) => (
+    CONC.FORMWORK_ITEMS[i]?.key !== q.key || CONC.FORMWORK_ITEMS[i]?.label !== q.label
+  ));
+  ok(bad.length === 0,
+    `the model matches the ${name}, key and label and ORDER${bad.length ? ` — ${JSON.stringify(bad)}` : ''}`);
+}
+
+console.log('\n-- concrete_operations: a slump row, and the renderer\'s drop rule --');
+
+// THE SCREEN'S RULE MUST BE THE RENDERER'S RULE. server.py:13428 drops a row
+// with `not t and not v and p is None`; the three fields it names are read out
+// of that condition rather than copied, and slumpHasContent is executed against
+// each of them. If the screen disagreed, a filed row would print where the CP
+// saw none, or vanish where he saw one.
+const slumpDropFields = uniq([
+  ...grab(concPdf, /st\.get\("([a-z_]+)"/g),
+  ...grab(concKiosk, /\bst\.([a-z_]+)/g),
+]);
+ok(slumpDropFields.length === 3,
+  `the renderers read 3 slump fields (${slumpDropFields.join(', ')})`);
+for (const f of slumpDropFields) {
+  ok(Object.prototype.hasOwnProperty.call(CONC.EMPTY_SLUMP_TEST(), f),
+    `EMPTY_SLUMP_TEST carries "${f}" — the renderer reads it`);
+}
+ok(CONC.slumpHasContent(CONC.EMPTY_SLUMP_TEST()) === false,
+  'an untouched EMPTY_SLUMP_TEST is NOT content — the same rule the renderer drops it by');
+ok(CONC.slumpHasContent({ ...CONC.EMPTY_SLUMP_TEST(), time: '09:30 AM' }) === true,
+  'a time alone is content');
+ok(CONC.slumpHasContent({ ...CONC.EMPTY_SLUMP_TEST(), value: '4' }) === true,
+  'a slump value alone is content');
+ok(CONC.slumpHasContent({ ...CONC.EMPTY_SLUMP_TEST(), pass: false }) === true,
+  'a recorded FAIL with no time and no value is still content — dropping it would '
+  + 'delete a failed test off a pour record');
+ok(CONC.slumpHasContent({ ...CONC.EMPTY_SLUMP_TEST(), time: '   ' }) === false,
+  'and whitespace is not, which is how the renderer strips it too');
+
+// `pass` IS TRI-STATE, and the third state has to be reachable.
+ok(CONC.EMPTY_SLUMP_TEST().pass === null,
+  'a fresh row is seeded null — unrecorded, which both renderers print as nothing');
+const p1 = CONC.applySlumpResult(CONC.EMPTY_SLUMP_TEST(), true);
+ok(p1.pass === true, 'tapping PASS records a pass');
+ok(CONC.applySlumpResult(p1, false).pass === false, 'tapping FAIL over it records a fail');
+ok(CONC.applySlumpResult(p1, true).pass === null,
+  'tapping the CHOSEN result again clears it back to null — the seeded state has to be '
+  + 'reachable, or a mis-tapped Fail can only be removed by deleting the row');
+ok(CONC.applySlumpResult(CONC.applySlumpResult(p1, false), false).pass === null,
+  'and the same holds from FAIL');
+ok(CONC.applySlumpResult({ time: '08:00 AM', value: '5', pass: null }, true).time === '08:00 AM',
+  'setting a result touches nothing else on the row');
+
+// Filing drops the seeds and keeps the tests.
+const slumpMixed = [
+  { time: '09:30 AM', value: '4', pass: true },
+  CONC.EMPTY_SLUMP_TEST(),
+  { time: '', value: '', pass: false },
+];
+ok(CONC.slumpTestsForFiling(slumpMixed).length === 2,
+  'filing drops the untouched seed and keeps both real tests');
+ok(CONC.slumpTestsForFiling(slumpMixed).every((r) => CONC.slumpHasContent(r)),
+  'every filed row passes the same rule the renderers drop rows by');
+ok(CONC.slumpTestsForFiling(null).length === 0 && CONC.slumpTestsForFiling(undefined).length === 0,
+  'and it is safe on a missing table');
+
+console.log('\n-- concrete_operations: the pips --');
+
+ok(JSON.stringify(CONC.incompleteSteps({
+  details: {}, slumpTests: [], formworkChecklist: {}, cpSignature: '',
+})) === '[1,2,3,4]', 'an untouched pour marks all four steps incomplete');
+const concFull = {};
+for (const it of CONC.FORMWORK_ITEMS) concFull[it.key] = true;
+ok(JSON.stringify(CONC.incompleteSteps({
+  details: { pour_location: '3rd floor slab' },
+  slumpTests: [{ time: '09:30 AM', value: '4', pass: true }],
+  formworkChecklist: concFull,
+  cpSignature: 'sig',
+})) === '[]', 'a filled and signed pour marks none');
+ok(CONC.incompleteSteps({
+  details: { pour_location: 'x' },
+  slumpTests: [{ time: '09:30 AM', value: '4', pass: true }],
+  formworkChecklist: { shores_plumb: false },
+  cpSignature: 'sig',
+}).includes(3), 'ONE of four formwork items answered still marks the inspection incomplete');
+ok(!CONC.incompleteSteps({
+  details: { pour_location: 'x' },
+  slumpTests: [{ time: '09:30 AM', value: '4', pass: true }],
+  formworkChecklist: Object.fromEntries(CONC.FORMWORK_ITEMS.map((it) => [it.key, false])),
+  cpSignature: 'sig',
+}).includes(3), 'four NOs is a COMPLETE inspection — a No is an answer');
+
+// ═══ CRANE OPERATIONS ════════════════════════════════════════════════════════
+console.log('\n-- crane_operations: the six top-level keys --');
+
+const cranePdf = pdfBranch('crane_operations', 'excavation_monitoring');
+const craneReport = reportBranch('crane_operations', '_filed_log(logbooks, "excavation_monitoring")');
+const craneKiosk = kioskBranch('renderCraneOperations', 'renderExcavationMonitoring');
+
+const craneBody = CRANE.draftBody({}, {}, []);
+ok(kioskSpecs(craneKiosk).length > 0,
+  'crane_operations: the kiosk DocFields specs list was found, not silently empty');
+const craneKeys = assertPayloadCovers('crane_operations', craneBody, [
+  ['PDF renderer', cranePdf, pdfTopKeys(cranePdf)],
+  ['combined report', craneReport, reportTopKeys(craneReport)],
+  ['kiosk inspector', craneKiosk, kioskTopKeys(craneKiosk)],
+]);
+ok(craneKeys.length === 6,
+  `all three readers together open 6 keys (${craneKeys.join(', ')})`);
+ok(CRANE.DETAIL_KEYS.every((k) => craneBody[k] === ''),
+  'every scalar is present and empty on an untouched crane log, not absent');
+ok(Array.isArray(craneBody.load_entries) && !craneBody.load_entries.length,
+  'load_entries is an empty ARRAY, the shape the renderers iterate');
+ok(craneBody.pre_operation_checklist
+  && !Object.keys(craneBody.pre_operation_checklist).length,
+  'pre_operation_checklist is an empty MAP — every check unrecorded, which is where it starts');
+
+// THE FIFTEEN PRE-OP CHECKS, key AND label, out of BOTH renderers' own lists.
+for (const [name, branch] of [['PDF renderer', cranePdf], ['combined report', craneReport]]) {
+  const items = tupleList(branch);
+  ok(items.length === 15, `${name} lists 15 pre-operation checks (got ${items.length})`);
+  const bad = items.filter((q, i) => (
+    CRANE.PRE_OP_CHECKLIST_ITEMS[i]?.key !== q.key
+    || CRANE.PRE_OP_CHECKLIST_ITEMS[i]?.label !== q.label
+  ));
+  ok(bad.length === 0,
+    `the model matches the ${name}, key and label and ORDER${bad.length ? ` — ${JSON.stringify(bad)}` : ''}`);
+}
+
+console.log('\n-- crane_operations: a lift row, and the renderer\'s drop rule --');
+
+// The four fields all three readers test a row's emptiness by, read out of
+// their own conditions rather than copied.
+const liftDropFields = uniq([
+  ...grab(cranePdf, /le\.get\("([a-z_]+)"/g),
+  ...grab(craneReport, /le\.get\("([a-z_]+)"/g),
+  ...grab(craneKiosk, /\ble\.([a-z_]+)/g),
+]);
+ok(liftDropFields.length === 4,
+  `the renderers read 4 lift fields (${liftDropFields.join(', ')})`);
+ok(JSON.stringify([...CRANE.LOAD_ENTRY_KEYS].sort()) === JSON.stringify(liftDropFields),
+  'and the model names exactly those four');
+for (const f of liftDropFields) {
+  ok(Object.prototype.hasOwnProperty.call(CRANE.EMPTY_LOAD_ENTRY(), f),
+    `EMPTY_LOAD_ENTRY carries "${f}" — the renderer reads it`);
+  ok(CRANE.loadEntryHasContent({ ...CRANE.EMPTY_LOAD_ENTRY(), [f]: 'x' }) === true,
+    `loadEntryHasContent agrees with the renderer on "${f}"`);
+}
+ok(CRANE.loadEntryHasContent(CRANE.EMPTY_LOAD_ENTRY()) === false,
+  'an untouched EMPTY_LOAD_ENTRY is NOT a lift — the same rule the renderer drops it by');
+ok(CRANE.loadEntryHasContent({ ...CRANE.EMPTY_LOAD_ENTRY(), radius: '  ' }) === false,
+  'and whitespace is not a lift either');
+ok(CRANE.loadEntryHasContent(null) === false && CRANE.loadEntryHasContent('x') === false,
+  'a non-row is never a lift');
+
+const liftMixed = [
+  { time: '07:15 AM', description: 'Rebar bundle', load_weight: '2400', radius: '60' },
+  CRANE.EMPTY_LOAD_ENTRY(),
+  { time: '', description: 'Formwork panels', load_weight: '', radius: '' },
+];
+ok(CRANE.loadEntriesForFiling(liftMixed).length === 2,
+  'filing drops the untouched seed and keeps both real lifts');
+ok(CRANE.filledLiftCount(liftMixed) === 2, 'and the screen counts the same two');
+ok(CRANE.loadEntriesForFiling([]).length === 0 && CRANE.loadEntriesForFiling(null).length === 0,
+  'and it is safe on an empty or missing log');
+
+console.log('\n-- crane_operations: the pips --');
+
+ok(JSON.stringify(CRANE.incompleteSteps({
+  details: {}, preOpChecklist: {}, loadEntries: [], cpSignature: '',
+})) === '[1,2,3,4]', 'an untouched crane log marks all four steps incomplete');
+const craneFull = {};
+for (const it of CRANE.PRE_OP_CHECKLIST_ITEMS) craneFull[it.key] = true;
+ok(JSON.stringify(CRANE.incompleteSteps({
+  details: { crane_type: 'Tower Crane' },
+  preOpChecklist: craneFull,
+  loadEntries: liftMixed,
+  cpSignature: 'sig',
+})) === '[]', 'a filled and signed crane log marks none');
+ok(CRANE.incompleteSteps({
+  details: { crane_type: 'Tower Crane' },
+  preOpChecklist: { wire_ropes: true },
+  loadEntries: liftMixed,
+  cpSignature: 'sig',
+}).includes(2), 'ONE of fifteen checks answered still marks the pre-lift walk incomplete');
+
+// ═══ THE SPARSE TOGGLE MAP — three states, and all three reachable ═══════════
+//
+// backend/server.py:13029-13043 says it: "key present and False is an explicit
+// No while key absent is untouched". Both ported forms answer through
+// checklistMap, so the rule is executed once here rather than trusted twice.
+console.log('\n-- checklistMap: absent / false / true, and back --');
+
+ok(/key present and False is an explicit No while `key absent` is\s*\n?\s*#?\s*untouched/i.test(SERVER)
+  || /key absent` is\s+untouched/i.test(SERVER),
+  'the backend still states the absent-vs-false convention this module implements');
+
+const ITEMS = [{ key: 'a' }, { key: 'b' }];
+let m = {};
+ok(CHK.recordedCount(m, ITEMS) === 0, 'an empty map has answered nothing');
+m = CHK.applyChecklistAnswer(m, 'a', true);
+ok(m.a === true && CHK.recordedCount(m, ITEMS) === 1, 'YES records true');
+m = CHK.applyChecklistAnswer(m, 'a', false);
+ok(m.a === false && CHK.recordedCount(m, ITEMS) === 1,
+  'NO over it records an explicit false — which the document prints as "No", not as a blank');
+m = CHK.applyChecklistAnswer(m, 'a', false);
+ok(!Object.prototype.hasOwnProperty.call(m, 'a'),
+  'answering the SAME way twice removes the key — the only route back to "not recorded", '
+  + 'and the state every form opens in');
+ok(CHK.recordedCount(m, ITEMS) === 0, 'and it stops counting as answered');
+ok(CHK.allRecorded({ a: false, b: true }, ITEMS) === true,
+  'two answers is complete even when both are NO');
+ok(CHK.allRecorded({ a: true }, ITEMS) === false, 'one of two is not');
+// A stored value that is not a boolean is not an answer. Old drafts and hand
+// edited documents both exist.
+ok(CHK.recordedCount({ a: 'yes' }, ITEMS) === 0,
+  'a non-boolean is not an answer — the renderers only branch on truthiness of a bool');
+ok(CHK.applyChecklistAnswer(null, 'a', true).a === true,
+  'a missing map is treated as empty, not as a crash');
+// The original map is never mutated — React state depends on it.
+const frozenSrc = { a: true };
+CHK.applyChecklistAnswer(frozenSrc, 'a', false);
+ok(frozenSrc.a === true, 'the source map is not mutated');
+
+// ── THE SCREENS ARE ACTUALLY WIRED TO ALL THAT ──────────────────────────────
+//
+// A correct model behind an unwired screen ships the same defect.
+console.log('\n-- both screens go through the models, not their own spreads --');
+
+/**
+ * Source with comments removed — the shared stripper every absence assertion
+ * in this suite runs against. Both screens DOCUMENT the patterns they ban
+ * ("NOT `!prev[key]`", "applySlumpResult, NOT a spread"), and an absence test
+ * that reads prose passes on the documentation of the very fix it checks for.
+ * Comments describe; code behaves. Only code is asserted.
+ */
+function stripComments(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+    .replace(/\s\/\/[^\n'"`]*$/gm, '');
+}
+const CONC_SCREEN = stripComments(fs.readFileSync(
+  path.join(FRONTEND, 'app', 'logbooks', 'concrete_operations.jsx'), 'utf8'));
+const CRANE_SCREEN = stripComments(fs.readFileSync(
+  path.join(FRONTEND, 'app', 'logbooks', 'crane_operations.jsx'), 'utf8'));
+ok(/LogbookStepper/.test(CONC_SCREEN) && !/THE PAYLOAD IS UNCHANGED/.test(CONC_SCREEN),
+  'the comment stripper removes prose but keeps code');
+
+for (const [name, src] of [['concrete_operations', CONC_SCREEN], ['crane_operations', CRANE_SCREEN]]) {
+  // On the shared stepper, with the chrome it owns.
+  ok(/<LogbookStepper/.test(src), `${name}: renders the shared stepper`);
+  ok(!/<AnimatedBackground>/.test(src) && !/<ScrollView/.test(src),
+    `${name}: owns no chrome of its own — the header, scroll and footer are the stepper's`);
+  ok(!/Save Draft|'draft'/.test(src),
+    `${name}: there is no Save Draft button and no draft submit — every change autosaves`);
+  ok(!/GlassCard|GlassButton|LogbookLockBar/.test(src),
+    `${name}: the old glass chrome is GONE, lock bar included`);
+  // The carried-forward lifecycle, each named because each was a separate fix.
+  for (const fn of ['readDraft', 'writeDraft', 'setDraftBackendId', 'markPending',
+    'clearPending', 'markFinalized', 'adoptAmendment', 'freezeIfImmediate',
+    'recordFinalizeError', 'clearFinalizeError', 'finalizeErrorCode',
+    'isOfflineError', 'recordSignatureEvent']) {
+    ok(new RegExp(`\\b${fn}\\b`).test(src), `${name}: carries ${fn}`);
+  }
+  // The affirmation gate — this is an IMMEDIATE type, so submit must be
+  // UNREACHABLE without one, not merely warned about.
+  ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\)\}/.test(src),
+    `${name}: an unaffirmed signature makes Submit unreachable`);
+  ok(/submitHint=\{affirmationHintKey\(cpSignature, profileLoaded\)/.test(src),
+    `${name}: and the dead button says why`);
+  // The refusal split: a 4xx is a JUDGEMENT and must not freeze.
+  ok(/refused && submitStatus === 'submitted'/.test(src)
+    && /if \(savedId === undefined\) return;/.test(src),
+    `${name}: a server REFUSAL is not offline — it reports and does not freeze`);
+  // gateCopy — the server's English `detail` never renders.
+  ok(/const key = `code_\$\{code\}`/.test(src) && /tFinalize\('genericError'\)/.test(src),
+    `${name}: the client owns the wording; an unmapped code falls back`);
+  // No camera on either form, so neither may quietly grow one.
+  ok(!/persistPhoto|compressUnderCap|Camera/.test(src),
+    `${name}: no camera — persistPhoto and compressUnderCap are deliberately absent`);
+  // No roster, so the empty-roster trap has no surface here.
+  ok(!/getCheckinsForDate|getCheckinsRoster|buildEntriesFromCheckins/.test(src),
+    `${name}: builds no roster, so it cannot carry the empty-roster trap`);
+  // A time-of-day field is TAPPED, not typed.
+  ok(/<TimeField/.test(src) && !/placeholder="HH:MM"/.test(src),
+    `${name}: times are chosen with TimeField, not typed into a free-text box`);
+}
+
+// The two edits that are the whole point of the models.
+ok(/applySlumpResult\(row, value\)/.test(CONC_SCREEN),
+  'concrete_operations: the result goes through applySlumpResult, which can reach null');
+ok(!/pass: [^,\n]*\? *true *: *false/.test(CONC_SCREEN)
+  && !/pass: !/.test(CONC_SCREEN),
+  'and there is no boolean flip that would make "not recorded" unreachable');
+ok(/slumpTestsForFiling\(b\.slumpTests\)/.test(CONC_SCREEN)
+  && /submitStatus === 'submitted'\s*\?\s*slumpTestsForFiling/.test(CONC_SCREEN),
+  'concrete_operations: SUBMIT trims the abandoned rows; a draft keeps them');
+ok(/loadEntriesForFiling\(b\.loadEntries\)/.test(CRANE_SCREEN)
+  && /submitStatus === 'submitted'\s*\?\s*loadEntriesForFiling/.test(CRANE_SCREEN),
+  'crane_operations: SUBMIT trims the abandoned rows; a draft keeps them');
+for (const [name, src] of [['concrete_operations', CONC_SCREEN], ['crane_operations', CRANE_SCREEN]]) {
+  ok(/applyChecklistAnswer\(p, key, value\)/.test(src),
+    `${name}: the checklist goes through applyChecklistAnswer`);
+  ok(!/\[key\]: !p\[key\]/.test(src) && !/!prev\[key\]/.test(src),
+    `${name}: the binary flip that could not express "not recorded" is GONE`);
+}
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════
 console.log('\n-- the kiosk inspector reads the same keys --');

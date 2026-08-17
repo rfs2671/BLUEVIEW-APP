@@ -48,15 +48,18 @@ import { withAlpha } from './semanticColors';
 
 // ─── Opaque colour bases ─────────────────────────────────────────────────────
 //
-// 15 distinct opaque literals, 57 occurrences, plus `black` which survives
+// 15 distinct opaque literals, 47 occurrences, plus `black` which survives
 // only as a tint base. Counts are occurrences across the 16 measured files.
 //
-// RE-MEASURED after the osha_log + scaffold_maintenance port onto the shared
-// stepper, exactly as the U1 daily-jobsite rebuild required before it. Those
-// two screens moved onto the token file and took their literals with them, so
-// `cyan400` (#22d3ee) and `red500` (#ef4444) now have NO use anywhere in the
-// measured set and are GONE from this palette. A measured scale may not keep
-// shipping a value nothing measures — the same rule that removed `shadow`.
+// RE-MEASURED after the concrete_operations + crane_operations port onto the
+// shared stepper — the fifth and sixth screens to move, after U1's
+// daily_jobsite, #123's osha_log + scaffold_maintenance and the toolbox_talk
+// port. Every distinct base survived this round; only the counts fell.
+//
+// The earlier osha_log + scaffold_maintenance port removed `cyan400` (#22d3ee)
+// and `red500` (#ef4444) outright — they had NO use left anywhere in the
+// measured set. A measured scale may not keep shipping a value nothing
+// measures; that is the same rule that removed `shadow`.
 //
 // NOT A CLAIM ABOUT THE WHOLE APP. Both colours are still written elsewhere
 // (CameraOverlay, LogbookLockBar, RiskScoreCircle); this file measures the 16
@@ -70,10 +73,10 @@ import { withAlpha } from './semanticColors';
 // by colour but not by string — the screens write '#fff', theme.js writes
 // '#ffffff'.
 export const palette = Object.freeze({
-  blue500:   '#3b82f6', // 13 uses, 6 files — exact match: theme colors.primary
-  blue300:   '#93c5fd', // 9 uses, 3 files
-  white:     '#fff',    // 9 uses, 8 files — same COLOUR as theme colors.white ('#ffffff'), different literal
-  blue400:   '#60a5fa', // 6 uses, 3 files — exact match: theme outdoor.accent
+  blue500:   '#3b82f6', // 9 uses, 4 files — exact match: theme colors.primary
+  blue300:   '#93c5fd', // 8 uses, 2 files
+  white:     '#fff',    // 5 uses, 5 files — same COLOUR as theme colors.white ('#ffffff'), different literal
+  blue400:   '#60a5fa', // 5 uses, 2 files — exact match: theme outdoor.accent
   amber400:  '#fbbf24', // 4 uses, 2 files — exact match: theme colors.warning / state.attention
   green400:  '#4ade80', // 3 uses, 1 file  — exact match: theme colors.success
   red400:    '#f87171', // 3 uses, 2 files — exact match: theme colors.error / state.criticalText
@@ -90,13 +93,17 @@ export const palette = Object.freeze({
 
 // ─── Alpha steps ─────────────────────────────────────────────────────────────
 //
-// The union of every opacity in use on a colour: 55 withAlpha() calls plus 28
+// The union of every opacity in use on a colour: 47 withAlpha() calls plus 26
 // hand-written rgba() literals = 16 distinct steps. This is NOT a designed
 // ramp — 0.03/0.07 are one-offs, kept because they ship.
 //
-// RE-MEASURED after the toolbox_talk port. `a02` (0.02) was that screen's
-// alone and now has NO use in the measured set, so it is gone — a measured
-// scale may not keep shipping a value nothing measures.
+// RE-MEASURED after the concrete_operations + crane_operations port. Every
+// step survived this round: the two screens' tints were all shared with
+// screens still to be ported, so the counts fell and the ramp did not.
+//
+// An earlier round did drop one: `a02` (0.02) was toolbox_talk's alone and
+// went when that screen moved — a measured scale may not keep shipping a value
+// nothing measures.
 //
 // NOTE the overlap with semanticColors.js's canonical STATE steps (fill 0.12,
 // border 0.3). Those two are the only steps with a stated meaning; every other
@@ -110,7 +117,7 @@ export const alpha = Object.freeze({
 
 // ─── tint(base, step) ────────────────────────────────────────────────────────
 // withAlpha under a shorter name. Alpha colours are always DERIVED from a
-// palette base so they cannot fork from it (the 44 hand-written rgba()
+// palette base so they cannot fork from it (the 26 hand-written rgba()
 // literals measured above are exactly that fork: `rgba(59,130,246,0.2)`,
 // `rgba(59, 130, 246, 0.1)` and `rgba(59,130,246,0.10)` are three spellings of
 // two colours, all of them palette.blue500 at an `alpha` step).
@@ -120,16 +127,17 @@ export const tint = withAlpha;
 // migration checklist, and a test can assert that `palette` × `alpha` still
 // covers all of it. `uses` is the occurrence count.
 //
-// RE-MEASURED after the toolbox_talk port — the third screen onto the shared
-// stepper, after U1's daily_jobsite and #123's osha_log + scaffold_maintenance.
-// It took 12 withAlpha calls and 6 rgba() literals out of the measurement with
-// it. These numbers are the CURRENT source, not the original audit snapshot.
+// RE-MEASURED after the concrete_operations + crane_operations port — the fifth
+// and sixth screens onto the shared stepper, after U1's daily_jobsite, #123's
+// osha_log + scaffold_maintenance and the toolbox_talk port. Those two took 8
+// withAlpha calls and 2 rgba() literals out of the measurement with them.
+// These numbers are the CURRENT source, not the original audit snapshot.
 //
 // `via` records HOW the value is written today:
-//   'withAlpha' — already the sanctioned helper idiom (55 occurrences).
-//   'rgba'      — a hand-written rgba() string literal (28 occurrences).
+//   'withAlpha' — already the sanctioned helper idiom (47 occurrences).
+//   'rgba'      — a hand-written rgba() string literal (26 occurrences).
 // Keeping them apart matters: counting the withAlpha bases as raw colour
-// literals inflates the apparent colour debt from 28 to 83.
+// literals inflates the apparent colour debt from 26 to 73.
 export const MEASURED_TINTS = Object.freeze([
   { base: 'black',      step: 'a04',  uses: 2,   via: 'withAlpha' },
   { base: 'black',      step: 'a06',  uses: 2,   via: 'withAlpha' },
@@ -145,126 +153,130 @@ export const MEASURED_TINTS = Object.freeze([
   { base: 'blue500',    step: 'a08',  uses: 1,   via: 'rgba' },
   { base: 'blue500',    step: 'a10',  uses: 4,   via: 'rgba' },
   { base: 'blue500',    step: 'a15',  uses: 2,   via: 'rgba' },
-  { base: 'blue500',    step: 'a20',  uses: 4,   via: 'rgba' },
+  { base: 'blue500',    step: 'a20',  uses: 3,   via: 'rgba' },
   { base: 'blue500',    step: 'a30',  uses: 1,   via: 'rgba' },
-  { base: 'blue500',    step: 'a50',  uses: 3,   via: 'rgba' },
+  { base: 'blue500',    step: 'a50',  uses: 2,   via: 'rgba' },
   { base: 'violet500',  step: 'a15',  uses: 1,   via: 'rgba' },
   { base: 'violet500',  step: 'a20',  uses: 2,   via: 'rgba' },
   { base: 'violet500',  step: 'a30',  uses: 1,   via: 'rgba' },
   { base: 'violet500',  step: 'a40',  uses: 2,   via: 'rgba' },
   { base: 'white',      step: 'a03',  uses: 1,   via: 'withAlpha' },
-  { base: 'white',      step: 'a04',  uses: 11,  via: 'withAlpha' },
-  { base: 'white',      step: 'a05',  uses: 14,  via: 'withAlpha' },
-  { base: 'white',      step: 'a06',  uses: 4,   via: 'withAlpha' },
+  { base: 'white',      step: 'a04',  uses: 10,  via: 'withAlpha' },
+  { base: 'white',      step: 'a05',  uses: 12,  via: 'withAlpha' },
+  { base: 'white',      step: 'a06',  uses: 2,   via: 'withAlpha' },
   { base: 'white',      step: 'a07',  uses: 1,   via: 'withAlpha' },
   { base: 'white',      step: 'a08',  uses: 5,   via: 'withAlpha' },
-  { base: 'white',      step: 'a10',  uses: 12,  via: 'withAlpha' },
+  { base: 'white',      step: 'a10',  uses: 9,   via: 'withAlpha' },
   { base: 'white',      step: 'a15',  uses: 1,   via: 'withAlpha' },
 ]);
 
 // ─── Type sizes ──────────────────────────────────────────────────────────────
 //
-// 13 distinct fontSize literals, 192 occurrences.
+// 13 distinct fontSize literals, 133 occurrences.
 //
-// The headline finding: f12 (43 uses) and f13 (43 uses) are jointly the most
-// common sizes on the CP screens and NEITHER has an entry in
-// theme.js `typography.sizes` ({ xs:11, sm:14, md:16, lg:18, xl:24 }). 86 of
-// the 192 fontSize literals — nearly half — are two sizes the scale does not
-// name. Meanwhile `typography.sizes.xl` (24) is referenced ZERO times anywhere
-// in app/ or src/, and `typography.sizes.md` (16) zero times as well.
+// The headline finding survives every port so far: f13 (32 uses) and f12 (30
+// uses) are jointly the most common sizes on the CP screens and NEITHER has an
+// entry in theme.js `typography.sizes` ({ xs:11, sm:14, md:16, lg:18, xl:24 }).
+// 62 of the 133 fontSize literals — nearly half — are two sizes the scale does
+// not name.
 export const fontSize = Object.freeze({
-  f10: 10, // 8 uses,  6 files
-  f11: 11, // 25 uses, 9 files  — theme typography.sizes.xs
-  f12: 12, // 43 uses, 11 files — JOINT MOST-USED, no theme token
-  f13: 13, // 43 uses, 15 files — JOINT MOST-USED, no theme token
-  f14: 14, // 31 uses, 16 files — theme typography.sizes.sm
-  f15: 15, // 20 uses, 10 files
-  f16: 16, // 8 uses,  7 files  — theme typography.sizes.md (0 references app-wide)
-  f17: 17, // 3 uses,  3 files
+  f10: 10, // 4 uses,  3 files
+  f11: 11, // 16 uses, 5 files  — theme typography.sizes.xs
+  f12: 12, // 30 uses, 7 files  — JOINT MOST-USED, no theme token
+  f13: 13, // 32 uses, 10 files — JOINT MOST-USED, no theme token
+  f14: 14, // 21 uses, 10 files — theme typography.sizes.sm
+  f15: 15, // 15 uses, 6 files
+  f16: 16, // 4 uses,  3 files  — theme typography.sizes.md
+  f17: 17, // 2 uses,  2 files
   f18: 18, // 2 uses,  2 files  — theme typography.sizes.lg
-  f20: 20, // 5 uses,  5 files
+  f20: 20, // 3 uses,  3 files
   f22: 22, // 1 use,   1 file
   f32: 32, // 2 uses,  2 files
   f48: 48, // 1 use,   1 file
 });
 
 // ─── Font weights ────────────────────────────────────────────────────────────
-// 5 distinct, 95 occurrences. Strings, because React Native's fontWeight is a
+// 5 distinct, 77 occurrences. Strings, because React Native's fontWeight is a
 // string in every one of the measured call sites.
 export const fontWeight = Object.freeze({
   w200: '200', // 3 uses,  3 files
-  w500: '500', // 26 uses, 9 files
-  w600: '600', // 50 uses, 15 files
-  w700: '700', // 15 uses, 10 files
+  w500: '500', // 19 uses, 6 files
+  w600: '600', // 36 uses, 11 files
+  w700: '700', // 18 uses, 6 files
   w800: '800', // 1 use,   1 file
 });
 
 // ─── Letter spacing ──────────────────────────────────────────────────────────
-// 6 distinct, 14 occurrences. `ls1` also appears via theme typography.label
+// 5 distinct, 8 occurrences. `ls1` also appears via theme typography.label
 // (letterSpacing 2) — that spread is NOT counted here, only literals are.
 export const letterSpacing = Object.freeze({
   lsNeg1: -1,  // 1 use
-  ls05:   0.5, // 7 uses, 5 files
+  ls05:   0.5, // 3 uses, 2 files
   ls08:   0.8, // 1 use
-  ls1:    1,   // 3 uses, 3 files
+  ls1:    1,   // 2 uses, 2 files
   ls6:    6,   // 1 use
 });
 
 // ─── Border radii ────────────────────────────────────────────────────────────
 //
-// 9 distinct numeric borderRadius literals, 17 occurrences. theme.js
+// 7 distinct numeric borderRadius literals, 11 occurrences. theme.js
 // borderRadius ({ sm:8, md:12, lg:16, xl:24, xxl:32, full:9999 }) covers only
 // r8 of them — every other literal below is off-scale.
 //
-// r11 and r13 are NOT design steps: they are half of a fixed box (22x22 and
-// 26x26) written out to make a circle. They are catalogued because they ship,
-// but the correct migration for those two is borderRadius.full, not a token.
+// r11 is NOT a design step: it is half of a fixed 22x22 box, written out to
+// make a circle. It is catalogued because it ships, but the correct migration
+// for it is borderRadius.full, not a token. Its count keeps falling as the
+// ported screens replace the hand-drawn toggle dot with a chip.
 export const radius = Object.freeze({
   r2:  2,  // 2 uses, 1 file
   r3:  3,  // 2 uses, 1 file
-  r4:  4,  // 3 uses, 3 files
+  r4:  4,  // 1 use,  1 file
   r5:  5,  // 1 use   — half of a 10x10 dot
   r8:  8,  // 1 use   — theme borderRadius.sm
-  r11: 11, // 5 uses, 5 files — half of a 22x22 toggle dot (circle, not a step)
+  r11: 11, // 3 uses, 3 files — half of a 22x22 toggle dot (circle, not a step)
   r20: 20, // 1 use
 });
 
 // ─── Space ───────────────────────────────────────────────────────────────────
 //
-// 12 distinct numeric padding / margin / gap literals, 81 occurrences.
-// theme.js spacing is { xs:4, sm:8, md:16, lg:24, xl:32, xxl:48 }, so s4, s8
-// and s16 duplicate existing tokens and the other nine are off-scale.
+// 11 distinct numeric padding / margin / gap literals, 58 occurrences.
+// theme.js spacing is { xs:4, sm:8, md:16, lg:24, xl:32, xxl:48 }, so s4 and
+// s8 duplicate existing tokens and the other nine are off-scale.
+//
+// RE-MEASURED after the concrete_operations + crane_operations port. `s16`
+// (16) is GONE: its single remaining use was the `paddingTop: 16` that nudged
+// the slump-row delete icon into line with the inputs beside it, and the
+// ported row puts that control in a header where nothing has to be nudged. A
+// measured scale may not keep shipping a value nothing measures.
 //
 // s100 / s120 / s140 are all `paddingBottom` on a ScrollView content style —
-// bottom clearance for the floating action bar, not a spacing step. s120 alone
-// accounts for 8 of the 13 occurrences of the three.
+// bottom clearance for the floating action bar, not a spacing step.
 export const space = Object.freeze({
-  s0:   0,   // 4 uses,  4 files
+  s0:   0,   // 3 uses,  3 files
   s1:   1,   // 3 uses,  2 files
-  s2:   2,   // 16 uses, 8 files
-  s3:   3,   // 6 uses,  4 files
-  s4:   4,   // 28 uses, 13 files — theme spacing.xs
-  s6:   6,   // 4 uses,  3 files
-  s8:   8,   // 5 uses,  3 files  — theme spacing.sm
+  s2:   2,   // 13 uses, 6 files
+  s3:   3,   // 5 uses,  3 files
+  s4:   4,   // 18 uses, 8 files — theme spacing.xs
+  s6:   6,   // 3 uses,  2 files
+  s8:   8,   // 4 uses,  2 files — theme spacing.sm
   s12:  12,  // 1 use
-  s16:  16,  // 1 use            — theme spacing.md
-  s100: 100, // 4 uses,  4 files — scroll bottom clearance
-  s120: 120, // 8 uses,  8 files — scroll bottom clearance
+  s100: 100, // 1 use            — scroll bottom clearance
+  s120: 120, // 6 uses,  6 files — scroll bottom clearance
   s140: 140, // 1 use            — scroll bottom clearance
 });
 
 // ─── Border widths ───────────────────────────────────────────────────────────
-// 2 distinct, 82 occurrences. bw1 is 76 of them.
+// 2 distinct, 54 occurrences. bw1 is 49 of them.
 export const borderWidth = Object.freeze({
-  bw1: 1, // 76 uses, 15 files
-  bw2: 2, // 6 uses,  5 files
+  bw1: 1, // 49 uses, 10 files
+  bw2: 2, // 5 uses,  4 files
 });
 
 // ─── Standalone opacity ──────────────────────────────────────────────────────
 // The `opacity:` style prop (distinct from a colour's alpha channel).
-// 4 distinct, 9 occurrences.
+// 3 distinct, 8 occurrences.
 export const opacity = Object.freeze({
-  o50: 0.5,  // 4 uses, 4 files — the disabled/busy dim
+  o50: 0.5,  // 5 uses, 5 files — the disabled/busy dim
   o80: 0.8,  // 2 uses, 2 files
   o90: 0.9,  // 1 use
 });
