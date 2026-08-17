@@ -1,144 +1,210 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
+import {
+  View, Text, StyleSheet, Pressable, TextInput,
+} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, CheckCircle, Save, Calendar, AlertTriangle, Trash2 } from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
+import { AlertTriangle, Check, Plus, Trash2 } from 'lucide-react-native';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
-import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
-import { useTheme } from '../../src/context/ThemeContext';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen files for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+// The app-wide OFFLINE discriminator — "offline" has to mean what it means
+// everywhere else: no response at all.
+import { isOfflineError } from '../../src/utils/offlineState';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
+import {
+  SOIL_TYPE_OPTIONS, PROTECTION_SYSTEM_OPTIONS, CONDITION_FLAGS,
+  EMPTY_DETAILS, EMPTY_ADJACENT_BUILDING, calcDelta, isOverThreshold,
+  thresholdStatusIsMeaningful, filledBuildingCount, detailsFromData,
+  incompleteSteps as computeIncomplete, draftBody,
+} from '../../src/utils/excavationMonitoringModel';
 import { useT } from '../../src/i18n';
+import { spacing, borderRadius, outdoor, touchTarget } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 
+/**
+ * EXCAVATION MONITORING LOG — the cut and what it is doing to the buildings
+ * beside it, on the shared stepper.
+ *
+ * FOUR STEPS, in the order the filed document prints them: the excavation, the
+ * adjacent structures, vibration and conditions, then review and sign. The
+ * chrome is LogbookStepper's — nothing about the header, pips, lock bar or
+ * footer is decided here.
+ *
+ * WHAT CARRIED FORWARD from the reference (daily_jobsite.jsx), unchanged:
+ *   draft lifecycle          readDraft / writeDraft / setDraftBackendId /
+ *                            markPending / clearPending / markFinalized
+ *   adoptAmendment           an amendment child must reach this screen
+ *   signature client guard   no signature, no file — and it says why
+ *   gateCopy                 the server names the condition, the client owns
+ *                            the wording; the server's English never renders
+ *   recordFinalizeError      a foreground refusal leaves the same durable
+ *                            banner a background one does
+ *
+ * NOT CARRIED, because this form has no camera: persistPhoto and
+ * compressUnderCap. NOT CARRIED, because this form builds no roster: nothing
+ * here reads /checkins.
+ *
+ * THE TWO DERIVED VALUES — per-building `delta` and
+ * `vibration_over_threshold` — are computed by draftBody and nowhere else, so
+ * the autosave, the flush and the submit all write the same payload. See
+ * excavationMonitoringModel for what the old split cost.
+ *
+ * THE PAYLOAD IS UNCHANGED — the same nine top-level keys
+ * backend/server.py:13349 renders.
+ */
 const LOG_TYPE = 'excavation_monitoring';
-
-const SOIL_TYPE_OPTIONS = ['Rock', 'Hard Clay', 'Soft Clay', 'Sand', 'Fill'];
-const PROTECTION_SYSTEM_OPTIONS = ['Sloping', 'Shoring', 'Shield'];
-
-const EMPTY_ADJACENT_BUILDING = () => ({
-  address: '',
-  baseline_reading: '',
-  current_reading: '',
-});
+const TOTAL_STEPS = 4;
 
 export default function ExcavationMonitoringLog() {
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+  const t = useT('excavationMonitoring');
   const tFinalize = useT('finalize');
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+
+  const s = useMemo(() => buildStyles(), []);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
+  const [signing, setSigning] = useState(false);
+  const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
-
-  // Form fields
-  const [excavationDepth, setExcavationDepth] = useState('');
-  const [soilType, setSoilType] = useState('');
+  const [existingLogId, setExistingLogId] = useState(null);
+  const [details, setDetails] = useState(EMPTY_DETAILS);
   const [adjacentBuildings, setAdjacentBuildings] = useState([EMPTY_ADJACENT_BUILDING()]);
-  const [vibrationThreshold, setVibrationThreshold] = useState('');
-  const [vibrationCurrent, setVibrationCurrent] = useState('');
-  const [protectionSystem, setProtectionSystem] = useState('');
-  const [groundwaterObserved, setGroundwaterObserved] = useState(false);
-  const [atmosphericTesting, setAtmosphericTesting] = useState(false);
 
-  useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date }),
+    [projectId, date],
+  );
 
-  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
-  // Debounced so typing doesn't thrash storage; makes no server call. This is
-  // what lets the CP fill with zero network and reopen to the same draft.
-  // `status` is intentionally omitted so an autosave never downgrades a
-  // submitted log back to draft. adjacentBuildings is stored raw — the
-  // save-time delta / vibration_over_threshold derivation lives in handleSave.
+  // The body as of RIGHT NOW, for the debounced autosave and the save path.
+  // State read inside a timer is the value captured when the timer was set,
+  // which is one keystroke stale.
+  const bodyRef = useRef({ details, adjacentBuildings });
   useEffect(() => {
-    if (loading) return undefined;
-    const t = setTimeout(() => {
-      writeDraft(
-        draftKey({ projectId, logType: LOG_TYPE, date }),
-        {
-          data: {
-            excavation_depth: excavationDepth,
-            soil_type: soilType,
-            adjacent_buildings: adjacentBuildings,
-            vibration_threshold: vibrationThreshold,
-            vibration_current: vibrationCurrent,
-            protection_system: protectionSystem,
-            groundwater_observed: groundwaterObserved,
-            atmospheric_testing: atmosphericTesting,
-          },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        },
-      ).catch(() => {});
+    bodyRef.current = { details, adjacentBuildings };
+  }, [details, adjacentBuildings]);
+
+  /**
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
+   */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
+
+  // ── Draft ─────────────────────────────────────────────────────────────
+  // Debounced autosave on every change. `status` is deliberately omitted so an
+  // autosave never downgrades a filed log back to draft.
+  useEffect(() => {
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      const b = bodyRef.current;
+      writeDraft(_key, {
+        data: draftBody(b.details, b.adjacentBuildings),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
     }, 800);
-    return () => clearTimeout(t);
-  }, [
-    loading, projectId, date, excavationDepth, soilType, adjacentBuildings,
-    vibrationThreshold, vibrationCurrent, protectionSystem, groundwaterObserved,
-    atmosphericTesting, cpSignature, cpName,
-  ]);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, details, adjacentBuildings, cpSignature, cpName]);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
     try {
-      // Phase A — local-first: read the on-device draft first. Only if there is
-      // no local copy do we hydrate once from the server (best-effort); offline
-      // that simply opens a blank log rather than erroring.
-      const key = draftKey({ projectId, logType: LOG_TYPE, date });
-      let existing = await readDraft(key);
-      // Tier 1 (1)b: a draft marked finalized locks; a server doc's is_locked locks.
-      let isLocked = !!existing?.finalized;
-      if (!existing) {
-        const serverLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
-        const arr = Array.isArray(serverLogs) ? serverLogs : [];
-        // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
-        // locked original that shares (project, type, date).
-        const s = arr.find(l => !l.is_locked) || arr[0] || null;
-        if (s) {
-          isLocked = !!s.is_locked;
-          existing = {
-            data: s.data || {},
-            cp_signature: s.cp_signature,
-            cp_name: s.cp_name,
-            status: s.status,
-            backend_id: s.id || s._id,
-          };
+      const b = bodyRef.current;
+      await writeDraft(_key, {
+        data: draftBody(b.details, b.adjacentBuildings),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort; the next change retries */ }
+  }, [locked, _key, cpSignature, cpName]);
+
+  const applyLoaded = useCallback((d) => {
+    setDetails(detailsFromData(d));
+    if (Array.isArray(d.adjacent_buildings) && d.adjacent_buildings.length > 0) {
+      setAdjacentBuildings(d.adjacent_buildings);
+    }
+  }, []);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    // THE LOCK IS RE-DERIVED ON EVERY LOAD — device round 5. `locked` could
+    // only ever be set TRUE: no path set it back, so once a log was filed the
+    // screen stayed read-only for the life of the mount. After an amendment
+    // that is exactly wrong.
+    setLocked(false);
+    try {
+      // LOCAL-FIRST. A local draft wins over the server copy, so an offline CP
+      // reopens to exactly what he filled and unsynced edits are never
+      // clobbered.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked: the child sat there unlocked and unreachable
+        // while the logbook list showed it as a Draft. amendmentAdopt discards
+        // the frozen parent ONLY on server confirmation; offline it is a no-op
+        // and the log stays locked, which is honest.
+        const _amended = draft.finalized && await adoptAmendment({
+          key: _key, projectId, logType: LOG_TYPE, date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server path,
+          // which already prefers the unlocked document.
+        } else {
+          if (draft.finalized) { setLocked(true); markFinalized(_key); }
+          setExistingLogId(draft.backend_id || null);
+          applyLoaded(draft.data);
+          if (draft.cp_signature) setCpSignature(draft.cp_signature);
+          if (draft.cp_name) setCpName(draft.cp_name);
+          setLoading(false);
+          return;
         }
       }
-      if (isLocked) {
-        setLocked(true);
-        markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-      }
+
+      // DATE-SCOPED. Fetching with no date returns the most recent prior-day
+      // doc, which would load yesterday's readings onto today's screen and file
+      // today's signature against them.
+      const existingLogs = await logbooksAPI
+        .getByProject(projectId, LOG_TYPE, date).catch(() => []);
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
       if (existing) {
-        setExistingLogId(existing.backend_id || null);
-        const d = existing.data || {};
-        if (d.excavation_depth) setExcavationDepth(d.excavation_depth);
-        if (d.soil_type) setSoilType(d.soil_type);
-        if (d.adjacent_buildings?.length > 0) setAdjacentBuildings(d.adjacent_buildings);
-        if (d.vibration_threshold) setVibrationThreshold(d.vibration_threshold);
-        if (d.vibration_current) setVibrationCurrent(d.vibration_current);
-        if (d.protection_system) setProtectionSystem(d.protection_system);
-        if (d.groundwater_observed != null) setGroundwaterObserved(d.groundwater_observed);
-        if (d.atmospheric_testing != null) setAtmosphericTesting(d.atmospheric_testing);
+        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(existing.id || existing._id);
+        applyLoaded(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       }
@@ -147,472 +213,507 @@ export default function ExcavationMonitoringLog() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [_key, projectId, date, applyLoaded, setCpName, setCpSignature]);
 
-  const updateAdjacentBuilding = (index, field, value) => {
-    setAdjacentBuildings(prev => prev.map((b, i) => i === index ? { ...b, [field]: value } : b));
-  };
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const addAdjacentBuilding = () => {
-    setAdjacentBuildings(prev => [...prev, EMPTY_ADJACENT_BUILDING()]);
-  };
+  // ── Edits ─────────────────────────────────────────────────────────────
+  const setDetail = (key, value) => setDetails((p) => ({ ...p, [key]: value }));
+  const toggleFlag = (key) => setDetails((p) => ({ ...p, [key]: !p[key] }));
+  const setBuildingField = (index, field, value) => setAdjacentBuildings(
+    (p) => p.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
+  );
+  const addBuilding = () => setAdjacentBuildings((p) => [...p, EMPTY_ADJACENT_BUILDING()]);
+  const removeBuilding = (index) => setAdjacentBuildings((p) => p.filter((_, i) => i !== index));
 
-  const removeAdjacentBuilding = (index) => {
-    setAdjacentBuildings(prev => prev.filter((_, i) => i !== index));
-  };
+  // ── Save ──────────────────────────────────────────────────────────────
+  /**
+   * Local draft first, server push best-effort. Returns the doc id, `null`
+   * when it saved locally with no server id yet (the offline path), or
+   * `undefined` when the server REFUSED — which is not offline and must not
+   * freeze.
+   */
+  const persistAndPush = async (submitStatus) => {
+    const b = bodyRef.current;
+    const filing = submitStatus === 'submitted';
+    // AN ABANDONED ROW IS NOT A MONITORING POINT. On SUBMIT the table is
+    // trimmed to the rows that say something — the same rule all three
+    // renderers already drop rows by, so what is filed and what is printed are
+    // the same table. A DRAFT KEEPS EVERYTHING.
+    const data = draftBody(b.details, b.adjacentBuildings, { forFiling: filing });
+    // What he signed is what he sees.
+    if (filing && data.adjacent_buildings.length !== b.adjacentBuildings.length) {
+      setAdjacentBuildings(data.adjacent_buildings.length > 0
+        ? data.adjacent_buildings : [EMPTY_ADJACENT_BUILDING()]);
+    }
 
-  const calcDelta = (baseline, current) => {
-    const b = parseFloat(baseline);
-    const c = parseFloat(current);
-    if (isNaN(b) || isNaN(c)) return '';
-    const delta = Math.abs(c - b);
-    return delta.toFixed(3);
-  };
+    await writeDraft(_key, {
+      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+    });
 
-  const vibrationOverThreshold = (() => {
-    const t = parseFloat(vibrationThreshold);
-    const c = parseFloat(vibrationCurrent);
-    if (isNaN(t) || isNaN(c)) return false;
-    return c > t;
-  })();
-
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    const key = draftKey({ projectId, logType: LOG_TYPE, date });
-    // Compute deltas for adjacent buildings
-    const buildingsWithDelta = adjacentBuildings.map(b => ({
-      ...b,
-      delta: calcDelta(b.baseline_reading, b.current_reading),
-    }));
-    const data = {
-      excavation_depth: excavationDepth,
-      soil_type: soilType,
-      adjacent_buildings: buildingsWithDelta,
-      vibration_threshold: vibrationThreshold,
-      vibration_current: vibrationCurrent,
-      vibration_over_threshold: vibrationOverThreshold,
-      protection_system: protectionSystem,
-      groundwater_observed: groundwaterObserved,
-      atmospheric_testing: atmosphericTesting,
-    };
+    let created = null;
+    let savedId = existingLogId;
     try {
-      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
-      // so an offline CP completes the log without the "could not save" failure.
-      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
-
-      // Best-effort server push. Offline this throws and is swallowed — the key
-      // is recorded in the pending-push list for the Phase B reconnect flush.
-      // NOTE: a submit made offline has no server id yet, so the signature-audit
-      // record below is skipped until the draft syncs (a Phase B reconcile item).
-      let savedId = existingLogId;
-      let pushed = true;
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-        } else {
-          const created = await logbooksAPI.create({
-            project_id: projectId, log_type: LOG_TYPE, date,
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-          savedId = created.id || created._id;
-          setExistingLogId(savedId);
-        }
-        await setDraftBackendId(key, savedId);
-        await clearPending(key);
-      } catch (pushErr) {
-        pushed = false;
-        await markPending(key);
-        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: LOG_TYPE, date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
       }
+      if (savedId) await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+      if (savedId) await clearFinalizeError(savedId);
+    } catch (pushErr) {
+      // REFUSAL IS NOT OFFLINE. excavation_monitoring is an IMMEDIATE type, so
+      // a submitted push IS the finalize — a 4xx here is the server judging the
+      // log, not failing to reach it. Freezing on a judgement would tell the CP
+      // it was filed, make the draft immutable so he could not fix what was
+      // refused, and leave nothing pending for the drain to retry.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('Excavation log REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
+      }
+      if (!offline && !refused) {
+        // 5xx — the server FAILED rather than judged. Retryable, and it must
+        // not be announced as filed.
+        console.warn('Excavation log push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
+      }
+      await markPending(_key);
+      console.warn('Excavation log push deferred (will sync on reconnect):', pushErr?.message);
+    }
 
-      await autoSave(cpName, cpSignature).catch(() => {});
+    // Guarded: a CP-PROFILE save failure must never report a failure on a log
+    // that was already saved (and, for an immediate type, already FROZEN).
+    await autoSave(cpName, cpSignature).catch(() => {});
 
-      if (submitStatus === 'submitted' && cpSignature && savedId) {
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
         recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'cp_sign',
-          signerName: cpName,
-          signerRole: user?.role || 'cp',
+          documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+          signerName: cpName, signerRole: user?.role || 'cp',
           signatureData: cpSignature,
           contentSnapshot: {
-            log_type: LOG_TYPE,
-            date,
-            project_id: projectId,
-            data,
-            status: submitStatus,
+            log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
           },
           user,
-        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
+    }
+    return savedId || null;
+  };
 
-      // FREEZE-ON-SIGN — excavation_monitoring is an IMMEDIATE log: the
-      // SIGNATURE IS THE FREEZE. Submitting finalizes the record in one action
-      // (there is no separate "Finalize" step) and it is never reopened; a later
-      // reading is a NEW discrete log, and a correction is an amendment.
-      //
-      // The draft above is written FIRST — with the SAME computed `data`
-      // (buildingsWithDelta + vibration_over_threshold) that is pushed — and is
-      // frozen only after. The freeze runs on BOTH push outcomes: this log is
-      // filled below grade with no signal, so the lock can never wait on a
-      // server round-trip. The backend applies the same lock when the deferred
-      // push lands.
-      if (submitStatus === 'submitted') {
-        await freezeIfImmediate(key, LOG_TYPE);
-        setLocked(true);
-      }
-
+  /**
+   * THE one action. excavation_monitoring is an IMMEDIATE log: THE SIGNATURE IS
+   * THE FREEZE. Submitting finalizes the record in one action and it is never
+   * reopened — a later reading is a NEW discrete log, and a correction is an
+   * amendment.
+   */
+  const handleSubmitAndSign = async () => {
+    if (signing) return;
+    // SIGNATURE CLIENT GUARD. draftSync refuses an unsigned submitted push and
+    // records SUBMIT_MISSING_CP_SIGNATURE against the key; catching it here
+    // means the CP is told on the screen that can fix it.
+    if (!cpSignature) {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    setSigning(true);
+    try {
+      const savedId = await persistAndPush('submitted');
+      // `undefined` = refused or failed, already reported. Nothing may be
+      // frozen or announced on a log the server would not take. `null` is
+      // different: saved LOCALLY with no server id, which is the offline path
+      // and DOES freeze — a reading taken in a hole with no signal must still
+      // hold.
+      if (savedId === undefined) return;
+      await freezeIfImmediate(_key, LOG_TYPE);
+      setLocked(true);
       toast.success(
-        submitStatus === 'submitted' ? 'Signed & Locked' : 'Draft Saved',
-        submitStatus === 'submitted'
-          ? (pushed
-            ? 'Excavation log signed and locked. Corrections require an amendment.'
-            : 'Excavation log signed and locked on this device. It will sync when you are back online.')
-          : 'Draft saved'
+        t('submittedTitle'),
+        savedId ? t('submittedBody') : t('submittedOfflineBody'),
       );
-      if (submitStatus === 'submitted') router.back();
+      router.back();
     } catch (e) {
       console.error(e);
-      toast.error('Error', 'Could not save excavation monitoring log');
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
-      setSaving(false);
+      setSigning(false);
     }
   };
 
-  const ToggleRow = ({ label, value, onToggle }) => (
-    <View style={s.toggleRow}>
-      <Text style={s.toggleLabel}>{label}</Text>
-      <Pressable onPress={onToggle}>
-        <View style={[s.toggleDot, value && s.toggleDotActive]} />
-      </Pressable>
+  // Moving on is never BLOCKED — a CP who cannot complete a step because the
+  // data is not there must still finish and sign.
+  const onStepChange = async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  };
+
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
+
+  const incomplete = computeIncomplete({ details, adjacentBuildings, cpSignature })
+    .filter((n) => n !== step);
+  const filledPoints = filledBuildingCount(adjacentBuildings);
+  const overThreshold = isOverThreshold(details.vibration_threshold, details.vibration_current);
+  const thresholdMeaningful = thresholdStatusIsMeaningful(
+    details.vibration_threshold, details.vibration_current,
+  );
+
+  // ── STEP 1 — the excavation ───────────────────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      <StepHeader title={t('step1Title')} />
+      <Text style={s.noteText}>{t('cutHint')}</Text>
+
+      <Card s={s}>
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fDepth')}</Text>
+          <TextInput
+            style={s.input}
+            value={details.excavation_depth || ''}
+            onChangeText={(v) => setDetail('excavation_depth', v)}
+            placeholder={t('phField')}
+            placeholderTextColor={outdoor.textDim}
+            keyboardType="numeric"
+          />
+        </View>
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fSoilType')}</Text>
+          <View style={s.chipWrap}>
+            {SOIL_TYPE_OPTIONS.map((opt) => (
+              <Chip
+                key={opt}
+                label={opt}
+                selected={details.soil_type === opt}
+                onPress={() => setDetail('soil_type', details.soil_type === opt ? '' : opt)}
+              />
+            ))}
+          </View>
+        </View>
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fProtection')}</Text>
+          <View style={s.chipWrap}>
+            {PROTECTION_SYSTEM_OPTIONS.map((opt) => (
+              <Chip
+                key={opt}
+                label={opt}
+                selected={details.protection_system === opt}
+                onPress={() => setDetail(
+                  'protection_system', details.protection_system === opt ? '' : opt,
+                )}
+              />
+            ))}
+          </View>
+        </View>
+      </Card>
     </View>
   );
 
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+  // ── STEP 2 — the adjacent structures ──────────────────────────────────
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+      <Text style={s.noteText}>{t('pointsHint')}</Text>
 
-  return (
-    <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
-        {/* Header */}
-        <View style={s.header}>
-          <GlassButton
-            variant="icon"
-            icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => router.back()}
-          />
-          <Text style={s.headerTitle}>Excavation Monitoring Log</Text>
-        </View>
-
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={s.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (no per-field editable flags
-              to miss). Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-          {/* Date */}
-          <GlassCard style={s.section}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
-              <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>
-                {new Date(date).toLocaleDateString('en-US', {
-                  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-                })}
+      {adjacentBuildings.map((row, index) => {
+        // Shown live, computed by the SAME function that writes it into the
+        // payload — the number on screen is the number that files.
+        const delta = calcDelta(row.baseline_reading, row.current_reading);
+        return (
+          <Card s={s} key={`bldg-${index}`}>
+            <View style={s.rowHead}>
+              <Text style={s.reviewLabel}>
+                {t('pointOf').replace('{n}', String(index + 1)).replace('{m}', String(adjacentBuildings.length))}
               </Text>
+              <Pressable
+                style={s.rowRemove}
+                accessibilityRole="button"
+                accessibilityLabel={t('removePoint')}
+                onPress={() => removeBuilding(index)}
+              >
+                <Trash2 size={20} strokeWidth={2} color={outdoor.danger} />
+              </Pressable>
             </View>
-          </GlassCard>
 
-          {/* Excavation Details */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Excavation Details</Text>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Excavation Depth (ft)</Text>
+            <View style={s.fieldBlock}>
+              <Text style={s.reviewLabel}>{t('fAddress')}</Text>
               <TextInput
                 style={s.input}
-                value={excavationDepth}
-                onChangeText={setExcavationDepth}
-                placeholder="0"
-                placeholderTextColor={colors.text.subtle}
+                value={row.address}
+                onChangeText={(v) => setBuildingField(index, 'address', v)}
+                placeholder={t('phAddress')}
+                placeholderTextColor={outdoor.textDim}
+              />
+            </View>
+
+            <View style={s.fieldBlock}>
+              <Text style={s.reviewLabel}>{t('fBaseline')}</Text>
+              <TextInput
+                style={s.input}
+                value={row.baseline_reading}
+                onChangeText={(v) => setBuildingField(index, 'baseline_reading', v)}
+                placeholder={t('phReading')}
+                placeholderTextColor={outdoor.textDim}
                 keyboardType="numeric"
               />
             </View>
 
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Soil Type</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
-                {SOIL_TYPE_OPTIONS.map((opt) => (
-                  <Pressable
-                    key={opt}
-                    onPress={() => setSoilType(soilType === opt ? '' : opt)}
-                    style={[s.chip, soilType === opt && s.chipActive]}
-                  >
-                    <Text style={[s.chipText, soilType === opt && s.chipTextActive]}>{opt}</Text>
-                  </Pressable>
-                ))}
-              </View>
+            <View style={s.fieldBlock}>
+              <Text style={s.reviewLabel}>{t('fCurrent')}</Text>
+              <TextInput
+                style={s.input}
+                value={row.current_reading}
+                onChangeText={(v) => setBuildingField(index, 'current_reading', v)}
+                placeholder={t('phReading')}
+                placeholderTextColor={outdoor.textDim}
+                keyboardType="numeric"
+              />
             </View>
 
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Protection System</Text>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
-                {PROTECTION_SYSTEM_OPTIONS.map((opt) => (
-                  <Pressable
-                    key={opt}
-                    onPress={() => setProtectionSystem(protectionSystem === opt ? '' : opt)}
-                    style={[s.chip, protectionSystem === opt && s.chipActive]}
-                  >
-                    <Text style={[s.chipText, protectionSystem === opt && s.chipTextActive]}>{opt}</Text>
-                  </Pressable>
-                ))}
+            <View style={s.fieldBlock}>
+              <Text style={s.reviewLabel}>{t('fMovement')}</Text>
+              <View style={s.readOnlyValue}>
+                <Text style={s.readOnlyText}>{delta || t('notRecorded')}</Text>
+                <Text style={s.noteText}>{t('movementDerived')}</Text>
               </View>
             </View>
-          </GlassCard>
+          </Card>
+        );
+      })}
 
-          {/* Adjacent Buildings */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Adjacent Building Monitoring</Text>
-            {adjacentBuildings.map((bldg, i) => {
-              const delta = calcDelta(bldg.baseline_reading, bldg.current_reading);
-              return (
-                <View key={i} style={s.entryCard}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.xs }}>
-                    <Text style={[s.inputLabel, { marginBottom: 0 }]}>Building #{i + 1}</Text>
-                    {adjacentBuildings.length > 1 && (
-                      <Pressable onPress={() => removeAdjacentBuilding(i)}>
-                        <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
-                      </Pressable>
-                    )}
-                  </View>
-                  <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>Address</Text>
-                    <TextInput
-                      style={s.input}
-                      value={bldg.address}
-                      onChangeText={(v) => updateAdjacentBuilding(i, 'address', v)}
-                      placeholder="Building address"
-                      placeholderTextColor={colors.text.subtle}
-                    />
-                  </View>
-                  <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.inputLabel}>Baseline</Text>
-                      <TextInput
-                        style={s.input}
-                        value={bldg.baseline_reading}
-                        onChangeText={(v) => updateAdjacentBuilding(i, 'baseline_reading', v)}
-                        placeholder="0.000"
-                        placeholderTextColor={colors.text.subtle}
-                        keyboardType="numeric"
-                      />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.inputLabel}>Current</Text>
-                      <TextInput
-                        style={s.input}
-                        value={bldg.current_reading}
-                        onChangeText={(v) => updateAdjacentBuilding(i, 'current_reading', v)}
-                        placeholder="0.000"
-                        placeholderTextColor={colors.text.subtle}
-                        keyboardType="numeric"
-                      />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.inputLabel}>Delta</Text>
-                      <View style={[s.input, { paddingVertical: spacing.sm, justifyContent: 'center' }]}>
-                        <Text style={{ color: delta ? colors.text.primary : colors.text.subtle }}>
-                          {delta || '--'}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-            <GlassButton
-              title="+ Add Building"
-              onPress={addAdjacentBuilding}
-              style={{ marginTop: spacing.xs }}
-            />
-          </GlassCard>
+      <Pressable style={s.secondaryBtn} accessibilityRole="button" onPress={addBuilding}>
+        <Plus size={22} strokeWidth={2.5} color={outdoor.text} />
+        <Text style={s.secondaryBtnText}>{t('addPoint')}</Text>
+      </Pressable>
+    </View>
+  );
 
-          {/* Vibration Monitoring */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Vibration Monitoring</Text>
-            <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-              <View style={{ flex: 1, ...s.inputGroup }}>
-                <Text style={s.inputLabel}>Threshold (in/s)</Text>
-                <TextInput
-                  style={s.input}
-                  value={vibrationThreshold}
-                  onChangeText={setVibrationThreshold}
-                  placeholder="0.00"
-                  placeholderTextColor={colors.text.subtle}
-                  keyboardType="numeric"
-                />
-              </View>
-              <View style={{ flex: 1, ...s.inputGroup }}>
-                <Text style={s.inputLabel}>Current Reading (in/s)</Text>
-                <TextInput
-                  style={[s.input, vibrationOverThreshold && s.inputWarning]}
-                  value={vibrationCurrent}
-                  onChangeText={setVibrationCurrent}
-                  placeholder="0.00"
-                  placeholderTextColor={colors.text.subtle}
-                  keyboardType="numeric"
-                />
-              </View>
-            </View>
-            {vibrationOverThreshold && (
-              <View style={s.warningBanner}>
-                <AlertTriangle size={16} strokeWidth={2} color={semantic.attention} />
-                <Text style={s.warningText}>
-                  Current vibration exceeds threshold! Review and take corrective action.
-                </Text>
-              </View>
-            )}
-          </GlassCard>
+  // ── STEP 3 — vibration and conditions ─────────────────────────────────
+  const renderStep3 = () => (
+    <View>
+      <StepHeader title={t('step3Title')} />
+      <Text style={s.noteText}>{t('vibrationHint')}</Text>
 
-          {/* Environmental */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Environmental Conditions</Text>
-            <ToggleRow
-              label="Groundwater Observed"
-              value={groundwaterObserved}
-              onToggle={() => setGroundwaterObserved(!groundwaterObserved)}
-            />
-            <ToggleRow
-              label="Atmospheric Testing Performed"
-              value={atmosphericTesting}
-              onToggle={() => setAtmosphericTesting(!atmosphericTesting)}
-            />
-          </GlassCard>
-
-          {/* CP Signature */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Competent Person Sign-Off</Text>
-            <SignaturePad
-              title="CP Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-            />
-          </GlassCard>
-          </View>
-
-          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
-          {!locked && (
-          <>
-          <View style={s.buttonRow}>
-            <GlassButton
-              title={saving ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving}
-              style={{ flex: 1 }}
-            />
-            <GlassButton
-              title={saving ? 'Saving...' : 'Submit'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={() => handleSave('submitted')}
-              loading={saving}
-              disabled={!isAffirmedSignature(cpSignature)}
-              style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
-            />
-          </View>
-          {/* An IMMEDIATE log freezes the moment it is submitted, so submitting
-              unsigned would mint a locked, unsigned legal record. Disabling the
-              button alone is a dead end — the CP has no separate profile screen
-              to set a signature on (nothing under app/settings writes
-              cp_signature), so the hint names the pad directly above. */}
-          {!!affirmationHintKey(cpSignature, profileLoaded) && (
-            <Text style={s.signHint}>
-              {tFinalize(affirmationHintKey(cpSignature, profileLoaded))}
-            </Text>
-          )}
-          </>
-          )}
-
-          {/* logType drives the freeze model: this is an IMMEDIATE log, so the
-              bar shows NO Finalize button (the submit already froze it) and
-              offers only the Amend path once locked. */}
-          <LogbookLockBar
-            locked={locked}
-            logId={existingLogId}
-            draftKey={draftKey({ projectId, logType: LOG_TYPE, date })}
-            logType={LOG_TYPE}
-            onAmended={fetchData}
+      <Card s={s} style={overThreshold ? s.cardWarn : undefined}>
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fThreshold')}</Text>
+          <TextInput
+            style={s.input}
+            value={details.vibration_threshold || ''}
+            onChangeText={(v) => setDetail('vibration_threshold', v)}
+            placeholder={t('phReading')}
+            placeholderTextColor={outdoor.textDim}
+            keyboardType="numeric"
           />
-        </ScrollView>
-      </SafeAreaView>
-    </AnimatedBackground>
+        </View>
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fCurrentReading')}</Text>
+          <TextInput
+            style={[s.input, overThreshold && s.inputRequired]}
+            value={details.vibration_current || ''}
+            onChangeText={(v) => setDetail('vibration_current', v)}
+            placeholder={t('phReading')}
+            placeholderTextColor={outdoor.textDim}
+            keyboardType="numeric"
+          />
+        </View>
+
+        {/* The reading is only a FINDING alongside a threshold. Below both
+            readings, so the CP reads the numbers and then what they mean. */}
+        {overThreshold && (
+          <View style={s.warnRow}>
+            <AlertTriangle size={22} strokeWidth={2} color={outdoor.warn} />
+            <View style={s.warnBody}>
+              <Text style={s.warnTitle}>{t('overThresholdTitle')}</Text>
+              <Text style={s.warnText}>{t('overThresholdBody')}</Text>
+            </View>
+          </View>
+        )}
+      </Card>
+
+      {/* TWO REAL BOOLEANS, not a three-state checklist: both renderers print a
+          bare Yes/No for these and have no "not recorded" branch to print, so
+          the control has exactly the two states the document has. */}
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('conditionsLabel')}</Text>
+        {CONDITION_FLAGS.map((f) => (
+          <Pressable
+            key={f.key}
+            style={[s.toggleRow, details[f.key] && s.toggleRowOn]}
+            accessibilityRole="button"
+            accessibilityState={{ selected: !!details[f.key] }}
+            onPress={() => toggleFlag(f.key)}
+          >
+            <View style={[s.toggleBox, details[f.key] && s.toggleBoxOn]}>
+              {details[f.key] && <Check size={18} strokeWidth={3} color={outdoor.ok} />}
+            </View>
+            <Text style={s.toggleText}>{t(f.labelKey)}</Text>
+          </Pressable>
+        ))}
+      </Card>
+    </View>
+  );
+
+  // ── STEP 4 — review and sign ──────────────────────────────────────────
+  const renderStep4 = () => (
+    <View>
+      <StepHeader title={t('step4Title')} />
+      <Text style={s.noteText}>{t('reviewHeading')}</Text>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewCut')}</Text>
+        <View style={s.reviewRow}>
+          <Text style={s.reviewLabel}>{t('fDepth')}</Text>
+          <Text style={s.reviewValue}>
+            {String(details.excavation_depth || '').trim() || t('notRecorded')}
+          </Text>
+        </View>
+        <View style={s.reviewRow}>
+          <Text style={s.reviewLabel}>{t('fSoilType')}</Text>
+          <Text style={s.reviewValue}>{details.soil_type || t('notRecorded')}</Text>
+        </View>
+        <View style={s.reviewRow}>
+          <Text style={s.reviewLabel}>{t('fProtection')}</Text>
+          <Text style={s.reviewValue}>{details.protection_system || t('notRecorded')}</Text>
+        </View>
+      </Card>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewPoints')}</Text>
+        <Text style={s.reviewValue}>
+          {filledPoints > 0
+            ? t(`pointCount_${filledPoints === 1 ? 'one' : 'other'}`)
+              .replace('{n}', String(filledPoints))
+            : t('reviewNothingYet')}
+        </Text>
+      </Card>
+
+      {/* The status line, exactly as the renderers decide it: a bare "within
+          threshold" over a missing reading is a finding the CP never made. */}
+      <Card s={s} style={thresholdMeaningful && overThreshold ? s.cardWarn : undefined}>
+        <Text style={s.reviewLabel}>{t('reviewVibration')}</Text>
+        <Text style={s.reviewValue}>
+          {thresholdMeaningful
+            ? (overThreshold ? t('overThresholdTitle') : t('withinThreshold'))
+            : t('notRecorded')}
+        </Text>
+      </Card>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>{t('reviewConditions')}</Text>
+        {CONDITION_FLAGS.map((f) => (
+          <View key={f.key} style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+            <Text style={s.reviewValue}>{details[f.key] ? t('yes') : t('no')}</Text>
+          </View>
+        ))}
+      </Card>
+
+      <Card s={s}>
+        <Text style={s.reviewLabel}>
+          {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
+        </Text>
+        <SignaturePad
+          title="Competent Person Signature"
+          signerName={cpName}
+          onNameChange={setCpName}
+          existingSignature={cpSignature}
+          onSignatureCapture={setCpSignature}
+        />
+      </Card>
+    </View>
+  );
+
+  const STEPS = [
+    { render: renderStep1 },
+    { render: renderStep2 },
+    { render: renderStep3 },
+    { render: renderStep4 },
+  ];
+
+  return (
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={t('screenSub')}
+      step={step}
+      steps={STEPS}
+      onStepChange={onStepChange}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={incomplete}
+      a11yProgressLabel={t('stepOf')
+        .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      /* excavation_monitoring is IMMEDIATE — the server locks on `submitted`
+         alone — so an unsigned submit must be UNREACHABLE, not merely warned
+         about. The handler keeps its guard as a backstop. */
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
+      onSubmit={handleSubmitAndSign}
+      logType={LOG_TYPE}
+      logId={existingLogId}
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+    />
   );
 }
 
-function buildStyles(colors, isDark) {
+/**
+ * The shared chrome plus the handful of keys only this form uses. Spreading
+ * rather than forking is what keeps the shared names identical across forms.
+ */
+function buildStyles() {
   return StyleSheet.create({
-    container: { flex: 1 },
-    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
-    header: { flexDirection: 'row', alignItems: 'center', padding: spacing.lg, gap: spacing.md },
-    headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text.primary, flex: 1 },
-    section: { marginBottom: spacing.md },
-    sectionTitle: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
-    inputGroup: { marginBottom: spacing.md },
-    inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
-    input: {
-      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
-      padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    ...buildStepperStyles(),
+    reviewRow: {
+      gap: spacing.xs / 2,
+      paddingVertical: spacing.xs,
     },
-    inputWarning: {
-      borderColor: semantic.attentionBorder, borderWidth: 2,
+    rowHead: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      gap: spacing.sm,
     },
-    textArea: { minHeight: 80, textAlignVertical: 'top' },
-    toggleRow: {
-      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-      paddingVertical: spacing.sm,
+    rowRemove: {
+      minWidth: touchTarget.min, minHeight: touchTarget.min,
+      alignItems: 'center', justifyContent: 'center',
+      borderRadius: borderRadius.full,
     },
-    toggleLabel: { color: colors.text.secondary, fontSize: 14 },
-    toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
-    toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-    buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
-    signHint: {
-      fontSize: 13, fontWeight: '600', color: semantic.attention,
-      marginTop: spacing.sm, textAlign: 'center',
+    warnRow: {
+      flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
     },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    entryCard: {
-      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
-      padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
-    },
-    chip: {
-      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-      backgroundColor: withAlpha('#ffffff', 0.04),
-    },
-    chipActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
-    chipText: { fontSize: 13, color: colors.text.muted },
-    chipTextActive: { color: '#3b82f6', fontWeight: '600' },
-    warningBanner: {
-      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-      backgroundColor: semantic.attentionBg, borderRadius: borderRadius.md,
-      padding: spacing.md, marginTop: spacing.sm,
-      borderWidth: 1, borderColor: semantic.attentionBorder,
-    },
-    warningText: { color: semantic.attention, fontSize: 13, fontWeight: '500', flex: 1 },
+    toggleBoxOn: { borderColor: outdoor.okBorder },
   });
 }

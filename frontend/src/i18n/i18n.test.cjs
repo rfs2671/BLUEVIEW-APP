@@ -126,6 +126,15 @@ const EN_ONLY_NAMESPACES = [
   // pre-operation check labels stay in craneOperationsModel for the same
   // reason.
   'craneOperations',
+  // app/logbooks/excavation_monitoring.jsx — the adjacent-structure and
+  // vibration readings. The soil types and protection systems stay in
+  // excavationMonitoringModel: they are enum VALUES stored in the payload and
+  // printed verbatim.
+  'excavationMonitoring',
+  // app/logbooks/hot_work.jsx — the burn permit. The seven precaution labels
+  // and the five work types stay in hotWorkModel because the filed permit
+  // prints the same strings.
+  'hotWork',
   // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
   // and signature prompts. CP-facing.
   'finalize',

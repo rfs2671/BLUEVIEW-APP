@@ -1,177 +1,214 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator } from 'react-native';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
+import {
+  View, Text, StyleSheet, TextInput,
+} from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { ArrowLeft, CheckCircle, Save, Calendar, Flame } from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
-import LogbookLockBar from '../../src/components/LogbookLockBar';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
-import { freezeIfImmediate } from '../../src/utils/logbookTiming';
-import { settleFetch } from '../../src/utils/offlineState';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
-import { useTheme } from '../../src/context/ThemeContext';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
+// finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
+// axios error (and the one place that guarantees the server's English `detail`
+// never reaches a screen); clearFinalizeError removes the drain's persistent
+// "NOT LOCKED ON THE SERVER" banner once this screen files for real;
+// recordFinalizeError RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+// settleFetch reports HOW a load ended; isOfflineError is the app-wide OFFLINE
+// discriminator — "offline" has to mean what it means everywhere else: no
+// response at all.
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
+import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
+import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
+import TimeField from '../../src/components/logbookStepper/TimeField';
+import {
+  WORK_TYPE_OPTIONS, DETAIL_FIELDS, PRECAUTION_ITEMS, CONFIRM_OPTIONS,
+  EMPTY_DETAILS, calcFireWatchEnd, detailsFromData,
+  incompleteSteps as computeIncomplete, draftBody,
+} from '../../src/utils/hotWorkModel';
+import { applyChecklistAnswer, recordedCount } from '../../src/utils/checklistMap';
 import { useT } from '../../src/i18n';
+import { spacing, outdoor } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
-
-const LOG_TYPE = 'hot_work';
-
-const WORK_TYPE_OPTIONS = ['Welding', 'Cutting', 'Brazing', 'Soldering', 'Other'];
-
-const PRECAUTION_ITEMS = [
-  { key: 'area_cleared', label: 'Area Cleared of Combustibles (35ft)' },
-  { key: 'fire_extinguisher_present', label: 'Fire Extinguisher Present' },
-  { key: 'sprinklers_operational', label: 'Sprinklers Operational' },
-  { key: 'combustibles_covered', label: 'Combustibles Covered/Protected' },
-  { key: 'fire_watch_assigned', label: 'Fire Watch Assigned' },
-  { key: 'ventilation_adequate', label: 'Ventilation Adequate' },
-  { key: 'permit_posted', label: 'Permit Posted at Location' },
-];
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 
 /**
- * Calculate fire watch end time = end_time + 30 minutes.
- * Expects end_time in "HH:MM" format. Returns "HH:MM" or empty string.
+ * HOT WORK PERMIT — on the shared stepper.
+ *
+ * FOUR STEPS, in the order the filed permit prints them: the work, the timing,
+ * the seven precautions, then review and sign. The chrome is LogbookStepper's —
+ * nothing about the header, pips, lock bar or footer is decided here.
+ *
+ * WHAT CARRIED FORWARD from the reference (daily_jobsite.jsx), unchanged:
+ *   draft lifecycle          readDraft / writeDraft / setDraftBackendId /
+ *                            markPending / clearPending / markFinalized
+ *   adoptAmendment           an amendment child must reach this screen
+ *   signature client guard   no signature, no file — and it says why
+ *   gateCopy                 the server names the condition, the client owns
+ *                            the wording; the server's English never renders
+ *   recordFinalizeError      a foreground refusal leaves the same durable
+ *                            banner a background one does
+ *
+ * AND ONE THIS SCREEN OWNS ALONE: the OFFLINE-AWARE hydrate. A failed load with
+ * no local draft must not render as a blank permit — that reads as "no permit
+ * exists for today" and invites a duplicate. settleFetch reports how the load
+ * ended and OfflineNotice says so, on step 1, which is where the CP lands.
+ *
+ * NOT CARRIED, because this form has no camera: persistPhoto and
+ * compressUnderCap. NOT CARRIED, because this form builds no roster: nothing
+ * here reads /checkins.
+ *
+ * THE PAYLOAD IS UNCHANGED — the same nine top-level keys
+ * backend/server.py:13256 renders. Two precaution LABELS did change, to the
+ * ones all three readers already print; see hotWorkModel.
  */
-const calcFireWatchEnd = (endTime) => {
-  if (!endTime || !endTime.includes(':')) return '';
-  try {
-    const [hh, mm] = endTime.split(':').map(Number);
-    if (isNaN(hh) || isNaN(mm)) return '';
-    const totalMin = hh * 60 + mm + 30;
-    const h = Math.floor(totalMin / 60) % 24;
-    const m = totalMin % 60;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-  } catch {
-    return '';
-  }
-};
+const LOG_TYPE = 'hot_work';
+const TOTAL_STEPS = 4;
 
 export default function HotWorkPermitLog() {
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+  const t = useT('hotWork');
   const tFinalize = useT('finalize');
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+
+  const s = useMemo(() => buildStyles(), []);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [existingLogId, setExistingLogId] = useState(null);
-  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
-  // renders read-only and only the Amend path can change anything.
+  const [signing, setSigning] = useState(false);
+  const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
+  const [existingLogId, setExistingLogId] = useState(null);
   // 'ok' | 'offline' | 'error' — how the LAST server hydrate went. Only used
   // when there is no local draft: a failed load must not masquerade as a blank
-  // new permit (the old `.catch(() => [])` did exactly that).
+  // new permit.
   const [fetchState, setFetchState] = useState('ok');
-
-  // Form fields
-  const [workType, setWorkType] = useState('');
-  const [location, setLocation] = useState('');
-  const [workerName, setWorkerName] = useState('');
-  const [workerCertNumber, setWorkerCertNumber] = useState('');
-  const [startTime, setStartTime] = useState('');
-  const [endTime, setEndTime] = useState('');
-  const [fireWatchName, setFireWatchName] = useState('');
+  const [details, setDetails] = useState(EMPTY_DETAILS);
   const [precautions, setPrecautions] = useState({});
 
-  const fireWatchEndTime = calcFireWatchEnd(endTime);
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date }),
+    [projectId, date],
+  );
 
+  // The body as of RIGHT NOW, for the debounced autosave and the save path.
+  // State read inside a timer is the value captured when the timer was set,
+  // which is one keystroke stale.
+  const bodyRef = useRef({ details, precautions });
+  useEffect(() => { bodyRef.current = { details, precautions }; }, [details, precautions]);
+
+  /**
+   * The server names the condition, the client owns the wording — the same
+   * rule LogbookLockBar's gateCopy follows, over the same `finalize`
+   * namespace. `translate` returns the KEY on a miss, which is how an unmapped
+   * code is detected; the server's English `detail` is never rendered.
+   */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
+
+  // ── Draft ─────────────────────────────────────────────────────────────
+  // Debounced autosave on every change. `status` is deliberately omitted so an
+  // autosave never downgrades a filed permit back to draft.
   useEffect(() => {
-    fetchData();
-  }, [projectId, date]);
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      const b = bodyRef.current;
+      writeDraft(_key, {
+        data: draftBody(b.details, b.precautions),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
+    }, 800);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, details, precautions, cpSignature, cpName]);
 
-  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
-  // Debounced so typing doesn't thrash storage; makes no server call. This is
-  // what lets the CP fill the permit with zero network and reopen to the same
-  // draft. `status` is intentionally omitted so an autosave never downgrades a
-  // submitted permit back to draft.
-  useEffect(() => {
-    if (loading) return undefined;
-    const t = setTimeout(() => {
-      writeDraft(
-        draftKey({ projectId, logType: LOG_TYPE, date }),
-        {
-          data: {
-            work_type: workType,
-            location,
-            worker_name: workerName,
-            worker_cert_number: workerCertNumber,
-            start_time: startTime,
-            end_time: endTime,
-            fire_watch_end_time: fireWatchEndTime,
-            fire_watch_name: fireWatchName,
-            precautions,
-          },
-          cp_signature: cpSignature,
-          cp_name: cpName,
-        },
-      ).catch(() => {});
-    }, 600);
-    return () => clearTimeout(t);
-  }, [
-    loading, projectId, date, workType, location, workerName, workerCertNumber,
-    startTime, endTime, fireWatchEndTime, fireWatchName, precautions,
-    cpSignature, cpName,
-  ]);
-
-  const fetchData = async () => {
-    setLoading(true);
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
     try {
-      // Phase A — local-first: read the on-device draft first. Only if there is
-      // no local copy do we hydrate once from the server, and that hydrate is
-      // offline-AWARE: a failed load is reported (OfflineNotice) instead of
-      // silently rendering an empty permit that the CP would fill from scratch.
-      const key = draftKey({ projectId, logType: LOG_TYPE, date });
-      let existing = await readDraft(key);
-      // Tier 1 (1)b: a draft marked finalized locks; a server doc's is_locked locks.
-      let isLocked = !!existing?.finalized;
-      if (existing) {
-        setFetchState('ok');
-      } else {
-        const r = await settleFetch(() => logbooksAPI.getByProject(projectId, LOG_TYPE, date));
-        setFetchState(r.status);
-        const arr = Array.isArray(r.data) ? r.data : [];
-        // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
-        // locked original that shares (project, type, date).
-        const serverLog = arr.find(l => !l.is_locked) || arr[0] || null;
-        if (serverLog) {
-          isLocked = !!serverLog.is_locked;
-          existing = {
-            data: serverLog.data || {},
-            cp_signature: serverLog.cp_signature,
-            cp_name: serverLog.cp_name,
-            status: serverLog.status,
-            backend_id: serverLog.id || serverLog._id,
-          };
+      const b = bodyRef.current;
+      await writeDraft(_key, {
+        data: draftBody(b.details, b.precautions),
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      });
+    } catch (_e) { /* best-effort; the next change retries */ }
+  }, [locked, _key, cpSignature, cpName]);
+
+  const applyLoaded = useCallback((d) => {
+    setDetails(detailsFromData(d));
+    if (d.precautions && typeof d.precautions === 'object') setPrecautions(d.precautions);
+  }, []);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    // THE LOCK IS RE-DERIVED ON EVERY LOAD — device round 5. `locked` could
+    // only ever be set TRUE: no path set it back, so once a permit was filed
+    // the screen stayed read-only for the life of the mount. After an amendment
+    // that is exactly wrong.
+    setLocked(false);
+    try {
+      // LOCAL-FIRST. A local draft wins over the server copy, so an offline CP
+      // reopens to exactly what he filled and unsynced edits are never
+      // clobbered.
+      const draft = await readDraft(_key);
+      if (draft?.data && Object.keys(draft.data).length) {
+        // AN AMENDMENT MUST REACH THIS SCREEN — device round 5, finding 19.
+        // Parent and amendment share ONE draft key (project, logType, date), so
+        // a finalized local draft used to lock the editor and return before the
+        // server was ever asked: the child sat there unlocked and unreachable
+        // while the logbook list showed it as a Draft. amendmentAdopt discards
+        // the frozen parent ONLY on server confirmation; offline it is a no-op
+        // and the permit stays locked, which is honest.
+        const _amended = draft.finalized && await adoptAmendment({
+          key: _key, projectId, logType: LOG_TYPE, date,
+        });
+        if (_amended) {
+          // The frozen parent is discarded; fall through to the server path,
+          // which already prefers the unlocked document.
+        } else {
+          setFetchState('ok');
+          if (draft.finalized) { setLocked(true); markFinalized(_key); }
+          setExistingLogId(draft.backend_id || null);
+          applyLoaded(draft.data);
+          if (draft.cp_signature) setCpSignature(draft.cp_signature);
+          if (draft.cp_name) setCpName(draft.cp_name);
+          setLoading(false);
+          return;
         }
       }
-      if (isLocked) {
-        setLocked(true);
-        markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
-      }
+
+      // OFFLINE-AWARE, and DATE-SCOPED. `.catch(() => [])` would turn a failed
+      // load into a blank permit, which reads as "none exists today"; settleFetch
+      // reports the outcome so step 1 can say what actually happened.
+      const r = await settleFetch(
+        () => logbooksAPI.getByProject(projectId, LOG_TYPE, date),
+      );
+      setFetchState(r.status);
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
+      const arr = Array.isArray(r.data) ? r.data : [];
+      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
       if (existing) {
-        setExistingLogId(existing.backend_id || null);
-        const d = existing.data || {};
-        if (d.work_type) setWorkType(d.work_type);
-        if (d.location) setLocation(d.location);
-        if (d.worker_name) setWorkerName(d.worker_name);
-        if (d.worker_cert_number) setWorkerCertNumber(d.worker_cert_number);
-        if (d.start_time) setStartTime(d.start_time);
-        if (d.end_time) setEndTime(d.end_time);
-        if (d.fire_watch_name) setFireWatchName(d.fire_watch_name);
-        if (d.precautions) setPrecautions(d.precautions);
+        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(existing.id || existing._id);
+        applyLoaded(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       }
@@ -180,377 +217,422 @@ export default function HotWorkPermitLog() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [_key, projectId, date, applyLoaded, setCpName, setCpSignature]);
 
-  const togglePrecaution = (key) => {
-    setPrecautions(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const handleSave = async (submitStatus = 'draft') => {
-    setSaving(true);
-    const key = draftKey({ projectId, logType: LOG_TYPE, date });
-    const data = {
-      work_type: workType,
-      location,
-      worker_name: workerName,
-      worker_cert_number: workerCertNumber,
-      start_time: startTime,
-      end_time: endTime,
-      fire_watch_end_time: fireWatchEndTime,
-      fire_watch_name: fireWatchName,
-      precautions,
-    };
+  // ── Edits ─────────────────────────────────────────────────────────────
+  const setDetail = (key, value) => setDetails((p) => ({ ...p, [key]: value }));
+  // applyChecklistAnswer, NOT `!prev[key]`: the map is TRI-STATE on the filed
+  // permit — absent is "Not recorded", false is an explicit "No" — and the old
+  // dot could not tell those apart. See src/utils/checklistMap.js.
+  const setPrecaution = (key, value) => setPrecautions(
+    (p) => applyChecklistAnswer(p, key, value),
+  );
+
+  // ── Save ──────────────────────────────────────────────────────────────
+  /**
+   * Local draft first, server push best-effort. Returns the doc id, `null`
+   * when it saved locally with no server id yet (the offline path), or
+   * `undefined` when the server REFUSED — which is not offline and must not
+   * freeze.
+   */
+  const persistAndPush = async (submitStatus) => {
+    const b = bodyRef.current;
+    const data = draftBody(b.details, b.precautions);
+
+    await writeDraft(_key, {
+      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+    });
+
+    let created = null;
+    let savedId = existingLogId;
     try {
-      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
-      // so an offline CP completes the permit without the "could not save" failure.
-      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
-
-      // Best-effort server push. Offline this throws and is swallowed — the key
-      // is recorded in the pending-push list for the Phase B reconnect flush.
-      // NOTE: a submit made offline has no server id yet, so the signature-audit
-      // record below is skipped until the draft syncs (a Phase B reconcile item).
-      let savedId = existingLogId;
-      let pushOk = true;
-      try {
-        if (existingLogId) {
-          await logbooksAPI.update(existingLogId, {
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-        } else {
-          const created = await logbooksAPI.create({
-            project_id: projectId, log_type: LOG_TYPE, date,
-            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-          });
-          savedId = created.id || created._id;
-          setExistingLogId(savedId);
-        }
-        await setDraftBackendId(key, savedId);
-        await clearPending(key);
-      } catch (pushErr) {
-        pushOk = false;
-        await markPending(key);
-        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      if (existingLogId) {
+        await logbooksAPI.update(existingLogId, {
+          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } else {
+        created = await logbooksAPI.create({
+          project_id: projectId, log_type: LOG_TYPE, date, data,
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+        savedId = created.id || created._id;
+        setExistingLogId(savedId);
       }
+      if (savedId) await setDraftBackendId(_key, savedId);
+      await clearPending(_key);
+      if (savedId) await clearFinalizeError(savedId);
+    } catch (pushErr) {
+      // REFUSAL IS NOT OFFLINE. hot_work is an IMMEDIATE type, so a submitted
+      // push IS the finalize — a 4xx here is the server judging the permit, not
+      // failing to reach it. Freezing on a judgement would tell the CP it was
+      // filed, make the draft immutable so he could not fix what was refused,
+      // and leave nothing pending for the drain to retry.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('Hot work permit REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
+      }
+      if (!offline && !refused) {
+        // 5xx — the server FAILED rather than judged. Retryable, and it must
+        // not be announced as filed.
+        console.warn('Hot work permit push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
+      }
+      await markPending(_key);
+      console.warn('Hot work permit push deferred (will sync on reconnect):', pushErr?.message);
+    }
 
-      await autoSave(cpName, cpSignature).catch(() => {});
+    // Guarded: a CP-PROFILE save failure must never report a failure on a permit
+    // that was already saved (and, for an immediate type, already FROZEN).
+    await autoSave(cpName, cpSignature).catch(() => {});
 
-      if (submitStatus === 'submitted' && cpSignature && savedId) {
+    if (submitStatus === 'submitted' && cpSignature) {
+      const docId = existingLogId || created?.id || created?._id;
+      if (docId) {
         recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'cp_sign',
-          signerName: cpName,
-          signerRole: user?.role || 'cp',
+          documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+          signerName: cpName, signerRole: user?.role || 'cp',
           signatureData: cpSignature,
           contentSnapshot: {
-            log_type: LOG_TYPE,
-            date,
-            project_id: projectId,
-            data,
-            status: submitStatus,
+            log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
           },
           user,
-        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
+        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
+    }
+    return savedId || null;
+  };
 
-      // FREEZE MODEL — hot_work is an IMMEDIATE log: THE SIGNATURE IS THE FREEZE.
-      // Submitting finalizes the permit in one action; there is no separate
-      // Finalize step and it is never reopened (a second burn is a NEW permit;
-      // corrections go through the amendment-as-child path). This runs AFTER the
-      // local writeDraft (so the frozen draft holds the signed content) and AFTER
-      // the server push attempt — on SUCCESS OR FAILURE, so the freeze holds with
-      // no signal rather than waiting on a round-trip.
-      if (submitStatus === 'submitted') {
-        await freezeIfImmediate(key, LOG_TYPE);
-        setLocked(true);
-      }
-
+  /**
+   * THE one action. hot_work is an IMMEDIATE log: THE SIGNATURE IS THE FREEZE.
+   * Submitting finalizes the permit in one action and it is never reopened — a
+   * second burn is a NEW permit, and a correction is an amendment.
+   */
+  const handleSubmitAndSign = async () => {
+    if (signing) return;
+    // SIGNATURE CLIENT GUARD. draftSync refuses an unsigned submitted push and
+    // records SUBMIT_MISSING_CP_SIGNATURE against the key; catching it here
+    // means the CP is told on the screen that can fix it.
+    if (!cpSignature) {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    setSigning(true);
+    try {
+      const savedId = await persistAndPush('submitted');
+      // `undefined` = refused or failed, already reported. Nothing may be
+      // frozen or announced on a permit the server would not take. `null` is
+      // different: saved LOCALLY with no server id, which is the offline path
+      // and DOES freeze — a permit signed in a basement must still hold.
+      if (savedId === undefined) return;
+      await freezeIfImmediate(_key, LOG_TYPE);
+      setLocked(true);
       toast.success(
-        submitStatus === 'submitted' ? 'Signed & Locked' : 'Draft Saved',
-        submitStatus === 'submitted'
-          ? (pushOk
-            ? 'Hot work permit signed and locked. Corrections require an amendment.'
-            : 'Hot work permit signed and locked on this device. It will sync when you reconnect.')
-          : 'Saved on this device'
+        t('submittedTitle'),
+        savedId ? t('submittedBody') : t('submittedOfflineBody'),
       );
-      if (submitStatus === 'submitted') router.back();
+      router.back();
     } catch (e) {
       console.error(e);
-      toast.error('Error', 'Could not save hot work permit log');
+      toast.error(t('saveFailedTitle'), t('saveFailedTitle'));
     } finally {
-      setSaving(false);
+      setSigning(false);
     }
   };
 
-  if (loading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={s.container} edges={['top']}>
-          <View style={s.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+  // Moving on is never BLOCKED — a CP who cannot complete a step because the
+  // data is not there must still finish and sign.
+  const onStepChange = async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  };
 
-  return (
-    <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
-        {/* Header */}
-        <View style={s.header}>
-          <GlassButton
-            variant="icon"
-            icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => router.back()}
-          />
-          <Text style={s.headerTitle}>Hot Work Permit Log</Text>
+  const Chip = useCallback((p) => <ChipBase s={s} {...p} />, [s]);
+  const StepHeader = useCallback((p) => (
+    <StepHeaderBase
+      s={s}
+      count={t('stepOf').replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      {...p}
+    />
+  ), [s, step, t]);
+
+  const incomplete = computeIncomplete({ details, precautions, cpSignature })
+    .filter((n) => n !== step);
+  const precautionsAnswered = recordedCount(precautions, PRECAUTION_ITEMS);
+  // Shown live, computed by the SAME function that writes it into the payload —
+  // the time on screen is the time that files.
+  const fireWatchEnd = calcFireWatchEnd(details.end_time);
+
+  // ── STEP 1 — the work ─────────────────────────────────────────────────
+  const renderStep1 = () => (
+    <View>
+      {/* The load FAILED and there was no local draft to fall back on — say so.
+          Without this the screen opens a blank permit, which reads as "no permit
+          exists for today" and invites a duplicate entry. */}
+      {fetchState !== 'ok' && (
+        <OfflineNotice
+          mode={fetchState}
+          detail={fetchState === 'offline' ? t('offlineDetail') : undefined}
+        />
+      )}
+
+      <StepHeader title={t('step1Title')} />
+      <Text style={s.noteText}>{t('workHint')}</Text>
+
+      <Card s={s}>
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fWorkType')}</Text>
+          <View style={s.chipWrap}>
+            {WORK_TYPE_OPTIONS.map((opt) => (
+              <Chip
+                key={opt}
+                label={opt}
+                selected={details.work_type === opt}
+                onPress={() => setDetail('work_type', details.work_type === opt ? '' : opt)}
+              />
+            ))}
+          </View>
         </View>
 
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={s.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* The load FAILED and there was no local draft to fall back on — say
-              so. Without this the screen opens a blank permit, which reads as
-              "no permit exists for today" and invites a duplicate entry. */}
-          {fetchState !== 'ok' && (
-            <OfflineNotice
-              mode={fetchState}
-              detail={fetchState === 'offline'
-                ? 'Could not check for an existing permit. You can still fill this in — it saves on this device and syncs when you reconnect.'
-                : undefined}
+        {DETAIL_FIELDS.map((f) => (
+          <View key={f.key} style={s.fieldBlock}>
+            <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+            <TextInput
+              style={s.input}
+              value={details[f.key] || ''}
+              onChangeText={(v) => setDetail(f.key, v)}
+              placeholder={t('phField')}
+              placeholderTextColor={outdoor.textDim}
             />
-          )}
+          </View>
+        ))}
+      </Card>
+    </View>
+  );
 
-          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
-              makes EVERY field below non-interactive (no per-field editable flags
-              to miss). Scrolling still works; the LockBar stays interactive. */}
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-          {/* Date */}
-          <GlassCard style={s.section}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
-              <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionTitle}>
-                {new Date(date).toLocaleDateString('en-US', {
-                  weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-                })}
+  // ── STEP 2 — the timing ───────────────────────────────────────────────
+  const renderStep2 = () => (
+    <View>
+      <StepHeader title={t('step2Title')} />
+      <Text style={s.noteText}>{t('timingHint')}</Text>
+
+      <Card s={s}>
+        <TimeField
+          s={s}
+          label={t('fStartTime')}
+          placeholder={t('phTime')}
+          value={details.start_time}
+          clearLabel={t('dateClear')}
+          doneLabel={t('dateDone')}
+          onChange={(v) => setDetail('start_time', v)}
+        />
+        <TimeField
+          s={s}
+          label={t('fEndTime')}
+          placeholder={t('phTime')}
+          value={details.end_time}
+          clearLabel={t('dateClear')}
+          doneLabel={t('dateDone')}
+          onChange={(v) => setDetail('end_time', v)}
+        />
+
+        {/* DERIVED, AND IT SAYS SO. This permit captures no real watch-until;
+            FDNY can require sixty minutes, so the screen labels it the computed
+            default it is — the same words all three readers print beside it. */}
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fFireWatchUntil')}</Text>
+          <View style={s.readOnlyValue}>
+            <Text style={s.readOnlyText}>{fireWatchEnd || t('needsEndTime')}</Text>
+            <Text style={s.noteText}>{t('fireWatchDerived')}</Text>
+          </View>
+        </View>
+
+        <View style={s.fieldBlock}>
+          <Text style={s.reviewLabel}>{t('fFireWatchName')}</Text>
+          <TextInput
+            style={s.input}
+            value={details.fire_watch_name || ''}
+            onChangeText={(v) => setDetail('fire_watch_name', v)}
+            placeholder={t('phField')}
+            placeholderTextColor={outdoor.textDim}
+          />
+        </View>
+      </Card>
+    </View>
+  );
+
+  // ── STEP 3 — the seven precautions ────────────────────────────────────
+  //
+  // ONE ITEM PER BLOCK with its two answers beneath it, the shape the scaffold
+  // inspection settled on: a right-aligned answer strip beside a wrapping label
+  // is unreadable at arm's length outdoors.
+  const renderStep3 = () => (
+    <View>
+      <StepHeader title={t('step3Title')} />
+      <Text style={s.noteText}>{t('precautionsHint')}</Text>
+      <Text style={s.noteText}>
+        {t('answeredOf')
+          .replace('{n}', String(precautionsAnswered))
+          .replace('{m}', String(PRECAUTION_ITEMS.length))}
+      </Text>
+
+      {PRECAUTION_ITEMS.map((item, i) => (
+        <Card s={s} key={item.key}>
+          <Text style={s.reviewLabel}>
+            {t('itemOf')
+              .replace('{n}', String(i + 1))
+              .replace('{m}', String(PRECAUTION_ITEMS.length))}
+          </Text>
+          <Text style={s.question}>{item.label}</Text>
+          <View style={s.chipWrap}>
+            {CONFIRM_OPTIONS.map((opt) => (
+              <Chip
+                key={opt.label}
+                label={opt.label}
+                selected={precautions[item.key] === opt.value}
+                onPress={() => setPrecaution(item.key, opt.value)}
+              />
+            ))}
+          </View>
+        </Card>
+      ))}
+    </View>
+  );
+
+  // ── STEP 4 — review and sign ──────────────────────────────────────────
+  const renderStep4 = () => {
+    const unanswered = PRECAUTION_ITEMS.length - precautionsAnswered;
+    return (
+      <View>
+        <StepHeader title={t('step4Title')} />
+        <Text style={s.noteText}>{t('reviewHeading')}</Text>
+
+        <Card s={s}>
+          <Text style={s.reviewLabel}>{t('reviewWork')}</Text>
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fWorkType')}</Text>
+            <Text style={s.reviewValue}>{details.work_type || t('notRecorded')}</Text>
+          </View>
+          {DETAIL_FIELDS.map((f) => (
+            <View key={f.key} style={s.reviewRow}>
+              <Text style={s.reviewLabel}>{t(f.labelKey)}</Text>
+              <Text style={s.reviewValue}>
+                {String(details[f.key] || '').trim() || t('notRecorded')}
               </Text>
             </View>
-          </GlassCard>
+          ))}
+        </Card>
 
-          {/* Work Type Picker */}
-          <GlassCard style={s.section}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm }}>
-              <Flame size={16} strokeWidth={1.5} color={semantic.neutral} />
-              <Text style={s.sectionTitle}>Type of Hot Work</Text>
-            </View>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
-              {WORK_TYPE_OPTIONS.map((opt) => (
-                <Pressable
-                  key={opt}
-                  onPress={() => setWorkType(workType === opt ? '' : opt)}
-                  style={[s.chip, workType === opt && s.chipActive]}
-                >
-                  <Text style={[s.chipText, workType === opt && s.chipTextActive]}>{opt}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </GlassCard>
-
-          {/* Location & Worker */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Work Details</Text>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Location</Text>
-              <TextInput
-                style={s.input}
-                value={location}
-                onChangeText={setLocation}
-                placeholder="Floor, area, or room..."
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Worker Name</Text>
-              <TextInput
-                style={s.input}
-                value={workerName}
-                onChangeText={setWorkerName}
-                placeholder="Full name of worker performing hot work"
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Worker Certification Number</Text>
-              <TextInput
-                style={s.input}
-                value={workerCertNumber}
-                onChangeText={setWorkerCertNumber}
-                placeholder="Cert #"
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-          </GlassCard>
-
-          {/* Timing */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Timing</Text>
-            <View style={{ flexDirection: 'row', gap: spacing.sm }}>
-              <View style={{ flex: 1, ...s.inputGroup }}>
-                <Text style={s.inputLabel}>Start Time</Text>
-                <TextInput
-                  style={s.input}
-                  value={startTime}
-                  onChangeText={setStartTime}
-                  placeholder="HH:MM"
-                  placeholderTextColor={colors.text.subtle}
-                />
-              </View>
-              <View style={{ flex: 1, ...s.inputGroup }}>
-                <Text style={s.inputLabel}>End Time</Text>
-                <TextInput
-                  style={s.input}
-                  value={endTime}
-                  onChangeText={setEndTime}
-                  placeholder="HH:MM"
-                  placeholderTextColor={colors.text.subtle}
-                />
-              </View>
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Fire Watch End Time (auto: end + 30 min)</Text>
-              <View style={[s.input, { paddingVertical: spacing.sm }]}>
-                <Text style={{ color: fireWatchEndTime ? colors.text.primary : colors.text.subtle }}>
-                  {fireWatchEndTime || 'Enter end time above'}
-                </Text>
-              </View>
-            </View>
-            <View style={s.inputGroup}>
-              <Text style={s.inputLabel}>Fire Watch Person Name</Text>
-              <TextInput
-                style={s.input}
-                value={fireWatchName}
-                onChangeText={setFireWatchName}
-                placeholder="Full name"
-                placeholderTextColor={colors.text.subtle}
-              />
-            </View>
-          </GlassCard>
-
-          {/* Precautions Checklist */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Precautions Checklist</Text>
-            {PRECAUTION_ITEMS.map((item) => (
-              <View key={item.key} style={s.toggleRow}>
-                <Text style={s.toggleLabel}>{item.label}</Text>
-                <Pressable onPress={() => togglePrecaution(item.key)}>
-                  <View style={[s.toggleDot, precautions[item.key] && s.toggleDotActive]} />
-                </Pressable>
-              </View>
-            ))}
-          </GlassCard>
-
-          {/* CP Signature */}
-          <GlassCard style={s.section}>
-            <Text style={s.sectionTitle}>Competent Person Sign-Off</Text>
-            <SignaturePad
-              title="CP Signature"
-              signerName={cpName}
-              onNameChange={setCpName}
-              existingSignature={cpSignature}
-              onSignatureCapture={setCpSignature}
-            />
-          </GlassCard>
+        <Card s={s}>
+          <Text style={s.reviewLabel}>{t('reviewTiming')}</Text>
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fStartTime')}</Text>
+            <Text style={s.reviewValue}>{details.start_time || t('notRecorded')}</Text>
           </View>
-
-          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
-          {!locked && (
-          <>
-          <View style={s.buttonRow}>
-            <GlassButton
-              title={saving ? 'Saving...' : 'Save Draft'}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => handleSave('draft')}
-              loading={saving}
-              style={{ flex: 1 }}
-            />
-            <GlassButton
-              title={saving ? 'Saving...' : 'Submit'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={() => handleSave('submitted')}
-              loading={saving}
-              disabled={!isAffirmedSignature(cpSignature)}
-              style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
-            />
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fEndTime')}</Text>
+            <Text style={s.reviewValue}>{details.end_time || t('notRecorded')}</Text>
           </View>
-          {/* An IMMEDIATE log freezes the moment it is submitted, so submitting
-              unsigned would mint a locked, unsigned legal record. Disabling the
-              button alone is a dead end — the CP has no separate profile screen
-              to set a signature on (nothing under app/settings writes
-              cp_signature), so the hint names the pad directly above. */}
-          {!!affirmationHintKey(cpSignature, profileLoaded) && (
-            <Text style={s.signHint}>
-              {tFinalize(affirmationHintKey(cpSignature, profileLoaded))}
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fFireWatchUntil')}</Text>
+            <Text style={s.reviewValue}>
+              {fireWatchEnd ? `${fireWatchEnd} ${t('fireWatchDerived')}` : t('notRecorded')}
             </Text>
-          )}
-          </>
-          )}
+          </View>
+          <View style={s.reviewRow}>
+            <Text style={s.reviewLabel}>{t('fFireWatchName')}</Text>
+            <Text style={s.reviewValue}>
+              {String(details.fire_watch_name || '').trim() || t('notRecorded')}
+            </Text>
+          </View>
+        </Card>
 
-          {/* logType drives the freeze model: for an IMMEDIATE log the LockBar
-              hides Finalize (the signature already froze it) and offers only the
-              Amend path. No canFinalize prop — it would contradict that. */}
-          <LogbookLockBar
-            locked={locked}
-            logId={existingLogId}
-            draftKey={draftKey({ projectId, logType: LOG_TYPE, date })}
-            logType={LOG_TYPE}
-            onFinalized={() => setLocked(true)}
-            onAmended={fetchData}
+        <Card s={s} style={unanswered > 0 ? s.cardWarn : undefined}>
+          <Text style={s.reviewLabel}>{t('reviewPrecautions')}</Text>
+          <Text style={s.reviewValue}>
+            {unanswered > 0
+              ? t('reviewUnanswered').replace('{n}', String(unanswered))
+              : t('reviewAllAnswered').replace('{m}', String(PRECAUTION_ITEMS.length))}
+          </Text>
+        </Card>
+
+        <Card s={s}>
+          <Text style={s.reviewLabel}>
+            {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
+          </Text>
+          <SignaturePad
+            title="Competent Person Signature"
+            signerName={cpName}
+            onNameChange={setCpName}
+            existingSignature={cpSignature}
+            onSignatureCapture={setCpSignature}
           />
-        </ScrollView>
-      </SafeAreaView>
-    </AnimatedBackground>
+        </Card>
+      </View>
+    );
+  };
+
+  const STEPS = [
+    { render: renderStep1 },
+    { render: renderStep2 },
+    { render: renderStep3 },
+    { render: renderStep4 },
+  ];
+
+  return (
+    <LogbookStepper
+      s={s}
+      loading={loading}
+      title={t('screenTitle')}
+      subtitle={t('screenSub')}
+      step={step}
+      steps={STEPS}
+      onStepChange={onStepChange}
+      onExit={() => router.push('/logbooks')}
+      locked={locked}
+      incompleteSteps={incomplete}
+      a11yProgressLabel={t('stepOf')
+        .replace('{n}', String(step)).replace('{m}', String(TOTAL_STEPS))}
+      nextLabel={t('next')}
+      submitLabel={t('submitAndSign')}
+      submitting={signing}
+      /* hot_work is IMMEDIATE — the server locks on `submitted` alone — so an
+         unsigned submit must be UNREACHABLE, not merely warned about. The
+         handler keeps its guard as a backstop. */
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
+      onSubmit={handleSubmitAndSign}
+      logType={LOG_TYPE}
+      logId={existingLogId}
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      autosaveNote={t('savedAutomatically')}
+    />
   );
 }
 
-function buildStyles(colors, isDark) {
+/**
+ * The shared chrome plus the handful of keys only this form uses. Spreading
+ * rather than forking is what keeps the shared names identical across forms.
+ */
+function buildStyles() {
   return StyleSheet.create({
-    container: { flex: 1 },
-    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
-    header: { flexDirection: 'row', alignItems: 'center', padding: spacing.lg, gap: spacing.md },
-    headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text.primary, flex: 1 },
-    section: { marginBottom: spacing.md },
-    sectionTitle: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
-    inputGroup: { marginBottom: spacing.md },
-    inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
-    input: {
-      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
-      padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    ...buildStepperStyles(),
+    reviewRow: {
+      gap: spacing.xs / 2,
+      paddingVertical: spacing.xs,
     },
-    textArea: { minHeight: 80, textAlignVertical: 'top' },
-    toggleRow: {
-      flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-      paddingVertical: spacing.sm,
-    },
-    toggleLabel: { color: colors.text.secondary, fontSize: 14 },
-    toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
-    toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-    buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
-    signHint: {
-      fontSize: 13, fontWeight: '600', color: semantic.attention,
-      marginTop: spacing.sm, textAlign: 'center',
-    },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    chip: {
-      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
-      backgroundColor: withAlpha('#ffffff', 0.04),
-    },
-    chipActive: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder },
-    chipText: { fontSize: 13, color: colors.text.muted },
-    chipTextActive: { color: semantic.attention, fontWeight: '600' },
   });
 }

@@ -834,7 +834,7 @@ export default function SiteLogbooksViewer() {
       ['end_time', t('hwEnd')],
       ['fire_watch_name', t('hwFireWatch')],
       // The editor captures NO real fire-watch end time — it DERIVES this as
-      // work end + 30 min (hot_work.jsx:42-54). FDNY can require 60, so it is
+      // work end + 30 min (hotWorkModel.calcFireWatchEnd). FDNY can require 60, so it is
       // labelled as the computed default rather than asserted as recorded.
       ['fire_watch_end_time', t('hwFireWatchUntil'), (v) => `${v} ${t('hwFireWatchDefault')}`],
     ];
@@ -921,8 +921,10 @@ export default function SiteLogbooksViewer() {
     );
   };
 
-  // frontend/app/logbooks/excavation_monitoring.jsx:184-194 (save);
-  // EMPTY_ADJACENT_BUILDING :27-31; `delta` is derived at save (:180-183)
+  // src/utils/excavationMonitoringModel.js — draftBody decides the payload
+  // shape and is the ONE place `delta` and vibration_over_threshold are
+  // derived. The keys below are asserted against that model by
+  // src/utils/portedFormPayloads.test.cjs.
   const renderExcavationMonitoring = (log) => {
     const data = log.data || {};
     const thr = String(data.vibration_threshold || '').trim();

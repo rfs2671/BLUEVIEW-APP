@@ -13254,8 +13254,15 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     # ══════════════════════════════════════════════════════════════════════
 
     elif log_type == "hot_work":
-        # frontend/app/logbooks/hot_work.jsx:189-199 (save) / :103-113 (draft);
-        # PRECAUTION_ITEMS :28-36.
+        # frontend/src/utils/hotWorkModel.js — draftBody decides the payload
+        # shape and PRECAUTION_ITEMS the seven keys and labels. The screen
+        # (app/logbooks/hot_work.jsx) holds none of it. The list below is
+        # duplicated here because this renderer has no access to that bundle;
+        # frontend/src/utils/portedFormPayloads.test.cjs asserts the two agree,
+        # key for key and word for word — the editor used to say "(35ft)" and
+        # "Covered/Protected" where every reader printed "(35 ft)" and
+        # "Covered / Protected", so the CP ticked one sentence and the
+        # inspector read another.
         type_title = "Hot Work Permit"
         HW_PRECAUTIONS = [
             ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
@@ -13267,7 +13274,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             ("permit_posted", "Permit Posted at Location"),
         ]
         # The editor captures NO real fire-watch end time — it DERIVES
-        # fire_watch_end_time as work end + 30 min (hot_work.jsx:42-54).
+        # fire_watch_end_time as work end + 30 min
+        # (hotWorkModel.calcFireWatchEnd).
         # FDNY can require 60, so it is labelled as the computed default it
         # is and never asserted as a recorded watch-until. It rides in the
         # spec list so an absent one reads "— Not recorded" like any other
@@ -13352,8 +13360,11 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         )
 
     elif log_type == "excavation_monitoring":
-        # frontend/app/logbooks/excavation_monitoring.jsx:184-194 (save);
-        # EMPTY_ADJACENT_BUILDING :27-31; `delta` is derived at save (:180-183).
+        # frontend/src/utils/excavationMonitoringModel.js — draftBody decides
+        # the payload shape and is the ONE place `delta` and
+        # vibration_over_threshold are derived, so the autosave, the flush and
+        # the submit all write the same document. The screen
+        # (app/logbooks/excavation_monitoring.jsx) holds none of it.
         type_title = "Excavation Monitoring"
         exc_lines = field_lines(data, [
             # excavation_depth is a raw number — the editor captures no unit.
