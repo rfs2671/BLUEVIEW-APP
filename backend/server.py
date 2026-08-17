@@ -10001,6 +10001,23 @@ async def register_and_checkin(data: dict, request: Request):
     # §3301.11 site orientation and would misrepresent provenance if rendered
     # under a "Worker Signatures" heading on a toolbox-talk record.
     toolbox_confirm = bool(data.get("toolbox_talk_confirm"))
+    # ── DAILY SIGNATURE AFFIRMATION ─────────────────────────────────────────
+    #
+    # He signed ONCE, at orientation. Printing that image against today's date
+    # asserts he signed today's sheet — the same class of overstatement as the
+    # "UNAFFIRMED — inherited signature" warning already carried on the CP's
+    # signatures. Affirming turns the stamp into a real daily attestation.
+    #
+    # THE LANGUAGE IS FROZEN HERE, at the moment of affirmation, from what the
+    # client says it SHOWED him. Reading it back from live state later would
+    # let the record change after the fact, and a worker affirming Spanish copy
+    # is evidence about what he read. Only the two locales that exist are
+    # accepted; anything else records "en" rather than a language nobody has
+    # copy for.
+    _sig_affirmed = bool(data.get("signature_affirmed"))
+    _sig_lang = str(data.get("signature_affirmed_lang") or "").strip().lower()
+    if _sig_lang not in ("en", "es"):
+        _sig_lang = "en"
 
     # Task 12 Phase 0: presence evidence + abuse control on this public endpoint.
     # Capture the caller IP / User-Agent / device fingerprint — all already on the
@@ -10429,6 +10446,13 @@ async def register_and_checkin(data: dict, request: Request):
         # Optional gate confirmation for the toolbox-talk roster (see above).
         # Name + server timestamp, so the roster can show WHO confirmed and WHEN
         # without implying the worker signed a legal attestation.
+        # The affirmation is a fact about TODAY, so it is recorded with
+        # today's check-in rather than on the worker doc beside the signature
+        # it affirms. Absent/false simply means he did not affirm, which is a
+        # gap on a sheet and never a locked turnstile.
+        "signature_affirmed": _sig_affirmed,
+        "signature_affirmed_at": now if _sig_affirmed else None,
+        "signature_affirmed_lang": _sig_lang if _sig_affirmed else None,
         "toolbox_talk_confirmed": toolbox_confirm,
         "toolbox_talk_confirmed_at": now if toolbox_confirm else None,
         # Task 12 Phase 0: presence evidence (previously received then dropped).
@@ -10605,6 +10629,30 @@ async def register_and_checkin(data: dict, request: Request):
         "check_in_time": now.isoformat(),
         "is_new_worker": True,
     }
+def _worker_signature_signed_at(worker) -> Optional[str]:
+    """When the stored signature was captured, as an ISO date, or None.
+
+    The signature lives inline on the worker doc and carries no timestamp of its
+    own — it is written in the same breath as the first safety_orientations entry
+    (register_and_checkin), so that entry's completed_at is when he signed.
+    EARLIEST, not latest: a second orientation on another project did not
+    re-capture the signature, and reporting the later date would overstate how
+    fresh the stroke is, which is the whole thing the kiosk is showing him.
+    """
+    if not worker or not worker.get("signature"):
+        return None
+    stamps = []
+    for _o in (worker.get("safety_orientations") or []):
+        if not isinstance(_o, dict):
+            continue
+        _c = _o.get("completed_at")
+        if isinstance(_c, datetime):
+            stamps.append(_c.isoformat())
+        elif isinstance(_c, str) and _c.strip():
+            stamps.append(_c.strip())
+    return min(stamps) if stamps else None
+
+
 @api_router.post("/checkin/lookup-worker")
 async def lookup_worker(data: dict):
     """Public endpoint - check if worker exists by phone.
@@ -10676,6 +10724,21 @@ async def lookup_worker(data: dict):
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
         "oriented_on_this_project": oriented_on_this_project,
+        # ── DAILY SIGNATURE AFFIRMATION — what the kiosk needs, and no more.
+        #
+        # A BOOLEAN AND A DATE, NEVER THE IMAGE. This endpoint is PUBLIC and
+        # keyed on a phone number, so returning the signature PNG would make
+        # signature images enumerable by phone — the one artefact where that
+        # matters, and the same enumeration E3 is already open about. The
+        # affirmation's weight comes from the worker tapping a named, dated
+        # attestation, not from him looking at a thumbnail.
+        #
+        # THE DATE IS SHOWN, NOT ENFORCED. He signed once at orientation and
+        # a stamp re-timestamped is still a stamp, so the kiosk tells him when
+        # he signed it. Old is a fact to show, never a gate: the standing rule
+        # is that the gate does not stop a man working.
+        "has_signature": bool(worker.get("signature")),
+        "signature_signed_at": _worker_signature_signed_at(worker),
     }
    
 @api_router.post("/checkin/submit")
@@ -13151,7 +13214,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
-                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td></tr>'
+                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
+                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -13166,8 +13230,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
             + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
-              f'<th {TH}>Injury</th><th {TH}>PPE</th></tr>'
-            + (w_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
+              f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
+            + (w_rows or f'<tr><td colspan="6" {TD}>—</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + ps_sig
@@ -17597,6 +17661,12 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 # Closing it means capturing the tap on the enrollment flow —
                 # a change to the gate page itself, which is the turnstile.
                 # Scoped separately rather than smuggled in here.
+                # The card/enrollment path has no affirmation control, so
+                # this is false by construction, not by a read. Same honesty
+                # as the toolbox pair below it.
+                "signature_affirmed": False,
+                "signature_affirmed_at": None,
+                "signature_affirmed_lang": None,
                 "toolbox_talk_confirmed": False,
                 "toolbox_talk_confirmed_at": None,
                 # ── Flag fields (FIX 1) ──────────────────────────────────────
@@ -17687,6 +17757,17 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             # /false simply means they did not tap — they are still on the roster
             # by virtue of checking in. The CP's signature remains the only legal
             # attestation.
+            # ── DAILY SIGNATURE AFFIRMATION, carried to the sheet ───────
+            # The signature itself already flows on this pass (worker_signature
+            # above, from the worker doc). What was missing is whether he
+            # AFFIRMED it today — without that the sheet can only print a
+            # stamp, which is what the affirmation exists to stop.
+            "signature_affirmed": bool(c.get("signature_affirmed")),
+            "signature_affirmed_at": (
+                c.get("signature_affirmed_at").isoformat()
+                if isinstance(c.get("signature_affirmed_at"), datetime) else None
+            ),
+            "signature_affirmed_lang": c.get("signature_affirmed_lang"),
             "toolbox_talk_confirmed": bool(c.get("toolbox_talk_confirmed")),
             "toolbox_talk_confirmed_at": (
                 c.get("toolbox_talk_confirmed_at").isoformat()
@@ -18228,6 +18309,38 @@ def _inspection_label(key: str) -> str:
     return str(key or "").replace("_", " ").title()
 
 
+def _preshift_signature_cell(w) -> str:
+    """The signature column on a filed pre-shift sheet. THREE STATES, never blank.
+
+    Blank cannot be told apart from a column nobody filled, and this document has
+    never claimed a worker signed before — so every row has to say which of three
+    things is true:
+
+      AFFIRMED           he affirmed his stored signature at the gate today, so
+                         the signature prints. The affirmation is what makes a
+                         stroke captured at orientation usable on today's sheet.
+      NOT AFFIRMED       a signature is on file and he did not affirm it today.
+                         A gap on a sheet, never a locked turnstile — the gate
+                         does not stop a man working.
+      NO SIGNATURE       nothing on file at all. A DIFFERENT fact from not
+      ON FILE            affirming, and the document says which.
+
+    The image is inlined only in the affirmed case. It arrives already inline on
+    the roster row (worker.signature, base64), so there is no fetch here and
+    nothing is added to a sheet that did not earn it.
+    """
+    _sig = str(w.get("worker_signature") or w.get("signature") or "").strip()
+    if not _sig:
+        return '<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>'
+    if not w.get("signature_affirmed"):
+        return '<span style="color:#b45309;">NOT AFFIRMED</span>'
+    _src = _sig if _sig.startswith("data:") else f"data:image/png;base64,{_sig}"
+    return (
+        f'<img src="{_src}" alt="Signature" '
+        'style="max-height:34px;max-width:150px;display:block;" />'
+    )
+
+
 def _display_inspections(chk) -> str:
     """Render the daily inspections for a filed document.
 
@@ -18635,6 +18748,11 @@ async def generate_combined_report(
     )
     TD = 'style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;"'
     EMPTY_5 = f'<tr><td colspan="5" {TD}>&mdash;</td></tr>'
+    # The pre-shift sheet is SIX columns since it gained a signature — a
+    # placeholder narrower than its header renders a ragged table on the one
+    # document nobody re-renders. EMPTY_5 still serves the three tables that
+    # really are five wide.
+    EMPTY_6 = f'<tr><td colspan="6" {TD}>&mdash;</td></tr>'
     EMPTY_3 = f'<tr><td colspan="3" {TD}>&mdash;</td></tr>'
 
     def section_title(text):
@@ -19133,7 +19251,8 @@ async def generate_combined_report(
                     f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
-                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td></tr>'
+                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
+                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
@@ -19143,8 +19262,8 @@ async def generate_combined_report(
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
             + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
-              f'<th {TH}>Injury</th><th {TH}>PPE</th></tr>'
-            + (w_rows or EMPTY_5)
+              f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
+            + (w_rows or EMPTY_6)
             + '</table>'
             + bold_para("CP", _capitalize_first(preshift.get("cp_name", "N/A")))
             + ps_sig

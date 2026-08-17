@@ -561,7 +561,14 @@ class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
     def test_the_table_is_not_left_one_column_short(self):
         """A header row wider than its empty-state placeholder renders a
         ragged table on the one document nobody re-renders."""
-        self.assertNotIn('colspan="6"', _SRC)
+        # NARROWED. This meant "the toolbox placeholder is not left one column
+        # short of its header" and was written as a global ban on colspan 6 —
+        # which the pre-shift sheet then legitimately needed when it gained a
+        # signature column. Asserted on the toolbox table's own placeholder.
+        _tb = _REPORT[_REPORT.index('toolbox = _filed_log'):]
+        _tb = _tb[:_tb.index('preshift = _filed_log')]
+        self.assertIn('colspan="7"', _tb)
+        self.assertNotIn('colspan="6"', _tb)
 
 
 class TestGroupThreeRendering(unittest.TestCase):

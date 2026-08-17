@@ -272,8 +272,17 @@ ok((SERVER.match(/\{_attendee_source_label\(a\)\}/g) || []).length === 2,
   'and BOTH toolbox renderers call it');
 ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 2,
   'both carry the column header');
-ok(!/colspan="6"/.test(SERVER),
-  'and both empty-roster placeholders widened with the table');
+// NARROWED. This meant "the toolbox placeholders are not left one column short
+// of their header" and was written as a global ban on colspan 6 — which the
+// PRE-SHIFT sheet then legitimately needed when it gained a signature column
+// (B10). Scoped to the two toolbox tables, which is what it was always about.
+// Same over-broad shape as four earlier assertions on this project.
+for (const [from, to] of [['elif log_type == "toolbox_talk":', 'elif log_type == "preshift_signin":'],
+  ['toolbox = _filed_log', 'preshift = _filed_log']]) {
+  const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
+  ok(/colspan="7"/.test(block) && !/colspan="6"/.test(block),
+    'the toolbox placeholder widened with its header');
+}
 // The three labels must be distinguishable, and an OLD record must not be
 // given one it never earned.
 for (const [k, v] of [['gate', 'Gate'], ['weekly_gap', 'CP &mdash; this week'],
