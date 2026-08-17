@@ -8819,6 +8819,30 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["dropbox_enabled"] = False
     project_dict["dropbox_folder"] = None
     project_dict["is_deleted"] = False
+
+    # ── ROSTER IDS ARE MINTED HERE TOO ──────────────────────────────────────
+    #
+    # `_merge_trade_assignments` had ONE call site — the project UPDATE path —
+    # so a roster supplied at CREATION was stored exactly as the client sent
+    # it, with no server-minted `id` on any row. Everything downstream depends
+    # on that id and degrades silently without it:
+    #
+    #   get_daily_headcount skips any row with no id (`if not _rid: continue`),
+    #   so `subcontractor_id` came back None on EVERY activity row — which is
+    #   why the chip ranker fell back to the unfiltered catalogue, and why the
+    #   crew-level identity the operator ruled never took effect. It was
+    #   implemented; it was one call site short of the door.
+    #
+    # The "every" was the tell: a key mismatch nulls SOME rows, only an empty
+    # roster_ids nulls all of them.
+    #
+    # The SAME function as the update path, so a roster cannot mean two
+    # different things depending on how it arrived. Existing projects still
+    # carry id-less rows — nothing here rewrites stored data; see the backfill
+    # question in the PR.
+    project_dict["trade_assignments"] = _merge_trade_assignments(
+        [], project_dict.get("trade_assignments") or [],
+    )
     
     # IMPORTANT: Auto-inject company_id from admin
     project_dict["company_id"] = admin.get("company_id")
@@ -9709,14 +9733,38 @@ async def get_project_companies(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     
     company_id = project.get("company_id")
-    
-    # Get subcontractors for this company
-    subs = await db.subcontractors.find(
-        {"company_id": company_id, "is_deleted": {"$ne": True}},
-        {"company_name": 1, "trade": 1}
-    ).to_list(500)
-    
-    companies = [{"name": s.get("company_name"), "trade": s.get("trade")} for s in subs]
+
+    # ── THE ROSTER IS THE PROJECT'S, NOT AN ACCOUNTS TABLE ──────────────────
+    #
+    # This read `db.subcontractors`, which is the subcontractor LOGIN directory
+    # — it carries email and password and has a unique email index. The
+    # operator ruled CREW-LEVEL identity: a roster entry is (trade x company)
+    # on a project, and there are no subcontractor logins. So that collection
+    # is correctly EMPTY, and "Subs 0" was an accurate count of a concept the
+    # ruling retired, not a broken query.
+    #
+    # `project.trade_assignments` is the roster the admin actually maintains
+    # and the same array `_merge_trade_assignments` mints ids into, so this
+    # endpoint and the daily headcount now describe one thing.
+    #
+    # Inactive rows are excluded: a sub who has left the job should not be
+    # offered at the gate. Distinct on the NORMALISED (company, trade), the
+    # roster-match rule used everywhere else here, so a case-only edit does not
+    # produce two entries for one crew.
+    _seen: set = set()
+    companies = []
+    for _row in (project.get("trade_assignments") or []):
+        if not isinstance(_row, dict) or _assignment_is_inactive(_row):
+            continue
+        _name = str(_row.get("company") or "").strip()
+        _trade = str(_row.get("trade") or "").strip()
+        if not _name:
+            continue
+        _key = (_roster_key(_name), _roster_key(_trade))
+        if _key in _seen:
+            continue
+        _seen.add(_key)
+        companies.append({"name": _name, "trade": _trade})
     
     # Also add the main company name
     if company_id:
