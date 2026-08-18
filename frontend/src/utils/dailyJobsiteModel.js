@@ -372,6 +372,53 @@ export const isUnassignedWorkerRow = (activity) => Boolean(
 export const workRows = (activities) => (Array.isArray(activities) ? activities : [])
   .filter((a) => !isUnassignedWorkerRow(a));
 
+/**
+ * Crews the CP has left with NO WORK DESCRIBED — the sentence the submit gate
+ * shows him.
+ *
+ * THE RULE ALREADY EXISTED AND ONLY MARKED. stepComplete(2) says a step is
+ * complete when every work row carries a description, and the step pip has been
+ * reading it all along. Nothing stopped him signing: a filed §3301.2 daily log
+ * could name four subcontractors on site and say what none of them did, and the
+ * only trace was a pip he had already walked past.
+ *
+ * UNASSIGNED WORKERS ARE NOT CREWS. A man who checked in with no company gets
+ * no activity card, so asking him for a work description would block every day
+ * on which one person tapped in without a company assigned. workRows drops
+ * those rows and this inherits that, so the two cannot drift.
+ *
+ * Returns the crew LABEL, because a row number means nothing on a screen that
+ * lists crews by company.
+ */
+export function crewsWithoutWork(activities) {
+  const rows = workRows(activities);
+  const total = rows.length;
+  return rows
+    .map((a, i) => ({ a, n: i + 1 }))
+    .map(({ a, n }) => {
+      const missing = [];
+      if (String(a?.work_description || '').trim() === '') missing.push('activity');
+      // AND A LOCATION. A crew's activity with nowhere attached is half a
+      // record: the §3301.2 table has a Location column, the photo caption is
+      // built from it, and "formwork" with no floor tells an inspector which
+      // trade was on site and nothing about where to look.
+      if (String(a?.work_locations || '').trim() === '') missing.push('location');
+      return {
+        crew: String(a?.company || '').trim(),
+        trade: String(a?.trade || '').trim(),
+        // POSITION AND TOTAL. "Crew 3 of 5" tells him where to go; a bare
+        // count makes him hunt down the list comparing what he sees against a
+        // number. The position is within workRows, which is the list the step
+        // actually renders — an unassigned-worker row has no card, so counting
+        // it would point at a crew that is not on screen.
+        row: n,
+        total,
+        missing,
+      };
+    })
+    .filter((c) => c.missing.length > 0);
+}
+
 /** True once this row names a sub the project roster does not know. */
 export const isUnboundCrew = (activity) => Boolean(
   activity && String(activity.company || '').trim() && !activity.subcontractor_id,
@@ -515,9 +562,18 @@ export function stepComplete(step, state) {
       // activity card, so requiring a work description from him would leave
       // this step permanently incomplete the moment one man checks in without
       // a company.
+      // ACTIVITY *AND* LOCATION — the same pair the Next gate asks for.
+      //
+      // This asked only for the description while crewsWithoutWork also
+      // required a location, so a crew with work and no floor made the pip read
+      // COMPLETE and the Next button sit dead. A CP stopped by something the
+      // screen has just told him is finished learns to distrust the screen, and
+      // that is the failure this pair is watched for.
       const work = workRows(acts);
-      return work.length > 0
-        && work.every((a) => String(a.work_description || '').trim());
+      return work.length > 0 && work.every(
+        (a) => String(a.work_description || '').trim()
+          && String(a.work_locations || '').trim(),
+      );
     }
     case 3: return incompleteObservations(state?.observations).length === 0;
     // Step 4 is the nine daily inspections. Weather moved to Step 1, where it
@@ -645,6 +701,7 @@ export default {
   resolveRosterId,
   isUnassignedWorkerRow,
   workRows,
+  crewsWithoutWork,
   deriveGeneralDescription,
   OTHER_CHIP_ID,
   CHIP_SLOTS,

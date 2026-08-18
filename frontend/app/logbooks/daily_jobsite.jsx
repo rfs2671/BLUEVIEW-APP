@@ -88,7 +88,7 @@ import {
   composeChipBands,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
-  isUnassignedWorkerRow, workRows, tradeLabel,
+  isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
   deriveGeneralDescription,
@@ -1353,6 +1353,29 @@ export default function DailyJobsiteLog() {
       toast.warning(t('sectionInspected'), t('inspectionNoteMissing'));
       return;
     }
+    // A CREW ON SITE THAT DID NOTHING RECORDABLE IS A CREW NOBODY DESCRIBED.
+    //
+    // stepComplete(2) has held this rule the whole time and only MARKED with
+    // it. So a filed §3301.2 daily log could name four subcontractors on site
+    // and say what none of them did, and the only trace was a pip the CP had
+    // already walked past. The document that goes to the DOB, the investor and
+    // the lender is the one where that gap shows.
+    //
+    // Same shape as the two gates above: back to the step that holds it, and
+    // name WHICH crews rather than refusing at the signature with no route to
+    // a fix. Blocking at submit, never on Next — a crew whose work is not done
+    // yet is ordinary at 9am.
+    // THE BACKSTOP. Next is disabled on step 2 until every crew is complete
+    // (see nextDisabled below), so reaching here means the state moved under
+    // the press — a roster refresh adding a crew while he was on step 5. The
+    // check stands rather than filing a log that names a crew and says nothing
+    // about it.
+    const bareCrews = crewsWithoutWork(activitiesRef.current || activities);
+    if (bareCrews.length > 0) {
+      setStep(2);
+      toast.warning(t('crewWorkMissingTitle'), crewGapSentence(bareCrews));
+      return;
+    }
     setSigning(true);
     try {
       const savedId = await persistAndPush('submitted');
@@ -1424,9 +1447,33 @@ export default function DailyJobsiteLog() {
 
   const crewName = (a) => (String(a.company || '').trim() || t('noCrewWorker'));
 
+  /**
+   * WHICH CREW, AND WHAT IT IS MISSING.
+   *
+   * "Crew 3 of 5 has no activity" tells him where to go. A bare count makes him
+   * hunt down the list comparing what he sees against a number, on a phone, in
+   * gloves. The company name comes too when the row has one — the position is
+   * how he finds the card, the name is how he knows it is the right one.
+   *
+   * ONE SENTENCE, TWO SURFACES: the disabled-Next hint and the submit backstop
+   * read the same function, so the two can never describe the same gap
+   * differently.
+   */
+  const crewGapSentence = useCallback((gaps) => gaps.map((c) => {
+    const where = t('crewNofM')
+      .replace('{n}', String(c.row)).replace('{m}', String(c.total));
+    const who = c.crew ? ` (${c.crew})` : '';
+    const what = c.missing.map((k) => t(`crewMissing_${k}`)).join(t('crewMissingJoin'));
+    return `${where}${who} ${what}`;
+  }).join('; '), [t]);
+
   // Present on site, not a unit of work. Counted so Step 2 can say why there
   // is no card for him rather than simply omitting him without explanation.
   const unassignedWorkerCount = activities.filter(isUnassignedWorkerRow).length;
+
+  // The crews step 2 is still waiting on. One computation, read by the Next
+  // gate and by its hint.
+  const crewGaps = useMemo(() => crewsWithoutWork(activities), [activities]);
 
   // ── STEP 1 — what was on site ─────────────────────────────────────────
   //
@@ -2138,6 +2185,16 @@ export default function DailyJobsiteLog() {
       step={step}
       steps={STEPS}
       onStepChange={(n) => (n > step ? goNext() : goBack())}
+      /* GATING NEXT ON STEP 2 — the documented exception, same as toolbox
+         step 1. The stepper's rule is MARK, NEVER GATE, because a CP must be
+         able to finish a day he cannot complete. This is the case that rule
+         was never about: a crew row with no activity and no location makes the
+         whole log unfilable, and every one of these fields is known the moment
+         the card is on screen — he is standing in front of the crew. Being
+         stopped at step 2 is better than discovering it at step 5 with four
+         steps behind him. */
+      nextDisabled={step === 2 && crewGaps.length > 0}
+      nextHint={crewGaps.length > 0 ? crewGapSentence(crewGaps) : ''}
       onExit={() => router.push('/logbooks')}
       locked={locked}
       incompleteSteps={stepsLeftIncomplete}
