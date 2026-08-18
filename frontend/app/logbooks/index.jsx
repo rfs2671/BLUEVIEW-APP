@@ -93,7 +93,7 @@ export default function LogBooksScreen() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [todayLogs, setTodayLogs] = useState({});
-  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [] });
+  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [] });
   const [cpName, setCpName] = useState('');
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
@@ -268,7 +268,7 @@ export default function LogBooksScreen() {
     try {
       const [logs, notifs, scaffoldInfo, reqLogbooks, catalog] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
-        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [] })),
+        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [] })),
         logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
         projectsAPI.getRequiredLogbooks(projectId).catch(() => null),
         logbookTypesAPI.getAll().catch(() => null),
@@ -322,6 +322,22 @@ export default function LogBooksScreen() {
   // signature affirmed. Refs come from the notifications payload (log_type +
   // date); we open the most recent one — after it's affirmed, the focus
   // refetch drops the count and the alert clears (or points at the next one).
+  /**
+   * Open the oldest day still waiting for a signature.
+   *
+   * OLDEST FIRST, not newest. The refs come back newest-first for the badge, so
+   * this walks to the end: the day most likely to be forgotten is the one
+   * furthest back, and it is also the one whose record has been sitting open
+   * the longest.
+   */
+  const handleOpenStaleUnsigned = () => {
+    const refs = notifications?.stale_unsigned_logbook_refs || [];
+    if (!selectedProject || refs.length === 0) return;
+    const projectId = selectedProject._id || selectedProject.id;
+    const { log_type, date } = refs[refs.length - 1];
+    router.push(`/logbooks/${log_type}?projectId=${projectId}&date=${date}`);
+  };
+
   const handleOpenUnaffirmed = () => {
     const refs = notifications?.unaffirmed_logbook_refs || [];
     if (!selectedProject || refs.length === 0) return;
@@ -437,6 +453,7 @@ export default function LogBooksScreen() {
   // answers, which is why the block that renders them is gated on length —
   // an empty "On site today" heading over nothing is worse than no heading.
   const activations = requiredLogbooks?.activations || [];
+  const staleUnsigned = notifications?.stale_unsigned_logbooks || 0;
   const missingToolbox = notifications?.missing_toolbox_talk || [];
   const unaffirmedLogbooks = notifications?.unaffirmed_logbooks || 0;
   const visibleLogs = getVisibleLogTypes();
@@ -666,6 +683,34 @@ export default function LogBooksScreen() {
                 An admin sets this on the project.
               </Text>
             </GlassCard>
+          )}
+
+          {/* A DAY THAT WAS WORKED AND NEVER SIGNED. The end-of-day sweep
+              freezes yesterday's SIGNED narratives and leaves these open on
+              purpose — sealing a record nobody attested to is worse than
+              leaving it open — so it is an unfinished obligation, and the CP
+              is the only person who can finish it.
+
+              SAME TREATMENT as the unaffirmed-signature card directly above,
+              deliberately. That card is the closest thing this screen has: a
+              record that exists and lacks the CP's attestation, tappable,
+              deep-linking to the log. A fourth variant is what followups.md
+              already logs this screen for. */}
+          {staleUnsigned > 0 && (
+            <Pressable onPress={handleOpenStaleUnsigned}>
+              <GlassCard style={styles.notifCard}>
+                <View style={styles.notifHeader}>
+                  <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                  <Text style={styles.notifTitle}>
+                    {staleUnsigned} day{staleUnsigned > 1 ? 's' : ''} worked but never signed
+                  </Text>
+                </View>
+                <Text style={styles.notifWorker}>
+                  These logs are still open and still yours to finish. Tap to
+                  open the oldest one and sign it.
+                </Text>
+              </GlassCard>
+            </Pressable>
           )}
 
           {/* Check-in review entry point. Lives here because /logbooks/* is

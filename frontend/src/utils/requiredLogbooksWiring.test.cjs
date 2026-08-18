@@ -236,6 +236,47 @@ console.log('\n-- who owns which switch --');
     + 'cannot disagree with the switch above it');
 }
 
+console.log('\n-- the day he never signed reaches the CP --');
+{
+  // The sweep leaves an unsigned stale log OPEN on purpose and tells the admin
+  // through compliance_alerts. The CP is the only person who can finish it and
+  // has no admin login, so the same fact reaches him here.
+  ok(/const staleUnsigned = notifications\?\.stale_unsigned_logbooks \|\| 0;/.test(SCREEN),
+    'the count comes off the notifications endpoint');
+  const at = SCREEN.indexOf('staleUnsigned > 0');
+  ok(at > -1, 'and the card is gated on it');
+  const card = SCREEN.slice(at, at + 900);
+  ok(/never signed/.test(card), 'it says what happened');
+  ok(/still yours to finish/.test(card),
+    'and that it is HIS to finish — an unfinished obligation, not a sealed record');
+  ok(/handleOpenStaleUnsigned/.test(card),
+    'tapping it opens the log rather than being a dead badge');
+}
+{
+  const fn = SCREEN.slice(SCREEN.indexOf('const handleOpenStaleUnsigned'),
+    SCREEN.indexOf('const handleOpenUnaffirmed'));
+  ok(/refs\[refs\.length - 1\]/.test(fn),
+    'OLDEST first — the refs arrive newest-first for the badge, and the day '
+    + 'most likely to be forgotten is the one furthest back');
+  ok(fn.includes('router.push(`/logbooks/${log_type}?projectId=${projectId}&date=${date}`)'),
+    'and it deep-links to that exact day, not to the list');
+  ok(/refs\.length === 0\) return;/.test(fn), 'an empty list taps to nothing');
+}
+{
+  // NOT A FOURTH TREATMENT. followups.md already logs this screen for carrying
+  // three different ones; the closest analogue is the unaffirmed-signature
+  // card — a record that exists and lacks the CP's attestation.
+  const mine = SCREEN.slice(SCREEN.indexOf('staleUnsigned > 0'), SCREEN.indexOf('staleUnsigned > 0') + 900);
+  const theirs = SCREEN.slice(SCREEN.indexOf('unaffirmedLogbooks > 0'), SCREEN.indexOf('unaffirmedLogbooks > 0') + 900);
+  for (const bit of ['styles.notifCard', 'styles.notifHeader', 'AlertTriangle',
+    'semantic.attention', 'styles.notifTitle', 'styles.notifWorker']) {
+    ok(mine.includes(bit) && theirs.includes(bit),
+      `reuses the unaffirmed card's ${bit} rather than inventing a variant`);
+  }
+}
+ok(SCREEN.includes('stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: []'),
+  'the offline default carries the new keys, so a failed fetch reads 0 not undefined');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');
