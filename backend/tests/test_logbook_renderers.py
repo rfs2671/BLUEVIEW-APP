@@ -930,5 +930,49 @@ class TheFallProtectionDocument(unittest.TestCase):
         self.assertIn("Removed and destroyed", html)
 
 
+class TheOrphanMonitoringPoint(unittest.TestCase):
+    """THE OWNER RULE, on an address instead of a worker.
+
+    The drop rule was any-of four (address, baseline, current, delta), so a row
+    carrying a baseline reading and a current reading with NO ADDRESS printed:
+    vibration data attributed to no structure. Movement of 0.004 against
+    nothing names no building to inspect, no owner to notify and no work to
+    stop — which is the entire purpose of the log.
+    """
+
+    NAMED = {"address": "12 bond street", "baseline_reading": "1.000",
+             "current_reading": "1.004", "delta": "0.004"}
+    ORPHAN = {"address": "", "baseline_reading": "2.000",
+              "current_reading": "2.010", "delta": "0.010"}
+
+    def _html(self, buildings):
+        return render(doc("excavation_monitoring", {
+            "excavation_depth": "12", "soil_type": "Clay",
+            "protection_system": "Sheeting", "adjacent_buildings": buildings,
+        }))
+
+    def test_a_reading_with_no_address_does_not_print(self):
+        html = self._html([dict(self.NAMED), dict(self.ORPHAN)])
+        self.assertIn(">0.004<", html)
+        self.assertNotIn(">0.010<", html)
+        self.assertEqual(_table_rows(html, "Movement (&Delta;)"), 1)
+
+    def test_an_address_with_no_readings_still_prints(self):
+        """An OWNER rule, not a completeness rule: a point surveyed and not yet
+        re-read is a real row about a named building."""
+        html = self._html([{"address": "12 bond street"}])
+        self.assertIn("12 bond street", html)
+        self.assertEqual(_table_rows(html, "Movement (&Delta;)"), 1)
+
+    def test_whitespace_is_not_an_address(self):
+        self.assertNotIn(">0.010<", self._html([dict(self.ORPHAN, address="   ")]))
+
+    def test_a_table_of_nothing_but_orphans_prints_no_table(self):
+        html = self._html([dict(self.ORPHAN)])
+        self.assertNotIn(">0.010<", html)
+        # Anchored: the column header, not the bare word.
+        self.assertNotIn(">Movement (&Delta;)</th>", html)
+
+
 if __name__ == "__main__":
     unittest.main()

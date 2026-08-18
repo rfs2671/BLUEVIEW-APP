@@ -34,7 +34,7 @@ import {
   SOIL_TYPE_OPTIONS, PROTECTION_SYSTEM_OPTIONS, CONDITION_FLAGS,
   EMPTY_DETAILS, EMPTY_ADJACENT_BUILDING, calcDelta, isOverThreshold,
   thresholdStatusIsMeaningful, filledBuildingCount, detailsFromData,
-  incompleteSteps as computeIncomplete, draftBody,
+  unnamedBuildings, incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/excavationMonitoringModel';
 import { useT } from '../../src/i18n';
 import { spacing, borderRadius, outdoor, touchTarget } from '../../src/styles/theme';
@@ -332,6 +332,30 @@ export default function ExcavationMonitoringLog() {
     if (!cpSignature) {
       setStep(TOTAL_STEPS);
       toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    // A MONITORING POINT WITH NO ADDRESS NAMES NO BUILDING, and it is dropped
+    // at filing either way — this is what stops the dropping being SILENT. A
+    // CP who typed a baseline and a current reading into a row and then signed
+    // would otherwise get the record back with that row simply gone.
+    //
+    // BLOCKING AT SUBMIT, NOT ON NEXT. A half-filled row is ordinary work: the
+    // readings are taken at the wall and the address is often typed after. It
+    // is only at the moment of FILING that a reading against no building
+    // becomes vibration data nobody can act on.
+    const unnamed = unnamedBuildings(adjacentBuildings);
+    if (unnamed.length > 0) {
+      setStep(2);
+      toast.warning(
+        t('unnamedPointTitle'),
+        t('unnamedPointBody').replace(
+          '{rows}',
+          unnamed.map((u) => {
+            const held = [u.baseline, u.current].filter(Boolean).join(' / ');
+            return held ? `${u.row} (${held})` : String(u.row);
+          }).join('; '),
+        ),
+      );
       return;
     }
     setSigning(true);

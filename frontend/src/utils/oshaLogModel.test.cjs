@@ -146,8 +146,28 @@ ok(/const unnamed = unnamedEntries\(rowsNow\);/.test(SCREEN),
   ok(step > -1 && !SCREEN.slice(step, stepEnd).includes('unnamedEntries'),
     'and NOT on step change — moving on is never refused for a half-typed row');
 }
-ok(/toast\.warning\(\s*\n?\s*t\('unnamedRowsTitle'\)/.test(SCREEN),
+ok(/t\('unnamedRowsTitle'\)/.test(SCREEN),
   'it warns rather than dropping the rows silently');
+
+// ONE GATE, TWO REASONS. These were two checks, and which one fired decided
+// whether the CP got a useful sentence or a generic "Nothing to file" —
+// including for a register that empties for a reason this screen has not
+// enumerated. The gate now computes what will be DROPPED, then says what that
+// leaves.
+{
+  const gate = SCREEN.slice(SCREEN.indexOf('const unnamed = unnamedEntries('),
+    SCREEN.indexOf("persistAndPush('submitted')"));
+  ok(/const willFile = entriesForFiling\(rowsNow\)\.length;/.test(gate),
+    'the gate asks what will be LEFT as well as what will go');
+  ok(/if \(unnamed\.length > 0 \|\| willFile === 0\)/.test(gate),
+    'and ONE condition covers both — no second check to fall through to');
+  ok(/nothingLeftBody/.test(gate),
+    'when both are true he gets the reason AND the consequence');
+  ok(gate.indexOf('unnamedRowsBody') < gate.indexOf('nothingLeftBody'),
+    'reason first: it is the half he can act on');
+  ok(/nothingToFileBody/.test(gate),
+    'and an untouched register still gets its own sentence');
+}
 {
   const en = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
   ok(/unnamedRowsTitle:/.test(en) && /unnamedRowsBody:/.test(en),

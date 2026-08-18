@@ -32,7 +32,7 @@ import TimeField from '../../src/components/logbookStepper/TimeField';
 import {
   TOPICS, TOPIC_GROUPS, EMPTY_ATTENDEE, formatClock, buildAttendees,
   ATTENDEE_SOURCES, missingStepOneFields, weeklyGapWorkers, weeklyGapAttendee,
-  reconcileAttendees, topicCount, namedAttendees,
+  reconcileAttendees, topicCount, namedAttendees, unnamedAttendees,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/toolboxTalkModel';
 import { useT } from '../../src/i18n';
@@ -320,7 +320,14 @@ export default function ToolboxTalkLog() {
 
   // ── Save ──────────────────────────────────────────────────────────────
   const persistAndPush = async (submitStatus) => {
-    const data = draftBody(bodyRef.current);
+    // `forFiling` drops the nameless rows on a SUBMIT and keeps them on a
+    // draft. What he signed is what he sees: the trimmed roster is written
+    // back to state, so the screen never shows a row the filed sheet lacks.
+    const filing = submitStatus === 'submitted';
+    const data = draftBody({ ...bodyRef.current, forFiling: filing });
+    if (filing && data.attendees.length !== (bodyRef.current.attendees || []).length) {
+      setAttendees(data.attendees);
+    }
     await writeDraft(_key, {
       data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
     });
@@ -401,6 +408,30 @@ export default function ToolboxTalkLog() {
     if (!cpSignature) {
       setStep(TOTAL_STEPS);
       toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+      return;
+    }
+    // AN ATTENDEE WITH NO NAME IS NOT AN ATTENDEE. Both renderers already
+    // refuse to print one, so the row could only ever reach the STORED record
+    // — and it carried the CP's Present mark and the worker's own gate tap
+    // against a man nobody can identify. It is dropped at filing either way;
+    // this is what stops the dropping being silent.
+    //
+    // BLOCKING AT SUBMIT, NOT ON NEXT — a half-typed row is ordinary work
+    // while the talk is happening.
+    const unnamed = unnamedAttendees(attendees);
+    if (unnamed.length > 0) {
+      setStep(3);
+      toast.warning(
+        t('unnamedAttendeeTitle'),
+        t('unnamedAttendeeBody').replace(
+          '{rows}',
+          unnamed.map((u) => {
+            const bits = [u.held, u.marked ? t('unnamedAttendeeMarked') : '']
+              .filter(Boolean).join(', ');
+            return bits ? `${u.row} (${bits})` : String(u.row);
+          }).join('; '),
+        ),
+      );
       return;
     }
     setSigning(true);

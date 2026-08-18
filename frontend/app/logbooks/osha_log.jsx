@@ -376,28 +376,41 @@ export default function OshaLogBook() {
     // never be refused for it; it is only at the moment of FILING that the row
     // becomes an assertion about an unnamed man. So he is stopped once, at the
     // signature, sent back to the register, and told which rows and why.
+    // ONE GATE, TWO REASONS, AND THE SECOND ONE IS A CONSEQUENCE OF THE FIRST.
+    //
+    // These were two checks and the order between them decided what the CP was
+    // told. A register whose every row is nameless failed the first and got a
+    // useful sentence; one whose rows were untouched fell through to a generic
+    // "Nothing to file". And a register that empties for a reason this screen
+    // has NOT enumerated — a rule added later — would fall through to the
+    // generic one too, which is the shape that ages badly: the CP meets a
+    // refusal he could have been warned about, or worse, meets the SERVER's.
+    //
+    // So the gate computes what will be dropped, then says what that leaves.
     const unnamed = unnamedEntries(rowsNow);
-    if (unnamed.length > 0) {
+    const willFile = entriesForFiling(rowsNow).length;
+    if (unnamed.length > 0 || willFile === 0) {
       setStep(1);
-      toast.warning(
-        t('unnamedRowsTitle'),
-        t('unnamedRowsBody').replace(
-          '{rows}',
-          unnamed.map((u) => {
-            const held = [u.company, u.certification_type, u.card_number]
-              .filter(Boolean).join(', ');
-            return held ? `${u.row} (${held})` : String(u.row);
-          }).join('; '),
-        ),
-      );
-      return;
-    }
-    // AN EMPTY REGISTER IS NOT A RECORD. The footer button is already disabled
-    // for this, so reaching here means the state moved under the press; the
-    // check stands anyway rather than filing a document that asserts nothing.
-    if (entriesForFiling(rowsNow).length === 0) {
-      setStep(1);
-      toast.warning(t('nothingToFileTitle'), t('nothingToFileBody'));
+      const named = unnamed.map((u) => {
+        const held = [u.company, u.certification_type, u.card_number]
+          .filter(Boolean).join(', ');
+        return held ? `${u.row} (${held})` : String(u.row);
+      }).join('; ');
+      if (unnamed.length > 0 && willFile === 0) {
+        // Everything he typed is going, and nothing is left. Both facts, in
+        // that order — the reason first, because it is the one he can act on.
+        toast.warning(
+          t('nothingToFileTitle'),
+          `${t('unnamedRowsBody').replace('{rows}', named)} ${t('nothingLeftBody')}`,
+        );
+      } else if (unnamed.length > 0) {
+        toast.warning(t('unnamedRowsTitle'), t('unnamedRowsBody').replace('{rows}', named));
+      } else {
+        // Nothing was dropped and nothing is there — the register was never
+        // filled in. The footer button is already disabled for this, so
+        // reaching here means the state moved under the press.
+        toast.warning(t('nothingToFileTitle'), t('nothingToFileBody'));
+      }
       return;
     }
     setSigning(true);

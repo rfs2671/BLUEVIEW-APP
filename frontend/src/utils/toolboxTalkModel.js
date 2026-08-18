@@ -187,6 +187,34 @@ export function namedAttendees(attendees) {
 }
 
 /**
+ * Touched rows that WILL NOT BE FILED — the sentence the submit gate shows him.
+ *
+ * BOTH RENDERERS ALREADY DROP A NAMELESS ATTENDEE, so the row could reach the
+ * STORED record and never the FILED one: an auditor reading the collection and
+ * an inspector reading the PDF saw different sheets, and only the first showed
+ * the row. And a nameless row is not blank — `signed` is the CP's Present mark
+ * and `gate_confirmed` is the worker's own tap at the turnstile, so it carried
+ * two ticks against a man the record cannot name.
+ *
+ * An untouched EMPTY_ATTENDEE is NOT reported: it says nothing, it has always
+ * been dropped silently, and only a row he put something into is worth
+ * stopping him for.
+ */
+export function unnamedAttendees(attendees) {
+  const out = [];
+  (Array.isArray(attendees) ? attendees : []).forEach((a, i) => {
+    if (!a || typeof a !== 'object') return;
+    if (String(a.name || '').trim() !== '') return;
+    const held = [...TOOLBOX_GATE_FIELDS.filter((k) => k !== 'name'),
+      'time'].map((k) => String(a[k] ?? '').trim()).filter(Boolean);
+    const marked = !!a.signed || !!a.gate_confirmed;
+    if (held.length === 0 && !marked) return;
+    out.push({ row: i + 1, held: held.join(', '), marked });
+  });
+  return out;
+}
+
+/**
  * Which steps the CP has LEFT incomplete. Marks only; never gates — a CP who
  * cannot complete a step must still be able to finish and sign.
  *
@@ -303,7 +331,15 @@ export function draftBody(f) {
     meeting_time: f.meetingTime || '',
     performed_by: f.performedBy || '',
     checked_topics: f.checkedTopics || {},
-    attendees: Array.isArray(f.attendees) ? f.attendees : [],
+    // NAMED ROWS ONLY WHEN FILING. A draft keeps everything, because a
+    // half-typed attendee is ordinary work while the talk is happening; it is
+    // only at the moment of filing that a nameless row becomes a man on a
+    // signed attendance record who cannot be identified. Both renderers
+    // already refuse to print one, so without this the STORED record and the
+    // FILED record disagree — and only the stored one shows the row.
+    attendees: f.forFiling
+      ? namedAttendees(f.attendees)
+      : (Array.isArray(f.attendees) ? f.attendees : []),
   };
 }
 
@@ -325,6 +361,7 @@ export default {
   reconcileAttendees,
   topicCount,
   namedAttendees,
+  unnamedAttendees,
   incompleteSteps,
   draftBody,
 };
