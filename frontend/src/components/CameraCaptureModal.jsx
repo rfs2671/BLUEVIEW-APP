@@ -91,6 +91,11 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const uwDevice = useCameraDevice('back', { physicalDevices: ['ultra-wide-angle-camera'] });
   const wideDevice = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
   const frontDevice = useCameraDevice('front');
+  // UNFILTERED, and it is here only to be COMPARED against the two above.
+  // vision-camera picks the best back device with no constraint, which is
+  // normally the multi-camera spanning every lens. Nothing mounts it — see the
+  // diagnostic below for why that is the question.
+  const anyBackDevice = useCameraDevice('back');
 
   // `uwIsDistinct` now decides ONE thing: whether there is a separate ultra-wide
   // DEVICE worth mounting. Where the lens sits in the zoom range is no longer
@@ -186,6 +191,48 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   }, [device, frontDevice, position, backLens]);
 
   useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
+
+  /**
+   * DIAGNOSTIC ONLY — no behaviour, one line, removed once it has answered.
+   *
+   * THE REPORT: the camera opens at 1x, not ultra-wide. #147 set the opening
+   * zoom to the mounted device's `minZoom` and he still sees 1x, and three
+   * rounds have now been spent guessing at it from the source.
+   *
+   * WHAT THE SOURCE CAN ALREADY SAY. Both device lookups above carry a
+   * `physicalDevices` filter, so NOTHING HERE EVER MOUNTS THE MULTI-CAMERA
+   * DEVICE. If this phone's ultra-wide exists only inside a multi-cam that
+   * neither filter selects, `wideDevice` is a wide-ONLY device whose `minZoom`
+   * is 1.0 by construction — a device chosen for being the wide lens has no
+   * wider lens to zoom out to — and #147 cannot reach past it however it is
+   * written.
+   *
+   * WHAT ONLY THE PHONE CAN SAY: whether that is this phone. The decisive
+   * comparison is `any` against `mounted`:
+   *
+   *   any.minZoom < 1 while mounted.minZoom === 1
+   *     -> confirmed. The wider device exists and is not being mounted.
+   *   any.minZoom === mounted.minZoom === 1
+   *     -> the phone has no reachable ultra-wide. A hardware expectation, not
+   *        a bug, and #147 was never going to change it.
+   *
+   * The existing [CAM] shutter line prints device/pos/lens and no zoom values,
+   * which is exactly why this has stayed open. Logged at MOUNT rather than at
+   * the shutter: the framing is already wrong before he presses anything.
+   */
+  useEffect(() => {
+    const d = (label, dev) => `${label}{id=${dev?.id} phys=${(dev?.physicalDevices || []).join('+')} `
+      + `min=${dev?.minZoom} neutral=${dev?.neutralZoom} max=${dev?.maxZoom}}`;
+    console.log(
+      '[CAM-DIAG] %s %s %s %s uwIsDistinct=%s backLens=%s appliedZoom=%s',
+      d('any', anyBackDevice), d('uw', uwDevice), d('wide', wideDevice),
+      d('mounted', device), uwIsDistinct, backLens, zoom,
+    );
+    // Mount-time only: the deps are the identities that decide the framing, and
+    // `zoom` is deliberately NOT among them — re-logging on every pinch would
+    // bury the one line that matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens]);
 
   // Pinch-to-zoom within the active lens. runOnJS(true) forces the callback
   // onto the JS thread — without it, reanimated's babel plugin workletizes
