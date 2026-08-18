@@ -304,6 +304,16 @@ class TheEndpointReportsBothTheSetAndTheDoubt(unittest.TestCase):
         silent default classify_project stopped making, one layer out."""
         self.assertIsNone(self._get({"_id": "p1"})["project_class"])
 
+    def test_the_payload_carries_the_toggles_and_their_state(self):
+        """One request, so the control and the list beside it cannot disagree."""
+        out = self._get({"_id": "p1", "project_class": "regular",
+                         "excavation_active": True})
+        by_type = {a["log_type"]: a for a in out["activations"]}
+        self.assertEqual(set(by_type), set(TOGGLED))
+        self.assertIs(by_type["excavation_monitoring"]["active"], True)
+        self.assertIs(by_type["crane_operations"]["active"], False)
+        self.assertEqual(by_type["hot_work"]["activated_by"], "admin")
+
     def test_a_toggle_shows_up_in_the_payload(self):
         out = self._get({"_id": "p1", "project_class": "regular",
                          "crane_on_site": True})
@@ -357,6 +367,176 @@ class TheStoredSetIsRefreshedWhenAToggleMoves(unittest.TestCase):
         fn = _CODE[_CODE.index("async def update_scaffold_info"):]
         fn = fn[:fn.index("Scaffold info saved")]
         self.assertIn("await _refresh_required_logbooks(project_id)", fn)
+
+
+class TheActivationsAreReadOffTheRegistry(unittest.TestCase):
+    """The screen renders one row per conditional type from this, so a fifth
+    one added to the registry appears with no client change."""
+
+    def test_one_entry_per_conditional_type_and_no_others(self):
+        acts = S.logbook_activations({})
+        self.assertEqual({a["log_type"] for a in acts}, set(TOGGLED))
+
+    def test_each_names_its_field_and_its_owner(self):
+        by_type = {a["log_type"]: a for a in S.logbook_activations({})}
+        for log_type, field in TOGGLED.items():
+            with self.subTest(log=log_type):
+                self.assertEqual(by_type[log_type]["field"], field)
+        self.assertEqual(by_type["hot_work"]["activated_by"], "admin")
+        for cp_owned in ("scaffold_maintenance", "crane_operations",
+                         "excavation_monitoring"):
+            self.assertEqual(by_type[cp_owned]["activated_by"], "cp")
+
+    def test_active_tracks_the_project_field(self):
+        acts = {a["log_type"]: a["active"]
+                for a in S.logbook_activations({"crane_on_site": True})}
+        self.assertIs(acts["crane_operations"], True)
+        self.assertIs(acts["scaffold_maintenance"], False)
+
+    def test_a_label_comes_along_so_the_client_invents_no_wording(self):
+        by_type = {a["log_type"]: a for a in S.logbook_activations({})}
+        self.assertEqual(by_type["hot_work"]["label"], "Hot Work Permit Log")
+
+
+class OnlyTheRightPersonMayFlipIt(unittest.TestCase):
+    """ENFORCED SERVER-SIDE. Hiding the control on the client is a courtesy;
+    the request still exists, and a CP declaring hot work permitted would be
+    asserting an FDNY permit and a certificate of fitness that this app has
+    never seen."""
+
+    def _call(self, log_type, active, role="cp", project=None, omit_state=False):
+        state = {"doc": dict(project if project is not None
+                             else {"_id": "p1", "project_class": "regular"}),
+                 "audit": []}
+
+        class _Projects:
+            async def find_one(self, *a, **k):
+                return dict(state["doc"])
+
+            async def update_one(self, q, update):
+                state["doc"].update(update["$set"])
+
+        class _Audit:
+            async def insert_one(self, doc):
+                state["audit"].append(doc)
+
+        class _DB:
+            projects = _Projects()
+            audit_logs = _Audit()
+
+        body = {"log_type": log_type}
+        if not omit_state:
+            body["active"] = active
+        with patch.object(S, "db", _DB()), \
+             patch.object(S, "to_query_id", lambda x: x):
+            out = asyncio.run(S.set_logbook_activation(
+                "p1", body, current_user={"id": "u1", "role": role}))
+        return out, state
+
+    def test_a_cp_may_switch_on_what_he_can_see(self):
+        for log_type in ("scaffold_maintenance", "crane_operations",
+                         "excavation_monitoring"):
+            with self.subTest(log=log_type):
+                out, state = self._call(log_type, True)
+                self.assertIs(out["active"], True)
+                self.assertIs(state["doc"][TOGGLED[log_type]], True)
+                self.assertIn(log_type, out["required_logbooks"])
+
+    def test_a_cp_may_NOT_switch_on_hot_work(self):
+        with self.assertRaises(S.HTTPException) as cm:
+            self._call("hot_work", True, role="cp")
+        self.assertEqual(cm.exception.status_code, 403)
+        self.assertEqual(cm.exception.detail["code"], "ACTIVATION_REQUIRES_ADMIN")
+
+    def test_an_admin_may(self):
+        for role in ("admin", "owner"):
+            with self.subTest(role=role):
+                out, state = self._call("hot_work", True, role=role)
+                self.assertIs(state["doc"]["hot_work_permitted"], True)
+                self.assertIn("hot_work", out["required_logbooks"])
+
+    def test_the_refusal_writes_nothing_at_all(self):
+        """A 403 that had already flipped the field would be a guard in name."""
+        captured = {}
+
+        class _Projects:
+            async def find_one(self, *a, **k):
+                return {"_id": "p1", "project_class": "regular"}
+
+            async def update_one(self, q, update):
+                captured["wrote"] = update
+
+        class _DB:
+            projects = _Projects()
+
+        with patch.object(S, "db", _DB()), \
+             patch.object(S, "to_query_id", lambda x: x):
+            with self.assertRaises(S.HTTPException):
+                asyncio.run(S.set_logbook_activation(
+                    "p1", {"log_type": "hot_work", "active": True},
+                    current_user={"id": "u1", "role": "cp"}))
+        self.assertEqual(captured, {})
+
+    def test_switching_off_removes_it_from_the_required_set(self):
+        out, state = self._call(
+            "scaffold_maintenance", False,
+            project={"_id": "p1", "project_class": "regular", "scaffold_erected": True})
+        self.assertIs(state["doc"]["scaffold_erected"], False)
+        self.assertNotIn("scaffold_maintenance", out["required_logbooks"])
+
+    def test_a_type_with_no_toggle_is_refused(self):
+        for log_type in ("daily_jobsite", "concrete_operations", "nonsense", ""):
+            with self.subTest(log=log_type):
+                with self.assertRaises(S.HTTPException) as cm:
+                    self._call(log_type, True, role="owner")
+                self.assertEqual(cm.exception.status_code, 400)
+                self.assertEqual(cm.exception.detail["code"], "LOGBOOK_NOT_ACTIVATABLE")
+
+    def test_a_missing_state_is_refused_rather_than_read_as_OFF(self):
+        """Coercing an absent key to False would turn a malformed request into
+        a silent switch-off of a required compliance log."""
+        with self.assertRaises(S.HTTPException) as cm:
+            self._call("crane_operations", None, omit_state=True)
+        self.assertEqual(cm.exception.detail["code"], "ACTIVATION_STATE_REQUIRED")
+
+    def test_a_non_boolean_state_is_refused(self):
+        for bad in ("true", 1, 0, [], {}, None):
+            with self.subTest(active=bad):
+                with self.assertRaises(S.HTTPException) as cm:
+                    self._call("crane_operations", bad)
+                self.assertEqual(cm.exception.detail["code"], "ACTIVATION_STATE_REQUIRED")
+
+    def test_the_flip_is_audited(self):
+        _, state = self._call("crane_operations", True)
+        self.assertEqual(len(state["audit"]), 1)
+        entry = state["audit"][0]
+        self.assertEqual(entry["action"], "logbook_activation")
+        self.assertEqual(entry["details"],
+                         {"log_type": "crane_operations", "field": "crane_on_site",
+                          "active": True})
+
+    def test_the_stored_required_set_is_rewritten_in_the_same_call(self):
+        _, state = self._call("crane_operations", True)
+        self.assertIn("crane_operations", state["doc"]["required_logbooks"])
+
+
+class TheCitationsNameTheRightSection(unittest.TestCase):
+
+    def _ref(self, key):
+        return next(e for e in S.LOGBOOK_TYPE_REGISTRY
+                    if e["key"] == key)["dob_reference"]
+
+    def test_concrete_carries_the_CONCRETE_SAFETY_MANAGERS_sections(self):
+        """It carried §3310.4 — the SITE SAFETY COORDINATOR's section, which is
+        the SSC log's citation, sitting on the CSM's log. Nothing renders
+        dob_reference today, and that is exactly why it was worth fixing: a
+        wrong citation in a registry is the kind of thing that gets rendered
+        later and believed."""
+        self.assertEqual(self._ref("concrete_operations"), "§3310.10 / §3315")
+
+    def test_and_it_is_no_longer_the_SSCs(self):
+        self.assertNotEqual(self._ref("concrete_operations"),
+                            self._ref("ssc_daily_safety_log"))
 
 
 if __name__ == "__main__":

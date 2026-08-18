@@ -184,6 +184,58 @@ ok(/requiredLogbooks\.classification_assessed === false/.test(SCREEN),
     'strict false — undefined (an older server) must not raise it');
 }
 
+console.log('\n-- the four toggles are rendered from the model, not hardcoded --');
+ok(/const activations = requiredLogbooks\?\.activations \|\| \[\];/.test(SCREEN),
+  'the rows come from the server’s activations list');
+ok(/activations\.map\(\(act\) =>/.test(SCREEN),
+  'one row per conditional type — a fifth appears with no change here');
+{
+  // The scaffold toggle used to be the only one, hardcoded against its own
+  // endpoint and its own state variable.
+  ok(!/handleToggleScaffold/.test(SCREEN), 'the single hardcoded handler is gone');
+  ok(!/saveScaffoldInfo\(projectId, \{ scaffold_erected/.test(SCREEN),
+    'and so is its bespoke write path');
+  ok(/handleToggleLogbook/.test(SCREEN), 'replaced by one handler for all of them');
+}
+
+console.log('\n-- who owns which switch --');
+{
+  const at = SCREEN.indexOf('activations.map((act)');
+  const block = SCREEN.slice(at, SCREEN.indexOf('</>', at));
+  ok(block.includes("const mine = act.activated_by !== 'admin';"),
+    'ownership is read off the server’s answer, never a client-side list of types');
+  ok(/mine\s*\?\s*handleToggleLogbook\(act\)/.test(block.replace(/\s+/g, ' ')),
+    'a CP-owned switch flips');
+  ok(block.includes('An admin sets this one'),
+    'an admin-owned one explains itself instead of doing nothing');
+  ok(block.includes('an admin switches this one on'),
+    'and its OFF state says WHO turns it on — a CP hunting for the hot-work log '
+    + 'needs to know it exists, not to find a dead control');
+}
+{
+  // The client must not be the guard: the server enforces `activated_by`, and
+  // hiding a control is a courtesy on top of that.
+  // STRIPPED — the doc comment on this client explains that the SERVER owns
+  // `activated_by`, and matching that sentence would satisfy the assertion
+  // while proving nothing. Same trap backend/tests/source_text.py exists for.
+  const api = strip(fs.readFileSync(
+    path.join(FRONTEND, 'src', 'utils', 'api.js'), 'utf8'));
+  ok(api.includes('/activation'), 'the client posts to the activation endpoint');
+  ok(!/activated_by/.test(api),
+    'and does not decide ownership itself — that answer only comes from the server');
+}
+{
+  const at = SCREEN.indexOf('const handleToggleLogbook');
+  const fn = SCREEN.slice(at, SCREEN.indexOf('\n  };', at));
+  ok(fn.includes('e?.response?.status === 403'),
+    'a refusal is told apart from a failure to save');
+  ok(fn.includes('active: act.active'),
+    'and the optimistic switch is put back on any error');
+  ok(fn.includes('res?.required_logbooks'),
+    'the recomputed set comes back in the same response, so the list below '
+    + 'cannot disagree with the switch above it');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

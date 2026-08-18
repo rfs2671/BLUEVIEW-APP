@@ -66,7 +66,12 @@ function extractFn(anchor) {
 
 const GET_BY_DATE = '/api/checkins?date=';
 const DAILYLOGS_BY_PROJECT = '/api/daily-logs/project/';
-const LOGBOOKS_BY_PROJECT = '/api/logbooks/project/';
+// The FULL template, not the prefix. `/api/logbooks/project/` now matches
+// several endpoints under that path — the first of them being the activation
+// PUT, which is not a paginated GET and has no unwrap to find. An anchor that
+// silently resolves to a different function is how this test would come to
+// assert nothing while still passing, so it names exactly one call site.
+const LOGBOOKS_BY_PROJECT = '`/api/logbooks/project/${projectId}`';
 
 // A stub apiClient whose .get() returns a caller-controlled response body.
 function clientReturning(dataValue) {
