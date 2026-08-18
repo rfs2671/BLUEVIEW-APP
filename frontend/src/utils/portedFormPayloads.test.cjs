@@ -167,23 +167,28 @@ ok(blocked[0].certification_type === 'MISSING OSHA' && blocked[0].blocked === tr
 ok(blocked[0].card_number === '' && blocked[0].expiration === '',
   'and carries no card number — the gate established that he had none');
 
-// The screen's completeness rule must agree with the renderer's drop rule.
-// server.py:13472 skips a row with none of these five fields as an untouched
-// seed; if the pip disagreed, the CP would see a filled step print blank.
-ok(OSHA.entryHasContent(row) === true, 'a real row counts as content');
+// The screen's FILING rule must agree with the renderer's drop rule, and as of
+// device round 6 both are the worker name: a row carrying a card number and a
+// signature mark against nobody is not an incomplete record of somebody, it is
+// an assertion about a man the document does not identify. entryHasContent
+// stayed behind as the TOUCHED question, which is what the row pip reads.
+ok(OSHA.entryHasContent(row) === true, 'a real row counts as touched');
 ok(OSHA.entryHasContent(OSHA.EMPTY_ENTRY()) === false,
-  'an untouched EMPTY_ENTRY does NOT — the same rule the renderer drops it by');
-const seedSkipFields = [...new Set(
+  'an untouched EMPTY_ENTRY does NOT');
+const dropFields = [...new Set(
   [...oshaBranch.matchAll(/has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)/g)]
     .flatMap((m) => [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1])),
 )].sort();
-ok(seedSkipFields.length === 5,
-  `the renderer's seed-skip rule names 5 fields (${seedSkipFields.join(', ')})`);
-for (const f of seedSkipFields) {
+ok(JSON.stringify(dropFields) === '["worker_name"]',
+  `the renderer drops a row that names nobody (${dropFields.join(', ')})`);
+for (const f of dropFields) {
   const probe = { ...OSHA.EMPTY_ENTRY(), [f]: 'x' };
-  ok(OSHA.entryHasContent(probe) === true,
-    `entryHasContent agrees with the renderer on "${f}"`);
+  ok(OSHA.entryNamesWorker(probe) === true,
+    `entriesForFiling agrees with the renderer on "${f}"`);
 }
+ok(OSHA.entriesForFiling([{ ...OSHA.EMPTY_ENTRY(), company: 'AAZ', card_number: 'C1' }])
+  .length === 0,
+  'and a company + card number with no name is filed by neither');
 
 // The payload wrapper.
 ok(JSON.stringify(Object.keys(OSHA.draftBody([]))) === '["entries"]',

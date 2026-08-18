@@ -7,6 +7,10 @@ one of those filed the row this gate exists to stop — project
 6a5f63bc147407d3261df2c7, 2026-08-11: an entry with no name, no card number and
 no certification, on a signed compliance record.
 
+WIDENED IN DEVICE ROUND 6 to the worker name alone. The five-field any-of rule
+caught that row and missed the worse one: a card number and a signature mark
+filed against a man the register does not name.
+
 WHAT IS BEING ASSERTED, and what deliberately is not.
 
 finalize_logbook rules that per-field completeness "differs per log type and
@@ -83,14 +87,27 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         self.assertNotIn("submitDisabled=", screen)
 
     def test_osha_fields_match_the_renderer(self):
-        """render_logbook_html's osha_log branch skips a row with none of five
-        fields as 'an untouched EMPTY_ENTRY seed'. Read from the source."""
+        """render_logbook_html's osha_log branch drops a row that names no
+        worker. Read from the source, so the two cannot drift apart."""
         branch = _SRC[_SRC.index('elif log_type == "osha_log":'):]
         branch = branch[:branch.index("elif log_type ==", 10)]
-        self.assertIn("untouched EMPTY_ENTRY seed", branch)
         m = re.search(r"has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)", branch)
         renderer_fields = tuple(re.findall(r'"([a-z_]+)"', m.group(1)))
         self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["osha_log"][1], renderer_fields)
+
+    def test_the_osha_rule_is_the_WORKER_NAME(self):
+        """DEVICE ROUND 6, item 1 — the rule was widened, and the widening is
+        the whole point rather than an implementation detail of the tuple.
+
+        It read five fields any-of, which caught the abandoned blank row from
+        production and let through the shape that is worse: a row carrying a
+        company, a card number and a signature mark against NO NAME. That is
+        not an incomplete record of somebody, it is an assertion about a man
+        the document does not identify — nobody can be checked against it and
+        nobody can be cleared by it. The other four fields are detail ON a row
+        that already names somebody."""
+        self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["osha_log"],
+                         ("entries", ("worker_name",)))
 
     def test_the_preshift_rule_exists_in_the_renderers_and_is_ready(self):
         """The rule preshift WOULD use is shipped in both renderers already —
@@ -139,12 +156,34 @@ class ItFiresOnTheProductionShape(unittest.TestCase):
             S._submit_no_content_detail("osha_log", {"entries": [seed, real]}),
         )
 
-    def test_the_company_only_row_from_production_is_content(self):
-        """The abandoned row carried company 'AAZ' and nothing else. The CP
-        typed it, the renderer prints it, so the gate must not refuse it."""
+    def test_the_company_only_row_is_NO_LONGER_content(self):
+        """REVERSED, device round 6. The abandoned row carried company 'AAZ'
+        and nothing else, and this gate used to pass it through because the CP
+        had typed something. A company is not a worker: the row still says
+        nothing about anybody, and both renderers now decline to print it, so
+        a register consisting only of rows like it would come out blank."""
         row = {"worker_name": "", "company": "AAZ", "certification_type": "",
                "card_number": "", "expiration": ""}
-        self.assertIsNone(S._submit_no_content_detail("osha_log", {"entries": [row]}))
+        self.assertIsNotNone(S._submit_no_content_detail("osha_log", {"entries": [row]}))
+
+    def test_the_nameless_CARD_row_is_refused(self):
+        """The shape device round 6 read back off a filed register: a card
+        number and a signature mark, against nobody."""
+        row = {"worker_name": "", "company": "AAZ", "certification_type": "SST",
+               "card_number": "12345678", "expiration": "2027-01-01", "signed": True}
+        self.assertEqual(
+            S._submit_no_content_detail("osha_log", {"entries": [row]}),
+            {"code": "SUBMIT_NO_CONTENT", "log_type": "osha_log"},
+        )
+        # And one named row beside it is still enough for the record to exist —
+        # this gate asks whether the DOCUMENT would print blank, not whether
+        # every row is good. The nameless row is dropped by the renderers.
+        self.assertIsNone(S._submit_no_content_detail(
+            "osha_log", {"entries": [row, {"worker_name": "WILMER CARRILLO"}]}))
+
+    def test_whitespace_is_not_a_name(self):
+        self.assertIsNotNone(
+            S._submit_no_content_detail("osha_log", {"entries": [{"worker_name": "   "}]}))
 
     def test_an_empty_register_is_refused(self):
         self.assertIsNotNone(S._submit_no_content_detail("osha_log", {"entries": []}))

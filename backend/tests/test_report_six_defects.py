@@ -258,7 +258,23 @@ class TheBlankRowIsGoneEverywhere(unittest.TestCase):
 
     def test_toolbox_talk_skips_a_nameless_attendee(self):
         block = _REPORT[_REPORT.index('for a in td_data.get("attendees"'):]
-        block = block[:600]
+        block = block[:block.index("att_rows +=")]
+        self.assertIn('if not str(a.get("name") or "").strip():', block)
+        self.assertIn("continue", block)
+
+    def test_the_per_logbook_PDF_skips_one_too(self):
+        """DEVICE ROUND 6, item 2. The gate above was applied to the emailed
+        report and nowhere else, while its own comment said the pre-shift sheet
+        and the OSHA register "already use" it and this table "was the one that
+        never got it". The second half was false: render_logbook_html — the
+        document an inspector asks for BY NAME — had no name gate on this table
+        at all, so one stored talk printed two different attendance records.
+
+        A nameless row there was not blank, either: it carried Present ✓ from
+        the CP's mark and Confirmed at gate ✓ from a worker tap, against a man
+        the record does not identify."""
+        block = _SINGLE[_SINGLE.index('for a in data.get("attendees"'):]
+        block = block[:block.index("att_rows +=")]
         self.assertIn('if not str(a.get("name") or "").strip():', block)
         self.assertIn("continue", block)
 
@@ -267,8 +283,18 @@ class TheBlankRowIsGoneEverywhere(unittest.TestCase):
         cannot quietly remove the rule the other tables were brought up to."""
         self.assertEqual(_SRC.count('if w.get("name", "").strip():'), 2)
 
-    def test_the_osha_register_still_skips_its_seed(self):
-        self.assertIn("untouched EMPTY_ENTRY seed", _SINGLE)
+    def test_the_osha_register_drops_a_row_that_names_nobody(self):
+        """WIDENED, device round 6 item 1. It skipped a row carrying none of
+        five fields — the untouched seed — and printed one carrying a company
+        and a card number against no name. A certification register is a list
+        of statements about named men, so the name is the rule and the seed
+        row (which has no name either) is still dropped by it."""
+        branch = _SINGLE[_SINGLE.index('elif log_type == "osha_log":'):]
+        branch = branch[:branch.index("elif log_type ==", 10)]
+        m = re.search(r"has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)", branch)
+        self.assertIsNotNone(m, "the osha row gate is unreadable")
+        self.assertEqual(tuple(re.findall(r'"([a-z_]+)"', m.group(1))),
+                         ("worker_name",))
 
 
 class TheDuplicateWorkerRow(unittest.TestCase):
@@ -728,7 +754,12 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
     def test_every_call_site_goes_through_the_resolver(self):
         """Ten hand-written picks is how this pair drifted twice. One resolver,
         and no `next(...)` survives to drift again."""
-        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 10)
+        # ELEVEN, not ten: the compliance line on page 1 now resolves the
+        # project's REQUIRED set through the same resolver the sections below
+        # print from (device round 6, item 3), so it cannot call a log missing
+        # that page 2 goes on to render. That is one more call site and one
+        # fewer place to drift.
+        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 11)
         self.assertNotIn('next((l for l in logbooks', _REPORT)
 
 

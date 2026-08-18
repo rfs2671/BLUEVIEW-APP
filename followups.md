@@ -102,3 +102,72 @@ Known gaps and deferred work, newest first.
   the PR-F commit. Second-submits and other log types are unaffected. If a
   backfill is ever needed, source of truth is the `logbooks` rows themselves
   (created_at / cp_signature) — the events cannot be recovered, only approximated.
+
+- **Free text where a picker belongs — company and trade.** Device round 6,
+  finding 5, ruled STORED-NOT-RENDERED and deliberately not fixed as a string.
+  An OSHA register row on 588 Thomas S Boyland reads `A AZ`; every other row on
+  the same filed document reads `AAZ`. `_capitalize_first` (server.py:18274)
+  upper-cases the first non-space character and preserves the rest exactly, so
+  nothing in the renderers inserted that space — somebody typed it into a row he
+  had added by hand, and it filed.
+
+  SAME CLASS as `Concrete` vs `Concrete / Cement`: a field the app already knows
+  the answers to, offered as free text. The gate holds the companies on site and
+  the taxonomy holds the trades, and neither is offered at the point of entry, so
+  every hand-added row is one typo away from a filed document that disagrees with
+  itself.
+
+  THE TRADE PICKER on the backlog closes both — one control, sourced from what
+  the project already knows, replacing free text on the company and trade fields.
+  Recorded here rather than patched: normalising the stored string would hide the
+  entry gap that produced it, and the next row would read `AA Z`.
+
+- **[MED] `daily_jobsite` activity rows have no emptiness gate on EITHER renderer.**
+  Device round 6, reported not fixed. `render_logbook_html`'s daily_jobsite
+  branch (`act_rows`, server.py:13084) iterates `data.activities` and emits a
+  row for every entry, with no test for whether the entry says anything — an
+  untouched crew row prints as a line on a filed §3301.2 record carrying a CP's
+  count of 0 and nothing else. The report-side rendering, which the round-6
+  notes recorded as NOT LOCATED, was located while writing this entry:
+  `generate_combined_report` builds its own activity table the same way
+  (server.py:19228) and has the same gap. Two renderers, one missing rule.
+  The OSHA register, the pre-shift sheet and (as of this round) the toolbox
+  attendee table all gate their rows; these two do not.
+
+  NOT THE SAME RULE, which is why it was reported rather than patched with the
+  others. Those three are PERSON-owned records — every row names a man, so "no
+  name, no row" is the rule and it is the same rule in all three. An activity
+  row is CREW-owned: it names a company and a crew id, and what makes it real
+  is arguable in a way the others are not (a crew that showed up and did
+  nothing recordable is a fact about the day). Deciding the minimum content for
+  an activity row is the per-form ruling `finalize_logbook` still defers to the
+  operator, and inventing one in the renderer would assert a minimum the form
+  has never declared.
+
+- **[MED] `preshift_signin` can STORE a nameless worker row, though it never prints one.**
+  Device round 6, reported not fixed. Both renderers gate the row on
+  `if w.get("name", "").strip()`, so a nameless row has never reached a
+  document — but the sheet is deliberately absent from
+  `_SUBMIT_ROW_CONTENT_RULES` (`_SUBMIT_ROW_CONTENT_RULES_DEFERRED`), so the
+  row is accepted and stored. The STORED record and the FILED record therefore
+  differ: an inspector reading the PDF and an auditor reading the collection
+  see different sheets, and only the second one shows the row.
+
+  THE DEFERRAL STANDS and its reason is unchanged: `preshift_signin.jsx` has no
+  client gate, so turning the server rule on would create a refusal a live CP
+  meets for the first time mid-shift, at the gate, on the one form where being
+  stopped costs a man the start of his day. It comes back when that form is
+  ported onto the shared stepper and has a client gate in front of it — exactly
+  the sequence `osha_log` followed, and exactly what item 1 of this round added
+  to `osha_log` at FINAL SUBMIT.
+
+- **[LOW] Two surfaces were NOT traced in device round 6 and are unverified.**
+  Stated so neither is mistaken for cleared:
+  - **The kiosk inspector view** (`app/site/logbooks.jsx`) was not traced for
+    `osha_log` or `toolbox_talk`. The nameless-row rule was applied to the two
+    PDF renderers and to what is filed; whether the on-site kiosk shows such a
+    row is unknown.
+  - **`daily_jobsite`'s report-side activity rendering** was recorded as not
+    located; it has since been found (server.py:19228) and folded into the
+    activity-row item above. Nothing about it is outstanding except the ruling
+    that item is waiting on.

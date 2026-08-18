@@ -17,7 +17,12 @@ import {
  *
  * SAFETY — what this will and will not push:
  *   • Only keys in the pending index. Those are pushes the user ALREADY
- *     initiated and that failed; an abandoned draft is never auto-sent.
+ *     initiated; an abandoned draft is never auto-sent. TWO SOURCES put a key
+ *     there, and both are an act of the user's: a push he made that failed,
+ *     and an AMENDMENT he asked the server to create (adoptAmendment). The
+ *     second is queued from the moment it is adopted because its corrections
+ *     live nowhere but the device until it is signed, which may be days.
+ *   • Never an EMPTY payload over an existing document — see pushOne.
  *   • Only the STANDARD logbook types, whose payload reconstructs EXACTLY from
  *     what the editors send: create/update {project_id, log_type, date, data,
  *     cp_signature, cp_name, status}. The draft stores precisely those fields
@@ -209,6 +214,22 @@ async function pushOne(key) {
     cp_name: draft.cp_name,
     status: draft.status || 'draft',
   };
+
+  // ── A DRAFT THAT SAYS NOTHING NEVER OVERWRITES A DOCUMENT THAT DOES ──────
+  // update_logbook takes `data` verbatim, so pushing `{}` blanks the stored
+  // record. That is reachable now: a key is queued the moment an amendment is
+  // ADOPTED (see adoptAmendment), and at that instant the local draft is a
+  // freshly bound shell — no content yet, while the server's child already
+  // holds the whole log copied from its parent. A drain in that window would
+  // empty the very document the amendment exists to correct.
+  //
+  // Left PENDING rather than cleared: the draft has nothing to send YET, which
+  // is not a failure and not a completed push. The next drain, after the CP has
+  // actually typed something, sends it. A CREATE is unaffected — an empty
+  // create writes an empty record and destroys nothing.
+  if (draft.backend_id && Object.keys(data || {}).length === 0) {
+    return { key, ok: false, reason: 'empty-draft', logId: draft.backend_id };
+  }
 
   // ── DO NOT PUSH AN UNSIGNED SUBMIT ──────────────────────────────────────
   // The draft stores `status` and `cp_signature` independently (logbookDrafts

@@ -757,5 +757,104 @@ class FailedPhotoCountTest(unittest.TestCase):
         self.assertNotIn("failed_photo_count", resp.text)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  DEVICE ROUND 6 — A ROW THAT NAMES NOBODY IS NOT A ROW
+# ══════════════════════════════════════════════════════════════════════════
+
+def _table_rows(html: str, last_header: str) -> int:
+    """Body rows of the table whose header ends with `last_header`."""
+    head = html.index(f">{last_header}</th>")
+    table = html[head:html.index("</table>", head)]
+    return table.count("<tr>")
+
+
+class TheNamelessToolboxAttendee(unittest.TestCase):
+    """ITEM 2. The emailed report dropped a nameless attendee; THIS renderer —
+    the per-logbook PDF, the document an inspector asks for by name — did not.
+    One stored talk, two different attendance records.
+
+    The row was not blank, either. `signed` is the CP's Present mark and
+    `gate_confirmed` is the worker's own tap at the turnstile, so the line
+    printed Present ✓ and Confirmed ✓ against a man the record cannot name.
+    """
+
+    def _html(self, attendees):
+        return render(doc("toolbox_talk", {
+            "location": "gate", "company_name": "aaz", "performed_by": "carl cp",
+            "meeting_time": "07:30 AM", "checked_topics": {"hard_hats": True},
+            "attendees": attendees,
+        }))
+
+    NAMED = {"name": "wilmer carrillo", "title": "foreman", "company": "aaz",
+             "time": "07:15", "signed": True, "added_from": "gate"}
+    NAMELESS = {"name": "", "title": "laborer", "company": "aaz",
+                "time": "07:20", "signed": True, "gate_confirmed": True,
+                "added_from": "gate"}
+
+    def test_the_nameless_row_does_not_print_at_all(self):
+        html = self._html([self.NAMED, dict(self.NAMELESS)])
+        self.assertIn(">Wilmer carrillo<", html)
+        self.assertNotIn(">Laborer<", html)
+        self.assertEqual(_table_rows(html, "Added by"), 1)
+
+    def test_and_it_takes_its_ticks_with_it(self):
+        """The point is not the empty cell. It is that a signed attendance
+        record asserted PRESENT and CONFIRMED AT GATE about somebody it does
+        not identify."""
+        one = self._html([dict(self.NAMELESS)])
+        self.assertEqual(_table_rows(one, "Added by"), 1)   # the "no rows" dash
+        self.assertIn("colspan=\"7\"", one)
+        self.assertNotIn("&#10003;", one)
+
+    def test_whitespace_is_not_a_name(self):
+        html = self._html([dict(self.NAMELESS, name="   ")])
+        self.assertIn("colspan=\"7\"", html)
+
+    def test_a_named_row_is_untouched(self):
+        html = self._html([self.NAMED])
+        self.assertEqual(_table_rows(html, "Added by"), 1)
+        self.assertIn("Wilmer carrillo", html)
+        self.assertIn("&#10003;", html)
+
+
+class TheNamelessOshaRow(unittest.TestCase):
+    """ITEM 1. The register skipped a row carrying none of five fields and
+    printed one carrying a company and a card number against no name — a
+    certification on a signed register belonging to nobody named."""
+
+    def _html(self, entries):
+        return render(doc("osha_log", {"entries": entries}))
+
+    NAMED = {"worker_name": "wilmer carrillo", "company": "aaz",
+             "certification_type": "SST", "card_number": "11112222",
+             "expiration": "2027-03-01", "signed": True}
+    NAMELESS = {"worker_name": "", "company": "aaz", "certification_type": "SST",
+                "card_number": "99998888", "expiration": "2027-03-01",
+                "signed": True}
+
+    def test_a_card_number_with_no_worker_does_not_print(self):
+        html = self._html([self.NAMED, dict(self.NAMELESS)])
+        self.assertIn(">11112222<", html)
+        self.assertNotIn(">99998888<", html)
+        self.assertEqual(_table_rows(html, "Signed"), 1)
+
+    def test_a_register_of_nothing_but_nameless_rows_prints_no_table(self):
+        html = self._html([dict(self.NAMELESS), {"company": "aaz"}])
+        self.assertNotIn(">99998888<", html)
+        self.assertNotIn(">Card #</th>", html)
+
+    def test_whitespace_is_not_a_name(self):
+        self.assertNotIn(">99998888<",
+                         self._html([dict(self.NAMELESS, worker_name=" ")]))
+
+    def test_the_untouched_seed_is_still_dropped(self):
+        """It has no name either, so the rule that replaced the five-field
+        test still catches everything the five-field test caught."""
+        seed = {"worker_id": None, "worker_name": "", "company": "",
+                "certification_type": "", "card_number": "", "expiration": "",
+                "signed": False, "date": "2026-08-11"}
+        self.assertNotIn(">Card #</th>", self._html([seed]))
+
+
 if __name__ == "__main__":
     unittest.main()

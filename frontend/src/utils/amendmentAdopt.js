@@ -36,7 +36,7 @@
  */
 
 import { logbooksAPI } from './api';
-import { discardFinalizedDraft } from './logbookDrafts';
+import { discardFinalizedDraft, setDraftBackendId, markPending } from './logbookDrafts';
 
 /**
  * Is this server document an editable amendment rather than the filed original?
@@ -61,6 +61,44 @@ export function pickEditableChild(docs) {
  * Returns true when the caller should fall through to its server path, false
  * when it should keep the locked local draft. Never throws: a screen that
  * cannot load is worse than a screen that stays locked.
+ *
+ * ── AND THEN THE AMENDMENT IS MADE DURABLE ────────────────────────────────
+ *
+ * Discarding the parent was enough to get the child ON SCREEN, and that is
+ * where #143 stopped. It left the correction itself living on one device.
+ *
+ * TWO THINGS GO WRONG WITHOUT THE TWO CALLS BELOW.
+ *
+ *   THE DRAFT DID NOT KNOW WHICH DOCUMENT IT WAS. The discard deletes the
+ *   record outright, so the next draft written for this key carries
+ *   `backend_id: null` — the editor sets `existingLogId` from the SERVER doc
+ *   it just loaded, but that lives in component state and dies with the mount.
+ *   Re-open the screen after a force-quit and the local-first branch returns a
+ *   draft with content and no id, so the next Submit takes the CREATE path: a
+ *   THIRD document for one (project, type, date), with no parent link and no
+ *   amendment reason, which is newer than the original and therefore the one
+ *   _filed_log prints. The correction reaches the report as an unexplained
+ *   duplicate. setDraftBackendId is what stops that: from here on the draft
+ *   names the child, so every later push UPDATES it.
+ *
+ *   THE CORRECTION NEVER LEFT THE DEVICE. Editors are local-first by design —
+ *   autosave writes AsyncStorage and nothing else — and for an ordinary log
+ *   that is fine, because the log is pushed when it is signed. An amendment is
+ *   the one case where the gap is open indefinitely: the server holds the
+ *   child with the PARENT'S data copied onto it (amend_logbook), so the
+ *   corrections are exactly the part that exists nowhere but here.
+ *   markPending puts the key in the queue the reconnect drain already owns, so
+ *   the CP's edits go up on the next drain instead of waiting for a signature
+ *   that may be days away.
+ *
+ * THE REPORT IS UNCHANGED, deliberately. _filed_log still refuses to print an
+ * unsigned amendment — an intention to correct is not a correction, and
+ * publishing one to investors and lenders would assert a change nobody has
+ * attested to. This makes the amendment SURVIVE; signing it is still what
+ * makes it PRINT.
+ *
+ * Both are best-effort and neither can fail the adoption: the screen must open
+ * whatever the storage layer says.
  */
 export async function adoptAmendment({ key, projectId, logType, date }) {
   if (!key || !projectId || !logType) return false;
@@ -76,8 +114,18 @@ export async function adoptAmendment({ key, projectId, logType, date }) {
   // unlocked, the server is mid-write or this is a draft that was never filed.
   // Neither is an amendment, and neither is worth discarding a local record for.
   if (docs.length < 2) return false;
-  if (!pickEditableChild(docs)) return false;
-  return discardFinalizedDraft(key);
+  const child = pickEditableChild(docs);
+  if (!child) return false;
+  const discarded = await discardFinalizedDraft(key);
+  if (!discarded) return false;
+  const childId = child.id || child._id;
+  if (childId) {
+    try {
+      await setDraftBackendId(key, String(childId));
+      await markPending(key);
+    } catch (_e) { /* the screen still opens; the next save re-binds and re-queues */ }
+  }
+  return true;
 }
 
 export default adoptAmendment;
