@@ -86,7 +86,6 @@ export const palette = Object.freeze({
   cyan500:   '#06b6d4', // 1 use,  1 file
   emerald500:'#10b981', // 1 use,  1 file
   slate400:  '#94a3b8', // 1 use,  1 file
-  pink500:   '#ec4899', // 1 use,  1 file
   pink400:   '#f472b6', // 1 use,  1 file
   amber500:  '#f59e0b', // 1 use,  1 file
   black:     '#000000', // 0 standalone uses — survives as a TINT BASE only

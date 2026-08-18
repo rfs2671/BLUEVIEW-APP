@@ -343,11 +343,17 @@ const exactMatches = distinctOpaque.filter((h) => themeHexes.has(h));
 const colourMatches = distinctOpaque.filter((h) => themeHexes.has(expand(h))
   || [...themeHexes].some((t) => expand(t) === expand(h)));
 // Was 18 before U1, then 17 (the rebuild removed the last standalone '#000000'
-// from the CP screens; it survives only as a tint base). Now 15: the osha_log
+// from the CP screens; it survives only as a tint base). Then 15: the osha_log
 // and scaffold_maintenance port took '#22d3ee' and '#ef4444' with it, and both
 // are gone from the palette for the same reason.
-ok(distinctOpaque.length === 15,
-  `finding (c): 15 distinct opaque hex literals (got ${distinctOpaque.length})`);
+//
+// NOW 14, and this one was never really in use. '#ec4899' (pink500) was the
+// colour of a placeholder row in getVisibleLogTypes' dynamic branch — a branch
+// that could not run, because it read a response key the server has never sent.
+// The literal existed, the palette carried a token for it, and no CP has ever
+// seen the pixel. Removing the dead branch removed the only use.
+ok(distinctOpaque.length === 14,
+  `finding (c): 14 distinct opaque hex literals (got ${distinctOpaque.length})`);
 // Was 5. The U1 restyle added `outdoor.accent: '#60a5fa'` to theme.js — the
 // blue the app's count and status pills are drawn in — so that literal now has
 // a token where it did not before. The finding's POINT is unchanged (the
