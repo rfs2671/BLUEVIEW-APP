@@ -17738,11 +17738,53 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         if d.get("log_type") and d.get("date")
     ]
 
+    # ── STALE AND UNSIGNED — the CP-facing half of the end-of-day sweep ─────
+    #
+    # sweep_stale_end_of_day_logs freezes yesterday's SIGNED daily narratives
+    # and deliberately does NOT freeze the unsigned ones: a CP who signed and
+    # left is a different fact from a CP who never signed, and sealing the
+    # second would close a record nobody attested to. It raises a
+    # compliance_alerts row so the ADMIN sees it.
+    #
+    # This is the other half. The admin can see an unfinished obligation; the
+    # CP is the only person who can finish it, so he has to see it too — and on
+    # the screen he already opens every morning, not in an admin console he has
+    # no login for.
+    #
+    # SAME SHAPE AS unaffirmed_logbooks ABOVE: a count for the card and
+    # lightweight refs so the card deep-links straight to the log that needs
+    # signing. It is deliberately not a fourth exception treatment — see the
+    # drift note in followups.md.
+    #
+    # END_OF_DAY ONLY. An immediate log froze when it was signed, so an
+    # unsigned one is simply a draft nobody finished, not a day left open.
+    stale_unsigned_docs = await db.logbooks.find(
+        {
+            "project_id": project_id,
+            "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
+            "date": {"$lt": eastern_date()},
+            "is_locked": {"$ne": True},
+            "is_deleted": {"$ne": True},
+        },
+        {"log_type": 1, "date": 1, "cp_signature": 1},
+    ).sort("date", -1).to_list(200)
+    # THE SWEEP'S OWN PREDICATE, not a re-derivation. A log this list shows as
+    # needing a signature must be exactly a log the sweep declined to freeze,
+    # or the CP signs something and it stays on his screen.
+    stale_unsigned_refs = [
+        {"log_type": d.get("log_type"), "date": d.get("date")}
+        for d in stale_unsigned_docs
+        if d.get("log_type") and d.get("date")
+        and not _is_affirmed_signature(d.get("cp_signature"))
+    ]
+
     return {
         "missing_toolbox_talk": missing_toolbox,
         "unsigned_orientations": unsigned_orientations,
         "unaffirmed_logbooks": len(unaffirmed_docs),
         "unaffirmed_logbook_refs": unaffirmed_refs,
+        "stale_unsigned_logbooks": len(stale_unsigned_refs),
+        "stale_unsigned_logbook_refs": stale_unsigned_refs,
         "week_start": week_start_str,
     }
 
