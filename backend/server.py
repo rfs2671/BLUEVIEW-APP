@@ -1401,6 +1401,41 @@ def classification_assessed(project) -> bool:
     return str((project or {}).get("project_class") or "") in VALID_PROJECT_CLASSES
 
 
+def logbook_activations(project=None) -> list:
+    """Every log that has to be SWITCHED ON, and whether it currently is.
+
+    One entry per registry type carrying a `conditional`, so the screen renders
+    the toggles from the model instead of hardcoding four of them — and a fifth
+    conditional type added to the registry appears with no client change.
+
+    `activated_by` rides along because the answer differs per log and the
+    client must not guess it: three of these are site conditions the CP can
+    see, and hot work rests on an FDNY permit the admin holds.
+    """
+    proj = project or {}
+    out = []
+    for entry in LOGBOOK_TYPE_REGISTRY:
+        field = entry.get("conditional")
+        if not field:
+            continue
+        out.append({
+            "log_type": entry["key"],
+            "label": entry.get("label") or entry["key"],
+            "field": field,
+            "active": bool(proj.get(field)),
+            "activated_by": entry.get("activated_by") or "cp",
+        })
+    return out
+
+
+def logbook_activation_entry(log_type: str):
+    """The registry entry for a log that can be switched on, or None."""
+    for entry in LOGBOOK_TYPE_REGISTRY:
+        if entry["key"] == log_type and entry.get("conditional"):
+            return entry
+    return None
+
+
 def get_required_logbooks(project_class, project=None):
     """The logbooks this project must keep, RESOLVED FROM THE PROJECT.
 
@@ -2967,7 +3002,13 @@ LOGBOOK_TYPE_REGISTRY = [
         "frequency": "daily",
         "icon": "Layers",
         "color": "#64748b",
-        "dob_reference": "§3310.4",
+        # §3310.10 (Concrete Safety Manager) and §3315 (concrete operations).
+        # It carried §3310.4, which is the SITE SAFETY COORDINATOR's section —
+        # the SSC log's citation, on the CSM's log. Nothing renders
+        # dob_reference today, and that is exactly why it was worth fixing now:
+        # a wrong citation sitting in a registry is the kind of thing that gets
+        # rendered later and believed.
+        "dob_reference": "§3310.10 / §3315",
         # A Concrete Safety Manager instrument: a MAJOR-BUILDING classification,
         # not a site condition, so it is keyed off project_class and carries no
         # toggle. The storey condition it used to carry was a second, disagreeing
@@ -9283,6 +9324,9 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
         # them as the app being wrong about his site.
         "classification_assessed": classification_assessed(project),
         "required_logbooks": required,
+        # The toggles, so the screen makes one request rather than two and can
+        # never show a control whose state disagrees with the set beside it.
+        "activations": logbook_activations(project),
     }
 
 @api_router.delete("/projects/{project_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -17451,6 +17495,65 @@ async def _refresh_required_logbooks(project_id: str) -> list:
         {"$set": {"required_logbooks": required}},
     )
     return required
+
+
+@api_router.put(
+    "/logbooks/project/{project_id}/activation",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def set_logbook_activation(
+    project_id: str, data: Dict[str, Any], current_user = Depends(get_current_user),
+):
+    """Switch a conditional logbook ON or OFF for this project.
+
+    ONE ENDPOINT FOR ALL OF THEM, and it does not know which is which. The log
+    type names the project field (`conditional`) and who may set it
+    (`activated_by`), both read from LOGBOOK_TYPE_REGISTRY. A fifth conditional
+    type added there is switchable with no change here.
+
+    WHO MAY FLIP IT IS ENFORCED, not merely displayed. Three of these are site
+    conditions the CP can see — a scaffold is up, a crane is on site, an
+    excavation is open — and he is the right person to say so. Hot work is not:
+    it rests on an FDNY permit and a certificate of fitness, paper the admin
+    holds and this app has never seen, so a CP declaring the work permitted
+    would be asserting a document nobody has shown it. Filling the hot-work log
+    remains entirely his.
+
+    A client that hides the control is not a guard: the request still exists.
+    """
+    log_type = str((data or {}).get("log_type") or "").strip()
+    entry = logbook_activation_entry(log_type)
+    if entry is None:
+        # Names the type rather than the field, because the caller sent a type.
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "LOGBOOK_NOT_ACTIVATABLE", "log_type": log_type},
+        )
+    if entry.get("activated_by") == "admin" and current_user.get("role") not in ("admin", "owner"):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "ACTIVATION_REQUIRES_ADMIN", "log_type": log_type},
+        )
+    # `active` is REQUIRED and must be a real boolean. Coercing a missing key to
+    # False would turn a malformed request into a silent switch-off, and the
+    # thing being switched off is a required compliance log.
+    active = (data or {}).get("active")
+    if not isinstance(active, bool):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ACTIVATION_STATE_REQUIRED", "log_type": log_type},
+        )
+    await db.projects.update_one(
+        {"_id": to_query_id(project_id)},
+        {"$set": {entry["conditional"]: active,
+                  "updated_at": datetime.now(timezone.utc)}},
+    )
+    required = await _refresh_required_logbooks(project_id)
+    await audit_log(
+        "logbook_activation", str(current_user.get("id", "")), "project", project_id,
+        {"log_type": log_type, "field": entry["conditional"], "active": active},
+    )
+    return {"log_type": log_type, "active": active, "required_logbooks": required}
 
 
 @api_router.get("/logbooks/project/{project_id}/scaffold-info")

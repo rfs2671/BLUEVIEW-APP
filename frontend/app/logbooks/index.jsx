@@ -32,7 +32,7 @@ import CpNav from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
-import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI } from '../../src/utils/api';
+import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI, logbookActivationAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -337,20 +337,61 @@ export default function LogBooksScreen() {
     return 'draft';
   };
 
-  const handleToggleScaffold = async () => {
-    if (!selectedProject) return;
+  /**
+   * Switch one conditional logbook on or off.
+   *
+   * ONE HANDLER FOR ALL OF THEM. The activations come from the server, which
+   * reads LOGBOOK_TYPE_REGISTRY, so a fifth conditional type appears here with
+   * no change to this screen. The scaffold toggle used to be the only one and
+   * was written against its own endpoint and its own state variable; it now
+   * goes through the same path as the other three.
+   *
+   * OPTIMISTIC, THEN CORRECTED BY THE SERVER'S OWN ANSWER. The response carries
+   * the recomputed required set, so the list below cannot disagree with the
+   * switch above it even for a frame — and a REFUSAL (hot work, from a CP)
+   * puts the switch back rather than leaving it showing a state the server
+   * never accepted.
+   */
+  const handleToggleLogbook = async (act) => {
+    if (!selectedProject || !act) return;
     const projectId = selectedProject._id || selectedProject.id;
-    const next = !scaffoldActive;
-    setScaffoldActive(next);
+    const next = !act.active;
+    setRequiredLogbooks((prev) => (prev ? {
+      ...prev,
+      activations: (prev.activations || []).map(
+        (a) => (a.log_type === act.log_type ? { ...a, active: next } : a),
+      ),
+    } : prev));
     try {
-      await logbooksAPI.saveScaffoldInfo(projectId, { scaffold_erected: next });
+      const res = await logbookActivationAPI.set(projectId, act.log_type, next);
+      setRequiredLogbooks((prev) => (prev ? {
+        ...prev,
+        required_logbooks: Array.isArray(res?.required_logbooks)
+          ? res.required_logbooks : prev.required_logbooks,
+      } : prev));
       toast.success(
-        next ? 'Scaffold Active' : 'Scaffold Removed',
-        next ? 'Scaffold log will now appear daily' : 'Scaffold log hidden until re-activated',
+        next ? `${act.label} on` : `${act.label} off`,
+        next
+          ? 'It is now on your logbook list.'
+          : 'Hidden until you switch it back on.',
       );
     } catch (e) {
-      setScaffoldActive(!next);
-      toast.error('Error', 'Could not update scaffold status');
+      setRequiredLogbooks((prev) => (prev ? {
+        ...prev,
+        activations: (prev.activations || []).map(
+          (a) => (a.log_type === act.log_type ? { ...a, active: act.active } : a),
+        ),
+      } : prev));
+      // A 403 is the server saying this one is not the CP's to set. That is a
+      // different sentence from "it did not save", and telling him the wrong
+      // one is how a CP learns to distrust the screen.
+      const refused = e?.response?.status === 403;
+      toast.error(
+        refused ? 'An admin sets this one' : 'Could not update',
+        refused
+          ? `${act.label} runs on a permit the office holds. Ask an admin to switch it on.`
+          : 'Nothing changed. Check your signal and try again.',
+      );
     }
   };
 
@@ -392,6 +433,10 @@ export default function LogBooksScreen() {
     });
   };
 
+  // The conditional logbooks and their current state. Empty until the server
+  // answers, which is why the block that renders them is gated on length —
+  // an empty "On site today" heading over nothing is worse than no heading.
+  const activations = requiredLogbooks?.activations || [];
   const missingToolbox = notifications?.missing_toolbox_talk || [];
   const unaffirmedLogbooks = notifications?.unaffirmed_logbooks || 0;
   const visibleLogs = getVisibleLogTypes();
@@ -501,29 +546,51 @@ export default function LogBooksScreen() {
               </View>
             )}
 
-            {/* Scaffold toggle — inside the hero card */}
-            {selectedProject && (
+            {/* WHAT IS ON SITE TODAY — one row per conditional logbook.
+                Rendered from the server's `activations`, which come off
+                LOGBOOK_TYPE_REGISTRY, so a fifth conditional type appears here
+                on its own. Was a single hardcoded scaffold row. */}
+            {selectedProject && activations.length > 0 && (
               <>
                 <View style={styles.heroDivider} />
-                <View style={styles.scaffoldToggleRow}>
-                  <HardHat size={18} strokeWidth={1.5} color={semantic.neutral} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.scaffoldToggleTitle}>Scaffolding / Overhead Shed</Text>
-                    <Text style={styles.scaffoldToggleDesc}>
-                      {scaffoldActive
-                        ? 'Active — daily inspection required'
-                        : 'Not active — toggle ON when erected'}
-                    </Text>
-                  </View>
-                  <Pressable
-                    onPress={handleToggleScaffold}
-                    style={[styles.toggleBtn, scaffoldActive && styles.toggleBtnActive]}
-                  >
-                    <Text style={[styles.toggleBtnText, scaffoldActive && styles.toggleBtnTextActive]}>
-                      {scaffoldActive ? 'ON' : 'N/A'}
-                    </Text>
-                  </Pressable>
-                </View>
+                <Text style={styles.toggleGroupTitle}>On site today</Text>
+                {activations.map((act) => {
+                  const mine = act.activated_by !== 'admin';
+                  return (
+                    <View key={act.log_type} style={styles.scaffoldToggleRow}>
+                      <HardHat size={18} strokeWidth={1.5} color={semantic.neutral} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.scaffoldToggleTitle}>{act.label}</Text>
+                        <Text style={styles.scaffoldToggleDesc}>
+                          {/* THREE STATES, not two. "Off, and not yours to
+                              switch on" is a different fact from "off" — a CP
+                              hunting for the hot-work log needs to know it
+                              exists and who turns it on, not to find a dead
+                              control. */}
+                          {act.active
+                            ? 'On — it is on your logbook list'
+                            : (mine
+                              ? 'Off — switch on when it starts'
+                              : 'Off — an admin switches this one on')}
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => (mine
+                          ? handleToggleLogbook(act)
+                          : toast.warning(
+                            'An admin sets this one',
+                            `${act.label} runs on a permit the office holds.`,
+                          ))}
+                        style={[styles.toggleBtn, act.active && styles.toggleBtnActive,
+                          !mine && styles.toggleBtnLocked]}
+                      >
+                        <Text style={[styles.toggleBtnText, act.active && styles.toggleBtnTextActive]}>
+                          {act.active ? 'ON' : 'OFF'}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
               </>
             )}
           </GlassCard>
@@ -770,7 +837,14 @@ function buildStyles(colors, isDark) {
     projectOptionText: { fontSize: 15, color: colors.text.primary },
 
     // ── Scaffold toggle (inside hero card) ──
-    scaffoldToggleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    toggleGroupTitle: {
+      fontSize: 12, fontWeight: '600', color: colors.text.muted,
+      textTransform: 'uppercase', letterSpacing: 1, marginBottom: spacing.sm,
+    },
+    scaffoldToggleRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.md,
+      paddingVertical: spacing.xs,
+    },
     scaffoldToggleTitle: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
     scaffoldToggleDesc: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
     toggleBtn: {
@@ -779,6 +853,9 @@ function buildStyles(colors, isDark) {
       borderWidth: 1, borderColor: colors.border.medium,
       backgroundColor: isDark ? withAlpha('#ffffff', 0.05) : withAlpha('#000000', 0.04),
     },
+    // A control that is not this user's to press reads as unavailable rather
+    // than as OFF — it still responds, and what it says is who owns it.
+    toggleBtnLocked: { opacity: 0.5 },
     toggleBtnActive: {
       backgroundColor: semantic.attentionBg,
       borderColor: semantic.attentionBorder,

@@ -777,6 +777,24 @@ export const checklistsAPI = {
 /**
  * Logbook Type Registry
  */
+export const logbookActivationAPI = {
+  /**
+   * Switch a conditional logbook on or off for a project.
+   *
+   * The SERVER decides who may: the registry declares `activated_by` per type
+   * and the endpoint enforces it, so hiding a control on the client is a
+   * courtesy and never the guard. A CP who reaches the hot-work switch some
+   * other way still gets a 403.
+   */
+  set: async (projectId, logType, active) => {
+    const response = await apiClient.put(
+      `/api/logbooks/project/${projectId}/activation`,
+      { log_type: logType, active },
+    );
+    return response.data;
+  },
+};
+
 export const logbookTypesAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/logbook-types');
