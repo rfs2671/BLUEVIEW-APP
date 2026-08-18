@@ -351,6 +351,11 @@ export default {
     // the gap shows.
     crewWorkMissingTitle: 'A crew is missing its work',
     // POSITION AND TOTAL, so he can find the card instead of hunting.
+    // The day's description, empty at the moment of signing. He is attesting
+    // to that sentence, so the app drafts it when he arrives at review and will
+    // not file it unread — and will not file a blank either.
+    descriptionRequiredTitle: 'The day needs a description',
+    descriptionRequiredHint: 'Add a short description of the day above before signing. It is the first thing the report says.',
     crewNofM: 'Crew {n} of {m}',
     crewMissing_activity: 'has no activity',
     crewMissing_location: 'has no location',

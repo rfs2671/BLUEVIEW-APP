@@ -760,6 +760,38 @@ console.log('\n-- a crew on site whose work nobody described --');
     'and it says WHICH crew — a dead button with no sentence is where a CP stops');
   ok(/nextDisabled=\{step === 2/.test(screen) && !/nextDisabled=\{true\}/.test(screen),
     'and only on step 2 — the mark-never-gate rule stands everywhere else');
+  // ── THE DAY'S DESCRIPTION, GATED AT STEP 5 ───────────────────────────────
+  //
+  // The report printed "Description: — Not recorded" on filed logs. Nothing was
+  // losing the field — the payload carries it and both renderers read the right
+  // key — it was empty because the auto-draft only lands once he REACHES the
+  // review step. That rule is correct and stays: he is attesting to that
+  // sentence, so the app may propose it and may not file words he never read.
+  // The fix is that he cannot SIGN while it is empty.
+  ok(/const descriptionEmpty = String\(generalDescription \|\| ''\)\.trim\(\) === '';/
+    .test(screen), 'the empty state is computed once');
+  ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\) \|\| descriptionEmpty\}/
+    .test(screen), 'and the sign control is unavailable while it is empty');
+  ok(/descriptionEmpty \? t\('descriptionRequiredHint'\) : ''/.test(screen),
+    'with a hint that says so — a dead button with no sentence is where a CP stops');
+  {
+    // THE SIGNATURE REASON COMES FIRST. A CP with no affirmed credential cannot
+    // fix the description into a filed log either, so leading with the
+    // description would send him to the wrong repair.
+    const hint = screen.slice(screen.indexOf('submitHint={affirmationHintKey'));
+    ok(hint.indexOf('affirmationHintKey') < hint.indexOf('descriptionEmpty'),
+      'and the signature reason is offered before the description one');
+  }
+  // THE AUTO-DRAFT IS UNCHANGED — drafting sooner would file a sentence nobody
+  // had read, which is worse than a blank.
+  ok(/if \(step !== TOTAL_STEPS\) return;/.test(screen),
+    'the draft still lands only once he is looking at the review step');
+  ok(/if \(descriptionTouched\) return;/.test(screen),
+    'and never overwrites what he has typed');
+  ok(screen.indexOf("t('descriptionRequiredTitle')")
+     > screen.indexOf('const handleSubmitAndSign'),
+    'the handler keeps a backstop for state that moved under the press');
+
   // The submit check stays as a BACKSTOP: the state can move under the press.
   ok(screen.indexOf('crewsWithoutWork(activitiesRef.current')
      > screen.indexOf('const handleSubmitAndSign'),
