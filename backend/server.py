@@ -13162,6 +13162,15 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         
         att_rows = ""
         for a in data.get("attendees", []):
+            # AN ATTENDEE WITH NO NAME IS NOT AN ATTENDEE. A seed row the CP
+            # never filled printed here as a blank line carrying Present ✓ and
+            # Confirmed at gate ✓ — a man who was at the talk, was marked
+            # present by the CP, tapped confirm himself, and cannot be
+            # identified by anybody reading the signed attendance record. Same
+            # rule the pre-shift sheet, the OSHA register and the combined
+            # report apply; this table was the last one without it.
+            if not str(a.get("name") or "").strip():
+                continue
             # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
             # Workers are not required to sign a toolbox talk — the CP signature
             # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
@@ -13635,9 +13644,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         for e in (data.get("entries") or []):
             if not isinstance(e, dict):
                 continue
+            # AN ENTRY WITH NO WORKER IS NOT AN ENTRY. This read five fields
+            # any-of and printed a row that carried only a card number — a
+            # certification on a signed register belonging to nobody named.
+            # Same rule as _SUBMIT_ROW_CONTENT_RULES["osha_log"], the combined
+            # report and entriesForFiling on the device; the untouched
+            # EMPTY_ENTRY seed it used to catch has no name either and is still
+            # dropped here.
             if not any(has(e, k) for k in
-                       ("worker_name", "company", "certification_type", "card_number", "expiration")):
-                continue      # an untouched EMPTY_ENTRY seed
+                       ("worker_name",)):
+                continue      # a row that names nobody
             # card_number / expiration are identifiers — rendered raw.
             osha_rows += (
                 "<tr>"
@@ -16145,15 +16161,27 @@ def _row_has(d, key):
 # `container` is the payload key holding the rows; `fields` is any-of — one
 # non-blank field makes the row real.
 _SUBMIT_ROW_CONTENT_RULES = {
-    # server.py render_logbook_html, osha_log branch: a row with none of these
-    # five is "an untouched EMPTY_ENTRY seed" and is skipped.
+    # server.py render_logbook_html, osha_log branch: a row that does not name
+    # a worker is skipped.
     #
-    # SAFE TO GATE because osha_log.jsx already refuses this on the device
-    # (submitDisabled={!cpSignature || filledRows === 0}), so no CP can reach
-    # the refusal through the app. Here it is a pure backstop: an old build, a
+    # ONE FIELD, AND THAT IS THE RULE — not a list that happens to have shrunk
+    # to one. It read five (worker_name, company, certification_type,
+    # card_number, expiration, any-of) and caught the abandoned blank row it was
+    # written for. It also let through the worse shape, which device round 6
+    # read back off a filed register: a row carrying a card number and a
+    # signature mark against NO NAME. A certification register is a list of
+    # statements about named men — this man holds this card — so a row with no
+    # name is not an incomplete record of somebody, it is an assertion about a
+    # man the document does not identify. Nobody can be checked against it and
+    # nobody can be cleared by it. The other four fields are detail ON a row
+    # that already names somebody.
+    #
+    # SAFE TO GATE because osha_log.jsx refuses this on the device first, at
+    # FINAL SUBMIT, naming the rows and what they hold (unnamedEntries in
+    # src/utils/oshaLogModel.js). Here it is a pure backstop: an old build, a
     # replayed draft, a direct API call.
     "osha_log": ("entries", (
-        "worker_name", "company", "certification_type", "card_number", "expiration",
+        "worker_name",
     )),
 }
 
@@ -18188,13 +18216,30 @@ async def serve_checkin_page_full(project_id: str, tag_id: str):
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 # ==================== COMBINED REPORT GENERATOR ====================
+def _is_affirmed_signature(sig) -> bool:
+    """AFFIRMED FOR *THIS* DOCUMENT — the one predicate, so nothing can ask a
+    weaker question of the same object and get a different answer.
+
+    A signature is affirmed only when the CP took an explicit affirmative action
+    on THIS record and `affirmed is True` records it. A base64 string, a legacy
+    credential, an inherited profile signature and — the shape production
+    actually held — an EMPTY DICT are all not affirmed. `not {}` is False, which
+    is how `cp_signature: {}` satisfied every presence gate in the app while
+    every document it signed printed UNAFFIRMED.
+
+    Mirrors frontend/src/utils/signatureAffirmed.js. If one changes the other
+    changes with it, or the app gates on one rule and prints another.
+    """
+    return isinstance(sig, dict) and sig.get("affirmed") is True
+
+
 def _signature_affirmation_html(sig):
     """The per-document affirmation banner. A signature is AFFIRMED only when the
     CP took an explicit affirmative action on THIS document (sig.affirmed is
     True). An inherited/reused credential or a legacy signature renders
     UNAFFIRMED — an honest deficiency, never a VERIFIED stamp the signer never
     made for this record. Mirrors SignaturePad's attention/verified treatment."""
-    affirmed = isinstance(sig, dict) and sig.get("affirmed") is True
+    affirmed = _is_affirmed_signature(sig)
     if not affirmed:
         return (
             '<div style="font-size:12px;font-weight:700;color:#d97706;margin-top:4px;">'
@@ -19039,18 +19084,89 @@ async def generate_combined_report(
 
     # ONE line of compliance status. The detail is page 2; this says only
     # whether a reader needs to go there.
-    _real_logs = [_l for _l in logbooks if not _l.get("is_amendment")]
-    _total_logs = len(_real_logs)
-    _signed = sum(1 for _l in _real_logs if _l.get("cp_signature"))
-    if _total_logs and _signed == _total_logs:
-        _compliance = f"All {_total_logs} required logs filed and signed."
-    elif _total_logs:
-        _compliance = (
-            f"{_signed} of {_total_logs} logs filed and signed; "
-            f"{_total_logs - _signed} awaiting signature."
-        )
+    #
+    # THE DENOMINATOR IS THE PROJECT'S REQUIRED SET. It used to be the number
+    # of documents that happened to exist for the date, compared against
+    # itself: `_total_logs = len(_real_logs)` and then "All 9 required logs
+    # filed and signed". That sentence could not fail. Nine logs present became
+    # nine logs required; a required log NOBODY FILED was invisible, because a
+    # document that does not exist cannot be counted by counting documents. On
+    # a compliance line that is the exact direction the error must not run.
+    #
+    # So the required set is read from the PROJECT (get_required_logbooks —
+    # class, storeys, demolition, scaffold), and the logs actually filed are
+    # compared against it. "4 of 4", which can also read "2 of 4".
+    #
+    # DAILY ONLY, and this is a restriction not an omission. A Tool Box Talk is
+    # weekly and a Subcontractor Orientation is as-needed; counting either as
+    # missing on a Tuesday would invent a deficiency out of a frequency. They
+    # are still named when they ARE filed, so nothing the CP did goes unstated.
+    #
+    # SIGNED MEANS AFFIRMED, tested with _is_affirmed_signature — the same
+    # predicate the signature banner beside each section prints from. The old
+    # line tested `_l.get("cp_signature")` for truthiness, and production held
+    # `cp_signature: {}`: an empty object, truthy, counted as signed here while
+    # page 2 printed "UNAFFIRMED — inherited signature" for the very same log.
+    # Two statements about one signature on one document.
+    _FREQ = {t["key"]: (t.get("label") or t["key"], t.get("frequency"))
+             for t in LOGBOOK_TYPE_REGISTRY}
+
+    def _log_label(_t):
+        return _FREQ.get(_t, (_t, None))[0]
+
+    if project:
+        _required = list(project.get("required_logbooks") or [])
+        if not _required:
+            _required = get_required_logbooks(project.get("project_class"), project)
     else:
-        _compliance = "No logs filed for this date."
+        _required = []
+    # THE SAME RESOLVER THE SECTIONS BELOW PRINT FROM, so this line can never
+    # call a log missing that page 2 goes on to render, or vice versa. One pass,
+    # so there is one lookup per required type and no second opinion.
+    _by_type = {_t: _filed_log(logbooks, _t) for _t in _required}
+    # An unknown key has no frequency to judge it by, so it is treated as due —
+    # a new required type is surfaced rather than silently dropped from the
+    # count until someone remembers to register it.
+    _due = [_t for _t in _required if _FREQ.get(_t, (None, None))[1] in (None, "daily")]
+    _done, _unaffirmed, _missing = [], [], []
+    for _t in _due:
+        _doc = _by_type.get(_t)
+        if not _doc:
+            _missing.append(_t)
+        elif _is_affirmed_signature(_doc.get("cp_signature")):
+            _done.append(_t)
+        else:
+            _unaffirmed.append(_t)
+    # Required but not due today, and filed anyway. Stated because the ratio
+    # above deliberately excludes them and silence would read as "not done".
+    _extra = [_t for _t in _required if _t not in _due and _by_type.get(_t)]
+
+    if not project:
+        _compliance = "Project record not found — the required-log set could not be read."
+    elif not _due:
+        _compliance = "No daily logs are required on this project."
+    else:
+        _compliance = (
+            f"{len(_done)} of {len(_due)} required daily logs filed and signed."
+        )
+        _short = []
+        if _unaffirmed:
+            _short.append(
+                f"{len(_unaffirmed)} filed without an affirmed signature "
+                f"({', '.join(_log_label(_t) for _t in _unaffirmed)})"
+            )
+        if _missing:
+            _short.append(
+                f"{len(_missing)} not filed "
+                f"({', '.join(_log_label(_t) for _t in _missing)})"
+            )
+        if _short:
+            _compliance = _compliance[:-1] + "; " + "; ".join(_short) + "."
+    if _extra:
+        _compliance += (
+            " Also filed today: "
+            + ", ".join(_log_label(_t) for _t in _extra) + "."
+        )
 
     # ONE HEADER. The address and the date are printed by the document header
     # above this section and are NOT repeated here.
@@ -19219,8 +19335,15 @@ async def generate_combined_report(
             # AN ATTENDEE WITH NO NAME IS NOT AN ATTENDEE. A seed row the CP
             # never filled rendered as a blank line on a signed attendance
             # record — a person who was at the talk and cannot be identified.
-            # Same rule the pre-shift sheet and the OSHA register already use;
-            # this table was the one that never got it.
+            #
+            # THE COMMENT HERE USED TO SAY the pre-shift sheet and the OSHA
+            # register "already use" this rule and that this table "was the one
+            # that never got it". The first half was true and the second was
+            # not: the per-logbook PDF for toolbox_talk (render_logbook_html)
+            # had no name gate at all, so the SAME stored talk printed one way
+            # in the emailed report and another way on the document an
+            # inspector asks for by name. It has one now, and the two renderers
+            # agree; there are two of these gates and both are load-bearing.
             if not str(a.get("name") or "").strip():
                 continue
             # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
@@ -19456,14 +19579,19 @@ async def generate_combined_report(
             "NEEDS_REVIEW": "Needs review",
         }
 
-        # THE SAME SEED-SKIP THE PER-LOGBOOK PDF ALREADY APPLIES.
+        # THE SAME ROW RULE THE PER-LOGBOOK PDF APPLIES: a row that does not
+        # name a worker is not printed.
         #
-        # THE DIVERGENCE THIS CLOSES. generate_single_logbook_html drops a row
-        # carrying none of five fields as "an untouched EMPTY_ENTRY seed"; this
-        # renderer did not. Same stored register, two different documents — and
-        # THIS is the one the operator emails, so a blank row that the
-        # per-logbook PDF refuses was printing on the investor's copy as a
-        # certification row for nobody.
+        # THE DIVERGENCE THIS CLOSES. generate_single_logbook_html dropped a
+        # contentless row; this renderer did not. Same stored register, two
+        # different documents — and THIS is the one the operator emails, so a
+        # blank row that the per-logbook PDF refuses was printing on the
+        # investor's copy as a certification row for nobody.
+        #
+        # The rule is now the NAME (device round 6): a row with a card number
+        # and no worker was the shape that survived the old any-of-five test
+        # and printed. Both renderers, the submit gate and the device all read
+        # the one definition below, so all four moved together.
         #
         # THE DEFINITION IS NOT REWRITTEN HERE. It is read from
         # _SUBMIT_ROW_CONTENT_RULES, the rule #125 already enforces at submit,
@@ -19478,7 +19606,7 @@ async def generate_combined_report(
             if not isinstance(e, dict):
                 continue
             if not any(_row_has(e, _k) for _k in _osha_content_fields):
-                continue      # an untouched EMPTY_ENTRY seed — says nothing
+                continue      # names nobody — including the untouched seed
             wid = str(e.get("worker_id") or "")
             cn = str(e.get("card_number") or "")
             reason = review_by_key.get((wid, cn)) if cn else None

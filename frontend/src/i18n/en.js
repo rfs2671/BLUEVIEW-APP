@@ -398,6 +398,13 @@ export default {
     nothingToFileTitle: 'Nothing to file',
     nothingToFileBody: 'Every row is empty. Add a worker and a certification before signing.',
 
+    // A row with a card number and no name asserts something about a man the
+    // document does not identify. It is dropped at filing either way — this is
+    // the sentence that stops it happening behind his back. Shown at SIGN, not
+    // on Next: a half-typed row is ordinary work mid-shift.
+    unnamedRowsTitle: 'Some rows name no worker',
+    unnamedRowsBody: 'A certification row has to say whose card it is, so these rows will not be filed: {rows}. Add the worker’s name, or delete the row.',
+
     // A worker the gate turned away for missing OSHA. He is on the register as
     // DENIED — never as a certification — because the one fact the gate
     // established is that he had none.

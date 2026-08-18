@@ -192,15 +192,69 @@ export function buildEntriesFromCheckins(checkins, date) {
 /**
  * Has this row been touched at all?
  *
- * MIRRORS THE RENDERER, deliberately. backend/server.py:13472 drops a row with
- * none of these five fields as "an untouched EMPTY_ENTRY seed". The screen uses
- * the same rule for its pip, so what the CP sees as incomplete is exactly what
- * the PDF will decline to print.
+ * NO LONGER THE FILING RULE, and the split is the point. This still answers
+ * "did the CP put anything in this row" — it is what the row pip and the
+ * "N rows" count read, so a half-typed row still shows as work in progress.
+ * Whether the row may be FILED is `entryNamesWorker` below, and the rows where
+ * the two answers DISAGREE are exactly what the submit gate names.
+ *
+ * It used to be both, mirroring the renderer's five-field seed-skip. That rule
+ * let a row with a card number and no name onto a signed register.
  */
 export function entryHasContent(entry) {
   if (!entry || typeof entry !== 'object') return false;
   return ['worker_name', 'company', 'certification_type', 'card_number', 'expiration']
     .some((k) => String(entry[k] ?? '').trim() !== '');
+}
+
+/**
+ * AN OSHA ENTRY MUST CARRY A WORKER.
+ *
+ * A certification register is a list of statements about NAMED MEN: this man
+ * holds this card, which expires on this date. A row with a company, a card
+ * number and a signature mark but no name is not an incomplete record of
+ * someone — it is an assertion about a man the document does not identify, and
+ * that is worse than the abandoned blank row this file already refused. Nobody
+ * can be checked against it, and nobody can be cleared by it.
+ *
+ * So the name is the one field that decides whether the row is filed, and
+ * every other field is detail ON a row that already names somebody.
+ *
+ * MIRRORS THE RENDERERS, which is where this rule now lives on the server too:
+ * _SUBMIT_ROW_CONTENT_RULES["osha_log"] (backend/server.py) is `worker_name`
+ * alone, and both PDF renderers drop the same rows. What is filed and what is
+ * printed are the same register.
+ */
+export function entryNamesWorker(entry) {
+  if (!entry || typeof entry !== 'object') return false;
+  return String(entry.worker_name ?? '').trim() !== '';
+}
+
+/**
+ * The rows the CP typed into that WILL NOT BE FILED, and why they will not.
+ *
+ * Content but no name — the gap between the two predicates above. Returns the
+ * 1-based row NUMBER as it reads on screen plus whatever the row does carry,
+ * because a refusal that does not point at a row is a dead end on a register
+ * that may run to thirty of them.
+ *
+ * An untouched seed row is NOT here: it says nothing, it is dropped silently,
+ * and it has been dropped silently since the row-content rule shipped. Only a
+ * row the CP put something into is worth stopping him for.
+ */
+export function unnamedEntries(entries) {
+  const out = [];
+  (Array.isArray(entries) ? entries : []).forEach((e, i) => {
+    if (entryNamesWorker(e)) return;
+    if (!entryHasContent(e)) return;
+    out.push({
+      row: i + 1,
+      company: String((e && e.company) ?? '').trim(),
+      card_number: String((e && e.card_number) ?? '').trim(),
+      certification_type: String((e && e.certification_type) ?? '').trim(),
+    });
+  });
+  return out;
 }
 
 /**
@@ -247,16 +301,22 @@ export function applyEntryEdit(entry, field, value) {
 }
 
 /**
- * The rows that may be FILED. An entry with no name, no company, no
- * certification, no card number and no expiry is not a record of anything —
- * it is an abandoned row — and one was filed on the production log above.
+ * The rows that may be FILED: the ones that name a worker.
  *
- * Uses the SAME rule the PDF renderer already drops rows by
- * (backend/server.py:13472), so the register that is filed and the register
- * that is printed contain exactly the same rows.
+ * WIDENED FROM "the row says something" TO "the row names somebody" — device
+ * round 6. The old rule kept an abandoned blank row off the register, which
+ * was the production defect it was written for, and let through the worse
+ * shape: a row carrying a card number and a signature mark against no name at
+ * all. Both are now dropped, for the same reason and by the same call.
+ *
+ * Uses the SAME rule both PDF renderers drop rows by, so the register that is
+ * filed and the register that is printed contain exactly the same rows. The
+ * CP is told which rows these are BEFORE this runs — see unnamedEntries and
+ * the submit gate in app/logbooks/osha_log.jsx — so nothing is ever deleted
+ * out from under him without a sentence naming it.
  */
 export function entriesForFiling(entries) {
-  return (Array.isArray(entries) ? entries : []).filter(entryHasContent);
+  return (Array.isArray(entries) ? entries : []).filter(entryNamesWorker);
 }
 
 /**
@@ -282,13 +342,16 @@ export function sharedWorkerIds(entries) {
  * a CP who cannot complete a step because the data is not there must still be
  * able to finish and sign his day.
  *
- * Step 1 is the register: incomplete when not one row carries anything.
+ * Step 1 is the register: incomplete when not one row WILL BE FILED. A screen
+ * full of rows that all get dropped at filing is an incomplete step, not a
+ * complete one, so the pip asks the filing question rather than the touched
+ * question.
  * Step 2 is the signature.
  */
 export function incompleteSteps({ entries, cpSignature }) {
   const out = [];
   const rows = Array.isArray(entries) ? entries : [];
-  if (!rows.some(entryHasContent)) out.push(1);
+  if (!rows.some(entryNamesWorker)) out.push(1);
   if (!String(cpSignature || '').trim()) out.push(2);
   return out;
 }
@@ -307,6 +370,8 @@ export default {
   EMPTY_ENTRY,
   buildEntriesFromCheckins,
   entryHasContent,
+  entryNamesWorker,
+  unnamedEntries,
   applyEntryEdit,
   entriesForFiling,
   sharedWorkerIds,

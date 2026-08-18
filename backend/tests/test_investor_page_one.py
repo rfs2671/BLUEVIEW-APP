@@ -211,16 +211,88 @@ class ItAnswersTheQuestionThatWasAsked(Base):
         self.assertNotIn("Failed inspection: Permits", self.page1())
 
     def test_one_line_of_compliance_status(self):
-        self.assertIn("All 1 required logs filed and signed.", self.page1())
+        """DEVICE ROUND 6, item 3. This line read "All 1 required logs filed
+        and signed" on exactly this day, and every word after the number was
+        false: the day is missing two of the three logs this project requires
+        daily, and the one document present carries a signature that was never
+        affirmed for it.
+
+        It could not have said anything else. The denominator was
+        `len(_real_logs)` — the documents that happened to exist, compared
+        against themselves — so a required log NOBODY FILED was invisible,
+        because a document that does not exist cannot be counted by counting
+        documents. On a compliance line that is the one direction the error
+        must never run."""
+        line = self.page1()
+        self.assertIn("0 of 3 required daily logs filed and signed", line)
+        self.assertIn("1 filed without an affirmed signature (Daily Jobsite Log)",
+                      line)
+        self.assertIn("2 not filed (Pre-Shift Safety Meeting, OSHA Log Book)", line)
+        self.assertNotIn("All 1 required", line)
+
+    def test_the_denominator_is_the_PROJECTS_required_set(self):
+        """Read from the project, not from the pile of documents. A scaffold on
+        site adds a required daily log, and the line has to know it."""
+        self.db.projects.docs[0]["scaffold_erected"] = True
+        self.assertIn("of 4 required daily logs", self.page1())
+
+    def test_a_stored_required_set_wins_over_the_derived_one(self):
+        """`required_logbooks` is written onto the project at create/update
+        (get_required_logbooks) and is what every other surface reads."""
+        self.db.projects.docs[0]["required_logbooks"] = ["daily_jobsite"]
+        self.assertIn("of 1 required daily logs", self.page1())
+
+    def test_a_complete_day_reads_as_a_RATIO_not_as_All_N(self):
+        self.db.projects.docs[0]["required_logbooks"] = ["daily_jobsite"]
+        self.db.logbooks.docs[0]["cp_signature"] = {"affirmed": True}
+        line = self.page1()
+        self.assertIn("1 of 1 required daily logs filed and signed.", line)
+        self.assertNotIn("not filed", line)
+        self.assertNotIn("without an affirmed signature", line)
+
+    def test_the_signature_is_tested_with_the_AFFIRMED_predicate(self):
+        """`cp_signature: {}` is what production actually held — an empty
+        object. `_l.get("cp_signature")` is truthy for it, so this line counted
+        it as SIGNED while page 2 printed "UNAFFIRMED - inherited signature"
+        for the very same log. Two statements about one signature."""
+        self.db.projects.docs[0]["required_logbooks"] = ["daily_jobsite"]
+        for sig in ({}, {"image": "x"}, "data:image/png;base64,iVBOR",
+                    {"affirmed": False}, {"affirmed": "true"}):
+            with self.subTest(sig=sig):
+                self.db.logbooks.docs[0]["cp_signature"] = sig
+                line = self.page1()
+                self.assertIn("0 of 1 required daily logs", line)
+                self.assertIn("1 filed without an affirmed signature", line)
+
+    def test_a_weekly_log_is_not_a_deficiency_on_a_Tuesday(self):
+        """A Tool Box Talk is weekly and a Subcontractor Orientation is
+        as-needed. Counting either as missing every day would invent a
+        deficiency out of a frequency — and a compliance line that cries wolf
+        daily is one nobody reads. They are still NAMED when they are filed, so
+        nothing the CP did goes unstated."""
+        line = self.page1()
+        self.assertNotIn("Tool Box Talk", line)
+        self.assertNotIn("Subcontractor Safety Orientation", line)
+        self.db.logbooks.docs.append({
+            "_id": "lb_tbt", "project_id": PROJECT, "date": DATE,
+            "log_type": "toolbox_talk", "is_deleted": False,
+            "is_locked": True, "cp_signature": {"affirmed": True}, "data": {},
+        })
+        line = self.page1()
+        self.assertIn("Also filed today: Tool Box Talk.", line)
+        # And it does NOT move the ratio, either way.
+        self.assertIn("0 of 3 required daily logs", line)
 
     def test_an_amendment_does_not_inflate_the_count(self):
         """An amendment is a correction to a filing, not another filing.
-        Counting it would report more logs than the day required."""
+        Counting it would report more logs than the day required — and the
+        count is now per REQUIRED TYPE, resolved through _filed_log, so a
+        second document for a type it already holds cannot add to anything."""
         amend = copy.deepcopy(DAILY_JOBSITE)
         amend.update({"_id": "lb_amend", "is_amendment": True})
         amend.pop("cp_signature")
         self.db.logbooks.docs.append(amend)
-        self.assertIn("All 1 required logs filed and signed.", self.page1())
+        self.assertIn("0 of 3 required daily logs filed and signed", self.page1())
 
     def test_a_photo_with_no_surviving_copy_is_SKIPPED(self):
         """Every copy purged. It must vanish rather than render as a broken
@@ -232,8 +304,18 @@ class ItAnswersTheQuestionThatWasAsked(Base):
         self.assertEqual(p1.count('<img '), 1, 'only the intact photo renders')
 
     def test_an_unsigned_log_says_so_instead(self):
+        self.db.projects.docs[0]["required_logbooks"] = ["daily_jobsite"]
         self.db.logbooks.docs[0].pop("cp_signature")
-        self.assertIn("awaiting signature", self.page1())
+        self.assertIn("1 filed without an affirmed signature (Daily Jobsite Log)",
+                      self.page1())
+
+    def test_a_project_that_could_not_be_read_says_so_rather_than_guessing(self):
+        """No project record means no required set. Printing "0 of 0" would
+        read as a clean day."""
+        self.db.projects.docs = []
+        line = self.page1()
+        self.assertIn("required-log set could not be read", line)
+        self.assertNotIn("of 0 required", line)
 
 
 class HeadcountComesFromCheckIns(Base):

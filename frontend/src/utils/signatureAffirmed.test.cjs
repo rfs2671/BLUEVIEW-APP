@@ -75,8 +75,17 @@ ok(M.affirmationHintKey({}, true) !== M.affirmationHintKey(null, true),
 console.log('\n-- the renderer and the gate ask the same question --');
 const serverSrc = fs.readFileSync(
   path.join(SRC, '..', '..', 'backend', 'server.py'), 'utf8');
-ok(/affirmed = isinstance\(sig, dict\) and sig\.get\("affirmed"\) is True/.test(serverSrc),
-  'the PDF renderer still tests `affirmed is True` on a dict');
+// The rule moved into ONE named predicate on the server (device round 6, item
+// 3): the page-1 compliance line has to ask the same question the per-section
+// banner prints, and it used to ask `if _l.get("cp_signature")` — truthy for
+// the `{}` production actually held. Two statements about one signature.
+ok(/def _is_affirmed_signature\(sig\)[\s\S]{0,1400}?return isinstance\(sig, dict\) and sig\.get\("affirmed"\) is True/
+  .test(serverSrc),
+  'the server has ONE predicate and it tests `affirmed is True` on a dict');
+ok(/affirmed = _is_affirmed_signature\(sig\)/.test(serverSrc),
+  'and the PDF affirmation banner is one of its callers, not a second copy');
+ok(/_is_affirmed_signature\(_doc\.get\("cp_signature"\)\)/.test(serverSrc),
+  'so is the page-1 compliance count');
 ok(/sig\.affirmed === true/.test(MOD_SRC),
   'and the client predicate is the same test, so the app cannot gate on one rule and print another');
 

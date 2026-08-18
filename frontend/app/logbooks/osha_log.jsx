@@ -33,7 +33,7 @@ import { Card, ChipBase, StepHeaderBase } from '../../src/components/logbookStep
 import DateField from '../../src/components/logbookStepper/DateField';
 import {
   CERT_TYPES, EMPTY_ENTRY, buildEntriesFromCheckins, entryHasContent,
-  applyEntryEdit, entriesForFiling, sharedWorkerIds,
+  unnamedEntries, applyEntryEdit, entriesForFiling, sharedWorkerIds,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/oshaLogModel';
 import { useT } from '../../src/i18n';
@@ -362,10 +362,40 @@ export default function OshaLogBook() {
       toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
       return;
     }
+    const rowsNow = entriesRef.current || entries;
+    // A ROW THAT NAMES NOBODY IS NOT FILED, AND HE IS TOLD SO HERE.
+    //
+    // entriesForFiling drops it either way — that rule is not negotiable and
+    // it runs whatever this gate does. What this gate exists for is that the
+    // dropping must never be SILENT: a CP who typed a card number and a
+    // company into a row and then signed would otherwise get a register back
+    // with that row simply gone, and no sentence anywhere saying it went.
+    //
+    // BLOCKING AT SUBMIT, NOT ON NEXT — the daily-inspection-note shape. A
+    // half-typed row is ordinary mid-shift work and moving between steps must
+    // never be refused for it; it is only at the moment of FILING that the row
+    // becomes an assertion about an unnamed man. So he is stopped once, at the
+    // signature, sent back to the register, and told which rows and why.
+    const unnamed = unnamedEntries(rowsNow);
+    if (unnamed.length > 0) {
+      setStep(1);
+      toast.warning(
+        t('unnamedRowsTitle'),
+        t('unnamedRowsBody').replace(
+          '{rows}',
+          unnamed.map((u) => {
+            const held = [u.company, u.certification_type, u.card_number]
+              .filter(Boolean).join(', ');
+            return held ? `${u.row} (${held})` : String(u.row);
+          }).join('; '),
+        ),
+      );
+      return;
+    }
     // AN EMPTY REGISTER IS NOT A RECORD. The footer button is already disabled
     // for this, so reaching here means the state moved under the press; the
     // check stands anyway rather than filing a document that asserts nothing.
-    if (entriesForFiling(entriesRef.current || entries).length === 0) {
+    if (entriesForFiling(rowsNow).length === 0) {
       setStep(1);
       toast.warning(t('nothingToFileTitle'), t('nothingToFileBody'));
       return;
