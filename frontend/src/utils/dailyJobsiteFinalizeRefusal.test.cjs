@@ -153,6 +153,18 @@ const { finalizeErrorCode } = loadDraftSync();
 
 // The app-wide OFFLINE predicate — the real one, so "offline" in this test is
 // the same thing it is in every other screen.
+// The affirmation predicate, executed — not stubbed true. A harness that
+// stubbed it would pass whatever the screen asked.
+const { isAffirmedSignature, affirmationHintKey } = (() => {
+  const body = fs.readFileSync(path.join(UTILS, 'signatureAffirmed.js'), 'utf8')
+    .replace(/^import .*$/gm, '')
+    .replace(/^export default [\s\S]*$/m, '')
+    .replace(/^export (function|const) /gm, '$1 ');
+  // eslint-disable-next-line no-new-func
+  return new Function(`${body}
+return { isAffirmedSignature, affirmationHintKey };`)();
+})();
+
 const { isOfflineError } = (() => {
   const body = offlineSrc.replace(/^export (async function|function|const) /gm, '$1 ');
   // eslint-disable-next-line no-new-func
@@ -207,7 +219,15 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
   const env = {
     saving: false,
     signing: false,
-    cpSignature: 'sig',
+    // AFFIRMED, not merely present — round 6 finding 15. The screen used to ask
+    // `!cpSignature` and production held `cp_signature: {}`: truthy, so it
+    // passed, and every section of the filed report printed UNAFFIRMED. The
+    // fixture is a real affirmed signature so the finalize paths below stay
+    // reachable, and the REAL predicate runs against it.
+    cpSignature: { affirmed: true, affirmedAt: '2026-08-07T09:00:00Z', signer_name: 'Casey' },
+    isAffirmedSignature,
+    affirmationHintKey,
+    profileLoaded: true,
     setSigning: () => {},
     projectId: 'proj1',
     date: '2026-08-07',

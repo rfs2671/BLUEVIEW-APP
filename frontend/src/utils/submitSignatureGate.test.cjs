@@ -69,7 +69,27 @@ const NEWLY_GUARDED = [
 // now the renderer's own: affirmed FOR THIS DOCUMENT. Full coverage of the
 // rule itself is in signatureAffirmed.test.cjs; this keeps the structural
 // assertion in the file that has always owned it.
-for (const t of IMMEDIATE) {
+// ── EVERY TYPE, NOT ONLY THE IMMEDIATE ONES ─────────────────────────────────
+//
+// THE HOLE THIS CLOSES, round 6 finding 15. This loop iterated IMMEDIATE and
+// nothing else, so the two END_OF_DAY forms were never asked the question. One
+// of them picked the gate up when it was ported; daily_jobsite — the most-filed
+// log in the app, and the one that leads the report — never did, and went on
+// asking `!cpSignature`. Production held `cp_signature: {}`: truthy, so it
+// passed, and every section of the filed report printed "UNAFFIRMED —
+// inherited signature, not affirmed for this document".
+//
+// The scope was never a ruling. It was the shape of the list the loop happened
+// to be handed, and an END_OF_DAY log is signed by the same CP, with the same
+// credential, onto the same report.
+const timingAll = [...timingBlock.matchAll(/"([a-z_]+)":\s*"(?:immediate|end_of_day)"/g)]
+  .map((m) => m[1]);
+ok(timingAll.length === IMMEDIATE.length + 2,
+  `every registered type is gated, not only the immediate ones (${timingAll.length})`);
+
+const GATED = [];
+for (const t of timingAll) {
+  GATED.push(t);
   const f = path.join(APP_LOGBOOKS, `${t}.jsx`);
   if (!fs.existsSync(f)) { ok(false, `${t}.jsx exists`); continue; }
   const src = fs.readFileSync(f, 'utf8');
@@ -85,6 +105,20 @@ for (const t of IMMEDIATE) {
   const stepperGated = /submitDisabled=\{!isAffirmedSignature\(cpSignature\)/.test(src);
   ok(derives || disables || stepperGated,
     `${t}: an UNAFFIRMED submit is unreachable (${derives ? 'status derived' : (disables ? 'button disabled' : 'stepper submitDisabled')})`);
+}
+
+// THE SCOPE IS PINNED, not merely widened. Narrowing this loop back to
+// IMMEDIATE used to leave the file green: every remaining assertion still
+// passed, because the two END_OF_DAY forms happened to carry the gate. A
+// mutation proved it. What follows fails the moment either drops out of the
+// loop's coverage, which is the only thing that made finding 15 possible.
+const END_OF_DAY = [...timingBlock.matchAll(/"([a-z_]+)":\s*"end_of_day"/g)]
+  .map((m) => m[1]);
+ok(END_OF_DAY.length === 2, `the server declares 2 END_OF_DAY types (${END_OF_DAY.join(', ')})`);
+for (const t of END_OF_DAY) {
+  ok(GATED.includes(t),
+    `${t}: CHECKED by the loop above — an end-of-day log is signed by the same `
+    + 'CP, with the same credential, onto the same report');
 }
 
 // ── 1b. the shared stepper HONOURS submitDisabled ────────────────────────────

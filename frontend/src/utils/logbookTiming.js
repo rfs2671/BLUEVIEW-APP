@@ -23,6 +23,20 @@ import { markFinalized } from './logbookDrafts';
  * If the two ever disagree, the server wins.
  */
 
+/**
+ * THIS LIST WENT STALE THE DAY A TWELFTH LOG TYPE SHIPPED, and nothing said so.
+ *
+ * fall_protection is `immediate` on the server and was missing here, so
+ * freezeIfImmediate returned false for it: the record still locked when the
+ * push landed, but the ON-DEVICE freeze — the only one that exists with no
+ * signal, and the entire reason this mirror is written down — did not happen.
+ * The comment above says "if the two ever disagree, the server wins", and that
+ * is true everywhere EXCEPT the offline path, which is the path this file is
+ * for.
+ *
+ * logbookTiming.test.cjs now reads LOGBOOK_TIMING_CLASS out of server.py and
+ * compares the two lists, so the next type cannot ship half-mirrored.
+ */
 export const IMMEDIATE_LOG_TYPES = Object.freeze([
   'preshift_signin',
   'toolbox_talk',
@@ -33,6 +47,7 @@ export const IMMEDIATE_LOG_TYPES = Object.freeze([
   'concrete_operations',
   'crane_operations',
   'excavation_monitoring',
+  'fall_protection',
 ]);
 
 /** The daily narrative logs — open all day, frozen by the EOD Submit & Sign. */
