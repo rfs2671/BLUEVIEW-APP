@@ -349,8 +349,12 @@ export default {
     // A crew on site whose work nobody described. stepComplete(2) has held this
     // rule all along and only marked with it; the filed §3301.2 log is where
     // the gap shows.
-    crewWorkMissingTitle: 'Some crews have no work described',
-    crewWorkMissingBody: 'The daily log has to say what each crew did. Nothing is recorded for: {crews}. Add their work before signing.',
+    crewWorkMissingTitle: 'A crew is missing its work',
+    // POSITION AND TOTAL, so he can find the card instead of hunting.
+    crewNofM: 'Crew {n} of {m}',
+    crewMissing_activity: 'has no activity',
+    crewMissing_location: 'has no location',
+    crewMissingJoin: ' and ',
     savedAutomatically: 'Saved automatically',
   },
 

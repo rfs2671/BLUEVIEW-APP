@@ -391,14 +391,32 @@ export const workRows = (activities) => (Array.isArray(activities) ? activities 
  * lists crews by company.
  */
 export function crewsWithoutWork(activities) {
-  return workRows(activities)
+  const rows = workRows(activities);
+  const total = rows.length;
+  return rows
     .map((a, i) => ({ a, n: i + 1 }))
-    .filter(({ a }) => String(a?.work_description || '').trim() === '')
-    .map(({ a, n }) => ({
-      crew: String(a.company || '').trim(),
-      trade: String(a.trade || '').trim(),
-      row: n,
-    }));
+    .map(({ a, n }) => {
+      const missing = [];
+      if (String(a?.work_description || '').trim() === '') missing.push('activity');
+      // AND A LOCATION. A crew's activity with nowhere attached is half a
+      // record: the §3301.2 table has a Location column, the photo caption is
+      // built from it, and "formwork" with no floor tells an inspector which
+      // trade was on site and nothing about where to look.
+      if (String(a?.work_locations || '').trim() === '') missing.push('location');
+      return {
+        crew: String(a?.company || '').trim(),
+        trade: String(a?.trade || '').trim(),
+        // POSITION AND TOTAL. "Crew 3 of 5" tells him where to go; a bare
+        // count makes him hunt down the list comparing what he sees against a
+        // number. The position is within workRows, which is the list the step
+        // actually renders — an unassigned-worker row has no card, so counting
+        // it would point at a crew that is not on screen.
+        row: n,
+        total,
+        missing,
+      };
+    })
+    .filter((c) => c.missing.length > 0);
 }
 
 /** True once this row names a sub the project roster does not know. */
@@ -544,9 +562,18 @@ export function stepComplete(step, state) {
       // activity card, so requiring a work description from him would leave
       // this step permanently incomplete the moment one man checks in without
       // a company.
+      // ACTIVITY *AND* LOCATION — the same pair the Next gate asks for.
+      //
+      // This asked only for the description while crewsWithoutWork also
+      // required a location, so a crew with work and no floor made the pip read
+      // COMPLETE and the Next button sit dead. A CP stopped by something the
+      // screen has just told him is finished learns to distrust the screen, and
+      // that is the failure this pair is watched for.
       const work = workRows(acts);
-      return work.length > 0
-        && work.every((a) => String(a.work_description || '').trim());
+      return work.length > 0 && work.every(
+        (a) => String(a.work_description || '').trim()
+          && String(a.work_locations || '').trim(),
+      );
     }
     case 3: return incompleteObservations(state?.observations).length === 0;
     // Step 4 is the nine daily inspections. Weather moved to Step 1, where it

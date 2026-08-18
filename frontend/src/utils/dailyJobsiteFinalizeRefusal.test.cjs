@@ -299,9 +299,13 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     // the finalize paths below, so it has to be satisfiable here. Real
     // activities with work described, not a stub returning [] — a stub would
     // let the gate rot without this file noticing.
-    activities: [{ company: 'Kestrel Electric', work_description: 'branch rough-in' }],
-    activitiesRef: { current: [{ company: 'Kestrel Electric', work_description: 'branch rough-in' }] },
+    activities: [{ company: 'Kestrel Electric', work_description: 'branch rough-in', work_locations: 'Floor 3' }],
+    activitiesRef: { current: [{ company: 'Kestrel Electric', work_description: 'branch rough-in', work_locations: 'Floor 3' }] },
     crewsWithoutWork,
+    // The gate's sentence builder. Reached only when a crew is incomplete, and
+    // the fixture above is complete — but an undefined identifier would throw
+    // before any of that mattered.
+    crewGapSentence: (gaps) => gaps.map((c) => `Crew ${c.row} of ${c.total}`).join('; '),
     setStep: () => {},
     // Real English copy, so the success-toast assertions ("back online",
     // "amendment") test the shipped sentence rather than a stub.
