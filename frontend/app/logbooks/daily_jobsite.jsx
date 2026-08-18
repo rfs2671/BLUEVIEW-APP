@@ -1211,8 +1211,56 @@ export default function DailyJobsiteLog() {
       }
       await setDraftBackendId(_key, savedId);
       await clearPending(_key);
+      // A PUSH THAT LANDED CLEARS A REFUSAL ON RECORD. The banner LogbookLockBar
+      // renders is durable by design — it has to survive the CP walking away —
+      // so nothing but a successful push may take it down. This used to sit
+      // beside the /finalize call; the refusal it clears is now recorded by the
+      // push, so the clearing moves with it.
+      if (savedId) await clearFinalizeError(savedId);
     } catch (pushErr) {
-      // Offline / server error — the local draft is already saved above.
+      // ── REFUSAL IS NOT OFFLINE ──────────────────────────────────────────
+      //
+      // THIS BLOCK USED TO BE THREE LINES: markPending and a warning, whatever
+      // had gone wrong. Every outcome — no network, a 4xx judgement, a 5xx
+      // failure — became "queued, will sync on reconnect", and the CP was told
+      // nothing at all.
+      //
+      // It survived because the REAL refusal handling lived in the /finalize
+      // call that followed, and end-of-day sign-once removed that call. Taking
+      // the finalize out without moving its split here would have left the
+      // app's most-filed log with no refusal handling of any kind: a submit
+      // the server judged and rejected would queue forever, silently, and his
+      // own device would say it was filed.
+      //
+      // Modelled on ssc_daily_safety_log, which has carried this split since it
+      // was ported and is why removing ITS finalize needed nothing else. Three
+      // outcomes, and only one of them may promise a sync:
+      //
+      //   4xx  the server JUDGED the log. It will keep saying no until the log
+      //        changes, so the CP is told now, on the screen that can fix it,
+      //        and the refusal is RECORDED so the durable banner survives him
+      //        walking away. Nothing is queued — a retry would be refused
+      //        identically.
+      //   5xx  the server FAILED rather than judged. Retryable, queued, and it
+      //        must not be announced as filed.
+      //   none no response at all. Genuinely offline: queued, and the promise
+      //        that it syncs is true.
+      const offline = isOfflineError(pushErr);
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+      if (refused && submitStatus === 'submitted') {
+        const code = finalizeErrorCode(pushErr);
+        console.warn('daily_jobsite REFUSED by the server:', status, code);
+        await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
+        toast.error(tFinalize('errorTitle'), gateCopy(code));
+        return undefined;
+      }
+      if (!offline && !refused) {
+        console.warn('daily_jobsite push FAILED server-side:', status || pushErr?.message);
+        await markPending(_key);
+        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        return undefined;
+      }
       await markPending(_key);
       console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
     }

@@ -1288,7 +1288,7 @@ for (const [name, src] of PORTED_SCREENS) {
   const body = src.slice(importsAt);
   for (const fn of ['readDraft', 'writeDraft', 'setDraftBackendId', 'markPending',
     'clearPending', 'markFinalized', 'adoptAmendment',
-    'recordFinalizeError', 'clearFinalizeError', 'finalizeErrorCode',
+    'recordFinalizeError',  'finalizeErrorCode',
     'isOfflineError', 'recordSignatureEvent']) {
     ok(new RegExp(`\\b${fn}\\s*\\(`).test(body), `${name}: CALLS ${fn}`);
   }
@@ -1296,18 +1296,32 @@ for (const [name, src] of PORTED_SCREENS) {
   // five ported forms do not share one. Four are IMMEDIATE — the signature IS
   // the freeze, so freezeIfImmediate runs and there is no separate /finalize.
   // ssc_daily_safety_log is END_OF_DAY (server.py's LOGBOOK_TIMING_CLASS puts
-  // it with daily_jobsite): the narrative accumulates all day and freezes once,
-  // at an explicit /finalize plus a local markFinalized. Getting this backwards
-  // either freezes a day that is still being written or leaves a REQUIRED log
-  // unfrozen, so each form is asserted to carry ITS model and NOT the other.
+  // it with daily_jobsite): the narrative accumulates all day.
+  //
+  // WHAT AN END_OF_DAY LOG DOES ON A SIGNATURE CHANGED, AND THIS IS WHY.
+  // It used to close the day here, with an explicit /finalize plus a local
+  // markFinalized — and this block asserted exactly that. So the log was frozen
+  // the moment it was signed, which is the opposite of "accumulates all day":
+  // an SSC who signed at 9am had nowhere to put the afternoon's incidents
+  // except an amendment. END_OF_DAY was described in three places and
+  // implemented in none.
+  //
+  // He signs once, the record stays open, and sweep_stale_end_of_day_logs
+  // closes it at 3am ET once the day is actually over. So the assertion
+  // inverts: an END_OF_DAY form must freeze NOTHING on a signature.
   const endOfDay = name === 'ssc_daily_safety_log';
   ok(END_OF_DAY_TYPES.includes(name) === endOfDay,
     `${name}: the backend agrees this is ${endOfDay ? 'END_OF_DAY' : 'IMMEDIATE'}`);
   if (endOfDay) {
     ok(!/freezeIfImmediate/.test(src),
       `${name}: does NOT freeze on signature — it is a daily narrative`);
-    ok(/logbooksAPI\.finalize\(savedId\)/.test(body) && /markFinalized\(_key\)/.test(body),
-      `${name}: closes the day with an explicit finalize plus a local freeze`);
+    // SCOPED TO THE SIGNATURE PATH. markFinalized still appears in fetchData,
+    // where a log the SERVER reports as locked is mirrored onto the device —
+    // that is reading a freeze, not applying one.
+    const signPath = body.slice(body.indexOf('const persistAndPush'));
+    ok(!/logbooksAPI\.finalize\(/.test(signPath) && !/markFinalized\(_key\)/.test(signPath),
+      `${name}: and does not close the day either — sign once, and the 3am `
+      + 'sweep freezes it when the day is over');
   } else {
     ok(/freezeIfImmediate\s*\(/.test(body),
       `${name}: CALLS freezeIfImmediate — the signature IS the freeze`);
@@ -1450,20 +1464,25 @@ ok(!/if \(!cpSignature\) \{/.test(SSC_SCREEN),
 // that dropped the refusal branch's `return` still mentioned every name. A
 // mutation walked straight through the earlier version of this.
 {
-  const a = SSC_SCREEN.indexOf('} catch (finalizeErr) {');
-  const b = SSC_SCREEN.indexOf('await markFinalized(_key);', a);
+  // RE-POINTED FROM THE FINALIZE CATCH TO THE PUSH CATCH. End-of-day sign-once
+  // removed the /finalize call, and the three-way split it guarded did not go
+  // with it — ssc has always carried the same split on the CONTENT PUSH, which
+  // is now the only call that can be refused. Every claim below is the same
+  // claim; it is asked of the surviving catch.
+  const a = SSC_SCREEN.indexOf('} catch (pushErr) {');
+  const b = SSC_SCREEN.indexOf('if (submitStatus === \'submitted\' && cpSignature)', a);
   const catchBlock = (a > -1 && b > a) ? SSC_SCREEN.slice(a, b) : '';
   ok(catchBlock.length > 0,
-    'ssc_daily_safety_log: located the finalize catch block');
-  ok((catchBlock.match(/\breturn;/g) || []).length === 2,
-    'a REFUSED and a FAILED finalize each return BEFORE the freeze — only the '
-    + 'genuinely offline path falls through to it');
-  ok(/if \(refused\) \{[\s\S]*?recordFinalizeError\(savedId, code, _key, 'editor'\);[\s\S]*?return;/
+    'ssc_daily_safety_log: located the push catch block');
+  ok((catchBlock.match(/\breturn undefined;/g) || []).length === 2,
+    'a REFUSED and a FAILED push each return undefined — only the genuinely '
+    + 'offline path falls through and lets the signature be announced');
+  ok(/if \(refused && submitStatus === 'submitted'\) \{[\s\S]*?recordFinalizeError\(existingLogId \|\| _key, code, _key, 'editor'\);[\s\S]*?return undefined;/
     .test(catchBlock),
     'and a refusal leaves the durable banner on its way out, so the toast is not '
     + 'the only trace four seconds later');
-  ok(/if \(!offline && !refused\) \{[\s\S]*?return;/.test(catchBlock),
-    'a 5xx is retryable, is not queued and is not announced as synced');
+  ok(/if \(!offline && !refused\) \{[\s\S]*?return undefined;/.test(catchBlock),
+    'a 5xx is retryable, is queued, and is not announced as filed');
 }
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════
