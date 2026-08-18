@@ -3152,6 +3152,151 @@ def logbook_timing_class(log_type: str) -> str:
     return LOGBOOK_TIMING_CLASS.get(log_type, "end_of_day")
 
 
+END_OF_DAY_LOG_TYPES = tuple(
+    k for k, v in LOGBOOK_TIMING_CLASS.items() if v == "end_of_day"
+)
+
+
+async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
+    """Freeze yesterday's signed daily narratives, and FLAG the unsigned ones.
+
+    THE PROPERTY THIS IMPLEMENTS HAS NEVER EXISTED. END_OF_DAY is described in
+    three places -- LOGBOOK_TIMING_CLASS above, frontend/src/utils/
+    logbookTiming.js, and the timing_class / is_batchable / freeze_on_finalize
+    contract /logbook-types serves to clients -- as the class that stays open
+    and accumulating all day and freezes once, at the end-of-day Submit and
+    Sign.
+
+    It was implemented nowhere. The editors called /finalize the instant the CP
+    signed, so a daily jobsite log signed at 9am froze at 9am, and the only
+    observable difference between the two timing classes was which code path
+    did the locking. Two files, an API contract and a legal distinction
+    describing a behaviour no code produced -- the same shape as a comment
+    asserting a rule is universal when it is not, and larger, because a comment
+    misleads a reader while this misled a reader AND an API consumer.
+
+    The client half stops finalizing on signature. This is the other half: the
+    thing that eventually closes the record. Without both, a log signed in the
+    morning would never freeze at all, which is a worse exposure than freezing
+    it early -- an editable record of a day months gone.
+
+    WHAT IT FREEZES. Signed and stale, nothing else:
+      * an END_OF_DAY type, read from LOGBOOK_TIMING_CLASS rather than a
+        hardcoded pair, so a third one added there is swept with no change here
+      * date strictly BEFORE today in NEW YORK
+      * not already locked, not deleted
+      * carrying an AFFIRMED signature
+
+    AFFIRMED, not merely present. Production held cp_signature: {} -- an empty
+    object, signature-SHAPED and truthy, which nobody attested to. The ruling
+    that an unsigned stale log must not be frozen ("freezing an unsigned record
+    would lock something nobody attested to") applies to that shape exactly, so
+    it is flagged rather than sealed. A legacy signature from before the
+    affirmation stamp existed sits in the same bucket for a weaker reason --
+    somebody did sign it -- which is why this errs toward NOT locking: an
+    unfrozen record can still be frozen later, and a wrongly sealed one cannot
+    be opened.
+
+    EASTERN, NOT UTC. eastern_date is the only date source. A UTC day boundary
+    would, from 20:00 EDT onward, call TODAY's log stale and freeze a record the
+    CP is still standing in the middle of. Thirteen instances of that bug have
+    shipped on this project.
+
+    Idempotent: an already-locked log does not match the filter, so a re-run or
+    an overlapping admin-triggered run is safe.
+
+    Returns counts for the caller to log. Never raises: the nightly tick runs
+    unattended and a sweep that threw would take the detectors down with it.
+    """
+    today = eastern_date(now)
+    out = {"frozen": 0, "unsigned": 0}
+    try:
+        cursor = database.logbooks.find({
+            "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
+            "date": {"$lt": today},
+            "is_locked": {"$ne": True},
+            "is_deleted": {"$ne": True},
+        })
+        stale = await cursor.to_list(1000)
+    except Exception as e:
+        logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
+        return out
+
+    for doc in stale:
+        try:
+            if not _is_affirmed_signature(doc.get("cp_signature")):
+                # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and left is
+                # a different fact from a CP who never signed; the second is an
+                # unfinished obligation, not a document to close.
+                out["unsigned"] += 1
+                await _flag_unsigned_stale_log(database, doc)
+                continue
+            stamp = datetime.now(timezone.utc)
+            await database.logbooks.update_one(
+                {"_id": doc["_id"], "is_locked": {"$ne": True}},
+                {"$set": {
+                    "is_locked": True,
+                    "finalized_at": stamp,
+                    # WHO froze it, in the same fields the manual path writes, so
+                    # a reader is never left guessing whether a person closed it.
+                    # The CP's signature is what made it eligible; the sweep only
+                    # applied the lock.
+                    "finalized_by": "system:eod_sweep",
+                    "finalized_by_name": "End-of-day sweep",
+                    "status": "submitted",
+                    "updated_at": stamp,
+                }},
+            )
+            out["frozen"] += 1
+        except Exception as e:
+            # One bad document must not stop the sweep for every other project.
+            logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+    return out
+
+
+async def _flag_unsigned_stale_log(database, doc) -> None:
+    """Surface a stale UNSIGNED daily narrative where the admin already looks.
+
+    The same shape the nightly compliance check already uses for a missing
+    logbook: a compliance_alerts row, deduped on (project, log_type, date) so a
+    nightly re-run cannot stack duplicates. No new screen and no new concept --
+    /admin/compliance-alerts renders it already.
+
+    The CP-facing half is deliberately NOT here. It belongs on the logbook list
+    beside the unaffirmed-signature card, and that screen already carries three
+    different treatments for three exception signals (see followups.md); adding
+    a fourth from inside a sweep is how that drift continues.
+    """
+    try:
+        exists = await database.compliance_alerts.find_one({
+            "alert_type": "unsigned_stale_logbook",
+            "project_id": doc.get("project_id"),
+            "details.log_type": doc.get("log_type"),
+            "details.date": doc.get("date"),
+        })
+        if exists:
+            return
+        await database.compliance_alerts.insert_one({
+            "alert_type": "unsigned_stale_logbook",
+            "severity": "medium",
+            "project_id": doc.get("project_id"),
+            "company_id": doc.get("company_id"),
+            "message": (
+                f"{doc.get('log_type')} for {doc.get('date')} was never signed. "
+                "It stays editable - it is not frozen."
+            ),
+            "details": {
+                "log_type": doc.get("log_type"),
+                "date": doc.get("date"),
+                "logbook_id": str(doc.get("_id")),
+            },
+            "resolved": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        logger.error(f"[eod-freeze] could not flag {doc.get('_id')}: {e!r}")
+
+
 def is_immediate_preshift(log_type: str) -> bool:
     """True for sign-and-freeze-now logs: frozen on signature, EXCLUDED from the
     end-of-day batch, and re-filed as a NEW discrete log rather than reopened."""
@@ -32908,6 +33053,17 @@ async def startup_event():
             from lib.logbook.deficiency import run_deficiency_detector_for_all_projects
             await run_missing_detector_for_all_projects(db)
             await run_deficiency_detector_for_all_projects(db)
+            # THE END-OF-DAY FREEZE. Here rather than in a job of its own: this
+            # tick already runs at 3am ET, already iterates projects, and its
+            # own comment gives the reason for the hour -- it runs after the 24h
+            # daily-log writing window closes, which is exactly the window a
+            # freeze must not run inside.
+            _swept = await sweep_stale_end_of_day_logs(db)
+            if _swept["frozen"] or _swept["unsigned"]:
+                logger.info(
+                    "[eod-freeze] froze %s stale signed log(s); flagged %s unsigned",
+                    _swept["frozen"], _swept["unsigned"],
+                )
         except Exception as e:
             logger.error(f"[v2_logbook] nightly tick failed: {e!r}", exc_info=True)
     scheduler.add_job(

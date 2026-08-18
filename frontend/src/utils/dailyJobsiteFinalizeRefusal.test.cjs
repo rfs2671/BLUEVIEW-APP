@@ -83,6 +83,19 @@ function decl(text, anchor) {
 }
 
 const submitSrc = decl(screenSrc, 'const handleSubmitAndSign = async () => {');
+// THE REFUSAL HANDLING MOVED, AND SO DID THIS FILE'S SUBJECT.
+//
+// End-of-day sign-once removed the /finalize call from handleSubmitAndSign:
+// daily_jobsite is END_OF_DAY, the signature is not the freeze, and
+// sweep_stale_end_of_day_logs closes the record at 3am ET instead. The three-way
+// split lived inside that call's catch — so removing it would have left the
+// app's most-filed log with NO refusal handling at all, and every assertion
+// below would have gone green while testing a code path that no longer ran.
+//
+// The split moved to the CONTENT PUSH, where ssc_daily_safety_log has carried
+// it since it was ported. Every claim this file makes still holds; they are
+// asked of persistAndPush now, and both functions are executed for real.
+const pushSrc = decl(screenSrc, 'const persistAndPush = async (submitStatus) => {');
 const gateCopySrc = decl(screenSrc, 'const gateCopy = (code) => {');
 const barGateCopySrc = decl(barSrc, 'const gateCopy = (code) =>');
 // LogbookLockBar's mount effect — the READER of what the editor now writes.
@@ -205,7 +218,7 @@ const rejection = (status, code) => ({
 });
 const offline = () => ({ message: 'Network Error' });
 
-async function run({ finalizeError, savedId = 'log123', saveFailed = false, locale = 'en' } = {}) {
+async function run({ pushError, savedId = 'log123', saveFailed = false, locale = 'en' } = {}) {
   const D = loadDrafts();
   await D.writeDraft(KEY, {
     data: { general_description: 'Shoring.' }, cp_signature: 'sig', cp_name: 'Casey', status: 'submitted',
@@ -214,7 +227,7 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
   const S = loadDraftSync();
 
   const calls = {
-    toasts: [], finalized: [], cleared: [], recorded: [], locked: [], back: 0, warns: [],
+    toasts: [], finalized: [], cleared: [], recorded: [], locked: [], back: 0, warns: [], pending: [],
   };
   const env = {
     saving: false,
@@ -244,17 +257,22 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
     isOfflineError,
     setLocked: (v) => { calls.locked.push(v); },
     router: { back: () => { calls.back += 1; } },
-    console: { warn: (...a) => calls.warns.push(a.join(' ')) },
+    // .error too: handleSubmitAndSign's outer catch uses it, and a console
+    // stub missing a method turns a real assertion into a TypeError.
+    console: {
+      warn: (...a) => calls.warns.push(a.join(' ')),
+      error: (...a) => calls.warns.push(a.join(' ')),
+    },
     toast: {
       success: (title, body) => calls.toasts.push({ kind: 'success', title, body }),
       error: (title, body) => calls.toasts.push({ kind: 'error', title, body }),
       warning: (title, body) => calls.toasts.push({ kind: 'warning', title, body }),
     },
-    // persistAndPush returns `undefined` when the save itself failed (and has
-    // already reported it), `null` when it only landed locally.
-    // Named handleSave before the U1 stepper split saving from signing; the
-    // contract it stands in for is identical.
-    persistAndPush: async () => (saveFailed ? undefined : savedId),
+    // THE REAL persistAndPush, built below and injected — not a stub that
+    // returns a verdict. A stub would decide the very thing under test.
+    // `saveFailed` still forces the undefined path, for the one case that is
+    // about handleSubmitAndSign's reaction to it rather than about the push.
+    persistAndPush: null,
     // The stepper's own additions. `_key` moved out of this function and became
     // a memoized value on the component; the observation gate is new, and runs
     // BEFORE any of the finalize logic below, so it has to be satisfiable here.
@@ -276,6 +294,52 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
     tFinalize: tFor(locale),
     gateCopy: gateCopyFor(locale),
   };
+  // ── the push, built for real ───────────────────────────────────────────
+  // Everything it closes over, stubbed at the EDGES only: storage, network,
+  // toasts. Every decision inside it is the shipped code's.
+  const pushEnv = {
+    ...env,
+    pendingCompressRef: { current: [] },
+    activitiesRef: { current: [{ crew_id: 'C1', company: 'AAZ', photos: [] }] },
+    activities: [{ crew_id: 'C1', company: 'AAZ', photos: [] }],
+    cpName: 'Casey',
+    date: '2026-08-07',
+    persistActivityPhotos: async (rows) => rows,
+    uploadPendingActivityPhotos: async (_p, rows) => ({
+      activities: rows, uploaded: 0, remaining: 0, offline: false,
+    }),
+    hasPendingPhotoUploads: () => false,
+    photoForPayload: (x) => x,
+    draftBody: (rows) => ({ activities: rows }),
+    writeDraft: D.writeDraft,
+    setDraftBackendId: async () => {},
+    clearPending: async () => {},
+    markPending: async (k) => { calls.pending.push(k); },
+    setActivities: () => {},
+    setExistingLogId: () => {},
+    existingLogId: savedId,
+    autoSave: async () => {},
+    user: { role: 'cp' },
+    // The push is what fails now. A refusal reaches the screen through the
+    // content call, not through a finalize that no longer happens.
+    logbooksAPI: {
+      update: async () => { if (pushError) throw pushError; return { id: savedId }; },
+      create: async () => { if (pushError) throw pushError; return { id: savedId }; },
+    },
+    // persistAndPush pulls the audit recorder in with require(); there is no
+    // module loader inside new Function.
+    require: () => ({ recordSignatureEvent: async () => {} }),
+  };
+  // `persistAndPush` is the thing being BUILT here; leaving it in the env
+  // would declare the same name twice inside the generated function.
+  delete pushEnv.persistAndPush;
+  const pushNames = Object.keys(pushEnv);
+  // eslint-disable-next-line no-new-func
+  const realPush = new Function(...pushNames, `${pushSrc}\nreturn persistAndPush;`)(
+    ...pushNames.map((n) => pushEnv[n]),
+  );
+  env.persistAndPush = saveFailed ? async () => undefined : realPush;
+
   const names = Object.keys(env);
   // eslint-disable-next-line no-new-func
   const fn = new Function(...names, `${submitSrc}\nreturn handleSubmitAndSign;`)(
@@ -309,7 +373,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 (async () => {
   // ── 1. A FINALIZE_* REFUSAL ────────────────────────────────────────────────
   for (const code of CODES) {
-    const { calls, D, S } = await run({ finalizeError: rejection(400, code) });
+    const { calls, D, S } = await run({ pushError: rejection(400, code) });
 
     ok(!calls.toasts.some((t) => t.kind === 'success'),
       `${code}: NO success toast — nothing claims the log was signed and locked`);
@@ -342,7 +406,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     ok(!JSON.stringify(calls.toasts).includes('Something went wrong'),
       `${code}: the server's raw English detail is never rendered`);
 
-    const es = await run({ finalizeError: rejection(400, code), locale: 'es' });
+    const es = await run({ pushError: rejection(400, code), locale: 'es' });
     const esErr = es.calls.toasts.find((t) => t.kind === 'error');
     // FLIPPED, not dropped. `finalize` is EN-only by ruling — a logbook is a
     // legal record filed with the DOB and these are the CP's lock/refusal
@@ -382,7 +446,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 
   // ── 2. A 4xx with NO recognised code is still a refusal ────────────────────
   {
-    const { calls, S } = await run({ finalizeError: rejection(403, null) });
+    const { calls, S } = await run({ pushError: rejection(403, null) });
     ok(calls.finalized.length === 0 && !calls.toasts.some((t) => t.kind === 'success'),
       '403: the server answered and said no — not frozen, not announced as success');
     const err = calls.toasts.find((t) => t.kind === 'error');
@@ -393,26 +457,64 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
       '403: recorded with no code — the banner still appears, carrying the generic reason');
   }
 
-  // ── 3. A GENUINE OFFLINE FINALIZE IS UNCHANGED ────────────────────────────
+  // ── 3. A GENUINE OFFLINE PUSH QUEUES, AND FREEZES NOTHING ─────────────────
+  //
+  // THIS CASE INVERTED, and the inversion is the whole end-of-day change. It
+  // used to assert "the log IS frozen on this device — an EOD sign with no
+  // signal must still hold", which was right while the signature WAS the
+  // freeze. It is not any more: daily_jobsite is END_OF_DAY, he signs once, the
+  // record stays open for the rest of the day, and
+  // sweep_stale_end_of_day_logs closes it at 3am ET.
+  //
+  // So nothing freezes here, offline or not — and that is a stronger statement
+  // than the old one, because it holds on every path rather than on three of
+  // four. What survives untouched is the PROMISE: the draft is queued and the
+  // drain sends it, so "it will sync" is still true.
   {
-    const { calls, D, S } = await run({ finalizeError: offline() });
-    ok(calls.finalized.length === 1,
-      'offline: the log IS frozen on this device — an EOD sign with no signal must still hold');
-    ok(calls.locked.length === 1 && calls.locked[0] === true,
-      'offline: the form goes read-only, as before');
+    const { calls, D, S } = await run({ pushError: offline() });
+    ok(calls.finalized.length === 0,
+      'offline: NOTHING is frozen on the device — the signature is not the freeze '
+      + 'on an end-of-day log, and the 3am sweep is what closes it');
+    ok(calls.locked.length === 0,
+      'offline: the form does NOT go read-only — he can still add the afternoon');
+    ok(calls.pending.length === 1,
+      'offline: but the draft IS queued, which is what makes the promise true');
     const s = calls.toasts.find((t) => t.kind === 'success');
-    ok(!!s && /back online/.test(s.body),
-      'offline: the CP is still told it will sync when he is back online');
-    ok(calls.back === 1, 'offline: and he is still returned to the list');
+    ok(!!s && /stays open/.test(s.body),
+      'offline: and he is told the log stays open rather than that it was locked');
+    ok(calls.back === 1, 'offline: he is still returned to the list');
     ok(!calls.toasts.some((t) => t.kind === 'error'), 'offline: no error is shown');
 
     const after = await D.readDraft(KEY);
-    ok(after.finalized === true, 'offline: the draft really is frozen locally');
+    ok(after.finalized !== true,
+      'offline: the draft is NOT frozen locally — it has to stay writable, '
+      + 'because the rest of the day still has to go into it');
 
     ok(calls.recorded.length === 0, 'offline: nothing is recorded — the server never refused anything');
     const banner = await bannerFor(S, 'log123');
     ok(!banner.shown, 'offline: and no "NOT LOCKED ON THE SERVER" banner is raised');
   }
+
+  // ── 3b. SIGN ONCE, FREEZE AT END OF DAY — the contract itself ─────────────
+  //
+  // Asserted on the happy path too, not only the failure paths: a signature
+  // that quietly started freezing again would otherwise only be caught by the
+  // offline case above, and that is the rarest path of the four.
+  {
+    const { calls, D } = await run({});
+    ok(calls.finalized.length === 0 && calls.locked.length === 0,
+      'signed: the log is NOT frozen — no markFinalized, no read-only flip');
+    const after = await D.readDraft(KEY);
+    ok(after.finalized !== true, 'signed: and the draft stays writable');
+    const s = calls.toasts.find((t) => t.kind === 'success');
+    ok(!!s && /stays open/.test(s.body) && /closes overnight/.test(s.body),
+      'signed: he is told it stays open today and closes overnight — a CP told '
+      + 'only "filed" would not add the afternoon\'s photos');
+  }
+  ok(!/logbooksAPI\.finalize/.test(submitSrc) && !/logbooksAPI\.finalize/.test(pushSrc),
+    'the screen never calls /finalize at all — the sweep is what closes the day');
+  ok(!/markFinalized/.test(submitSrc),
+    'and never marks the local draft finalized on a signature');
 
   // ── 4. A 5xx IS NOT BEING OFFLINE EITHER ──────────────────────────────────
   // The server FAILED rather than judged. Nothing is locked and nothing is
@@ -420,7 +522,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
   // drain to retry — so "signed and locked, it will sync when you are back
   // online" is the same lie as the refusal case on a rarer path.
   for (const status of [500, 502, 503]) {
-    const { calls, D, S } = await run({ finalizeError: rejection(status, null) });
+    const { calls, D, S } = await run({ pushError: rejection(status, null) });
 
     ok(!calls.toasts.some((t) => t.kind === 'success'),
       `${status}: NO success toast — the log is not locked anywhere`);
@@ -450,7 +552,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     ok(!body.includes(String(status)) && !body.includes('status code'),
       `${status}: no HTTP status or axios prose reaches the CP`);
 
-    const es = await run({ finalizeError: rejection(status, null), locale: 'es' });
+    const es = await run({ pushError: rejection(status, null), locale: 'es' });
     const esErr = es.calls.toasts.find((t) => t.kind === 'error');
     ok(esErr && esErr.body === GENERIC.es && esErr.body === GENERIC.en,
       `${status}: and an es-locale CP gets the same English generic (EN-only)`);
@@ -465,12 +567,18 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 
   // ── 4b. THE THREE BRANCHES ARE GENUINELY DISTINCT ─────────────────────────
   {
-    const off = (await run({ finalizeError: offline() })).calls;
-    const five = (await run({ finalizeError: rejection(500, null) })).calls;
-    const four = (await run({ finalizeError: rejection(400, 'FINALIZE_EMPTY_LOG') })).calls;
+    const off = (await run({ pushError: offline() })).calls;
+    const five = (await run({ pushError: rejection(500, null) })).calls;
+    const four = (await run({ pushError: rejection(400, 'FINALIZE_EMPTY_LOG') })).calls;
 
-    ok(off.finalized.length === 1 && five.finalized.length === 0 && four.finalized.length === 0,
-      '3-way: ONLY a genuine offline freezes the log locally');
+    // NONE of the three freezes anything now — the signature is not the freeze
+    // on an end-of-day log. What still separates them is the PROMISE: only the
+    // genuinely offline one is queued and told it will sync.
+    ok(off.finalized.length === 0 && five.finalized.length === 0 && four.finalized.length === 0,
+      '3-way: none of the three freezes the log — that is the sweep\'s job now');
+    ok(off.pending.length === 1 && five.pending.length === 1 && four.pending.length === 0,
+      '3-way: offline and 5xx are QUEUED; a 4xx is not — the server will keep '
+      + 'saying no, so a retry would be refused identically');
     ok(off.toasts.some((t) => t.kind === 'success')
       && !five.toasts.some((t) => t.kind === 'success')
       && !four.toasts.some((t) => t.kind === 'success'),
@@ -492,24 +600,26 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
       '3-way: offline is decided by the app-wide isOfflineError, the same predicate settleFetch uses');
     ok(!/(const|function)\s+isOfflineError/.test(screenSrc),
       '3-way: ...and the screen does not define a second one of its own');
-    ok(/const offline = isOfflineError\(finalizeErr\);/.test(submitSrc),
-      '3-way: ...and it is applied to the finalize error itself');
-    ok(!/error\.response|!finalizeErr\?\.response/.test(submitSrc),
-      '3-way: handleSubmitAndSign does not re-derive "offline" from the response object');
+    ok(/const offline = isOfflineError\(pushErr\);/.test(pushSrc),
+      '3-way: ...and it is applied to the PUSH error — the call that can now '
+      + 'be refused, since no finalize is attempted');
+    ok(!/error\.response|!pushErr\?\.response/.test(pushSrc),
+      '3-way: persistAndPush does not re-derive "offline" from the response object');
 
     // isOfflineError's own contract, so the branch above cannot be read wrong.
     ok(/if \(error\.response\) return false;/.test(offlineSrc),
       '3-way: isOfflineError is false whenever a server answered — a 5xx can never take the offline branch');
   }
 
-  // ── 5. A SUCCESSFUL finalize ──────────────────────────────────────────────
+  // ── 5. A SUCCESSFUL push ──────────────────────────────────────────────────
   {
     const { calls, S } = await run({});
-    ok(calls.finalized.length === 1 && calls.locked[0] === true && calls.back === 1,
-      'success: frozen, locked and dismissed, as before');
+    ok(calls.finalized.length === 0 && calls.locked.length === 0 && calls.back === 1,
+      'success: signed and dismissed, and NOT frozen — the record stays open');
     const s = calls.toasts.find((t) => t.kind === 'success');
-    ok(!!s && /amendment/.test(s.body),
-      'success: the CP is told corrections now require an amendment');
+    ok(!!s && /stays open/.test(s.body),
+      'success: the CP is told the log stays open, not that it is locked. He is '
+      + 'the one who has to put the afternoon into it.');
     ok(calls.cleared.includes('log123'),
       'success: a refusal previously recorded by the drain is CLEARED, so the LockBar banner goes');
     ok(calls.recorded.length === 0, 'success: nothing recorded');
@@ -522,13 +632,13 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
       'success: ...and the clear on a real finalize takes the banner away again');
   }
 
-  // ── 6. An OFFLINE save (no server id at all) still freezes locally ────────
+  // ── 6. An OFFLINE save (no server id at all) ──────────────────────────────
   {
-    const { calls } = await run({ savedId: null });
-    ok(calls.finalized.length === 1 && calls.back === 1,
-      'no server id: never reached the server, so it freezes locally and reports the sync promise');
-    ok(calls.cleared.length === 0 && calls.recorded.length === 0,
-      'no server id: nothing to clear and nothing to record');
+    const { calls } = await run({ savedId: null, pushError: offline() });
+    ok(calls.finalized.length === 0 && calls.back === 1,
+      'no server id: nothing is frozen, and he is still returned to the list');
+    ok(calls.recorded.length === 0,
+      'no server id: nothing is recorded — the server never refused anything');
   }
 
   // ── 7. A save that FAILED still aborts before anything is frozen ──────────
@@ -543,8 +653,8 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
   ok(/from '\.\.\/\.\.\/src\/utils\/draftSync'/.test(screenSrc)
     && /finalizeErrorCode/.test(screenSrc) && /clearFinalizeError/.test(screenSrc),
     'reuse: the screen imports draftSync`s finalize-error helpers rather than parsing the error itself');
-  ok(!/response\?\.data\?\.detail/.test(submitSrc) && !/\.data\.detail/.test(submitSrc),
-    'reuse: handleSubmitAndSign never touches response.data.detail — that stays inside finalizeErrorCode');
+  ok(!/response\?\.data\?\.detail/.test(pushSrc) && !/\.data\.detail/.test(pushSrc),
+    'reuse: persistAndPush never touches response.data.detail — that stays inside finalizeErrorCode');
   ok(/useT\('finalize'\)/.test(screenSrc),
     'reuse: the copy comes from LogbookLockBar`s own `finalize` namespace, not a second catalogue');
 
@@ -561,8 +671,8 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     'reuse: the storage key is a single literal in draftSync');
   ok(!/logbook_finalize_errors/.test(screenSrc) && !/logbook_finalize_errors/.test(barSrc),
     'reuse: and neither the screen nor the LockBar restates it — there is nothing to drift');
-  ok(!/AsyncStorage/.test(submitSrc),
-    'reuse: handleSubmitAndSign never touches AsyncStorage directly');
+  ok(!/AsyncStorage/.test(pushSrc),
+    'reuse: persistAndPush never touches AsyncStorage directly');
 
   // The two gateCopy implementations must follow the SAME rule.
   const norm = (s) => s.replace(/\s+/g, ' ').replace(/^const gateCopy = \(code\) =>\s*\{?/, '').trim();
@@ -577,12 +687,19 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     }
   }
 
-  ok(/const refused = typeof status === 'number' && status >= 400 && status < 500;/.test(submitSrc),
+  ok(/const refused = typeof status === 'number' && status >= 400 && status < 500;/.test(pushSrc),
     'source: the refusal test is the HTTP status the server answered with');
-  const refusalAt = submitSrc.indexOf('if (refused) {');
-  const freezeAt = submitSrc.indexOf('await markFinalized(_key);');
-  ok(refusalAt > 0 && freezeAt > refusalAt,
-    'source: the refusal returns BEFORE markFinalized — the ordering is what makes the draft stay editable');
+  // THE ORDERING ASSERTION IS GONE BECAUSE THE THING IT ORDERED IS GONE. It
+  // pinned "the refusal returns BEFORE markFinalized", which is what kept the
+  // draft editable while a signature still froze it. Nothing freezes on a
+  // signature now, so the property it protected holds unconditionally — and
+  // that is asserted directly, on every path, above and here.
+  ok(!/markFinalized/.test(submitSrc) && !/markFinalized/.test(pushSrc),
+    'source: neither the signature nor the push freezes the draft — there is no '
+    + 'ordering left to get wrong');
+  ok(/return undefined;/.test(pushSrc),
+    'source: a refused push returns undefined, which is what stops the caller '
+    + 'announcing anything at all');
   ok(!/catch \(finalizeErr\) \{\s*\/\/ Offline \/ server refused\./.test(screenSrc),
     'source: the old "offline / server refused" catch-all is gone');
 
