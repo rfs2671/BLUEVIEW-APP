@@ -157,7 +157,11 @@ const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 // Every assertion below is vacuously true against an empty measurement, so a
 // regex that silently stops matching would turn this file green while
 // measuring nothing.
-ok(FILES.length === 16, `scanner reads 16 CP screens (found ${FILES.length})`);
+// SEVENTEEN with app/logbooks/fall_protection.jsx. The number is a guard on
+// the SCANNER, not a budget on the app: every assertion below is vacuously
+// true against an empty measurement, so a regex that stopped matching would
+// turn this file green while measuring nothing.
+ok(FILES.length === 17, `scanner reads 17 CP screens (found ${FILES.length})`);
 // SCANNER-IS-ALIVE guards, not debt ceilings. Every assertion below is
 // vacuously true against an empty measurement, so these exist to fail loudly
 // if a regex silently stops matching. The thresholds track the migration

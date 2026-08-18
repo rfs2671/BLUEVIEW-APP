@@ -113,7 +113,12 @@ const timingBlock = serverSrc.slice(
   serverSrc.indexOf('def logbook_timing_class'),
 );
 const IMMEDIATE = [...timingBlock.matchAll(/"([a-z_]+)":\s*"immediate"/g)].map((m) => m[1]);
-ok(IMMEDIATE.length === 9, `server.py declares 9 IMMEDIATE types (got ${IMMEDIATE.length})`);
+// TEN with the fall-protection log: an equipment inspection is a point-in-time
+// finding, so the signature is the freeze and a later inspection is a NEW
+// record rather than an edit. Read out of server.py so the list cannot drift
+// from the backend's; the count is the checkpoint that makes a new immediate
+// type get a gate rather than inherit one by omission.
+ok(IMMEDIATE.length === 10, `server.py declares 10 IMMEDIATE types (got ${IMMEDIATE.length})`);
 
 // COMMENTS STRIPPED before the absence assertion. osha_log's own comment quotes
 // the predicate it used to carry, and matching raw source made the file fail an
