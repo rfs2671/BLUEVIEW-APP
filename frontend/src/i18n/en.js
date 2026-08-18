@@ -345,6 +345,104 @@ export default {
     savedAutomatically: 'Saved automatically',
   },
 
+  // ── app/logbooks/fall_protection.jsx — the strap log, 2 steps ─────────────
+  //
+  // EN-ONLY, like every other logbook namespace. See EN_ONLY_NAMESPACES.
+  //
+  // `standardNotice` IS THE POINT OF THIS BLOCK. OSHA 1926.502(d)(21) mandates
+  // the INSPECTION and not a written record of it; the documented inspection
+  // comes from ANSI Z359, an industry consensus standard. The same sentence is
+  // printed by both PDF renderers from FALL_PROTECTION_NOTICE in
+  // backend/server.py — one wording, three surfaces, so the app cannot say two
+  // different things about what this log is. If one changes the other changes
+  // with it, and fallProtectionModel.test.cjs asserts they still agree.
+  fallProtection: {
+    screenTitle: 'Fall Protection',
+    screenSub: 'Equipment Inspection Log',
+
+    stepOf: 'Step {n} of {m}',
+    step1Title: 'Equipment inspected',
+    step2Title: 'Check this before you sign',
+
+    registerHint: 'One row per piece of equipment. Workers come from the gate — add a row for anyone the gate did not see.',
+    rowOf: 'Row {n} of {m}',
+    removeRow: 'Remove this row',
+    addRow: 'Add equipment',
+
+    colWorker: 'Worker',
+    colCompany: 'Company',
+    colEquipment: 'Equipment',
+    colEquipmentId: 'ID / serial',
+    colMfgDate: 'Manufacture date',
+    colResult: 'Inspection result',
+    colImpact: 'Impact loaded since last use?',
+    colDefect: 'Defect found',
+    colAction: 'Action taken',
+    colAnchor: 'Anchor point',
+    colPhoto: 'Photo (optional)',
+    colPhotoRequired: 'Photo (required)',
+
+    phWorker: 'Worker name',
+    phCompany: 'Company',
+    phEquipmentId: "The manufacturer's marking",
+    phDefect: 'What is wrong with it',
+    phAction: 'What was done about it',
+    phAnchor: 'Where it was anchored',
+
+    yes: 'Yes',
+    no: 'No',
+
+    takePhoto: 'Take a photo',
+    choosePhoto: 'Choose a photo',
+    removePhoto: 'Remove this photo',
+    photoPermTitle: 'Permission needed',
+    photoPermBody: 'Allow camera and photo access to attach a photo to this row.',
+    photoFailedTitle: 'Photo not added',
+    photoFailedBody: 'Nothing was attached. Try again.',
+
+    // The row has stopped claiming to know who this is.
+    unlinkedNote: 'Not linked to a gate check-in. This row records the name as typed.',
+
+    // 1926.502(d)(19) — mandatory removal. Said, never done for him.
+    impactWarning: 'Impact-loaded equipment must be removed from service (OSHA 1926.502(d)(19)). Record it as Removed from service, or change the impact answer.',
+    impactWarningTitle: 'Impact-loaded equipment still in service',
+    impactWarningBody: 'These rows record impact loading without removing the equipment from service: {rows}. Fix them before you sign, or the record contradicts 1926.502(d)(19).',
+
+    // Fail / Removed needs a defect, an action and a photo.
+    missing_defect: 'defect',
+    missing_action: 'action taken',
+    missing_photo: 'photo',
+    adverseIncompleteTitle: 'A failed inspection needs the detail',
+    adverseIncompleteBody: 'Fail and Removed from service each need a defect, an action and a photo. Missing on {rows}.',
+
+    // Rows that will be dropped at filing, named before they go.
+    reasonUnnamed: 'no worker named',
+    reasonNoResult: 'no inspection result',
+    notFiledTitle: 'Some rows will not be filed',
+    notFiledBody: 'These rows will not be filed: {rows}. Complete them, or delete the row.',
+
+    nothingToFileTitle: 'Nothing to file',
+    nothingToFileBody: 'No row records an inspection yet. Record a result before signing.',
+
+    reviewRows: 'Inspections recorded',
+    reviewNothingYet: 'Nothing recorded yet',
+    rowsCount_one: '{n} inspection',
+    rowsCount_other: '{n} inspections',
+
+    standardNotice: 'OSHA 1926.502(d)(21) requires that this equipment be inspected before each use. It does not require a written record of each inspection. This log follows ANSI Z359, an industry consensus standard, and is not a DOB or OSHA filing.',
+
+    next: 'Next',
+    submitAndSign: 'Sign and file',
+    savedAutomatically: 'Saved automatically as you go.',
+
+    signatureRequiredTitle: 'Signature required',
+    signatureRequiredBody: 'Sign the log before filing it.',
+    submittedTitle: 'Filed',
+    submittedBody: 'The fall protection log is filed and frozen.',
+    submittedOfflineBody: 'Saved on this device. It will sync when you are back online.',
+    saveFailedTitle: 'Could not save',
+  },
+
   // ── app/logbooks/osha_log.jsx — the certification register, 2 steps ────────
   //
   // EN-ONLY, like every other logbook namespace: this is a legal record filed

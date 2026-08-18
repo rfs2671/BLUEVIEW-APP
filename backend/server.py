@@ -3046,7 +3046,42 @@ LOGBOOK_TYPE_REGISTRY = [
         "conditional": "excavation_active",
         "activated_by": "cp",
     },
+    {
+        "key": "fall_protection",
+        "label": "Fall Protection Equipment Log",
+        # THE SUBTITLE IS THE DISCLAIMER, and it is on the row a CP taps.
+        "subtitle": "Equipment inspection — industry standard, not DOB-required",
+        "frequency": "daily",
+        "icon": "ShieldCheck",
+        "color": "#0ea5e9",
+        # ── NO dob_reference, AND ITS ABSENCE IS THE POINT ──────────────────
+        #
+        # OSHA 1926.502(d)(21) mandates the INSPECTION — equipment inspected
+        # prior to each use — and does NOT mandate a written record of each
+        # one. The documented periodic inspection comes from ANSI Z359, an
+        # industry consensus standard, which is not law.
+        #
+        # So the key is ABSENT rather than "" or "N/A": a renderer that ever
+        # starts printing this field cannot print an empty citation for this
+        # log, because there is no field to print. Every other entry here
+        # carries one, and this one is different on purpose.
+        "applicable_classes": ["regular", "major_a", "major_b"],
+        # Work at height is a site condition the CP can see. A foundation crew
+        # at grade has no fall exposure, and a daily fall-protection log on
+        # that day is a record of nothing.
+        "conditional": "fall_protection_active",
+        "activated_by": "cp",
+    },
 ]
+
+# The sentence the form and both renderers print, in ONE place so the app
+# cannot say two different things about what this log is.
+FALL_PROTECTION_NOTICE = (
+    "OSHA 1926.502(d)(21) requires that this equipment be inspected before each "
+    "use. It does not require a written record of each inspection. This log "
+    "follows ANSI Z359, an industry consensus standard, and is not a DOB or "
+    "OSHA filing."
+)
 
 # HOW OFTEN EACH LOG IS DUE, read off the registry rather than restated.
 #
@@ -3104,6 +3139,9 @@ LOGBOOK_TIMING_CLASS = {
     "concrete_operations": "immediate",
     "crane_operations": "immediate",
     "excavation_monitoring": "immediate",
+    # An equipment inspection is a point-in-time finding: the signature is the
+    # freeze, and a later inspection is a NEW record rather than an edit.
+    "fall_protection": "immediate",
     # ── DAILY NARRATIVE — open all day, frozen by the EOD Submit and Sign ──
     "daily_jobsite": "end_of_day",
     "ssc_daily_safety_log": "end_of_day",
@@ -13836,6 +13874,76 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + render_signature_html(logbook.get("cp_signature"), "SSC / SSM Signature")
         )
 
+    elif log_type == "fall_protection":
+        # frontend/src/utils/fallProtectionModel.js — draftBody writes
+        # { activities: rows }, and each row carries the keys below.
+        #
+        # THE ROWS LIVE UNDER `activities` because get_logbook_activity_photo —
+        # the ONE production read of a logbook photo — indexes
+        # data.activities[ai].photos[pi]. Anywhere else means either no photos
+        # on the report or a second photo reader, and a second reader is how a
+        # record and its photos drift apart (device round 6, item 5).
+        type_title = "Fall Protection Equipment Log"
+        fp_rows = ""
+        for r in (data.get("activities") or []):
+            if not isinstance(r, dict):
+                continue
+            # A ROW THAT NAMES NOBODY IS NOT A ROW — the Group 1 rule. Here the
+            # claim is that a man's fall-arrest equipment was inspected, so a
+            # nameless row asserts it about somebody the record cannot name.
+            if not has(r, "worker_name"):
+                continue
+            result = str(r.get("result") or "").strip()
+            if result == "Pass":
+                result_cell = '<span style="color:#15803d;font-weight:600;">Pass</span>'
+            elif result == "Fail":
+                result_cell = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
+            elif result:
+                # "Removed from service" — a stronger statement than Fail, and
+                # a different one. Printed as recorded, never collapsed into it.
+                result_cell = (
+                    '<span style="color:#b91c1c;font-weight:700;">'
+                    + _capitalize_first(result) + '</span>'
+                )
+            else:
+                # TRI-STATE, seeded null. An inspection nobody performed must
+                # never print as a Pass.
+                result_cell = NOT_RECORDED
+            impact = r.get("impact_loaded")
+            # Same three states. A silent "No" here is the answer that keeps
+            # impact-loaded equipment in service (1926.502(d)(19)).
+            impact_cell = (NOT_RECORDED if impact is None
+                           else ("Yes" if impact else "No"))
+            fp_rows += (
+                "<tr>"
+                + cell(_capitalize_first(r.get("worker_name", "")))
+                + cell(_capitalize_first(r.get("company", "")))
+                + cell(_capitalize_first(r.get("equipment_type", "")))
+                # equipment_id is the manufacturer's marking — an identifier,
+                # rendered raw. So is the date, as entered.
+                + cell(r.get("equipment_id"))
+                + cell(r.get("manufacture_date"))
+                + cell(result_cell)
+                + cell(impact_cell)
+                + cell(_sentence_case(r.get("defect_found") or ""))
+                + cell(_sentence_case(r.get("action_taken") or ""))
+                + cell(_capitalize_first(r.get("anchor_point", "")))
+                + "</tr>"
+            )
+        body_html = (
+            (rows_table(
+                ["Worker", "Company", "Equipment", "ID / Serial", "Mfg Date",
+                 "Result", "Impact Loaded", "Defect", "Action Taken", "Anchor"],
+                fp_rows) if fp_rows else "")
+            + cp_name_line + cp_sig_block
+            # WHAT THIS DOCUMENT IS, printed on the document itself. A reader
+            # who finds it in a compliance packet must not take it for a
+            # required filing, and the packet is exactly where it will be found.
+            + '<p style="color:#64748b;font-size:11px;line-height:1.6;'
+              'margin:18px 0 0;border-top:1px solid #e2e8f0;padding-top:10px;">'
+            + FALL_PROTECTION_NOTICE + '</p>'
+        )
+
     elif log_type == "osha_log":
         # frontend/app/logbooks/osha_log.jsx:200  data: { entries };
         # EMPTY_ENTRY :28-37.
@@ -16387,6 +16495,21 @@ _SUBMIT_ROW_CONTENT_RULES = {
     # src/utils/oshaLogModel.js). Here it is a pure backstop: an old build, a
     # replayed draft, a direct API call.
     "osha_log": ("entries", (
+        "worker_name",
+    )),
+    # SAME RULE, SAME REASON. A fall-protection row with an equipment serial,
+    # an inspection result and no name asserts that somebody's fall-arrest gear
+    # was inspected without saying whose — worse here than on the register,
+    # because the assertion is about the equipment holding a man up.
+    #
+    # SAFE TO GATE: fall_protection.jsx refuses it on the device first, at
+    # FINAL SUBMIT, naming the rows (unfilableRows in
+    # src/utils/fallProtectionModel.js). This is the backstop for an old build,
+    # a replayed draft or a direct API call.
+    #
+    # `activities`, not `entries` — see the module comment on why the rows live
+    # in the container the one production photo reader indexes.
+    "fall_protection": ("activities", (
         "worker_name",
     )),
 }
@@ -20144,6 +20267,61 @@ async def generate_combined_report(
         )
 
     # ==========================================================
+    #  FALL PROTECTION EQUIPMENT
+    # ==========================================================
+    fp_html = ""
+    fp_lb = _filed_log(logbooks, "fall_protection")
+    if fp_lb:
+        _fp_rows = ""
+        for r in ((fp_lb.get("data") or {}).get("activities") or []):
+            if not isinstance(r, dict):
+                continue
+            # The Group 1 rule. A nameless row here claims a man's fall-arrest
+            # equipment was inspected without saying whose.
+            if not str(r.get("worker_name") or "").strip():
+                continue
+            _res = str(r.get("result") or "").strip()
+            if _res == "Pass":
+                _res_cell = '<span style="color:#15803d;font-weight:600;">Pass</span>'
+            elif _res:
+                # Fail and "Removed from service" are different findings and
+                # neither is collapsed into the other.
+                _res_cell = ('<span style="color:#b91c1c;font-weight:700;">'
+                             + _capitalize_first(_res) + '</span>')
+            else:
+                _res_cell = "&mdash; Not recorded"
+            _imp = r.get("impact_loaded")
+            _imp_cell = ("&mdash; Not recorded" if _imp is None
+                         else ("Yes" if _imp else "No"))
+            _fp_rows += (
+                f'<tr><td {TD}>{_capitalize_first(r.get("worker_name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(r.get("company", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(r.get("equipment_type", ""))}</td>'
+                f'<td {TD}>{r.get("equipment_id", "") or "&mdash;"}</td>'
+                f'<td {TD}>{r.get("manufacture_date", "") or "&mdash;"}</td>'
+                f'<td {TD}>{_res_cell}</td>'
+                f'<td {TD}>{_imp_cell}</td>'
+                f'<td {TD}>{_sentence_case(r.get("defect_found") or "") or "&mdash;"}</td>'
+                f'<td {TD}>{_sentence_case(r.get("action_taken") or "") or "&mdash;"}</td></tr>'
+            )
+        fp_html = (
+            section_title("Fall Protection Equipment")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Equipment</th>'
+              f'<th {TH}>ID / Serial</th><th {TH}>Mfg Date</th><th {TH}>Result</th>'
+              f'<th {TH}>Impact Loaded</th><th {TH}>Defect</th><th {TH}>Action Taken</th></tr>'
+            + (_fp_rows or f'<tr><td colspan="9" {TD}>No inspections recorded</td></tr>')
+            + '</table>'
+            + render_signature_html(fp_lb.get("cp_signature"), "CP Signature")
+            # THIS REPORT GOES TO INVESTORS AND LENDERS, and it is where a
+            # reader is most likely to mistake this section for a required
+            # filing. One sentence, on the section, saying what it is.
+            + '<p style="color:#64748b;font-size:11px;line-height:1.6;margin:8px 0 0;">'
+            + FALL_PROTECTION_NOTICE + '</p>'
+        )
+
+    # ==========================================================
     #  SCAFFOLD MAINTENANCE INSPECTION
     # ==========================================================
     scaffold_html = ""
@@ -20607,6 +20785,7 @@ async def generate_combined_report(
       {crane_html}
       {exc_html}
       {scaffold_html}
+      {fp_html}
       {orientation_html}
       {ssc_html}
       {concrete_html}

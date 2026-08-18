@@ -454,10 +454,21 @@ ok(/unlinkedNote/.test(OSHA_SCREEN),
 // only two of the three read is still a key the payload must carry.
 
 /** The `elif log_type == "X":` arm of render_logbook_pdf. */
-function pdfBranch(logType, nextLogType) {
+/**
+ * ENDS AT THE NEXT BRANCH, whichever it is.
+ *
+ * It used to take the name of the branch that follows, which made every window
+ * depend on the ORDER of the elif chain in server.py. Adding fall_protection
+ * between ssc_daily_safety_log and osha_log silently widened ssc's window to
+ * include it, and the ssc payload assertion then failed for a key that belongs
+ * to a different log. A window that can quietly grow is a window that can
+ * quietly assert the wrong thing.
+ */
+function pdfBranch(logType) {
   const a = SERVER.indexOf(`elif log_type == "${logType}":`);
-  const b = SERVER.indexOf(`elif log_type == "${nextLogType}":`);
-  return (a > -1 && b > a) ? SERVER.slice(a, b) : '';
+  if (a < 0) return '';
+  const b = SERVER.indexOf('elif log_type ==', a + 10);
+  return b > a ? SERVER.slice(a, b) : SERVER.slice(a);
 }
 /** The `X_lb = _filed_log(logbooks, "X")` arm of generate_combined_report. */
 function reportBranch(logType, endMarker) {
@@ -529,7 +540,7 @@ function assertPayloadCovers(label, body, sources) {
 // ═══ CONCRETE OPERATIONS ═════════════════════════════════════════════════════
 console.log('\n-- concrete_operations: the eight top-level keys --');
 
-const concPdf = pdfBranch('concrete_operations', 'scaffold_maintenance');
+const concPdf = pdfBranch('concrete_operations');
 const concReport = reportBranch('concrete_operations', 'handled_types = {');
 const concKiosk = kioskBranch('renderConcreteOperations', 'renderScaffoldMaintenance');
 
@@ -650,7 +661,7 @@ ok(!CONC.incompleteSteps({
 // ═══ CRANE OPERATIONS ════════════════════════════════════════════════════════
 console.log('\n-- crane_operations: the six top-level keys --');
 
-const cranePdf = pdfBranch('crane_operations', 'excavation_monitoring');
+const cranePdf = pdfBranch('crane_operations');
 const craneReport = reportBranch('crane_operations', '_filed_log(logbooks, "excavation_monitoring")');
 const craneKiosk = kioskBranch('renderCraneOperations', 'renderExcavationMonitoring');
 
@@ -744,7 +755,7 @@ ok(CRANE.incompleteSteps({
 // ═══ EXCAVATION MONITORING ═══════════════════════════════════════════════════
 console.log('\n-- excavation_monitoring: the nine top-level keys --');
 
-const excPdf = pdfBranch('excavation_monitoring', 'concrete_operations');
+const excPdf = pdfBranch('excavation_monitoring');
 const excReport = reportBranch('excavation_monitoring', '_filed_log(logbooks, "scaffold_maintenance")');
 const excKiosk = kioskBranch('renderExcavationMonitoring', 'renderConcreteOperations');
 
@@ -886,7 +897,7 @@ ok(EXC.incompleteSteps({
 // ═══ HOT WORK ════════════════════════════════════════════════════════════════
 console.log('\n-- hot_work: the nine top-level keys --');
 
-const hwPdf = pdfBranch('hot_work', 'crane_operations');
+const hwPdf = pdfBranch('hot_work');
 const hwReport = reportBranch('hot_work', '_filed_log(logbooks, "crane_operations")');
 const hwKiosk = kioskBranch('renderHotWork', 'renderCraneOperations');
 
@@ -991,7 +1002,7 @@ ok(!HW.incompleteSteps({
 // ═══ SSC DAILY SAFETY LOG ════════════════════════════════════════════════════
 console.log('\n-- ssc_daily_safety_log: the thirteen top-level keys --');
 
-const sscPdf = pdfBranch('ssc_daily_safety_log', 'osha_log');
+const sscPdf = pdfBranch('ssc_daily_safety_log');
 const sscReport = reportBranch('ssc_daily_safety_log', '_filed_log(logbooks, "concrete_operations")');
 const sscKiosk = kioskBranch('renderSscDailySafetyLog', 'renderOshaLog');
 

@@ -45,7 +45,7 @@ ALL_LOG_TYPES = [
     "preshift_signin", "toolbox_talk", "subcontractor_orientation", "osha_log",
     "scaffold_maintenance", "hot_work", "concrete_operations",
     "crane_operations", "excavation_monitoring", "daily_jobsite",
-    "ssc_daily_safety_log",
+    "ssc_daily_safety_log", "fall_protection",
 ]
 
 
@@ -53,8 +53,8 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
     """Not written here. A rule that drifts from the renderer would refuse a
     record the PDF would happily print, or pass one that comes out blank."""
 
-    def test_all_eleven_types_are_accounted_for(self):
-        # The table names two; the other nine must be types this file knows
+    def test_all_twelve_types_are_accounted_for(self):
+        # The table names two; the other ten must be types this file knows
         # about, so a NEW log type cannot appear without someone deciding
         # which side of the line it falls on.
         timing = re.search(
@@ -63,8 +63,26 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         declared = set(re.findall(r'"([a-z_]+)":\s*"(?:immediate|end_of_day)"', timing))
         self.assertEqual(declared, set(ALL_LOG_TYPES))
 
-    def test_only_osha_log_is_gated_today(self):
-        self.assertEqual(set(S._SUBMIT_ROW_CONTENT_RULES), {"osha_log"})
+    def test_the_gated_types_are_the_two_that_ARE_a_list_of_rows(self):
+        """Both are records that consist of nothing but rows, and both have a
+        client gate in front of them — the condition osha_log had to meet
+        before it could be gated here at all."""
+        self.assertEqual(set(S._SUBMIT_ROW_CONTENT_RULES),
+                         {"osha_log", "fall_protection"})
+
+    def test_the_fall_protection_rule_is_the_worker_name_too(self):
+        """A row with an equipment serial, a verdict and no name asserts that
+        somebody's fall-arrest equipment was inspected without saying whose.
+        `activities`, not `entries`: the rows live in the container the one
+        production photo reader indexes."""
+        self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["fall_protection"],
+                         ("activities", ("worker_name",)))
+        self.assertIsNotNone(S._submit_no_content_detail(
+            "fall_protection",
+            {"activities": [{"equipment_id": "SN-4471", "result": "Pass"}]}))
+        self.assertIsNone(S._submit_no_content_detail(
+            "fall_protection",
+            {"activities": [{"worker_name": "WILMER CARRILLO"}]}))
 
     def test_preshift_is_DEFERRED_not_forgotten(self):
         """It qualifies on every technical ground and is held back on

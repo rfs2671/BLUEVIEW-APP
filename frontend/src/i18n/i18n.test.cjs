@@ -142,6 +142,12 @@ const EN_ONLY_NAMESPACES = [
   // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
   // and signature prompts. CP-facing.
   'finalize',
+  // app/logbooks/fall_protection.jsx — the strap log. The equipment types and
+  // the three inspection results stay in fallProtectionModel because both PDF
+  // renderers print those exact stored strings; `standardNotice` is here AND
+  // in backend/server.py's FALL_PROTECTION_NOTICE, and the model test asserts
+  // the two agree word for word.
+  'fallProtection',
   // app/reports.jsx — admin only.
   'reportPreview',
 ];
@@ -378,8 +384,12 @@ function walk(dir, out = []) {
 }
 const allSource = [...walk(path.join(FRONTEND, 'app')), ...walk(path.join(FRONTEND, 'src'))];
 const renderSites = allSource.filter((p) => /<SignaturePad/.test(fs.readFileSync(p, 'utf8')));
-ok(renderSites.length === 13,
-  `13 files render <SignaturePad> (got ${renderSites.length})`);
+// FOURTEEN with the fall-protection log. The count is pinned so a NEW render
+// site cannot appear without someone checking it against the rule below — that
+// no call site passes `lang`, which is the premise the whole reconnection rests
+// on. It is a checkpoint, not a ceiling.
+ok(renderSites.length === 14,
+  `14 files render <SignaturePad> (got ${renderSites.length})`);
 const passLang = renderSites.filter((p) => /<SignaturePad[\s\S]{0,1200}?\blang=/.test(fs.readFileSync(p, 'utf8')));
 ok(passLang.length === 0,
   `zero render sites pass lang= — the app locale is the only path to Spanish${passLang.length ? ` — ${JSON.stringify(passLang)}` : ''}`);

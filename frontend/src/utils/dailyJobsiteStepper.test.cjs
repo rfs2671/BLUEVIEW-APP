@@ -475,7 +475,12 @@ const en = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
 // forms carry their own step titles (oshaLog has 2, scaffoldMaintenance 3) and
 // an unscoped count picked up all ten. The assertion is unchanged — THIS
 // screen has five — it is now asked of the right block.
-const djBlock = en.slice(en.indexOf('\n  dailyJobsite: {'), en.indexOf('\n  oshaLog: {'));
+// ENDS AT THE NEXT NAMESPACE, whichever it is. Naming oshaLog made this window
+// depend on the ORDER of the blocks in en.js: adding fallProtection between the
+// two widened it, and the count picked up another form's step titles.
+const _djStart = en.indexOf('\n  dailyJobsite: {');
+const _djRest = en.slice(_djStart + 20).search(/\n {2}[a-zA-Z]+: \{/);
+const djBlock = _djRest > -1 ? en.slice(_djStart, _djStart + 20 + _djRest) : '';
 const titles = [...djBlock.matchAll(/step[1-5]Title: '([^']+)'/g)].map((m) => m[1]);
 ok(djBlock.length > 0 && titles.length === 5,
   `all five step titles exist in the dailyJobsite namespace (got ${titles.length})`);

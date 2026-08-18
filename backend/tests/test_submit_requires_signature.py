@@ -70,6 +70,9 @@ UNTOUCHED_PAYLOADS = {
     },
     # osha_log.jsx — `data: { entries }`
     "osha_log": {"entries": []},
+    # fallProtectionModel.draftBody — `{ activities: rows }`. The rows live in
+    # the container the one production photo reader indexes.
+    "fall_protection": {"activities": []},
     # scaffold_maintenance.jsx — `const data = { general_info, answers }`
     "scaffold_maintenance": {"general_info": {}, "answers": {}},
     # hot_work.jsx
@@ -429,6 +432,10 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
     _HAS_CONTENT_RULE = {
         "subcontractor_orientation": "SUBMIT_MISSING_TRADE",
         "osha_log": "SUBMIT_NO_CONTENT",
+        # The fall-protection log is a list of rows and nothing else, same as
+        # the register, and it arrives with a client gate already in front of
+        # it — the condition osha_log had to meet before it could be gated.
+        "fall_protection": "SUBMIT_NO_CONTENT",
     }
 
     def test_a_signed_but_untouched_submit_is_ACCEPTED(self):
@@ -456,19 +463,24 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                 self.assertEqual(resp.status_code, 400, resp.text)
                 self.assertEqual(resp.json()["detail"]["code"], code)
 
-    def test_the_hole_is_still_open_for_nine_of_the_eleven_types(self):
+    def test_the_hole_is_still_open_for_nine_of_the_twelve_types(self):
         """The count is the point. Measured against LOGBOOK_TIMING_CLASS — the
-        real list of types on this submit path — not against the fixture above,
-        which covers nine of them. If a later change narrows or widens the
-        boundary, this fails and it gets re-stated rather than drifting."""
+        real list of types on this submit path — not against the fixture above.
+        If a later change narrows or widens the boundary, this fails and it
+        gets re-stated rather than drifting.
+
+        TWELVE now: fall_protection joined, and it joined the COVERED side, so
+        the open set is unchanged at nine. A new log type that is a list of
+        rows arrives with the row rule rather than widening the hole."""
         import server as _S
         all_types = set(_S.LOGBOOK_TIMING_CLASS)
-        self.assertEqual(len(all_types), 11)
+        self.assertEqual(len(all_types), 12)
         still_open = all_types - set(self._HAS_CONTENT_RULE)
         self.assertEqual(len(still_open), 9, sorted(still_open))
-        # And the two that are covered really are the two named above.
+        # And the three that are covered really are the three named above.
         self.assertEqual(
-            all_types - still_open, {"subcontractor_orientation", "osha_log"},
+            all_types - still_open,
+            {"subcontractor_orientation", "osha_log", "fall_protection"},
         )
         # preshift is in the open set BY DECISION, not by omission.
         self.assertIn("preshift_signin", still_open)

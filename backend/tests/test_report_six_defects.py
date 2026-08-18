@@ -760,7 +760,9 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         # print from (device round 6, item 3), so it cannot call a log missing
         # that page 2 goes on to render. That is one more call site and one
         # fewer place to drift.
-        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 11)
+        # TWELVE: the fall-protection section joined, and it resolves its
+        # document through the same one resolver as every other section.
+        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 12)
         self.assertNotIn('next((l for l in logbooks', _REPORT)
 
 

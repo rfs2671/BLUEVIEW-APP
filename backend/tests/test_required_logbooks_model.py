@@ -56,6 +56,10 @@ TOGGLED = {
     "crane_operations": "crane_on_site",
     "excavation_monitoring": "excavation_active",
     "hot_work": "hot_work_permitted",
+    # Work at height is a site condition the CP can see, so it toggles like the
+    # scaffold. A foundation crew at grade has no fall exposure, and a daily
+    # fall-protection log on that day is a record of nothing.
+    "fall_protection": "fall_protection_active",
 }
 NON_MAJOR_CLASSES = ("regular",)
 MAJOR_CLASSES = ("major_a", "major_b")
@@ -68,7 +72,7 @@ class TheModelIsTheRegistry(unittest.TestCase):
         keys = [e["key"] for e in S.LOGBOOK_TYPE_REGISTRY]
         self.assertEqual(sorted(keys), sorted(set(S.LOGBOOK_TIMING_CLASS)))
 
-    def test_the_conditional_fields_are_the_approved_four(self):
+    def test_the_conditional_fields_are_the_approved_set(self):
         conds = {e["key"]: e.get("conditional") for e in S.LOGBOOK_TYPE_REGISTRY
                  if e.get("conditional")}
         self.assertEqual(conds, TOGGLED)
@@ -94,6 +98,7 @@ class TheModelIsTheRegistry(unittest.TestCase):
             "scaffold_maintenance": "cp",
             "crane_operations": "cp",
             "excavation_monitoring": "cp",
+            "fall_protection": "cp",
             "hot_work": "admin",
         })
 
@@ -384,7 +389,7 @@ class TheActivationsAreReadOffTheRegistry(unittest.TestCase):
                 self.assertEqual(by_type[log_type]["field"], field)
         self.assertEqual(by_type["hot_work"]["activated_by"], "admin")
         for cp_owned in ("scaffold_maintenance", "crane_operations",
-                         "excavation_monitoring"):
+                         "excavation_monitoring", "fall_protection"):
             self.assertEqual(by_type[cp_owned]["activated_by"], "cp")
 
     def test_active_tracks_the_project_field(self):
@@ -435,7 +440,7 @@ class OnlyTheRightPersonMayFlipIt(unittest.TestCase):
 
     def test_a_cp_may_switch_on_what_he_can_see(self):
         for log_type in ("scaffold_maintenance", "crane_operations",
-                         "excavation_monitoring"):
+                         "excavation_monitoring", "fall_protection"):
             with self.subTest(log=log_type):
                 out, state = self._call(log_type, True)
                 self.assertIs(out["active"], True)

@@ -856,5 +856,79 @@ class TheNamelessOshaRow(unittest.TestCase):
         self.assertNotIn(">Card #</th>", self._html([seed]))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  THE FALL PROTECTION LOG — what it says it is, and what it refuses to print
+# ══════════════════════════════════════════════════════════════════════════
+
+class TheFallProtectionDocument(unittest.TestCase):
+    """OSHA 1926.502(d)(21) mandates the INSPECTION, not a written record of
+    each one; the documented inspection is ANSI Z359, an industry consensus
+    standard. This log therefore prints what it is, ON the document — the copy
+    that ends up in a compliance packet is exactly where a reader would
+    otherwise take it for a required filing."""
+
+    NAMED = {
+        "worker_name": "wilmer carrillo", "company": "aaz",
+        "equipment_type": "Harness", "equipment_id": "SN-4471",
+        "manufacture_date": "2024-03-01", "result": "Pass",
+        "impact_loaded": False, "anchor_point": "roof davit 2",
+    }
+
+    def _html(self, rows):
+        return render(doc("fall_protection", {"activities": rows}))
+
+    def test_the_notice_is_on_the_document(self):
+        html = self._html([dict(self.NAMED)])
+        self.assertIn("1926.502(d)(21)", html)
+        self.assertIn("does not require a written record", html)
+        self.assertIn("ANSI Z359", html)
+        self.assertIn("not a DOB or OSHA filing", html)
+
+    def test_it_is_the_ONE_string_and_not_a_second_copy(self):
+        self.assertIn("FALL_PROTECTION_NOTICE", code_of("server.py"))
+        self.assertEqual(code_of("server.py").count("FALL_PROTECTION_NOTICE = ("), 1)
+
+    def test_the_notice_prints_even_with_no_rows(self):
+        """An empty log still has to say what kind of record it is."""
+        self.assertIn("ANSI Z359", self._html([]))
+
+    def test_a_row_that_names_nobody_does_not_print(self):
+        nameless = dict(self.NAMED, worker_name="", equipment_id="SN-9999")
+        html = self._html([dict(self.NAMED), nameless])
+        self.assertIn(">SN-4471<", html)
+        self.assertNotIn(">SN-9999<", html)
+        self.assertEqual(_table_rows(html, "Anchor"), 1)
+
+    def test_an_unrecorded_result_is_NOT_a_pass(self):
+        html = self._html([dict(self.NAMED, result=None)])
+        self.assertIn("Not recorded", html)
+        self.assertNotIn(">Pass<", html)
+
+    def test_removed_from_service_is_not_collapsed_into_Fail(self):
+        """A failed component still on the rack and one taken out of use are
+        different facts, and an inspector reads them differently."""
+        html = self._html([dict(self.NAMED, result="Removed from service",
+                                defect_found="cut webbing", action_taken="destroyed")])
+        self.assertIn("Removed from service", html)
+        self.assertNotIn(">Fail<", html)
+
+    def test_an_unanswered_impact_question_is_NOT_a_No(self):
+        """1926.502(d)(19) makes an impact-loaded component mandatory to
+        remove, so a silent No is the answer that keeps it in service."""
+        html = self._html([dict(self.NAMED, impact_loaded=None)])
+        i = html.index("Impact Loaded")
+        self.assertIn("Not recorded", html[i:])
+
+    def test_an_explicit_No_still_reads_as_No(self):
+        self.assertIn(">No<", self._html([dict(self.NAMED, impact_loaded=False)]))
+
+    def test_the_defect_and_the_action_print(self):
+        html = self._html([dict(self.NAMED, result="Fail",
+                                defect_found="cut webbing at the dorsal D-ring",
+                                action_taken="removed and destroyed")])
+        self.assertIn("Cut webbing at the dorsal D-ring", html)
+        self.assertIn("Removed and destroyed", html)
+
+
 if __name__ == "__main__":
     unittest.main()
