@@ -163,7 +163,11 @@ for (const [file, helper, stored] of [
 {
   const s2 = fs.readFileSync(path.join(APP, 'toolbox_talk.jsx'), 'utf8');
   const model = fs.readFileSync(path.join(__dirname, 'toolboxTalkModel.js'), 'utf8');
-  ok(/reconcileAttendees[\s\S]{0,120}from '\.\.\/\.\.\/src\/utils\/toolboxTalkModel'/.test(s2),
+  // ORDER- AND LENGTH-INDEPENDENT. A fixed character window broke the moment a
+  // sixth name joined the import; what is being asserted is MEMBERSHIP of that
+  // block, not where in it the name sits.
+  const tbImport = (s2.match(/import \{([\s\S]*?)\} from '\.\.\/\.\.\/src\/utils\/toolboxTalkModel'/) || [])[1] || '';
+  ok(tbImport.split(',').map((x) => x.trim()).includes('reconcileAttendees'),
     'toolbox_talk.jsx: imports reconcileAttendees from its model');
   ok(model.includes('withGateSnapshot({'),
     'toolboxTalkModel: gate-stamps the rows it builds');

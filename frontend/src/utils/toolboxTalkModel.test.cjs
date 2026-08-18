@@ -354,6 +354,12 @@ ok(!M.ALL_TOPIC_KEYS.includes('covid19'), 'covid19 is gone from the picker');
 ok(SERVER.includes('for k, v in topics.items() if v'),
   'the renderer prints whichever stored topics are true, so a filed talk keeps covid19');
 
+// One key from each group, taken FROM the model so the fixture cannot drift
+// away from the groups it is meant to satisfy.
+const FULL_TOPICS = Object.fromEntries(
+  M.TOPIC_GROUPS.map((g) => [M.TOPICS[g][0].key, true]),
+);
+
 // ── 5. The step pips ────────────────────────────────────────────────────────
 console.log('\n-- the pips mark, they never gate --');
 ok(JSON.stringify(M.incompleteSteps({
@@ -364,9 +370,17 @@ ok(JSON.stringify(M.incompleteSteps({
 // on a step the button let him leave.
 ok(JSON.stringify(M.incompleteSteps({
   location: 'Gate', companyName: 'AAZ', typeOfWork: 'Demo',
-  meetingTime: '07:30 AM', performedBy: 'CP', checkedTopics: { hard_hats: true },
+  meetingTime: '07:30 AM', performedBy: 'CP', checkedTopics: FULL_TOPICS,
   attendees: [{ name: 'W' }], cpSignature: 'sig',
 })) === '[]', 'a complete, signed talk marks none');
+// AND STEP 2 IS NOW PER TAB. The fixture above used to be `{ hard_hats: true }`
+// — ONE tick, and the pip read complete. It reads incomplete now, and nothing
+// else about the talk changed.
+ok(JSON.stringify(M.incompleteSteps({
+  location: 'Gate', companyName: 'AAZ', typeOfWork: 'Demo',
+  meetingTime: '07:30 AM', performedBy: 'CP', checkedTopics: { hard_hats: true },
+  attendees: [{ name: 'W' }], cpSignature: 'sig',
+})) === '[2]', 'one tick in one tab leaves step 2 incomplete and nothing else');
 ok(M.incompleteSteps({
   location: 'Gate', companyName: '', typeOfWork: 'Demo',
   meetingTime: '07:30 AM', performedBy: 'CP', checkedTopics: { hard_hats: true },
@@ -424,6 +438,75 @@ console.log('\n-- an attendee with no name is not an attendee --');
     'at SUBMIT, not on Next — a half-typed row must not block a step');
   ok(/forFiling: filing/.test(screen),
     'and the payload is trimmed on a submit only');
+}
+
+
+
+// ── the topic tabs ──────────────────────────────────────────────────────────
+console.log('\n-- a talk has to touch every subject, not five boxes in one --');
+
+
+ok(M.emptyTopicGroups(FULL_TOPICS).length === 0,
+  'one tick in every tab leaves nothing outstanding');
+ok(M.emptyTopicGroups({}).length === M.TOPIC_GROUPS.length,
+  'an untouched talk owes every tab');
+
+// THE DEFECT, NAMED. Every PPE box ticked and nothing else — the old gate
+// counted five and passed.
+const ALL_PPE = Object.fromEntries(M.TOPICS.PPE.map((t) => [t.key, true]));
+ok(M.topicCount(ALL_PPE) === M.TOPICS.PPE.length,
+  'the total the old gate read is genuinely non-zero');
+{
+  const owed = M.emptyTopicGroups(ALL_PPE);
+  ok(owed.length === M.TOPIC_GROUPS.length - 1,
+    'five PPE ticks still owe every other tab');
+  ok(!owed.includes('PPE') && owed.includes('Fall Protection')
+    && owed.includes('Hazards') && owed.includes('Equipment')
+    && owed.includes('Public Safety'),
+    'and it names them: height, hazards, equipment, the public');
+}
+
+// The gate reads TRUE, not truthy — a stored `false` or a string is not a tick.
+ok(M.emptyTopicGroups({ ...FULL_TOPICS, hard_hats: false }).includes('PPE'),
+  'un-ticking the only PPE box puts PPE back on the list');
+ok(M.emptyTopicGroups(
+  Object.fromEntries(M.TOPIC_GROUPS.map((g) => [M.TOPICS[g][0].key, 'yes'])),
+).length === M.TOPIC_GROUPS.length, 'a non-boolean is not a tick');
+
+// Any key in the group satisfies it, not just the first.
+ok(!M.emptyTopicGroups({ slopes: true }).includes('Fall Protection'),
+  'the LAST topic in a tab satisfies that tab');
+
+// Garbage in.
+[null, undefined, 'x', 7].forEach((bad) => {
+  ok(M.emptyTopicGroups(bad).length === M.TOPIC_GROUPS.length,
+    `a ${String(bad)} payload owes every tab rather than throwing`);
+});
+
+// A retired key cannot satisfy a tab. covid19 was removed from PPE and filed
+// records still carry it — it must not count as PPE coverage on a NEW talk.
+ok(M.emptyTopicGroups({ covid19: true }).includes('PPE'),
+  'a retired key does not tick its old tab');
+
+// ── the screen files nothing a tab is missing from ─────────────────────────
+{
+  const scr = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'app', 'logbooks', 'toolbox_talk.jsx'), 'utf8');
+  const body = scr.slice(scr.indexOf('const handleSubmitAndSign'),
+    scr.indexOf('setSigning(true);'));
+  ok(body.includes('emptyTopicGroups(checkedTopics)'),
+    'the submit handler asks the model, it does not re-implement the rule');
+  ok(/bareGroups\.length > 0[\s\S]{0,220}return;/.test(body),
+    'and it RETURNS rather than falling through to the signature');
+  ok(/bareGroups\.length > 0[\s\S]{0,120}setStep\(2\)/.test(body),
+    'sending him back to the topics step, not refusing at the signature');
+  // AT SUBMIT, NOT ON NEXT. He works down the tabs while the talk is
+  // happening; step 1 is the only gated step and this must not become a second.
+  ok(!/nextDisabled=\{[^}]*bareGroups/.test(scr)
+    && !/nextDisabled=\{[^}]*emptyTopicGroups/.test(scr),
+    'Next is NOT gated on the topics step');
+  ok(/nextDisabled=\{step === 1 && missingStep1\.length > 0\}/.test(scr),
+    'step 1 remains the only gated step');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

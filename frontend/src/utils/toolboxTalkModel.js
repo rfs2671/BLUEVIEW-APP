@@ -180,6 +180,30 @@ export function topicCount(checkedTopics) {
   return ALL_TOPIC_KEYS.filter((k) => t[k] === true).length;
 }
 
+/**
+ * Topic groups with NOTHING TICKED — the sentence the submit gate shows him.
+ *
+ * THE DEFECT THE COUNT HID. The gate asked `topicCount(checkedTopics) === 0`,
+ * a TOTAL across all five groups, so five PPE ticks and nothing else satisfied
+ * it: hard hats, boots, glasses, harness and gloves, and not one word about
+ * working at height, the hazards on the site, the equipment running that day or
+ * the public on the far side of the fence. The filed §3301.12.3 record read as
+ * a complete talk. A total cannot tell "thorough about one thing" from
+ * "covered everything", and those are the two cases that matter.
+ *
+ * PER TAB, because the tab IS the subject. The five groups are not a taxonomy
+ * imposed on a list of topics — they are the five things a talk has to touch,
+ * and the screen already puts each behind its own tab. A CP who never opened
+ * Fall Protection never discussed it, and the record should not say he did.
+ *
+ * Returns the GROUP NAMES, which are the tab labels, so the sentence names the
+ * tabs he has to open rather than a number he has to reconcile.
+ */
+export function emptyTopicGroups(checkedTopics) {
+  const t = (checkedTopics && typeof checkedTopics === 'object') ? checkedTopics : {};
+  return TOPIC_GROUPS.filter((g) => !TOPICS[g].some((x) => t[x.key] === true));
+}
+
 /** Attendees the renderer will actually print — it drops a nameless row. */
 export function namedAttendees(attendees) {
   return (Array.isArray(attendees) ? attendees : [])
@@ -316,7 +340,9 @@ export function incompleteSteps({
   if (missingStepOneFields({
     location, companyName, typeOfWork, meetingTime, performedBy,
   }).length > 0) out.push(1);
-  if (topicCount(checkedTopics) === 0) out.push(2);
+  // PER TAB, NOT A TOTAL. The pip and the submit gate read the same function,
+  // so step 2 cannot mark complete while the gate is refusing.
+  if (emptyTopicGroups(checkedTopics).length > 0) out.push(2);
   if (namedAttendees(attendees).length === 0) out.push(3);
   if (!String(cpSignature || '').trim()) out.push(4);
   return out;
@@ -363,5 +389,6 @@ export default {
   namedAttendees,
   unnamedAttendees,
   incompleteSteps,
+  emptyTopicGroups,
   draftBody,
 };
