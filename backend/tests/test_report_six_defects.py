@@ -703,7 +703,8 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
         db = _Db(
             projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
-                                "address": "8 Walworth St"}),
+                                "address": "8 Walworth St",
+                                "project_class": "regular"}),
             logbooks=_Coll(docs=[day["preshift"], day["jobsite"], *toolbox_docs]),
             daily_logs=_Coll(one=None),
             checkins=_Coll(docs=[]),
@@ -777,7 +778,8 @@ class TestAiOutcomeIsVisibleToTheAdminOnly(unittest.TestCase):
         day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
         db = _Db(
             projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
-                                "address": "8 Walworth St"}),
+                                "address": "8 Walworth St",
+                                "project_class": "regular"}),
             logbooks=_Coll(docs=[day["preshift"], day["toolbox"], day["jobsite"]]),
             daily_logs=_Coll(one=None),
             checkins=_Coll(docs=[]),
@@ -830,7 +832,8 @@ class TestPageOneReadsLikeSomethingSentToALender(unittest.TestCase):
                           "data": {**day["jobsite"]["data"], "activities": activities}}
         db = _Db(
             projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
-                                "address": "8 Walworth St"}),
+                                "address": "8 Walworth St",
+                                "project_class": "regular"}),
             logbooks=_Coll(docs=[day["preshift"], day["toolbox"], day["jobsite"]]),
             daily_logs=_Coll(one=None),
             checkins=_Coll(docs=[]),

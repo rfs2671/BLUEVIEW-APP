@@ -145,6 +145,11 @@ class Base(unittest.TestCase):
         self.db.projects.docs = [{
             "_id": PROJECT, "name": "588 Thomas S Boyland Street",
             "address": "588 Thomas S Boyland St, Brooklyn",
+            # ASSESSED and non-major. Without this the required set fails
+            # CLOSED (get_required_logbooks) and the two major-building logs
+            # join the denominator — which is the correct behaviour for a
+            # project nobody has classified, and is its own test below.
+            "project_class": "regular",
         }]
         self.db.logbooks.docs = [copy.deepcopy(DAILY_JOBSITE)]
         self.db.checkins.docs = [
@@ -308,6 +313,36 @@ class ItAnswersTheQuestionThatWasAsked(Base):
         self.db.logbooks.docs[0].pop("cp_signature")
         self.assertIn("1 filed without an affirmed signature (Daily Jobsite Log)",
                       self.page1())
+
+    def test_an_UNCLASSIFIED_project_counts_both_major_logs_and_says_why(self):
+        """FAIL CLOSED. "Never assessed" and "measured and found non-major"
+        were one value in one field, and the default was the second — which
+        REMOVES two required logs from a project that may well be major. A
+        missing obligation on a compliance record is invisible in the way an
+        extra one is not, so the count includes them and the line says why.
+
+        Printing the bigger denominator WITHOUT the reason would put two
+        unexplained deficiencies in front of an investor."""
+        self.db.projects.docs[0].pop("project_class")
+        line = self.page1()
+        self.assertIn("of 5 required daily logs", line)
+        self.assertIn("SSC/SSM Daily Safety Log", line)
+        self.assertIn("Concrete Operations Log", line)
+        self.assertIn("Building classification not set", line)
+
+    def test_a_CLASSIFIED_non_major_project_carries_neither(self):
+        """The other half: they are absent because the class says so."""
+        line = self.page1()
+        self.assertIn("of 3 required daily logs", line)
+        self.assertNotIn("SSC/SSM Daily Safety Log", line)
+        self.assertNotIn("Concrete Operations Log", line)
+        self.assertNotIn("Building classification not set", line)
+
+    def test_an_assessed_project_is_never_told_its_class_is_missing(self):
+        for pclass in ("regular", "major_a", "major_b"):
+            with self.subTest(pclass=pclass):
+                self.db.projects.docs[0]["project_class"] = pclass
+                self.assertNotIn("Building classification not set", self.page1())
 
     def test_a_project_that_could_not_be_read_says_so_rather_than_guessing(self):
         """No project record means no required set. Printing "0 of 0" would

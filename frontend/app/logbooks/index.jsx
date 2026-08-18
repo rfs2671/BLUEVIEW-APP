@@ -32,7 +32,7 @@ import CpNav from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
-import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI } from '../../src/utils/api';
+import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -98,6 +98,11 @@ export default function LogBooksScreen() {
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
   const [requiredLogbooks, setRequiredLogbooks] = useState(null); // dynamic from API
+  // The server's logbook registry — labels, icons, colours and frequency for
+  // all eleven types. FALLBACK_LOG_TYPES covers six and is what shows until
+  // this lands; without it the five conditional forms could only ever render
+  // under a key-cased placeholder label.
+  const [logTypeCatalog, setLogTypeCatalog] = useState(null);
   // Task A: flagged check-in count across the CP's projects, so the Check-In
   // Review banner only shows when there's genuinely something to review (and
   // taps land on the first project that has items).
@@ -261,11 +266,12 @@ export default function LogBooksScreen() {
 
   const fetchProjectData = async (projectId) => {
     try {
-      const [logs, notifs, scaffoldInfo, reqLogbooks] = await Promise.all([
+      const [logs, notifs, scaffoldInfo, reqLogbooks, catalog] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
         logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [] })),
         logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
         projectsAPI.getRequiredLogbooks(projectId).catch(() => null),
+        logbookTypesAPI.getAll().catch(() => null),
       ]);
 
       const logMap = {};
@@ -273,9 +279,18 @@ export default function LogBooksScreen() {
       setTodayLogs(logMap);
       setNotifications(notifs);
 
-      if (reqLogbooks?.logbooks) {
+      // `required_logbooks`, NOT `logbooks`. The endpoint has always returned
+      // `{project_id, project_class, classification_assessed, required_logbooks}`
+      // and this read the key `logbooks`, which does not exist — so the state
+      // was never set, the dynamic branch in getVisibleLogTypes never ran, and
+      // the CP's list was ALWAYS the six hardcoded fallbacks. The resolved
+      // required set has never once reached this screen. It also mapped
+      // `l.log_type` over what are plain strings, so the branch was broken
+      // twice over and neither half could be noticed while the other held.
+      if (Array.isArray(reqLogbooks?.required_logbooks)) {
         setRequiredLogbooks(reqLogbooks);
       }
+      if (Array.isArray(catalog) && catalog.length > 0) setLogTypeCatalog(catalog);
 
       const isScaffoldUp = scaffoldInfo?.scaffold_erected === true
         || (scaffoldInfo?.scaffold_erector && scaffoldInfo?.scaffold_erected !== false)
@@ -340,28 +355,35 @@ export default function LogBooksScreen() {
   };
 
   const getVisibleLogTypes = () => {
-    // If we have dynamic required logbooks from the API, use them
-    if (requiredLogbooks?.logbooks) {
-      const requiredKeys = requiredLogbooks.logbooks.map(l => l.log_type);
-      // Build log type list from FALLBACK data enriched with required status
-      const allTypes = FALLBACK_LOG_TYPES.filter(lt => requiredKeys.includes(lt.key));
-      // Add any required types not in fallback (new types like ssc_daily_safety_log)
-      requiredKeys.forEach(key => {
-        if (!allTypes.find(t => t.key === key)) {
-          allTypes.push({
-            key,
-            label: key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-            subtitle: requiredLogbooks.project_class === 'major_b' ? 'Major B Required' : 'Major A Required',
-            icon: 'ShieldCheck',
-            color: '#ec4899',
-            frequency: 'daily',
-          });
-        }
+    const requiredKeys = requiredLogbooks?.required_logbooks;
+    if (Array.isArray(requiredKeys) && requiredKeys.length > 0) {
+      // THE SERVER DECIDES WHAT IS REQUIRED. get_required_logbooks resolves it
+      // from the project — §3310 class for the major-building pair, the site
+      // toggles for the conditional four — and this screen renders that answer
+      // rather than re-deriving one. The old local filtering below is what a
+      // second model looks like: it decided weekly and as-needed types for
+      // itself, and it decided them differently.
+      //
+      // Order is the server's, which is registry order.
+      const byKey = {};
+      [...(logTypeCatalog || []), ...FALLBACK_LOG_TYPES].forEach((t) => {
+        if (t && t.key && !byKey[t.key]) byKey[t.key] = t;
       });
-      return allTypes;
+      return requiredKeys.map((key) => byKey[key] || {
+        // A type the server requires and neither the registry nor the fallback
+        // describes. It is still rendered — a required log the CP cannot open
+        // is worse than an ugly label.
+        key,
+        label: key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+        subtitle: '',
+        icon: 'ShieldCheck',
+        color: semantic.neutral,
+        frequency: 'daily',
+      });
     }
 
-    // Fallback to local filtering
+    // Nothing from the server yet (first paint, or offline). Local filtering,
+    // unchanged — it is a placeholder, not a second opinion.
     return FALLBACK_LOG_TYPES.filter((lt) => {
       if (lt.conditional === 'scaffold_erected') return scaffoldActive;
       if (lt.frequency === 'weekly') return !toolboxDoneThisWeek;
@@ -552,6 +574,31 @@ export default function LogBooksScreen() {
                 </Text>
               </GlassCard>
             </Pressable>
+          )}
+
+          {/* THE CLASSIFICATION WAS NEVER SET, so the required set failed
+              CLOSED and both major-building logs are on the list below.
+              Saying so is half the ruling: get_required_logbooks includes them
+              because it cannot rule them out, and a CP who is shown two logs
+              his site plainly does not need, with no reason given, learns to
+              distrust the list. Reuses the same attention channel as the two
+              alerts above rather than adding a fourth treatment (see the
+              exception-surface drift note in followups.md). */}
+          {requiredLogbooks && requiredLogbooks.classification_assessed === false && (
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                <Text style={styles.notifTitle}>
+                  Building classification not set
+                </Text>
+              </View>
+              <Text style={styles.notifWorker}>
+                Nobody has recorded this project&apos;s storeys, height or footprint,
+                so the app cannot tell whether it is a major building. The
+                Concrete Operations and SSC/SSM logs are listed until it does.
+                An admin sets this on the project.
+              </Text>
+            </GlassCard>
           )}
 
           {/* Check-in review entry point. Lives here because /logbooks/* is

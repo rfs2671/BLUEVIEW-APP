@@ -1321,7 +1321,37 @@ def classify_project(stories, footprint_sqft, full_demo, demo_stories, building_
     """NYC Building Code §3310 classification.
     Major Building = 10+ stories OR 125+ ft OR 100,000+ sqft footprint.
     SSM required = 15+ stories OR 200+ ft OR footprint > 100,000 sqft.
-    SSC can substitute for SSM if < 15 stories AND < 200 ft AND <= 100,000 sqft."""
+    SSC can substitute for SSM if < 15 stories AND < 200 ft AND <= 100,000 sqft.
+
+    RETURNS None WHEN THERE WAS NOTHING TO CLASSIFY — the case this function
+    used to answer "regular".
+
+    Every input is Optional on ProjectCreate, so a project can be created with
+    no storeys, no height, no footprint and no demolition. Not one threshold
+    below fires, and the function fell through to `return "regular"`: NEVER
+    ASSESSED and MEASURED AND FOUND NON-MAJOR became the same answer, stored
+    in the same field, indistinguishable afterwards.
+
+    That is only a cosmetic defect until something removes obligations on the
+    strength of it. get_required_logbooks does exactly that — a non-major
+    project is not required to keep the Concrete Safety Manager log or the
+    SSC/SSM daily log — so a genuinely major project created before anybody
+    typed its storey count would have had two required logs silently dropped.
+
+    The rule this follows is already in this file, on `structural_system`:
+    "NEVER inferred ... because guessing it would put the wrong trades in front
+    of the CP." Same shape, heavier consequence. None is the honest answer and
+    get_required_logbooks fails CLOSED on it.
+
+    `full_demo` counts as an input on its own: declaring a full demolition is
+    an assessment even with no storey count beside it. A zero or blank
+    measurement is not an input — no building has zero storeys.
+    """
+    if not full_demo and not any(
+        v for v in (stories, footprint_sqft, building_height, demo_stories)
+    ):
+        return None
+
     is_major = False
     needs_ssm = False
 
@@ -1357,19 +1387,72 @@ def classify_project(stories, footprint_sqft, full_demo, demo_stories, building_
         return "major_a"
     return "regular"
 
+def classification_assessed(project) -> bool:
+    """Has this project's §3310 classification actually been decided?
+
+    A project_class OUTSIDE the valid set — missing, null, empty, junk — means
+    nobody has assessed it. See classify_project: it returns None rather than
+    "regular" when there was nothing to classify.
+
+    This is the ONE question the fail-closed branch below turns on, so it is a
+    named predicate rather than an inline truth test repeated at three call
+    sites.
+    """
+    return str((project or {}).get("project_class") or "") in VALID_PROJECT_CLASSES
+
+
 def get_required_logbooks(project_class, project=None):
-    base = ["daily_jobsite", "preshift_signin", "toolbox_talk", "subcontractor_orientation", "osha_log"]
-    if project_class in ("major_a", "major_b"):
-        base.append("ssc_daily_safety_log")
-        base.append("hot_work")
-        if project:
-            if project.get("building_stories") and project["building_stories"] >= 5:
-                base.append("concrete_operations")
-            if project.get("has_full_demolition") or project.get("adjacent_to_occupied"):
-                base.append("excavation_monitoring")
-    if project and project.get("scaffold_erected"):
-        base.append("scaffold_maintenance")
-    return base
+    """The logbooks this project must keep, RESOLVED FROM THE PROJECT.
+
+    ── ONE MODEL, AND IT LIVES IN LOGBOOK_TYPE_REGISTRY ────────────────────
+    This function used to hand-build the list, and the registry declared its
+    own `conditional` keys that nothing read. The two disagreed on every
+    conditional type: the registry said concrete needed >= 5 storeys and crane
+    needed a permit; this function implemented the storey rule, keyed
+    excavation on `adjacent_to_occupied` (a field nothing writes), and never
+    appended crane under any condition at all — so the crane log was
+    unreachable on every project this app has ever had.
+
+    Now there is one declaration. Each registry entry carries:
+
+      applicable_classes   which §3310 classes the log can apply to
+      conditional          a project field that must be TRUE for it to apply
+      activated_by         who may set that field — "cp" or "admin"
+
+    ── TWO INDEPENDENT TESTS, and they are not the same kind of fact ───────
+    CLASS is a building classification: it is decided once, from measurements,
+    and the CP cannot change it. CONDITION is a site fact: a scaffold is up, a
+    crane is on site, an excavation is open, the site holds a hot-work permit.
+    A toggle is therefore applied whether or not the class is known — the
+    scaffold is up regardless of how many storeys anybody typed.
+
+    ── UNASSESSED FAILS CLOSED ────────────────────────────────────────────
+    When the class has never been decided, the class test is SKIPPED rather
+    than defaulted, so every class-restricted log is included. On a project
+    with no classification that means the Concrete Safety Manager log and the
+    SSC/SSM daily log both appear.
+
+    That is deliberately the noisier error. The alternative — treating blank as
+    "regular" — REMOVES two required logs from a project that may well be major,
+    and a missing obligation on a compliance record is invisible in exactly the
+    way an extra one is not. The caller is told which case it is
+    (classification_assessed) so it can say so on screen instead of leaving the
+    CP to wonder why two logs appeared.
+
+    Order is registry order, which is the display order the CP list renders in.
+    """
+    proj = project or {}
+    assessed = str(project_class or "") in VALID_PROJECT_CLASSES
+    out = []
+    for entry in LOGBOOK_TYPE_REGISTRY:
+        classes = entry.get("applicable_classes") or ()
+        if assessed and project_class not in classes:
+            continue
+        cond = entry.get("conditional")
+        if cond and not proj.get(cond):
+            continue
+        out.append(entry["key"])
+    return out
 
 def normalize_phone(phone: str) -> str:
     """Normalize phone to E.164 format."""
@@ -2845,6 +2928,8 @@ LOGBOOK_TYPE_REGISTRY = [
         "dob_reference": "§3314",
         "applicable_classes": ["regular", "major_a", "major_b"],
         "conditional": "scaffold_erected",
+        # The toggle that already works, and the pattern the other three follow.
+        "activated_by": "cp",
     },
     {
         "key": "ssc_daily_safety_log",
@@ -2864,7 +2949,16 @@ LOGBOOK_TYPE_REGISTRY = [
         "icon": "Flame",
         "color": "#f97316",
         "dob_reference": "FC §3504",
-        "applicable_classes": ["major_a", "major_b"],
+        # Welding happens on regular sites too. This was major-only, which is
+        # why it never appeared for the operator.
+        "applicable_classes": ["regular", "major_a", "major_b"],
+        "conditional": "hot_work_permitted",
+        # THE ADMIN, not the CP. Every other toggle is a site condition the CP
+        # can see: a scaffold is up, a crane is on site, an excavation is open.
+        # This one rests on an FDNY permit and a certificate of fitness — paper
+        # the admin holds and the app has never seen. Filling the log is the
+        # CP's act; declaring the work permitted is not.
+        "activated_by": "admin",
     },
     {
         "key": "concrete_operations",
@@ -2874,8 +2968,12 @@ LOGBOOK_TYPE_REGISTRY = [
         "icon": "Layers",
         "color": "#64748b",
         "dob_reference": "§3310.4",
+        # A Concrete Safety Manager instrument: a MAJOR-BUILDING classification,
+        # not a site condition, so it is keyed off project_class and carries no
+        # toggle. The storey condition it used to carry was a second, disagreeing
+        # model — the registry said >= 5 storeys and get_required_logbooks
+        # implemented it while ignoring this key entirely.
         "applicable_classes": ["major_a", "major_b"],
-        "conditional": "building_stories_gte_5",
     },
     {
         "key": "crane_operations",
@@ -2885,8 +2983,12 @@ LOGBOOK_TYPE_REGISTRY = [
         "icon": "Crane",
         "color": "#eab308",
         "dob_reference": "§3319",
-        "applicable_classes": ["major_a", "major_b"],
-        "conditional": "has_crane_permit",
+        # A crane can stand on any site. This was major-only AND
+        # get_required_logbooks never appended it under any condition, so the
+        # crane log was unreachable on every project this app has ever had.
+        "applicable_classes": ["regular", "major_a", "major_b"],
+        "conditional": "crane_on_site",
+        "activated_by": "cp",
     },
     {
         "key": "excavation_monitoring",
@@ -2896,10 +2998,43 @@ LOGBOOK_TYPE_REGISTRY = [
         "icon": "Mountain",
         "color": "#a855f7",
         "dob_reference": "§3304",
-        "applicable_classes": ["major_a", "major_b"],
-        "conditional": "has_excavation",
+        # An excavation is a site condition the CP can see. It was major-only,
+        # and the condition get_required_logbooks actually used was
+        # `adjacent_to_occupied` — a field NOTHING in this codebase writes.
+        "applicable_classes": ["regular", "major_a", "major_b"],
+        "conditional": "excavation_active",
+        "activated_by": "cp",
     },
 ]
+
+# HOW OFTEN EACH LOG IS DUE, read off the registry rather than restated.
+#
+# "Which types are due DAILY" was being decided in four places, and only one of
+# them read this field: the page-1 compliance line. The nightly missing-logbook
+# check carried `not in ("subcontractor_orientation", "toolbox_talk")` — an
+# exclusion list that happened to agree, until a type with a different frequency
+# was added to a required set, at which point it starts alerting nightly on a
+# weekly log. The CP list screen carried a fourth hand-copied copy.
+#
+# A type this does not know is treated as DAILY: an unregistered log that a
+# project requires is surfaced rather than silently exempted from every
+# deadline.
+def logbook_frequency(log_type: str) -> str:
+    for entry in LOGBOOK_TYPE_REGISTRY:
+        if entry["key"] == log_type:
+            return entry.get("frequency") or "daily"
+    return "daily"
+
+
+def daily_required_logbooks(required) -> list:
+    """The subset of a required set that is due EVERY DAY.
+
+    Weekly and as-needed types are real obligations; they are simply not
+    deficiencies on a given date, and counting them as such invents a
+    deficiency out of a frequency.
+    """
+    return [t for t in (required or []) if logbook_frequency(t) == "daily"]
+
 
 # ── TIMING TAXONOMY — the counsel-defined freeze model. ─────────────────────
 # Two behaviors, and which one applies is a LEGAL classification, not a UI choice:
@@ -8923,6 +9058,12 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     override = project_dict.get("project_class")
     if override and override in VALID_PROJECT_CLASSES:
         project_dict["project_class"] = override
+        # A HUMAN DECIDED IT. That is an assessment even when it agrees with
+        # nothing, which is why it is recorded separately from the class: a
+        # stored "regular" that a person chose and a stored "regular" that fell
+        # out of an empty form are the same string, and only this field can
+        # ever tell them apart afterwards.
+        project_dict["classification_source"] = "admin"
         if override != suggested:
             await db.compliance_alerts.insert_one({
                 "type": "classification_override",
@@ -8934,7 +9075,11 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
                 "resolved": False,
             })
     else:
+        # May be None — classify_project returns None when there was nothing to
+        # classify, and storing that is the whole point. get_required_logbooks
+        # fails CLOSED on it rather than quietly dropping two required logs.
         project_dict["project_class"] = suggested
+        project_dict["classification_source"] = "measured" if suggested else "unassessed"
 
     project_dict["required_logbooks"] = get_required_logbooks(project_dict["project_class"], project_dict)
     # ── END classification ──
@@ -9089,9 +9234,15 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
             override = update_data.get("project_class")
             if override and override in VALID_PROJECT_CLASSES:
                 update_data["project_class"] = override
+                update_data["classification_source"] = "admin"
             else:
                 update_data["project_class"] = suggested
-            update_data["required_logbooks"] = get_required_logbooks(update_data["project_class"], merged)
+                update_data["classification_source"] = (
+                    "measured" if suggested else "unassessed")
+            # `merged` carries the STORED class, not the one just decided, so
+            # the resolved set is computed from the new class explicitly.
+            update_data["required_logbooks"] = get_required_logbooks(
+                update_data["project_class"], {**merged, **update_data})
 
     result = await db.projects.update_one(
         {"_id": to_query_id(project_id)},
@@ -9119,9 +9270,20 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
-    project_class = project.get("project_class", "regular")
+    # NO "regular" DEFAULT HERE EITHER. A missing class is reported as missing;
+    # substituting the non-major class at the read is the same silent default
+    # classify_project stopped making, one layer out.
+    project_class = project.get("project_class")
     required = get_required_logbooks(project_class, project)
-    return {"project_id": project_id, "project_class": project_class, "required_logbooks": required}
+    return {
+        "project_id": project_id,
+        "project_class": project_class,
+        # The client says so on screen. Two logs appear that would not appear
+        # on an assessed non-major project, and a CP who is not told why reads
+        # them as the app being wrong about his site.
+        "classification_assessed": classification_assessed(project),
+        "required_logbooks": required,
+    }
 
 @api_router.delete("/projects/{project_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):
@@ -17263,6 +17425,34 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         "week_start": week_start_str,
     }
 
+async def _refresh_required_logbooks(project_id: str) -> list:
+    """Recompute and store `required_logbooks` after a toggle moved.
+
+    THE STORED LIST IS A CACHE, and it had exactly two writers: project create,
+    and project update when a CLASSIFICATION field changed. A toggle is neither.
+    So flipping `scaffold_erected` changed what the CP's list showed — that
+    screen asks the endpoint, which resolves live — and changed nothing about
+    the stored list, which is what the daily report's compliance line and the
+    nightly missing-logbook check both read first.
+
+    The result: the scaffold went up, the CP started filing scaffold logs, and
+    the compliance line never counted one, because the cache still held the set
+    computed when the project was created. Two surfaces, one project, two
+    different answers about what is required.
+
+    Returns the recomputed list so a caller can use it without a second read.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        return []
+    required = get_required_logbooks(project.get("project_class"), project)
+    await db.projects.update_one(
+        {"_id": to_query_id(project_id)},
+        {"$set": {"required_logbooks": required}},
+    )
+    return required
+
+
 @api_router.get("/logbooks/project/{project_id}/scaffold-info")
 async def get_scaffold_info(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get saved scaffold info for a project (remembered after first entry)"""
@@ -17303,6 +17493,7 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
     # Remove None values
     update = {k: v for k, v in update.items() if v is not None}
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
+    await _refresh_required_logbooks(project_id)
     return {"message": "Scaffold info saved"}
 # ==================== LOGBOOK TYPE REGISTRY ENDPOINT ====================
 
@@ -19141,6 +19332,11 @@ async def generate_combined_report(
     # above deliberately excludes them and silence would read as "not done".
     _extra = [_t for _t in _required if _t not in _due and _by_type.get(_t)]
 
+    _unassessed_note = (
+        " Building classification not set, so the two major-building logs are"
+        " included until it is."
+        if project and not classification_assessed(project) else ""
+    )
     if not project:
         _compliance = "Project record not found — the required-log set could not be read."
     elif not _due:
@@ -19167,6 +19363,13 @@ async def generate_combined_report(
             " Also filed today: "
             + ", ".join(_log_label(_t) for _t in _extra) + "."
         )
+    # WHY THE DENOMINATOR IS BIGGER THAN THE READER EXPECTS. get_required_logbooks
+    # fails CLOSED on a project whose §3310 class was never decided, so the
+    # Concrete Safety Manager log and the SSC/SSM log are counted as required.
+    # Printing that count without the reason puts two unexplained deficiencies
+    # on a document that goes to investors and lenders, and the honest sentence
+    # is that nobody has classified the building — not that the site is failing.
+    _compliance += _unassessed_note
 
     # ONE HEADER. The address and the date are printed by the document header
     # above this section and are NOT repeated here.
@@ -23166,7 +23369,7 @@ async def nightly_compliance_check():
         for project in projects:
             pid = str(project["_id"])
             pname = project.get("name", "Unknown")
-            pclass = project.get("project_class", "regular")
+            pclass = project.get("project_class")
             company_id = project.get("company_id")
 
             # 1. Check for missing required daily logbooks (only if workers were on site today)
@@ -23179,7 +23382,7 @@ async def nightly_compliance_check():
 
             if checkin_count > 0:
                 required = project.get("required_logbooks") or get_required_logbooks(pclass, project)
-                daily_required = [r for r in required if r not in ("subcontractor_orientation", "toolbox_talk")]
+                daily_required = daily_required_logbooks(required)
 
                 for log_type in daily_required:
                     existing = await db.logbooks.find_one({
