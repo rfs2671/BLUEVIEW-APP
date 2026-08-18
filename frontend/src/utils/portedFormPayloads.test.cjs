@@ -842,19 +842,50 @@ for (const f of bldDropFields) {
     `buildingHasContent agrees with the renderer on "${f}"`);
 }
 ok(EXC.buildingHasContent(EXC.EMPTY_ADJACENT_BUILDING()) === false,
-  'an untouched row is NOT a monitoring point — the same rule the renderer drops it by');
+  'an untouched row is not TOUCHED either');
 
+// ── THE OWNER RULE: A MONITORING POINT IS A BUILDING ────────────────────────
+//
+// The rule was any-of those four, and this block used to assert that a row
+// carrying only `current_reading: '2.000'` WAS filed. That row is vibration
+// data attributed to no structure: a movement reading that names no building
+// to inspect, no owner to notify and no work to stop. Both renderers now drop
+// it and so does filing.
 const excMixed = [
   { address: '12 Bond', baseline_reading: '1.000', current_reading: '1.004' },
   EXC.EMPTY_ADJACENT_BUILDING(),
   { address: '', baseline_reading: '', current_reading: '2.000' },
 ];
-ok(EXC.buildingsForFiling(excMixed).length === 2,
-  'filing drops the untouched seed and keeps both surveyed points');
+ok(EXC.buildingNamesStructure(excMixed[0]) === true,
+  'a row with an address names a building');
+ok(EXC.buildingNamesStructure(excMixed[2]) === false,
+  'a reading with NO address does not, whatever else it holds');
+ok(EXC.buildingNamesStructure({ address: '   ' }) === false,
+  'and neither does whitespace');
+ok(EXC.buildingNamesStructure({ address: '12 Bond' }) === true,
+  'an address with no readings yet DOES — half a measurement is still a '
+  + 'measurement of a named building, and this is an owner rule, not a '
+  + 'completeness rule');
+ok(EXC.buildingsForFiling(excMixed).length === 1,
+  'filing keeps the named point and drops both the seed and the orphan reading');
 ok(EXC.draftBody({}, excMixed).adjacent_buildings.length === 3,
   'but a DRAFT keeps all three — a half-typed row must survive a save');
-ok(EXC.draftBody({}, excMixed, { forFiling: true }).adjacent_buildings.length === 2,
+ok(EXC.draftBody({}, excMixed, { forFiling: true }).adjacent_buildings.length === 1,
   'and the filing flag is what trims it');
+{
+  const reported = EXC.unnamedBuildings(excMixed);
+  ok(reported.length === 1 && reported[0].row === 3,
+    'the orphan reading is REPORTED by its on-screen position');
+  ok(reported[0].current === '2.000',
+    'carrying the readings it holds, so he can recognise the row');
+  ok(!reported.some((u) => u.row === 2),
+    'and the untouched seed is not — it is dropped silently, as always');
+}
+// Both renderers agree, read from their own source.
+ok(/if not has\(b, "address"\)/.test(excPdf),
+  'the per-logbook PDF drops a row with no address');
+ok(/if not str\(b\.get\("address", ""\)\)\.strip\(\)/.test(excReport),
+  'and so does the combined report');
 
 // ── TWO REAL BOOLEANS, DELIBERATELY NOT A THREE-STATE MAP ───────────────────
 //

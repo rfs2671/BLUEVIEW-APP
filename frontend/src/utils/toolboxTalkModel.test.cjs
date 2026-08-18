@@ -376,6 +376,56 @@ ok(M.topicCount({ hard_hats: true, gloves: false }) === 1, 'an unticked topic is
 ok(M.namedAttendees([{ name: '' }, { name: 'W' }]).length === 1,
   'a nameless row is not an attendee — the same rule the renderer drops it by');
 
+console.log('\n-- an attendee with no name is not an attendee --');
+{
+  // BOTH RENDERERS ALREADY DROP ONE, so the row could only ever reach the
+  // STORED record — an auditor reading the collection and an inspector reading
+  // the PDF saw different sheets, and only the first showed the row. And it is
+  // not blank: `signed` is the CP's Present mark and `gate_confirmed` is the
+  // worker's own tap at the turnstile.
+  const rows = [
+    { ...M.EMPTY_ATTENDEE(), name: 'Wilmer Carrillo', company: 'AAZ' },
+    { ...M.EMPTY_ATTENDEE(), company: 'AAZ', signed: true, gate_confirmed: true },
+    M.EMPTY_ATTENDEE(),
+    { ...M.EMPTY_ATTENDEE(), title: 'Laborer' },
+  ];
+  const reported = M.unnamedAttendees(rows);
+  ok(reported.length === 2, 'both touched-but-nameless rows are reported');
+  ok(reported[0].row === 2 && reported[1].row === 4,
+    'by their 1-based position, which is how they read on screen');
+  ok(reported[0].marked === true,
+    'and the one carrying ticks says so — that is what made it worse than blank');
+  ok(!reported.some((u) => u.row === 3),
+    'the untouched seed is NOT reported — dropped silently, as always');
+  ok(M.unnamedAttendees([rows[0]]).length === 0,
+    'a clean roster reports nothing and the CP is never stopped');
+}
+{
+  const attendees = [
+    { ...M.EMPTY_ATTENDEE(), name: 'Wilmer Carrillo' },
+    { ...M.EMPTY_ATTENDEE(), company: 'AAZ', signed: true },
+  ];
+  const draft = M.draftBody({ attendees });
+  ok(draft.attendees.length === 2,
+    'a DRAFT keeps both — a half-typed row is ordinary work during the talk');
+  const filed = M.draftBody({ attendees, forFiling: true });
+  ok(filed.attendees.length === 1 && filed.attendees[0].name === 'Wilmer Carrillo',
+    'FILING keeps only the named row, so the stored record cannot hold a row '
+    + 'the filed record will not print');
+  ok(!filed.attendees.some((a) => a.signed && !a.name),
+    'and the Present mark against nobody goes with it');
+}
+{
+  const screen = SCREEN.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(/unnamedAttendees\(attendees\)/.test(screen),
+    'the screen names the rows before they go');
+  ok(screen.indexOf('unnamedAttendees(attendees)')
+     > screen.indexOf('const handleSubmitAndSign'),
+    'at SUBMIT, not on Next — a half-typed row must not block a step');
+  ok(/forFiling: filing/.test(screen),
+    'and the payload is trimmed on a submit only');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

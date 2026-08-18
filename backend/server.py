@@ -13657,7 +13657,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         for b in (data.get("adjacent_buildings") or []):
             if not isinstance(b, dict):
                 continue
-            if not any(has(b, k) for k in ("address", "baseline_reading", "current_reading", "delta")):
+            # A MONITORING POINT IS A BUILDING. The rule was any-of four, so a
+            # row carrying a baseline and a current reading with NO ADDRESS
+            # printed — vibration data attributed to no structure. Nobody can
+            # act on it: the whole purpose of the log is telling the DOB which
+            # adjacent building moved and by how much.
+            #
+            # THE SAME OWNER RULE the OSHA register, the toolbox roster, the
+            # pre-shift sheet and the fall-protection log apply to a WORKER.
+            # Here the thing that owns the row is an address.
+            if not has(b, "address"):
                 continue
             bld_rows += (
                 "<tr>"
@@ -20230,7 +20239,9 @@ async def generate_combined_report(
         buildings = d.get("adjacent_buildings") or []
         bld_rows = ""
         for b in buildings:
-            if not any(str(b.get(k, "")).strip() for k in ("address", "baseline_reading", "current_reading", "delta")):
+            # The owner rule, same as the per-logbook PDF: a reading with no
+            # address names no building.
+            if not str(b.get("address", "")).strip():
                 continue
             bld_rows += (
                 f'<tr><td {TD}>{_capitalize_first(b.get("address", "")) or "&mdash;"}</td>'

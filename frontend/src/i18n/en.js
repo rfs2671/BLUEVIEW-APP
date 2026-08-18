@@ -500,6 +500,10 @@ export default {
     // document does not identify. It is dropped at filing either way — this is
     // the sentence that stops it happening behind his back. Shown at SIGN, not
     // on Next: a half-typed row is ordinary work mid-shift.
+    // Appended when dropping the rows above leaves the register with nothing.
+    // The reason comes first and this second — a CP told only "nothing to
+    // file" has been given the consequence and not the cause.
+    nothingLeftBody: 'That leaves nothing to file, so the register cannot be signed yet.',
     unnamedRowsTitle: 'Some rows name no worker',
     unnamedRowsBody: 'A certification row has to say whose card it is, so these rows will not be filed: {rows}. Add the worker’s name, or delete the row.',
 
@@ -543,6 +547,13 @@ export default {
   // must be the SAME string on the device and on the document. They live in
   // toolboxTalkModel.TOPICS.
   toolboxTalk: {
+
+    // Both renderers already refuse to print a nameless attendee, so the row
+    // could only ever reach the STORED record — and it carried two ticks
+    // against a man nobody can identify.
+    unnamedAttendeeTitle: 'Some rows name no worker',
+    unnamedAttendeeBody: 'An attendance record has to say who was there, so these rows will not be filed: {rows}. Add the name, or delete the row.',
+    unnamedAttendeeMarked: 'marked present',
     // Device round 4. Step 1 is the one gated step (finding 8) and the weekly
     // gap is ruling C — the men who worked this week without a talk, whom the
     // daily roster never offered.
@@ -847,6 +858,11 @@ export default {
   // string on the device has to be the string on the document. They live in
   // excavationMonitoringModel.
   excavationMonitoring: {
+
+    // A reading with no address names no building. Dropped at filing either
+    // way; this is the sentence that stops it happening behind him.
+    unnamedPointTitle: 'A monitoring point needs an address',
+    unnamedPointBody: 'These rows record readings but name no building, so they will not be filed: {rows}. Add the address, or delete the row.',
     screenTitle: 'Excavation Monitoring Log',
     screenSub: 'Adjacent-Structure and Vibration Readings',
 

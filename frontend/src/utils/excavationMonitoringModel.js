@@ -124,15 +124,60 @@ export function thresholdStatusIsMeaningful(threshold, current) {
 }
 
 /**
- * Does this row record a monitoring point?
+ * Has the CP put anything into this row?
  *
- * THE RENDERER'S OWN DROP RULE, restated: server.py:13391 skips a row with none
- * of the four fields set, the combined report (:19659) and the kiosk
- * (logbooks.jsx:936) use the same four.
+ * NO LONGER THE FILING RULE, and the split is the point — the same split
+ * oshaLogModel made. This still answers "did he touch it", which is what the
+ * row count and the step pip read. Whether the row may be FILED is
+ * `buildingNamesStructure` below, and the rows where the two answers DISAGREE
+ * are exactly what the submit gate names.
  */
 export function buildingHasContent(building) {
   if (!building || typeof building !== 'object') return false;
   return BUILDING_KEYS.some((k) => String(building[k] ?? '').trim() !== '');
+}
+
+/**
+ * A MONITORING POINT IS A BUILDING.
+ *
+ * The old rule was any-of four, so a row carrying a baseline reading and a
+ * current reading with NO ADDRESS was filed and printed: vibration data
+ * attributed to no structure. Nobody can act on that — the entire purpose of
+ * this log is telling the DOB which adjacent building moved and by how much,
+ * and a movement of 0.004 against nothing names no building to inspect, no
+ * owner to notify and no work to stop.
+ *
+ * THE SAME OWNER RULE the OSHA register, the toolbox roster, the pre-shift
+ * sheet and the fall-protection log apply to a WORKER. Here the thing that
+ * owns the row is an address. It is deliberately NOT a rule about how much of
+ * a row is filled in: a row with an address and one reading is a real,
+ * half-taken measurement and it files.
+ *
+ * Mirrors both renderers, which now drop the same rows.
+ */
+export function buildingNamesStructure(building) {
+  if (!building || typeof building !== 'object') return false;
+  return String(building.address ?? '').trim() !== '';
+}
+
+/**
+ * Touched rows that WILL NOT BE FILED, and what they hold — the sentence the
+ * submit gate shows him. An untouched row is not here: it says nothing, it has
+ * always been dropped silently, and only a row he put readings into is worth
+ * stopping him for.
+ */
+export function unnamedBuildings(buildings) {
+  const out = [];
+  (Array.isArray(buildings) ? buildings : []).forEach((b, i) => {
+    if (buildingNamesStructure(b)) return;
+    if (!buildingHasContent(b)) return;
+    out.push({
+      row: i + 1,
+      baseline: String((b && b.baseline_reading) ?? '').trim(),
+      current: String((b && b.current_reading) ?? '').trim(),
+    });
+  });
+  return out;
 }
 
 /** Every row with its computed delta — the shape that goes in the payload. */
@@ -149,7 +194,7 @@ export function buildingsWithDelta(buildings) {
  * nobody surveyed.
  */
 export function buildingsForFiling(buildings) {
-  return buildingsWithDelta(buildings).filter(buildingHasContent);
+  return buildingsWithDelta(buildings).filter(buildingNamesStructure);
 }
 
 /** How many points the CP has actually recorded. */
@@ -224,6 +269,8 @@ export default {
   isOverThreshold,
   thresholdStatusIsMeaningful,
   buildingHasContent,
+  buildingNamesStructure,
+  unnamedBuildings,
   buildingsWithDelta,
   buildingsForFiling,
   filledBuildingCount,
