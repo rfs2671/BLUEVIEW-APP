@@ -346,6 +346,11 @@ export default {
     // for the rest of the day; the 3am sweep closes it. Saying so is the
     // point: a CP told only "filed" would not add the afternoon's photos.
     signedStaysOpen: 'Signed. This log stays open for the rest of the day — add photos or injuries as they happen. It closes overnight.',
+    // A crew on site whose work nobody described. stepComplete(2) has held this
+    // rule all along and only marked with it; the filed §3301.2 log is where
+    // the gap shows.
+    crewWorkMissingTitle: 'Some crews have no work described',
+    crewWorkMissingBody: 'The daily log has to say what each crew did. Nothing is recorded for: {crews}. Add their work before signing.',
     savedAutomatically: 'Saved automatically',
   },
 

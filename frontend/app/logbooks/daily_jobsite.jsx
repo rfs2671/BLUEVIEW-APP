@@ -88,7 +88,7 @@ import {
   composeChipBands,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
-  isUnassignedWorkerRow, workRows, tradeLabel,
+  isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
   deriveGeneralDescription,
@@ -1351,6 +1351,32 @@ export default function DailyJobsiteLog() {
     if (badInspections.length > 0) {
       setStep(4);
       toast.warning(t('sectionInspected'), t('inspectionNoteMissing'));
+      return;
+    }
+    // A CREW ON SITE THAT DID NOTHING RECORDABLE IS A CREW NOBODY DESCRIBED.
+    //
+    // stepComplete(2) has held this rule the whole time and only MARKED with
+    // it. So a filed §3301.2 daily log could name four subcontractors on site
+    // and say what none of them did, and the only trace was a pip the CP had
+    // already walked past. The document that goes to the DOB, the investor and
+    // the lender is the one where that gap shows.
+    //
+    // Same shape as the two gates above: back to the step that holds it, and
+    // name WHICH crews rather than refusing at the signature with no route to
+    // a fix. Blocking at submit, never on Next — a crew whose work is not done
+    // yet is ordinary at 9am.
+    const bareCrews = crewsWithoutWork(activitiesRef.current || activities);
+    if (bareCrews.length > 0) {
+      setStep(2);
+      toast.warning(
+        t('crewWorkMissingTitle'),
+        t('crewWorkMissingBody').replace(
+          '{crews}',
+          bareCrews.map((c) => (c.crew
+            ? (c.trade ? `${c.crew} (${c.trade})` : c.crew)
+            : t('noCrewWorker'))).join(', '),
+        ),
+      );
       return;
     }
     setSigning(true);

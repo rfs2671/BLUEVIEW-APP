@@ -372,6 +372,35 @@ export const isUnassignedWorkerRow = (activity) => Boolean(
 export const workRows = (activities) => (Array.isArray(activities) ? activities : [])
   .filter((a) => !isUnassignedWorkerRow(a));
 
+/**
+ * Crews the CP has left with NO WORK DESCRIBED — the sentence the submit gate
+ * shows him.
+ *
+ * THE RULE ALREADY EXISTED AND ONLY MARKED. stepComplete(2) says a step is
+ * complete when every work row carries a description, and the step pip has been
+ * reading it all along. Nothing stopped him signing: a filed §3301.2 daily log
+ * could name four subcontractors on site and say what none of them did, and the
+ * only trace was a pip he had already walked past.
+ *
+ * UNASSIGNED WORKERS ARE NOT CREWS. A man who checked in with no company gets
+ * no activity card, so asking him for a work description would block every day
+ * on which one person tapped in without a company assigned. workRows drops
+ * those rows and this inherits that, so the two cannot drift.
+ *
+ * Returns the crew LABEL, because a row number means nothing on a screen that
+ * lists crews by company.
+ */
+export function crewsWithoutWork(activities) {
+  return workRows(activities)
+    .map((a, i) => ({ a, n: i + 1 }))
+    .filter(({ a }) => String(a?.work_description || '').trim() === '')
+    .map(({ a, n }) => ({
+      crew: String(a.company || '').trim(),
+      trade: String(a.trade || '').trim(),
+      row: n,
+    }));
+}
+
 /** True once this row names a sub the project roster does not know. */
 export const isUnboundCrew = (activity) => Boolean(
   activity && String(activity.company || '').trim() && !activity.subcontractor_id,
@@ -645,6 +674,7 @@ export default {
   resolveRosterId,
   isUnassignedWorkerRow,
   workRows,
+  crewsWithoutWork,
   deriveGeneralDescription,
   OTHER_CHIP_ID,
   CHIP_SLOTS,

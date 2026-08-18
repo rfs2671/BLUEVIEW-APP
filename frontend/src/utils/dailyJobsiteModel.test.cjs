@@ -41,7 +41,7 @@ const M = new Function(`
   return { rosterKey, isUnassignedCompany, EMPTY_ACTIVITY, EMPTY_OBSERVATION,
            buildCrewsFromRoster, rosterIdIndex, parseInstant, composeSelection,
            cameraReady, resolveRosterId, isUnboundCrew, deriveGeneralDescription,
-           isUnassignedWorkerRow, workRows,
+           isUnassignedWorkerRow, workRows, crewsWithoutWork,
            observationComplete, incompleteObservations, formatLogDate,
            formatCheckInTime, stepComplete,
            isUnassignedTrade, cleanTrade, tradeLabel, NO_TRADE_LABEL,
@@ -630,6 +630,74 @@ for (const junk of [undefined, null, {}, { chips: null }, { chips: 'x' },
   const r = M.composeChipBands(junk || {});
   ok(Array.isArray(r.primary) && Array.isArray(r.always) && Array.isArray(r.rest),
     `a well-formed result for ${JSON.stringify(junk)} — chips must never stop a CP logging a day`);
+}
+
+console.log('\n-- a crew on site whose work nobody described --');
+{
+  // stepComplete(2) has held this rule the whole time and only MARKED with it,
+  // so a filed daily log could name four subs and say what none of them did.
+  const crews = [
+    { company: 'Kestrel Electric', trade: 'Electrical', work_description: 'branch rough-in' },
+    { company: 'Air Star Mechanical', trade: 'HVAC', work_description: '' },
+    { company: 'Vanguard Concrete', trade: 'Concrete', work_description: '   ' },
+  ];
+  const bare = M.crewsWithoutWork(crews);
+  ok(bare.length === 2, 'both crews with nothing described are reported');
+  ok(bare[0].crew === 'Air Star Mechanical' && bare[0].trade === 'HVAC',
+    'named by COMPANY and trade — a row number means nothing on a list of crews');
+  ok(bare[1].crew === 'Vanguard Concrete',
+    'and whitespace is not a description');
+  ok(M.crewsWithoutWork([crews[0]]).length === 0,
+    'a described crew is not reported and the CP is never stopped');
+  ok(M.crewsWithoutWork(null).length === 0, 'malformed input does not throw');
+}
+{
+  // AN UNASSIGNED WORKER IS NOT A CREW. He gets no activity card, so asking
+  // him for a work description would block every day on which one man tapped
+  // in with no company assigned.
+  const rows = [
+    { gate_sourced: true, company: '', work_description: '' },
+    { company: 'Kestrel Electric', work_description: 'branch rough-in' },
+  ];
+  ok(M.crewsWithoutWork(rows).length === 0,
+    'the unassigned worker row is not asked for work');
+  ok(M.crewsWithoutWork(rows).length === M.workRows(rows)
+    .filter((a) => !String(a.work_description || '').trim()).length,
+    'and it inherits workRows rather than re-deriving which rows count');
+}
+{
+  // The gate and the step pip must agree, or he is stopped by something the
+  // screen showed as complete.
+  const bare = [{ company: 'Kestrel Electric', work_description: '' }];
+  ok(M.stepComplete(2, { activities: bare }) === false
+     && M.crewsWithoutWork(bare).length === 1,
+    'the pip and the submit gate answer the same question');
+  const done = [{ company: 'Kestrel Electric', work_description: 'rough-in' }];
+  ok(M.stepComplete(2, { activities: done }) === true
+     && M.crewsWithoutWork(done).length === 0,
+    'and they agree when it is done too');
+}
+{
+  const screen = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'app', 'logbooks', 'daily_jobsite.jsx'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const at = screen.indexOf('crewsWithoutWork(activitiesRef.current');
+  ok(at > screen.indexOf('const handleSubmitAndSign'),
+    'the gate runs inside handleSubmitAndSign');
+  ok(at < screen.indexOf("persistAndPush('submitted')"),
+    'and BEFORE anything is written');
+  // `goNext`, not `onStepChange`. This screen has no function by that name, so
+  // the old form matched -1 and the `step === -1 ||` escape hatch made the
+  // assertion pass against ANY code — a mutation that put the gate on the step
+  // path walked straight through it. Named after what this screen actually
+  // calls, with no escape hatch.
+  const nextAt = screen.indexOf('const goNext');
+  ok(nextAt > -1, 'the step-forward path is where this screen keeps it');
+  ok(!screen.slice(nextAt, screen.indexOf('const goBack', nextAt))
+    .includes('crewsWithoutWork'),
+    'and the gate is NOT on it — a crew whose work is not done yet is ordinary at 9am');
+  ok(/setStep\(2\);/.test(screen.slice(at - 200, at + 400)),
+    'it sends him back to the step that holds the fix');
 }
 
 console.log(`

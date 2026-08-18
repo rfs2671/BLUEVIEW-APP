@@ -178,6 +178,17 @@ const { isAffirmedSignature, affirmationHintKey } = (() => {
 return { isAffirmedSignature, affirmationHintKey };`)();
 })();
 
+// The REAL crew gate, executed. handleSubmitAndSign calls it before anything
+// below, so a stub returning [] would hide a gate that had stopped working.
+const { crewsWithoutWork } = (() => {
+  const body = fs.readFileSync(path.join(UTILS, 'dailyJobsiteModel.js'), 'utf8')
+    .replace(/^export default [\s\S]*$/m, '')
+    .replace(/^export (const|function|let) /gm, '$1 ');
+  // eslint-disable-next-line no-new-func
+  return new Function(`${body}
+return { crewsWithoutWork };`)();
+})();
+
 const { isOfflineError } = (() => {
   const body = offlineSrc.replace(/^export (async function|function|const) /gm, '$1 ');
   // eslint-disable-next-line no-new-func
@@ -284,6 +295,13 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     // the signature. Satisfied here so the finalize paths below are reachable.
     checklistItems: {},
     incompleteInspections: () => [],
+    // The crew gate runs beside the observation and inspection ones and BEFORE
+    // the finalize paths below, so it has to be satisfiable here. Real
+    // activities with work described, not a stub returning [] — a stub would
+    // let the gate rot without this file noticing.
+    activities: [{ company: 'Kestrel Electric', work_description: 'branch rough-in' }],
+    activitiesRef: { current: [{ company: 'Kestrel Electric', work_description: 'branch rough-in' }] },
+    crewsWithoutWork,
     setStep: () => {},
     // Real English copy, so the success-toast assertions ("back online",
     // "amendment") test the shipped sentence rather than a stub.
