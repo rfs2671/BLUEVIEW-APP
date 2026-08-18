@@ -342,6 +342,10 @@ export default {
     reviewNothingYet: 'Nothing recorded',
     submitAndSign: 'Sign and close the day',
     signingClosesDay: 'Signing locks this log. Corrections then need an amendment.',
+    // SIGN ONCE, FREEZE AT END OF DAY. He signs and the log stays open
+    // for the rest of the day; the 3am sweep closes it. Saying so is the
+    // point: a CP told only "filed" would not add the afternoon's photos.
+    signedStaysOpen: 'Signed. This log stays open for the rest of the day — add photos or injuries as they happen. It closes overnight.',
     savedAutomatically: 'Saved automatically',
   },
 
@@ -1018,6 +1022,11 @@ export default {
   // report, so the label must be the SAME string on the device and on the
   // document. They live in sscDailySafetyLogModel.
   sscDailySafetyLog: {
+
+    // SIGN ONCE, FREEZE AT END OF DAY — the same sentence daily_jobsite
+    // shows, for the same reason: an SSC told only "filed" would not add
+    // the afternoon's incidents.
+    signedStaysOpen: 'Signed. This log stays open for the rest of the day — add incidents or conditions as they happen. It closes overnight.',
     screenTitle: 'SSC/SSM Daily Safety Log',
     screenSub: 'Site Safety Coordinator — Daily Record',
 

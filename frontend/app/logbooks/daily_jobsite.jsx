@@ -1313,47 +1313,29 @@ export default function DailyJobsiteLog() {
       // was never written. `null` is different: it saved LOCALLY but has no
       // server id yet, which is the offline path and does freeze below.
       if (savedId === undefined) return;
-      let serverLocked = false;
-      if (savedId) {
-        try {
-          await logbooksAPI.finalize(savedId);
-          serverLocked = true;
-          await clearFinalizeError(savedId);
-        } catch (finalizeErr) {
-          const offline = isOfflineError(finalizeErr);
-          const status = finalizeErr?.response?.status;
-          const refused = typeof status === 'number' && status >= 400 && status < 500;
-          if (!offline && !refused) {
-            // 5xx — the server FAILED rather than judged. Nothing is queued and
-            // nothing is locked, so it is simply retryable and must not be
-            // announced as synced.
-            console.warn('Finalize FAILED server-side — not locked, not queued:', status || finalizeErr?.message);
-            toast.error(tFinalize('errorTitle'), gateCopy(null));
-            return;
-          }
-          if (refused) {
-            // NOT frozen, NOT announced, NOT navigated away from: the CP has to
-            // be able to fix what was refused, on this screen, right now. BOTH a
-            // toast and a record — the toast is gone in four seconds, and the
-            // record is what is still there when he comes back.
-            const code = finalizeErrorCode(finalizeErr);
-            console.warn('Finalize REFUSED by the server:', status, code);
-            await recordFinalizeError(savedId, code, _key, 'editor');
-            toast.error(tFinalize('errorTitle'), gateCopy(code));
-            return;
-          }
-          // GENUINELY OFFLINE. The local freeze below stands — an EOD sign with
-          // no signal must still hold — and the drain re-applies /finalize once
-          // the push lands, which is what makes the promise below true.
-          console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
-        }
-      }
-      await markFinalized(_key);
-      setLocked(true);
-      toast.success(
-        t('submittedTitle'),
-        serverLocked ? t('signingClosesDay') : t('submittedOfflineBody'),
-      );
+      // ── SIGN ONCE, FREEZE AT END OF DAY ───────────────────────────────
+      //
+      // THE SIGNATURE IS NOT THE FREEZE ON THIS LOG. daily_jobsite is
+      // END_OF_DAY: the daily narrative, open and accumulating all day. That
+      // is what LOGBOOK_TIMING_CLASS says, what logbookTiming.js says, and
+      // what /logbook-types serves to clients as `freeze_on_finalize`.
+      //
+      // It was true nowhere. This block called /finalize the instant he
+      // signed, so a log signed at 9am froze at 9am and the photos, injuries
+      // and deliveries of the rest of the day had nowhere to go except an
+      // amendment. Three descriptions of a property no code produced.
+      //
+      // He signs once. The record stays editable. sweep_stale_end_of_day_logs
+      // freezes it at 3am ET once the day is over — signed and stale, and only
+      // then. An UNSIGNED stale log is flagged instead of sealed: a CP who
+      // signed and left is a different fact from one who never signed, and
+      // sealing the second would close a record nobody attested to.
+      //
+      // NOTHING IS MARKED FINALIZED HERE, locally or on the server. The old
+      // three-way finalize split (offline / refused / failed) went with the
+      // call it was written for; the refusal it handled cannot occur, because
+      // no finalize is attempted. The submit push above keeps its own split.
+      toast.success(t('submittedTitle'), t('signedStaysOpen'));
       router.back();
     } catch (e) {
       console.error(e);

@@ -338,48 +338,24 @@ export default function SSCDailySafetyLog() {
       // different: saved LOCALLY with no server id, which is the offline path
       // and DOES freeze below.
       if (savedId === undefined) return;
-      let serverLocked = false;
-      if (savedId) {
-        try {
-          await logbooksAPI.finalize(savedId);
-          serverLocked = true;
-          await clearFinalizeError(savedId);
-        } catch (finalizeErr) {
-          const offline = isOfflineError(finalizeErr);
-          const status = finalizeErr?.response?.status;
-          const refused = typeof status === 'number' && status >= 400 && status < 500;
-          if (!offline && !refused) {
-            // 5xx — the server FAILED rather than judged. Nothing is queued and
-            // nothing is locked, so it is simply retryable and must not be
-            // announced as synced.
-            console.warn('Finalize FAILED server-side — not locked, not queued:',
-              status || finalizeErr?.message);
-            toast.error(tFinalize('errorTitle'), gateCopy(null));
-            return;
-          }
-          if (refused) {
-            // NOT frozen, NOT announced, NOT navigated away from: the SSC has to
-            // be able to fix what was refused, on this screen, right now. BOTH a
-            // toast and a record — the toast is gone in four seconds, and the
-            // record is what is still there when he comes back.
-            const code = finalizeErrorCode(finalizeErr);
-            console.warn('Finalize REFUSED by the server:', status, code);
-            await recordFinalizeError(savedId, code, _key, 'editor');
-            toast.error(tFinalize('errorTitle'), gateCopy(code));
-            return;
-          }
-          // GENUINELY OFFLINE. The local freeze below stands — an EOD sign with
-          // no signal must still hold — and the drain re-applies /finalize once
-          // the push lands, which is what makes the promise below true.
-          console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
-        }
-      }
-      await markFinalized(_key);
-      setLocked(true);
-      toast.success(
-        t('submittedTitle'),
-        serverLocked ? t('submittedBody') : t('submittedOfflineBody'),
-      );
+      // ── SIGN ONCE, FREEZE AT END OF DAY ───────────────────────────────
+      //
+      // THE SIGNATURE IS NOT THE FREEZE ON THIS LOG. ssc_daily_safety_log is
+      // END_OF_DAY, the same class as daily_jobsite: the daily narrative,
+      // open and accumulating. LOGBOOK_TIMING_CLASS says so, logbookTiming.js
+      // says so, and /logbook-types serves it to clients as
+      // `freeze_on_finalize` — and it was true nowhere, because this block
+      // called /finalize the instant the SSC signed.
+      //
+      // He signs once. The record stays editable. sweep_stale_end_of_day_logs
+      // freezes it at 3am ET once the day is over — signed and stale, and only
+      // then. An UNSIGNED stale log is flagged instead of sealed.
+      //
+      // The three-way finalize split went with the call it was written for:
+      // no finalize is attempted, so its refusal cannot occur. The submit push
+      // above keeps its own split, which is where a server judgement still
+      // reaches this screen.
+      toast.success(t('submittedTitle'), t('signedStaysOpen'));
       router.back();
     } catch (e) {
       console.error(e);
