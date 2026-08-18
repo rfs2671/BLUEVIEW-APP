@@ -530,12 +530,31 @@ const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'))
   ok(r.basis === 'sequence', 'ranked off yesterday, and it says so');
 }
 
-// ── COLD START: all five, by ruling ─────────────────────────────────────────
+// ── COLD START: FOUR, like everything else ──────────────────────────────────
+//
+// THIS ASSERTED FIVE, and the ruling behind it was made when the band was
+// ranked and the fifth chip was a real suggestion. A cold start is not that: it
+// is the project-start set in declaration order, encoding nothing about
+// yesterday, so there is no ranking to respect. The operator asked for four per
+// contractor and reported "still too many" across three rounds.
 {
   const r = M.composeChipBands({ chips: [...SUGG(5), ...ALW, ...CAT(60)], priorDate: null });
-  ok(r.primary.length === 5,
-    'ALL FIVE on a cold start — which of the five a cap of four drops is alphabetical accident, not judgement');
-  ok(r.basis === 'cold_start', 'and the basis distinguishes it from a real prior');
+  ok(r.primary.length === M.CHIP_SLOTS,
+    `FOUR on a cold start too (got ${r.primary.length}) — the band is four slots, `
+    + 'and the cold-start set is not a ranking that a cap would damage');
+  ok(r.basis === 'cold_start',
+    'and the basis STILL distinguishes it from a real prior — the card must not '
+    + 'imply a ranking that does not exist just because the count now matches');
+  ok(r.rest.some((c) => c.id === 's4'),
+    'the fifth is FOLDED, not dropped — the expander still reaches it');
+}
+// And the cap holds however many the ranker returns.
+{
+  for (const n of [1, 4, 5, 9]) {
+    const r = M.composeChipBands({ chips: [...SUGG(n), ...ALW], priorDate: null });
+    ok(r.primary.length === Math.min(n, M.CHIP_SLOTS),
+      `cold start with ${n} suggested yields ${Math.min(n, M.CHIP_SLOTS)}`);
+  }
 }
 
 // ── ALWAYS-AVAILABLE never competes for a slot ──────────────────────────────
