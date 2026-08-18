@@ -589,8 +589,23 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
   let primary;
   let basis;
   if (suggested.length > 0) {
-    // All five on a cold start; capped otherwise.
-    primary = coldStart ? suggested : suggested.slice(0, CHIP_SLOTS);
+    // FOUR SLOTS, ALWAYS — including a cold start.
+    //
+    // This read `coldStart ? suggested : suggested.slice(0, CHIP_SLOTS)`, and
+    // the ruling behind that was made when the band was RANKED and the fifth
+    // chip was a real suggestion: dropping one of five would have been an
+    // alphabetical accident rather than a judgement.
+    //
+    // A cold start is not that. It is the project-start set — five ids in
+    // declaration order, encoding nothing about what this crew did yesterday —
+    // so there is no ranking to respect and no fifth suggestion to protect.
+    // The operator asked for four per contractor and reported "still too many"
+    // across three rounds; four is the answer he gave, and the earlier ruling
+    // is superseded rather than argued with.
+    //
+    // NOTHING IS HIDDEN by this, only folded: `rest` still holds the fifth and
+    // the expander still reaches it, and "Other" is always there.
+    primary = suggested.slice(0, CHIP_SLOTS);
     basis = coldStart ? 'cold_start' : 'sequence';
   } else if (tradeCatalog.length > 0) {
     primary = tradeCatalog.slice(0, CHIP_SLOTS);
