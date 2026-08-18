@@ -569,6 +569,11 @@ export default {
     // Both renderers already refuse to print a nameless attendee, so the row
     // could only ever reach the STORED record — and it carried two ticks
     // against a man nobody can identify.
+    // A talk has to touch all five subjects. The gate asked for a TOTAL, so
+    // five PPE ticks filed as a complete talk with nothing said about height,
+    // hazards, equipment or the public.
+    topicGroupMissingTitle: 'Some topics were not covered',
+    topicGroupMissingBody: 'A talk has to cover every topic tab. Nothing is ticked under: {groups}. Open each tab and tick what you discussed.',
     unnamedAttendeeTitle: 'Some rows name no worker',
     unnamedAttendeeBody: 'An attendance record has to say who was there, so these rows will not be filed: {rows}. Add the name, or delete the row.',
     unnamedAttendeeMarked: 'marked present',

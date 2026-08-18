@@ -33,6 +33,7 @@ import {
   TOPICS, TOPIC_GROUPS, EMPTY_ATTENDEE, formatClock, buildAttendees,
   ATTENDEE_SOURCES, missingStepOneFields, weeklyGapWorkers, weeklyGapAttendee,
   reconcileAttendees, topicCount, namedAttendees, unnamedAttendees,
+  emptyTopicGroups,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/toolboxTalkModel';
 import { useT } from '../../src/i18n';
@@ -418,6 +419,24 @@ export default function ToolboxTalkLog() {
     //
     // BLOCKING AT SUBMIT, NOT ON NEXT — a half-typed row is ordinary work
     // while the talk is happening.
+    // EVERY TAB, NOT FIVE TICKS IN ONE. The gate used to ask for a total, so a
+    // CP who ticked all five PPE boxes filed a talk that said nothing about
+    // working at height, the site's hazards, the equipment running or the
+    // public — and it read as complete. Each tab is a subject the talk has to
+    // touch; one he never opened is one he never discussed.
+    //
+    // BLOCKING AT SUBMIT, NOT ON NEXT — same as the nameless attendee below. He
+    // works down the tabs while the talk is happening and should not be pinned
+    // to step 2 until he has finished speaking.
+    const bareGroups = emptyTopicGroups(checkedTopics);
+    if (bareGroups.length > 0) {
+      setStep(2);
+      toast.warning(
+        t('topicGroupMissingTitle'),
+        t('topicGroupMissingBody').replace('{groups}', bareGroups.join(', ')),
+      );
+      return;
+    }
     const unnamed = unnamedAttendees(attendees);
     if (unnamed.length > 0) {
       setStep(3);
