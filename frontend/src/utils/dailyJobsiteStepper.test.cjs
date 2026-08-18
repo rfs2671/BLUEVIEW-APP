@@ -370,8 +370,14 @@ ok(/setProjectAddress\(fullAddress\)/.test(src),
 // report printed "UNAFFIRMED — inherited signature".
 ok(/if \(!isAffirmedSignature\(cpSignature\)\) \{/.test(code),
   'the signature client guard asks whether it was AFFIRMED for this document');
-ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\)\}/.test(code),
-  'and the footer button is unreachable without one, not merely warned about');
+// TWO REASONS NOW. The day's description joined the signature: he is attesting
+// to that sentence, the app drafts it when he arrives at review, and it will not
+// file a blank either. The signature half is asserted on its own so widening the
+// condition cannot quietly drop it.
+ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\) \|\| descriptionEmpty\}/.test(code),
+  'the footer button is unreachable without an affirmed signature AND a description');
+ok(/!isAffirmedSignature\(cpSignature\)/.test(code),
+  'and the signature half is still there — not merely warned about');
 ok(!/if \(!cpSignature\) \{/.test(code),
   'the bare presence check is gone — `{}` is truthy and satisfied it');
 

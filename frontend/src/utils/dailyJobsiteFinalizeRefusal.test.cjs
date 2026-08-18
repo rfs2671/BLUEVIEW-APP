@@ -302,6 +302,10 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     activities: [{ company: 'Kestrel Electric', work_description: 'branch rough-in', work_locations: 'Floor 3' }],
     activitiesRef: { current: [{ company: 'Kestrel Electric', work_description: 'branch rough-in', work_locations: 'Floor 3' }] },
     crewsWithoutWork,
+    // The description backstop runs before the finalize paths below, so the
+    // fixture has to satisfy it. A real sentence, not a stub predicate — the
+    // gate itself is what must keep working.
+    generalDescription: 'Shoring and formwork on the third floor.',
     // The gate's sentence builder. Reached only when a crew is incomplete, and
     // the fixture above is complete — but an undefined identifier would throw
     // before any of that mattered.

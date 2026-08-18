@@ -1365,6 +1365,13 @@ export default function DailyJobsiteLog() {
     // name WHICH crews rather than refusing at the signature with no route to
     // a fix. Blocking at submit, never on Next — a crew whose work is not done
     // yet is ordinary at 9am.
+    // THE SAME BACKSTOP FOR THE DESCRIPTION. The sign control is disabled while
+    // it is empty, so reaching here means the state moved under the press.
+    if (String(generalDescription || '').trim() === '') {
+      setStep(TOTAL_STEPS);
+      toast.warning(t('descriptionRequiredTitle'), t('descriptionRequiredHint'));
+      return;
+    }
     // THE BACKSTOP. Next is disabled on step 2 until every crew is complete
     // (see nextDisabled below), so reaching here means the state moved under
     // the press — a roster refresh adding a crew while he was on step 5. The
@@ -1474,6 +1481,34 @@ export default function DailyJobsiteLog() {
   // The crews step 2 is still waiting on. One computation, read by the Next
   // gate and by its hint.
   const crewGaps = useMemo(() => crewsWithoutWork(activities), [activities]);
+
+  /**
+   * THE DAY'S DESCRIPTION, EMPTY AT THE MOMENT OF SIGNING.
+   *
+   * The report printed "Description: — Not recorded" on filed logs, and nothing
+   * was losing the field: the payload carries it, both renderers read the right
+   * key, and there is a control plus an auto-draft.
+   *
+   * It was empty because the draft only lands once he REACHES the review step:
+   *
+   *     if (descriptionTouched) return;
+   *     if (step !== TOTAL_STEPS) return;   // only once he is looking at it
+   *
+   * That rule is correct and stays. He is attesting to that sentence, so the
+   * app may propose it and may not put words he never read into the record —
+   * drafting sooner would file a sentence nobody had seen, which is worse than
+   * a blank.
+   *
+   * So the fix is not drafting sooner; it is that he cannot SIGN while it is
+   * empty. A log filed with "— Not recorded" in the description is a log where
+   * the CP never looked at the review step, and the sign control is the last
+   * place that can be true and still fixable.
+   *
+   * It also catches the case the auto-draft cannot: once he has edited the
+   * field, `descriptionTouched` is set and the draft never re-lands, so a CP
+   * who types and then clears it leaves it empty for good.
+   */
+  const descriptionEmpty = String(generalDescription || '').trim() === '';
 
   // ── STEP 1 — what was on site ─────────────────────────────────────────
   //
@@ -2210,9 +2245,15 @@ export default function DailyJobsiteLog() {
          Same pair every other form carries — the button is unavailable and the
          hint says WHICH tap fixes it, because "you have no signature" is the
          wrong sentence for a man looking at his own signature. */
-      submitDisabled={!isAffirmedSignature(cpSignature)}
+      /* TWO REASONS THE DAY CANNOT BE SIGNED, and the hint below names
+         whichever applies. The signature one comes first: a CP with no
+         affirmed credential cannot fix the description into a filed log
+         either, so telling him about the description first would send him to
+         the wrong repair. */
+      submitDisabled={!isAffirmedSignature(cpSignature) || descriptionEmpty}
       submitHint={affirmationHintKey(cpSignature, profileLoaded)
-        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded))
+        : (descriptionEmpty ? t('descriptionRequiredHint') : '')}
       onSubmit={handleSubmitAndSign}
       logType={'daily_jobsite'}
       logId={existingLogId}
