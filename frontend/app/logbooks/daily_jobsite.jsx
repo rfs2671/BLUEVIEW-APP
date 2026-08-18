@@ -55,6 +55,7 @@ import {
   spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
 } from '../../src/styles/theme';
 import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
 import { Card, ChipBase, StepHeaderBase, PromptModal } from '../../src/components/logbookStepper/primitives';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
@@ -259,7 +260,11 @@ export default function DailyJobsiteLog() {
   const date = params.date || easternToday();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  // profileLoaded distinguishes "no signature" from "still loading" — a CP
+  // must never be told he is unsigned while his own credential is on its way.
+  const {
+    cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave,
+  } = useCpProfile();
   const t = useT('dailyJobsite');
   // LogbookLockBar's namespace, reused verbatim so a server refusal reads
   // identically wherever the CP meets it.
@@ -1263,8 +1268,25 @@ export default function DailyJobsiteLog() {
    */
   const handleSubmitAndSign = async () => {
     if (signing) return;
-    if (!cpSignature) {
-      toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
+    // AFFIRMED, NOT MERELY PRESENT — round 6, finding 15.
+    //
+    // This asked `!cpSignature`, and production held `cp_signature: {}`: an
+    // empty object, truthy, so a CP with a cached profile credential filed the
+    // day's headline log and every section of it printed "UNAFFIRMED —
+    // inherited signature, not affirmed for this document". He passed the gate
+    // and the document said he had not.
+    //
+    // The affirmation gate shipped for the NINE immediate types, whose test
+    // iterates LOGBOOK_TIMING_CLASS's `immediate` entries. daily_jobsite is
+    // END_OF_DAY, so it was never in that loop; ssc_daily_safety_log picked the
+    // gate up when it was ported, and this form — the most-filed log in the app
+    // and the one that leads the report — was the one left behind.
+    if (!isAffirmedSignature(cpSignature)) {
+      const hint = affirmationHintKey(cpSignature, profileLoaded);
+      toast.warning(
+        t('signatureRequiredTitle'),
+        hint ? tFinalize(hint) : t('signatureRequiredBody'),
+      );
       return;
     }
     const blocking = incompleteObservations(observations);
@@ -2097,6 +2119,13 @@ export default function DailyJobsiteLog() {
       nextLabel={t('next')}
       submitLabel={t('submitAndSign')}
       submitting={signing}
+      /* The handler above is the backstop; this is what stops him reaching it.
+         Same pair every other form carries — the button is unavailable and the
+         hint says WHICH tap fixes it, because "you have no signature" is the
+         wrong sentence for a man looking at his own signature. */
+      submitDisabled={!isAffirmedSignature(cpSignature)}
+      submitHint={affirmationHintKey(cpSignature, profileLoaded)
+        ? tFinalize(affirmationHintKey(cpSignature, profileLoaded)) : ''}
       onSubmit={handleSubmitAndSign}
       logType={'daily_jobsite'}
       logId={existingLogId}

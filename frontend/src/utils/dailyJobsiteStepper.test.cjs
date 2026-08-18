@@ -362,7 +362,18 @@ ok(/fetchWeather\(fullAddress\)/.test(src),
   'weather auto-population is KEPT — it is an observed fact, not asserted work');
 ok(/setProjectAddress\(fullAddress\)/.test(src),
   'address auto-population is KEPT for the same reason');
-ok(/if \(!cpSignature\) \{/.test(src), 'the signature client guard stays');
+// AFFIRMED, not merely present — round 6 finding 15. This asserted the OLD
+// guard, `!cpSignature`, and production held `cp_signature: {}`: an empty
+// object, truthy, which passed it. The affirmation gate shipped for the nine
+// IMMEDIATE types and this form is END_OF_DAY, so it was never in that loop —
+// it went on asking the presence question while every section of the filed
+// report printed "UNAFFIRMED — inherited signature".
+ok(/if \(!isAffirmedSignature\(cpSignature\)\) \{/.test(code),
+  'the signature client guard asks whether it was AFFIRMED for this document');
+ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\)\}/.test(code),
+  'and the footer button is unreachable without one, not merely warned about');
+ok(!/if \(!cpSignature\) \{/.test(code),
+  'the bare presence check is gone — `{}` is truthy and satisfied it');
 
 // ═══ TOKENS ONLY ═════════════════════════════════════════════════════════════
 console.log('\n── Every colour, size and spacing comes from the token file ──');

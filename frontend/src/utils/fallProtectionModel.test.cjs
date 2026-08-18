@@ -72,7 +72,11 @@ const PHOTO = [{ id: 'ph1', uri: 'file:///x.jpg' }];
 
 console.log('\n-- what the app says this log IS --');
 {
-  const notice = /FALL_PROTECTION_NOTICE = \(\s*([\s\S]*?)\)\n/.exec(SERVER);
+  // \r?\n, not \n. server.py is checked out CRLF on Windows, so `)\n` never
+  // matched there — this passed on a LF working copy and on Linux CI, and
+  // would have failed on a fresh Windows clone. A test that depends on line
+  // endings reports on the checkout, not on the code.
+  const notice = /FALL_PROTECTION_NOTICE = \(\s*([\s\S]*?)\)\r?\n/.exec(SERVER);
   ok(!!notice, 'the server declares the notice in one place');
   const serverText = [...notice[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]).join('');
   const enText = /standardNotice: '([^']+)'/.exec(EN);
