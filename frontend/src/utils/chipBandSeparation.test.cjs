@@ -19,38 +19,47 @@ const APP = path.join(__dirname, '..', '..', 'app', 'logbooks', 'daily_jobsite.j
 const src = fs.readFileSync(APP, 'utf8');
 
 const iPrimary = src.indexOf('{primary.map((c) => (');
-const iAlways = src.indexOf('{always.map((c) => (');
-ok(iPrimary !== -1 && iAlways > iPrimary, 'both bands render, ranked first');
+ok(iPrimary !== -1, 'the ranked band still renders');
 
-const between = src.slice(iPrimary, iAlways);
+// ── THE BAND IS GONE, AND TWO OF THE THREE GUARDS WITH IT ──────────────────
+//
+// #177 separated two bands with a heading, because four ranked chips and twelve
+// always-available ones in one flex container read as sixteen boxes. The
+// operator's correction landed one level up: that band was offering every crew
+// another sub's work, so it is REMOVED rather than tidied.
+//
+// "never capped" and "never folded" described a band that no longer exists.
+// Re-pointed rather than deleted — what replaces them is that none of it came
+// back.
+ok(!/always\.map/.test(src), 'no always-available band renders on a crew card');
+ok(!/chipBandHeading/.test(src), 'and the heading that separated it went with it');
+ok(!/siteActivityQuestion/.test(src), 'and its question is gone from the card');
 
-// THE STRUCTURAL CLAIM: the primary container CLOSES before always opens, and
-// a new one opens for it. Without this the two maps share a flex-wrap parent
-// and the boxes run together.
-ok(/<\/View>/.test(between), 'the ranked band CLOSES its container before the second band');
-ok(/<View style=\{s\.chipWrap\}>/.test(between), 'and the second band opens its OWN container');
-ok((between.match(/<\/View>/g) || []).length >= 1
-  && (between.match(/<View style=\{s\.chipWrap\}>/g) || []).length >= 1,
-  'so the two maps cannot share one flex-wrap parent');
+// "Other" REJOINED THE ONE REMAINING CONTAINER. It lived INSIDE the always
+// band, so removing that band must not have taken it along — and it must still
+// be reachable without scrolling.
+ok(/chipOther/.test(src), 'Other survives the band it happened to live in');
+{
+  const iOther = src.indexOf("t('chipOther')");
+  ok(iOther > iPrimary && !/<\/View>/.test(src.slice(iPrimary, iOther)),
+    'and sits in the SAME container as the ranked chips — always visible');
+}
 
-// THE HEADING. A different QUESTION, not a section label — the band below
-// answers "what else happened on site", not "more of this crew's work".
-ok(/s\.chipBandHeading/.test(between), 'a heading sits between them');
-ok(/t\('siteActivityQuestion'\)/.test(between), 'and it is its own question, from i18n');
-ok(/always\.length > 0 &&/.test(between),
-  'the heading is suppressed when the second band is empty, so no crew sees a heading over nothing');
-
-// THE RULINGS THAT MUST NOT HAVE BEEN QUIETLY TRADED AWAY.
-ok(!/always\.slice\(/.test(src),
-  'always-available is NOT capped — it never competes for the four, by ruling');
-ok(!/expandedChips\[[^\]]*\][\s\S]{0,80}always\.map/.test(src),
-  'and NOT folded behind the expander — burying "rain / no work" on a rain day is worse');
-
-// The four-slot cap itself is untouched; the fix was never a smaller cap.
-const model = fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8');
-ok(/primary = suggested\.slice\(0, CHIP_SLOTS\)/.test(model)
-  && /primary = tradeCatalog\.slice\(0, CHIP_SLOTS\)/.test(model),
-  'the four-slot cap is unchanged on every branch — it was never the defect');
+// ── THE GUARD THAT STILL HOLDS, AND MATTERS MORE THAN BEFORE ───────────────
+//
+// The four-slot cap was never the defect and must not be "fixed" in a future
+// round. It matters MORE now: the ten de-special-cased activities compete for
+// those four slots on the crews whose taxonomy holds them.
+{
+  const model = fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8');
+  ok(/primary = suggested\.slice\(0, CHIP_SLOTS\)/.test(model)
+    && /primary = tradeCatalog\.slice\(0, CHIP_SLOTS\)/.test(model),
+    'the four-slot cap is unchanged on every branch');
+  ok(/return \{ primary, rest, basis, hidden: rest\.length \};/.test(model),
+    'composeChipBands returns { primary, rest, basis } — always is gone');
+  ok(!/band === .always_available./.test(model),
+    "and nothing filters on the dead band, which would hide a crew's own work");
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
