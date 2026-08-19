@@ -17941,8 +17941,29 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
         "scaffold_erected": data.get("scaffold_erected"),
         "updated_at": datetime.now(timezone.utc),
     }
-    # Remove None values
-    update = {k: v for k, v in update.items() if v is not None}
+    # AN EMPTY STRING IS NOT AN ANSWER, AND IT MUST NOT WIPE PROJECT MEMORY.
+    #
+    # This read `if v is not None`, which drops a missing key and lets ""
+    # straight through. These fields exist to be REMEMBERED — the endpoint's own
+    # docstring says "so it's remembered" and the GET is "saved scaffold info
+    # (remembered after first entry)". A screen that posts the whole form with
+    # one field blank therefore erased the stored permit number, expiry or
+    # erector, and the next prefill came back blank. The CP sees a form he
+    # already filled asking again, with no trace of what happened.
+    #
+    # SAME SHAPE AS gate_sourced ON THE DAILY LOG: a value the system already
+    # holds is not overwritten by an absence. A blank is "I did not supply
+    # this", not "delete what you know".
+    #
+    # `bool(v)` is deliberately NOT used — False and 0 are real answers for
+    # drawings_on_site, num_platforms and scaffold_erected, and dropping them
+    # would be the same defect with the opposite sign.
+    def _supplied(v):
+        return v is not None and not (isinstance(v, str) and v.strip() == "")
+
+    update = {k: v for k, v in update.items() if _supplied(v)}
+    # updated_at is stamped above and always survives, so a save that supplied
+    # nothing still records that he looked.
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
     await _refresh_required_logbooks(project_id)
     return {"message": "Scaffold info saved"}
