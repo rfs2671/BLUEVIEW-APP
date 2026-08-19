@@ -35,9 +35,15 @@ export const isUnassignedCompany = (v) => {
 
 /**
  * THE SAME RULE, FOR TRADE. The gate writes "UNASSIGNED" into a check-in's
- * `trade` as well as its `company` (backend/server.py:10043-10044,
- * :10055-10056, :10687-10688), and only the company was ever sanitised — so
- * the placeholder rendered on Step 1 as though it were the man's trade.
+ * `trade` as well as its `company`, and only the company was ever sanitised —
+ * so the placeholder rendered on Step 1 as though it were the man's trade.
+ *
+ * The three coercion sites are the no_roster and not_listed branches of
+ * register-and-checkin and the no_roster branch of submit. Named rather than
+ * cited by line: the addresses this comment used to carry (:10043, :10055,
+ * :10687) had all drifted, and a comment pointing at the wrong lines is how
+ * the next reader concludes the claim itself is false. Search
+ * `or "UNASSIGNED"` in server.py.
  *
  * `cleanTrade` returns '' for the sentinel, matching what buildCrewsFromRoster
  * already does to company. Callers that DISPLAY it use `tradeLabel`, which
