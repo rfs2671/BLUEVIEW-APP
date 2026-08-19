@@ -125,10 +125,49 @@ console.log('\n-- the diagnostic panel is gone, on schedule --');
 // It named the lowLightBoost failure in one round after two rounds of guessing,
 // and the preview is confirmed live. Temporary instrumentation on a CP-facing
 // screen is the shape that outlives its reason.
+// `expo-clipboard` LEFT THIS LIST, and it is the only name that did. The lens
+// readout added for the 1x report needs a copy affordance for the same reason
+// the old panel did — the operator has no debugger — so the import is back. The
+// rest of the old panel's names stay dead, and the block below replaces the
+// guarantee this one entry used to carry: the NEW instrument must announce that
+// it is temporary and must not sit open in front of a CP who did not ask for it.
 for (const dead of ['previewFailed', 'diagText', 'noteDiag', 'CAMERA DIAGNOSTIC',
-  'diagPanel', 'graceOver', 'expo-clipboard']) {
+  'diagPanel', 'graceOver']) {
   ok(!raw.includes(dead), 'fully removed: no ' + dead);
 }
+
+// ── THE LENS READOUT, AND THE TERMS IT IS HERE ON ──────────────────────────
+//
+// The old panel earned its keep — it named the lowLightBoost failure in one
+// round after two rounds of guessing — and it still had to go, because
+// temporary instrumentation on a CP-facing screen is the shape that outlives
+// its reason. The new one is here on the same terms, and these are them.
+//
+// It could not be gated on a demonstrated failure the way the old one was: THIS
+// FAILURE LOOKS LIKE SUCCESS. Live preview, working shutter, filed photo, wrong
+// framing. So the gate is deliberate access, and that is what is asserted.
+ok(/const \[lensDiagOpen, setLensDiagOpen\] = useState\(false\)/.test(raw)
+  || /const \[diagOpen, setDiagOpen\] = useState\(false\)/.test(raw),
+  'the lens readout is COLLAPSED until he opens it — no CP meets it by accident');
+// READ THE RENDERED COPY, not the file. `TEMPORARY` also appears in the
+// component's doc comment, so a bare match would keep passing with the label
+// stripped off the panel — the mutation that proved it survived this exact
+// assertion in its first form.
+{
+  const title = (raw.match(/<Text style=\{styles\.diagTitle\}>([^<]*)<\/Text>/) || [])[1] || '';
+  const foot = (raw.match(/<Text style=\{styles\.diagFoot\}>([\s\S]*?)<\/Text>/) || [])[1] || '';
+  ok(/TEMPORARY/.test(title),
+    'and it says TEMPORARY on its face, where the person reading it can see it');
+  ok(/removed once/.test(foot),
+    'and states the condition it goes on, so removal is not left to memory');
+}
+// It must not become a second place that decides anything. The device rule and
+// the sticky error record live in cameraDiag.js and are tested there.
+ok(/from '\.\.\/utils\/cameraDiag'/.test(raw),
+  'the readout delegates — the camera holds state and renders, it decides nothing');
+ok(!/setCamError\(null\)/.test(raw),
+  'and nothing here clears the error record: a fallback that WORKED is exactly '
+  + 'the case where the error string is the only surviving evidence');
 // The SHUTTER LOG stays — console-only, never on the CP's screen, and a capture
 // that hangs leaves no other trace.
 ok(/\[CAM\] shutter/.test(src), 'the shutter log stays — it was never the panel');
