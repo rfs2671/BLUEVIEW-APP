@@ -1930,7 +1930,20 @@ class ProjectResponse(BaseModel):
     track_dob_status: bool = True
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
-    project_class: Optional[str] = "regular"
+    # NONE, MATCHING ProjectCreate AND ProjectUpdate. This defaulted to
+    # "regular", so a project document with NO project_class key — the correct
+    # representation of "nobody assessed this §3310 classification" — serialised
+    # to the client as a real class. The API asserted an assessment nobody made,
+    # and shipped it beside classification_source="unassessed", so one response
+    # carried both answers with nothing to say which a consumer should believe.
+    #
+    # NOT the null-rejection case recorded at the top of this file (item 3): that
+    # was gates and five siblings typed NON-Optional List with default [], where
+    # a null genuinely could not construct. This field is Optional[str] and
+    # accepts None explicitly — verified by construction, not by reading the
+    # annotation. The default only ever fired on an ABSENT key, which is the
+    # legacy document written before the classification model landed.
+    project_class: Optional[str] = None
     suggested_class: Optional[str] = None
     building_stories: Optional[int] = None
     building_height: Optional[int] = None
