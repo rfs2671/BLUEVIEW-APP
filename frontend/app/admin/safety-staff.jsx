@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { classificationAssessed, isMajorClass } from '../../src/utils/projectClass';
 import {
   View,
   Text,
@@ -119,9 +120,12 @@ export default function SafetyStaffScreen() {
     if (res.status === 'ok') {
       const projs = res.data;
       const arr = Array.isArray(projs) ? projs : (projs?.items || []);
-      const major = arr.filter(
-        (p) => p.project_class === 'major_a' || p.project_class === 'major_b'
-      );
+      // UNASSESSED PROJECTS BELONG ON THIS LIST. This filtered to major_a /
+      // major_b, so a project nobody had classified never appeared here at
+      // all — not shown as needing no staff, but INVISIBLE. It may well be a
+      // Major A; nobody has looked. Excluding it is the app deciding a §3310
+      // staffing question by omission.
+      const major = arr.filter((p) => isMajorClass(p) || !classificationAssessed(p));
       setProjects(major);
       if (major.length && !selectedProjectId) {
         setSelectedProjectId(major[0]._id || major[0].id);
@@ -279,8 +283,16 @@ export default function SafetyStaffScreen() {
   const hasSSM = staff.some((s) => s.role === 'ssm');
   // Only assert a §3310 gap when the staff list actually came from the server.
   const staffKnown = staffState === 'ok' && !staffLoading;
-  const needsSSC = staffKnown && selectedProject?.project_class === 'major_a' && !hasSSC;
-  const needsSSM = staffKnown && selectedProject?.project_class === 'major_b' && !hasSSM;
+  // THE CLASSIFICATION IS ITS OWN STATE, ahead of any staffing answer.
+  // `staffKnown` already models "we do not know yet" for the staff read; this
+  // is the same shape for the classification, and it must be tested FIRST —
+  // computing needsSSC on an unassessed project answers a question nobody can
+  // answer yet, and answers it "no".
+  const classAssessed = classificationAssessed(selectedProject);
+  const needsSSC = staffKnown && classAssessed
+    && selectedProject?.project_class === 'major_a' && !hasSSC;
+  const needsSSM = staffKnown && classAssessed
+    && selectedProject?.project_class === 'major_b' && !hasSSM;
 
   const renderRoleBadge = (role) => (
     <View
@@ -418,6 +430,25 @@ export default function SafetyStaffScreen() {
               </ScrollView>
 
               {/* Compliance banners */}
+              {/* EXPLAIN, DO NOT GATE. An admin who opened a staffing screen for
+                  an unassessed project needs to know the app CANNOT answer and
+                  what would answer it. Blocking him from a screen he opened to
+                  understand something is the wrong direction — so this sits
+                  where the staffing verdict would have been, and says what each
+                  class would require so the absence is actionable rather than
+                  merely an error. */}
+              {selectedProject && !classAssessed && (
+                <View style={styles.warnCard}>
+                  <Text style={styles.warnTitle}>Classification not assessed</Text>
+                  <Text style={styles.warnText}>
+                    This project&apos;s §3310 classification hasn&apos;t been set, so
+                    required safety staffing can&apos;t be determined. A Major A
+                    project requires a Site Safety Coordinator and a Major B
+                    requires a Site Safety Manager. Set the classification on the
+                    project to see what&apos;s required here.
+                  </Text>
+                </View>
+              )}
               {needsSSC && (
                 <View style={s.amberBanner}>
                   <AlertTriangle size={18} strokeWidth={1.5} color={semantic.attention} />
@@ -758,6 +789,18 @@ export default function SafetyStaffScreen() {
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
     container: { flex: 1 },
+    // "Classification not assessed". Informational, not a warning colour — the
+    // app cannot answer a staffing question yet, which is not the same as a
+    // compliance failure.
+    warnCard: {
+      borderRadius: 10, padding: spacing.md, marginBottom: spacing.md,
+      backgroundColor: withAlpha('#ffffff', 0.06),
+      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12),
+    },
+    warnTitle: {
+      fontSize: 15, fontWeight: '600', marginBottom: 6, color: colors.text,
+    },
+    warnText: { fontSize: 13, lineHeight: 19, color: colors.textMuted },
     header: {
       flexDirection: 'row',
       alignItems: 'center',
