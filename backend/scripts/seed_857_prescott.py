@@ -189,14 +189,50 @@ class Api:
     def _h(self):
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
-    def post(self, path, body, auth=True, label=""):
+    def post(self, path, body, auth=True, label="", already_filed_ok=False):
+        """POST, with 423 optionally treated as an OUTCOME rather than a failure.
+
+        423 FROM /api/logbooks MEANS ALREADY FILED. An END_OF_DAY log is one
+        record per day by design (server.py: "the daily narrative is one record
+        per day; corrections go through /amend"), so re-running this seed
+        against a project whose prior-day log is already filed is not an error —
+        it is the normal second run. The script advertises that:
+
+            PROJECT ALREADY EXISTS -> {pid}  (not duplicating)
+            Re-running only adds check-ins and the prior-day log to it.
+
+        It checked for an existing PROJECT and never for an existing LOG, so the
+        second run died on the 423 the server raises deliberately. The server is
+        right; this was wrong.
+
+        Returns None when the row was already filed, so the caller can record
+        the skip. Every other 4xx/5xx still stops the run — a seed that
+        swallowed real failures would be worse than one that stopped.
+        """
         if not self.execute:
             print(f"  [DRY-RUN] POST {path}  {label}")
             return {"id": f"dry-{uuid.uuid4().hex[:8]}", "_dry": True}
         r = self.s.post(f"{self.base}{path}", json=body,
                         headers=self._h() if auth else {}, timeout=60)
+        if already_filed_ok and r.status_code == 423:
+            return None
         if r.status_code >= 400:
             raise SystemExit(f"POST {path} -> {r.status_code}: {r.text[:400]}")
+        return r.json() if r.content else {}
+
+    def get_or_none(self, path):
+        """GET that returns None instead of stopping the run.
+
+        Used only by the closing verification, which must be able to say "I
+        could not confirm" rather than take the whole seed down after every
+        write has already succeeded.
+        """
+        try:
+            r = self.s.get(f"{self.base}{path}", headers=self._h(), timeout=60)
+        except Exception:
+            return None
+        if r.status_code >= 400:
+            return None
         return r.json() if r.content else {}
 
     def put(self, path, body, label=""):
@@ -253,6 +289,17 @@ class Api:
             if not has_more or not items:
                 return out
             skip += len(items)
+
+
+def _read_priors(api, pid):
+    """Every daily_jobsite on the project, narrowed and widened.
+
+    The endpoint defaults to limit=50 sorted by date, so on a project with a
+    long history the prior could sit off the first page and the caller would
+    report a cold start that is not real.
+    """
+    return api.get_or_none(
+        f"/api/logbooks/project/{pid}?log_type=daily_jobsite&limit=500")
 
 
 def main():
@@ -396,10 +443,91 @@ def main():
             }],
             "equipment_on_site": {}, "checklist_items": {}, "observations": [],
         },
-    }, label=f"daily_jobsite {yday} — {PRIOR_ACTIVITY}")
-    lid = log.get("id") or log.get("_id")
-    api.post(f"/api/logbooks/{lid}/finalize", {}, label="finalize")
-    print(f"  PRIOR-DAY LOG {yday}  activity_ids=[{PRIOR_ACTIVITY}]  -> {lid}")
+    }, label=f"daily_jobsite {yday} — {PRIOR_ACTIVITY}", already_filed_ok=True)
+    skipped_days = []
+    if log is None:
+        # ALREADY FILED. Not an error and not a success either — see the
+        # verification below, which reads the priors back rather than assuming
+        # this one is usable.
+        skipped_days.append(yday)
+        print(f"  PRIOR-DAY LOG {yday}  ALREADY FILED — not re-created")
+    else:
+        lid = log.get("id") or log.get("_id")
+        api.post(f"/api/logbooks/{lid}/finalize", {}, label="finalize")
+        print(f"  PRIOR-DAY LOG {yday}  activity_ids=[{PRIOR_ACTIVITY}]  -> {lid}")
+
+    # ── DID THE RANKER ACTUALLY GET A PRIOR? ────────────────────────────────
+    #
+    # "ALREADY FILED" AND "THE RANKER HAS HISTORY" ARE DIFFERENT FACTS, and
+    # conflating them is what makes a cold seed indistinguishable from a project
+    # with no history — the failure that has cost time twice.
+    #
+    # The ranker needs a log that is BOTH dated strictly before today AND
+    # carrying activity_ids on at least one activity (server.py
+    # _activity_chip_ids). A pre-existing log can satisfy the first and not the
+    # second: an older seed wrote the legacy single-string `activity_chip_id`,
+    # and a log filed by a real CP who described work without tapping a chip
+    # carries none at all. Either way the skip above would print "already
+    # filed" while the ranker stayed cold.
+    #
+    # So this READS THE PRIORS BACK instead of inferring from the skip.
+    print()
+    print("  RANKER PRIORS — verified by reading them back, not inferred:")
+    if not api.execute:
+        # A DRY RUN HAS WRITTEN NOTHING, and `pid` may be a minted dry id. Any
+        # verdict here would describe a project that does not exist — the exact
+        # false confidence this whole block was added to remove.
+        print("    [DRY-RUN] not checked — nothing was written.")
+        rows = None
+        truncated = False
+    else:
+        rows = _read_priors(api, pid)
+        truncated = bool(isinstance(rows, dict) and rows.get("has_more"))
+    # NARROWED AND WIDENED. The endpoint defaults to limit=50 sorted by date,
+    # so on a project with a long history the prior could sit off the first
+    # page and this would report a cold start that is not real. log_type filters
+    # server-side; limit=500 is the endpoint's documented ceiling.
+    if not api.execute:
+        pass
+    elif rows is None:
+        print("    COULD NOT VERIFY — the logbooks read failed. Everything above")
+        print("    was written; this line alone is unconfirmed. Re-run to check.")
+    else:
+        if isinstance(rows, dict):
+            rows = rows.get("items") or rows.get("logbooks") or rows.get("data") or []
+        usable = []
+        for lg in rows if isinstance(rows, list) else []:
+            if lg.get("log_type") != "daily_jobsite":
+                continue
+            d = str(lg.get("date") or "")
+            if not d or not (d < today):          # STRICTLY before today
+                continue
+            acts = ((lg.get("data") or {}).get("activities")) or []
+            ids = [i for a in acts for i in ((a or {}).get("activity_ids") or [])]
+            if ids:
+                usable.append((d, sorted(set(ids))))
+        usable.sort()
+        if usable:
+            for d, ids in usable[-3:]:
+                print(f"    {d}  activity_ids={ids}")
+            print(f"    -> {len(usable)} usable prior(s). THE RANKER HAS HISTORY;")
+            print("       today's chips will be ranked, not cold start.")
+        elif truncated:
+            # NOT ASSERTED FROM A PARTIAL PAGE. Saying "cold start" here when
+            # the read was truncated would be the same conflation this check
+            # exists to prevent, one level up.
+            print("    NONE FOUND, but the read was TRUNCATED (has_more=true).")
+            print("    -> CANNOT SAY whether the ranker has history. Re-read with")
+            print("       a higher skip before concluding anything.")
+        else:
+            print("    NONE. No daily_jobsite before today carries activity_ids.")
+            print("    -> THE RANKER WILL COLD-START. Today's chips will be the")
+            print("       cold-start set, which looks identical to a project with")
+            print("       no history. If that is not what you wanted, the")
+            print("       prior-day log needs activity_ids on an activity.")
+    if skipped_days:
+        print()
+        print(f"  SKIPPED (already filed, not re-created): {', '.join(skipped_days)}")
     print(f"      today (America/New_York) is {today}")
     print(f"      the ranker reads priors with date < {today}, so {yday} qualifies")
     print("      today's suggested chips should be exactly:")
