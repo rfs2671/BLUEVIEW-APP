@@ -104,10 +104,31 @@ COLD_START_IDS: Tuple[str, ...] = (
 
 # ── Always available — never sequence-gated ──────────────────────────
 # Order is the approved order and is the order the ranker emits.
+# rain_no_work AND shutdown ARE GONE FROM HERE, and from the node table below.
+# They are facts about THE DAY, not activities a crew performed, and their
+# "gc" trade was a placeholder for "no trade" that this band was hiding:
+#
+#   - a day when nobody worked has no crew cards to hang them on, which is
+#     exactly the day a CP needs to record rain
+#   - a site with no GC crew that day could not record either one at all
+#
+# They live on the daily jobsite log as a day-level state now
+# (frontend/src/utils/dayStateModel.js): worked / rain - no work / shutdown,
+# mutually exclusive, defaulting to worked. Deliberately NOT written into any
+# crew's activity_ids — the ranker reads yesterday's activity_ids to suggest
+# today's chips, and a rain pseudo-activity on every crew would feed the graph
+# a day of work that never happened.
+#
+# inspection STAYS. It has four sequenced edges (underground_plumbing,
+# slab_rebar, interior_framing, mep_rough_in all precede it), so it is the hold
+# point a GC calls, not an external DOB visit — its "gc" trade is real. A
+# separate day-level field for EXTERNAL inspections may be right eventually;
+# that is a new field rather than a move, and it is not established that the
+# app needs one.
 ALWAYS_AVAILABLE_ORDER: Tuple[str, ...] = (
     "site_cleanup", "material_delivery", "hoisting", "scaffold_erection",
     "scaffold_dismantle", "sidewalk_shed_work", "dewatering", "survey_layout",
-    "inspection", "safety_meeting", "rain_no_work", "shutdown",
+    "inspection", "safety_meeting",
 )
 ALWAYS_AVAILABLE_IDS = frozenset(ALWAYS_AVAILABLE_ORDER)
 
@@ -272,8 +293,9 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("survey_layout", "survey", "survey / layout"),
         _wp("inspection", "gc", "inspection"),
         _wp("safety_meeting", "safety", "safety meeting"),
-        _wp("rain_no_work", "gc", "rain - no work"),
-        _wp("shutdown", "gc", "shutdown"),
+        # rain_no_work / shutdown REMOVED — day-level fields now, see the note
+        # on ALWAYS_AVAILABLE_ORDER. Both had NO edges, so nothing in the
+        # sequence graph pointed at them and nothing is orphaned by their going.
 
         # ── the escape hatch — always LAST chip ──────────────────────
         _wp(OTHER_ACTIVITY_ID, "gc", "other"),
