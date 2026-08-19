@@ -10858,8 +10858,17 @@ async def register_and_checkin(data: dict, request: Request):
     # FIRST check-in on this project with a resolved trade — store the pairing
     # so every later visit HERE reads it instead of re-prompting. Skipped when
     # one already exists (nothing changed) and when the trade is still pending
-    # (UNASSIGNED must never become a stored answer — the CP has to assign it,
+    # (UNASSIGNED must never become a stored PAIRING — the CP has to assign it,
     # and _store_worker_project_trade refuses the sentinel besides).
+    #
+    # SCOPE, because "never stored" stated flatly is wrong and dangerous: the
+    # sentinel IS persisted, deliberately, on the checkins row inserted just
+    # above — checkin_record carries it in worker_trade/worker_company/trade/
+    # company, and _display_sub_company and the headcount renderer translate it
+    # to "Pending assignment" / "Not yet assigned" at read time. Stripping it
+    # from checkin_record would break every one of those surfaces. What must
+    # never persist is THE PAIRING, and only because reading it back would skip
+    # the needs_trade_assignment flag the CP still has to clear.
     if not existing_pair and not needs_trade_assignment:
         await _store_worker_project_trade(
             str(worker["_id"]), project_id, trade, company,
@@ -11347,7 +11356,10 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         # FIRST check-in on this project with a resolved trade — store the
         # pairing so every later visit HERE reads it instead of re-prompting.
         # Skipped when one already exists and when the trade is still pending
-        # (UNASSIGNED must never become a stored answer).
+        # (UNASSIGNED must never become a stored PAIRING — NOT "never stored":
+        # the checkins row inserted just above carries the sentinel on purpose,
+        # and the report renderers translate it. See the fuller note on the
+        # register-and-checkin twin of this block.)
         if not existing_pair and not needs_trade_assignment:
             await _store_worker_project_trade(
                 str(worker["_id"]), checkin_data.project_id,

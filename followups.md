@@ -242,3 +242,41 @@ and would move under a re-order. It is only reachable when a row has neither a
 `subcontractor_id` nor an `activity_id`, and every construction path mints an
 `activity_id` — so it is a defensive last resort, not a live path. Worth
 knowing it exists rather than assuming the key is always stable.
+
+## The UNASSIGNED model, corrected
+
+Recorded because the short form is wrong in a way that would cause damage.
+
+**Wrong:** "UNASSIGNED must never be stored."
+
+**Right:** the sentinel **IS persisted, deliberately, on the `checkins` row.**
+`checkin_record` carries it in `worker_trade` / `worker_company` / `trade` /
+`company` (`server.py:10802-10805` and its twin at `11315`), and
+`db.checkins.insert_one` runs *before* the pairing store with the sentinel
+intact. `_display_sub_company` and the headcount renderer translate it to
+"Pending assignment" / "Not yet assigned" at read time.
+
+**What must never persist is the `worker_project_trades` PAIRING** — and for
+one specific reason (`server.py:10231`): storing it there *"would make the next
+visit read UNASSIGNED back and silently skip the `needs_trade_assignment` flag
+the CP still has to clear."* Guarded twice: callers check
+`not needs_trade_assignment`, and `_store_worker_project_trade` independently
+rejects `trade == "UNASSIGNED"`.
+
+Someone applying the short form literally would strip the sentinel from
+`checkin_record` and break every renderer that depends on it — a worse outcome
+than the thing the model was guarding against.
+
+**Do not conflate with `subcontractor_id: None`.** Two sentinels, adjacent code
+(four lines apart in `dailyJobsiteModel.js:175-184`), opposite rules:
+
+| | |
+|---|---|
+| `"UNASSIGNED"` | transport value; converted to `''` on arrival client-side, never stored as a pairing |
+| `subcontractor_id: None` | a legitimate persisted answer meaning *no roster identity*, which the code is right to store and right to refuse to fabricate around |
+
+`isUnassignedWorkerRow` reads the first, `isUnboundCrew` the second. No overlap.
+
+**Survey result (device round 6, E5):** all 34 sites classified — 6 coerce in
+flight, 5 defend the pairing, 6 translate at render, 6 frontend, 11 tests.
+Every one sits cleanly on one side of the line. Nothing to build.
