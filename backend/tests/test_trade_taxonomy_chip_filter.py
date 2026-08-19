@@ -118,13 +118,28 @@ class EveryRosterTradeGetsAUsableList(unittest.TestCase):
 
 
 class TheSharedBandsAreNeverFiltered(unittest.TestCase):
-    def test_always_available_shows_for_every_trade(self):
-        base = {c.id for c in chips(None) if c.band == "always_available"}
-        self.assertGreater(len(base), 0)
-        for t in ROSTER + list(TRADES):
+    def test_the_shared_band_is_gone_and_the_work_follows_its_trade(self):
+        """RE-POINTED, not deleted — the guarantee inverted by ruling.
+
+        This asserted the same shared band appeared for EVERY trade. That was
+        the defect: it offered an HVAC crew "scaffold dismantle" and "site
+        clean-up", which is another sub's work. A crew card offers that crew's
+        trade work and nothing else.
+        """
+        for t in ROSTER + list(TRADES) + [None]:
             with self.subTest(trade=t):
-                got = {c.id for c in chips(t) if c.band == "always_available"}
-                self.assertEqual(got, base, f"{t} lost part of the shared band")
+                self.assertEqual(
+                    [c.id for c in chips(t) if c.band == "always_available"], [],
+                    f"{t} still has a shared band")
+
+        # AND THE WORK LANDED ON THE RIGHT CARD. scaffold_dismantle is trade
+        # "scaffold": the scaffolding crew keeps it, an HVAC crew never sees it.
+        scaffold = {c.id for c in chips("Scaffold")}
+        hvac = {c.id for c in chips("HVAC / Mechanical")}
+        self.assertIn("scaffold_dismantle", scaffold,
+                      "the scaffolding crew lost its own work")
+        self.assertNotIn("scaffold_dismantle", hvac,
+                         "an HVAC crew is still offered another sub's work")
 
     def test_other_is_last_for_every_trade(self):
         for t in ROSTER + list(TRADES) + [None, "nonsense"]:

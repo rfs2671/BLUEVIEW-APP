@@ -192,9 +192,17 @@ def rank_activities(
         # Cold start, or every prior was a rule miss: neither raises, both
         # simply fall back to the project-start set.
         suggested.update(c for c in COLD_START_IDS if c in allowed)
-    # Always-available chips keep their own pinned band so their position never
-    # moves day to day; "Other" is appended last by hand.
-    suggested -= ALWAYS_AVAILABLE_IDS
+    # NO LONGER SUBTRACTED. These ten used to be pulled out of `suggested` and
+    # pinned into a band of their own on EVERY crew card, which meant offering
+    # an HVAC crew "scaffold dismantle" and "site clean-up" — another sub's
+    # work. Operator ruling: a crew card offers that crew's trade work and
+    # nothing else. Scaffold erection belongs to the scaffolding crew because it
+    # is in their taxonomy; site clean-up to whoever cleaned up.
+    #
+    # So they flow through suggested/catalog by trade like every other activity.
+    # The subtraction and the `placed` exclusion below were the only two things
+    # holding them out, and both are gone — remove one and the ten vanish from
+    # the product entirely rather than moving to the right cards.
     if _trade_ids:
         suggested &= _trade_ids
     suggested_ids = _strip_other(sorted(suggested, key=lambda i: (order[i], i)))
@@ -205,11 +213,19 @@ def rank_activities(
         seen_labels.setdefault(lab.casefold(), lab)
     remembered = [seen_labels[k] for k in sorted(seen_labels)]
 
-    # ── band 3: always available — never sequence-gated ──────────────
-    always_ids = _strip_other([a for a in ALWAYS_AVAILABLE_ORDER if a in allowed])
+    # ── band 3: always available ─────────────────────────────────────
+    # EMITTED EMPTY, and the band is retained rather than deleted so an older
+    # client that still reads `always_available` gets an empty list instead of a
+    # missing key. The frontend build ships by OTA and the field binary cannot
+    # receive one, so a client older than this deploy must not break.
+    always_ids: List[str] = []
 
     # ── band 4: the rest of the catalogue ────────────────────────────
-    placed = set(suggested_ids) | set(always_ids) | {OTHER_ACTIVITY_ID}
+    # `always_ids` NO LONGER EXCLUDED — that exclusion plus the subtraction
+    # above were what kept these ten out of both real bands. With the band empty,
+    # every one of them is now reachable through suggested or catalog, filtered
+    # by trade like anything else.
+    placed = set(suggested_ids) | {OTHER_ACTIVITY_ID}
     _catalog_pool = (allowed & _trade_ids) if _trade_ids else allowed
     catalog_ids = _strip_other(
         sorted((i for i in _catalog_pool if i not in placed),
