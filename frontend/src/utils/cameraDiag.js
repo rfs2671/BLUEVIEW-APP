@@ -73,6 +73,12 @@ export function buildDiagText(v) {
       ? `camError x${s.camError.n} atLens=${s.camError.lensAtError} `
         + `code=${s.camError.code} ${s.camError.message}`
       : 'camError: none',
+    // HOW MANY TIMES THE SESSION-START CALLBACK RE-ASSERTED THE FRAMING. This
+    // answers a different question from appliedZoom, which reports what was
+    // REQUESTED rather than what took effect: 0 here means onStarted and
+    // onInitialized never fired, which would be a different defect from the
+    // framing not landing.
+    `framingApplied=${s.framingApplied}`,
     `os=${s.os}`,
   ].join('\n');
 }
