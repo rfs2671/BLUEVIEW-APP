@@ -13542,7 +13542,11 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         
         body_html = (
             info_box(
-                f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
+                # THE DAY'S STATE, directly under weather and only when set —
+                # weather says what the sky did, this says what it meant.
+                (f'<strong style="color:#0A1929;">Day:</strong> '
+                   f'{_day_state_label(data)}<br />' if _day_state_label(data) else '')
+                + f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
                 f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description") or NOT_RECORDED)}<br />'
                 f'<strong style="color:#0A1929;">Time In:</strong> {data.get("time_in") or "N/A"}'
                 f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {data.get("time_out") or "N/A"}<br />'
@@ -18981,6 +18985,33 @@ def _sentence_case(text):
             if ch in ".!?":
                 cap_next = True
     return "".join(out)
+
+
+# ── A DAY NOBODY WORKED IS A COMPLETE RECORD, NOT A NEGLIGENT ONE ──────────
+#
+# "rain - no work" and "shutdown" used to be chips on a crew card. They are
+# facts about THE DAY, so they are a day-level field now (see the note on
+# ALWAYS_AVAILABLE_ORDER in sequence_rules_v1). The renderers have to say so.
+#
+# WITHOUT THIS the honest record reads as the negligent one: crews named, every
+# activity blank, description thin — indistinguishable on a filed 3301-02 from
+# a CP who signed without filling anything in. The men were ON SITE; they tapped
+# the gate and stood down. Present-and-stood-down is a different fact from
+# absent and the document must be able to state it.
+_DAY_STATE_LABELS = {
+    "rain_no_work": "Rain — no work performed",
+    "shutdown": "Shutdown — no work performed",
+}
+
+
+def _day_state_label(data):
+    """The day's state, or None on an ordinary working day.
+
+    Anything unrecognised — absent, null, junk, a log filed before the field
+    existed — is an ordinary day. The report must never assert a washout
+    nobody recorded.
+    """
+    return _DAY_STATE_LABELS.get(str((data or {}).get("day_state") or ""))
 
 
 def _display_sub_company(name):

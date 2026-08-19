@@ -230,6 +230,16 @@ export default {
     cancel: 'Cancel',
     save: 'Save',
 
+    // THE DAY'S STATE. Beside weather, because it is the same kind of fact.
+    dayStateQuestion: 'Did work happen today?',
+    dayState_worked: 'Work happened',
+    dayState_rain_no_work: 'Rain — no work',
+    dayState_shutdown: 'Shutdown',
+    dayStateKeptWork: 'Work you already described on {n} crew(s) is kept — the log still records it.',
+    // ON THE CREW CARD, when nobody worked. Present and stood down is a
+    // different fact from absent, and the card must say which.
+    dayStateCrewNote_rain_no_work: 'On site, stood down for rain. No work recorded for this crew.',
+    dayStateCrewNote_shutdown: 'On site, stood down for the shutdown. No work recorded for this crew.',
     step1Title: 'What was on site',
     step2Title: 'What each crew did',
     step3Title: 'Safety observations',

@@ -160,7 +160,22 @@ class TheSequenceLoopSurvives(unittest.TestCase):
 
     def test_the_graph_itself_is_untouched(self):
         g = build_sequence_rules_v1()
-        self.assertEqual(len(g.nodes), 86, "no node was added to the signed rules")
+        # 86 -> 84: rain_no_work and shutdown were REMOVED by operator ruling.
+        # They are facts about the day, not activities a crew performed, and
+        # their "gc" trade was a placeholder for "no trade". They live on the
+        # daily jobsite log as a day-level state now.
+        #
+        # RE-POINTED, NOT RELAXED. This guard is an ANTI-ADDITION check — its
+        # message says "no node was ADDED", and its siblings check shadowing and
+        # re-creation. The module's own provenance note is explicit that this
+        # content is not signed: "these contents are data and change when the
+        # operator changes them." A removal by ruling is a different act from
+        # the silent growth this exists to catch, so the number moves and the
+        # reason is written down beside it.
+        self.assertEqual(len(g.nodes), 84, "no node was added to the rules")
+        # EDGES ARE UNCHANGED. Both removed nodes had no edges, so nothing in
+        # the sequence graph pointed at them and nothing was orphaned — which is
+        # the fact that made them safe to remove and inspection not.
         self.assertEqual(len(g.edges), 145, "no edge was added or lost")
 
     def test_no_new_node_shadows_an_existing_one(self):
