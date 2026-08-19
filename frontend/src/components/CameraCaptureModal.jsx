@@ -5,6 +5,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
+import * as Clipboard from 'expo-clipboard';
+import { recordCamError, buildDiagText } from '../utils/cameraDiag';
 import CameraOverlay from './CameraOverlay';
 
 /**
@@ -79,6 +81,15 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // A phone with no ultra-wide degrades to its widest available framing through
   // the zoom logic below; nothing here assumes the sensor exists.
   const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide'
+  // DIAGNOSTIC STATE — see the readout at the bottom of this file.
+  // STICKY BY DESIGN: `camError` is written on every vision-camera error and
+  // NEVER cleared. A fallback that WORKED is exactly the case where the error
+  // string is the only evidence — the camera recovers on the wide lens, the
+  // preview looks fine, and clearing on recovery would erase the one field
+  // that distinguishes a runtime flip from a device that was never mounted.
+  const [camError, setCamError] = useState(null);
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [diagCopied, setDiagCopied] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
   // Numbers each capture, so a late `report` from an older shot is identifiable
@@ -220,19 +231,32 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
    * which is exactly why this has stayed open. Logged at MOUNT rather than at
    * the shutter: the framing is already wrong before he presses anything.
    */
+  /**
+   * ONE TEXT, TWO READERS. The console line and the on-screen readout are built
+   * from the same string, so a debugger and the operator can never be shown
+   * different values — and there is no second place computing the device rule.
+   *
+   * READ OFF THE RUNNING COMPONENT. Every field below is live state this camera
+   * is actually using: `device` is what is MOUNTED, `zoom` is what is APPLIED,
+   * `backLens` is what the reset effect last branched on. None of it is
+   * recomputed, which is why this cannot live on the settings BUILD card — that
+   * card would have to re-implement the selection rule and would then be free
+   * to disagree with the camera it is describing.
+   */
+  const lensDiagText = useMemo(() => buildDiagText({
+    anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens,
+    position, zoom, camError, os: Platform.OS,
+  }), [anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens,
+    position, zoom, camError]);
+
   useEffect(() => {
-    const d = (label, dev) => `${label}{id=${dev?.id} phys=${(dev?.physicalDevices || []).join('+')} `
-      + `min=${dev?.minZoom} neutral=${dev?.neutralZoom} max=${dev?.maxZoom}}`;
-    console.log(
-      '[CAM-DIAG] %s %s %s %s uwIsDistinct=%s backLens=%s appliedZoom=%s',
-      d('any', anyBackDevice), d('uw', uwDevice), d('wide', wideDevice),
-      d('mounted', device), uwIsDistinct, backLens, zoom,
-    );
-    // Mount-time only: the deps are the identities that decide the framing, and
-    // `zoom` is deliberately NOT among them — re-logging on every pinch would
-    // bury the one line that matters.
+    console.log('[CAM-DIAG]\n%s', lensDiagText);
+    // The deps are the identities that decide the framing, plus camError. `zoom`
+    // is deliberately NOT among them — re-logging on every pinch would bury the
+    // one line that matters. The on-screen readout is not throttled this way
+    // and always shows the live value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens]);
+  }, [anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens, camError]);
 
   // Pinch-to-zoom within the active lens. runOnJS(true) forces the callback
   // onto the JS thread — without it, reanimated's babel plugin workletizes
@@ -438,6 +462,10 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         zoom={zoom}
         onError={(err) => {
           console.warn('vision-camera error:', err?.message);
+          // STICKY. Kept whether or not the fallback below rescues the session,
+          // and it records the lens IN FORCE WHEN IT FIRED — after the flip
+          // `backLens` reads 'wide' and the reason it changed is gone.
+          setCamError((prev) => recordCamError(prev, err, backLens));
           // Untested-OEM safety net: if a DISTINCT ultra-wide device
           // fails to start, drop to the wide lens so the user never sees
           // a dead/black camera. (The zoom-based UW path is unaffected —
@@ -455,6 +483,17 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         onShutter={handleShutter}
         onDeleteShot={onDeleteShot}
         onClose={onClose}
+      />
+      <LensDiagnostic
+        open={diagOpen}
+        onToggle={() => setDiagOpen((v) => !v)}
+        copied={diagCopied}
+        onCopy={async () => {
+          await Clipboard.setStringAsync(lensDiagText);
+          setDiagCopied(true);
+          setTimeout(() => setDiagCopied(false), 2000);
+        }}
+        text={lensDiagText}
       />
     </View>
     </GestureDetector>
@@ -523,8 +562,104 @@ export default function CameraCaptureModal({ visible, shots, onClose, onCapture,
   );
 }
 
+/**
+ * THE LENS READOUT — TEMPORARY, and the label on it says so.
+ *
+ * WHY ON SCREEN AT ALL. The report is "the camera opens at 1x, not ultra-wide".
+ * #147 set the opening zoom to the mounted device's minZoom and it did not
+ * change. The values that settle it were already being logged, and the operator
+ * has no debugger attached — the same reason two Railway diagnoses went unread.
+ * A console line nobody can read is not a diagnostic.
+ *
+ * WHY IT IS NOT ALWAYS ON. The earlier camera panel was gated on a demonstrated
+ * failure, which is the right rule and cannot be applied here: THIS FAILURE
+ * LOOKS LIKE SUCCESS. The preview is live, the shutter works, the photo files.
+ * Only the framing is wrong, and there is no state to test for it. So the gate
+ * is DELIBERATE ACCESS instead — collapsed to a single character, opened on
+ * purpose, never in front of a CP who did not go looking for it.
+ *
+ * WHAT IT SETTLES, in the order the candidates were ruled out:
+ *
+ *   any.minZoom < 1 while MOUNTED.minZoom == 1
+ *     The wider device exists and is not being mounted. Both device lookups
+ *     carry a physicalDevices filter, so nothing here ever mounts the
+ *     multi-camera device — and a device chosen for being the wide lens has
+ *     minZoom 1.0 by construction, no wider lens to zoom out to.
+ *
+ *   any.minZoom == MOUNTED.minZoom == 1
+ *     No reachable ultra-wide on this hardware. An expectation, not a bug.
+ *
+ *   backLens=wide WITH a camError
+ *     Neither of the above. A distinct ultra-wide device mounted and FAILED TO
+ *     START, onError dropped to the wide lens, and the zoom effect re-ran down
+ *     the neutralZoom branch to 1. This is the case a settings card read
+ *     afterwards could never see: it happened at runtime and the camera
+ *     recovered, so the only surviving evidence is the error string.
+ */
+function LensDiagnostic({ open, onToggle, copied, onCopy, text }) {
+  if (!open) {
+    return (
+      <Pressable
+        onPress={onToggle}
+        style={styles.diagTab}
+        accessibilityRole="button"
+        accessibilityLabel="Show lens diagnostic"
+        hitSlop={12}
+      >
+        <Text style={styles.diagTabText}>i</Text>
+      </Pressable>
+    );
+  }
+  return (
+    <View style={styles.lensPanel}>
+      <Text style={styles.diagTitle}>LENS DIAGNOSTIC — TEMPORARY</Text>
+      <Text style={styles.lensDiagText} selectable>{text}</Text>
+      <View style={styles.diagBtns}>
+        <Pressable onPress={onCopy} style={styles.diagBtn} accessibilityRole="button" hitSlop={8}>
+          <Text style={styles.diagBtnText}>{copied ? 'Copied' : 'Copy'}</Text>
+        </Pressable>
+        <Pressable onPress={onToggle} style={styles.diagBtn} accessibilityRole="button" hitSlop={8}>
+          <Text style={styles.diagBtnText}>Close</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.diagFoot}>
+        Sent to fix the camera opening at 1x. It will be removed once answered.
+      </Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  // The readout. Top-LEFT: the shutter, the shot tray and the close control are
+  // all right or bottom, so this sits where nothing else is reachable.
+  diagTab: {
+    position: 'absolute', top: 52, left: 12, width: 30, height: 30,
+    borderRadius: 15, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.45)', borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.35)', zIndex: 200, elevation: 200,
+  },
+  diagTabText: { color: '#fff', fontSize: 15, fontWeight: '700', lineHeight: 18 },
+  lensPanel: {
+    position: 'absolute', top: 52, left: 12, right: 12, padding: 12,
+    borderRadius: 10, backgroundColor: 'rgba(0,0,0,0.86)', borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.25)', zIndex: 200, elevation: 200,
+  },
+  diagTitle: {
+    color: '#fbbf24', fontSize: 11, fontWeight: '700', marginBottom: 6,
+    letterSpacing: 0.5,
+  },
+  lensDiagText: {
+    color: '#e2e8f0', fontSize: 11, lineHeight: 16,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  diagBtns: { flexDirection: 'row', marginTop: 10 },
+  diagBtn: {
+    paddingHorizontal: 16, paddingVertical: 8, marginRight: 8, borderRadius: 6,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  diagBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  diagFoot: { color: '#94a3b8', fontSize: 10, marginTop: 8, lineHeight: 14 },
   // elevation only when shown: an elevated-but-invisible view still casts a
   // shadow on Android.
   overlayShown: { opacity: 1, zIndex: 100, elevation: 100 },
