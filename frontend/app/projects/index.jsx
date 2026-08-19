@@ -74,7 +74,18 @@ export default function ProjectsScreen() {
   // ── FIX #3: Single address field instead of name + location ──
   const [newProject, setNewProject] = useState({
     address: '',
-    project_class: 'regular',
+    // UNSET, NOT 'regular'. server.py:9282 treats ANY client-supplied
+    // project_class as an ADMIN OVERRIDE and stamps
+    // classification_source = "admin" — so this default recorded a human
+    // decision about §3310 on every project created here, when nobody had
+    // measured anything or chosen anything.
+    //
+    // That is why so few projects ever reached the fail-closed path: the
+    // server computes a suggested class and marks it "measured" or
+    // "unassessed", and this field overrode that on the way in.
+    //
+    // Sending NOTHING lets the server's own classification run.
+    project_class: null,
   });
 
   // Redirect if not authenticated
@@ -157,11 +168,13 @@ export default function ProjectsScreen() {
         name: newProject.address,
         address: newProject.address,
         location: newProject.address,
-        project_class: newProject.project_class,
+        // OMITTED unless he picked one. A key present with any value is an
+        // override; the absence is what lets the server classify.
+        ...(newProject.project_class ? { project_class: newProject.project_class } : {}),
       });
 
       setProjects([...projects, createdProject]);
-      setNewProject({ address: '', project_class: 'regular' });
+      setNewProject({ address: '', project_class: null });
       setShowAddModal(false);
       toast.success('Project Created', 'New project added');
     } catch (error) {
@@ -438,12 +451,18 @@ export default function ProjectsScreen() {
                     <Text style={s.inputLabel}>PROJECT TYPE</Text>
                     <View style={s.classPickerCol}>
                       {[
+                        // FIRST, AND SELECTED UNTIL HE CHOOSES. "Not assessed"
+                        // is a real answer here: the server measures stories,
+                        // height and footprint and classifies from them, and it
+                        // can only do that if this screen does not assert one.
+                        { key: null, label: 'Not assessed — set later',
+                          desc: 'The server classifies from the measurements; pick one only to override it' },
                         { key: 'regular', label: 'Regular', desc: 'Under 10 stories, no SSC/SSM required' },
                         { key: 'major_a', label: 'Major A — SSC', desc: '10+ stories or 125+ ft — Site Safety Coordinator required' },
                         { key: 'major_b', label: 'Major B — SSM', desc: '15+ stories, 200+ ft, or 100K+ sqft — Site Safety Manager required' },
                       ].map((opt) => (
                         <Pressable
-                          key={opt.key}
+                          key={String(opt.key)}
                           style={[
                             s.classPickerOption,
                             newProject.project_class === opt.key && s.classPickerActive,
