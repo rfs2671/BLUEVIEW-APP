@@ -560,16 +560,26 @@ const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'))
   }
 }
 
-// ── ALWAYS-AVAILABLE never competes for a slot ──────────────────────────────
+// ── THE ALWAYS-AVAILABLE BAND IS GONE ──────────────────────────────────────
+//
+// It put the same chips on EVERY crew card regardless of trade, so an HVAC crew
+// was offered "scaffold dismantle" and "site clean-up" — another sub's work.
+// The ranker stopped special-casing those ids; they reach the crews whose
+// taxonomy holds them, and two of them ("rain - no work", "shutdown") became a
+// day-level control because they were never a crew's activity at all.
 {
   const r = M.composeChipBands({ chips: [...SUGG(8), ...ALW, ...CAT(20)], priorDate: '2026-08-13' });
-  ok(r.always.length === 3,
-    'always-available is returned in FULL — what any crew can log on any day');
-  ok(r.primary.every((c) => c.band !== 'always_available'),
-    'and never occupies one of the four');
-  ok(r.rest.every((c) => c.band !== 'always_available'),
-    'nor is it folded behind the expander — burying "rain / no work" on a rain day is worse than a longer list');
-  ok(r.always.some((c) => c.id === 'rain_no_work'), 'rain / no work stays on the card');
+  ok(r.always === undefined, 'the band is gone from the shape, not merely empty');
+  ok(Array.isArray(r.primary) && Array.isArray(r.rest) && typeof r.basis === 'string',
+    'and what remains is { primary, rest, basis }');
+  ok(r.primary.length === 4, 'the four-slot cap is untouched — it was never the defect');
+
+  // NOT FILTERED OUT OF THE EXPANDER. Anything the server still bands as
+  // always_available is a crew's own work now, so hiding it here would take
+  // back exactly what the de-special-casing handed over.
+  const restIds = new Set(r.rest.map((c) => c.id));
+  ok(ALW.some((c) => restIds.has(c.id)),
+    'a chip the server bands as always_available still reaches the expander');
 }
 
 // ── a trade with NO sequenced successors says so ────────────────────────────
@@ -598,9 +608,11 @@ const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'))
 // ── nothing is hidden, only folded ──────────────────────────────────────────
 {
   const r = M.composeChipBands({ chips: [...SUGG(8), ...ALW, ...CAT(50)], priorDate: '2026-08-13' });
-  const shown = new Set([...r.primary, ...r.always].map((c) => c.id));
+  const shown = new Set([...r.primary].map((c) => c.id));
   const reachable = new Set([...shown, ...r.rest.map((c) => c.id)]);
-  ok(r.rest.length === 54,
+  // 54 -> 57: the three formerly always-banded chips are no longer excluded
+  // from the expander. 8 + 3 + 50 = 61 chips, less the four in primary.
+  ok(r.rest.length === 57,
     `everything else is still reachable through the expander (${r.rest.length})`);
   ok([...SUGG(8), ...CAT(50)].every((c) => reachable.has(c.id)),
     'EVERY chip is reachable — a cap on what is offered first is not a cap on what can be logged');
@@ -623,7 +635,7 @@ const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'))
 {
   const withOther = [...SUGG(8), ...ALW, chip(M.OTHER_CHIP_ID, 'other')];
   const r = M.composeChipBands({ chips: withOther, priorDate: '2026-08-13' });
-  ok(![...r.primary, ...r.always, ...r.rest].some((c) => c.id === M.OTHER_CHIP_ID),
+  ok(![...r.primary, ...r.rest].some((c) => c.id === M.OTHER_CHIP_ID),
     'Other is never in a band — the screen renders it itself, always last and always visible');
 }
 
@@ -631,7 +643,7 @@ const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'))
 for (const junk of [undefined, null, {}, { chips: null }, { chips: 'x' },
   { chips: [null, undefined] }]) {
   const r = M.composeChipBands(junk || {});
-  ok(Array.isArray(r.primary) && Array.isArray(r.always) && Array.isArray(r.rest),
+  ok(Array.isArray(r.primary) && r.always === undefined && Array.isArray(r.rest),
     `a well-formed result for ${JSON.stringify(junk)} — chips must never stop a CP logging a day`);
 }
 

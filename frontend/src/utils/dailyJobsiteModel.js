@@ -629,6 +629,23 @@ export function stepComplete(step, state) {
  */
 export const CHIP_SLOTS = 4;
 
+/**
+ * THE ALWAYS-AVAILABLE BAND IS GONE.
+ *
+ * Twelve chips sat on EVERY crew card regardless of trade — offering an HVAC
+ * crew "scaffold dismantle" and "site clean-up", which is another sub's work.
+ * The operator's correction: a crew card offers that crew's trade work and
+ * nothing else.
+ *
+ * Scaffold erection appears on the scaffolding crew's card because it is in
+ * their taxonomy. Site clean-up on whoever cleaned up. Two of the twelve —
+ * "rain - no work" and "shutdown" — were facts about the DAY rather than a
+ * crew's activity and became a day-level control (dayStateModel.js); the other
+ * ten now flow through suggested/catalog by trade, because the ranker stopped
+ * special-casing them.
+ *
+ * Returns { primary, rest, basis }. `always` is gone from the shape.
+ */
 export function composeChipBands({ chips, allChips, resolvedTrades, priorDate }) {
   // A malformed chip is DROPPED FIRST, before anything reads `.band`. The
   // ranker is total and never returns one, but this runs on a network response
@@ -639,7 +656,6 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
   const filtered = Array.isArray(resolvedTrades) && resolvedTrades.length > 0;
 
   const suggested = mine.filter((c) => c.band === 'suggested');
-  const always = mine.filter((c) => c.band === 'always_available');
   const tradeCatalog = filtered ? mine.filter((c) => c.band === 'catalog') : [];
 
   // COLD START is the ranker falling back to the project-start set because
@@ -682,11 +698,13 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
   // activities rather than "the rest of this trade's".
   const pool = (filtered && Array.isArray(allChips) && allChips.length > 0)
     ? allChips.filter(notOther) : mine;
-  const rest = pool.filter(
-    (c) => !shown.has(c.id) && c.band !== 'always_available',
-  );
+  // NO always_available EXCLUSION. The band is gone: the ranker stopped
+  // special-casing those ten and they now flow through suggested/catalog by
+  // trade like every other activity, so filtering on the band here would hide
+  // a crew's own work from its own expander.
+  const rest = pool.filter((c) => !shown.has(c.id));
 
-  return { primary, always, rest, basis, hidden: rest.length };
+  return { primary, rest, basis, hidden: rest.length };
 }
 
 export default {

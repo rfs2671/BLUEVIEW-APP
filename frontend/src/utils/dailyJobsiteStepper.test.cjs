@@ -224,7 +224,7 @@ ok(/if \(!wanted\.includes\(''\)\) wanted\.push\(''\)/.test(code),
   'the unfiltered list is ALWAYS fetched too, so "All activities" can mean all');
 ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(\)\]/.test(code),
   'each crew reads its OWN trade list, keyed on its trade');
-ok(/const \{ primary, always, rest, basis \} = chipBandsFor\(a\);/.test(code),
+ok(/const \{ primary, rest, basis \} = chipBandsFor\(a\);/.test(code),
   'Step 2 renders that list, not a shared one');
 
 // ── THE COMPOSITION MOVED INTO THE MODEL ────────────────────────────────────
@@ -238,11 +238,16 @@ ok(/const \{ primary, always, rest, basis \} = chipBandsFor\(a\);/.test(code),
 const step2band = code.slice(code.indexOf('const renderStep2'), code.indexOf('const renderStep3'));
 ok(/\{primary\.map\(/.test(step2band),
   "the crew's four render INLINE, not behind the catalogue toggle");
-// ALWAYS-AVAILABLE is outside the four AND outside the expander, by ruling.
-ok(/\{always\.map\(/.test(step2band),
-  'and so does the always-available band — burying "rain / no work" on a rain day is worse than a longer list');
-ok(step2band.indexOf('{primary.map(') < step2band.indexOf('{always.map('),
-  'the ranked four come first; always-available follows them');
+// THE ALWAYS-AVAILABLE BAND IS GONE. It put the same chips on every crew card
+// regardless of trade — offering an HVAC crew "scaffold dismantle" and "site
+// clean-up", which is another sub's work. A crew card offers that crew's trade
+// work and nothing else now.
+ok(!/\{always\.map\(/.test(step2band),
+  'no shared band renders after the ranked four');
+// "Other" WAS INSIDE that band and must not have gone with it — it is still
+// last and still visible without scrolling.
+ok(step2band.indexOf('{primary.map(') < step2band.indexOf("t('chipOther')"),
+  'Other still follows the ranked four, in the same container');
 // A trade list is a fine suggestion, it is just not a sequenced one.
 ok(/basis === 'trade' && \(/.test(step2band) && /chipsFromTrade/.test(step2band),
   'a trade-basis list says so, rather than implying yesterday informed it');

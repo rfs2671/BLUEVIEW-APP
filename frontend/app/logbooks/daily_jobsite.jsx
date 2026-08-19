@@ -653,10 +653,14 @@ export default function DailyJobsiteLog() {
    * this must not cost it. Neither band is ever pre-selected.
    */
   // FOUR SLOTS, COMPOSED — the composition lives in dailyJobsiteModel so it can
-  // be EXECUTED rather than grepped. Inlining ~80 chips was the defect; a
-  // top-four slice of one band would have been a different one, because the
-  // always-available chips a crew logs every day are not this crew's ranked
-  // work and must not compete for the four.
+  // be EXECUTED rather than grepped. Inlining ~80 chips was the defect.
+  //
+  // THE ALWAYS-AVAILABLE BAND IS GONE. It put twelve chips on every crew card
+  // regardless of trade, so an HVAC crew was offered "scaffold dismantle" and
+  // "site clean-up" — another sub's work. A crew card offers that crew's trade
+  // work and nothing else now: the ranker stopped special-casing those ids and
+  // they reach the crews whose taxonomy holds them, so the four slots are the
+  // only thing that ever competed for.
   const chipBandsFor = (a) => {
     const meta = chipsMetaByTrade[String(a?.trade || '').trim()];
     return composeChipBands({
@@ -1760,7 +1764,7 @@ export default function DailyJobsiteLog() {
         if (isUnassignedWorkerRow(a)) return null;
         // THIS crew's chips, not the project's. An electrical crew must never
         // be offered drywall.
-        const { primary, always, rest, basis } = chipBandsFor(a);
+        const { primary, rest, basis } = chipBandsFor(a);
         const open = !!expandedChips[a.activity_id];
         const ready = cameraReady(a);
         const customA = Object.entries(a.custom_activity_labels || {});
@@ -1827,43 +1831,6 @@ export default function DailyJobsiteLog() {
                     key={c.id} label={c.label}
                     selected={(a.activity_ids || []).includes(c.id)}
                     onPress={() => toggleActivityChip(i, c.id)}
-                  />
-                ))}
-              </View>
-              {/* A SECOND QUESTION, NOT MORE OF THE FIRST.
-               *
-               * The operator reported "12-15 chips per crew" four times and the
-               * cap was working every time. Four ranked chips and twelve
-               * always-available ones were rendering into ONE flex-wrap container
-               * with nothing between them, so sixteen boxes read as one list and
-               * the four-slot cap looked broken. Both rulings were implemented
-               * faithfully; the conflict was between them, not in either.
-               *
-               * The fix is the divider, not a smaller cap. Always-available stays
-               * OUT of the four and stays UNFOLDED — burying "rain / no work" on
-               * a rain day is worse than a long list — and none of the twelve are
-               * trimmed, because each is a real thing that happens on a site.
-               *
-               * What changes is that the second band now asks its own question.
-               * The first is about THIS CREW; the second is about the SITE, which
-               * is why it is not phrased as "more activities".
-               */}
-              {always.length > 0 && (
-                <Text style={s.chipBandHeading}>{t('siteActivityQuestion')}</Text>
-              )}
-              <View style={s.chipWrap}>
-                {always.map((c) => (
-                  <Chip
-                    key={c.id} label={c.label}
-                    selected={(a.activity_ids || []).includes(c.id)}
-                    onPress={() => toggleActivityChip(i, c.id)}
-                  />
-                ))}
-                {customA.map(([id, label]) => (
-                  <Chip
-                    key={id} label={label}
-                    selected={(a.activity_ids || []).includes(id)}
-                    onPress={() => toggleActivityChip(i, id)}
                   />
                 ))}
                 {/* "Other" is ALWAYS last and always visible without scrolling —
