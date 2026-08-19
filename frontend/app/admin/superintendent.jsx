@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { classificationAssessed } from '../../src/utils/projectClass';
 import {
   View,
   Text,
@@ -42,6 +43,10 @@ const CLASS_BADGES = {
   major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
   major_a: { label: 'MAJOR A', color: semantic.neutralStrong, bg: withAlpha('#94a3b8', 0.15) },
   regular: { label: 'REGULAR', color: null, bg: null }, // uses muted
+  // AN ABSENCE IS NOT AN ALARM. Neutral, like REGULAR, deliberately not the
+  // attention treatment a Major A carries — nobody has looked, which is a
+  // different thing from a finding.
+  not_assessed: { label: 'NOT ASSESSED', color: null, bg: null },
 };
 
 export default function SuperintendentScreen() {
@@ -307,7 +312,9 @@ export default function SuperintendentScreen() {
   const anyConflict = registrations.some((r) => r.has_conflict);
 
   const renderClassBadge = (cls) => {
-    const spec = CLASS_BADGES[cls] || CLASS_BADGES.regular;
+    // FALLING BACK TO `regular` WAS THE BUG IN MINIATURE: an unrecognised
+    // value rendered as a real class. An unknown key is not assessed.
+    const spec = CLASS_BADGES[cls] || CLASS_BADGES.not_assessed;
     return (
       <View
         style={[
@@ -511,7 +518,14 @@ export default function SuperintendentScreen() {
                     <View style={s.dropdown}>
                       {projects.map((p) => {
                         const pid = p._id || p.id;
-                        const cls = (p.project_class || 'regular').toLowerCase();
+                        // NOT `|| 'regular'`. That converted an absence into
+                        // a real class — the same assertion the API stopped
+                        // making. An absence is not an alarm either, so the
+                        // badge is neutral rather than the attention colour a
+                        // Major A carries.
+                        const clsKnown = classificationAssessed(p);
+                        const cls = clsKnown
+                          ? String(p.project_class).toLowerCase() : 'not_assessed';
                         return (
                           <Pressable
                             key={pid}
