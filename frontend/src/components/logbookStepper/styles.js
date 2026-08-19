@@ -121,6 +121,16 @@ export function buildStepperStyles() {
     // Says what the chips above are ranked BY. Advisory, not a warning —
     // a trade list is a perfectly good suggestion, it is just not a
     // sequenced one, and the card must not imply otherwise.
+    // THE DIVIDER BETWEEN THE TWO CHIP BANDS. Reads as a question in its own
+    // right, not as a section label, because that is the whole point — the
+    // band below answers a different question from the four above. Same weight
+    // as `question` so neither band looks subordinate to the other; extra top
+    // margin so the break is unmistakable on a phone in daylight.
+    chipBandHeading: {
+      fontSize: typography.sizes.body, color: outdoor.text,
+      fontWeight: '600',
+      marginTop: spacing.md, marginBottom: spacing.xs,
+    },
     chipBasisNote: {
       fontSize: typography.sizes.fine, color: outdoor.textDim,
       marginBottom: spacing.xs,

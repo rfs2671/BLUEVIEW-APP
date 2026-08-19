@@ -301,6 +301,11 @@ export default {
 
     // Step 2 — activity, location, then the camera.
     activityQuestion: 'What did this crew do?',
+    // THE SECOND BAND'S OWN QUESTION. The first asks about THIS CREW's work;
+    // this asks about the SITE. Deliberately not "More activities" or "Other" —
+    // both would read as a continuation of the first list, which is exactly the
+    // confusion that made a working four-slot cap look broken for four rounds.
+    siteActivityQuestion: 'Anything else on site today?',
     locationQuestion: 'Where on site?',
     locationOther: 'Somewhere else',
     locationOtherPrompt: 'Where was the work?',
