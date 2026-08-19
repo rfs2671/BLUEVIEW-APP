@@ -127,22 +127,11 @@ console.log('\n-- the camera holds state, it does not decide --');
   // panel shows, or a debugger and the operator get different answers.
   ok(/console\.log\('\[CAM-DIAG\]\\n%s', lensDiagText\)/.test(scr),
     'the console line prints the SAME text the panel renders');
-  ok(/text=\{lensDiagText\}/.test(scr), 'and the panel is handed that same text');
-  // DELIBERATE ACCESS. It cannot gate on a failure state — this failure looks
-  // like success — so it must at least be collapsed by default.
-  ok(/const \[diagOpen, setDiagOpen\] = useState\(false\)/.test(scr),
-    'the panel is collapsed until he opens it');
-  ok(/accessibilityLabel="Show lens diagnostic"/.test(scr),
-    'and the affordance is reachable by a screen reader');
-  // NOT a bare /TEMPORARY/ — the word is in this component's own doc comment,
-  // so that would pass with the label stripped off the panel. This reads the
-  // RENDERED title, which is the only copy the operator can see.
-  const title = (scr.match(/<Text style=\{styles\.diagTitle\}>([^<]*)<\/Text>/) || [])[1] || '';
-  ok(/TEMPORARY/.test(title),
-    'the panel says on its face that it is temporary, in the text it renders');
-  const foot = (scr.match(/<Text style=\{styles\.diagFoot\}>([\s\S]*?)<\/Text>/) || [])[1] || '';
-  ok(/removed once/.test(foot),
-    'and names the condition it goes on, in rendered copy rather than a comment');
+  // THE PANEL IS GONE and the console line is what remains, so what is asserted
+  // here is that the log still carries the same text — not that anything
+  // renders. cameraPreview.test.cjs holds the removal itself.
+  ok(!/LensDiagnostic/.test(scr), 'no panel renders on the camera any more');
+  ok(!/expo-clipboard/.test(scr), 'and the copy affordance went with it');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
