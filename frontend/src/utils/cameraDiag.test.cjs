@@ -103,7 +103,10 @@ ok(txt.includes('backLens=wide'), 'and the lens in force');
 ok(txt.includes('appliedZoom=1'), 'and the zoom that was actually applied');
 ok(txt.includes('camError x2') && txt.includes('atLens=ultra'),
   'and the sticky error with its original lens');
-ok(txt.split('\n').length === 8, 'eight lines, one per field, so a paste is readable');
+ok(txt.split('\n').length === 9, 'nine lines, one per field, so a paste is readable');
+ok(txt.includes('framingApplied='),
+  'and the session-start callback count — 0 would mean onStarted never fired, '
+  + 'which is a different defect from the framing not landing');
 ok(M.buildDiagText({}).includes('camError: none'),
   'a clean session says so explicitly rather than omitting the line');
 ok(M.buildDiagText({}).includes('any (unfiltered): none'),

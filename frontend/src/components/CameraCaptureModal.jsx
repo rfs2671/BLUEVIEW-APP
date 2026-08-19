@@ -7,6 +7,7 @@ import { Camera, useCameraDevice, useCameraPermission } from 'react-native-visio
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
 import * as Clipboard from 'expo-clipboard';
 import { recordCamError, buildDiagText } from '../utils/cameraDiag';
+import { framingNudge, framingTarget } from '../utils/cameraFraming';
 import CameraOverlay from './CameraOverlay';
 
 /**
@@ -204,6 +205,68 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
 
   /**
+   * RE-ASSERT THE FRAMING WHEN THE SESSION ACTUALLY STARTS.
+   *
+   * See cameraFraming.js for the mechanism and the two device predictions that
+   * confirmed it. In short: the framing is written once, at T1, to a pre-warmed
+   * session that is not running; the session starts at T2 at the hardware
+   * default; and the prop never changes again, so nothing is ever pushed.
+   *
+   * ON THE LIBRARY'S CALLBACK, NOT ON A REACT FLAG. `isActive` is when React
+   * believes the session is ready. onStarted/onInitialized are when
+   * vision-camera says it is. This defect exists precisely because a write
+   * landed before the session existed, and a dependency on a React flag would
+   * be fixing a timing bug with a different guess at the timing.
+   *
+   * The callbacks also fire on starts that no re-render accompanies — a
+   * remount, a recovery after onError, a return from background. A dependency
+   * array only fires when React re-renders.
+   *
+   * BOTH CALLBACKS, WRITING THE SAME VALUE. onStarted is the direct analogue of
+   * the defect (it is defined as `isActive={true}` on the native side).
+   * onInitialized additionally fires when the device or an output changes,
+   * which is a re-initialisation without a stop. Re-applying the same framing
+   * twice is a no-op, so there is no cost to covering both.
+   *
+   * THE CURRENT ZOOM, NOT minZoom. Prediction 2: a CP who pinched to 3x and
+   * reopened must get 3x back. The session is not being told the value — the
+   * value is not wrong.
+   */
+  const reapplyPendingRef = useRef(false);
+  const framingAppliedRef = useRef(0);
+  const [framingApplied, setFramingApplied] = useState(0);
+
+  const reapplyFraming = useCallback(() => {
+    // One cycle in flight at a time. Both callbacks can fire for the same
+    // start, and a second nudge landing inside the first one's frame would
+    // send the camera to the nudge value and leave it there.
+    if (reapplyPendingRef.current) return;
+    const lensDevice = position === 'front' ? frontDevice : device;
+    const min = lensDevice?.minZoom;
+    const max = lensDevice?.maxZoom;
+    // CAPTURED NOW. The `zoom` effect above writes currentZoomRef on every
+    // render, so by the time the second write runs the ref holds the NUDGE.
+    // Reading it there would land the camera one step off the target forever.
+    const target = framingTarget(currentZoomRef.current, min, max);
+    if (target === null) return;
+    const nudge = framingNudge(target, min, max);
+    if (nudge === null) return;          // a device that cannot zoom
+    reapplyPendingRef.current = true;
+    setZoom(nudge);
+    // TWO COMMITS, NOT TWO setState CALLS. React batches within a handler, so
+    // `setZoom(nudge); setZoom(target)` collapses to one render and one prop —
+    // the same no-op this is here to break. The second write has to land in a
+    // later frame to be a second push.
+    requestAnimationFrame(() => {
+      setZoom(target);
+      currentZoomRef.current = target;
+      reapplyPendingRef.current = false;
+      framingAppliedRef.current += 1;
+      setFramingApplied(framingAppliedRef.current);
+    });
+  }, [device, frontDevice, position]);
+
+  /**
    * DIAGNOSTIC ONLY — no behaviour, one line, removed once it has answered.
    *
    * THE REPORT: the camera opens at 1x, not ultra-wide. #147 set the opening
@@ -245,9 +308,9 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
    */
   const lensDiagText = useMemo(() => buildDiagText({
     anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens,
-    position, zoom, camError, os: Platform.OS,
+    position, zoom, camError, framingApplied, os: Platform.OS,
   }), [anyBackDevice, uwDevice, wideDevice, device, uwIsDistinct, backLens,
-    position, zoom, camError]);
+    position, zoom, camError, framingApplied]);
 
   useEffect(() => {
     console.log('[CAM-DIAG]\n%s', lensDiagText);
@@ -410,6 +473,10 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         // extension) — not a boolean anyone can trust up front.
         lowLightBoost={false}
         isActive={active && appActive}
+        // THE TWO MOMENTS THE SESSION IS GENUINELY READY. Not `isActive` in a
+        // dependency array — see reapplyFraming above.
+        onStarted={reapplyFraming}
+        onInitialized={reapplyFraming}
         photo={true}
         // ── WHY THE PREVIEW WAS BLACK (device round 5, finding 28) ──────────
         //
