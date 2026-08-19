@@ -171,3 +171,74 @@ Known gaps and deferred work, newest first.
     located; it has since been found (server.py:19228) and folded into the
     activity-row item above. Nothing about it is outstanding except the ruling
     that item is waiting on.
+
+---
+
+## E4 — lookup-worker enumeration: OPEN, waiting on device provisioning
+
+`POST /api/checkin/lookup-worker` (`server.py:11045`) is **public, unauthenticated
+and unthrottled**. Given a phone number it returns `found`, and when found
+`worker_id`, `name`, `osha_number`, `has_osha_card` — so it is both a membership
+oracle over phone numbers and a PII read. The endpoint's own comment records the
+question as pending: *"this endpoint's (absent) auth are untouched — the PII
+question on them is a separate, still-pending operator decision."*
+
+**Three routes considered; all three ruled out for now.**
+
+1. **Rate limit** — attempted and reverted in `1953e24`. The limiter worked in
+   isolation and produced 12 order-dependent 429s in the full suite. Both
+   hypotheses (duplicate `server` module objects; autouse fixtures not reaching
+   `unittest.TestCase`) were probed and **disproved**, and the mechanism is still
+   unexplained. **Do not attempt a third time.** The blocker is shared
+   in-process test state — a test-infrastructure problem worth solving on its
+   own, not inside a security fix.
+2. **Trim the response** — rejected. `checkin.html` consumes `name` and
+   `osha_number` (it forwards `osha_number` back into the
+   register-and-checkin payload at `checkin.html:1142`). Trimming breaks the
+   gate, and the gate is the one surface that cannot degrade.
+3. **Require the project's kiosk device token** — the correct answer, and
+   blocked on deployment rather than on design.
+
+**Why route 3 is blocked, stated precisely.** NOT "the gate page cannot hold a
+token." The mechanism is fully built: `server.py:3780` documents SITE DEVICE as
+the first legitimate principal — *"Authorized for exactly ONE project — the one
+it was provisioned for. `get_current_user` resolves a site_mode token to its
+`site_devices` row and derives `company_id` from that device's project doc
+server-side, so nothing here is client-asserted"* — with admin CRUD and
+per-project provisioning at `server.py:12608–12730`.
+
+`backend/checkin.html` simply holds no token (grepped: no `Authorization`, no
+`Bearer`, no `token`, no `site_mode`; its `localStorage` carries only language
+and the returning worker's own phone/id/name). It scopes itself by reading
+`project_id` from a **query parameter or the NFC tag's `/info` response**
+(`checkin.html:900`, `912`) and passing it in the body — client-asserted, which
+is what the site-device model exists to avoid.
+
+**THE REASON THIS IS BLOCKED: wiring the gate to a provisioned device token
+would stop check-ins on any unprovisioned tablet, and the gate cannot degrade.
+Deployment risk, not a page limitation.**
+
+**This becomes cheap and correct the day gate devices are provisioned for any
+other reason.** The `site_devices` infrastructure is built and waiting; only the
+provisioning of existing field tablets is missing. Revisit then.
+
+## E3 — subcontractor_id: None is handled correctly on the client
+
+Closed by inspection, no change needed. The server returns
+`subcontractor_id: None` whenever the (sub, trade) pair has no roster row and
+states the contract as a comment — *"callers must treat it as no roster
+identity"* (`server.py:18570`). An unenforced contract in a comment is a shape
+that has bitten this project repeatedly, so the client was traced.
+
+**It is enforced where it matters.** `photoBucketKey`
+(`app/logbooks/daily_jobsite.jsx:121`) degrades in order:
+`sub:{subcontractor_id}` → `row:{activity_id}` → `row-index:{index}`. So an
+unrostered row gets **its own bucket of 10, never shared** — two unrelated subs
+cannot merge, and the CP is not punished for the admin's unfinished data entry.
+`isUnboundCrew` (`dailyJobsiteModel.js:423`) names the state explicitly.
+
+**Residual, LOW:** the third fallback `row-index:{index}` IS position-dependent
+and would move under a re-order. It is only reachable when a row has neither a
+`subcontractor_id` nor an `activity_id`, and every construction path mints an
+`activity_id` — so it is a defensive last resort, not a live path. Worth
+knowing it exists rather than assuming the key is always stable.
