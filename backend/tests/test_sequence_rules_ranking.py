@@ -212,16 +212,64 @@ def test_remembered_other_entry_appears_as_its_own_chip_next_day():
 
 # ── 9. always-available chips are never sequence-gated ───────────────
 def test_always_available_chips_present_for_every_state():
+    """Still true, and now the stronger claim: they are reachable in EVERY
+    prior state, including a bogus one, without a band of their own."""
     states = [[], ["excavation"], ["pour_slab"], ["punch_list"], ["bogus"]]
     for prior in states:
         ids = set(_ids(_rank(prior_activity_ids=prior)))
         assert set(ALWAYS_AVAILABLE_ORDER) <= ids, prior
 
 
-def test_always_available_band_order_is_stable_across_states():
-    a = _ids(_rank(prior_activity_ids=["excavation"]), "always_available")
-    b = _ids(_rank(prior_activity_ids=["punch_list"]), "always_available")
-    assert a == b == list(ALWAYS_AVAILABLE_ORDER)
+def test_the_always_available_band_is_empty_and_the_key_survives():
+    """RE-POINTED, not deleted.
+
+    This used to assert the band held ALWAYS_AVAILABLE_ORDER in a stable order
+    on every crew card. Operator ruling: a crew card offers that crew's trade
+    work and nothing else — offering an HVAC crew "scaffold dismantle" and
+    "site clean-up" was offering them another sub's work. The ten now flow
+    through suggested/catalog by trade, and the guarantee worth holding moved
+    with them (see the test below).
+
+    THE KEY STILL EXISTS AND IS EMPTY. The frontend ships by OTA and the field
+    binary cannot receive one, so a client older than this deploy must get an
+    empty list rather than a missing band.
+    """
+    for prior in (["excavation"], ["punch_list"], [], ["bogus"]):
+        assert _ids(_rank(prior_activity_ids=prior), "always_available") == [], prior
+
+
+def test_the_ten_are_still_reachable_somewhere():
+    """The ruling MOVED them; it did not delete them from the product.
+
+    Removing either the subtraction or the `placed` exclusion alone would have
+    made all ten unreachable — held out of `suggested` by one and out of
+    `catalog` by the other. This is the assertion that catches that.
+    """
+    ids = set(_ids(_rank(prior_activity_ids=["excavation"])))
+    missing = [a for a in ALWAYS_AVAILABLE_ORDER if a not in ids]
+    assert missing == [], f"unreachable after de-special-casing: {missing}"
+
+
+def test_the_ten_can_reach_the_SUGGESTED_band_not_just_the_catalogue():
+    """REACHABLE IS NOT ENOUGH — they must be RANKABLE.
+
+    Restoring `suggested -= ALWAYS_AVAILABLE_IDS` leaves them reachable, because
+    `placed` no longer holds them out of the catalogue, so a reachability check
+    alone stays green while the behaviour regresses: a scaffolding crew whose
+    ranked work is scaffold_dismantle would find it in the expander instead of
+    its primary four. Found by mutation; this is the assertion that kills it.
+
+    Asserted as "at least one, in some state" rather than naming an id, so it
+    tracks the graph rather than a fixture.
+    """
+    seen = set()
+    for prior in ([], ["excavation"], ["pour_slab"], ["punch_list"],
+                  ["scaffold_erection"], ["interior_framing"], ["mep_rough_in"]):
+        seen |= set(_ids(_rank(prior_activity_ids=prior), "suggested"))
+    reached = seen & set(ALWAYS_AVAILABLE_ORDER)
+    assert reached, (
+        "not one of the ten can be SUGGESTED — they are still held out of the "
+        "ranked band and can only be found in the catalogue")
 
 
 # ── 10. determinism ──────────────────────────────────────────────────
