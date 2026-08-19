@@ -1749,11 +1749,29 @@ export default function DailyJobsiteLog() {
                   onPress={() => toggleActivityChip(i, c.id)}
                 />
               ))}
-              {/* ALWAYS-AVAILABLE, OUTSIDE THE FOUR by ruling. Site clean-up,
-                  material delivery, inspection, rain / no work — what any crew
-                  can log on any day. They are not this crew's ranked work, so
-                  they never compete for a slot, and folding them behind the
-                  expander would bury "rain / no work" on a rain day. */}
+            </View>
+            {/* A SECOND QUESTION, NOT MORE OF THE FIRST.
+             *
+             * The operator reported "12-15 chips per crew" four times and the
+             * cap was working every time. Four ranked chips and twelve
+             * always-available ones were rendering into ONE flex-wrap container
+             * with nothing between them, so sixteen boxes read as one list and
+             * the four-slot cap looked broken. Both rulings were implemented
+             * faithfully; the conflict was between them, not in either.
+             *
+             * The fix is the divider, not a smaller cap. Always-available stays
+             * OUT of the four and stays UNFOLDED — burying "rain / no work" on
+             * a rain day is worse than a long list — and none of the twelve are
+             * trimmed, because each is a real thing that happens on a site.
+             *
+             * What changes is that the second band now asks its own question.
+             * The first is about THIS CREW; the second is about the SITE, which
+             * is why it is not phrased as "more activities".
+             */}
+            {always.length > 0 && (
+              <Text style={s.chipBandHeading}>{t('siteActivityQuestion')}</Text>
+            )}
+            <View style={s.chipWrap}>
               {always.map((c) => (
                 <Chip
                   key={c.id} label={c.label}
