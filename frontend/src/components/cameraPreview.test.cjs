@@ -125,49 +125,33 @@ console.log('\n-- the diagnostic panel is gone, on schedule --');
 // It named the lowLightBoost failure in one round after two rounds of guessing,
 // and the preview is confirmed live. Temporary instrumentation on a CP-facing
 // screen is the shape that outlives its reason.
-// `expo-clipboard` LEFT THIS LIST, and it is the only name that did. The lens
-// readout added for the 1x report needs a copy affordance for the same reason
-// the old panel did — the operator has no debugger — so the import is back. The
-// rest of the old panel's names stay dead, and the block below replaces the
-// guarantee this one entry used to carry: the NEW instrument must announce that
-// it is temporary and must not sit open in front of a CP who did not ask for it.
+// `expo-clipboard` IS BACK ON THIS LIST. It left for one release while the lens
+// readout needed a copy affordance, and returned the day that readout answered
+// its question — which is the whole rule this block encodes.
 for (const dead of ['previewFailed', 'diagText', 'noteDiag', 'CAMERA DIAGNOSTIC',
-  'diagPanel', 'graceOver']) {
+  'diagPanel', 'graceOver', 'expo-clipboard', 'LensDiagnostic', 'lensPanel',
+  'diagTab', 'TEMPORARY']) {
   ok(!raw.includes(dead), 'fully removed: no ' + dead);
 }
 
-// ── THE LENS READOUT, AND THE TERMS IT IS HERE ON ──────────────────────────
+// ── THE LENS READOUT IS GONE, ON THE TERMS IT ARRIVED ON ──────────────────
 //
-// The old panel earned its keep — it named the lowLightBoost failure in one
-// round after two rounds of guessing — and it still had to go, because
-// temporary instrumentation on a CP-facing screen is the shape that outlives
-// its reason. The new one is here on the same terms, and these are them.
+// It ruled out three mechanisms in one reading after four rounds of source
+// reading had produced three wrong diagnoses, and the framing fix that followed
+// was confirmed on device. Then it went, the same day. Both panels this screen
+// has carried were removed the moment they answered; that is the rule.
 //
-// It could not be gated on a demonstrated failure the way the old one was: THIS
-// FAILURE LOOKS LIKE SUCCESS. Live preview, working shutter, filed photo, wrong
-// framing. So the gate is deliberate access, and that is what is asserted.
-ok(/const \[lensDiagOpen, setLensDiagOpen\] = useState\(false\)/.test(raw)
-  || /const \[diagOpen, setDiagOpen\] = useState\(false\)/.test(raw),
-  'the lens readout is COLLAPSED until he opens it — no CP meets it by accident');
-// READ THE RENDERED COPY, not the file. `TEMPORARY` also appears in the
-// component's doc comment, so a bare match would keep passing with the label
-// stripped off the panel — the mutation that proved it survived this exact
-// assertion in its first form.
-{
-  const title = (raw.match(/<Text style=\{styles\.diagTitle\}>([^<]*)<\/Text>/) || [])[1] || '';
-  const foot = (raw.match(/<Text style=\{styles\.diagFoot\}>([\s\S]*?)<\/Text>/) || [])[1] || '';
-  ok(/TEMPORARY/.test(title),
-    'and it says TEMPORARY on its face, where the person reading it can see it');
-  ok(/removed once/.test(foot),
-    'and states the condition it goes on, so removal is not left to memory');
-}
-// It must not become a second place that decides anything. The device rule and
-// the sticky error record live in cameraDiag.js and are tested there.
-ok(/from '\.\.\/utils\/cameraDiag'/.test(raw),
-  'the readout delegates — the camera holds state and renders, it decides nothing');
+// THE CONSOLE LINE STAYS. It is off-screen, so it is not the shape this block
+// guards against, and it keeps the sticky error record — a fallback that
+// RECOVERED leaves no other trace.
+ok(!/<Text style=\{styles\.diag/.test(raw), 'nothing diagnostic renders on the camera');
+ok(!/Pressable[\s\S]{0,200}Show lens diagnostic/.test(raw), 'and there is no affordance to open one');
+ok(/console\.log\('\[CAM-DIAG\]/.test(raw), 'the off-screen log survives the panel');
+ok(/from '\.\.\/utils\/cameraFraming'/.test(raw),
+  'and the framing fix the readout led to is still wired');
 ok(!/setCamError\(null\)/.test(raw),
-  'and nothing here clears the error record: a fallback that WORKED is exactly '
-  + 'the case where the error string is the only surviving evidence');
+  'the error record still has no clear path: a fallback that RECOVERED leaves '
+  + 'no other trace');
 // The SHUTTER LOG stays — console-only, never on the CP's screen, and a capture
 // that hangs leaves no other trace.
 ok(/\[CAM\] shutter/.test(src), 'the shutter log stays — it was never the panel');
