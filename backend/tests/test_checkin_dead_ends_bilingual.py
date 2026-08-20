@@ -149,7 +149,9 @@ def _body(**overrides):
         "phone": "5551234567",
         "osha_number": "SST12345678",
         "osha_data": {"sst_number": "SST12345678", "card_type": "SST",
-                      "card_class": "LIMITED", "expiration": "01/01/2030"},
+                      # WORKER, not LIMITED — "Limited" ceased to be a valid SST card in
+                      # August 2020 and is now treated as a dead scheme, not a class.
+                      "card_class": "WORKER", "expiration": "01/01/2030"},
         "osha_card_image": "data:image/jpeg;base64,CARDIMG",
     }
     body.update(overrides)

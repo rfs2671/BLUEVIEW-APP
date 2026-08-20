@@ -222,6 +222,15 @@ export function buildStepperStyles() {
       textAlign: 'center', paddingBottom: spacing.sm,
     },
 
+    // LOUDER THAN submitHint, and deliberately. A submit hint explains a
+    // button he can see is dead — the button is already carrying half the
+    // message. This one contradicts a reassurance he has been reading all
+    // session ("Saved automatically as you go"), so it has to win against it.
+    submitWarning: {
+      fontSize: typography.sizes.fine, color: outdoor.danger,
+      fontWeight: '700', textAlign: 'center', paddingBottom: spacing.sm,
+    },
+
     autosaveNote: {
       fontSize: typography.sizes.fine, color: outdoor.textDim,
       textAlign: 'center', paddingVertical: spacing.sm,

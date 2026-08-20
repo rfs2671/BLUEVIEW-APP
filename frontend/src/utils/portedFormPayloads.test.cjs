@@ -1474,15 +1474,90 @@ ok(!/if \(!cpSignature\) \{/.test(SSC_SCREEN),
   const catchBlock = (a > -1 && b > a) ? SSC_SCREEN.slice(a, b) : '';
   ok(catchBlock.length > 0,
     'ssc_daily_safety_log: located the push catch block');
-  ok((catchBlock.match(/\breturn undefined;/g) || []).length === 2,
-    'a REFUSED and a FAILED push each return undefined — only the genuinely '
-    + 'offline path falls through and lets the signature be announced');
+  // FOUR OUTCOMES NOW, NOT THREE, and the fourth is not a fourth kind of push
+  // failure — it is the offline branch being asked a question it never used
+  // to ask.
+  //
+  // Offline is the one branch that falls through and ANNOUNCES the log: filed,
+  // frozen, syncing later. It says that on the strength of the local draft
+  // written just above the try, and writeDraft returns false rather than
+  // throwing, so that write could have failed and the announcement went out
+  // regardless. The drain reads the DRAFT, not this scope, so what got queued
+  // was either a stale autosave — which it files as the signed record — or
+  // nothing at all, which it clears as no-draft. Either way the CP had been
+  // told a signed log existed.
+  //
+  // So offline splits in two, and only the half with a device copy may promise
+  // a sync.
+  ok((catchBlock.match(/\breturn undefined;/g) || []).length === 3,
+    'a REFUSED push, a FAILED push, and an offline push with NO LOCAL COPY '
+    + 'each return undefined — only offline-and-saved falls through and '
+    + 'lets the signature be announced');
+  ok(/if \(!localSaved\) \{[\s\S]*?return undefined;\s*\}\s*await markPending\(_key\);/
+    .test(catchBlock),
+    'and that fourth outcome is a gate IN FRONT OF markPending — a key is '
+    + 'queued only when a draft exists for the drain to read');
   ok(/if \(refused && submitStatus === 'submitted'\) \{[\s\S]*?recordFinalizeError\(existingLogId \|\| _key, code, _key, 'editor'\);[\s\S]*?return undefined;/
     .test(catchBlock),
     'and a refusal leaves the durable banner on its way out, so the toast is not '
     + 'the only trace four seconds later');
   ok(/if \(!offline && !refused\) \{[\s\S]*?return undefined;/.test(catchBlock),
     'a 5xx is retryable, is queued, and is not announced as filed');
+  ok(/if \(localSaved\) await markPending\(_key\);/.test(catchBlock),
+    'and its queueing is conditional for the same reason — a key queued over '
+    + 'a stale draft is worse than no retry, because the drain would file the '
+    + 'stale content as the signed record');
+}
+
+// ──── THE SAME GATE, ON EVERY SCREEN THAT SAVES BEFORE IT PUSHES ────────
+//
+// The block above proves the shape on ssc_daily_safety_log, the screen that has
+// carried the three-way split longest. The gate is worth nothing if the other
+// thirteen went on discarding the result, so each is asked the two structural
+// questions directly: does it CAPTURE what writeDraft returned, and is that
+// answer READ by the branch that would otherwise announce the log?
+//
+// COMMENT-STRIPPED SOURCE, and that is the whole reason screenSrc is used here
+// rather than a plain read: every one of these screens now carries a comment
+// block explaining localSaved, so a bare /localSaved/ against the raw file
+// would pass on the prose alone while the code went back to dropping the
+// value. Asking the stripped source asks the code.
+{
+  const GATED = [
+    'crane_operations', 'concrete_operations', 'hot_work', 'osha_log',
+    'fall_protection', 'ssc_daily_safety_log', 'toolbox_talk',
+    'excavation_monitoring', 'scaffold_maintenance', 'preshift_signin',
+    'daily_jobsite', 'subcontractor_orientation',
+  ];
+  for (const name of GATED) {
+    const src = screenSrc(name);
+    ok(src.length > 0, `${name}: source read and non-empty`);
+    ok(/localSaved = await writeDraft\(/.test(src),
+      `${name}: the submit save CAPTURES what writeDraft returned`);
+    // AND THE OTHER FAILURE MODE. A false return and a thrown exception both
+    // mean the write did not happen. writeDraft catches its own storage
+    // errors today, so the throw is unreachable from it as written — which is
+    // exactly why the branch is asserted rather than left to a future reader
+    // to notice. The half that is never exercised is the half that rots.
+    ok(/\} catch \(_e\) \{[\s\S]*?localSaved = false;/.test(src),
+      `${name}: and a THROW is treated as the same false`);
+    ok(/if \(!localSaved\)|if \(localSaved\)|localSaved \?/.test(src),
+      `${name}: and READS it — a captured-and-ignored value is the same silence`);
+  }
+  // The two daily-log screens live outside app/logbooks and carry the same gate.
+  // Both print "Saved on this device" as a SUCCESS toast when the push fails,
+  // which is the most direct statement in the app of the thing writeDraft may
+  // not have done.
+  for (const rel of ['daily-log.jsx', path.join('site', 'daily-logs.jsx')]) {
+    const src = stripComments(fs.readFileSync(path.join(FRONTEND, 'app', rel), 'utf8'));
+    ok(src.length > 0, `${rel}: source read and non-empty`);
+    ok(/localSaved = await writeDraft\(/.test(src),
+      `${rel}: the submit save CAPTURES what writeDraft returned`);
+    ok(/\} catch \(_e\) \{[\s\S]*?localSaved = false;/.test(src),
+      `${rel}: and a THROW is treated as the same false`);
+    ok(/if \(!localSaved\) \{[\s\S]*?return;/.test(src),
+      `${rel}: and refuses to announce \"Saved on this device\" without one`);
+  }
 }
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════

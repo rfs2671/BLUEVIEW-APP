@@ -126,6 +126,14 @@ export default function DailyLogScreen() {
   const [backendLogId, setBackendLogId] = useState(null);
   // True when a signed log lives on this device but has not landed on the server.
   const [draftPending, setDraftPending] = useState(false);
+  // THE OTHER REASON. `draftPending` means "on this device, not on the
+  // server" — a queued push, work that is safe. This one is its opposite: the
+  // device is not storing the draft at all. Two problems, two fixes, and the
+  // banners below say which one he has.
+  //
+  // Sticky, and not a toast: he may have walked away. Cleared only by a later
+  // write that succeeds.
+  const [localSaveFailed, setLocalSaveFailed] = useState(false);
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
@@ -175,6 +183,9 @@ export default function DailyLogScreen() {
     const projectId = getProjectId(selectedProject);
     if (!projectId) return undefined;
     const t = setTimeout(() => {
+      // BOTH FAILURE MODES. The boolean was discarded and a throw fell into the
+      // same empty catch. Not a toast on every save — a superintendent typing
+      // all afternoon would stop seeing it — it drives the banner instead.
       writeDraft(
         draftKey({ projectId, logType: LOG_TYPE, date: todayISO() }),
         {
@@ -182,7 +193,9 @@ export default function DailyLogScreen() {
           cp_signature: formData.competent_person_signature,
           cp_name: formData.competent_person_name,
         },
-      ).catch(() => {});
+      )
+        .then((_ok) => setLocalSaveFailed(!_ok))
+        .catch(() => setLocalSaveFailed(true));
     }, 800);
     return () => clearTimeout(t);
   }, [loading, selectedProject, formData]);
@@ -408,13 +421,25 @@ export default function DailyLogScreen() {
 
       // 1) LOCAL FIRST. The signed log is durable on this device before a single
       //    byte goes to the network, so a failed push can never lose it.
-      await writeDraft(key, {
-        data: { ...formData },
-        cp_signature: formData.competent_person_signature,
-        cp_name: formData.competent_person_name,
-        status: 'submitted',
-        backend_id: knownId,
-      });
+      //    — but only if it actually landed. writeDraft returns false and never
+      //    throws, and this call used to discard that, so "so a failed push can
+      //    never lose it" was a promise nothing checked. The catch below prints
+      //    "Saved on this device", which is the claim this result either makes
+      //    true or does not.
+      let localSaved = false;
+      try {
+        localSaved = await writeDraft(key, {
+          data: { ...formData },
+          cp_signature: formData.competent_person_signature,
+          cp_name: formData.competent_person_name,
+          status: 'submitted',
+          backend_id: knownId,
+        });
+      } catch (_e) {
+        // A THROW IS A FALSE — see the note at the same guard in hot_work.
+        localSaved = false;
+      }
+      setLocalSaveFailed(!localSaved);
 
       // 2) Best-effort push. Failure is NOT data loss — the draft above already
       //    holds everything, so we record the key for the reconnect flush and
@@ -439,6 +464,23 @@ export default function DailyLogScreen() {
         }
         await fetchLogsForProject(projectId);
       } catch (pushErr) {
+        // NEITHER COPY EXISTS. Both messages below say the log is stored here;
+        // one of them calls it a success. If the local write failed there is no
+        // device copy to sync from, so nothing is queued — a key queued over a
+        // stale autosave would let the drain file unsigned content — and the
+        // superintendent is told before he closes the form on the only copy
+        // left, the one on screen.
+        if (!localSaved) {
+          // NOT "saved on this device". The banner below says the true thing and
+          // keeps saying it after this toast is gone.
+          setDraftPending(false);
+          console.warn('Daily log push failed AND the local save failed; not queued.');
+          toast.error(
+            'Not saved — nothing was filed',
+            'This device could not store the log, and it did not reach the server either. Nothing was filed and nothing is queued to retry. Your entries are still on this screen. Free up space on the device, then save again.',
+          );
+          return;
+        }
         await markPending(key);
         setDraftPending(true);
         if (pushErr?.offline || isOfflineError(pushErr)) {
@@ -754,8 +796,21 @@ export default function DailyLogScreen() {
                 )}
               </View>
 
+              {/* THE WORSE OF THE TWO WINS THE SLOT. "Saved on this device" and
+                  "not saved on this device" cannot both be on screen, and if the
+                  device is not storing the draft that is the one he must act on:
+                  his entries exist only in the form in front of him. */}
+              {localSaveFailed && (
+                <View style={s.saveFailedBanner}>
+                  <CloudOff size={14} strokeWidth={1.5} color={semantic.critical} />
+                  <Text style={s.saveFailedText}>
+                    NOT saved on this device. Your entries are only on this screen — do not close the form. Free up space, then save again.
+                  </Text>
+                </View>
+              )}
+
               {/* A push that never landed is not a loss — say so plainly. */}
-              {draftPending && (
+              {!localSaveFailed && draftPending && (
                 <View style={s.pendingBanner}>
                   <CloudOff size={14} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.pendingText}>
@@ -1292,6 +1347,17 @@ function buildStyles(colors, isDark) {
     fontSize: 11,
     fontWeight: '500',
     color: '#4ade80',
+  },
+  // Louder than pendingBanner: that one reassures, this one contradicts it.
+  saveFailedBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md, marginTop: spacing.sm,
+    backgroundColor: semantic.criticalBg, borderWidth: 1,
+    borderColor: semantic.criticalBorder,
+  },
+  saveFailedText: {
+    flex: 1, fontSize: 12, fontWeight: '700', color: semantic.critical,
   },
   pendingBanner: {
     flexDirection: 'row',

@@ -119,6 +119,9 @@ export default function SiteDailyLogsScreen() {
   const [fetchState, setFetchState] = useState('ok');
   // True when the local draft holds changes the server has not accepted yet.
   const [pendingSync, setPendingSync] = useState(false);
+  // THE OTHER REASON — see the note on the badge below. `pendingSync` means the
+  // work is here and queued; this means it is not here at all.
+  const [localSaveFailed, setLocalSaveFailed] = useState(false);
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
@@ -166,7 +169,10 @@ export default function SiteDailyLogsScreen() {
     const key = currentDraftKey();
     if (!key) return undefined;
     const t = setTimeout(() => {
-      writeDraft(key, { data: formData }).catch(() => {});
+      // BOTH FAILURE MODES, and no toast on every save — it drives the badge.
+      writeDraft(key, { data: formData })
+        .then((_ok) => setLocalSaveFailed(!_ok))
+        .catch(() => setLocalSaveFailed(true));
     }, 800);
     return () => clearTimeout(t);
   }, [loading, siteProject?.id, formData]);
@@ -216,7 +222,14 @@ export default function SiteDailyLogsScreen() {
           if (!draftPending) {
             const form = formFromLog(todayLog);
             setFormData(form);
-            writeDraft(key, { data: form, backend_id: serverId }).catch(() => {});
+            // NOT CONTENT, so this does NOT set localSaveFailed — telling a
+            // superintendent his entries are unsaved because an id bind failed
+            // would be a different lie. But it is not nothing either: the
+            // comment below says it plainly, a lost id is what made the next
+            // save CREATE a duplicate. So it reports in its own terms.
+            writeDraft(key, { data: form, backend_id: serverId })
+              .then((_ok) => { if (!_ok) console.warn('[daily-logs] server id NOT bound to the draft; the next save may duplicate'); })
+              .catch(() => console.warn('[daily-logs] server id bind threw; the next save may duplicate'));
           }
         } else {
           setExistingLog(null);
@@ -225,7 +238,9 @@ export default function SiteDailyLogsScreen() {
           // must not be reused, or the next save would PUT to a deleted doc.
           if (draft?.backend_id) {
             setExistingLogId(null);
-            writeDraft(key, { backend_id: null }).catch(() => {});
+            writeDraft(key, { backend_id: null })
+              .then((_ok) => { if (!_ok) console.warn('[daily-logs] stale server id NOT cleared; the next save may PUT to a deleted doc'); })
+              .catch(() => console.warn('[daily-logs] stale server id clear threw'));
           }
           // Only wipe the form when there is nothing local to lose. A draft
           // with no server twin is a log typed offline today — it stays.
@@ -346,7 +361,18 @@ export default function SiteDailyLogsScreen() {
       // LOCAL FIRST. The device copy is written before anything touches the
       // network, so from here on the log cannot be lost — the server push below
       // is best-effort and its failure only delays the sync.
-      await writeDraft(key, { data: formData, status: 'submitted' });
+      // — if it landed. writeDraft returns false and never throws, and this
+      // call used to discard that, so "from here on the log cannot be lost" was
+      // a promise nothing checked. The catch below announces "Saved on this
+      // device" as a SUCCESS toast; this result is what makes that true.
+      let localSaved = false;
+      try {
+        localSaved = await writeDraft(key, { data: formData, status: 'submitted' });
+      } catch (_e) {
+        // A THROW IS A FALSE — see the note at the same guard in hot_work.
+        localSaved = false;
+      }
+      setLocalSaveFailed(!localSaved);
 
       // Prefer the id we know about from ANY source: the loaded log, or the one
       // persisted in the draft when the load failed. Falling back to CREATE
@@ -374,6 +400,20 @@ export default function SiteDailyLogsScreen() {
         // The log IS saved — on this device. Say that, because "Could not save
         // log" reads as "your entry is gone" and pushes a superintendent to
         // retype a required record they still have.
+        // … UNLESS IT IS NOT. Both branches below state the log is safe here,
+        // and the offline one states it as a success. With no device copy there
+        // is nothing to sync from and nothing may be queued — the drain reads
+        // the draft, so a queued key over a stale autosave files unsigned
+        // content under this date.
+        if (!localSaved) {
+          setPendingSync(false);
+          console.warn('Daily log push failed AND the local save failed; not queued.');
+          toast.error(
+            'Not saved — nothing was filed',
+            'This device could not store the log, and it did not reach the server either. Nothing was filed and nothing is queued to retry. Your entries are still on this screen. Free up space on the device, then save again.',
+          );
+          return;
+        }
         await markPending(key);
         setPendingSync(true);
         console.warn('Daily log server push deferred (will sync on reconnect):', pushErr?.message);
@@ -519,7 +559,17 @@ export default function SiteDailyLogsScreen() {
               <View style={styles.dateCard}>
                 <Calendar size={18} strokeWidth={1.5} color={colors.text.muted} />
                 <Text style={styles.dateText}>{formatDate(new Date())}</Text>
-                {pendingSync ? (
+                {/* THREE STATES, AND THE WORST WINS. "Saved on device" and "not
+                    saved on device" are opposite claims about the same thing, so
+                    the failure is checked first — a superintendent reading
+                    "Saved on device" while the store is refusing writes is the
+                    exact lie this whole track exists to remove. */}
+                {localSaveFailed ? (
+                  <View style={styles.saveFailedBadge}>
+                    <CloudOff size={12} strokeWidth={2} color={semantic.critical} />
+                    <Text style={styles.saveFailedText}>NOT saved on device</Text>
+                  </View>
+                ) : pendingSync ? (
                   <View style={styles.pendingBadge}>
                     <CloudOff size={12} strokeWidth={2} color={semantic.attention} />
                     <Text style={styles.pendingText}>Saved on device</Text>
@@ -823,6 +873,13 @@ function buildStyles(colors, isDark) {
   existingBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: semantic.verifiedBg, paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full },
   existingText: { fontSize: 14, fontWeight: '500', color: '#4ade80' },
   // "Saved on device" — the log is safe locally but has not reached the server.
+  saveFailedBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: borderRadius.sm,
+    backgroundColor: semantic.criticalBg, borderWidth: 1,
+    borderColor: semantic.criticalBorder,
+  },
+  saveFailedText: { fontSize: 11, fontWeight: '700', color: semantic.critical },
   pendingBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: withAlpha(semantic.attention, 0.15), paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha(semantic.attention, 0.4) },
   pendingText: { fontSize: 14, fontWeight: '500', color: semantic.attention },
   section: { marginBottom: spacing.lg },

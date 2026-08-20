@@ -174,7 +174,12 @@ def _valid_osha(**overrides):
         "name": "Jane Worker",
         "sst_number": "SST12345678",
         "card_type": "SST",
-        "card_class": "LIMITED",
+        # WORKER, not LIMITED. "Limited" was a 30-hour transitional SST card and
+        # ceased to be valid in AUGUST 2020, so it is now recognised as a dead
+        # scheme rather than a class (SST_DEAD_CLASSES). This fixture stands in
+        # for "an ordinary legible class", which is what the 40-hour WORKER card
+        # is — and it is also the commonest card on a real site.
+        "card_class": "WORKER",
         "issued": None,
         "expiration": "01/01/2030",
     }

@@ -112,17 +112,42 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   // content is on the server and only the LOCK was refused.
   const neverSaved = !logId;
 
+  // A THIRD TRUTH, and it outranks the other two. `neverSaved` still asks a
+  // question about the SERVER — was the log ever created there — and both of its
+  // answers assure the CP his work is safe on the device. Source 'local' is the
+  // case where that assurance is the false part: the local write is what
+  // failed, so nothing is queued and nothing is stored, and saying either of
+  // the other two sentences would send him away from the only copy there is.
+  const localSaveFailed = refusedSource === 'local';
+
+  // AND A FOURTH. Same banner, third truth: the local write LANDED and only
+  // the push did not, so the work is safe on the device and genuinely queued
+  // — which makes `notLockedHint` almost right and still the wrong emphasis.
+  // What he needs before he signs is not "this will retry"; it is that right
+  // now nobody else can see this log and no inspector can be shown it.
+  const notOnServer = refusedSource === 'unsynced';
+
   // `undefined` = no refusal on record; `null` = refused with no recognised code.
   const notLockedBanner = refusedCode === undefined ? null : (
     <View style={s.warnBanner}>
       <AlertTriangle size={16} strokeWidth={2} color={semantic.attention} />
       <View style={s.warnTextWrap}>
-        <Text style={s.warnTitle}>{t(neverSaved ? 'notPushedTitle' : 'notLockedTitle')}</Text>
+        <Text style={s.warnTitle}>
+          {localSaveFailed
+            ? t('notSavedLocalTitle')
+            : notOnServer
+              ? t('notOnServerTitle')
+              : t(neverSaved ? 'notPushedTitle' : 'notLockedTitle')}
+        </Text>
         <Text style={s.warnBody}>{gateCopy(refusedCode)}</Text>
         <Text style={s.warnBody}>
-          {neverSaved
-            ? t('notPushedHint')
-            : t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
+          {localSaveFailed
+            ? t('notSavedLocalHint')
+            : notOnServer
+              ? t('notOnServerHint')
+              : neverSaved
+                ? t('notPushedHint')
+                : t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
         </Text>
       </View>
     </View>

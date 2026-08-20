@@ -297,6 +297,10 @@ export default function DailyJobsiteLog() {
   const [loading, setLoading] = useState(true);
   const [signing, setSigning] = useState(false);
   const [locked, setLocked] = useState(false);
+  // The last autosave did not land. Sticky: it clears only when a later
+  // write succeeds, never on the next keystroke, because a warning that
+  // decays is one he can miss by typing.
+  const [autosaveFailed, setAutosaveFailed] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
 
   // ── The record ────────────────────────────────────────────────────────
@@ -412,10 +416,16 @@ export default function DailyJobsiteLog() {
     const h = setTimeout(async () => {
       try {
         const persisted = await persistActivityPhotos(activitiesRef.current);
-        await writeDraft(_key, {
+        // BOTH FAILURE MODES. A false return and a throw both mean the
+        // draft was not written; the catch here only ever covered the
+        // second, and the first was discarded. Feeds the SUBMIT GATE
+        // rather than a toast — see the note in the stepper's
+        // submitWarning prop.
+        const _ok = await writeDraft(_key, {
           data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
         });
-      } catch (_e) { /* autosave is best-effort; the next change retries */ }
+        setAutosaveFailed(!_ok);
+      } catch (_e) { setAutosaveFailed(true); }
     }, 800);
     return () => clearTimeout(h);
   }, [
@@ -428,10 +438,11 @@ export default function DailyJobsiteLog() {
     if (locked) return;
     try {
       const persisted = await persistActivityPhotos(activitiesRef.current);
-      await writeDraft(_key, {
+      const _ok = await writeDraft(_key, {
         data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
       });
-    } catch (_e) { /* best-effort */ }
+      setAutosaveFailed(!_ok);
+    } catch (_e) { setAutosaveFailed(true); }
   }, [locked, draftBody, cpSignature, cpName]);
 
   const fetchData = async () => {
@@ -1174,10 +1185,28 @@ export default function DailyJobsiteLog() {
     }
     const rows = activitiesRef.current?.length ? activitiesRef.current : activities;
     const persisted = await persistActivityPhotos(rows);
-    await writeDraft(_key, {
-      data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
-      status: submitStatus,
-    });
+    // THE LOCAL SAVE IS THE OFFLINE RECORD, so its result is not discardable.
+    // writeDraft answers with a BOOLEAN and this call used to drop it on the
+    // floor; the try below covers a throw, because a caller that handles one
+    // failure mode and not the other has fixed half of this. This log carries the day's photos, which makes a quota
+    // failure here the likeliest one in the app — and the deferred branches
+    // below would still queue the key and report the day as filed, leaving the
+    // drain to read a stale autosave or find nothing at all.
+    let localSaved = false;
+    try {
+      localSaved = await writeDraft(_key, {
+        data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
+        status: submitStatus,
+      });
+    } catch (_e) {
+      // A THROW IS A FALSE. writeDraft catches its own storage errors today,
+      // so this is unreachable from that function as written — and that is
+      // exactly why it is here. The next person to make it throw will not
+      // come back and audit fourteen call sites, and the branch they would
+      // have needed is the one nobody would have tested.
+      localSaved = false;
+    }
+    setAutosaveFailed(!localSaved);
 
     // persistActivityPhotos no longer fails silently.
     const lost = persisted.reduce(
@@ -1236,6 +1265,10 @@ export default function DailyJobsiteLog() {
       // so nothing but a successful push may take it down. This used to sit
       // beside the /finalize call; the refusal it clears is now recorded by the
       // push, so the clearing moves with it.
+      // BOTH HANDLES. A banner raised while offline was recorded against
+      // the DRAFT KEY, because there was no server id yet — clearing only
+      // by savedId left it up permanently.
+      await clearFinalizeError(_key);
       if (savedId) await clearFinalizeError(savedId);
     } catch (pushErr) {
       // ── REFUSAL IS NOT OFFLINE ──────────────────────────────────────────
@@ -1277,12 +1310,53 @@ export default function DailyJobsiteLog() {
       }
       if (!offline && !refused) {
         console.warn('daily_jobsite push FAILED server-side:', status || pushErr?.message);
-        await markPending(_key);
-        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        // Queue only a key whose draft actually holds this content — see the
+        // localSaved note at the save above. A key queued over a stale draft
+        // is worse than no retry: the drain would file the stale content.
+        if (localSaved) await markPending(_key);
+        // A BANNER, NOT ONLY A TOAST. He may have walked away by the time
+        // this resolves. Recorded against the same handle the drain's
+        // refusals use, so LogbookLockBar renders it on his next visit to
+        // this exact log.
+        // ONE OF THE TWO ALWAYS FIRES. A 5xx is the push not landing, which is
+        // the same condition as offline: the work is on this device and not on
+        // the server. The error toast says so and then leaves. Recording it
+        // means the two reasons are exhaustive on a failed push — either the
+        // device does not hold it, or the server does not.
+        if (!localSaved) {
+          await recordFinalizeError(
+            existingLogId || _key, 'LOCAL_SAVE_FAILED', _key, 'local');
+        } else {
+          await recordFinalizeError(
+            existingLogId || _key, 'NOT_ON_SERVER', _key, 'unsynced');
+        }
+        toast.error(
+          tFinalize('errorTitle'),
+          localSaved ? gateCopy(null) : tFinalize('localSaveFailed'),
+        );
+        return undefined;
+      }
+      // NOTHING TO DEFER TO. Offline is the one failing path that still reports
+      // SUCCESS, on the strength of a local draft the drain will send later.
+      // With no such draft there is no record anywhere, so the key is not
+      // queued and nothing is announced.
+      if (!localSaved) {
+        console.warn('daily_jobsite push deferred but the LOCAL SAVE FAILED; not queued.');
+        await recordFinalizeError(
+          existingLogId || _key, 'LOCAL_SAVE_FAILED', _key, 'local');
+        toast.error(tFinalize('localSaveFailedTitle'), tFinalize('localSaveFailed'));
         return undefined;
       }
       await markPending(_key);
       console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
+      // ON THIS DEVICE ONLY — the other half of the same banner. The local
+      // write landed, so this log IS safe here and IS queued; what is not true
+      // is that anyone else can see it. He is about to attest to a legal
+      // record, and a toast saying "will sync" is gone before he has
+      // finished reading it, so this goes up durably and comes down when the
+      // drain succeeds (clearUnsyncedBanner in draftSync).
+      await recordFinalizeError(
+        existingLogId || _key, 'NOT_ON_SERVER', _key, 'unsynced');
     }
 
     // A PHOTO THAT HAS NOT REACHED R2 KEEPS THE DRAFT PENDING, even when the
@@ -2327,6 +2401,7 @@ export default function DailyJobsiteLog() {
       draftKey={draftKey({ projectId, logType: 'daily_jobsite', date })}
       onFinalized={() => setLocked(true)}
       onAmended={fetchData}
+      submitWarning={autosaveFailed ? tFinalize('autosaveFailedWarning') : ''}
       autosaveNote={t('savedAutomatically')}
       overlays={(
         <>

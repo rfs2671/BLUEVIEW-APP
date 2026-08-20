@@ -3,8 +3,10 @@ register_and_checkin):
 
   1. OCR autofill flow-through — a corrected expiration/card number sent on
      register_and_checkin flows into the SST certificate the backend builds.
-  2. Selfie capture — selfie_image is stored INLINE on the workers doc (not
-     R2); a missing selfie never blocks the check-in.
+  2. Selfie capture — the selfie goes to R2 under worker-selfies/{worker_id}/
+     and the worker doc carries the KEY, not the bytes. A missing selfie never
+     blocks the check-in, and neither does a failed upload: object storage is
+     not allowed to be the thing that turns a man away at the gate.
   3. EXPIRY RELAX (the deliberate behavior change) — an expired SST no longer
      hard-blocks; the worker checks in normally, a compliance_alerts row is
      still written, and dispatch_notification fires to the project's admins +
@@ -276,41 +278,311 @@ class ExpiredSstRelaxTest(unittest.TestCase):
 
 
 class SelfieStorageTest(unittest.TestCase):
+    """The selfie now goes to R2 AND stays inline. Two rulings shape this.
 
-    def test_selfie_stored_inline_on_worker_doc(self):
+    Q1 — A FAILED UPLOAD RECORDS NOTHING. No field, no empty string, no URL. A
+    URL that 404s is a claim the app cannot support and an empty string is a
+    value that reads as a fact. An earlier version wrote
+    `selfie_store_failed: True`; that invented a sentinel to carry a
+    distinction, and two absences meaning different things is the shape that has
+    bitten this project before.
+
+    Q2 — THE BASE64 STAYS IN THIS PR. `_upload_to_r2` returning a URL proves the
+    PUT returned, not that the object is readable, and this project has produced
+    an unreachable file that way before. Until something verifies the object,
+    the inline copy is the only one known to exist. Dropping it is a separate PR
+    gated on head_object.
+
+    Together they make the sentinel unnecessary, which is the point: a row with
+    `selfie_image` and no `selfie_r2_key` IS "took one, upload failed"; a row
+    with neither is "declined". Real data, not a flag.
+
+    Every test patches server._upload_to_r2 rather than boto3 — that function is
+    the ONE place a bucket and key are chosen, so patching it asserts what this
+    code asks object storage to do and lets each outcome be produced exactly.
+    """
+
+    _SELFIE = "data:image/jpeg;base64,U0VMRklFQllURVM="   # b"SELFIEBYTES"
+
+    def _post(self, upload, body=None):
+        """One register-and-checkin with `upload` standing in for R2.
+
+        Returns (response, worker_doc, upload_calls).
+        """
         db = _make_db()
-        selfie = "data:image/jpeg;base64,SELFIEBYTES"
+        calls = []
+
+        def _fake_upload(file_bytes, r2_key, content_type="application/octet-stream"):
+            calls.append((file_bytes, r2_key, content_type))
+            return upload(file_bytes, r2_key, content_type)
+
         with patch.object(server, "db", db), \
+             patch.object(server, "_upload_to_r2", _fake_upload), \
              patch.object(
                  server._notifications_inbox, "dispatch_notification",
                  new_callable=AsyncMock,
              ):
             resp = _client().post(
                 "/api/checkin/register-and-checkin",
-                json=_body(selfie_image=selfie),
+                json=_body(**(body if body is not None else {"selfie_image": self._SELFIE})),
             )
+        worker_doc = db.workers.inserted[0] if db.workers.inserted else None
+        return resp, worker_doc, calls
+
+    # ── the happy path ──────────────────────────────────────────────────────
+
+    def test_selfie_goes_to_r2_and_the_inline_copy_is_kept(self):
+        resp, worker_doc, calls = self._post(lambda b, k, c: "https://cdn.example/" + k)
         self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertEqual(len(db.workers.inserted), 1)
-        worker_doc = db.workers.inserted[0]
-        # Inline base64 on the worker doc — NOT an R2 key/URL.
-        self.assertEqual(worker_doc.get("selfie_image"), selfie)
+        self.assertIsNotNone(worker_doc)
+
+        # ONE upload, carrying the DECODED bytes: not the data URL, not base64.
+        self.assertEqual(len(calls), 1)
+        sent_bytes, key, content_type = calls[0]
+        self.assertEqual(sent_bytes, b"SELFIEBYTES")
+        self.assertEqual(content_type, "image/jpeg")
+
+        # THE PREFIX, and the worker id inside it. Built from the id the doc was
+        # actually inserted under, so a key derived from anything else cannot pass.
+        worker_id = str(worker_doc["_id"])
+        self.assertTrue(worker_id)
+        self.assertEqual(key, "worker-selfies/" + worker_id + "/selfie.jpg")
+
+        # The document names the object AND still holds the image (Q2).
+        self.assertEqual(worker_doc.get("selfie_r2_key"), key)
+        self.assertEqual(worker_doc.get("selfie_r2_url"), "https://cdn.example/" + key)
+        self.assertEqual(worker_doc.get("selfie_image"), self._SELFIE)
+
+    def test_the_bucket_is_never_the_object_locked_card_audit_one(self):
+        """One bucket, distinct prefix. The card-audit bucket is object-locked
+        with 7-year retention because a credential photo is evidence; a selfie
+        is a spot-check aid and must not be written under a retention lock."""
+        _, _, calls = self._post(lambda b, k, c: "https://cdn.example/x")
+        key = calls[0][1]
+        self.assertTrue(key.startswith("worker-selfies/"))
+        self.assertNotIn("card-audit", key)
+        self.assertNotIn("card_audit", key)
+
+    # ── every failure records NOTHING (Q1) ──────────────────────────────────
+
+    def _assert_no_pointer_but_flagged(self, worker_doc, why):
+        """NO POINTER, and the event recorded.
+
+        The two halves are different claims and both are asserted: a key or url
+        would assert an object that is not there (forbidden, including `""`),
+        while the boolean asserts only that an upload was attempted and did not
+        land — which is true and is about the event, not the image.
+        """
+        for field in ("selfie_r2_key", "selfie_r2_url"):
+            self.assertNotIn(field, worker_doc,
+                             f"{why}: {field} must be ABSENT, not empty")
+        self.assertIs(worker_doc.get("selfie_upload_failed"), True,
+                      f"{why}: the attempt is recorded")
+
+    def test_a_raising_upload_does_not_fail_the_checkin_and_records_nothing(self):
+        def _boom(b, k, c):
+            raise RuntimeError("R2 is down")
+
+        resp, worker_doc, calls = self._post(_boom)
+
+        # THE GATE HOLDS. A man at the turnstile is not turned away because
+        # object storage is unreachable.
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json().get("success"))
+        self.assertEqual(len(calls), 1)
+
+        self._assert_no_pointer_but_flagged(worker_doc, "raising upload")
+        # And the selfie is NOT lost: the inline copy is what makes silence safe.
+        self.assertEqual(worker_doc.get("selfie_image"), self._SELFIE)
+
+    def test_r2_unconfigured_records_nothing(self):
+        """_upload_to_r2 returns "" when R2 is not set up. That is not an
+        exception and is easy to read as success. It is not one, and `""` must
+        never be stored: an empty string is a value."""
+        resp, worker_doc, calls = self._post(lambda b, k, c: "")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(calls), 1)
+        self._assert_no_pointer_but_flagged(worker_doc, "unconfigured R2")
+        self.assertEqual(worker_doc.get("selfie_image"), self._SELFIE)
+
+    def test_undecodable_payload_is_never_uploaded(self):
+        junk = "data:image/jpeg;base64,"
+        resp, worker_doc, calls = self._post(
+            lambda b, k, c: "https://cdn.example/x", body={"selfie_image": junk})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(calls, [], "junk is not handed to R2 at all")
+        self._assert_no_pointer_but_flagged(worker_doc, "undecodable payload")
+
+    # ── the two absences stay distinguishable, WITHOUT a sentinel ───────────
+
+    def test_the_five_states_are_all_distinguishable(self):
+        """THE WHOLE JUSTIFICATION FOR THE BOOLEAN, as one table.
+
+        Four states were already distinguishable from stored data. The fifth
+        collapsed into "no selfie taken" with nothing to tell them apart, and a
+        pointer could not be used to fix it because a pointer to a missing
+        object is a claim the app cannot support. A boolean recording the EVENT
+        can, because it says an upload was attempted and did not land rather
+        than saying a photo is somewhere.
+
+        Note the redundancy while Q2 holds: `selfie_image` currently separates
+        4 from 5 on its own. It stops doing so when the strip PR lands, which
+        is exactly why the flag is written now.
+        """
+        seen = {}
+
+        # 1. declined
+        body = _body(); body.pop("selfie_image", None)
+        _, seen["declined"], _ = self._post(lambda b, k, c: "", body=body)
+        # 2. stored
+        _, seen["stored"], _ = self._post(lambda b, k, c: "https://cdn.example/" + k)
+        # 3. R2 unconfigured
+        _, seen["unconfigured"], _ = self._post(lambda b, k, c: "")
+        # 4. upload raised
+        def _boom(b, k, c):
+            raise RuntimeError("down")
+        _, seen["raised"], _ = self._post(_boom)
+        # 5. payload junk
+        _, seen["junk"], _ = self._post(lambda b, k, c: "https://cdn.example/x",
+                                        body={"selfie_image": "data:image/jpeg;base64,"})
+
+        def shape(d):
+            return (
+                bool(d.get("selfie_r2_key")),
+                bool(d.get("selfie_upload_failed")),
+                bool(d.get("selfie_image")),
+            )
+
+        self.assertEqual(shape(seen["declined"]), (False, False, False),
+                         "declined: nothing at all")
+        self.assertEqual(shape(seen["stored"]), (True, False, True),
+                         "stored: a real key, no failure flag")
+        for s_ in ("unconfigured", "raised", "junk"):
+            self.assertEqual(shape(seen[s_])[:2], (False, True),
+                             f"{s_}: no pointer, attempt recorded")
+
+        # AND THE ONE THAT MATTERS: declined and a failed upload are no longer
+        # the same row, by the flag alone — which is what survives the strip.
+        self.assertNotEqual(
+            (shape(seen["declined"])[0], shape(seen["declined"])[1]),
+            (shape(seen["unconfigured"])[0], shape(seen["unconfigured"])[1]),
+            "declined vs upload-failed must differ WITHOUT relying on the base64")
 
     def test_checkin_succeeds_without_selfie(self):
+        body = _body()
+        body.pop("selfie_image", None)
+        resp, worker_doc, calls = self._post(
+            lambda b, k, c: "https://cdn.example/x", body=body)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json().get("success"))
+        self.assertEqual(calls, [], "nothing offered, so nothing uploaded")
+        self.assertIsNone(worker_doc.get("selfie_image"))
+        # NOTHING OFFERED IS NOT A FAILURE. The flag records an attempt that did
+        # not land; a worker who declined made no attempt, so the field is
+        # absent. This is the pair that makes the flag mean something.
+        for field in ("selfie_r2_key", "selfie_r2_url", "selfie_upload_failed"):
+            self.assertNotIn(field, worker_doc, f"declined: {field} must be ABSENT")
+
+    def test_a_returning_worker_with_no_selfie_gets_BOTH_copies(self):
+        """THE RETURNING PATH IS A SECOND WRITE SITE, and it was uncovered.
+
+        A mutation that stripped the inline copy here survived the first run:
+        the only existing-worker test covered a worker who ALREADY had a selfie,
+        so nothing exercised the branch that actually writes one. Q2 applies to
+        both write sites or to neither.
+        """
         db = _make_db()
+        db.workers.set_find_one({
+            "_id": "worker_existing",
+            "name": "Jane Worker",
+            "phone": "5551234567",
+            # no selfie of either kind
+        })
+        calls = []
+
+        def _fake_upload(file_bytes, r2_key, content_type="application/octet-stream"):
+            calls.append((file_bytes, r2_key, content_type))
+            return "https://cdn.example/" + r2_key
+
+        with patch.object(server, "db", db),              patch.object(server, "_upload_to_r2", _fake_upload),              patch.object(
+                 server._notifications_inbox, "dispatch_notification",
+                 new_callable=AsyncMock,
+             ):
+            resp = _client().post(
+                "/api/checkin/register-and-checkin",
+                json=_body(selfie_image=self._SELFIE),
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(calls), 1, "the selfie IS uploaded for a worker who has none")
+        self.assertEqual(calls[0][1], "worker-selfies/worker_existing/selfie.jpg")
+
+        written = {}
+        for _q, u in db.workers.updated:
+            written.update(u.get("$set", {}))
+        self.assertEqual(written.get("selfie_image"), self._SELFIE,
+                         "Q2: the inline copy is written on the returning path too")
+        self.assertEqual(written.get("selfie_r2_key"),
+                         "worker-selfies/worker_existing/selfie.jpg")
+
+    def test_a_returning_worker_records_nothing_when_the_upload_fails(self):
+        """Q1 on the returning path: inline copy yes, R2 fields absent."""
+        db = _make_db()
+        db.workers.set_find_one({
+            "_id": "worker_existing", "name": "Jane Worker", "phone": "5551234567",
+        })
+        with patch.object(server, "db", db),              patch.object(server, "_upload_to_r2", lambda *a, **k: ""),              patch.object(
+                 server._notifications_inbox, "dispatch_notification",
+                 new_callable=AsyncMock,
+             ):
+            resp = _client().post(
+                "/api/checkin/register-and-checkin",
+                json=_body(selfie_image=self._SELFIE),
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        written = {}
+        for _q, u in db.workers.updated:
+            written.update(u.get("$set", {}))
+        self.assertEqual(written.get("selfie_image"), self._SELFIE)
+        for field in ("selfie_r2_key", "selfie_r2_url"):
+            self.assertNotIn(field, written, f"{field} must be ABSENT on failure")
+        self.assertIs(written.get("selfie_upload_failed"), True,
+                      "the returning path records the attempt too")
+
+    def test_existing_inline_base64_is_left_alone(self):
+        """NOT BACKFILLED, by ruling. A worker whose row already carries the old
+        inline copy keeps it and is not re-uploaded."""
+        db = _make_db()
+        db.workers.set_find_one({
+            "_id": "worker_existing",
+            "name": "Jane Worker",
+            "phone": "5551234567",
+            "selfie_image": "data:image/jpeg;base64,OLDINLINE",
+        })
+        calls = []
+
+        def _fake_upload(*a, **k):
+            calls.append(a)
+            return "https://cdn.example/x"
+
         with patch.object(server, "db", db), \
+             patch.object(server, "_upload_to_r2", _fake_upload), \
              patch.object(
                  server._notifications_inbox, "dispatch_notification",
                  new_callable=AsyncMock,
              ):
-            body = _body()
-            body.pop("selfie_image", None)  # no selfie at all
             resp = _client().post(
-                "/api/checkin/register-and-checkin", json=body,
+                "/api/checkin/register-and-checkin",
+                json=_body(selfie_image=self._SELFIE),
             )
         self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertTrue(resp.json().get("success"))
-        self.assertEqual(len(db.workers.inserted), 1)
-        self.assertIsNone(db.workers.inserted[0].get("selfie_image"))
+        self.assertEqual(calls, [], "an existing inline selfie is not re-uploaded")
+        self.assertTrue(db.workers.updated, "the returning-worker path did update the row")
+        for _q, u in db.workers.updated:
+            written = u.get("$set", {})
+            for field in ("selfie_image", "selfie_r2_key", "selfie_r2_url"):
+                self.assertNotIn(
+                    field, written,
+                    field + " must not be written over an existing inline selfie")
 
 
 class OcrCorrectionFlowThroughTest(unittest.TestCase):
@@ -336,7 +608,9 @@ class OcrCorrectionFlowThroughTest(unittest.TestCase):
                     osha_data={
                         "sst_number": "CORRECTED99",
                         "card_type": "SST",
-                        "card_class": "LIMITED",
+                        # WORKER, not LIMITED — "Limited" ceased to be a valid SST card in
+                        # August 2020 and is now treated as a dead scheme, not a class.
+                        "card_class": "WORKER",
                         "expiration": "01/01/2030",
                     },
                 ),

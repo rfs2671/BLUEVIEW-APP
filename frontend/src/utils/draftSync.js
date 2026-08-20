@@ -162,6 +162,20 @@ export async function clearFinalizeError(logId) {
   } catch (_e) { /* non-fatal */ }
 }
 
+/**
+ * Take down the ON THIS DEVICE ONLY banner once the push has landed.
+ *
+ * BOTH HANDLES, and that is the point. The editor records the banner against
+ * `existingLogId || draftKey`, so an offline CREATE — the case that most needs
+ * the banner — is recorded against the KEY, because no server id existed yet.
+ * Clearing by id alone would leave that one up forever, and a banner that
+ * cannot come down is how a CP learns to read past all of them.
+ */
+async function clearUnsyncedBanner(key, logId) {
+  await clearFinalizeError(key);
+  if (logId) await clearFinalizeError(logId);
+}
+
 async function pushOne(key) {
   const parsed = parseDraftKey(key);
   if (!parsed) return { key, ok: false, reason: 'unparseable-key' };
@@ -321,6 +335,7 @@ async function pushOne(key) {
         return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: draft.backend_id };
       }
       if (!photosStillPending) await clearPending(key);
+      await clearUnsyncedBanner(key, draft.backend_id);
       return { key, ok: true, mode: 'update', photosPending: photosStillPending };
     }
     const created = await logbooksAPI.create({
@@ -336,6 +351,7 @@ async function pushOne(key) {
       return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: newId };
     }
     if (!photosStillPending) await clearPending(key);
+    await clearUnsyncedBanner(key, newId);
     return { key, ok: true, mode: 'create', photosPending: photosStillPending };
   } catch (e) {
     // Still offline, or the server REFUSED. Those are not the same thing and

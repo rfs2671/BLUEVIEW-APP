@@ -94,6 +94,10 @@ export default function ConcreteOperationsLog() {
   const [signing, setSigning] = useState(false);
   const [step, setStep] = useState(1);
   const [locked, setLocked] = useState(false);
+  // The last autosave did not land. Sticky: it clears only when a later
+  // write succeeds, never on the next keystroke, because a warning that
+  // decays is one he can miss by typing.
+  const [autosaveFailed, setAutosaveFailed] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
   const [details, setDetails] = useState(EMPTY_DETAILS);
   const [slumpTests, setSlumpTests] = useState([EMPTY_SLUMP_TEST()]);
@@ -132,11 +136,23 @@ export default function ConcreteOperationsLog() {
     if (loading || locked) return undefined;
     const h = setTimeout(() => {
       const b = bodyRef.current;
+      // BOTH FAILURE MODES, because both mean the same thing: the draft
+      // was not written. writeDraft returns false for a refused write and
+      // this call used to discard it; a throw would have been swallowed by
+      // the same `.catch(() => {})`. Handling one and not the other leaves
+      // exactly the half nobody exercises.
+      //
+      // NOT A TOAST. A CP saving every few seconds does not need a message
+      // each time, and one that fires constantly is one he stops reading.
+      // This drives the SUBMIT GATE instead — he is told once, at the
+      // moment before he signs, which is the last moment it can still matter.
       writeDraft(_key, {
         data: draftBody(b.details, b.slumpTests, b.formworkChecklist),
         cp_signature: cpSignature,
         cp_name: cpName,
-      }).catch(() => {});
+      })
+        .then((_ok) => setAutosaveFailed(!_ok))
+        .catch(() => setAutosaveFailed(true));
     }, 800);
     return () => clearTimeout(h);
   }, [loading, locked, _key, details, slumpTests, formworkChecklist, cpSignature, cpName]);
@@ -145,12 +161,13 @@ export default function ConcreteOperationsLog() {
     if (locked) return;
     try {
       const b = bodyRef.current;
-      await writeDraft(_key, {
+      const _ok = await writeDraft(_key, {
         data: draftBody(b.details, b.slumpTests, b.formworkChecklist),
         cp_signature: cpSignature,
         cp_name: cpName,
       });
-    } catch (_e) { /* best-effort; the next change retries */ }
+      setAutosaveFailed(!_ok);
+    } catch (_e) { setAutosaveFailed(true); }
   }, [locked, _key, cpSignature, cpName]);
 
   const applyLoaded = useCallback((d) => {
@@ -269,9 +286,31 @@ export default function ConcreteOperationsLog() {
     }
     const data = draftBody(b.details, filed, b.formworkChecklist);
 
-    await writeDraft(_key, {
-      data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-    });
+    // THE LOCAL SAVE IS THE OFFLINE RECORD, so its result is not discardable.
+    // writeDraft answers with a BOOLEAN and this call used to drop it on the
+    // floor; the try below covers a throw, because a caller that handles one
+    // failure mode and not the other has fixed half of this.
+    //
+    // When it fails, what the CP has just signed exists only in React state
+    // — and the deferred branches below would still queue the
+    // key and report the log as filed, so the drain later reads a stale
+    // autosave (unsigned content, filed under this key) or finds nothing and
+    // clears the key as `no-draft`. Carried down to the branches that promise
+    // a later sync, because that promise is the thing it invalidates.
+    let localSaved = false;
+    try {
+      localSaved = await writeDraft(_key, {
+        data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+      });
+    } catch (_e) {
+      // A THROW IS A FALSE. writeDraft catches its own storage errors today,
+      // so this is unreachable from that function as written — and that is
+      // exactly why it is here. The next person to make it throw will not
+      // come back and audit fourteen call sites, and the branch they would
+      // have needed is the one nobody would have tested.
+      localSaved = false;
+    }
+    setAutosaveFailed(!localSaved);
 
     let created = null;
     let savedId = existingLogId;
@@ -290,6 +329,10 @@ export default function ConcreteOperationsLog() {
       }
       if (savedId) await setDraftBackendId(_key, savedId);
       await clearPending(_key);
+      // BOTH HANDLES. A banner raised while offline was recorded against
+      // the DRAFT KEY, because there was no server id yet — clearing only
+      // by savedId left it up permanently.
+      await clearFinalizeError(_key);
       if (savedId) await clearFinalizeError(savedId);
     } catch (pushErr) {
       // REFUSAL IS NOT OFFLINE. concrete_operations is an IMMEDIATE type, so a
@@ -311,12 +354,54 @@ export default function ConcreteOperationsLog() {
         // 5xx — the server FAILED rather than judged. Retryable, and it must
         // not be announced as filed.
         console.warn('Concrete log push FAILED server-side:', status || pushErr?.message);
-        await markPending(_key);
-        toast.error(tFinalize('errorTitle'), gateCopy(null));
+        // Queue only a key whose draft actually holds this content — see the
+        // localSaved note at the save above. A key queued over a stale draft
+        // is worse than no retry: the drain would file the stale content.
+        if (localSaved) await markPending(_key);
+        // A BANNER, NOT ONLY A TOAST. He may have walked away by the time
+        // this resolves. Recorded against the same handle the drain's
+        // refusals use, so LogbookLockBar renders it on his next visit to
+        // this exact log.
+        // ONE OF THE TWO ALWAYS FIRES. A 5xx is the push not landing, which is
+        // the same condition as offline: the work is on this device and not on
+        // the server. The error toast says so and then leaves. Recording it
+        // means the two reasons are exhaustive on a failed push — either the
+        // device does not hold it, or the server does not.
+        if (!localSaved) {
+          await recordFinalizeError(
+            existingLogId || _key, 'LOCAL_SAVE_FAILED', _key, 'local');
+        } else {
+          await recordFinalizeError(
+            existingLogId || _key, 'NOT_ON_SERVER', _key, 'unsynced');
+        }
+        toast.error(
+          tFinalize('errorTitle'),
+          localSaved ? gateCopy(null) : tFinalize('localSaveFailed'),
+        );
+        return undefined;
+      }
+      // NOTHING TO DEFER TO. Offline is the one failing path that still reports
+      // SUCCESS — the log is announced as filed and, for an immediate type,
+      // frozen — and it does so on the strength of a local draft the drain will
+      // send later. With no such draft there is no record anywhere, so the key
+      // is not queued and nothing is announced.
+      if (!localSaved) {
+        console.warn('Concrete log push deferred but the LOCAL SAVE FAILED; not queued.');
+        await recordFinalizeError(
+          existingLogId || _key, 'LOCAL_SAVE_FAILED', _key, 'local');
+        toast.error(tFinalize('localSaveFailedTitle'), tFinalize('localSaveFailed'));
         return undefined;
       }
       await markPending(_key);
       console.warn('Concrete log push deferred (will sync on reconnect):', pushErr?.message);
+      // ON THIS DEVICE ONLY — the other half of the same banner. The local
+      // write landed, so this log IS safe here and IS queued; what is not true
+      // is that anyone else can see it. He is about to attest to a legal
+      // record, and a toast saying "will sync" is gone before he has
+      // finished reading it, so this goes up durably and comes down when the
+      // drain succeeds (clearUnsyncedBanner in draftSync).
+      await recordFinalizeError(
+        existingLogId || _key, 'NOT_ON_SERVER', _key, 'unsynced');
     }
 
     // Guarded: a CP-PROFILE save failure must never report a failure on a log
@@ -643,6 +728,7 @@ export default function ConcreteOperationsLog() {
       draftKey={_key}
       onFinalized={() => setLocked(true)}
       onAmended={fetchData}
+      submitWarning={autosaveFailed ? tFinalize('autosaveFailedWarning') : ''}
       autosaveNote={t('savedAutomatically')}
     />
   );

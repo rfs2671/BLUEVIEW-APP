@@ -166,7 +166,10 @@ def _body(**overrides):
         # card_class now supplied by the OCR (see the capture-integrity fix):
         # a legible class is required for a 'valid' verdict.
         "osha_data": {"sst_number": "SST12345678", "card_type": "SST",
-                      "card_class": "LIMITED", "expiration": "01/01/2030"},
+                      # WORKER, not LIMITED — "Limited" was the 30-hour transitional
+                      # SST card and ceased to be valid in August 2020. It is now a
+                      # dead scheme, so it can no longer stand in for "a valid card".
+                      "card_class": "WORKER", "expiration": "01/01/2030"},
         "osha_card_image": "data:image/jpeg;base64,CARDIMG",
     }
     body.update(overrides)
@@ -297,8 +300,26 @@ class CertificationsPersistenceTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         # No cert-rewrite needed => the cert update_one should not have fired.
         self.assertIsNone(db.workers.last_set("certifications"))
-        # And the snapshot still reads the existing SST expiration.
-        self.assertEqual(db.checkins.inserted[0]["sst_status"], "valid")
+        # AND THE STORED CARD IS A DEAD SCHEME, so the snapshot says so.
+        #
+        # THIS IS A BEHAVIOUR CHANGE ON HISTORICAL DATA, deliberately. The row
+        # is a stored SST_LIMITED with a 2030 expiry, and it used to read
+        # "valid". "Limited" was the 30-hour transitional card and ceased to be
+        # valid in AUGUST 2020 — a future date printed on one does not revive
+        # it, so a worker carrying one has been reading as valid on a compliance
+        # record while holding a card that is not.
+        #
+        # Unlike `class_source` (an app-internal provenance idea, where absence
+        # means "written before we tracked it"), this is a fact about the world:
+        # the card is invalid regardless of when the row was written. So the
+        # legacy-rows-keep-their-verdict rule does not apply to it.
+        #
+        # OPEN, and not decided here: "unknown" or "expired"? Expired is the
+        # more literal reading and would route these into the existing
+        # expired-SST alert path. "unknown" is the conservative choice — it
+        # flags for review without firing alert machinery at every historical
+        # Limited holder at once. Worth an operator ruling before any backfill.
+        self.assertEqual(db.checkins.inserted[0]["sst_status"], "unknown")
 
 
 # ── PART 3: checkin.html OCR retake invariants ────────────────────────────
