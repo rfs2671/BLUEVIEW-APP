@@ -239,6 +239,7 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
 
   const calls = {
     toasts: [], finalized: [], cleared: [], recorded: [], locked: [], back: 0, warns: [], pending: [],
+    autosaveFailed: [],
   };
   const env = {
     saving: false,
@@ -260,13 +261,24 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     // Spied but NOT stubbed: the real draftSync functions run, against the real
     // store, so what the screen writes is what LogbookLockBar will later read.
     clearFinalizeError: async (id) => { calls.cleared.push(id); return S.clearFinalizeError(id); },
-    recordFinalizeError: async (id, code, k) => {
-      calls.recorded.push({ id, code, key: k });
-      return S.recordFinalizeError(id, code, k);
+    // `source` is the fourth argument and it is the whole point now: the
+    // editor records on the OFFLINE path as well, and what keeps that from
+    // claiming a refusal that never happened is the source/code pair. A stub
+    // that dropped it would make every assertion below unable to tell the two
+    // apart.
+    recordFinalizeError: async (id, code, k, source) => {
+      calls.recorded.push({ id, code, key: k, source });
+      return S.recordFinalizeError(id, code, k, source);
     },
     finalizeErrorCode,
     isOfflineError,
     setLocked: (v) => { calls.locked.push(v); },
+    // persistAndPush now also reports whether the LOCAL save landed, so the
+    // submit gate can warn before the next signature. Stubbed rather than
+    // ignored: an absent setter is a ReferenceError inside the function under
+    // test, the outer catch swallows it into a generic toast, and every
+    // assertion below then measures the harness instead of the screen.
+    setAutosaveFailed: (v) => { calls.autosaveFailed.push(v); },
     router: { back: () => { calls.back += 1; } },
     // .error too: handleSubmitAndSign's outer catch uses it, and a console
     // stub missing a method turns a real assertion into a TypeError.
@@ -384,13 +396,27 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
  * sides agree about the key and the record shape — not that they each match a
  * literal copied into this file.
  */
+// SOURCE IS OBSERVED NOW, not just the code. The bar picks between four
+// sentences on `refusedSource`, and the offline case has to land on its own
+// one rather than on the two that promise a retry or promise the work is
+// safely on the device.
+//
+// `setRefusedSource` was NOT being passed before. The bar's effect calls it
+// right after setRefusedCode, so it threw a ReferenceError straight into the
+// effect's own `.catch(() => {})` — invisibly, and only after the code had
+// already been captured. Every assertion still passed. Passing it makes the
+// harness run the effect the way the app runs it.
 async function bannerFor(S, logId) {
   let refusedCode = 'UNSET';
+  let refusedSource = 'UNSET';
   // eslint-disable-next-line no-new-func
-  await new Function('logId', 'readFinalizeError', 'setRefusedCode',
-    `return (async () => ${barEffectSrc})();`)(logId, S.readFinalizeError, (v) => { refusedCode = v; });
+  await new Function('logId', 'readFinalizeError', 'setRefusedCode', 'setRefusedSource',
+    `return (async () => ${barEffectSrc})();`)(
+    logId, S.readFinalizeError,
+    (v) => { refusedCode = v; }, (v) => { refusedSource = v; },
+  );
   await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-  return { refusedCode, shown: refusedCode !== undefined };
+  return { refusedCode, refusedSource, shown: refusedCode !== undefined };
 }
 
 const GENERIC = { en: I.translate('finalize', 'genericError', 'en'), es: I.translate('finalize', 'genericError', 'es') };
@@ -516,9 +542,28 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
       'offline: the draft is NOT frozen locally — it has to stay writable, '
       + 'because the rest of the day still has to go into it');
 
-    ok(calls.recorded.length === 0, 'offline: nothing is recorded — the server never refused anything');
+    // CHANGED BY RULING, 2026-08-19. This used to assert that NOTHING is
+    // recorded offline, and its reason was sound: the server never refused
+    // anything, and claiming a refusal that did not happen is its own kind of
+    // lie. What changed is not that reason — it is that silence was the wrong
+    // way to honour it. He is signing a legal record, and a phone holding data
+    // the server does not is exactly what he needs to know before he attests.
+    //
+    // So the protection moves from "nothing is recorded" to "nothing claims a
+    // REFUSAL": one record, its own code, its own source, its own sentence.
+    ok(calls.recorded.length === 1,
+      'offline: the unsynced state IS recorded — he is told before he signs again');
+    ok(calls.recorded[0].code === 'NOT_ON_SERVER',
+      'offline: under its OWN code, never a finalize/refusal code');
+    ok(calls.recorded[0].source === 'unsynced',
+      'offline: and its own source, so the bar can pick the right sentence');
     const banner = await bannerFor(S, 'log123');
-    ok(!banner.shown, 'offline: and no "NOT LOCKED ON THE SERVER" banner is raised');
+    ok(banner.shown, 'offline: a banner IS raised');
+    ok(banner.refusedSource === 'unsynced',
+      'offline: and the bar reads it back as the UNSYNCED case, so it renders '
+      + 'ON THIS DEVICE ONLY rather than NOT LOCKED ON THE SERVER');
+    ok(banner.refusedCode === 'NOT_ON_SERVER',
+      'offline: with the unsynced code, never a refusal code');
   }
 
   // ── 3b. SIGN ONCE, FREEZE AT END OF DAY — the contract itself ─────────────
@@ -583,12 +628,23 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     ok(esErr && esErr.body === GENERIC.es && esErr.body === GENERIC.en,
       `${status}: and an es-locale CP gets the same English generic (EN-only)`);
 
-    // NOT recorded: the banner's own copy says the log is frozen on this device
-    // and queued. On a 5xx it is neither, so raising it would be a third lie.
-    ok(calls.recorded.length === 0,
-      `${status}: no refusal is recorded — the server named no condition to fix`);
-    ok(!(await bannerFor(S, 'log123')).shown,
-      `${status}: so no "NOT LOCKED ON THE SERVER" banner, whose copy would not be true here`);
+    // CHANGED BY RULING, 2026-08-19. This asserted that NOTHING is recorded on
+    // a 5xx, and its reason was about the COPY: "the banner's own copy says the
+    // log is frozen on this device and queued. On a 5xx it is neither."
+    //
+    // Half of that objection was already wrong — a 5xx with a good local write
+    // DOES queue the key (markPending runs) — and the other half is answered by
+    // there now being a second sentence. `notOnServerHint` says saved here and
+    // queued to upload, which is exactly true on a 5xx. What must still never
+    // happen is the REFUSAL wording, because the server named no condition.
+    ok(calls.recorded.length === 1,
+      `${status}: the unsynced state IS recorded — the log is not on the server`);
+    ok(calls.recorded[0].code === 'NOT_ON_SERVER'
+      && calls.recorded[0].source === 'unsynced',
+      `${status}: under the unsynced code and source, never a refusal`);
+    const b5 = await bannerFor(S, 'log123');
+    ok(b5.shown && b5.refusedSource === 'unsynced',
+      `${status}: so the bar renders ON THIS DEVICE ONLY, not "NOT LOCKED ON THE SERVER"`);
   }
 
   // ── 4b. THE THREE BRANCHES ARE GENUINELY DISTINCT ─────────────────────────
@@ -609,8 +665,19 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
       && !five.toasts.some((t) => t.kind === 'success')
       && !four.toasts.some((t) => t.kind === 'success'),
       '3-way: ONLY a genuine offline claims success');
-    ok(off.recorded.length === 0 && five.recorded.length === 0 && four.recorded.length === 1,
-      '3-way: ONLY a refusal — a condition the server named — is recorded for the banner');
+    // ALL THREE record now, and the CODES are what keep them distinct. The
+    // claim being protected is unchanged: only the 4xx may say the server
+    // refused. The other two say the log has not reached it, which is true of
+    // both and is a different sentence.
+    ok(off.recorded.length === 1 && five.recorded.length === 1 && four.recorded.length === 1,
+      '3-way: every failed push leaves a durable trace — none of them is silent');
+    ok(off.recorded[0].code === 'NOT_ON_SERVER' && five.recorded[0].code === 'NOT_ON_SERVER',
+      '3-way: offline and 5xx record NOT_ON_SERVER — the push did not land');
+    ok(four.recorded[0].code !== 'NOT_ON_SERVER',
+      '3-way: ONLY the 4xx records the condition the SERVER named');
+    ok(off.recorded[0].source === 'unsynced' && five.recorded[0].source === 'unsynced'
+      && four.recorded[0].source === 'editor',
+      '3-way: and the sources differ, so the bar never calls a dead zone a refusal');
     const b5 = (five.toasts.find((t) => t.kind === 'error') || {}).body;
     const b4 = (four.toasts.find((t) => t.kind === 'error') || {}).body;
     ok(!!b5 && !!b4 && b5 !== b4,
@@ -663,8 +730,16 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     const { calls } = await run({ savedId: null, pushError: offline() });
     ok(calls.finalized.length === 0 && calls.back === 1,
       'no server id: nothing is frozen, and he is still returned to the list');
-    ok(calls.recorded.length === 0,
-      'no server id: nothing is recorded — the server never refused anything');
+    // RECORDED AGAINST THE DRAFT KEY, because there is no server id to hang it
+    // on — and this is the case that most needs the banner: the log exists
+    // NOWHERE but this phone. It is also the case a clear-by-id-only would have
+    // left up forever, which is why draftSync clears by key as well.
+    ok(calls.recorded.length === 1,
+      'no server id: the unsynced state is recorded');
+    ok(calls.recorded[0].code === 'NOT_ON_SERVER',
+      'no server id: under the unsynced code, not a refusal code');
+    ok(calls.recorded[0].id === calls.recorded[0].key,
+      'no server id: recorded against the DRAFT KEY, the only handle there is');
   }
 
   // ── 7. A save that FAILED still aborts before anything is frozen ──────────

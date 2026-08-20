@@ -161,6 +161,21 @@ export async function readDraft(key) {
  * are preserved from the existing draft — so a per-field autosave (which omits
  * `status`) never downgrades a 'submitted' log back to 'draft', and a
  * server-id bind never wipes the payload.
+ *
+ * RETURNS FALSE; NEVER THROWS. Two different things are behind that false and
+ * the difference matters to whoever reads the log:
+ *
+ *   • the finalize lock refused a content edit. Not an error — a rule — so it
+ *     passes quietly.
+ *   • AsyncStorage refused: quota, a corrupt store, a value that would not
+ *     serialise. NOTHING WAS WRITTEN, and for a submit that means the content
+ *     just signed is in React state and nowhere else.
+ *
+ * The second used to be swallowed whole — `catch (_e) { return false; }` and not
+ * a word anywhere — so a device that had stopped storing drafts looked exactly
+ * like one that was working, on all 46 call sites at once. It is announced now.
+ * The RETURN VALUE is still the contract (the submit paths branch on it); this
+ * is so the failure can be recognised in a log, not inferred from its effects.
  */
 export async function writeDraft(key, patch) {
   try {
@@ -208,7 +223,8 @@ export async function writeDraft(key, patch) {
     };
     await AsyncStorage.setItem(key, JSON.stringify(merged));
     return true;
-  } catch (_e) {
+  } catch (e) {
+    console.warn('[logbookDrafts] writeDraft FAILED for', key, '—', e?.message || e);
     return false;
   }
 }

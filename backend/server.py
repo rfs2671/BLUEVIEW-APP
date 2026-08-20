@@ -160,6 +160,95 @@ def _logbook_photo_key_segment(value: str) -> str:
     return cleaned[:80] or "unknown"
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# THE CHECK-IN SELFIE
+#
+# It used to be written INLINE, as a base64 data URL, straight onto the workers
+# document. A ~1200px JPEG at q0.7 is on the order of 100-200KB of base64 per
+# worker, sitting in a document that is read on every roster render, every
+# staffing screen and every check-in lookup — none of which want it. This moves
+# the bytes to object storage and leaves a key behind.
+#
+# SAME BUCKET, DISTINCT PREFIX. Deliberately NOT the card-audit bucket: that one
+# is object-locked with 7-year retention because a credential photo is evidence
+# of what was presented at the gate. A selfie is not that. It exists for a later
+# human spot-check — no face match, no liveness, no gate — and putting it under a
+# retention lock would assert a purpose it does not have and cannot be undone.
+def _worker_selfie_r2_key(worker_id: str) -> str:
+    return f"worker-selfies/{_logbook_photo_key_segment(worker_id)}/selfie.jpg"
+
+
+def _decode_image_data_url(value: str) -> bytes:
+    """Bytes out of a `data:image/...;base64,...` URL, or b"" if it is not one."""
+    if not isinstance(value, str) or not value:
+        return b""
+    payload = value.split(",", 1)[1] if value.startswith("data:") and "," in value else value
+    try:
+        return base64.b64decode(payload, validate=False)
+    except Exception:
+        return b""
+
+
+async def _store_worker_selfie(worker_id: str, selfie_image: str) -> dict:
+    """Put a check-in selfie in R2 and return the fields to write on the worker.
+
+    A FAILED UPLOAD MUST NOT FAIL THE CHECK-IN. The selfie is optional at the
+    gate — checkin.html never blocks on it — so it cannot become the thing that
+    turns a man away because object storage is down, misconfigured, or slow. Every
+    failure path here returns instead of raising.
+
+    NO POINTER IS EVER INVENTED. On failure there is no key, no URL, and no empty
+    string. A URL that 404s is a claim this app cannot support, and `""` is a
+    VALUE — it reads as a fact about the selfie rather than as the absence of one.
+
+    WHAT IS RECORDED INSTEAD: `selfie_upload_failed: True`. This is not a
+    sentinel standing in for a photo; it is a boolean recording what happened.
+    The difference matters and is the reason it is here rather than not:
+
+      * a POINTER to a missing object asserts the object exists — forbidden;
+      * a BOOLEAN asserts only that an upload was attempted and did not land,
+        which is true, checkable, and about the event rather than the image.
+
+    WHY IT IS NEEDED EVEN THOUGH THE BASE64 IS STILL WRITTEN. Today the inline
+    copy does carry the distinction: `selfie_image` present + no `selfie_r2_key`
+    is "took one, upload failed", and neither is "declined". So while Q2 holds,
+    this flag is redundant. It stops being redundant the moment the strip PR
+    removes the inline copy — at which point those two rows become byte-identical
+    and the distinction is gone. Recording it NOW means the strip PR does not
+    have to reconstruct information it can no longer see. See
+    docs/design/d3-phone-wins-and-the-server-copy.md.
+
+    Returns {} when no selfie was offered. On any failure with a selfie offered,
+    returns {"selfie_upload_failed": True} and nothing else.
+    """
+    if not selfie_image:
+        return {}
+    raw = _decode_image_data_url(selfie_image)
+    if not raw:
+        logger.warning(
+            "[selfie] worker=%s: selfie payload was not decodable base64; not stored",
+            worker_id,
+        )
+        return {"selfie_upload_failed": True}
+    key = _worker_selfie_r2_key(worker_id)
+    try:
+        # to_thread: _upload_to_r2 is a blocking boto3 PUT, and this runs inside
+        # the request that the worker is standing at the turnstile waiting on.
+        url = await asyncio.to_thread(_upload_to_r2, raw, key, "image/jpeg")
+    except Exception as e:
+        logger.error("[selfie] worker=%s: R2 upload failed key=%s: %r", worker_id, key, e)
+        return {"selfie_upload_failed": True}
+    if not url:
+        # _upload_to_r2 returns "" when R2 is not configured at all. Not an
+        # error and not a crash — but nothing was stored, so the record says
+        # nothing. NOT `selfie_r2_url: ""`: an empty string is a value.
+        logger.warning("[selfie] worker=%s: R2 not configured; selfie not stored", worker_id)
+        return {"selfie_upload_failed": True}
+    # THE URL PROVES THE WRITE RETURNED, NOT THAT THE OBJECT IS READABLE. That is
+    # why the caller still stores the inline copy; see the note there.
+    return {"selfie_r2_key": key, "selfie_r2_url": url}
+
+
 def _logbook_capture_photo_r2_key(project_id: str, activity_id: str, photo_id: str) -> str:
     """logbook-photos/{project_id}/{activity_id}/{photo_id}.jpg
 
@@ -2032,6 +2121,191 @@ RECOGNIZED_SST_TYPES = SST_CLASS_TYPES | {SST_UNSPECIFIED}
 OSHA_TYPES = {"OSHA_10", "OSHA_30", "OSHA_UNSPECIFIED"}
 
 
+
+# ══ COLOUR-FIRST CARD CLASSIFICATION ════════════════════════════════════════
+#
+# WHY COLOUR LEADS, and it is not a preference — it is what the cards do:
+#
+#   * A 40-HOUR SST WORKER CARD CARRIES NO CLASS TEXT AT ALL. It is the most
+#     common card on a NYC site, and there is nothing on it for OCR to read.
+#     A text-led model cannot lead on a signal that is absent.
+#   * TEXT WASHES OFF worn cards; printed card stock does not change colour.
+#     So text degrades to null on exactly the cards that most need reading.
+#   * PURPLE CARDS READ AS REGULAR SST TODAY — confidently wrong on a
+#     compliance record, which is the defect this replaces.
+#
+# AND COLOUR STILL ONLY PROPOSES. The failure modes that remain are real: a
+# tinted or reflective sleeve, sodium-vapour or yellow site lighting, auto-HDR
+# shifting saturation, glare across half the card. A proposal is what those
+# make it. Nothing here promotes a colour to a confirmed class on its own, and
+# `_sst_cert_state` grants `valid` only when colour and text AGREE.
+SST_COLOR_WORKER = "BLUE"
+SST_COLOR_SUPERVISOR = "YELLOW"
+SST_COLOR_TEMPORARY = "RED"
+SST_COLOR_WORKER_WALLET = "PURPLE"
+
+# The map, from the operator and DOB sources. Values are the STORED types this
+# module already uses, so nothing downstream learns a new vocabulary.
+_CARD_COLOR_CLASS_MAP = {
+    # The 40-hour worker card. SST_FULL is the existing constant for it.
+    SST_COLOR_WORKER: "SST_FULL",
+    # 62-hour supervisor.
+    SST_COLOR_SUPERVISOR: "SST_SUPERVISOR",
+    # Issued on a 10-hour OSHA course and valid SIX MONTHS from issue, not five
+    # years. See SST_TEMPORARY_VALID_MONTHS — the plausibility ceiling is
+    # class-aware because of this row.
+    SST_COLOR_TEMPORARY: "SST_TEMPORARY",
+}
+
+# ── PURPLE IS NOT AN SST CARD ───────────────────────────────────────────────
+# A purple card is a WORKER WALLET. It is a different product, it is not an SST
+# credential of any class, and it must never be classified as one. Ruled: the
+# worker is told this is not an SST card and asked to scan his SST card.
+#
+# This is the ONE colour that does not propose a class. It refuses to, which is
+# a different and stronger act — mapping it to any SST_* value, including
+# SST_UNSPECIFIED, would assert that an SST card is present. `SST_UNSPECIFIED`
+# means "an SST card whose class we could not read"; a Worker Wallet is not an
+# SST card at all, and RECOGNIZED_SST_TYPES treats SST_UNSPECIFIED as satisfying
+# the OSHA baseline. So the wrong-card case gets its own answer.
+CARD_NOT_SST_WORKER_WALLET = "NOT_SST_WORKER_WALLET"
+
+# ── A DEAD CLASS, FOR THE RECORD ────────────────────────────────────────────
+# "Limited" SST was a 30-hour transitional card. It ceased to be valid in
+# AUGUST 2020. If one appears it is an INVALID card, not a class — so it is
+# recognised (a reader must be able to tell why it was refused) and refused.
+# SST_LIMITED stays in SST_CLASS_TYPES because historical rows carry it and the
+# gate must keep reading them; what changes is that a NEW read of one is flagged.
+SST_DEAD_CLASSES = {"SST_LIMITED"}
+
+# A temporary card lives SIX MONTHS from issue. The plausibility gate below uses
+# this instead of the 7-year ceiling once the class is known, because a misread
+# date four years out clears a 7-year ceiling silently and would read as valid
+# for years past the card's life.
+SST_TEMPORARY_VALID_MONTHS = 6
+
+
+def _normalise_card_color(raw) -> str:
+    """The reported colour, upper-cased, or "" when absent/unusable."""
+    return str(raw or "").strip().upper()
+
+
+def resolve_card_class(od: dict) -> dict:
+    """Colour-first class resolution. PURE — no I/O, so it is unit-testable.
+
+    Returns a dict:
+        sst_type       the stored type, or None when no SST cert should be made
+        class_source   "color_and_text" | "color_only" | "text_only"
+                       | "conflict" | None
+        review_reason  a machine code, or None
+        not_sst        CARD_NOT_SST_WORKER_WALLET when the card is not an SST
+                       card at all, else None
+        color          the colour actually used, or ""
+
+    THE ONE CONFIRMED STATE is "color_and_text": two independent signals
+    agreeing. Everything else needs a human, which is what makes this a
+    proposal. `class_source` is RETURNED AND STORED because a proposed class is
+    otherwise indistinguishable from a read one the moment it lands in Mongo —
+    the exact provenance failure `card_type` already has (see
+    docs/design/d6-where-card-type-comes-from.md); it is not repeated here.
+    """
+    color = _normalise_card_color(od.get("card_dominant_color"))
+    confidence = str(od.get("card_color_confidence") or "").strip().lower()
+    conditions = od.get("card_color_conditions") or []
+    if not isinstance(conditions, list):
+        conditions = []
+    # A colour reported under glare, a sleeve or a colour cast is not a colour
+    # to classify on. The model is asked for these precisely so this branch can
+    # exist rather than being inferred from a confidence number alone.
+    impaired = len(conditions) > 0
+    color_usable = bool(color) and confidence == "high" and not impaired
+
+    text_type = _map_sst_class(od.get("card_class"))
+    text_known = text_type in SST_CLASS_TYPES
+
+    # ── THE WRONG CARD, before any class question is asked ──────────────────
+    # Checked first and independently of confidence: "this is not an SST card"
+    # is a different claim from "this is an SST card of class X", and it is the
+    # claim a worker can act on at the gate.
+    if color == SST_COLOR_WORKER_WALLET:
+        return {
+            "sst_type": None,
+            "class_source": None,
+            "review_reason": "CARD_NOT_SST",
+            "not_sst": CARD_NOT_SST_WORKER_WALLET,
+            "color": color,
+        }
+
+    # ── A DEAD CLASS is refused, not classified ────────────────────────────
+    if text_known and text_type in SST_DEAD_CLASSES:
+        return {
+            "sst_type": text_type,
+            "class_source": "text_only",
+            "review_reason": "CLASS_EXPIRED_SCHEME",
+            "not_sst": None,
+            "color": color,
+        }
+
+    if not color_usable:
+        # Colour could not lead. Text may still corroborate nothing — on its own
+        # it is a proposal too, because the field facts show it can be
+        # confidently wrong (a purple card with SST wording) and absent on the
+        # commonest card.
+        if text_known:
+            # NO REVIEW REASON. An earlier version attached
+            # CLASS_FROM_TEXT_UNCONFIRMED here to justify forcing needs_review.
+            # Once the demotion was correctly scoped to the colour-derived
+            # sources, that flag stopped being forced — and a reason on a row
+            # that is NOT flagged is incoherent: it puts a complaint on a clean
+            # scan. `class_source` already records that this rested on one
+            # signal, which is what a reviewer needs; the reason field is for
+            # rows that are actually being surfaced.
+            return {"sst_type": text_type, "class_source": "text_only",
+                    "review_reason": None, "not_sst": None, "color": color}
+        return {"sst_type": SST_UNSPECIFIED, "class_source": None,
+                "review_reason": "CLASS_UNVERIFIED", "not_sst": None,
+                "color": color}
+
+    proposed = _CARD_COLOR_CLASS_MAP.get(color)
+    if not proposed:
+        # A usable colour that is not in the map. NOT a guess and not a
+        # fallback to text-wins: an unmapped colour is a card this app does not
+        # know, and saying so is the honest answer.
+        return {"sst_type": SST_UNSPECIFIED, "class_source": None,
+                "review_reason": "CLASS_UNVERIFIED", "not_sst": None,
+                "color": color}
+
+    if not text_known:
+        # THE 40-HOUR CARD. No class text exists to corroborate with, which is
+        # the normal case for the most common card — not a defect.
+        return {"sst_type": proposed, "class_source": "color_only",
+                "review_reason": "CLASS_FROM_COLOR_UNCONFIRMED",
+                "not_sst": None, "color": color}
+
+    if text_type == proposed:
+        # Two independent signals agreeing. The only confirmed state.
+        return {"sst_type": proposed, "class_source": "color_and_text",
+                "review_reason": None, "not_sst": None, "color": color}
+
+    # ── THEY DISAGREE. NEITHER WINS. ───────────────────────────────────────
+    # "Colour leads" governs which signal is trusted when the other is ABSENT.
+    # It does not settle a contradiction. Text can be confidently wrong (the
+    # purple case); colour can be wrong under a sleeve or a cast. Resolving in
+    # either direction would trade one confidently-wrong class for another,
+    # which the hard constraint forbids whichever signal produced it.
+    #
+    # And a disagreement is INFORMATION: two independent signals contradicting
+    # each other is the strongest evidence available that something is unusual
+    # about this card — a reissue, a lookalike, someone else's sleeve, a
+    # forgery. Resolving it silently destroys that signal.
+    #
+    # The type is SST_UNSPECIFIED, not either candidate. Both candidates are
+    # carried on the row for whoever resolves it.
+    return {"sst_type": SST_UNSPECIFIED, "class_source": "conflict",
+            "review_reason": "CLASS_CONFLICTED", "not_sst": None,
+            "color": color}
+
+
 def _map_sst_class(raw) -> str:
     """OCR card_class -> stored SST type. Illegible/unknown -> SST_UNSPECIFIED,
     which can never resolve to a valid credential."""
@@ -2040,7 +2314,13 @@ def _map_sst_class(raw) -> str:
         return "SST_SUPERVISOR"
     if "TEMP" in s:
         return "SST_TEMPORARY"
-    if "FULL" in s or "COMPLETE" in s:
+    # "WORKER" IS THE WORD ON THE CARD. The four tests here were FULL /
+    # COMPLETE / LIMIT / SUPERV, and the 40-hour credential is printed
+    # "Worker" — so a correctly-read worker card matched nothing and fell to
+    # SST_UNSPECIFIED, filling the review queue with cards that had been read
+    # perfectly. The taxonomy the mapper accepted and the taxonomy printed on
+    # the card were different sets.
+    if "FULL" in s or "COMPLETE" in s or "WORKER" in s:
         return "SST_FULL"
     if "LIMIT" in s:
         return "SST_LIMITED"
@@ -2079,7 +2359,31 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
         if exp <= now:
             return "expired"                   # definitive, regardless of class
         ctype = str(cert.get("type", ""))
-        return "valid" if ctype in SST_CLASS_TYPES else "unknown"
+        if ctype not in SST_CLASS_TYPES:
+            return "unknown"
+        # A DEAD SCHEME IS NOT VALID. "Limited" ceased to be a valid SST card in
+        # August 2020; a future expiry printed on one does not revive it.
+        if ctype in SST_DEAD_CLASSES:
+            return "unknown"
+        # COLOUR PROPOSES, NEVER ASSERTS — enforced here rather than merely
+        # documented. A class that ONLY COLOUR produced cannot make a credential
+        # valid; nor can a conflict, where two signals disagree and the photo
+        # has not settled which is right.
+        #
+        # SCOPED DELIBERATELY TO THE COLOUR-DERIVED SOURCES. An earlier version
+        # demoted everything except `color_and_text`, which swept up `text_only`
+        # — and until the client sends a colour, text_only is EVERY card. That
+        # turned "colour proposes" into "nothing is valid any more", flagged
+        # every worker on every site, and broke four existing tests that were
+        # right to break. Reading a class off the card was valid before this
+        # work and the ruling did not overturn it; what the ruling changed is
+        # that colour may not do the same on its own.
+        #
+        # `class_source` absent means the row predates this work entirely and
+        # keeps the old behaviour for the same reason.
+        if cert.get("class_source") in ("color_only", "conflict"):
+            return "unknown"
+        return "valid"
     return "unknown"                           # missing / suppressed / unparseable
 
 
@@ -2147,8 +2451,23 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
             })
 
     elif resolved_kind == "SST":
-        sst_type = _map_sst_class(card_class)
-        class_ok = sst_type in SST_CLASS_TYPES
+        # COLOUR-FIRST. resolve_card_class consults the reported card colour
+        # before the class text, because the 40-hour worker card carries no
+        # class text at all and text washes off worn cards. It still only
+        # PROPOSES: `class_source` records which signal produced the answer and
+        # nothing but colour-and-text agreement is treated as confirmed.
+        _res = resolve_card_class(od)
+        # THE WRONG CARD ENTIRELY. A purple card is a Worker Wallet, not an SST
+        # credential, so NO SST certification row is created for it — not even
+        # SST_UNSPECIFIED, which RECOGNIZED_SST_TYPES would let satisfy the OSHA
+        # baseline. The caller surfaces `not_sst` to the worker and asks him to
+        # scan his SST card.
+        if _res["not_sst"]:
+            return worker_certs, sst_expiration_unparseable
+        sst_type = _res["sst_type"]
+        class_source = _res["class_source"]
+        color_seen = _res["color"]
+        class_ok = sst_type in SST_CLASS_TYPES and sst_type not in SST_DEAD_CLASSES
         issue_dt = _parse_mdy(od.get("issued"))
         exp_dt = _parse_mdy(raw_expiry) if raw_expiry else None
 
@@ -2159,18 +2478,43 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
             suppressed = True
             reason = "EXPIRY_UNPARSEABLE"
         elif exp_dt is not None:
-            ceiling = now.replace(year=now.year + SST_EXPIRY_MAX_YEARS)
+            # THE CEILING IS CLASS-AWARE, because a TEMPORARY card lives SIX
+            # MONTHS from issue, not five years. Against the flat 7-year ceiling
+            # a misread date four years out cleared silently, and
+            # `_sst_cert_state` would then read the card as valid for years past
+            # its life. Once colour has proposed SST_TEMPORARY the app knows the
+            # real bound, so it uses it.
+            #
+            # Applied ONLY when the class is known to be temporary. An unknown
+            # class keeps the loose ceiling: tightening it on a card we cannot
+            # identify would suppress real expiries on ordinary 5-year cards.
+            if sst_type == "SST_TEMPORARY":
+                _base = issue_dt or now
+                ceiling = _base + timedelta(days=31 * SST_TEMPORARY_VALID_MONTHS)
+            else:
+                ceiling = now.replace(year=now.year + SST_EXPIRY_MAX_YEARS)
             if (issue_dt is not None and exp_dt <= issue_dt) or exp_dt > ceiling:
                 suppressed = True
                 reason = "EXPIRY_IMPLAUSIBLE"
         stored_exp = None if suppressed else exp_dt
+        # The resolver's own reason wins when the expiry gate had none: it is
+        # more specific (CLASS_CONFLICTED / CLASS_FROM_COLOR_UNCONFIRMED /
+        # CLASS_EXPIRED_SCHEME all say something CLASS_UNVERIFIED cannot).
+        if reason is None and _res["review_reason"]:
+            reason = _res["review_reason"]
         if not class_ok and reason is None:
             reason = "CLASS_UNVERIFIED"
 
         completeness = round(
             (int(name_ok) + int(number_ok) + int(class_ok) + int(bool(stored_exp))) / 4, 3
         )
+        # A COLOUR-DERIVED CLASS ALWAYS NEEDS A HUMAN. Same scoping as
+        # _sst_cert_state and for the same reason: forcing review on `text_only`
+        # too would put every card in the queue until the client ships colour,
+        # which is how a review queue becomes something nobody reads.
         needs_review = not (name_ok and number_ok and class_ok and bool(stored_exp))
+        if class_source in ("color_only", "conflict"):
+            needs_review = True
         card_no = osha_number or None
 
         # Prefer an exact card-number match (any state — a verified match is
@@ -2199,6 +2543,13 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
                 "review_reason": reason,
                 "expiration_raw_rejected": raw_expiry if suppressed else None,
                 "extraction_completeness": completeness,
+                # PROVENANCE. Which signal produced this class. Without it a
+                # proposed class is indistinguishable from a read one the moment
+                # it is stored — the failure `card_type` already has. Both the
+                # colour seen and the source are kept so a reviewer can see what
+                # the app was looking at.
+                "class_source": class_source,
+                "card_color_seen": color_seen or None,
             })
         elif existing_sst.get("verified"):
             pass  # admin-confirmed — a re-scan may never modify it.
@@ -10059,6 +10410,25 @@ async def upload_osha_card(file_data: dict, request: Request):
         "and no class word, set card_class to null\", "
         "\"issued\": \"issued date if visible\", "
         "\"expiration\": \"expiration date if visible\", "
+        # COLOUR IS ASKED FOR, AND THE MAP IS NOT IN THE PROMPT. No SST class
+        # names, no card-type names, no colour->class table: a mapping here
+        # would let the model work backwards (read a class, then report the
+        # colour that justifies it), it would be a rule no test can assert
+        # against, and it would make the model the thing that decides the
+        # class. The table lives in Python, which is what makes "colour
+        # proposes, never asserts" enforceable rather than aspirational.
+        "\"card_dominant_color\": \"the dominant background colour of the CARD "
+        "STOCK itself - not the lanyard, sleeve, hand, or background behind it. "
+        "One of: WHITE, BLUE, GREEN, PURPLE, RED, YELLOW, ORANGE, GREY, OTHER. "
+        "If the card is inside a tinted or reflective sleeve, if the lighting "
+        "has an obvious colour cast, if glare covers much of the card, or if "
+        "you are not confident, return null. Do NOT infer the colour from any "
+        "words printed on the card\", "
+        "\"card_color_confidence\": \"high, medium or low - how sure you are of "
+        "card_dominant_color given glare, shade, colour cast and sleeve. null "
+        "when card_dominant_color is null\", "
+        "\"card_color_conditions\": \"array of any of GLARE, SHADE, COLOR_CAST, "
+        "SLEEVE, PARTIAL_CARD that could be distorting the colour; [] if none\", "
         "\"box_2d\": [ymin, xmin, ymax, xmax]}\n"
         "If a field is not visible or you are not certain, set it to null — "
         "do NOT guess the class. 'box_2d' should be the normalized coordinates "
@@ -10114,6 +10484,9 @@ async def upload_osha_card(file_data: dict, request: Request):
             "sst_number": None,
             "card_type":  None,
             "card_class": None,
+            "card_dominant_color": None,
+            "card_color_confidence": None,
+            "card_color_conditions": [],
             "issued":     None,
             "expiration": None,
             "raw_text":   text,
@@ -10294,6 +10667,94 @@ def _assignment_is_inactive(row) -> bool:
     return _roster_key(row.get("status")) == "inactive"
 
 
+# ── THE TWO READERS ─────────────────────────────────────────────────────────
+#
+# One fact, three field names. `project.trade_assignments` and
+# worker_project_trades say `company`; `checkins` rows say `worker_company`;
+# `worker_enrollments` says `sub_name` (card_audit.py:278); and two report
+# paths also try `company_name`. Four spellings for "which sub does this man
+# work for".
+#
+# They MEET. checkins_today merges three passes that each read the company from
+# a different one of these, and the comment above _norm_key records what that
+# cost: a trailing or doubled space made the lowercased (name, company) pair
+# miss and emitted THE SAME MAN TWICE on a production pre-shift sheet — once
+# from the gate with his card id, once from legacy without one. The same comment
+# notes the pair "has now produced four separate defects on this project".
+#
+# WHAT THIS DOES AND DOES NOT FIX. It collapses the READ: one place that knows
+# how to get a company string out of a row, so the `or`-chain-then-strip is not
+# retyped at every site. It does NOT fix the identity problem — a single name
+# for a string-keyed identity is still a string-keyed identity. Keying that
+# merge on `worker_id` is the real fix and it is a separate pass; this is what
+# makes it expressible without a translation layer in the middle.
+#
+# SEMANTICS ARE PRESERVED EXACTLY, and the shape is chosen for that reason.
+# Every original site was `(a.get(x) or b.get(y) or "").strip()` — an `or` chain
+# FIRST, one strip at the END. So this tests each candidate for truthiness in
+# the caller's order and strips only the winner. A whitespace-only value is
+# truthy, wins, and strips to "" — exactly as before. Stripping each candidate
+# before testing it would let "  " fall through to the next one, which is
+# probably the better behaviour and is NOT this pass's decision to make.
+#
+# The candidates stay AT THE CALL SITE, in the caller's own priority order.
+# That is deliberate: the divergence is real and each reader's order is part of
+# its meaning, so the fix is to make the order visible on one line rather than
+# to average four orders into a hidden default.
+def _worker_company(*candidates) -> str:
+    """The company string from the first candidate that carries one.
+
+    Mirrors `(a or b or "").strip()` exactly: first TRUTHY candidate wins, and
+    only that one is stripped.
+    """
+    for v in candidates:
+        if v:
+            return str(v).strip()
+    return ""
+
+
+# ── ROSTER PRESENCE ─────────────────────────────────────────────────────────
+#
+# "Does this project have a roster?" decided the same way in one place. The
+# canonical rule is register_and_checkin's, because it is the one a man at the
+# turnstile is judged by: ACTIVE rows only (a soft-deleted sub must never be a
+# valid new selection) and normalised through _roster_key, so the strict match
+# and the frontend's rosterKey() cannot disagree about case or whitespace.
+#
+# ONE CONSUMER IS DELIBERATELY NOT ROUTED THROUGH THIS — assign_checkin_trade
+# (:12191). It reads the RAW array on purpose, inactive rows included, because a
+# CP correcting an old check-in must still be able to pick a sub that has since
+# been removed from the project. Its comment says so. It is left exactly as it
+# is: changing it is a UX decision about what a CP may select, which belongs
+# with the mandatory-trade gate and not in a reader cleanup.
+#
+# (Its comment also claims it "still filters through _active_assignments" while
+# the code below it does not, and it compares un-normalised strings so a pair
+# differing only in case is rejected. Both are logged, not touched here.)
+def _roster_pairs(project) -> set:
+    """Normalised (trade, company) pairs this project's ACTIVE roster allows."""
+    pairs = set()
+    for row in _active_assignments(project):
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        if t and c:
+            pairs.add((_roster_key(t), _roster_key(c)))
+    return pairs
+
+
+def _has_roster(project) -> bool:
+    """True when the project has at least one selectable (trade, company) pair.
+
+    False is NOT an error state. It means an admin has not filled the roster in
+    yet, and the ruling that governs every consumer is that an unfilled admin
+    form must never stop a man from working: the check-in proceeds, the trade is
+    marked pending, and the row is flagged for the CP.
+    """
+    return bool(_roster_pairs(project))
+
+
 def _active_assignments(project) -> List[Dict[str, Any]]:
     """The project's roster rows that are still selectable.
 
@@ -10377,7 +10838,9 @@ async def register_and_checkin(data: dict, request: Request):
     trade = data.get("trade")
     company = data.get("company")
     osha_card_image = data.get("osha_card_image")  # base64
-    selfie_image = data.get("selfie_image")  # base64 worker selfie — stored inline for later human spot-check ONLY (no face match, no liveness, no gate)
+    # base64 worker selfie, for later human spot-check ONLY (no face match, no
+    # liveness, no gate). Stored in R2 now, not inline — see _store_worker_selfie.
+    selfie_image = data.get("selfie_image")
     osha_data = data.get("osha_data")  # OCR results dict
     osha_number = data.get("osha_number")
     safety_orientation = data.get("safety_orientation")  # dict of checked items
@@ -10492,20 +10955,12 @@ async def register_and_checkin(data: dict, request: Request):
     # matches who's actually been assigned to the project.
     # Soft-deleted rows are excluded: a removed sub must never be a valid
     # NEW selection, even from a stale client that still has it cached.
-    raw_assignments = _active_assignments(project)
-    allowed_pairs = set()
-    for row in raw_assignments:
-        if not isinstance(row, dict):
-            continue
-        t = str(row.get("trade") or "").strip()
-        c = str(row.get("company") or "").strip()
-        if t and c:
-            # Match on the normalized KEY (strip + casefold) only — the raw
-            # trade/company are still what gets stored. This ONE rule is
-            # mirrored by rosterKey() in checkin.html so the frontend
-            # re-prompt guard and this strict match can never disagree on
-            # case or whitespace (see _roster_key).
-            allowed_pairs.add((_roster_key(t), _roster_key(c)))
+    # Match on the normalized KEY (strip + casefold) only — the raw
+    # trade/company are still what gets stored. This ONE rule is mirrored by
+    # rosterKey() in checkin.html so the frontend re-prompt guard and this
+    # strict match can never disagree on case or whitespace. It now lives in
+    # _roster_pairs, which is the only place that rule is written.
+    allowed_pairs = _roster_pairs(project)
     submitted_pair = (_roster_key(trade), _roster_key(company))
     # FIX 1: a project with NO configured trades used to 409 here, which meant
     # a worker standing at the gate could never check in — a pure config gap
@@ -10562,13 +11017,31 @@ async def register_and_checkin(data: dict, request: Request):
         # Create new worker with full data.
         # NOTE: no `trade` / `company` here. Those are per-project and live in
         # worker_project_trades; a worker-level copy is what bled across jobs.
+        # THE ID IS MINTED HERE, not by the insert, because the selfie's R2 key
+        # is built from it and the object has to be written before the document
+        # that names it. insert_one honours an explicit _id and returns it, so
+        # `result.inserted_id` below is this same value.
+        worker_oid = ObjectId()
+        # BOTH COPIES, DELIBERATELY, AND THE INLINE ONE IS NOT REDUNDANT.
+        # `_upload_to_r2` returning a URL proves the PUT returned, not that the
+        # object is readable — this project has produced an unreachable file that
+        # way before, and until something verifies the object the base64 is the
+        # only copy that is known to exist. Dropping it is its own PR, gated on a
+        # head_object check (the shape Track P used for the logbook photos).
+        #
+        # Returns {} when no selfie was offered; the key + url when it landed;
+        # {"selfie_upload_failed": True} when a selfie was offered and no object
+        # was stored. Never a pointer to something that is not there.
+        selfie_fields = await _store_worker_selfie(str(worker_oid), selfie_image)
         worker = {
+            "_id": worker_oid,
             "name": name,
             "phone": phone or "",
             "osha_number": osha_number or "",
             "osha_data": osha_data,
             "osha_card_image": osha_card_image,
-            "selfie_image": selfie_image,  # inline base64, spot-check only (NOT R2)
+            "selfie_image": selfie_image,
+            **selfie_fields,
             "signature": signature,
             "safety_orientations": [{
                 "project_id": project_id,
@@ -10591,8 +11064,17 @@ async def register_and_checkin(data: dict, request: Request):
         update_fields = {"updated_at": now}
         if osha_card_image and not worker.get("osha_card_image"):
             update_fields["osha_card_image"] = osha_card_image
-        if selfie_image and not worker.get("selfie_image"):
-            update_fields["selfie_image"] = selfie_image  # inline base64, spot-check only (NOT R2)
+        # A WORKER WHO ALREADY HAS ONE IS LEFT ALONE, whichever form it is in.
+        # `selfie_image` is the pre-R2 inline copy: existing rows keep it and
+        # nothing here backfills them, so the two shapes coexist and the reader
+        # has to handle both. Only a worker with NEITHER gets a new upload.
+        if selfie_image and not worker.get("selfie_image") and not worker.get("selfie_r2_key"):
+            # Same pairing as the create path: the inline copy is written
+            # unconditionally, the R2 fields only when there is a real key.
+            update_fields["selfie_image"] = selfie_image
+            update_fields.update(
+                await _store_worker_selfie(str(worker.get("_id")), selfie_image)
+            )
         if osha_data:
             update_fields["osha_data"] = osha_data
         if osha_number:
@@ -18328,7 +18810,7 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             if not e:
                 continue
             name = (e.get("worker_name") or "").strip()
-            company = (e.get("sub_name") or "").strip()
+            company = _worker_company(e.get("sub_name"))
             name_key = (_norm_key(name), _norm_key(company))
             seen_name_keys.add(name_key)
             seen_names_only.add(name_key[0])
@@ -18440,7 +18922,8 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             continue          # same id, already emitted by an earlier pass
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
         name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
-        company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
+        company = _worker_company(c.get("worker_company"),
+                                 worker.get("company") if worker else None)
         name_key = (_norm_key(name), _norm_key(company))
         if name_key in seen_name_keys or (
             not name_key[1] and name_key[0] in seen_names_only
@@ -18546,7 +19029,7 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             _collapsed += 1
             continue
         name = (a.get("worker_name") or "").strip()
-        company = (a.get("worker_company") or "").strip()
+        company = _worker_company(a.get("worker_company"))
         name_key = (_norm_key(name), _norm_key(company))
         if name_key in seen_name_keys:
             # Same ambiguity as pass 2: normally a worker who was blocked then
@@ -18675,7 +19158,7 @@ async def get_project_daily_headcount(
             except Exception:
                 pass
         async for e in db.worker_enrollments.find({"_id": {"$in": oids}}):
-            sub = (e.get("sub_name") or "").strip()
+            sub = _worker_company(e.get("sub_name"))
             trade = (e.get("trade") or "").strip()
             name = (e.get("worker_name") or "").strip()
             worker_key = (name.lower(), sub.lower())
@@ -18703,7 +19186,8 @@ async def get_project_daily_headcount(
         wid = c.get("worker_id")
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
         name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
-        company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
+        company = _worker_company(c.get("worker_company"),
+                                 worker.get("company") if worker else None)
         trade = (c.get("worker_trade") or (worker.get("trade") if worker else "") or "").strip()
         worker_key = (name.lower(), company.lower())
         if worker_key in seen_workers or not name:
@@ -26454,7 +26938,13 @@ async def _handle_who_on_site(
             if trade.lower() not in t:
                 return False
         if company:
-            c = (ci.get("worker_company") or ci.get("company") or ci.get("company_name") or "").lower()
+            # ONE CHANGE DECLARED, not smuggled: the original did not strip, so
+            # " Acme " and "Acme" were two groups in this report. _worker_company
+            # strips. A grouping key cannot be SPLIT by stripping, only merged,
+            # and merging two groups that differ by whitespace is the documented
+            # bug class _norm_key exists for.
+            c = _worker_company(ci.get("worker_company"), ci.get("company"),
+                                ci.get("company_name")).lower()
             if company.lower() not in c:
                 return False
         return True
@@ -26489,7 +26979,8 @@ async def _handle_who_on_site(
     else:
         by_company: Dict[str, list] = {}
         for ci in filtered:
-            co = ci.get("worker_company") or ci.get("company") or ci.get("company_name") or "Unknown"
+            co = _worker_company(ci.get("worker_company"), ci.get("company"),
+                                 ci.get("company_name")) or "Unknown"
             by_company.setdefault(co, []).append(ci.get("worker_name", "Unknown"))
         lines = [f"*{n} on site today{filter_desc}:*"]
         for co, names in sorted(by_company.items()):

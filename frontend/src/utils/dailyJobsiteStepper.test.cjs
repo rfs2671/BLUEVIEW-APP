@@ -319,8 +319,26 @@ ok(/const goBack = async \(\) => \{\s*await flushDraft\(\);/.test(src),
   'moving BACK flushes the draft too');
 ok(/const flushDraft = useCallback/.test(src), 'flushDraft is a real, stable callback');
 ok(/writeDraft\(_key, \{/.test(src), 'the flush writes the whole draft body');
-ok(/setTimeout\(async \(\) => \{[\s\S]{0,400}?writeDraft/.test(src),
+// COMMENT-INSENSITIVE, and it had to become so. This was a bounded
+// {0,400} window from setTimeout to writeDraft, which made it a limit on
+// how much PROSE may sit between the two lines: documenting the autosave
+// failed the test without changing a line of behaviour. The window is the
+// right idea — it is what stops the match jumping to some unrelated
+// writeDraft far below — so the window stays and the comments come out.
+const srcNoComments = src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+ok(srcNoComments.length > 0, 'the comment-stripped screen source is non-empty');
+ok(/setTimeout\(async \(\) => \{[\s\S]{0,400}?writeDraft/.test(srcNoComments),
   'a debounced autosave also runs on every change, not only at step boundaries');
+// AND ITS RESULT IS READ. The autosave used to end in `.catch(() => {})`,
+// so a device that had stopped storing drafts looked identical to one that
+// was working right up until the CP signed. Both failure modes now move the
+// flag the submit gate reads.
+ok(/setAutosaveFailed\(!_ok\)/.test(srcNoComments),
+  'a failed autosave sets the flag rather than being swallowed');
+ok(/\} catch \(_e\) \{ setAutosaveFailed\(true\); \}/.test(srcNoComments),
+  'and a THROW moves the same flag — one handled without the other is half a fix');
 ok(/cameraVisible\) return undefined;/.test(src),
   'autosave stands down while the camera is open, so the shutter path stays fast');
 ok(/savedAutomatically/.test(src), 'and the CP is told the log saves itself');

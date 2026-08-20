@@ -84,6 +84,13 @@ export default function LogbookStepper({
   // dead button with no sentence is where a CP stops.
   nextDisabled = false,
   nextHint = '',
+  // A WARNING IS NOT A GATE. `submitHint` explains a button that is already
+  // dead, so it only renders when submitDisabled. This renders on the submit
+  // step regardless, because the thing it reports — the device has stopped
+  // storing the draft — must not stop him filing the log. It sits ABOVE the
+  // disabled-reason so the two can be on screen together without the warning
+  // pushing the reason off the button it belongs to.
+  submitWarning = '',
   onSubmit,
   // Lock bar.
   logType,
@@ -219,6 +226,9 @@ export default function LogbookStepper({
                 nowhere to live here and the CP met a dead grey button. Shown
                 only on the submit step: a reason to finish is not a reason to
                 stop paging. */}
+            {step === total && !!submitWarning && (
+              <Text style={s.submitWarning}>{submitWarning}</Text>
+            )}
             {step === total && submitDisabled && !!submitHint && (
               <Text style={s.submitHint}>{submitHint}</Text>
             )}

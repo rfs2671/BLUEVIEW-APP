@@ -13,6 +13,13 @@ unverified SST rows on one worker both flag.
 
 Tests target the pure builder/validator (no DB), which the endpoint now just
 persists — plus the cleanup script's pure planner.
+
+DEAD SCHEME, 2026-08-20: every `LIMITED` in this file was swapped for
+`WORKER`. "Limited" was the 30-hour transitional SST card and ceased to be
+valid in August 2020, so it is now recognised as a dead scheme rather than a
+class. It had been standing in throughout these fixtures for "an ordinary
+legible class" — which is what the 40-hour WORKER card is, and it is also
+the commonest card on a real site. No test's INTENT changed; the stand-in did.
 """
 
 import importlib.util
@@ -56,7 +63,10 @@ def od(**kw):
         "name": "Roey Fishman",
         "sst_number": "AH34A98LHB",
         "card_type": "SST",
-        "card_class": "LIMITED",
+        # WORKER, not LIMITED — "Limited" was the 30-hour transitional SST card
+        # and ceased to be valid in August 2020, so it is now a dead scheme
+        # (SST_DEAD_CLASSES) and can no longer stand in for an ordinary card.
+        "card_class": "WORKER",
         "issued": "03/11/2019",
         "expiration": "03/11/2029",
     }
@@ -85,7 +95,7 @@ class OneImageOneRow(unittest.TestCase):
         certs, _ = build([], od())
         self.assertEqual(len(certs), 1)
         self.assertEqual(len(osha_rows(certs)), 0, "no fabricated OSHA row from an SST scan")
-        self.assertEqual(certs[0]["type"], "SST_LIMITED")
+        self.assertEqual(certs[0]["type"], "SST_FULL")
         self.assertEqual(certs[0]["card_number"], "AH34A98LHB")
 
     def test_card_type_misread_as_osha_still_one_row(self):
@@ -192,13 +202,13 @@ class ReScanCorrection(unittest.TestCase):
     def _flagged_existing(self):
         # A stored SST with a flagged (implausible-suppressed) expiry, like Fishman.
         return [{
-            "type": "SST_LIMITED", "card_number": "AH34A98LHB", "issue_date": None,
+            "type": "SST_FULL", "card_number": "AH34A98LHB", "issue_date": None,
             "expiration_date": None, "verified": False, "needs_review": True,
             "review_reason": "EXPIRY_IMPLAUSIBLE", "expiration_raw_rejected": "03/11/2022",
         }]
 
     def test_clean_rescan_corrects_flagged(self):
-        certs, _ = build(self._flagged_existing(), od(card_class="LIMITED", expiration="03/11/2029"))
+        certs, _ = build(self._flagged_existing(), od(card_class="WORKER", expiration="03/11/2029"))
         row = sst_rows(certs)[0]
         self.assertEqual(len(sst_rows(certs)), 1, "corrects in place, no duplicate")
         self.assertIsNotNone(row["expiration_date"])
@@ -207,11 +217,11 @@ class ReScanCorrection(unittest.TestCase):
 
     def test_differing_rescan_vs_clean_sets_conflict_no_overwrite(self):
         good = [{
-            "type": "SST_LIMITED", "card_number": "AH34A98LHB",
+            "type": "SST_FULL", "card_number": "AH34A98LHB",
             "expiration_date": datetime(2029, 3, 11, tzinfo=timezone.utc),
             "verified": False, "needs_review": False, "review_reason": None,
         }]
-        certs, _ = build(good, od(card_class="LIMITED", expiration="03/11/2027"))
+        certs, _ = build(good, od(card_class="WORKER", expiration="03/11/2027"))
         row = sst_rows(certs)[0]
         self.assertEqual(row["expiration_date"], datetime(2029, 3, 11, tzinfo=timezone.utc),
                          "clean stored value must NOT be overwritten by a differing scan")
@@ -220,11 +230,11 @@ class ReScanCorrection(unittest.TestCase):
 
     def test_sanity_failing_rescan_never_overwrites(self):
         good = [{
-            "type": "SST_LIMITED", "card_number": "AH34A98LHB",
+            "type": "SST_FULL", "card_number": "AH34A98LHB",
             "expiration_date": datetime(2029, 3, 11, tzinfo=timezone.utc),
             "verified": False, "needs_review": False, "review_reason": None,
         }]
-        certs, _ = build(good, od(card_class="LIMITED", expiration="03/11/2099"))  # implausible
+        certs, _ = build(good, od(card_class="WORKER", expiration="03/11/2099"))  # implausible
         self.assertEqual(sst_rows(certs)[0]["expiration_date"],
                          datetime(2029, 3, 11, tzinfo=timezone.utc))
 
@@ -235,7 +245,7 @@ class ReScanCorrection(unittest.TestCase):
             "verified": True, "verified_by": "admin1", "needs_review": False,
         }]
         before = [dict(verified[0])]
-        certs, _ = build(verified, od(card_class="LIMITED", expiration="03/11/2029"))
+        certs, _ = build(verified, od(card_class="WORKER", expiration="03/11/2029"))
         match = [c for c in certs if c.get("verified")]
         self.assertEqual(match[0], before[0], "a verified cert must be byte-identical after any re-scan")
 
@@ -246,11 +256,11 @@ class DuplicateSst(unittest.TestCase):
         # number falls back to that row and a differing expiry is a CONFLICT,
         # so no second row is created.
         existing = [{
-            "type": "SST_LIMITED", "card_number": "OLD-NUM",
+            "type": "SST_FULL", "card_number": "OLD-NUM",
             "expiration_date": datetime(2029, 3, 11, tzinfo=timezone.utc),
             "verified": False, "needs_review": False, "review_reason": None,
         }]
-        certs, _ = build(existing, od(card_class="LIMITED", expiration="03/11/2030"), number="NEW-NUM")
+        certs, _ = build(existing, od(card_class="WORKER", expiration="03/11/2030"), number="NEW-NUM")
         rows = sst_rows(certs)
         self.assertEqual(len(rows), 1, "no silent duplicate — folds onto the one SST row")
         self.assertTrue(rows[0]["needs_review"])
@@ -260,7 +270,7 @@ class DuplicateSst(unittest.TestCase):
         # Amendment C safety net: two unverified SST rows already coexist (e.g.
         # legacy data). ANY build run flags BOTH so they never sit quietly.
         existing = [
-            {"type": "SST_LIMITED", "card_number": "A1",
+            {"type": "SST_FULL", "card_number": "A1",
              "expiration_date": datetime(2029, 3, 11, tzinfo=timezone.utc),
              "verified": False, "needs_review": False, "review_reason": None},
             {"type": "SST_SUPERVISOR", "card_number": "B2",
@@ -281,7 +291,7 @@ class DuplicateSst(unittest.TestCase):
              "expiration_date": datetime(2028, 2, 26, tzinfo=timezone.utc),
              "verified": True, "needs_review": False, "review_reason": None},
         ]
-        certs, _ = build(existing, od(card_class="LIMITED", expiration="03/11/2030"), number="B2")
+        certs, _ = build(existing, od(card_class="WORKER", expiration="03/11/2030"), number="B2")
         unverified = [c for c in sst_rows(certs) if not c.get("verified")]
         self.assertEqual(len(unverified), 1)
         self.assertNotEqual(unverified[0].get("review_reason"), "DUPLICATE_SST")
@@ -309,7 +319,7 @@ class CleanupPlanner(unittest.TestCase):
             "created_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
             "certifications": [
                 {"type": "OSHA_10", "card_number": "AH34A98LHB", "expiration_date": None},
-                {"type": "SST_LIMITED", "card_number": "AH34A98LHB",
+                {"type": "SST_FULL", "card_number": "AH34A98LHB",
                  "expiration_date": datetime(2022, 3, 11, tzinfo=timezone.utc)},
             ],
         }
@@ -332,7 +342,7 @@ class CleanupPlanner(unittest.TestCase):
             "created_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
             "certifications": [
                 {"type": "OSHA_10", "card_number": "PENA1", "expiration_date": None},
-                {"type": "SST_LIMITED", "card_number": "PENA1",
+                {"type": "SST_FULL", "card_number": "PENA1",
                  "expiration_date": datetime(2028, 2, 26, tzinfo=timezone.utc)},
             ],
         }

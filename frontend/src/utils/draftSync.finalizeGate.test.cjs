@@ -303,8 +303,16 @@ const gateRejection = (code) => ({
     'draftSync: a refusal is recorded and named');
   const pushOneSrc = draftSyncSrc.slice(draftSyncSrc.indexOf('async function pushOne'));
   const guardAt = pushOneSrc.search(/if \(!frozen\.ok\) \{/);
-  const clearAt = pushOneSrc.search(/await clearPending\(key\);\s*return \{ key, ok: true, mode: 'update'/);
-  ok(guardAt > 0 && clearAt > guardAt,
+  // NOT ADJACENCY — ORDER. This used to require `clearPending(key);` to be
+  // immediately followed by the update-path return, so inserting a statement
+  // between them failed the test without changing the ordering it exists to
+  // check. The claim is that the refusal guard returns BEFORE the pending key
+  // is cleared; the bounded gap keeps the update path distinguishable from the
+  // create path's identical clearPending without pinning what sits in between.
+  const clearAt = pushOneSrc.search(/await clearPending\(key\);[\s\S]{0,200}?return \{ key, ok: true, mode: 'update'/);
+  ok(guardAt > 0, 'draftSync: located the finalize-refusal guard');
+  ok(clearAt > 0, 'draftSync: located clearPending on the update path');
+  ok(clearAt > guardAt,
     'draftSync: the refusal returns BEFORE clearPending on the update path');
 
   console.log(`\n${passed} passed, ${failed} failed`);

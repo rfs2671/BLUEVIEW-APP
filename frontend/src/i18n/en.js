@@ -106,6 +106,19 @@ export default {
     // than the failure: the CP is reading this on a banner, away from the
     // form, and "something went wrong" gives him nothing to do.
     code_SUBMIT_INCOMPLETE_WORKER_ANSWERS: 'Answer injury and PPE for every worker, then resubmit.',
+    // ── THE LOCAL SAVE FAILED AND THE PUSH DID NOT LAND ─────────────────────
+    // Every other failure on this screen leaves the log somewhere: refused by
+    // the server but still in the draft, or offline but queued for the drain.
+    // This one leaves it nowhere. `writeDraft` returns false rather than
+    // throwing, so a full or broken store used to pass silently, the key was
+    // queued anyway, and the CP was told a signed log existed that the drain
+    // would later find empty or stale.
+    //
+    // The copy says the three things he cannot see: nothing was filed, nothing
+    // is queued, and what he typed is still on the screen in front of him — so
+    // he does not navigate away and lose it while looking for the fix.
+    localSaveFailedTitle: 'Not saved — nothing was filed',
+    localSaveFailed: 'This device could not store the log, and it did not reach the server either. Nothing was filed and nothing is queued to retry. Your entries are still on this screen. Free up space on the device, then submit again.',
     // Shown under a Submit button disabled because no signature is on file. A
     // CP sets his signature by signing on the log itself — there is no separate
     // profile screen for it (nothing under app/settings or app/profile writes
@@ -123,6 +136,47 @@ export default {
     // the work is still on this device and still editable.
     notPushedTitle: 'NOT SAVED TO THE SERVER',
     notPushedHint: 'The server refused this log, so it was NOT saved and is NOT locked. Your work is still on this device and still editable — fix the problem above and submit again.',
+    // ── THE LOCAL STORE FAILED ────────────────────────────────────────────
+    // A THIRD TRUTH, and the two above are both wrong for it.
+    //
+    // notLockedHint promises a queued retry. notPushedHint promises the work
+    // is still on the device. When the local write itself failed, neither is
+    // true: nothing is queued, because queuing a key whose draft does not
+    // hold this content is how the drain files stale content; and nothing is
+    // on the device, because that is the failure. The only copy is the one on
+    // screen, and the whole point of saying so is to stop him navigating away
+    // from it.
+    //
+    // A BANNER, NOT A TOAST. He signs and walks — to the next floor, to his
+    // truck — and a message that removed itself four seconds later is the same
+    // as no message. Same reasoning that made the drain's refusal durable.
+    notSavedLocalTitle: 'NOT SAVED ON THIS DEVICE',
+    notSavedLocalHint: 'Nothing is queued and nothing will retry. Your entries are still on this screen and nowhere else — do not close this log until you have saved it. Free up space on the device, then submit again.',
+    code_LOCAL_SAVE_FAILED: 'This device could not store the log, and it did not reach the server either.',
+    // ── THE OTHER REASON, AND IT IS NOT THE SAME PROBLEM ──────────────────
+    // He is signing a legal record. A phone holding data the server does not
+    // is exactly what he needs to know before he attests to it — so this
+    // fires on the ordinary offline path too, where the local write SUCCEEDED
+    // and only the push did not land.
+    //
+    // ONE BANNER, TWO WORDINGS. "Your last change is not saved on this device"
+    // and "your work is on this device but not on the server" are different
+    // problems with different fixes: the first means do not close the log, the
+    // second means do not assume anyone else can see it yet. Telling him WHICH
+    // one he has is the whole point of putting it on screen.
+    notOnServerTitle: 'ON THIS DEVICE ONLY',
+    notOnServerHint: 'This log is saved here and is queued to upload. Nobody else can see it and no inspector can be shown it until it syncs — reconnect when you can. Your work is safe on this device in the meantime.',
+    code_NOT_ON_SERVER: 'Saved on this device, but it has not reached the server.',
+    // ── THE SAME FAILURE, ONE STEP EARLIER ────────────────────────────────
+    // Shown at the SUBMIT GATE, beside the reasons a submit is blocked, when a
+    // background autosave has failed. Not a toast: a CP saving every few
+    // seconds does not need a message each time, and one that fires constantly
+    // is one he stops seeing — which is worse than silence.
+    //
+    // It does NOT disable Submit. A broken local store does not stop the log
+    // reaching the server, and blocking the submit would turn a storage fault
+    // into an inability to file at all. It warns; it does not gate.
+    autosaveFailedWarning: 'This device is not saving your draft. Your entries are only on this screen — submit now, and do not close the log until it is filed.',
   },
 
   // ── app/logbooks/daily_jobsite.jsx — the activity photo cap ────────────────

@@ -18,6 +18,14 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, checkinsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+// recordFinalizeError RAISES the durable banner LogbookLockBar renders. Used
+// here for the one failure a toast cannot carry: the sheet is signed at the
+// gate and the CP walks off with it.
+import { recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
+// PER-ROW SAVE STATE. A screen-level "Saving…" is decoration; this is a fact
+// about one man's row — see src/utils/rowSaveState.js for why the fact is
+// "changed since the last write that landed" rather than a spinner.
+import { snapshotRows, unsavedRowKeys, rowKey } from '../../src/utils/rowSaveState';
 import { withGateSnapshot, reconcileRoster } from '../../src/utils/rosterReconcile';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { capitalizeFirst } from '../../src/utils/textFormat';
@@ -62,6 +70,12 @@ export default function PreShiftSignIn() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // The last autosave did not land. Sticky — cleared only by a later write
+  // that succeeds, never by the next keystroke.
+  const [autosaveFailed, setAutosaveFailed] = useState(false);
+  // The rows as of the last write that RETURNED TRUE. null until the form has
+  // finished loading — see the seeding effect below.
+  const [savedSnapshot, setSavedSnapshot] = useState(null);
   const [existingLogId, setExistingLogId] = useState(null);
   // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
   // renders read-only and only the Amend path can change anything.
@@ -117,10 +131,36 @@ export default function PreShiftSignIn() {
         },
         cp_signature: cpSignature,
         cp_name: cpName,
-      }).catch(() => {});
+      })
+        // BOTH FAILURE MODES. The boolean was discarded and a throw fell into
+        // the same empty catch; either one means the sheet is not on the
+        // device. Reported at the SUBMIT GATE below rather than as a toast:
+        // this screen autosaves on every tap of every worker row, and a
+        // message that fires that often is one he stops seeing.
+        .then((_ok) => {
+          setAutosaveFailed(!_ok);
+          // ONLY ON A CONFIRMED WRITE. writeDraft returns false rather than
+          // throwing, so snapshotting unconditionally would mark every row
+          // saved on a device that is storing nothing — the per-row marker
+          // would then be the same lie as "Saved automatically", drawn once
+          // per man.
+          if (_ok) setSavedSnapshot(snapshotRows(workers));
+        })
+        .catch(() => setAutosaveFailed(true));
     }, 700);
     return () => clearTimeout(t);
   }, [loading, projectId, date, company, projectLocation, workers, cpSignature, cpName]);
+
+  // SEED AT LOAD. A draft read off disk is ALREADY on disk, and a roster built
+  // from today's check-ins has not been typed by anyone — neither is an unsaved
+  // edit. Without this every row lights up the moment the form opens, which is
+  // how a marker stops being read. Runs once, after loading settles.
+  useEffect(() => {
+    if (loading || savedSnapshot !== null) return;
+    setSavedSnapshot(snapshotRows(workers));
+  }, [loading, savedSnapshot, workers]);
+
+  const unsavedRows = unsavedRowKeys(workers, savedSnapshot);
 
   const fetchData = async () => {
     setLoading(true);
@@ -467,10 +507,24 @@ export default function PreShiftSignIn() {
     try {
       // Phase A2 — write the LOCAL draft first (works offline), then best-effort push.
       const _key = draftKey({ projectId, logType: 'preshift_signin', date });
-      await writeDraft(_key, {
-        data: { company, project_location: projectLocation, workers, total_count: filledWorkers.length },
-        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-      });
+      // THE LOCAL SAVE IS THE OFFLINE RECORD, and this sheet is the one signed
+      // at the gate with no signal, so it is the record more often than the
+      // server copy is. writeDraft returns false and never THROWS; the result
+      // used to be discarded, and the freeze + "will sync when you are back
+      // online" below fired regardless — announcing a signed, locked log that
+      // existed nowhere. Carried down to both.
+      let localSaved = false;
+      try {
+        localSaved = await writeDraft(_key, {
+          data: { company, project_location: projectLocation, workers, total_count: filledWorkers.length },
+          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+        });
+      } catch (_e) {
+        // A THROW IS A FALSE — see the note at the same guard in hot_work.
+        localSaved = false;
+      }
+      setAutosaveFailed(!localSaved);
+      if (localSaved) setSavedSnapshot(snapshotRows(workers));
 
       const payload = {
         project_id: projectId,
@@ -508,10 +562,50 @@ export default function PreShiftSignIn() {
         }
         await setDraftBackendId(_key, existingLogId || created?.id || created?._id);
         await clearPending(_key);
+        // The push landed, so any banner from a previous offline submit comes
+        // down. Both handles — an offline submit had no server id to record
+        // against and used the draft key.
+        await clearFinalizeError(_key);
+        const _sid = existingLogId || created?.id || created?._id;
+        if (_sid) await clearFinalizeError(_sid);
       } catch (pushErr) {
         pushOk = false;
-        await markPending(_key);
-        console.warn('preshift push deferred (will sync on reconnect):', pushErr?.message);
+        // Queue only a key whose draft actually holds this content. The
+        // debounced autosave writes this same key WITHOUT a status, so a stale
+        // draft here is this morning's half-filled sheet still marked 'draft'
+        // — and the drain reads the draft, not this scope. Queuing over it
+        // files the sheet unsigned, which is the one thing the CP was just told
+        // had not happened.
+        if (localSaved) {
+          await markPending(_key);
+          console.warn('preshift push deferred (will sync on reconnect):', pushErr?.message);
+          // ON THIS DEVICE ONLY. The sheet is safe here and queued, and the
+          // toast below says so — for four seconds, to a CP walking into the
+          // pre-shift meeting. He is attesting to who was on site; that nobody
+          // else can see it yet outlives the toast, so it goes up durably.
+          await recordFinalizeError(
+            existingLogId || _key, 'NOT_ON_SERVER', _key, 'unsynced');
+        } else {
+          console.warn('preshift push deferred but the LOCAL SAVE FAILED; not queued.');
+        }
+      }
+
+      // NEITHER COPY EXISTS. The server refused or could not be reached AND the
+      // device did not store the sheet, so there is no signed record anywhere
+      // and nothing queued to make one. Returning here is what stops the freeze
+      // below: freezing would lock an empty or stale draft, and `router.back()`
+      // would take the CP away from the only remaining copy — the rows on
+      // screen — while telling him they were filed.
+      if (!localSaved && !pushOk) {
+        // A BANNER, NOT ONLY A TOAST. This sheet is signed at the gate and the
+        // CP walks straight into the meeting; a message that removed itself
+        // four seconds later is the same as no message. Recorded against the
+        // same handle the drain uses, so LogbookLockBar carries it on his next
+        // visit to this log.
+        await recordFinalizeError(
+          existingLogId || _key, 'LOCAL_SAVE_FAILED', _key, 'local');
+        toast.error(tFinalize('localSaveFailedTitle'), tFinalize('localSaveFailed'));
+        return;
       }
 
       // FREEZE ON SIGN — preshift_signin is an IMMEDIATE log: the SIGNATURE IS
@@ -793,6 +887,16 @@ export default function PreShiftSignIn() {
                       <Text style={styles.autoFilledText}>Auto-filled</Text>
                     </View>
                   )}
+                  {/* A FACT ABOUT THIS ROW: what is typed here is not on disk
+                      yet. No spinner — a row is on disk or it is not, and the
+                      in-flight moment is a few milliseconds. Only the negative
+                      state renders, so the marker means something when it is
+                      there. */}
+                  {unsavedRows.has(rowKey(worker, index)) && (
+                    <View style={styles.rowUnsavedBadge}>
+                      <Text style={styles.rowUnsavedText}>Not saved</Text>
+                    </View>
+                  )}
                 </View>
 
                 {/* FIX 1 — why this worker is flagged, and what the CP can do
@@ -976,6 +1080,16 @@ export default function PreShiftSignIn() {
               the start of his shift. There is no separate profile screen for the
               signature (nothing under app/settings writes cp_signature), so the
               hint names the pad directly above. */}
+          {/* THE SAME FAILURE, ONE STEP EARLIER. Not a gate: a device that has
+              stopped storing the draft does not stop the sheet reaching the
+              server, and blocking Submit would turn a storage fault into an
+              inability to file at all. It sits above the other two reasons
+              because it is the only one he cannot discover by tapping. */}
+          {autosaveFailed && (
+            <Text style={styles.saveFailedWarn}>
+              {tFinalize('autosaveFailedWarning')}
+            </Text>
+          )}
           {!!affirmationHintKey(cpSignature, profileLoaded) && (
             <Text style={styles.signHint}>
               {tFinalize(affirmationHintKey(cpSignature, profileLoaded))}
@@ -1287,6 +1401,23 @@ function buildStyles(colors, isDark) {
   signHint: {
     fontSize: 13, fontWeight: '600', color: semantic.attention,
     marginTop: spacing.sm, marginBottom: spacing.xl, textAlign: 'center',
+  },
+
+  // Louder than signHint. signHint explains a button he can see is dead; this
+  // contradicts the reassurance he has been reading all morning.
+  rowUnsavedBadge: {
+    paddingHorizontal: 8, paddingVertical: 2, borderRadius: borderRadius.sm,
+    backgroundColor: semantic.attentionBg, borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+  },
+  rowUnsavedText: {
+    fontSize: 10, fontWeight: '700', color: semantic.attention,
+    textTransform: 'uppercase', letterSpacing: 0.5,
+  },
+
+  saveFailedWarn: {
+    fontSize: 13, fontWeight: '700', color: semantic.critical,
+    marginTop: spacing.sm, textAlign: 'center',
   },
 
   actions: {

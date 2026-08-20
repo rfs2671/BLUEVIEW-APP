@@ -33,7 +33,7 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { finalizeErrorCode } from '../../src/utils/draftSync';
+import { finalizeErrorCode, recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
@@ -406,13 +406,23 @@ export default function SubcontractorOrientation() {
       workerId: workerIdOf(orientation),
     });
     try {
-      // 1. The signature is durable on device before any network is attempted.
-      await writeDraft(key, {
-        data: orientation.data || {},
-        cp_signature: cpSig,
-        cp_name: cpN,
-        status: 'submitted',
-      });
+      // 1. The signature is durable on device before any network is attempted
+      //    — if the write landed. writeDraft returns false and never throws,
+      //    and this call used to discard that, so step 4 froze the record and
+      //    step 5 said "Signed & locked on this device" whether or not the
+      //    device held anything.
+      let localSaved = false;
+      try {
+        localSaved = await writeDraft(key, {
+          data: orientation.data || {},
+          cp_signature: cpSig,
+          cp_name: cpN,
+          status: 'submitted',
+        });
+      } catch (_e) {
+        // A THROW IS A FALSE — see the note at the same guard in hot_work.
+        localSaved = false;
+      }
 
       // 2. Show it as signed immediately, flagged unsynced until the push lands.
       let next = orientations.map(o => (
@@ -470,11 +480,37 @@ export default function SubcontractorOrientation() {
         }
       }
 
+      // NEITHER COPY EXISTS. The push did not land and the device did not store
+      // the signature, so nothing is queued — the drain reads the DRAFT, not the
+      // cached list, and a queued key with no draft is cleared as `no-draft`.
+      // Returning here is what stops the freeze and the success toast below; the
+      // optimistic `next` was never committed, so the card stays unsigned and
+      // signable rather than showing locked over a record that does not exist.
+      if (!landed && !localSaved) {
+        console.warn('Orientation signature push deferred but the LOCAL SAVE FAILED; not queued.');
+        // A BANNER TOO. The per-worker key IS the handle here: with no server
+        // id there is nothing else to record against, and LogbookLockBar
+        // already reads `logId || draftKey` for exactly this case.
+        await recordFinalizeError(id || key, 'LOCAL_SAVE_FAILED', key, 'local');
+        toast.error(
+          'Not signed — nothing was saved',
+          'This device could not store the signature, and it did not reach the server either. Nothing was filed and nothing is queued to retry. Free up space on the device, then sign again.',
+        );
+        return;
+      }
+
       if (landed) {
         await clearPending(key);
+        // The push landed: take down any banner from an earlier offline sign.
+        await clearFinalizeError(key);
+        if (id) await clearFinalizeError(id);
         next = next.map(o => (sameRecord(o, orientation) ? { ...o, _pending: false } : o));
       } else {
         await markPending(key);
+        // ON THIS DEVICE ONLY — this worker's orientation is signed here and
+        // queued, and the card's _pending flag says so while this screen is
+        // open. The banner is what survives him leaving it.
+        await recordFinalizeError(id || key, 'NOT_ON_SERVER', key, 'unsynced');
       }
 
       // 4. THE SIGNATURE IS THE FREEZE. Applied after the draft write and after
@@ -586,7 +622,16 @@ export default function SubcontractorOrientation() {
     try {
       // 1. The orientation is durable on device before any network is attempted
       //    — this is what makes a gate-side orientation possible with no signal.
-      await writeDraft(key, { data, cp_signature: newCpSignature, cp_name: newCpName, status });
+      //    Same caveat as the sign path: writeDraft returns false and never
+      //    throws. The offline branch below announces "Signed & locked on this
+      //    device", and this result is the only thing that makes it true.
+      let localSaved = false;
+      try {
+        localSaved = await writeDraft(key, { data, cp_signature: newCpSignature, cp_name: newCpName, status });
+      } catch (_e) {
+        // A THROW IS A FALSE — see the note at the same guard in hot_work.
+        localSaved = false;
+      }
 
       const localRecord = {
         _local_id: ident.workerId,
@@ -626,8 +671,31 @@ export default function SubcontractorOrientation() {
           toast.success('Created', 'Orientation record added');
         }
       } catch (pushErr) {
+        // NEITHER COPY EXISTS. The optimistic row went into the list above, but
+        // the reconnect drain reads the DRAFT store and nothing else — so with
+        // no draft that row would sit there looking filed, unsyncable, and (once
+        // frozen) not even signable. It is rolled back rather than left: the
+        // entries are not lost, because the add form is still standing with them
+        // in it (this return skips the reset below), and that is now the only
+        // copy. Nothing is queued and nothing is frozen.
+        if (!localSaved) {
+          console.warn('Orientation push deferred but the LOCAL SAVE FAILED; not queued.');
+          await recordFinalizeError(key, 'LOCAL_SAVE_FAILED', key, 'local');
+          setOrientations(orientations);
+          await writeCachedList(projectId, orientations);
+          toast.error(
+            'Not saved — nothing was filed',
+            'This device could not store the orientation, and it did not reach the server either. Nothing was filed and nothing is queued to retry. Free up space on the device, then add it again.',
+          );
+          return;
+        }
         await markPending(key);
         console.warn('Orientation push deferred (will sync on reconnect):', pushErr?.message);
+        // ON THIS DEVICE ONLY, on the CREATE path as well. Both success toasts
+        // below say "on this device" and then leave; this is what is still
+        // there when he comes back to the worker's card. Recorded against the
+        // key: an offline create has no server id yet.
+        await recordFinalizeError(key, 'NOT_ON_SERVER', key, 'unsynced');
         if (status === 'submitted') {
           toast.success(
             'Signed & locked on this device',
