@@ -3925,6 +3925,99 @@ async def require_approved(current_user = Depends(get_current_user)):
     return current_user
 
 
+# ==================== ACCOUNT DELETION (Apple 5.1.1(v)) ====================
+#
+# WHY A REQUEST AND NOT A BUTTON. Apple 5.1.1(v) requires an IN-APP path. It
+# does not require immediate self-service, and immediate self-service is the
+# wrong mechanism here.
+#
+# A CP carries UNSYNCED signed logbooks on his phone. Revoke his token and the
+# reconnect drain takes a 401 — which `isServerRefusal` correctly classes as a
+# 4xx and records as a refusal. His records are not destroyed (draftSync never
+# calls clearPending on that branch) but they are stranded forever AND
+# bannered to him as "the server refused your log": a compliance judgement the
+# server never made and could not make, because it no longer knows who he is.
+#
+# The right order is DRAIN, then delete. Only a person can confirm the drain
+# finished, which is why an admin executes.
+#
+# DELETED_USER_PREFIX is the guarantee in one string. A filed 3301-02 has to
+# say who signed it. Blank the name and the attestation is orphaned — a
+# document asserting an inspection was fine, signed by nobody. Leave a bare
+# name and it implies a live account somebody could still ask about it. The
+# record must say BOTH: this man signed, and his account is gone.
+#
+# WHERE IT IS STAMPED, AND WHERE IT DELIBERATELY IS NOT. It goes on the
+# RETAINED user row. It does NOT rewrite `signature_events.signer.user_id` on
+# historical rows: that ledger carries a `content_hash` over a
+# `content_snapshot`, and editing evidence to record that its author left is a
+# worse act than the one it documents. Deletion never mutates a signed record.
+DELETED_USER_PREFIX = "deleted_user:"
+
+
+def deleted_user_ref(user_id) -> str:
+    """The reference a departed account resolves to. Never bare, never blank."""
+    uid = str(user_id or "").strip()
+    if not uid:
+        # An id we cannot name is still not allowed to become an empty string:
+        # blank reads as "no signer", which is the orphaning this prevents.
+        return DELETED_USER_PREFIX + "unknown"
+    return DELETED_USER_PREFIX + uid
+
+
+def _mark_user_deleted(user_id) -> dict:
+    """The $set for an executed deletion.
+
+    THE ONLY WRITER of the soft-delete fields, so the prefix cannot be
+    forgotten by a second path that soft-deletes a user some other way. The
+    user's NAME is deliberately untouched: `users` is in
+    SOFT_DELETE_NEVER_PURGE, so the row survives and the name with it, and that
+    is what keeps `signature_events.signer.user_id` resolvable to a person.
+    """
+    now = datetime.now(timezone.utc)
+    return {
+        "is_deleted": True,
+        "deleted_at": now,
+        "updated_at": now,
+        "deleted_user_ref": deleted_user_ref(user_id),
+    }
+
+
+@api_router.post("/auth/me/deletion-request")
+async def request_own_account_deletion(current_user = Depends(get_current_user)):
+    """Record an in-app deletion request. Apple 5.1.1(v).
+
+    Site devices are excluded: a shared jobsite tablet is not somebody's
+    personal account, and the guideline is about the account a person created.
+    """
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        raise HTTPException(
+            status_code=400,
+            detail="A shared site device is not a personal account.",
+        )
+    uid = str(current_user.get("_id", current_user.get("id")))
+    now = datetime.now(timezone.utc)
+    await db.users.update_one(
+        {"_id": to_query_id(uid)},
+        {"$set": {"deletion_requested_at": now, "updated_at": now}},
+    )
+    await audit_log("account_deletion_requested", uid, "user", uid)
+    return {"deletion_requested_at": now.isoformat(), "status": "received"}
+
+
+@api_router.delete("/auth/me/deletion-request")
+async def withdraw_own_account_deletion(current_user = Depends(get_current_user)):
+    """Withdraw it. A request he cannot take back is a trap, not a choice."""
+    uid = str(current_user.get("_id", current_user.get("id")))
+    await db.users.update_one(
+        {"_id": to_query_id(uid)},
+        {"$unset": {"deletion_requested_at": ""},
+         "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    await audit_log("account_deletion_withdrawn", uid, "user", uid)
+    return {"status": "withdrawn"}
+
+
 # Static, canned demo project — ZERO external calls (no AI, Socrata, R2,
 # indexing). Lets a pending user see what the app does at no backend cost.
 _DEMO_PROJECT = {
@@ -6357,10 +6450,16 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     # Fetch user before delete to get phone for whatsapp_contacts cleanup
     user_doc = await db.users.find_one({"_id": to_query_id(user_id)})
 
-    # Soft delete
+    # SOFT delete, and never anything harder. `signature_events.signer.user_id`
+    # is the one link proving WHICH AUTHENTICATED ACCOUNT produced a signature,
+    # as against which name was typed into a box. A hard delete severs it and
+    # the attestation loses the half that cannot be forged.
+    #
+    # `_mark_user_deleted` is the ONLY writer of these fields, so the
+    # deleted_user: reference cannot be forgotten here or by a later path.
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
-        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
+        {"$set": _mark_user_deleted(user_id)},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
@@ -9075,10 +9174,10 @@ async def delete_admin_account(admin_id: str, current_user = Depends(get_current
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     
-    # Soft delete
+    # Same single writer as DELETE /admin/users/{id} — see the note there.
     result = await db.users.update_one(
         {"_id": to_query_id(admin_id), "role": "admin"},
-        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
+        {"$set": _mark_user_deleted(admin_id)},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Admin not found")

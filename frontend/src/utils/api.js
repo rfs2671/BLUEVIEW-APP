@@ -219,6 +219,22 @@ export const authAPI = {
     const response = await apiClient.put('/api/auth/password', data);
     return response.data;
   },
+
+  // Apple 5.1.1(v). A REQUEST, not a deletion — see the server note. A CP
+  // carries unsynced signed logbooks; revoke his token and the drain takes a
+  // 401, which the client correctly reads as a server refusal and banners as
+  // "your log was refused". The records survive but are stranded and
+  // mislabelled. Drain first, delete second, and only a person can confirm the
+  // drain finished.
+  requestAccountDeletion: async () => {
+    const response = await apiClient.post('/api/auth/me/deletion-request');
+    return response.data;
+  },
+
+  withdrawAccountDeletion: async () => {
+    const response = await apiClient.delete('/api/auth/me/deletion-request');
+    return response.data;
+  },
 };
 
 /**

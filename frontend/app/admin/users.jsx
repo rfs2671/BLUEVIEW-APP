@@ -196,7 +196,36 @@ export default function AdminUsersScreen() {
     }
   };
 
-  const handleDeleteUser = (userId) => {
+  /**
+   * THE SAME FACTS THE USER WAS SHOWN, FROM THE OTHER SIDE.
+   *
+   * An admin pressing this is ending somebody's access, and the two things he
+   * must know first are what survives and what does not:
+   *
+   *   SURVIVES — every filed logbook, signature and check-in, with the man's
+   *   name still on them. `users` is in the server's SOFT_DELETE_NEVER_PURGE
+   *   set and deletion is a soft delete that stamps `deleted_user:<id>`, so a
+   *   3301-02 signed by a departed CP still names its signer AND records that
+   *   the account is gone. Nothing about the attestation changes.
+   *
+   *   DOES NOT — unsynced work on that person's handset. Once his token stops
+   *   authenticating, the reconnect drain takes a 401, which the client reads
+   *   as a server refusal; the drafts stay on the phone, bannered as
+   *   "refused", and never land. This is the only sentence here that can save
+   *   a signed compliance record, so it goes in front of the admin BEFORE the
+   *   destructive action, not in a doc.
+   */
+  const deleteUserBody = (name) => (
+    `Deleting ${name || 'this user'} removes their account and sign-in. `
+    + 'Their filed logbooks, signatures and check-ins stay on the project, '
+    + 'with their name on them.'
+    + String.fromCharCode(10) + String.fromCharCode(10)
+    + 'Check first: if they have unsynced work on their phone it will not '
+    + 'reach the server after this. Ask them to open the app on a connection '
+    + 'before you continue.'
+  );
+
+  const handleDeleteUser = (userId, userName) => {
     // PREVENT DELETING SELF
     if (userId === user?.id || userId === user?._id) {
       toast.error('Error', 'You cannot delete your own account');
@@ -218,14 +247,15 @@ export default function AdminUsersScreen() {
       }
     };
 
+    const body = deleteUserBody(userName);
     if (Platform.OS === 'web') {
-      if (window.confirm('Delete this user?')) {
+      if (window.confirm(body)) {
         confirmDelete();
       }
     } else {
-      Alert.alert('Delete User', 'Are you sure you want to delete this user?', [
+      Alert.alert('Delete account', body, [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: confirmDelete },
+        { text: 'Delete account', style: 'destructive', onPress: confirmDelete },
       ]);
     }
   };
@@ -395,6 +425,18 @@ export default function AdminUsersScreen() {
                         <Text style={s.userName}>{userItem.name}</Text>
                         <Text style={s.userEmail}>{userItem.email}</Text>
                         {userItem.phone ? <Text style={s.userEmail}>{formatPhoneDisplay(userItem.phone)}</Text> : null}
+                        {/* The request, where the admin already looks. It is a
+                            field on the user's own row rather than a queue on
+                            a screen nobody opens — an unread queue is the
+                            "contact support" stall in another costume. */}
+                        {userItem.deletion_requested_at ? (
+                          <Text style={s.delRequestBadge}>
+                            Requested deletion{' '}
+                            {new Date(userItem.deletion_requested_at).toLocaleDateString(undefined, {
+                              day: 'numeric', month: 'short',
+                            })}
+                          </Text>
+                        ) : null}
                       </View>
                       <View style={[s.roleBadge, { backgroundColor: roleStyle.bg }]}>
                         <Text style={[s.roleText, { color: roleStyle.color }]}>
@@ -427,7 +469,7 @@ export default function AdminUsersScreen() {
                         disabled={isSelf}
                       />
                       <Pressable 
-                        onPress={() => handleDeleteUser(userItem.id)}
+                        onPress={() => handleDeleteUser(userItem.id, userItem.name)}
                         style={[s.deleteBtn, isSelf && s.deleteBtnDisabled]}
                         disabled={isSelf}
                       >
@@ -755,6 +797,14 @@ function buildStyles(colors, isDark) {
   userEmail: {
     fontSize: 13,
     color: colors.text.muted,
+  },
+  // The deletion request. semantic.attention rather than a destructive red:
+  // the REQUEST is not the destructive act, the admin pressing delete is.
+  delRequestBadge: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: semantic.attention,
+    marginTop: 2,
   },
   roleBadge: {
     paddingHorizontal: spacing.sm,
