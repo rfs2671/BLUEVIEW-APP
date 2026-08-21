@@ -2,6 +2,47 @@
 
 Known gaps and deferred work, newest first.
 
+- **[POST-RELEASE] Nothing records which bundle a device is running, and after
+  release nobody will be able to work it out.**
+  Today the installed population is KNOWN because it was hand-placed: the app has
+  never shipped on either store, both submissions are rejected or blocked, and
+  every device in the field was handed out by the operator — his own phone and
+  the CP on 588 Thomas. So "who is stranded on the old runtime?" is answered by
+  asking him, and the 1.1.3 to 1.2.0 OTA gap was shipped open on exactly that
+  basis: no device had ever reached runtime 1.1.3, because a device cannot cross
+  runtime versions by OTA (`expo-updates` applies an update only when its
+  `runtimeVersion` equals the running binary's), and the only binary in
+  existence was 1.1.0 (5).
+
+  **Release is what breaks that.** The moment installs come from a store, the
+  population stops being a list the operator holds in his head, and the same
+  question becomes unanswerable:
+
+  * The SERVER cannot answer it. No version header on any API request; the
+    `getDeviceFingerprint` payload carries brand / model / OS / platform and no
+    app version; no `app_version` field on any collection. `/api/version`
+    reports the BACKEND's commit, and the settings BUILD card does its
+    comparison client-side and sends nothing up.
+  * EAS cannot answer it either. `expo-insights` is not a dependency, so there
+    are no update-adoption metrics in the Expo dashboard.
+
+  Why it matters, in the shape it has already taken once: an
+  `expo.version` bump rolls the runtime version, and every device that does not
+  take the new BINARY silently stops receiving updates — no error, no prompt,
+  the device simply asks and is correctly told there is nothing for it. That is
+  how a superintendent on a live site ran three weeks behind the fixes written
+  for him and filed unsigned compliance logs the whole time.
+
+  Two candidate mechanisms, neither scoped: send the running version on API
+  requests so the server can report the spread, or add `expo-insights` and read
+  adoption per update. The first also answers "is this device's JS current?" for
+  support, which is the question the BUILD card exists to answer one phone at a
+  time.
+
+  **Not a gap now — do not build it before release.** The population is
+  knowable by other means until then, and a telemetry field added early is a
+  field nobody reads.
+
 - **[HIGH] Full responsive-layout audit across the supported device-size range.**
   Verify EVERY screen at the smallest supported size (iPhone SE / 4.7") and the
   largest (Pro Max / 6.9"), on both iOS and Android: nothing clipped, truncated,
