@@ -640,9 +640,11 @@ export const CHIP_SLOTS = 4;
  * Scaffold erection appears on the scaffolding crew's card because it is in
  * their taxonomy. Site clean-up on whoever cleaned up. Two of the twelve —
  * "rain - no work" and "shutdown" — were facts about the DAY rather than a
- * crew's activity and became a day-level control (dayStateModel.js); the other
- * ten now flow through suggested/catalog by trade, because the ranker stopped
- * special-casing them.
+ * crew's activity and were removed from the taxonomy outright — a day-level
+ * control for them was tried and withdrawn, because nobody is on site to open
+ * the app on a washout and the absence of a log for a date is the record. The
+ * other ten now flow through suggested/catalog by trade, because the ranker
+ * stopped special-casing them.
  *
  * Returns { primary, rest, basis }. `always` is gone from the shape.
  */
@@ -694,15 +696,34 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
   }
 
   const shown = new Set(primary.map((c) => c.id));
-  // The remainder comes from the UNFILTERED list, so "all activities" means all
-  // activities rather than "the rest of this trade's".
-  const pool = (filtered && Array.isArray(allChips) && allChips.length > 0)
-    ? allChips.filter(notOther) : mine;
-  // NO always_available EXCLUSION. The band is gone: the ranker stopped
-  // special-casing those ten and they now flow through suggested/catalog by
-  // trade like every other activity, so filtering on the band here would hide
-  // a crew's own work from its own expander.
-  const rest = pool.filter((c) => !shown.has(c.id));
+  // THE EXPANDER HOLDS THIS CREW'S REMAINING TRADE WORK, NOT THE CATALOGUE.
+  //
+  // It used to take the remainder from the UNFILTERED list, so with the chips
+  // trade-filtered the expander dumped every other trade's activities into a
+  // scaffolder's card. The operator's complaint was never the COUNT — twenty is
+  // fine — it was the IRRELEVANCE: seventy-odd of the eighty-odd belonged to
+  // somebody else, and a CP scanning for his own work had to sift them out.
+  //
+  // `mine` is already trade-filtered by the ranker, so the remainder is what is
+  // left of THIS crew's trade after the four primaries.
+  //
+  // WHAT THIS PUTS OUT OF REACH, stated because it is the cost. A chip whose
+  // trade is not this crew's is no longer reachable from this card. That is the
+  // point of the change, and it is survivable for one reason: the OTHER chip is
+  // rendered unconditionally, outside this expander, so a CP always has a
+  // free-text path for work the taxonomy does not offer him. Without that
+  // escape hatch this change would trade "buried" for "unrecordable", which is
+  // the worse failure.
+  //
+  // UNFILTERED IS UNCHANGED. With no resolved trades `mine` IS everything, so a
+  // crew whose trade nobody typed still sees the whole catalogue rather than an
+  // empty expander.
+  //
+  // NO always_available EXCLUSION, still. The band is gone: the ranker stopped
+  // special-casing those and they flow through suggested/catalog by trade like
+  // every other activity, so filtering on the band here would hide a crew's own
+  // work from its own expander.
+  const rest = mine.filter((c) => !shown.has(c.id));
 
   return { primary, rest, basis, hidden: rest.length };
 }

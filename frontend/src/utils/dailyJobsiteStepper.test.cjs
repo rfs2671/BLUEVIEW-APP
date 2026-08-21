@@ -258,9 +258,14 @@ ok(/const filtered = Array\.isArray\(resolvedTrades\) && resolvedTrades\.length 
   'promotion is gated on the trade having RESOLVED, not merely being non-empty');
 ok(/const tradeCatalog = filtered/.test(MODEL),
   'so an untraded crew keeps the collapsed catalogue it had');
-// "All activities" must mean all of them, not the rest of this one trade.
-ok(/\? allChips\.filter\(notOther\) : mine;/.test(MODEL),
-  'the remainder is drawn from the UNFILTERED list');
+// THE EXPANDER HOLDS THIS CREW'S TRADE WORK, not the catalogue. This asserted
+// the opposite — that the remainder came from the unfiltered list — and the
+// operator withdrew that: the count was never the complaint, the irrelevance
+// was. `mine` is already trade-filtered by the ranker.
+ok(/const rest = mine\.filter\(/.test(MODEL),
+  'the remainder is drawn from the trade-filtered chips for THIS crew');
+ok(!/allChips\.filter\(notOther\)/.test(MODEL),
+  'and the unfiltered pool is no longer consulted');
 ok(/!shown\.has\(c\.id\)/.test(MODEL),
   'and never repeats a chip already shown inline');
 ok(/allChips: chipsByTrade\[''\],/.test(code),

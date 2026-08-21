@@ -496,18 +496,36 @@ def test_insulation_prep_node_is_deleted_and_leaves_no_reference():
         assert "insulation_prep" not in _ids(_rank(prior_activity_ids=prior)), prior
 
 
-def test_firestopping_opens_inspection_only():
-    # the earlier firestopping -> insulation edge was corrected away
-    assert _succ()["firestopping"] == ["inspection"]
+def test_firestopping_now_opens_nothing():
+    """INSPECTION WAS ITS ONLY SUCCESSOR, and inspection is gone.
+
+    Ruled: an inspection is not work a sub performed — an inspector arriving is
+    a visitor event, already captured on step 3 under visitors — so it does not
+    belong in a table of activities.
+
+    Its six edges were ALL INBOUND and all soft_parallel_open; it had none
+    outbound, so it was terminal. Removing it therefore leaves firestopping
+    with no successors rather than a rewired one. Inventing
+    firestopping -> insulation (the edge that was corrected away earlier) or
+    firestopping -> drywall would assert a sequence rule the operator never
+    gave, which is worse than a node with no successor.
+
+    A node with no successor is not an error here: the ranker falls back to the
+    trade catalogue, which is exactly what should happen when nothing in the
+    graph says what comes next.
+    """
+    assert _succ().get("firestopping", []) == []
 
 
 def test_corrected_interior_fit_out_chain_is_encoded_exactly():
     succ = _succ()
-    assert set(succ["interior_framing"]) == {"mep_rough_in", "blocking",
-                                             "inspection"}
-    assert set(succ["mep_rough_in"]) == {"firestopping", "inspection",
-                                         "interior_framing"}
-    assert set(succ["insulation"]) == {"drywall", "inspection"}
+    # Every `inspection` below went with the node. Nothing else in these chains
+    # changed — the remaining successors are the real sequence relationships and
+    # they are asserted unchanged, so the removal cannot have taken anything
+    # with it that it should not have.
+    assert set(succ["interior_framing"]) == {"mep_rough_in", "blocking"}
+    assert set(succ["mep_rough_in"]) == {"firestopping", "interior_framing"}
+    assert set(succ["insulation"]) == {"drywall"}
     assert set(succ["drywall"]) == {"taping", "finishes", "flooring", "paint"}
     assert set(succ["taping"]) == {"paint", "flooring", "millwork"}
     for src in ("finishes", "flooring", "paint"):
