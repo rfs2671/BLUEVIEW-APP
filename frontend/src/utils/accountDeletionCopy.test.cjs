@@ -27,6 +27,28 @@ const FRONTEND = path.join(__dirname, '..', '..');
 const SETTINGS = fs.readFileSync(path.join(FRONTEND, 'app', 'settings.jsx'), 'utf8');
 const ADMIN = fs.readFileSync(path.join(FRONTEND, 'app', 'admin', 'users.jsx'), 'utf8');
 const API = fs.readFileSync(path.join(FRONTEND, 'src', 'utils', 'api.js'), 'utf8');
+const COPY = fs.readFileSync(path.join(FRONTEND, 'src', 'utils', 'retentionCopy.js'), 'utf8');
+
+/** The shared module, evaluated so the assertions test RENDERED sentences
+ *  rather than source fragments — a template that concatenates correctly in
+ *  source can still render wrong. */
+const COPY_FNS = (() => {
+  const m = {};
+  const cjs = COPY.replace(/export function (\w+)/g, 'exports.$1 = function $1');
+  // eslint-disable-next-line no-new-func
+  new Function('exports', cjs)(m);
+  return m;
+})();
+const CP_TEXT = [
+  COPY_FNS.accessRemovedSentence(null),
+  COPY_FNS.retentionSentence(null),
+  COPY_FNS.drainWarning(null),
+].join(' ');
+const ADMIN_TEXT = [
+  COPY_FNS.accessRemovedSentence('Michael Reyes'),
+  COPY_FNS.retentionSentence('Michael Reyes'),
+  COPY_FNS.drainWarning('Michael Reyes'),
+].join(' ');
 
 let passed = 0; let failed = 0;
 function ok(cond, label) {
@@ -51,32 +73,32 @@ console.log('\n-- it is reachable in the app, which is the whole guideline --');
 
 console.log('\n-- 1. what goes --');
 {
-  ok(/Your account and your access to LeveLog will be removed/.test(SET),
+  ok(/Your account and your access to LeveLog will be removed/.test(CP_TEXT),
     'the account and the access, said plainly');
-  ok(/You will not be able to sign in/.test(SET),
+  ok(/You will not be able to sign in/.test(CP_TEXT),
     'and the consequence he will actually notice');
 }
 
 console.log('\n-- 2 and 3. what stays, and WHY --');
 {
   ok(/Your signed records stay/.test(SET), 'stated as a heading, not buried');
-  ok(/Logbooks, daily logs, signatures and check-ins you filed/.test(SET),
+  ok(/Logbooks, daily logs, signatures and check-ins you filed/.test(CP_TEXT),
     'named specifically — "your data" would leave him guessing which data');
   // THE CORRECTION THAT MATTERS. "Kept by law" names the reason; "kept for
   // compliance" names a category and tells him only that a policy exists.
-  ok(/NYC DOB record-keeping requires the site to keep them/.test(SET),
+  ok(/NYC DOB record-keeping requires the site to keep them/.test(CP_TEXT),
     'THE REASON IS NAMED: DOB record-keeping, not "for compliance"');
-  ok(/not yours to erase and we will not delete them/.test(SET),
+  ok(/not yours to erase and we will not delete them/.test(CP_TEXT),
     'and it refuses plainly instead of implying erasure might happen later');
-  ok(/They keep your name on them, because a filed attestation has to say who made it/.test(SET),
+  ok(/They keep your name on them, because a filed attestation has to say who made it/.test(CP_TEXT),
     'HIS NAME STAYS, and why — otherwise he finds out afterwards, from a PDF');
 }
 
 console.log('\n-- 4. the one warning that can save him something --');
 {
   ok(/Before you request this/.test(SET), 'it comes BEFORE the destructive action');
-  ok(/unsynced/.test(SET), 'names the state he can actually look for');
-  ok(/cannot be recovered once your access ends/.test(SET),
+  ok(/unsynced/.test(CP_TEXT), 'names the state he can actually look for');
+  ok(/cannot be recovered once your access ends/.test(CP_TEXT),
     'and says what is lost — a CP whose token stops authenticating strands '
     + 'every signed draft still on his handset');
 }
@@ -100,21 +122,50 @@ console.log('\n-- not offered on a shared site device --');
     'a jobsite tablet is not somebody\'s personal account');
 }
 
-console.log('\n-- the admin is told the same facts, from the other side --');
+console.log('\n-- the admin is told the SAME SENTENCE, not a second one --');
 {
-  ok(/removes their account and sign-in/.test(ADM), 'what he is ending');
-  ok(/filed logbooks, signatures and check-ins stay on the project/.test(ADM),
-    'what he is NOT ending');
-  ok(/with their name on them/.test(ADM),
-    'and that the attestation keeps its author — the thing he would assume '
-    + 'deletion breaks');
-  ok(/unsynced work on their phone it will not/.test(ADM)
-    && /reach the server after this/.test(ADM),
+  // TWO WORDINGS OF ONE GUARANTEE IS HOW THEY DRIFT. The next person to soften
+  // one would not know the other existed, and the app would then tell two
+  // stories about what happens to a filed attestation. So there is ONE
+  // definition and the only thing that varies is who is spoken to.
+  ok(/retentionCopy/.test(SETTINGS) && /retentionCopy/.test(ADMIN),
+    'both screens import the same module');
+  ok(!/NYC DOB record-keeping/.test(SETTINGS) && !/NYC DOB record-keeping/.test(ADMIN),
+    'and NEITHER screen carries its own copy of the sentence');
+  // THE REAL TEST OF "one sentence": strip the subject from each voice and the
+  // remainder must be IDENTICAL. Counting occurrences would only prove the
+  // string appears once; this proves the two voices did not diverge.
+  const norm = (t) => t
+    .replace(/Michael Reyes/g, 'SUBJ')
+    .replace(/\byou\b/gi, 'SUBJ')
+    .replace(/\b(yours|theirs)\b/gi, 'POSS')
+    .replace(/\b(your|their)\b/gi, 'POSS');
+  ok(norm(COPY_FNS.retentionSentence(null)) === norm(COPY_FNS.retentionSentence('Michael Reyes')),
+    'the retention sentence is ONE sentence with the subject swapped, not two');
+
+  // Same clauses, same order, subject swapped.
+  ok(/Logbooks, daily logs, signatures and check-ins Michael Reyes filed/.test(ADMIN_TEXT),
+    'the admin sentence names the person instead of composing a parallel one');
+  ok(/NYC DOB record-keeping requires the site to keep them/.test(ADMIN_TEXT),
+    'the REASON is the same reason, not an admin-flavoured restatement');
+  ok(/They keep their name on them, because a filed attestation has to say who made it/.test(ADMIN_TEXT),
+    'and the clause about the name surviving is present on both sides');
+  ok(/account and access to LeveLog will be removed/.test(ADMIN_TEXT),
+    'what is ended');
+  // The FULL instruction, not just the risk. Naming the hazard without the
+  // action leaves the admin knowing something is wrong and not what to do,
+  // which is how he presses delete anyway.
+  ok(/unsynced work on their phone it will not reach the server/.test(ADMIN_TEXT),
     'THE CHECK HE MUST DO FIRST, in front of him at the moment he acts');
-  ok(/Ask them to open the app on a connection/.test(ADM),
-    'phrased as an instruction he can follow, not a caveat');
+  ok(/Ask them to open the app on a connection before you continue/.test(ADMIN_TEXT),
+    'and the action he can take, spelled out');
   ok(/deleteUserBody\(userName\)/.test(ADM),
     'and the body names the person, so a mis-tap on the wrong row is visible');
+
+  // they/them in the third person: the app does not know anyone's pronouns,
+  // and a guess in a legal-retention notice is worse than the neutral form.
+  ok(!/\bhis\b|\bher\b/.test(ADMIN_TEXT),
+    'third person is they/them, never a guessed pronoun');
 }
 
 console.log('\n-- the admin sees it where he already looks --');

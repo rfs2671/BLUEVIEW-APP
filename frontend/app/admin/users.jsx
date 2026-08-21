@@ -37,6 +37,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { retentionSentence, drainWarning, accessRemovedSentence } from '../../src/utils/retentionCopy';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -215,15 +216,18 @@ export default function AdminUsersScreen() {
    *   a signed compliance record, so it goes in front of the admin BEFORE the
    *   destructive action, not in a doc.
    */
-  const deleteUserBody = (name) => (
-    `Deleting ${name || 'this user'} removes their account and sign-in. `
-    + 'Their filed logbooks, signatures and check-ins stay on the project, '
-    + 'with their name on them.'
-    + String.fromCharCode(10) + String.fromCharCode(10)
-    + 'Check first: if they have unsynced work on their phone it will not '
-    + 'reach the server after this. Ask them to open the app on a connection '
-    + 'before you continue.'
-  );
+  const deleteUserBody = (name) => {
+    // THE SAME SENTENCE THE ACCOUNT HOLDER SAW, in the third person. NOT a
+    // parallel wording — retentionCopy.js is the single definition, and two
+    // wordings of one guarantee is how they drift apart.
+    const who = name || 'This user';
+    const NL = String.fromCharCode(10);
+    return [
+      accessRemovedSentence(who),
+      retentionSentence(who),
+      'Check first: ' + drainWarning(who),
+    ].join(NL + NL);
+  };
 
   const handleDeleteUser = (userId, userName) => {
     // PREVENT DELETING SELF

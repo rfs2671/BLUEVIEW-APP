@@ -47,6 +47,7 @@ import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
+import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
@@ -1052,10 +1053,7 @@ export default function SettingsScreen() {
               <View style={s.modalContent}>
                 <Text style={s.delSheetTitle}>Request account deletion</Text>
 
-                <Text style={s.delBody}>
-                  Your account and your access to LeveLog will be removed. You
-                  will not be able to sign in.
-                </Text>
+                <Text style={s.delBody}>{accessRemovedSentence(null)}</Text>
 
                 {/* THE SENTENCE THAT MAKES THIS HONEST RATHER THAN A STALL.
                     "Kept by law" and not "kept for compliance": the first
@@ -1063,22 +1061,11 @@ export default function SettingsScreen() {
                     him to guess. And it says his NAME stays on them, because
                     that is the part he would otherwise find out later. */}
                 <Text style={s.delBodyStrong}>Your signed records stay.</Text>
-                <Text style={s.delBody}>
-                  Logbooks, daily logs, signatures and check-ins you filed are
-                  construction compliance documents. NYC DOB record-keeping
-                  requires the site to keep them, and they remain with the
-                  project — they are not yours to erase and we will not delete
-                  them. They keep your name on them, because a filed
-                  attestation has to say who made it.
-                </Text>
+                <Text style={s.delBody}>{retentionSentence(null)}</Text>
 
                 {/* The only sentence here that can save him something. */}
                 <Text style={s.delBodyStrong}>Before you request this</Text>
-                <Text style={s.delBody}>
-                  Open any logbook still showing as unsynced and let it finish.
-                  Work that has not reached the server yet cannot be recovered
-                  once your access ends.
-                </Text>
+                <Text style={s.delBody}>{drainWarning(null)}</Text>
 
                 <Text style={s.delBody}>
                   Your administrator will action this request and can contact
