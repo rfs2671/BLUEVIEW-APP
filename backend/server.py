@@ -17453,6 +17453,31 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         # onto it is a tamper attempt — reject; corrections go through /amend.
         if existing.get("is_locked"):
             raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
+        # ── AND THE LOCK IS THE LINE. SIGNED IS NOT. ────────────────────────
+        #
+        # A guard was built here that refused any SUBMITTED row and routed it to
+        # amendment. It was withdrawn before shipping, and the reasoning is worth
+        # keeping because it is the same distinction twice:
+        #
+        #   AMENDMENT CORRECTS AN ATTESTED RECORD. A CP re-submitting an
+        #   UNSIGNED log is finishing it, not correcting it — nothing was
+        #   attested. And a CP adding an afternoon photo to a log he signed at
+        #   noon is ALSO finishing it: END_OF_DAY exists precisely so a daily
+        #   narrative stays open through the day, and observations and photos
+        #   arrive after the signature. Routing him to amendment on his first
+        #   afternoon photo would make amendment the normal path for ordinary
+        #   work, which is the opposite of what it is for.
+        #
+        # So the only refusal here is the LOCK, above. An end-of-day log is
+        # writable until the nightly sweep seals it, and that window is the
+        # intended flow rather than a gap.
+        #
+        # WHAT THAT LEAVES OPEN, named rather than papered over: a row that
+        # never gets locked never leaves the window. The sweep will not seal an
+        # unsigned log, so a log written by a bundle predating the affirmation
+        # gate (`cp_signature: {}`) stays editable indefinitely. That is a
+        # LOCKING question, not an upsert question, and it is open — see
+        # sweep_stale_end_of_day_logs.
         # Update existing
         await db.logbooks.update_one(
             {"_id": existing["_id"]},
@@ -18293,6 +18318,46 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         and not _is_affirmed_signature(d.get("cp_signature"))
     ]
 
+    # ── ONE LIST, BECAUSE IT IS ONE PROBLEM ─────────────────────────────────
+    #
+    # The two sets above OVERLAP, and on a live site the overlap was total. A
+    # daily_jobsite row carrying `cp_signature: {}` — the shape an old bundle
+    # writes — matches BOTH: it is submitted with a non-null signature that is
+    # not affirmed, and it is an unlocked end-of-day log from a past date whose
+    # signature the sweep would not accept.
+    #
+    # So three rows on 588 Thomas produced SIX counted problems across two
+    # cards: "3 logbooks filed without an affirmed signature" and "3 days
+    # worked but never signed", each tapping to a different end of the same
+    # list. Two surfaces disagreeing about the same three rows is not twice the
+    # signal; it reads as noise, and it is one reason three weeks passed.
+    #
+    # THE STATE IS PER ROW, not per card, because it is what the CP acts on:
+    #   unsigned    — nothing was ever put on it. He signs it.
+    #   unaffirmed  — a signature is present but was never affirmed FOR THIS
+    #                 document (an inherited one, or the `{}` an old bundle
+    #                 wrote). He opens it and affirms; re-signing is not the
+    #                 fix and telling him to sign would make him think the app
+    #                 lost the signature he already gave.
+    #
+    # THE OLD FIELDS STAY. Bundles in the field read them, and this whole
+    # incident exists because a two-week-old phone cannot take an OTA. Removing
+    # them would blank the only exception cards those devices have.
+    _gaps = {}
+    for _ref in stale_unsigned_refs:
+        _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
+    for _doc in unaffirmed_docs:
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if not _lt or not _dt:
+            continue
+        # A present-but-unaffirmed signature is the more specific state, so it
+        # wins over the generic "unsigned" the stale pass assigned.
+        _gaps[(_lt, _dt)] = "unaffirmed"
+    attestation_gaps = sorted(
+        ({"log_type": k[0], "date": k[1], "state": v} for k, v in _gaps.items()),
+        key=lambda g: g["date"], reverse=True,
+    )
+
     return {
         "missing_toolbox_talk": missing_toolbox,
         "unsigned_orientations": unsigned_orientations,
@@ -18300,6 +18365,9 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         "unaffirmed_logbook_refs": unaffirmed_refs,
         "stale_unsigned_logbooks": len(stale_unsigned_refs),
         "stale_unsigned_logbook_refs": stale_unsigned_refs,
+        # The merged, de-duplicated view. One row per (log_type, date), each
+        # naming its own state. Current bundles render this as ONE card.
+        "attestation_gaps": attestation_gaps,
         "week_start": week_start_str,
     }
 

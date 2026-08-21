@@ -234,6 +234,12 @@ const SUBMIT_CODES = [...new Set(
 // every row is one the PDF renderer would already refuse to print, i.e. the
 // document would come out blank. Same machine-code convention, no new
 // mechanism.
+// BACK TO FOUR. A fifth, SUBMIT_ALREADY_FILED, was added and withdrawn before
+// it shipped: it refused any SUBMITTED row and routed it to amendment, and the
+// ruling is that the LOCK is the line and signed is not. An end-of-day log is
+// meant to stay writable through the day — a CP adding an afternoon photo to a
+// log he signed at noon is finishing it, not correcting it — so there was no
+// row left for the code to fire on. A code with no trigger is worse than none.
 ok(SUBMIT_CODES.length === 4
   && SUBMIT_CODES.includes('SUBMIT_EMPTY_LOG')
   && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE')

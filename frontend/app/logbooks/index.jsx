@@ -93,7 +93,7 @@ export default function LogBooksScreen() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [todayLogs, setTodayLogs] = useState({});
-  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [] });
+  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [], attestation_gaps: [] });
   const [cpName, setCpName] = useState('');
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
@@ -268,7 +268,7 @@ export default function LogBooksScreen() {
     try {
       const [logs, notifs, scaffoldInfo, reqLogbooks, catalog] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
-        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [] })),
+        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [], attestation_gaps: [] })),
         logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
         projectsAPI.getRequiredLogbooks(projectId).catch(() => null),
         logbookTypesAPI.getAll().catch(() => null),
@@ -336,6 +336,44 @@ export default function LogBooksScreen() {
     const projectId = selectedProject._id || selectedProject.id;
     const { log_type, date } = refs[refs.length - 1];
     router.push(`/logbooks/${log_type}?projectId=${projectId}&date=${date}`);
+  };
+
+  const handleOpenGap = (gap) => {
+    if (!selectedProject || !gap) return;
+    const projectId = selectedProject._id || selectedProject.id;
+    router.push(
+      `/logbooks/${gap.log_type}?projectId=${projectId}&date=${gap.date}`);
+  };
+
+  /**
+   * The human name for a log type, from the same two sources the list above
+   * uses — server catalogue first, the six fallbacks second, a titlecased key
+   * last. A gap row must never be the only place on this screen that calls a
+   * log something different.
+   */
+  const gapLabel = (key) => {
+    const hit = [...(logTypeCatalog || []), ...FALLBACK_LOG_TYPES]
+      .find((t) => t && t.key === key);
+    return hit?.label
+      || String(key || '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
+  /**
+   * "2026-08-11" -> "Aug 11", or "Aug 11, 2025" when it is not this year.
+   *
+   * BY STRING, NOT BY Date. `new Date('2026-08-11')` is UTC midnight, which
+   * renders as the 10th anywhere west of Greenwich — the app is on New York
+   * time, so every date on this card would be a day early. The row has to name
+   * the same day the log itself is filed under.
+   */
+  const gapDate = (iso) => {
+    const [y, m, d] = String(iso || '').split('-');
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const name = MON[parseInt(m, 10) - 1];
+    if (!name || !d) return iso || '';
+    const thisYear = today.slice(0, 4);
+    return `${name} ${parseInt(d, 10)}${y === thisYear ? '' : `, ${y}`}`;
   };
 
   const handleOpenUnaffirmed = () => {
@@ -454,6 +492,18 @@ export default function LogBooksScreen() {
   // an empty "On site today" heading over nothing is worse than no heading.
   const activations = requiredLogbooks?.activations || [];
   const staleUnsigned = notifications?.stale_unsigned_logbooks || 0;
+  // ── ONE CARD FOR ONE PROBLEM ──────────────────────────────────────────────
+  // `attestation_gaps` is the server's merged, de-duplicated view: one row per
+  // (log_type, date), each naming its own state. The two older counts are still
+  // read above so an older SERVER (which does not send the merged list) keeps
+  // rendering something rather than nothing.
+  const gaps = notifications?.attestation_gaps || [];
+  const gapsUnsigned = gaps.filter((g) => g.state === 'unsigned');
+  const gapsUnaffirmed = gaps.filter((g) => g.state === 'unaffirmed');
+  // OLDEST FIRST. The server sorts newest-first for the count; the CP reads a
+  // worklist, and the day most likely to be asked about — and the one the sweep
+  // has had longest to not fix — belongs at the top of it.
+  const gapsOldestFirst = [...gaps].reverse();
   const missingToolbox = notifications?.missing_toolbox_talk || [];
   const unaffirmedLogbooks = notifications?.unaffirmed_logbooks || 0;
   const visibleLogs = getVisibleLogTypes();
@@ -644,46 +694,90 @@ export default function LogBooksScreen() {
           {/* Unaffirmed-signature alert — a filed logbook whose CP signature was
               inherited but never affirmed for that document. Same attention
               channel as the toolbox alert; an honest deficiency, not a block. */}
-          {unaffirmedLogbooks > 0 && (
-            <Pressable onPress={handleOpenUnaffirmed}>
-              <GlassCard style={styles.notifCard}>
-                <View style={styles.notifHeader}>
-                  <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
-                  <Text style={styles.notifTitle}>
-                    {unaffirmedLogbooks} logbook{unaffirmedLogbooks > 1 ? 's' : ''} filed without an affirmed signature
-                  </Text>
-                </View>
-                <Text style={styles.notifWorker}>
-                  Tap to open and affirm the signature for that document.
+          {/* ── ONE CARD, TWO STATES ────────────────────────────────────────
+              This replaced TWO cards that counted the same rows. A daily log
+              carrying `cp_signature: {}` matched both detectors, so three rows
+              on 588 Thomas showed as "3 filed without an affirmed signature"
+              AND "3 days worked but never signed", tapping to opposite ends of
+              the same list. Twice the noise, none of the extra signal — and a
+              fifth card would have added to the treatment drift followups.md
+              already logs on this screen.
+
+              THE STATE IS NAMED PER ROW because the two need DIFFERENT actions,
+              and that is the whole reason to distinguish them:
+
+                never signed  -> he signs it. Ordinary unfinished work.
+                not affirmed  -> a signature IS on it; he opens it and affirms
+                                 it for that document. Telling him to SIGN would
+                                 make him think the app lost the signature he
+                                 already gave, and he would sign again — which
+                                 is the one thing this copy must not cause. */}
+          {/* NO WINDOW ON THIS LIST, DELIBERATELY. `attestation_gaps` is not
+              filtered to today, to this week, or to anything else: an unsigned
+              log does not stop being unsigned because the calendar moved, and a
+              screen that drops it the next morning makes it invisible by
+              construction — which is how three of these sat for three weeks at
+              588 Thomas. It is capped only by the detector's own 200.
+
+              AND EVERY ROW IS A DOOR. A count that opens the oldest gets the CP
+              to one of them; he then has to fix it, wait for a refetch, and tap
+              again to discover the second. The list is the worklist. */}
+          {gaps.length > 0 && (
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                <Text style={styles.notifTitle}>
+                  {gaps.length} filed log{gaps.length > 1 ? 's' : ''} with no valid signature
                 </Text>
-              </GlassCard>
-            </Pressable>
+              </View>
+              {gapsUnsigned.length > 0 && (
+                <Text style={styles.notifWorker}>
+                  {gapsUnsigned.length} never signed — still open and still yours
+                  to finish.
+                </Text>
+              )}
+              {gapsUnaffirmed.length > 0 && (
+                <Text style={styles.notifWorker}>
+                  {gapsUnaffirmed.length} signed but not affirmed for that day —
+                  open {gapsUnaffirmed.length > 1 ? 'each' : 'it'} and tap your
+                  signature to affirm it. You do not need to sign again.
+                </Text>
+              )}
+              {gapsOldestFirst.map((g) => (
+                <Pressable
+                  key={`${g.log_type}:${g.date}`}
+                  onPress={() => handleOpenGap(g)}
+                  style={({ pressed }) => [styles.gapRow, pressed && styles.gapRowPressed]}
+                >
+                  <Text style={styles.gapRowDate}>{gapDate(g.date)}</Text>
+                  <Text style={styles.gapRowLabel} numberOfLines={1}>
+                    {gapLabel(g.log_type)}
+                  </Text>
+                  <Text style={styles.gapRowState}>
+                    {g.state === 'unsigned' ? 'never signed' : 'not affirmed'}
+                  </Text>
+                  <ChevronRight size={14} strokeWidth={1.5} color={colors.text.muted} />
+                </Pressable>
+              ))}
+            </GlassCard>
           )}
 
-
-          {/* A DAY THAT WAS WORKED AND NEVER SIGNED. The end-of-day sweep
-              freezes yesterday's SIGNED narratives and leaves these open on
-              purpose — sealing a record nobody attested to is worse than
-              leaving it open — so it is an unfinished obligation, and the CP
-              is the only person who can finish it.
-
-              SAME TREATMENT as the unaffirmed-signature card directly above,
-              deliberately. That card is the closest thing this screen has: a
-              record that exists and lacks the CP's attestation, tappable,
-              deep-linking to the log. A fourth variant is what followups.md
-              already logs this screen for. */}
-          {staleUnsigned > 0 && (
-            <Pressable onPress={handleOpenStaleUnsigned}>
+          {/* OLDER SERVER FALLBACK. A server that predates `attestation_gaps`
+              sends only the two counts; without this its CP would lose the
+              cards entirely. Suppressed the moment the merged list arrives, so
+              nothing is ever double-counted on a current pair. */}
+          {gaps.length === 0 && (unaffirmedLogbooks > 0 || staleUnsigned > 0) && (
+            <Pressable onPress={staleUnsigned > 0 ? handleOpenStaleUnsigned : handleOpenUnaffirmed}>
               <GlassCard style={styles.notifCard}>
                 <View style={styles.notifHeader}>
                   <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={styles.notifTitle}>
-                    {staleUnsigned} day{staleUnsigned > 1 ? 's' : ''} worked but never signed
+                    {Math.max(unaffirmedLogbooks, staleUnsigned)} filed log
+                    {Math.max(unaffirmedLogbooks, staleUnsigned) > 1 ? 's' : ''} with no valid signature
                   </Text>
                 </View>
                 <Text style={styles.notifWorker}>
-                  These logs are still open and still yours to finish. Tap to
-                  open the oldest one and sign it.
+                  Tap to open and deal with the signature.
                 </Text>
               </GlassCard>
             </Pressable>
@@ -891,6 +985,22 @@ function buildStyles(colors, isDark) {
     notifHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
     notifTitle: { fontSize: 14, fontWeight: '500', color: semantic.attention, flex: 1 },
     notifWorker: { fontSize: 13, color: colors.text.secondary, marginBottom: 2, paddingLeft: spacing.sm },
+    // One gap row. The date leads because that is what an inspector asks about.
+    gapRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      paddingVertical: spacing.sm,
+      paddingLeft: spacing.sm,
+      borderTopWidth: 1,
+      // The screen already has a divider, and it is theme-aware; a hand-written
+      // white would be invisible in light mode.
+      borderTopColor: divider,
+    },
+    gapRowPressed: { opacity: 0.8 },  // same press feedback as the log cards
+    gapRowDate: { fontSize: 13, fontWeight: '600', color: colors.text.primary, minWidth: 58 },
+    gapRowLabel: { fontSize: 13, color: colors.text.secondary, flex: 1 },
+    gapRowState: { fontSize: 12, color: semantic.attention },
     notifMore: { fontSize: 12, color: colors.text.muted, paddingLeft: spacing.sm, marginBottom: spacing.sm },
     notifBtn: { marginTop: spacing.sm },
 
