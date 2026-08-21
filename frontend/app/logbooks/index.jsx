@@ -660,30 +660,6 @@ export default function LogBooksScreen() {
             </Pressable>
           )}
 
-          {/* THE CLASSIFICATION WAS NEVER SET, so the required set failed
-              CLOSED and both major-building logs are on the list below.
-              Saying so is half the ruling: get_required_logbooks includes them
-              because it cannot rule them out, and a CP who is shown two logs
-              his site plainly does not need, with no reason given, learns to
-              distrust the list. Reuses the same attention channel as the two
-              alerts above rather than adding a fourth treatment (see the
-              exception-surface drift note in followups.md). */}
-          {requiredLogbooks && requiredLogbooks.classification_assessed === false && (
-            <GlassCard style={styles.notifCard}>
-              <View style={styles.notifHeader}>
-                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
-                <Text style={styles.notifTitle}>
-                  Building classification not set
-                </Text>
-              </View>
-              <Text style={styles.notifWorker}>
-                Nobody has recorded this project&apos;s storeys, height or footprint,
-                so the app cannot tell whether it is a major building. The
-                Concrete Operations and SSC/SSM logs are listed until it does.
-                An admin sets this on the project.
-              </Text>
-            </GlassCard>
-          )}
 
           {/* A DAY THAT WAS WORKED AND NEVER SIGNED. The end-of-day sweep
               freezes yesterday's SIGNED narratives and leaves these open on

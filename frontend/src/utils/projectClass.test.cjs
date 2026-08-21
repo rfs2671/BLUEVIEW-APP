@@ -40,9 +40,32 @@ ok(!/if \(!classAssessed\) return null/.test(SS),
 const SU=fs.readFileSync(path.join(__dirname,'..','..','app','admin','superintendent.jsx'),'utf8');
 ok(!/\|\| 'regular'\)\.toLowerCase\(\)/.test(SU),
   "the `|| 'regular'` fallback is gone — it undid the API fix client-side");
-ok(/not_assessed: \{ label: 'NOT ASSESSED'/.test(SU), 'a NOT ASSESSED badge exists');
-ok(/CLASS_BADGES\[cls\] \|\| CLASS_BADGES\.not_assessed/.test(SU),
-  'and an unknown key falls back to NOT ASSESSED, never to a real class');
+// THE BADGE IS GONE, BY RULING, AND THE FALLBACK IS REGULAR AGAIN.
+//
+// The two assertions here used to be the exact opposite, and they were
+// right at the time: an absent class meant nobody had assessed the §3310
+// classification, so rendering REGULAR asserted a finding nobody had made.
+//
+// The operator has since ruled that a project STARTS regular and an admin
+// changes it when the project changes. That makes regular the answer for an
+// absent class rather than a guess about it, so there is no unassessed state
+// left to badge.
+//
+// The line ABOVE still stands and is the one that matters: the old
+// `|| 'regular').toLowerCase()` fallback undid the API fix client-side by
+// coercing at the read. This fallback is different — it is a lookup default
+// on a badge map, not a rewrite of the project's data.
+// COMMENT-STRIPPED: the screen still explains WHY the badge went, and that
+// prose names the old key. A raw test would read the explanation as the
+// thing it explains.
+const SU_CODE = SU
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '');
+ok(SU_CODE.length > 0, 'superintendent source stripped and non-empty');
+ok(!/not_assessed/.test(SU_CODE),
+  'no NOT ASSESSED badge survives — there is no unassessed state to show');
+ok(/CLASS_BADGES\[cls\] \|\| CLASS_BADGES\.regular/.test(SU),
+  'and an unknown key renders REGULAR, which is now the stated default');
 
 console.log(`\n${p} passed, ${f} failed`);
 if(f>0)process.exit(1);

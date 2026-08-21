@@ -85,7 +85,7 @@ export default function ProjectsScreen() {
     // "unassessed", and this field overrode that on the way in.
     //
     // Sending NOTHING lets the server's own classification run.
-    project_class: null,
+    project_class: 'regular',
   });
 
   // Redirect if not authenticated
@@ -170,11 +170,11 @@ export default function ProjectsScreen() {
         location: newProject.address,
         // OMITTED unless he picked one. A key present with any value is an
         // override; the absence is what lets the server classify.
-        ...(newProject.project_class ? { project_class: newProject.project_class } : {}),
+        project_class: newProject.project_class,
       });
 
       setProjects([...projects, createdProject]);
-      setNewProject({ address: '', project_class: null });
+      setNewProject({ address: '', project_class: 'regular' });
       setShowAddModal(false);
       toast.success('Project Created', 'New project added');
     } catch (error) {
@@ -451,12 +451,12 @@ export default function ProjectsScreen() {
                     <Text style={s.inputLabel}>PROJECT TYPE</Text>
                     <View style={s.classPickerCol}>
                       {[
-                        // FIRST, AND SELECTED UNTIL HE CHOOSES. "Not assessed"
-                        // is a real answer here: the server measures stories,
-                        // height and footprint and classifies from them, and it
-                        // can only do that if this screen does not assert one.
-                        { key: null, label: 'Not assessed — set later',
-                          desc: 'The server classifies from the measurements; pick one only to override it' },
+                        // REGULAR IS THE DEFAULT, and it is a real starting
+                        // value rather than a guess: a project starts regular
+                        // and an admin changes it when the project changes —
+                        // foundation complete, now Major A. The "Not assessed"
+                        // option was withdrawn for that reason; classification
+                        // is editable at any time, so there is nothing to defer.
                         { key: 'regular', label: 'Regular', desc: 'Under 10 stories, no SSC/SSM required' },
                         { key: 'major_a', label: 'Major A — SSC', desc: '10+ stories or 125+ ft — Site Safety Coordinator required' },
                         { key: 'major_b', label: 'Major B — SSM', desc: '15+ stories, 200+ ft, or 100K+ sqft — Site Safety Manager required' },

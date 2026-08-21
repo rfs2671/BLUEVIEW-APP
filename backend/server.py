@@ -2019,20 +2019,28 @@ class ProjectResponse(BaseModel):
     track_dob_status: bool = True
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
-    # NONE, MATCHING ProjectCreate AND ProjectUpdate. This defaulted to
-    # "regular", so a project document with NO project_class key — the correct
-    # representation of "nobody assessed this §3310 classification" — serialised
-    # to the client as a real class. The API asserted an assessment nobody made,
-    # and shipped it beside classification_source="unassessed", so one response
-    # carried both answers with nothing to say which a consumer should believe.
+    # "REGULAR", RESTORED BY RULING. This briefly defaulted to None, on the
+    # reasoning that an absent key meant "nobody assessed this §3310
+    # classification" and defaulting it asserted an assessment nobody made.
     #
-    # NOT the null-rejection case recorded at the top of this file (item 3): that
-    # was gates and five siblings typed NON-Optional List with default [], where
-    # a null genuinely could not construct. This field is Optional[str] and
-    # accepts None explicitly — verified by construction, not by reading the
-    # annotation. The default only ever fired on an ABSENT key, which is the
-    # legacy document written before the classification model landed.
-    project_class: Optional[str] = None
+    # The operator has since ruled that REGULAR IS THE ANSWER, not a guess: a
+    # project starts regular and an admin changes it when the project changes.
+    # So an absent key is not an unanswered question — it is a project nobody
+    # has needed to reclassify.
+    #
+    # WHAT THE DEFAULT DOES AND DOES NOT REACH, checked rather than assumed.
+    # It fires only on an ABSENT key, which after this ruling means exactly one
+    # population: legacy documents written before the classification model
+    # landed. Both write paths always SET the key, and the create form now
+    # always sends a class.
+    #
+    # It does NOT reach the fail-closed logbook rule. Every
+    # get_required_logbooks caller (:9865, :18322, :20294, :24443) reads
+    # `project.get("project_class")` off the RAW MONGO DOCUMENT, never off this
+    # model — so a legacy project keeps being computed as unassessed
+    # server-side and keeps its full logbook set. This default changes what the
+    # API says, not what the compliance rule decides.
+    project_class: Optional[str] = "regular"
     suggested_class: Optional[str] = None
     building_stories: Optional[int] = None
     building_height: Optional[int] = None
@@ -14024,11 +14032,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         
         body_html = (
             info_box(
-                # THE DAY'S STATE, directly under weather and only when set —
-                # weather says what the sky did, this says what it meant.
-                (f'<strong style="color:#0A1929;">Day:</strong> '
-                   f'{_day_state_label(data)}<br />' if _day_state_label(data) else '')
-                + f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
+                f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
                 f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description") or NOT_RECORDED)}<br />'
                 f'<strong style="color:#0A1929;">Time In:</strong> {data.get("time_in") or "N/A"}'
                 f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {data.get("time_out") or "N/A"}<br />'
@@ -19490,35 +19494,6 @@ def _sentence_case(text):
             if ch in ".!?":
                 cap_next = True
     return "".join(out)
-
-
-# ── A DAY NOBODY WORKED IS A COMPLETE RECORD, NOT A NEGLIGENT ONE ──────────
-#
-# "rain - no work" and "shutdown" used to be chips on a crew card. They are
-# facts about THE DAY, so they are a day-level field now (see the note on
-# ALWAYS_AVAILABLE_ORDER in sequence_rules_v1). The renderers have to say so.
-#
-# WITHOUT THIS the honest record reads as the negligent one: crews named, every
-# activity blank, description thin — indistinguishable on a filed 3301-02 from
-# a CP who signed without filling anything in. The men were ON SITE; they tapped
-# the gate and stood down. Present-and-stood-down is a different fact from
-# absent and the document must be able to state it.
-_DAY_STATE_LABELS = {
-    "rain_no_work": "Rain — no work performed",
-    "shutdown": "Shutdown — no work performed",
-}
-
-
-def _day_state_label(data):
-    """The day's state, or None on an ordinary working day.
-
-    Anything unrecognised — absent, null, junk, a log filed before the field
-    existed — is an ordinary day. The report must never assert a washout
-    nobody recorded.
-    """
-    return _DAY_STATE_LABELS.get(str((data or {}).get("day_state") or ""))
-
-
 def _display_sub_company(name):
     """Render a subcontractor/company for a report or headcount. The
     'UNASSIGNED' sentinel — a worker whose sub was not on the project roster at
