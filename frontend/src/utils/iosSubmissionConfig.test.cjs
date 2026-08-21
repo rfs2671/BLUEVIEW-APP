@@ -54,6 +54,38 @@ console.log('\n-- the version is the one being submitted --');
     'and the RV policy still derives the runtime from it, so the lane moves with the build');
 }
 
+console.log('\n-- the build numbers are stated, not counted up to --');
+{
+  const EAS = JSON.parse(fs.readFileSync(path.join(FRONTEND, 'eas.json'), 'utf8'));
+  // Under `appVersionSource: "remote"` the two numbers below are IGNORED and
+  // EAS derives them from a counter. That is what has to stop: iOS build 5 is
+  // burned on the rejected 1.1.0, and the Android versionCode — which must
+  // increase monotonically forever or Play refuses the upload — has never
+  // once been read.
+  ok(EAS.cli.appVersionSource === 'local',
+    'the REPO is the source of truth for both numbers, so they are in the diff');
+  ok(!('autoIncrement' in EAS.build.production),
+    'and autoIncrement is gone — with both, the explicit value is only ever '
+    + 'the first one, and the next build silently goes back to counting');
+  ok(APP_JSON.ios.buildNumber === '1',
+    'iOS build 1: CFBundleVersion need only be unique WITHIN a version train, '
+    + 'and 1.2.0 is a new train, so it starts clean rather than inheriting 6 '
+    + 'from the rejected one');
+  const vc = APP_JSON.android.versionCode;
+  ok(Number.isInteger(vc) && vc > 0 && vc < 2100000000,
+    `Android versionCode is a valid integer (${vc})`);
+  // major*1000000 + minor*10000 + patch*100 + build, derived from the version
+  // string so the two cannot drift apart.
+  const [maj, min, pat] = APP_JSON.version.split('.').map(Number);
+  const floor = maj * 1000000 + min * 10000 + pat * 100;
+  ok(vc > floor && vc < floor + 100,
+    `and it encodes ${APP_JSON.version} with a build slot (${floor} < ${vc} < ${floor + 100}) `
+    + '— a resubmission after a rejection needs a new versionCode WITHOUT a '
+    + 'new version string, so the slot has to exist');
+  ok(!('autoIncrement' in EAS.build['preview-prod']),
+    'the internal-distribution profile has not quietly gained one either');
+}
+
 console.log('\n-- location: declared nowhere, because it exists nowhere --');
 {
   const hasLocationDep = Object.keys(DEPS).some((d) => /expo-location|geolocation/.test(d));
