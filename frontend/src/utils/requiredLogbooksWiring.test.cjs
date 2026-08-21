@@ -171,18 +171,24 @@ ok(!/reqLogbooks\?\.logbooks/.test(SCREEN), 'and the non-existent key is gone');
 ok(/logbookTypesAPI\.getAll\(\)/.test(SCREEN),
   'the registry is fetched — it was served and never once requested');
 
-console.log('\n-- an unassessed project is TOLD, not just given two extra logs --');
-ok(/requiredLogbooks\.classification_assessed === false/.test(SCREEN),
-  'the banner is gated on the server’s own assessment flag');
-{
-  const at = SCREEN.indexOf('classification_assessed === false');
-  const card = SCREEN.slice(at, at + 900);
-  ok(/Building classification not set/.test(card), 'it names the condition');
-  ok(/Concrete Operations and SSC\/SSM/.test(card),
-    'and names the two logs it explains, so the list stops reading as wrong');
-  ok(/=== false/.test(SCREEN.slice(at - 40, at + 40)),
-    'strict false — undefined (an older server) must not raise it');
-}
+console.log('\n-- there is no unassessed banner any more --');
+// REMOVED BY RULING. This block asserted that an unassessed project was TOLD
+// why two extra logs appeared rather than being handed them silently. That was
+// right while "unassessed" was a state a project could be in.
+//
+// The operator has ruled that a project starts REGULAR, so there is no
+// unassessed state for the banner to explain.
+//
+// THE SERVER FLAG IS DELIBERATELY LEFT ALONE. get_required_logbooks still
+// fails closed on a class it cannot resolve and still reports
+// classification_assessed, because it reads the RAW stored document, where a
+// legacy project's class is still absent. What went is the SCREEN's
+// explanation, not the rule. Asserted so a future reader does not take the
+// missing banner as licence to drop the flag too.
+ok(!/classification_assessed === false/.test(SCREEN),
+  'the screen no longer explains an unassessed state');
+ok(!/Building classification not set/.test(SCREEN),
+  'and the copy is gone with it');
 
 console.log('\n-- the four toggles are rendered from the model, not hardcoded --');
 ok(/const activations = requiredLogbooks\?\.activations \|\| \[\];/.test(SCREEN),

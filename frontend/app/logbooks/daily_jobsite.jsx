@@ -96,9 +96,6 @@ import {
   stepComplete,
   rosterKey,
 } from '../../src/utils/dailyJobsiteModel';
-import {
-  DAY_WORKED, DAY_STATES, dayState, isNoWorkDay, crewWorkRequired, retainedWork,
-} from '../../src/utils/dayStateModel';
 
 // The DOB form number is an identifier, not prose — identical in every
 // language — so it is a module constant rather than a catalogue string.
@@ -321,10 +318,6 @@ export default function DailyJobsiteLog() {
   const [equipmentOnSite, setEquipmentOnSite] = useState({});
   const [checklistItems, setChecklistItems] = useState({});
   const [observations, setObservations] = useState([]);
-  // THE DAY'S STATE. Never pre-selected away from `worked` — the log must not
-  // assert a washout the CP did not report. See dayStateModel.js for why this
-  // is one control rather than two booleans, and why it is not a chip.
-  const [dayStateValue, setDayStateValue] = useState(DAY_WORKED);
   const [visitorsDeliveries, setVisitorsDeliveries] = useState('');
   const [timeIn, setTimeIn] = useState('');
   const [timeOut, setTimeOut] = useState('');
@@ -386,18 +379,12 @@ export default function DailyJobsiteLog() {
     equipment_on_site: equipmentOnSite,
     checklist_items: checklistItems,
     observations,
-    // DAY-LEVEL, AND ONLY DAY-LEVEL. The ranker reads yesterday's activity_ids
-    // to suggest today's chips, so a rain pseudo-activity written onto every
-    // crew would feed the sequence graph a day of work that never happened and
-    // poison the next day's suggestions for every trade on the project.
-    day_state: dayStateValue,
     visitors_deliveries: visitorsDeliveries,
     time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
   }), [
     projectAddress, weather, weatherTemp, weatherWind, weatherFetchState,
     generalDescription,
     equipmentOnSite, checklistItems, observations, visitorsDeliveries,
-    dayStateValue,
     timeIn, timeOut, areasVisited,
   ]);
 
@@ -693,9 +680,6 @@ export default function DailyJobsiteLog() {
     if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
     if (d.checklist_items) setChecklistItems(d.checklist_items);
     if (d.observations) setObservations(d.observations);
-    // Normalised on the way in: a log filed before this field existed carries
-    // nothing, and a day nobody recorded a state for is a day somebody worked.
-    if (d.day_state) setDayStateValue(dayState(d.day_state));
     if (d.visitors_deliveries) setVisitorsDeliveries(d.visitors_deliveries);
     if (d.time_in) setTimeIn(d.time_in);
     if (d.time_out) setTimeOut(d.time_out);
@@ -1574,20 +1558,14 @@ export default function DailyJobsiteLog() {
 
   // The crews step 2 is still waiting on. One computation, read by the Next
   // gate and by its hint.
-  const noWorkDay = isNoWorkDay(dayStateValue);
-  // #167 RELAXED FOR A NO-WORK DAY, and for the activity/location requirement
-  // ONLY. The gate exists so a CP cannot file a log claiming work happened
-  // without saying what; on a washout nothing happened, so demanding an
-  // activity and a location per crew would block him from filing the exact day
-  // the log exists to record. Everything else the gate does is unchanged.
+  // #167, UNCONDITIONAL AGAIN. This was relaxed on a no-work day, because a
+  // washout had nothing to describe and the gate would have blocked the CP from
+  // filing the exact day the log existed to record. The day state is gone — a
+  // rain or shutdown day has nobody on site to open the app, so the absence of a
+  // log for that date IS the record — so the relaxation has no trigger and the
+  // gate goes back to what #167 specified: every crew names its work and where.
   const crewGaps = useMemo(
-    () => (crewWorkRequired(dayStateValue) ? crewsWithoutWork(activities) : []),
-    [activities, dayStateValue],
-  );
-  // Work he typed BEFORE the day turned. Kept, never cleared — the day state
-  // describes the day, it does not erase the morning.
-  const keptWork = useMemo(
-    () => retainedWork(activities, dayStateValue), [activities, dayStateValue],
+    () => crewsWithoutWork(activities), [activities],
   );
 
   /**
@@ -1774,28 +1752,6 @@ export default function DailyJobsiteLog() {
         </Card>
       )}
 
-      {/* THE DAY'S STATE, beside weather because it is the same kind of fact.
-          Weather records what the sky did; this records what it meant for the
-          site. Three states, mutually exclusive — a day cannot be both rained
-          out and shut down, and two checkboxes would let a CP file that
-          contradiction. */}
-      <Text style={s.question}>{t('dayStateQuestion')}</Text>
-      <View style={s.chipWrap}>
-        {DAY_STATES.map((st) => (
-          <Chip
-            key={st} label={t(`dayState_${st}`)}
-            selected={dayStateValue === st}
-            onPress={() => setDayStateValue(st)}
-          />
-        ))}
-      </View>
-      {noWorkDay && keptWork.length > 0 && (
-        /* THE MORNING IS NOT ERASED. He described work and then the day turned
-           — a half day. What he typed is kept and the log still carries it. */
-        <Text style={s.noteText}>
-          {t('dayStateKeptWork').replace('{n}', String(keptWork.length))}
-        </Text>
-      )}
     </View>
   );
 
@@ -1862,33 +1818,7 @@ export default function DailyJobsiteLog() {
                 .filter(Boolean).join(' · ')}
             </Text>
 
-            {noWorkDay ? (
-              /* SUPPRESSED, NOT BLANKED.
-               *
-               * Nothing happened, so there is nothing to ask. Leaving the
-               * activity and location questions on screen and merely not
-               * enforcing them invites a CP to type something to make the card
-               * look finished — a visible field he is not required to fill is
-               * an invitation, and #167's gate is relaxed on this day precisely
-               * because there is no work to describe.
-               *
-               * THE CARD STILL SAYS SOMETHING. An empty body under a crew name
-               * reads as unfinished. The crew tapped in at the gate, so they
-               * were PRESENT and stood down — a different fact from absent, and
-               * one a §3301.2 record should be able to state. Presence is
-               * already carried by the check-in; this is the sentence that says
-               * what it meant.
-               *
-               * WHAT HE TYPED IS NOT ERASED. Anything described before the day
-               * turned stays in the payload and still files; step 1 reports it.
-               * The day state describes the day, it does not delete the
-               * morning — so this branch hides the QUESTIONS, never the answers.
-               */
-              <Text style={s.noteText}>
-                {t(`dayStateCrewNote_${dayStateValue}`)}
-              </Text>
-            ) : (
-              <>
+            <>
               {/* ACTIVITY. Ranked, never pre-selected. */}
               <Text style={s.question}>{t('activityQuestion')}</Text>
               {/* WHAT THESE FOUR ARE RANKED BY, said plainly. A trade whose

@@ -43,10 +43,6 @@ const CLASS_BADGES = {
   major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
   major_a: { label: 'MAJOR A', color: semantic.neutralStrong, bg: withAlpha('#94a3b8', 0.15) },
   regular: { label: 'REGULAR', color: null, bg: null }, // uses muted
-  // AN ABSENCE IS NOT AN ALARM. Neutral, like REGULAR, deliberately not the
-  // attention treatment a Major A carries — nobody has looked, which is a
-  // different thing from a finding.
-  not_assessed: { label: 'NOT ASSESSED', color: null, bg: null },
 };
 
 export default function SuperintendentScreen() {
@@ -312,9 +308,13 @@ export default function SuperintendentScreen() {
   const anyConflict = registrations.some((r) => r.has_conflict);
 
   const renderClassBadge = (cls) => {
-    // FALLING BACK TO `regular` WAS THE BUG IN MINIATURE: an unrecognised
-    // value rendered as a real class. An unknown key is not assessed.
-    const spec = CLASS_BADGES[cls] || CLASS_BADGES.not_assessed;
+    // REGULAR IS THE FALLBACK AGAIN, and this time it is the answer rather
+    // than a guess. It fell back to `regular` once and that WAS a bug: back
+    // then an absent class meant nobody had assessed it, so rendering REGULAR
+    // asserted a finding nobody had made. The operator has since ruled that a
+    // project STARTS regular and an admin changes it when the project changes,
+    // which makes regular a real default rather than an assumed one.
+    const spec = CLASS_BADGES[cls] || CLASS_BADGES.regular;
     return (
       <View
         style={[
@@ -518,14 +518,14 @@ export default function SuperintendentScreen() {
                     <View style={s.dropdown}>
                       {projects.map((p) => {
                         const pid = p._id || p.id;
-                        // NOT `|| 'regular'`. That converted an absence into
-                        // a real class — the same assertion the API stopped
-                        // making. An absence is not an alarm either, so the
-                        // badge is neutral rather than the attention colour a
-                        // Major A carries.
-                        const clsKnown = classificationAssessed(p);
-                        const cls = clsKnown
-                          ? String(p.project_class).toLowerCase() : 'not_assessed';
+                        // REGULAR FOR AN ABSENT CLASS, by ruling. This read
+                        // 'not_assessed', and that was right while an absence
+                        // meant nobody had assessed the §3310 classification.
+                        // The operator has ruled a project STARTS regular, so
+                        // an absence is the default rather than an open
+                        // question, and the badge says so.
+                        const cls = classificationAssessed(p)
+                          ? String(p.project_class).toLowerCase() : 'regular';
                         return (
                           <Pressable
                             key={pid}
