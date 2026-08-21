@@ -518,7 +518,10 @@ console.log('\n-- four slots, composed --');
 // answer different questions.
 const chip = (id, band, label) => ({ id, band, label: label || id });
 const SUGG = (n) => Array.from({ length: n }, (_, i) => chip(`s${i}`, 'suggested'));
-const ALW = ['site_cleanup', 'material_delivery', 'rain_no_work']
+// `rain_no_work` was here until it was removed from the taxonomy — it is a
+// fact about the day, not a crew's activity. Replaced with a real
+// always-available id so the fixture names things that exist.
+const ALW = ['site_cleanup', 'material_delivery', 'safety_meeting']
   .map((i) => chip(i, 'always_available'));
 const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'));
 
@@ -627,8 +630,19 @@ const CAT = (n) => Array.from({ length: n }, (_, i) => chip(`c${i}`, 'catalog'))
     chips: mine, allChips: everything, resolvedTrades: ['Carpentry (rough)'],
     priorDate: '2026-08-13',
   });
-  ok(r.rest.length > 14,
-    '"All activities" is drawn from the UNFILTERED list, so it means all activities');
+  // INVERTED BY RULING. This asserted the remainder came from the UNFILTERED
+  // list, so "All activities" meant all 84. The operator's complaint was never
+  // the count — twenty is fine — it was the irrelevance: seventy-odd of those
+  // belonged to other trades and a CP scanning for his own work had to sift
+  // them out. The expander now holds THIS CREW'S remaining trade work.
+  // 17 in `mine` (3 always-available + 14 catalog) less the 4 primaries = 13.
+  // Against `everything` it would have been 71 — 8 suggested + 3 + 60 catalog,
+  // less 4 — and 57 of those 71 are other trades' work.
+  ok(r.rest.length === 13,
+    `the remainder is this trade only: 13, not 71 (${r.rest.length})`);
+  const restIds = new Set(r.rest.map((c) => c.id));
+  ok(everything.filter((c) => !restIds.has(c.id) && !mine.some((m) => m.id === c.id)).length > 0,
+    'and other trade activities are genuinely absent, not merely reordered');
 }
 
 // ── "Other" is never in any band ────────────────────────────────────────────

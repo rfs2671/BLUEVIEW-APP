@@ -102,6 +102,27 @@ COLD_START_IDS: Tuple[str, ...] = (
     "excavation", "shoring", "underpinning", "piles", "site_prep",
 )
 
+# ── INSPECTION IS GONE FROM THIS GRAPH ENTIRELY ─────────────────
+#
+# Operator ruling: an inspection is not work a sub performed. "Work description"
+# means the actual work the crew did; an inspector arriving is a VISITOR event,
+# and it is already captured on step 3 under visitors. So it is not an activity
+# and does not belong in a table of activities.
+#
+# This is the same category correction that removed rain_no_work and shutdown,
+# one step further out: those were facts about the DAY, the four structural
+# milestones still here are facts about the BUILDING, and this was an event
+# involving a third party. None of the three is a crew's activity.
+#
+# ITS SIX EDGES WENT WITH IT, AND NOTHING WAS REWIRED. All six were INBOUND
+# (underground_plumbing, slab_rebar, interior_framing, mep_rough_in,
+# firestopping, insulation) and all six were soft_parallel_open. It had NO
+# outbound edges, so it was terminal: nothing sequenced after it and no
+# successor lost a predecessor. Rewiring e.g. slab_rebar -> pour_slab would
+# assert a sequence rule the operator never gave, and pour_slab is not a hold
+# point in the sense inspection was. An inbound edge to a node that no longer
+# exists simply goes.
+#
 # ── Always available — never sequence-gated ──────────────────────────
 # Order is the approved order and is the order the ranker emits.
 # rain_no_work AND shutdown ARE GONE FROM HERE, and from the node table below.
@@ -112,12 +133,20 @@ COLD_START_IDS: Tuple[str, ...] = (
 #     exactly the day a CP needs to record rain
 #   - a site with no GC crew that day could not record either one at all
 #
-# They live on the daily jobsite log as a day-level state now
-# (frontend/src/utils/dayStateModel.js): worked / rain - no work / shutdown,
-# mutually exclusive, defaulting to worked. Deliberately NOT written into any
-# crew's activity_ids — the ranker reads yesterday's activity_ids to suggest
-# today's chips, and a rain pseudo-activity on every crew would feed the graph
-# a day of work that never happened.
+# THEY ARE NOT REPLACED BY ANYTHING, and that is deliberate. They briefly lived
+# on the daily jobsite log as a day-level control; the operator withdrew it,
+# because on a rain or shutdown day nobody is on site to open the app and the
+# ABSENCE of a log for a date is itself the record.
+#
+# THE REMOVAL FROM HERE DOES NOT DEPEND ON THAT CONTROL and must not be undone
+# with it. The reason is the one above: they are facts about the day, not
+# activities a crew performed, and their "gc" trade was a placeholder for
+# "no trade" that this band was hiding. That was true before the control
+# existed and is true now that it does not.
+#
+# Restoring them would also feed the ranker a day of work that never happened:
+# it reads yesterday's activity_ids to suggest today's chips, so a rain
+# pseudo-activity written onto every crew would poison every trade's next day.
 #
 # inspection STAYS. It has four sequenced edges (underground_plumbing,
 # slab_rebar, interior_framing, mep_rough_in all precede it), so it is the hold
@@ -128,7 +157,7 @@ COLD_START_IDS: Tuple[str, ...] = (
 ALWAYS_AVAILABLE_ORDER: Tuple[str, ...] = (
     "site_cleanup", "material_delivery", "hoisting", "scaffold_erection",
     "scaffold_dismantle", "sidewalk_shed_work", "dewatering", "survey_layout",
-    "inspection", "safety_meeting",
+    "safety_meeting",
 )
 ALWAYS_AVAILABLE_IDS = frozenset(ALWAYS_AVAILABLE_ORDER)
 
@@ -164,7 +193,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
     """
     nodes: List[WorkPackage] = [
         # ── cold start / sitework ────────────────────────────────────
-        _wp("site_prep", "sitework", "site prep"),
+        _wp("site_prep", "excavation", "site prep"),
         _wp("excavation", "excavation", "excavation"),
         _wp("shoring", "foundation", "shoring"),
         _wp("underpinning", "foundation", "underpinning"),
@@ -182,7 +211,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("backfill", "excavation", "backfill"),
         _wp("compaction", "excavation", "compaction"),
         _wp("underground_plumbing", "plumbing", "underground plumbing"),
-        _wp("under_slab_mep", "mep", "under-slab MEP"),
+        _wp("under_slab_mep", "plumbing", "under-slab MEP"),
         _wp("vapour_barrier", "concrete", "vapour barrier"),
         _wp("cellar_slab_rebar", "concrete", "cellar slab rebar"),
         _wp("pour_cellar_slab", "concrete", "pour cellar slab"),
@@ -203,7 +232,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
             branch=FLAG_CAST_IN_PLACE),
         _wp("slab_rebar", "concrete", "slab rebar", branch=FLAG_CAST_IN_PLACE),
         _wp("edge_forms", "concrete", "edge forms", branch=FLAG_CAST_IN_PLACE),
-        _wp("mep_sleeves_embeds", "mep", "MEP sleeves and embeds",
+        _wp("mep_sleeves_embeds", "plumbing", "MEP sleeves and embeds",
             branch=FLAG_CAST_IN_PLACE),
         _wp("post_tension_tendons", "concrete", "post-tension tendons",
             branch=FLAG_CAST_IN_PLACE),
@@ -291,7 +320,6 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("sidewalk_shed_work", "scaffold", "sidewalk shed work"),
         _wp("dewatering", "excavation", "dewatering"),
         _wp("survey_layout", "survey", "survey / layout"),
-        _wp("inspection", "gc", "inspection"),
         _wp("safety_meeting", "safety", "safety meeting"),
         # rain_no_work / shutdown REMOVED — day-level fields now, see the note
         # on ALWAYS_AVAILABLE_ORDER. Both had NO edges, so nothing in the
@@ -334,7 +362,6 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("backfill", "compaction"),
         _e("underground_plumbing", "under_slab_mep"),
         _e("underground_plumbing", "vapour_barrier"),
-        _e("underground_plumbing", "inspection"),
         _e("under_slab_mep", "vapour_barrier"),
         _e("under_slab_mep", "cellar_slab_rebar"),
         _e("vapour_barrier", "cellar_slab_rebar"),
@@ -353,7 +380,6 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("slab_shoring_formwork", "edge_forms"),
         _e("slab_rebar", "mep_sleeves_embeds"),
         _e("slab_rebar", "post_tension_tendons"),
-        _e("slab_rebar", "inspection"),
         _e("mep_sleeves_embeds", "pour_slab"),
         # pour slab (floor N) -> ... -> FLOOR N+1 columns/shear wall rebar
         _e("pour_slab", "curing_slab"),
@@ -465,17 +491,13 @@ def build_sequence_rules_v1() -> SequenceGraph:
         # offered whichever one was logged.
         _e("interior_framing", "mep_rough_in"),
         _e("interior_framing", "blocking"),
-        _e("interior_framing", "inspection"),
         _e("mep_rough_in", "firestopping"),
-        _e("mep_rough_in", "inspection"),
         _e("mep_rough_in", "interior_framing"),            # continue framing
         # Firestopping opens inspection ONLY. The earlier firestopping ->
         # insulation edge was corrected away: insulation now comes off dried-in.
-        _e("firestopping", "inspection"),
         _e("building_envelope_closed", "insulation"),
         _e("building_envelope_closed", "drywall"),
         _e("insulation", "drywall"),
-        _e("insulation", "inspection"),
         _e("drywall", "taping"),
         _e("drywall", "finishes"),
         _e("drywall", "flooring"),

@@ -187,11 +187,27 @@ class TheSequenceLoopSurvives(unittest.TestCase):
         # operator changes them." A removal by ruling is a different act from
         # the silent growth this exists to catch, so the number moves and the
         # reason is written down beside it.
-        self.assertEqual(len(g.nodes), 84, "no node was added to the rules")
-        # EDGES ARE UNCHANGED. Both removed nodes had no edges, so nothing in
-        # the sequence graph pointed at them and nothing was orphaned — which is
-        # the fact that made them safe to remove and inspection not.
-        self.assertEqual(len(g.edges), 145, "no edge was added or lost")
+        self.assertEqual(len(g.nodes), 83, "no node was added to the rules")
+        # THE EDGE COUNT MOVED THIS TIME, and the number is the point.
+        #
+        # It held at 145 through the rain_no_work/shutdown removal because both
+        # had NO edges — nothing pointed at them and nothing was orphaned. The
+        # note here used to say "which is the fact that made them safe to remove
+        # and inspection not". Inspection has since been removed anyway, on a
+        # different and stronger ground: it is not work a sub performed. An
+        # inspector arriving is a visitor event, already captured on step 3.
+        #
+        # 145 -> 139: its SIX inbound edges went with it (underground_plumbing,
+        # slab_rebar, interior_framing, mep_rough_in, firestopping, insulation),
+        # all soft_parallel_open. It had NO outbound edges, so it was terminal
+        # and no successor lost a predecessor. Nothing was rewired: inventing
+        # slab_rebar -> pour_slab would assert a sequence rule nobody gave.
+        #
+        # STILL AN ANTI-ADDITION CHECK. The number moves only when a removal is
+        # ruled and written down beside it; it is never renumbered to match
+        # whatever the graph happens to hold. A future removal that orphans a
+        # successor still fails here, which is the whole purpose.
+        self.assertEqual(len(g.edges), 139, "no edge was added or lost")
 
     def test_no_new_node_shadows_an_existing_one(self):
         existing = {n.id for n in build_sequence_rules_v1().nodes}
