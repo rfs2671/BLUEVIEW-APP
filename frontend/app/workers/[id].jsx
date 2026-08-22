@@ -814,7 +814,7 @@ export default function WorkerDetailScreen() {
               </View>
             </View>
 
-            <GlassCard style={s.signatureCard}>\
+            <GlassCard style={s.signatureCard}>
               {signature ? (
                 <>
 <View style={s.signaturePreview}>
