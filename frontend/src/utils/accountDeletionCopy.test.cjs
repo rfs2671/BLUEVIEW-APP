@@ -116,6 +116,35 @@ console.log('\n-- the request is a request, and it is answerable --');
     'seeded from the server, so the request survives a reinstall');
 }
 
+console.log('\n-- a destructive action LOOKS like one --');
+{
+  // It was five bare <Text> runs stacked in a modal: a wall of prose in which
+  // "kept by law" and "unsynced work is lost" carried no more visual weight
+  // than the line about who actions the request.
+  //
+  // The container is the app's existing warning treatment, not a variant -
+  // identical tokens to notifCard / notifHeader / notifTitle on the CP's
+  // logbook screen, so a destructive warning here reads like a compliance
+  // warning there.
+  ok(/delWarnCard: {[^}]*semantic.attentionBg/.test(SET),
+    'the warning block sits on semantic.attentionBg, like every other one');
+  ok(/delWarnCard: {[^}]*semantic.attentionBorder/.test(SET),
+    'with the matching attention border');
+  ok(/delWarnTitle: {[^}]*color: semantic.attention/.test(SET),
+    'and an attention-coloured title');
+  const card = SETTINGS.slice(SETTINGS.indexOf('retentionSentence(null)') - 900,
+    SETTINGS.indexOf('drainWarning(null)') + 200);
+  ok(card.length > 400, 'ANCHOR: the two warning blocks slice is non-empty');
+  ok((card.match(/<GlassCard style={s.delWarnCard}>/g) || []).length === 2,
+    'BOTH facts are contained - what is kept, and what is lost');
+  // includes(), not a regex: size={16} makes {16} a QUANTIFIER in a regex
+  // literal, so the pattern silently matches nothing.
+  ok(card.includes('<AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />'),
+    'the LOSS warning carries the same AlertTriangle the app warns with');
+  ok(!/delBodyStrong/.test(card),
+    'and the bare bold-run treatment they replaced is gone, not left beside them');
+}
+
 console.log('\n-- not offered on a shared site device --');
 {
   ok(/\{!siteMode && \(/.test(SETTINGS),
