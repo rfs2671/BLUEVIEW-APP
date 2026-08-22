@@ -42,8 +42,15 @@ assumed:
 | `react-native-reanimated` | 4.6.0 | 4.6.0 |
 | `expo` | 57.x (55, 56, 57 all released) | 58 canary |
 
-**nfc-manager still has NO stable New-Architecture release.** `4.0.0-beta.7` is
-still the only one, and it is still a beta. The note above hoping that "by then
+**nfc-manager still has NO stable New-Architecture release.** Checked
+2026-08-22 via `npm view react-native-nfc-manager dist-tags`:
+
+```json
+{ "latest": "3.17.2", "beta": "4.0.0-beta.7" }
+```
+
+The entire 4.x line is `beta.0` through `beta.7` — eight pre-releases, no
+stable. `latest` still points at 3.17.2. The note above hoping that "by then
 nfc-manager should have a stable New-Arch release" has not come true.
 
 ### Why that rules out SDK 55 and later
@@ -263,6 +270,42 @@ Resolve **React 18 → 19** fallout. Build a dev client and smoke-test that the 
 ```
 npx expo install expo@^54 --fix
 ```
+
+### 🔴 ISOLATE THE SDK — revert the two native modules `--fix` moves for you
+
+`--fix` is NOT surgical. It moves community packages to the SDK's
+`bundledNativeModules` pins, so it will bump **vision-camera** and
+**nfc-manager** whether or not you asked. Let it, then put them back:
+
+```
+npm install --save-exact react-native-vision-camera@4.7.3
+npm install --save-exact react-native-nfc-manager@3.17.2
+node -p "['react-native-vision-camera','react-native-nfc-manager'].map(k=>k+'='+require('./package.json').dependencies[k]).join('  ')"
+```
+
+**Why, and this is an operator ruling rather than a preference.** The camera
+took **six device rounds** to diagnose, and four of the wrong diagnoses came
+from reasoning about source instead of observing hardware. If the SDK and the
+camera library move in the same build, the next camera defect cannot be
+attributed to either, and unwinding that afterwards is how six rounds became
+six rounds.
+
+vision-camera 5.2.3 exists and this repo is on 4.7.3. **It moves on its own,
+after this, with a device test in front of it.** Same for nfc-manager: 3.17.2 is
+the RN 0.81 floor and also the current stable, so it lands as a floor rather
+than as a speculative bump.
+
+Re-pin only what the BUILD says is broken, one at a time.
+
+### Checkpoint after every phase
+
+```
+node src/utils/api36MigrationInvariants.test.cjs
+```
+
+Inert on a correct tree; it fails the moment `--fix` clobbers the reanimated
+pin, takes nfc-manager to the beta, or leaves targetSdk and the architecture
+setting disagreeing. Cheaper than reading a Gradle log.
 
 ### 🔴 CRITICAL — THE ONE STEP THAT SILENTLY BREAKS THE BUILD
 `--fix` installs **reanimated 4.1.1**, which is **New-Architecture-ONLY** and **cannot run on

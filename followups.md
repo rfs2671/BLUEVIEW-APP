@@ -2,6 +2,40 @@
 
 Known gaps and deferred work, newest first.
 
+- **[DATED 2026-08-22] SDK 55+ / New Architecture — do it in ONE migration, and
+  the trigger is `react-native-nfc-manager@4.x` going stable.**
+  Not "someday". The actual consideration, with the numbers as of today.
+
+  Expo **57** is current; this repo is going to **54**. That is three majors
+  behind on the day it ships, and 54's EAS Build support window will close.
+  SDK 55 (RN 0.82) removes the `newArchEnabled: false` opt-out, so New
+  Architecture stops being a choice — which means Path B is not optional, only
+  deferred.
+
+  **Why 54 and not 55 now.** `npm view react-native-nfc-manager dist-tags` on
+  2026-08-22 returns `{latest: 3.17.2, beta: 4.0.0-beta.7}`. The whole 4.x line
+  is beta.0 through beta.7 — eight pre-releases, no stable. Going to 55 today
+  would force that beta onto the library that programs the gate tags every
+  worker checks in against. Shipping a pre-release on the check-in path is not
+  a trade worth making to save a migration.
+
+  **The trigger to re-open this**, and it is one command:
+
+  ```bash
+  npm view react-native-nfc-manager dist-tags
+  ```
+
+  The moment `latest` reads `4.x`, Path B is available and 55/56/57 collapse
+  into a single hop. Doing one migration then beats doing two.
+
+  **What Path B additionally costs**, so it is not underestimated when it
+  arrives: `expo-file-system/legacy` is REMOVED in 55, so the six import sites
+  need a real API rewrite rather than the path swap Path A does; and reanimated
+  returns to the 4.x line, which is correct on New Arch and impossible off it.
+
+  Check this before starting Path A, not only after — if 4.x went stable in the
+  interim, the whole legacy-architecture detour is avoidable.
+
 - **[REQUIRED-BEFORE-PLAY] `eas submit -p android` has no service-account key
   and will fail the first time it is run.**
   `eas.json` already carries `submit.production.android: {"track": "alpha"}`, so
