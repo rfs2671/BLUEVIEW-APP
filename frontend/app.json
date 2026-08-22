@@ -8,7 +8,7 @@
     "icon": "./assets/icon.png",
     "scheme": "levelog",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "updates": {
       "url": "https://u.expo.dev/818dd5ed-c372-4582-aea9-846381063a51",
       "fallbackToCacheTimeout": 3000
@@ -131,6 +131,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-asset",
       [
         "react-native-nfc-manager",
         {
@@ -142,9 +143,9 @@
         {
           "android": {
             "minSdkVersion": 26,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35,
-            "buildToolsVersion": "35.0.0"
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "buildToolsVersion": "36.0.0"
           },
           "ios": {}
         }
