@@ -33,7 +33,7 @@ import {
   ChevronRight,
   Share2,
 } from 'lucide-react-native';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
