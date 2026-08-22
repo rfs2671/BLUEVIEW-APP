@@ -2,6 +2,34 @@
 
 Known gaps and deferred work, newest first.
 
+- **[REQUIRED-BEFORE-PLAY] `eas submit -p android` has no service-account key
+  and will fail the first time it is run.**
+  `eas.json` already carries `submit.production.android: {"track": "alpha"}`, so
+  the profile is not missing — what is missing is the credential behind it.
+  Compare the iOS side, which names `ascAppId` and `appleTeamId`: the Android
+  side names a track and nothing that can authenticate to it. EAS will either
+  prompt for a Google Play service-account JSON interactively or fail outright,
+  depending on how it is invoked.
+
+  **Deliberately NOT built now.** Play cannot accept an upload at all until
+  `targetSdkVersion 36` lands, so a submit profile written today would sit
+  unused and untested across a six-to-eight-day migration that may change what
+  it needs — SDK 54 ships a newer `eas-cli`, and credential handling is exactly
+  the kind of thing that moves between majors. Build it when the AAB is
+  actually going somewhere.
+
+  **What it will need**, so the day it is built is not also the day it is
+  discovered: a Google Cloud service account with the Play Developer API
+  enabled, invited into the Play Console with release permissions, its JSON key
+  downloaded, and either `serviceAccountKeyPath` pointed at it in `eas.json` or
+  the key uploaded to EAS credentials. Google's own propagation delay on a
+  newly-invited service account is measured in hours, not minutes, so the
+  invitation is worth sending BEFORE the migration finishes rather than after.
+
+  Related: the first Play upload also fixes `versionCode` forever as a
+  monotonic floor. It is set explicitly to `1020001` (see the release notes on
+  #188) rather than left to autoIncrement, precisely so that floor is a number
+  someone chose.
 - **[POST-RELEASE] Nothing records which bundle a device is running, and after
   release nobody will be able to work it out.**
   Today the installed population is KNOWN because it was hand-placed: the app has
