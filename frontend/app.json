@@ -131,6 +131,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-asset",
       [
         "react-native-nfc-manager",
         {
