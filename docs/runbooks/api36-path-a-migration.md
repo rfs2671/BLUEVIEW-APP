@@ -172,6 +172,55 @@ impossible to attribute.
 
 ---
 
+## Staged rollout — the operator's phone first, never the CP's
+
+Operator ruling, and it applies whichever SDK this lands on.
+
+The CP on 588 Thomas is the only other install. He was two weeks stale for a
+month and filed unsigned compliance logs the whole time. **Distributing a broken
+build to him and having no way back is the failure to avoid** — worse than any
+defect this migration might introduce, because it is the one with no undo.
+
+1. Build.
+2. **The operator installs it on HIS OWN phone.** Not the CP's.
+3. He runs the list below in full.
+4. It holds → the CP gets it.
+5. It does not → **the CP stays on a working 1.2.0**, which is why the version
+   bump and the handout must not be the same event for this build. Nothing is
+   published to the CP until step 3 passes.
+
+### The device list
+
+Not a smoke test. Each of these has cost time before, and each exercises a
+native path that an SDK bump can break silently:
+
+- [ ] **Camera at ultra-wide.** Open it, switch lens, capture.
+- [ ] **A photo actually saving** — capture, then confirm it survives to the
+      logbook and uploads. The capture succeeding is not the test.
+- [ ] **The gate check-in.** Tap a real tag, confirm the check-in page opens
+      and a worker can complete it. This is the NFC path.
+- [ ] **A full daily log**, start to submitted, including the signature.
+- [ ] **The offline path**: fill a logbook with the network off, background the
+      app, reopen, confirm the draft persists, reconnect, confirm it pushes.
+
+### THE CAMERA IS THE ONE TO WATCH, AND IT HAS A STANDING ORDER
+
+It took **six device rounds** to get right, and **four of the wrong diagnoses
+came from reasoning about the source rather than observing the hardware**. An
+SDK bump is the most likely thing in this entire change to break it.
+
+**If the camera regresses: STOP and report BEFORE touching
+`react-native-vision-camera`.** Moving the SDK and the camera library in the
+same change makes the next camera defect impossible to attribute, and unwinding
+that after the fact is precisely how six rounds became six rounds.
+
+Note this cuts against a blanket `npx expo install --fix`, which is not
+surgical: it moves community packages to the SDK's `bundledNativeModules` pins
+and **will** touch vision-camera and nfc-manager whether or not you want it to.
+To test the SDK alone, run `--fix`, then revert those two to their current
+versions before building. That isolation is the whole point of the sequencing.
+
+
 ## Rollback
 
 - The migration lives on its own branch; `main` stays shippable throughout.
