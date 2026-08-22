@@ -11,9 +11,9 @@ if (!config.resolver.assetExts.includes('txt')) {
 }
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  if (platform === 'web' && moduleName.includes('@nozbe/watermelondb')) {
-    return { type: 'empty' };
-  }
+  // The WatermelonDB web exclusion that lived here is gone with the
+  // package: it kept Watermelon's native shim out of the WEB bundle, and
+  // with no dependency the branch can never be true.
   return context.resolveRequest(context, moduleName, platform);
 };
 
