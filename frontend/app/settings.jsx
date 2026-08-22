@@ -7,6 +7,7 @@ import {
   Switch,
   ActivityIndicator,
   Pressable,
+  Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -30,6 +31,7 @@ import {
   CalendarDays,
   Bell,
   ChevronRight,
+  Trash2,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import * as Clipboard from 'expo-clipboard';
@@ -45,6 +47,7 @@ import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
+import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
@@ -74,7 +77,7 @@ const formatDate = (dateStr) => {
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode } = useAuth();
   const { isDark, toggleTheme, colors } = useTheme();
   const toast = useToast();
 
@@ -103,9 +106,52 @@ export default function SettingsScreen() {
     ? new Date(Updates.createdAt).toLocaleString()
     : 'shipped with the binary';
 
+  // ── ACCOUNT DELETION (Apple 5.1.1(v)) ───────────────────────────────
+  // Seeded from the user doc so a request survives a reinstall: it lives on
+  // the server, not in component state.
+  const [deletionRequestedAt, setDeletionRequestedAt] = useState(
+    user?.deletion_requested_at || null,
+  );
+  const [deletionConfirmOpen, setDeletionConfirmOpen] = useState(false);
+  const [deletionBusy, setDeletionBusy] = useState(false);
+
   const [backendCommit, setBackendCommit] = useState(null);
   const [backendLoading, setBackendLoading] = useState(true);
   const [buildCopied, setBuildCopied] = useState(false);
+
+  const handleRequestDeletion = async () => {
+    setDeletionBusy(true);
+    try {
+      const r = await authAPI.requestAccountDeletion();
+      setDeletionRequestedAt(r?.deletion_requested_at || new Date().toISOString());
+      setDeletionConfirmOpen(false);
+      // NOT a toast. He has just asked for his account to be removed and needs
+      // to see that it was received — a message gone in four seconds is what
+      // makes a request feel like it went nowhere.
+    } catch (e) {
+      toast.error(
+        'Not sent',
+        isOfflineError(e)
+          ? 'You are offline. Nothing was requested — try again on a connection.'
+          : (e?.response?.data?.detail || 'Could not send the request.'),
+      );
+    } finally {
+      setDeletionBusy(false);
+    }
+  };
+
+  const handleWithdrawDeletion = async () => {
+    setDeletionBusy(true);
+    try {
+      await authAPI.withdrawAccountDeletion();
+      setDeletionRequestedAt(null);
+      toast.success('Withdrawn', 'Your account will not be removed.');
+    } catch (e) {
+      toast.error('Not withdrawn', 'Could not withdraw the request.');
+    } finally {
+      setDeletionBusy(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -944,6 +990,105 @@ export default function SettingsScreen() {
             />
           </GlassCard>
 
+          {/* ── ACCOUNT DELETION — Apple 5.1.1(v) ─────────────────────────
+              An app that lets somebody create an account must let him remove
+              it FROM INSIDE THE APP. A mailto or a "contact support" line is
+              the thing the guideline was written to stop.
+
+              A REQUEST, not a button, and the reason is his own records: a CP
+              carries unsynced signed logbooks on this phone. End his access
+              now and the reconnect drain takes a 401, which the client reads
+              as a server refusal and banners as "your log was refused" — a
+              compliance judgement the server never made. His work survives
+              but is stranded on the handset and mislabelled. Drain first,
+              delete second, and only a person can confirm the drain finished.
+
+              NOT shown on a shared site device: a jobsite tablet is not
+              somebody's personal account, and the server refuses it too. */}
+          {!siteMode && (
+            <>
+              <Text style={s.sectionLabel}>DANGER ZONE</Text>
+              <GlassCard style={s.card}>
+                {deletionRequestedAt ? (
+                  <>
+                    <Text style={s.delRequestedTitle}>
+                      Deletion requested{' '}
+                      {new Date(deletionRequestedAt).toLocaleDateString(undefined, {
+                        day: 'numeric', month: 'short', year: 'numeric',
+                      })}
+                    </Text>
+                    <Text style={s.delBody}>
+                      Your administrator has been notified. You can keep using
+                      LeveLog until they action it.
+                    </Text>
+                    <GlassButton
+                      title="Withdraw request"
+                      onPress={handleWithdrawDeletion}
+                      loading={deletionBusy}
+                      style={s.delWithdrawBtn}
+                    />
+                  </>
+                ) : (
+                  <Pressable
+                    onPress={() => setDeletionConfirmOpen(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Request account deletion"
+                    style={s.delRow}
+                  >
+                    <Trash2 size={16} strokeWidth={1.5} color="#f87171" />
+                    <Text style={s.delRowText}>Request account deletion</Text>
+                  </Pressable>
+                )}
+              </GlassCard>
+            </>
+          )}
+
+          <Modal
+            visible={deletionConfirmOpen}
+            animationType="slide"
+            transparent
+            onRequestClose={() => setDeletionConfirmOpen(false)}
+          >
+            <View style={s.modalOverlay}>
+              <View style={s.modalContent}>
+                <Text style={s.delSheetTitle}>Request account deletion</Text>
+
+                <Text style={s.delBody}>{accessRemovedSentence(null)}</Text>
+
+                {/* THE SENTENCE THAT MAKES THIS HONEST RATHER THAN A STALL.
+                    "Kept by law" and not "kept for compliance": the first
+                    names the reason, the second names a category and leaves
+                    him to guess. And it says his NAME stays on them, because
+                    that is the part he would otherwise find out later. */}
+                <Text style={s.delBodyStrong}>Your signed records stay.</Text>
+                <Text style={s.delBody}>{retentionSentence(null)}</Text>
+
+                {/* The only sentence here that can save him something. */}
+                <Text style={s.delBodyStrong}>Before you request this</Text>
+                <Text style={s.delBody}>{drainWarning(null)}</Text>
+
+                <Text style={s.delBody}>
+                  Your administrator will action this request and can contact
+                  you first.
+                </Text>
+
+                <GlassButton
+                  title="Request deletion"
+                  onPress={handleRequestDeletion}
+                  loading={deletionBusy}
+                  style={s.delConfirmBtn}
+                />
+                <Pressable
+                  onPress={() => setDeletionConfirmOpen(false)}
+                  accessibilityRole="button"
+                  style={s.delCancelRow}
+                >
+                  <Text style={s.delCancelText}>Cancel</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+
           {/* ── BUILD ────────────────────────────────────────────────────
               WHY THIS EXISTS. A device test reported Step 1 as missing its
               equipment and weather sections. They were on main and had never
@@ -1016,6 +1161,21 @@ function buildStyles(colors) {
       borderBottomWidth: 1,
       borderBottomColor: colors.glass.border,
     },
+    // Account deletion. 56pt row so the target is never below the app minimum.
+    delRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      minHeight: 56, paddingHorizontal: spacing.xs,
+    },
+    delRowText:        { fontSize: 15, color: '#f87171', fontWeight: '500' },
+    delRequestedTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
+    delSheetTitle:     { fontSize: 18, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
+    delBody:           { fontSize: 14, lineHeight: 20, color: colors.text.secondary, marginBottom: spacing.md },
+    delBodyStrong:     { fontSize: 14, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
+    delConfirmBtn:     { marginTop: spacing.sm },
+    delWithdrawBtn:    { marginTop: spacing.sm },
+    delCancelRow:      { minHeight: 56, alignItems: 'center', justifyContent: 'center' },
+    delCancelText:     { fontSize: 15, color: colors.text.muted },
+
     backBtn:      { padding: spacing.xs },
     headerSpacer: { width: 20 + spacing.xs * 2 },
     headerTitle:  { fontSize: 17, fontWeight: '600', color: colors.text.primary },
