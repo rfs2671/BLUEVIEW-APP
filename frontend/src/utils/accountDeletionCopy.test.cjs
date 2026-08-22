@@ -145,10 +145,32 @@ console.log('\n-- a destructive action LOOKS like one --');
     'and the bare bold-run treatment they replaced is gone, not left beside them');
 }
 
-console.log('\n-- not offered on a shared site device --');
+console.log('\n-- who this control appears for, and who it does not --');
 {
-  ok(/\{!siteMode && \(/.test(SETTINGS),
-    'a jobsite tablet is not somebody\'s personal account');
+  // A shared jobsite tablet is not somebody's personal account.
+  ok(SETTINGS.includes('!siteMode &&'),
+    'not offered on a site device');
+
+  // AND SELF-REGISTERED ONLY. 5.1.1(v) reaches accounts a PERSON created
+  // for themselves. Here owners are seeded, admins made by an owner, CPs
+  // by an admin, and workers have no account at all - the one
+  // self-registration path in real use is the demo account Apple reviews
+  // with, so the control belongs there and nowhere else.
+  ok(SETTINGS.includes("user?.registration_source === 'self_registered'"),
+    'and ONLY on an account that registered itself');
+
+  // Read from a STAMPED field, never derived. account_status 'pending'
+  // would have worked until approval flipped it - and the demo account
+  // must be approved to be reviewable, so the signal would vanish from
+  // the single account it exists for.
+  // Scoped to the GATE LINE, not the file: settings.jsx legitimately reads
+  // user.role elsewhere for admin sections, and the comment above the gate
+  // names account_status while explaining why it is NOT used.
+  const gateLine = SETTINGS.split(String.fromCharCode(10))
+    .find((l) => l.includes("registration_source ==="));
+  ok(!!gateLine, 'ANCHOR: the gate line exists');
+  ok(!/account_status|role ===/.test(gateLine || ''),
+    'the gate itself derives nothing: not account_status, which approval flips, nor role, which POST /admin/users does not constrain');
 }
 
 console.log('\n-- the admin is told the SAME SENTENCE, not a second one --');

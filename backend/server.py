@@ -3952,6 +3952,47 @@ async def require_approved(current_user = Depends(get_current_user)):
 # historical rows: that ledger carries a `content_hash` over a
 # `content_snapshot`, and editing evidence to record that its author left is a
 # worse act than the one it documents. Deletion never mutates a signed record.
+# ── HOW THIS ACCOUNT CAME TO EXIST — stamped once, never derived ────────────
+#
+# Apple 5.1.1(v) reaches accounts a PERSON CREATED FOR THEMSELVES. On this
+# product nobody does: owners are seeded, admins are created by an owner, CPs
+# by an admin, and workers have no account at all. The only self-registration
+# path in real use is the demo account Apple reviews with. So the deletion
+# control belongs on self-registered accounts and nowhere else.
+#
+# WHY A STAMPED FIELD AND NOT A DERIVED ONE. Every derivable signal decays:
+#
+#   account_status == "pending"   the ONLY writer of "pending" is /auth/register,
+#                                 so it does identify self-registration — until
+#                                 approval flips it to "approved". The demo
+#                                 account MUST be approved to be reviewable, so
+#                                 the signal disappears from the one account it
+#                                 exists for.
+#   role == "owner"               POST /admin/users takes `role` straight from
+#                                 the request body with no constraint, and the
+#                                 startup seeds create owners. A UI that only
+#                                 offers cp/worker is a convention, not a
+#                                 guarantee.
+#   company_id is None            /onboarding/company sets it on first use.
+#   onboarding_step present       exclusive today, but it is a side effect of an
+#                                 unrelated feature; rework onboarding and this
+#                                 gate changes silently with nothing failing.
+#
+# The deciding case: an approved admin is ONE FIELD EDIT away from looking
+# self-registered, and the field that would do it is the same one approval
+# writes. Deriving a permanent property from a mutable status is the shape that
+# has produced defects here repeatedly.
+REG_SELF = "self_registered"
+REG_ADMIN = "created_by_admin"
+REG_SEED = "system_seed"
+
+
+def is_self_registered(user) -> bool:
+    """The gate. ABSENT means no — correct for every pre-marker account, which
+    the backfill then makes explicit rather than leaving to this default."""
+    return (user or {}).get("registration_source") == REG_SELF
+
+
 DELETED_USER_PREFIX = "deleted_user:"
 
 
@@ -3994,6 +4035,15 @@ async def request_own_account_deletion(current_user = Depends(get_current_user))
         raise HTTPException(
             status_code=400,
             detail="A shared site device is not a personal account.",
+        )
+    # THE SERVER REFUSES, not only the screen. A UI that hides a control is a
+    # presentation choice; this is the rule. An account created by an owner or
+    # an admin is removed by them — there is nothing here for 5.1.1(v) to reach.
+    if not is_self_registered(current_user):
+        raise HTTPException(
+            status_code=400,
+            detail="This account was created by your administrator. "
+                   "Ask them to remove it.",
         )
     uid = str(current_user.get("_id", current_user.get("id")))
     now = datetime.now(timezone.utc)
@@ -4718,6 +4768,12 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # require_approved, so a pending account can cost nothing. Never read from
     # the client payload — always forced here.
     user_dict["account_status"] = "pending"
+
+    # WRITTEN HERE AND NOWHERE ELSE. Not read back off the request body — the
+    # client cannot claim it, the same way it cannot claim role or company_id
+    # (see the lockdown note below). Immutable afterwards: no update path
+    # touches it, and test_registration_source.py fails if one starts.
+    user_dict["registration_source"] = REG_SELF
 
     # ── Registration lockdown (Finding 0) ────────────────────────────────────
     # role and company_id were previously taken STRAIGHT FROM THE REQUEST BODY
@@ -6321,6 +6377,9 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     # approval — the review gate exists for SELF-SERVE signup, which is the
     # only writer of "pending".
     user_dict["account_status"] = "approved"
+    # An admin creating a user is the opposite of self-registration, and the
+    # same act that approves them. 5.1.1(v) does not reach this account.
+    user_dict["registration_source"] = REG_ADMIN
 
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -9116,6 +9175,7 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
         "password": hash_password(admin_data.password),
         "name": admin_data.name,
         "role": "admin",
+        "registration_source": REG_ADMIN,
         "company_id": company_id,
         "company_name": company_name,
         "created_at": now,
@@ -33523,6 +33583,7 @@ async def startup_event():
             "password": hash_password(owner_default_pw),
             "name": "Roy Fishman",
             "role": "owner",
+            "registration_source": REG_SEED,
             "created_at": now,
             "updated_at": now,
             "assigned_projects": [],
@@ -33590,6 +33651,7 @@ async def startup_event():
             "name": "Test Owner",
             "full_name": "Test Owner",
             "role": "owner",
+            "registration_source": REG_SEED,
             "company_id": test_company_id,
             "phone": "+15163018154",
             "created_at": now,
@@ -33609,6 +33671,7 @@ async def startup_event():
                 "name": "Roy Fishman",
                 "full_name": "Roy Fishman",
                 "role": "admin",
+                "registration_source": REG_SEED,
                 "company_id": test_company_id,
                 "phone": "+15163018154",
                 "created_at": now,
@@ -33626,6 +33689,7 @@ async def startup_event():
             "name": "Test CP",
             "full_name": "Test Construction Professional",
             "role": "cp",
+            "registration_source": REG_SEED,
             "company_id": test_company_id,
             "phone": "+15551234567",
             "created_at": now,

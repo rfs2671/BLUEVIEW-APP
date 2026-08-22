@@ -1006,7 +1006,21 @@ export default function SettingsScreen() {
 
               NOT shown on a shared site device: a jobsite tablet is not
               somebody's personal account, and the server refuses it too. */}
-          {!siteMode && (
+          {/* SELF-REGISTERED ACCOUNTS ONLY. Apple 5.1.1(v) reaches accounts a
+              PERSON CREATED FOR THEMSELVES; on this product nobody does. Owners
+              are seeded, admins created by an owner, CPs by an admin, workers
+              have no account. The one self-registration path in real use is the
+              demo account Apple reviews with, so this control belongs there and
+              on nothing else.
+
+              Read from a STAMPED field, never derived. account_status
+              "pending" would have worked until approval flipped it - and the
+              demo account has to be approved to be reviewable, so the signal
+              would vanish from the only account it exists for.
+
+              The server refuses too (POST /auth/me/deletion-request). Hiding a
+              control is presentation; the refusal is the rule. */}
+          {!siteMode && user?.registration_source === 'self_registered' && (
             <>
               <Text style={s.sectionLabel}>DANGER ZONE</Text>
               <GlassCard style={s.card}>
