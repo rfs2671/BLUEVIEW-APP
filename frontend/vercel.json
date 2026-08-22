@@ -6,13 +6,23 @@
   "redirects": [
     {
       "source": "/:path(.*)",
-      "has": [{ "type": "host", "value": "blue-view.app" }],
+      "has": [
+        {
+          "type": "host",
+          "value": "blue-view.app"
+        }
+      ],
       "destination": "https://levelog.com/:path",
       "permanent": true
     },
     {
       "source": "/:path(.*)",
-      "has": [{ "type": "host", "value": "www.blue-view.app" }],
+      "has": [
+        {
+          "type": "host",
+          "value": "www.blue-view.app"
+        }
+      ],
       "destination": "https://levelog.com/:path",
       "permanent": true
     }
@@ -29,6 +39,10 @@
     {
       "source": "/a/:annotation_id",
       "destination": "https://api.levelog.com/a/:annotation_id"
+    },
+    {
+      "source": "/support",
+      "destination": "/support.html"
     },
     {
       "source": "/:path*",
