@@ -28,6 +28,65 @@
 
 ---
 
+## Registry check, 2026-08-22 — THE BLOCKER HAS NOT LIFTED
+
+This runbook was written when SDK 54 was current. It is not any more, and the
+question of whether to jump straight to a newer SDK was raised. The answer is
+decided by one package, and it was re-checked against the registry rather than
+assumed:
+
+| Package | Latest STABLE | Latest any |
+|---|---|---|
+| `react-native-nfc-manager` | **3.17.2** | `4.0.0-beta.7` |
+| `react-native-vision-camera` | 5.2.3 | 5.2.3 |
+| `react-native-reanimated` | 4.6.0 | 4.6.0 |
+| `expo` | 57.x (55, 56, 57 all released) | 58 canary |
+
+**nfc-manager still has NO stable New-Architecture release.** `4.0.0-beta.7` is
+still the only one, and it is still a beta. The note above hoping that "by then
+nfc-manager should have a stable New-Arch release" has not come true.
+
+### Why that rules out SDK 55 and later
+
+SDK 55 (RN 0.82) **removes the `newArchEnabled: false` opt-out** — see the Path
+B section below. So targeting 55+ does not merely permit New Architecture, it
+**requires** it, which in turn requires nfc-manager `4.0.0-beta.7`. NFC programs
+the gate tags every worker checks in against. Shipping a pre-release there is
+the thing Path A exists to refuse.
+
+Two further costs of 55+, both consequences of the same jump:
+
+* `expo-file-system/legacy` is **removed** in SDK 55, so the six import sites
+  need a full API rewrite rather than a path swap.
+* reanimated has no maintained 3.x line left (4.6.0 is current, New-Arch-only),
+  which is fine ON New Arch and impossible off it.
+
+**SDK 54 remains the target**, and it is sufficient: `targetSdkVersion 36` is
+what Play requires, and SDK 54 supports it. Being behind the current SDK line is
+a debt to pay in the Path B cycle, not a reason to take the beta now.
+
+### The one fact that would change this
+
+`react-native-nfc-manager@4.x` reaching **stable**. Re-run the check before
+starting; if 4.x has shipped, Path B becomes available and the whole
+legacy-architecture detour can be skipped:
+
+```bash
+npm view react-native-nfc-manager versions --json
+```
+
+### Also noted, and deliberately NOT acted on
+
+`react-native-vision-camera` is now **5.2.3**; this repo is on 4.7.3 and the
+"keep 4.7.3, no patch" guidance above is now advice about a version two majors
+old. It stands for the SDK 54 hop. It is not being changed here, because the
+camera took six device rounds to get right and four of the wrong diagnoses came
+from reasoning about source rather than observing hardware — moving the camera
+library in the same change as an SDK bump would make the next camera defect
+impossible to attribute.
+
+---
+
 ## Target versions (verify with `npx expo install --fix`)
 
 | Package | Current | Path A target (SDK 54) | Notes |
