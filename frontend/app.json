@@ -146,16 +146,7 @@
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0"
           },
-          "ios": {
-            "extraPods": [
-              {
-                "name": "simdjson",
-                "configurations": ["Debug", "Release"],
-                "path": "../node_modules/@nozbe/simdjson",
-                "modular_headers": true
-              }
-            ]
-          }
+          "ios": {}
         }
       ],
       [
