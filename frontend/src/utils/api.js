@@ -1403,7 +1403,7 @@ export const whatsappAPI = {
     // Native: we need the auth token on the URL (Linking can't set headers).
     // Fetch the file content, write it to cache via expo-file-system (already
     // installed), and open it -- the OS shows the "Add Contact" sheet.
-    const FileSystem = require('expo-file-system');
+    const FileSystem = require('expo-file-system/legacy');
     const response = await apiClient.get('/api/whatsapp/contact.vcf', {
       responseType: 'text',
       transformResponse: [(data) => data], // keep as raw text

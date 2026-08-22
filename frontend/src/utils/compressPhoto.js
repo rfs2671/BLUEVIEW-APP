@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 /**
  * Downscale + re-encode a captured photo until it fits under the upload cap.
