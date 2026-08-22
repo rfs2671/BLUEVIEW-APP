@@ -28,6 +28,72 @@
 
 ---
 
+## Registry check, 2026-08-22 — THE BLOCKER HAS NOT LIFTED
+
+This runbook was written when SDK 54 was current. It is not any more, and the
+question of whether to jump straight to a newer SDK was raised. The answer is
+decided by one package, and it was re-checked against the registry rather than
+assumed:
+
+| Package | Latest STABLE | Latest any |
+|---|---|---|
+| `react-native-nfc-manager` | **3.17.2** | `4.0.0-beta.7` |
+| `react-native-vision-camera` | 5.2.3 | 5.2.3 |
+| `react-native-reanimated` | 4.6.0 | 4.6.0 |
+| `expo` | 57.x (55, 56, 57 all released) | 58 canary |
+
+**nfc-manager still has NO stable New-Architecture release.** Checked
+2026-08-22 via `npm view react-native-nfc-manager dist-tags`:
+
+```json
+{ "latest": "3.17.2", "beta": "4.0.0-beta.7" }
+```
+
+The entire 4.x line is `beta.0` through `beta.7` — eight pre-releases, no
+stable. `latest` still points at 3.17.2. The note above hoping that "by then
+nfc-manager should have a stable New-Arch release" has not come true.
+
+### Why that rules out SDK 55 and later
+
+SDK 55 (RN 0.82) **removes the `newArchEnabled: false` opt-out** — see the Path
+B section below. So targeting 55+ does not merely permit New Architecture, it
+**requires** it, which in turn requires nfc-manager `4.0.0-beta.7`. NFC programs
+the gate tags every worker checks in against. Shipping a pre-release there is
+the thing Path A exists to refuse.
+
+Two further costs of 55+, both consequences of the same jump:
+
+* `expo-file-system/legacy` is **removed** in SDK 55, so the six import sites
+  need a full API rewrite rather than a path swap.
+* reanimated has no maintained 3.x line left (4.6.0 is current, New-Arch-only),
+  which is fine ON New Arch and impossible off it.
+
+**SDK 54 remains the target**, and it is sufficient: `targetSdkVersion 36` is
+what Play requires, and SDK 54 supports it. Being behind the current SDK line is
+a debt to pay in the Path B cycle, not a reason to take the beta now.
+
+### The one fact that would change this
+
+`react-native-nfc-manager@4.x` reaching **stable**. Re-run the check before
+starting; if 4.x has shipped, Path B becomes available and the whole
+legacy-architecture detour can be skipped:
+
+```bash
+npm view react-native-nfc-manager versions --json
+```
+
+### Also noted, and deliberately NOT acted on
+
+`react-native-vision-camera` is now **5.2.3**; this repo is on 4.7.3 and the
+"keep 4.7.3, no patch" guidance above is now advice about a version two majors
+old. It stands for the SDK 54 hop. It is not being changed here, because the
+camera took six device rounds to get right and four of the wrong diagnoses came
+from reasoning about source rather than observing hardware — moving the camera
+library in the same change as an SDK bump would make the next camera defect
+impossible to attribute.
+
+---
+
 ## Target versions (verify with `npx expo install --fix`)
 
 | Package | Current | Path A target (SDK 54) | Notes |
@@ -113,6 +179,55 @@
 
 ---
 
+## Staged rollout — the operator's phone first, never the CP's
+
+Operator ruling, and it applies whichever SDK this lands on.
+
+The CP on 588 Thomas is the only other install. He was two weeks stale for a
+month and filed unsigned compliance logs the whole time. **Distributing a broken
+build to him and having no way back is the failure to avoid** — worse than any
+defect this migration might introduce, because it is the one with no undo.
+
+1. Build.
+2. **The operator installs it on HIS OWN phone.** Not the CP's.
+3. He runs the list below in full.
+4. It holds → the CP gets it.
+5. It does not → **the CP stays on a working 1.2.0**, which is why the version
+   bump and the handout must not be the same event for this build. Nothing is
+   published to the CP until step 3 passes.
+
+### The device list
+
+Not a smoke test. Each of these has cost time before, and each exercises a
+native path that an SDK bump can break silently:
+
+- [ ] **Camera at ultra-wide.** Open it, switch lens, capture.
+- [ ] **A photo actually saving** — capture, then confirm it survives to the
+      logbook and uploads. The capture succeeding is not the test.
+- [ ] **The gate check-in.** Tap a real tag, confirm the check-in page opens
+      and a worker can complete it. This is the NFC path.
+- [ ] **A full daily log**, start to submitted, including the signature.
+- [ ] **The offline path**: fill a logbook with the network off, background the
+      app, reopen, confirm the draft persists, reconnect, confirm it pushes.
+
+### THE CAMERA IS THE ONE TO WATCH, AND IT HAS A STANDING ORDER
+
+It took **six device rounds** to get right, and **four of the wrong diagnoses
+came from reasoning about the source rather than observing the hardware**. An
+SDK bump is the most likely thing in this entire change to break it.
+
+**If the camera regresses: STOP and report BEFORE touching
+`react-native-vision-camera`.** Moving the SDK and the camera library in the
+same change makes the next camera defect impossible to attribute, and unwinding
+that after the fact is precisely how six rounds became six rounds.
+
+Note this cuts against a blanket `npx expo install --fix`, which is not
+surgical: it moves community packages to the SDK's `bundledNativeModules` pins
+and **will** touch vision-camera and nfc-manager whether or not you want it to.
+To test the SDK alone, run `--fix`, then revert those two to their current
+versions before building. That isolation is the whole point of the sequencing.
+
+
 ## Rollback
 
 - The migration lives on its own branch; `main` stays shippable throughout.
@@ -155,6 +270,42 @@ Resolve **React 18 → 19** fallout. Build a dev client and smoke-test that the 
 ```
 npx expo install expo@^54 --fix
 ```
+
+### 🔴 ISOLATE THE SDK — revert the two native modules `--fix` moves for you
+
+`--fix` is NOT surgical. It moves community packages to the SDK's
+`bundledNativeModules` pins, so it will bump **vision-camera** and
+**nfc-manager** whether or not you asked. Let it, then put them back:
+
+```
+npm install --save-exact react-native-vision-camera@4.7.3
+npm install --save-exact react-native-nfc-manager@3.17.2
+node -p "['react-native-vision-camera','react-native-nfc-manager'].map(k=>k+'='+require('./package.json').dependencies[k]).join('  ')"
+```
+
+**Why, and this is an operator ruling rather than a preference.** The camera
+took **six device rounds** to diagnose, and four of the wrong diagnoses came
+from reasoning about source instead of observing hardware. If the SDK and the
+camera library move in the same build, the next camera defect cannot be
+attributed to either, and unwinding that afterwards is how six rounds became
+six rounds.
+
+vision-camera 5.2.3 exists and this repo is on 4.7.3. **It moves on its own,
+after this, with a device test in front of it.** Same for nfc-manager: 3.17.2 is
+the RN 0.81 floor and also the current stable, so it lands as a floor rather
+than as a speculative bump.
+
+Re-pin only what the BUILD says is broken, one at a time.
+
+### Checkpoint after every phase
+
+```
+node src/utils/api36MigrationInvariants.test.cjs
+```
+
+Inert on a correct tree; it fails the moment `--fix` clobbers the reanimated
+pin, takes nfc-manager to the beta, or leaves targetSdk and the architecture
+setting disagreeing. Cheaper than reading a Gradle log.
 
 ### 🔴 CRITICAL — THE ONE STEP THAT SILENTLY BREAKS THE BUILD
 `--fix` installs **reanimated 4.1.1**, which is **New-Architecture-ONLY** and **cannot run on
