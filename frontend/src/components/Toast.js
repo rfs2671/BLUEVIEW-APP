@@ -8,6 +8,11 @@ import { semantic, withAlpha } from '../styles/semanticColors';
 
 const { width } = Dimensions.get('window');
 
+// The LIVE toast list, exposed so a second renderer inside a Modal's window can
+// paint the same stack. Deliberately separate from ToastContext, which carries
+// the raise-a-toast API: a screen should never reach in and read the list.
+const ToastStackContext = createContext(null);
+
 // Near-opaque fills so toasts are fully readable even when rendered on top of a
 // dimmed modal scrim. A ~10% ALPHA fill was tried before and rejected: it was
 // see-through against dark backdrops. So these stay fully OPAQUE — what changes
@@ -158,6 +163,7 @@ export const ToastProvider = ({ children }) => {
   const hasToasts = toasts.length > 0;
 
   return (
+    <ToastStackContext.Provider value={{ toasts, removeToast, styles }}>
     <ToastContext.Provider value={toast}>
       {children}
       {hasToasts && (
@@ -171,6 +177,47 @@ export const ToastProvider = ({ children }) => {
         </View>
       )}
     </ToastContext.Provider>
+    </ToastStackContext.Provider>
+  );
+};
+
+
+/**
+ * THE SAME TOASTS, PAINTED INSIDE A MODAL'S OWN WINDOW.
+ *
+ * A native Modal is a separate OS window — a Dialog on Android, a presented
+ * view controller on iOS. `zIndex` and `elevation` are scoped to one view
+ * hierarchy and React tree position is scoped to the same one, so NOTHING in
+ * the app's tree can paint above a Modal. That is why the provider's stack
+ * carries zIndex 99999 and still renders behind every sheet, and why moving
+ * ToastProvider around _layout.jsx changes nothing: it is already the
+ * innermost provider.
+ *
+ * Wrapping the provider's stack in its own Modal was tried and reverted in
+ * efea5c9 ("toast blocking UI"): RN's Modal root intercepts every touch
+ * regardless of pointerEvents on its children, so for the four seconds a toast
+ * was up the user could not tap anything.
+ *
+ * So the fix is not a different layer — it is a SECOND MOUNT POINT. Drop
+ * <ToastHost /> inside a Modal's own tree and toasts raised while that sheet
+ * is open render in that sheet's window, in front of it.
+ *
+ * ONE MECHANISM, ONE TREATMENT. Same ToastProvider, same useToast(), same
+ * Toast component, same styles object — the only thing that differs is which
+ * window it paints into. It is not a per-screen banner and must not become
+ * one; a modal that needs to report an error still calls toast.error().
+ *
+ * Renders nothing when no toast is up, so an idle sheet is unaffected.
+ */
+export const ToastHost = () => {
+  const stack = useContext(ToastStackContext);
+  if (!stack || stack.toasts.length === 0) return null;
+  return (
+    <View pointerEvents="box-none" style={stack.styles.toastContainer}>
+      {stack.toasts.map((t) => (
+        <Toast key={t.id} {...t} onClose={stack.removeToast} />
+      ))}
+    </View>
   );
 };
 

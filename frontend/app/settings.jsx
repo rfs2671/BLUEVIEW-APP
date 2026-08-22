@@ -45,7 +45,7 @@ import FloatingNav from '../src/components/FloatingNav';
 import CpNav from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
-import { useToast } from '../src/components/Toast';
+import { useToast, ToastHost } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
@@ -1065,6 +1065,12 @@ export default function SettingsScreen() {
             onRequestClose={() => setDeletionConfirmOpen(false)}
           >
             <View style={s.modalOverlay}>
+              {/* THE ERROR HAS TO BE VISIBLE FROM INSIDE THE SHEET. A native
+                  Modal is a separate OS window, so the app-wide toast stack
+                  paints BEHIND it - a failed request would have shown the CP
+                  nothing at all. ToastHost is the same stack, same component,
+                  same styling, rendered in this window. */}
+              <ToastHost />
               <View style={s.modalContent}>
                 <Text style={s.delSheetTitle}>Request account deletion</Text>
 

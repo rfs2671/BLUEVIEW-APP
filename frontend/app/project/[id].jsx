@@ -58,7 +58,7 @@ import CompliancePanel from '../../src/components/CompliancePanel';
 import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
-import { useToast } from '../../src/components/Toast';
+import { useToast, ToastHost } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
 import { useCheckIns } from '../../src/hooks/useCheckIns';
@@ -1402,6 +1402,13 @@ export default function ProjectDetailScreen() {
           }}
         >
           <View style={s.modalOverlay}>
+            {/* Tag programming reports EVERY outcome through a toast - Scan
+                Failed, Registration Failed, and the "unsupported tag api" the
+                library raises. A native Modal is its own OS window, so the
+                app-wide stack paints behind this sheet and an admin holding a
+                phone to a tag would see nothing happen at all. Same stack,
+                same component, rendered in this window. */}
+            <ToastHost />
             <Pressable 
               style={s.modalBackdrop} 
               onPress={() => {
