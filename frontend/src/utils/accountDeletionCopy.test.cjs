@@ -116,10 +116,61 @@ console.log('\n-- the request is a request, and it is answerable --');
     'seeded from the server, so the request survives a reinstall');
 }
 
-console.log('\n-- not offered on a shared site device --');
+console.log('\n-- a destructive action LOOKS like one --');
 {
-  ok(/\{!siteMode && \(/.test(SETTINGS),
-    'a jobsite tablet is not somebody\'s personal account');
+  // It was five bare <Text> runs stacked in a modal: a wall of prose in which
+  // "kept by law" and "unsynced work is lost" carried no more visual weight
+  // than the line about who actions the request.
+  //
+  // The container is the app's existing warning treatment, not a variant -
+  // identical tokens to notifCard / notifHeader / notifTitle on the CP's
+  // logbook screen, so a destructive warning here reads like a compliance
+  // warning there.
+  ok(/delWarnCard: {[^}]*semantic.attentionBg/.test(SET),
+    'the warning block sits on semantic.attentionBg, like every other one');
+  ok(/delWarnCard: {[^}]*semantic.attentionBorder/.test(SET),
+    'with the matching attention border');
+  ok(/delWarnTitle: {[^}]*color: semantic.attention/.test(SET),
+    'and an attention-coloured title');
+  const card = SETTINGS.slice(SETTINGS.indexOf('retentionSentence(null)') - 900,
+    SETTINGS.indexOf('drainWarning(null)') + 200);
+  ok(card.length > 400, 'ANCHOR: the two warning blocks slice is non-empty');
+  ok((card.match(/<GlassCard style={s.delWarnCard}>/g) || []).length === 2,
+    'BOTH facts are contained - what is kept, and what is lost');
+  // includes(), not a regex: size={16} makes {16} a QUANTIFIER in a regex
+  // literal, so the pattern silently matches nothing.
+  ok(card.includes('<AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />'),
+    'the LOSS warning carries the same AlertTriangle the app warns with');
+  ok(!/delBodyStrong/.test(card),
+    'and the bare bold-run treatment they replaced is gone, not left beside them');
+}
+
+console.log('\n-- who this control appears for, and who it does not --');
+{
+  // A shared jobsite tablet is not somebody's personal account.
+  ok(SETTINGS.includes('!siteMode &&'),
+    'not offered on a site device');
+
+  // AND SELF-REGISTERED ONLY. 5.1.1(v) reaches accounts a PERSON created
+  // for themselves. Here owners are seeded, admins made by an owner, CPs
+  // by an admin, and workers have no account at all - the one
+  // self-registration path in real use is the demo account Apple reviews
+  // with, so the control belongs there and nowhere else.
+  ok(SETTINGS.includes("user?.registration_source === 'self_registered'"),
+    'and ONLY on an account that registered itself');
+
+  // Read from a STAMPED field, never derived. account_status 'pending'
+  // would have worked until approval flipped it - and the demo account
+  // must be approved to be reviewable, so the signal would vanish from
+  // the single account it exists for.
+  // Scoped to the GATE LINE, not the file: settings.jsx legitimately reads
+  // user.role elsewhere for admin sections, and the comment above the gate
+  // names account_status while explaining why it is NOT used.
+  const gateLine = SETTINGS.split(String.fromCharCode(10))
+    .find((l) => l.includes("registration_source ==="));
+  ok(!!gateLine, 'ANCHOR: the gate line exists');
+  ok(!/account_status|role ===/.test(gateLine || ''),
+    'the gate itself derives nothing: not account_status, which approval flips, nor role, which POST /admin/users does not constrain');
 }
 
 console.log('\n-- the admin is told the SAME SENTENCE, not a second one --');

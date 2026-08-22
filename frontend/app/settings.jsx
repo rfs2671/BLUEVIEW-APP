@@ -32,6 +32,7 @@ import {
   Bell,
   ChevronRight,
   Trash2,
+  ShieldCheck,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import * as Clipboard from 'expo-clipboard';
@@ -1005,7 +1006,21 @@ export default function SettingsScreen() {
 
               NOT shown on a shared site device: a jobsite tablet is not
               somebody's personal account, and the server refuses it too. */}
-          {!siteMode && (
+          {/* SELF-REGISTERED ACCOUNTS ONLY. Apple 5.1.1(v) reaches accounts a
+              PERSON CREATED FOR THEMSELVES; on this product nobody does. Owners
+              are seeded, admins created by an owner, CPs by an admin, workers
+              have no account. The one self-registration path in real use is the
+              demo account Apple reviews with, so this control belongs there and
+              on nothing else.
+
+              Read from a STAMPED field, never derived. account_status
+              "pending" would have worked until approval flipped it - and the
+              demo account has to be approved to be reviewable, so the signal
+              would vanish from the only account it exists for.
+
+              The server refuses too (POST /auth/me/deletion-request). Hiding a
+              control is presentation; the refusal is the rule. */}
+          {!siteMode && user?.registration_source === 'self_registered' && (
             <>
               <Text style={s.sectionLabel}>DANGER ZONE</Text>
               <GlassCard style={s.card}>
@@ -1055,17 +1070,37 @@ export default function SettingsScreen() {
 
                 <Text style={s.delBody}>{accessRemovedSentence(null)}</Text>
 
-                {/* THE SENTENCE THAT MAKES THIS HONEST RATHER THAN A STALL.
-                    "Kept by law" and not "kept for compliance": the first
-                    names the reason, the second names a category and leaves
-                    him to guess. And it says his NAME stays on them, because
-                    that is the part he would otherwise find out later. */}
-                <Text style={s.delBodyStrong}>Your signed records stay.</Text>
-                <Text style={s.delBody}>{retentionSentence(null)}</Text>
+                {/* THE TWO FACTS THAT MATTER GET CONTAINERS, and it is the same
+                    container every other warning in this app uses — the
+                    flagged-worker and unaffirmed-signature blocks on the CP's
+                    logbook screen. GlassCard on semantic.attentionBg, an
+                    AlertTriangle, an attention-coloured title.
 
-                {/* The only sentence here that can save him something. */}
-                <Text style={s.delBodyStrong}>Before you request this</Text>
-                <Text style={s.delBody}>{drainWarning(null)}</Text>
+                    They were five bare <Text> runs stacked in a modal, which
+                    read as a wall of prose in which "your records are kept by
+                    law" and "unsynced work is lost" carried no more weight than
+                    the line about who actions the request. A destructive action
+                    should look like one. */}
+
+                {/* WHAT IS KEPT, AND WHY. "Kept by law" and not "kept for
+                    compliance": the first names the reason, the second names a
+                    category and leaves him to guess. */}
+                <GlassCard style={s.delWarnCard}>
+                  <View style={s.delWarnHeader}>
+                    <ShieldCheck size={16} strokeWidth={1.5} color={semantic.attention} />
+                    <Text style={s.delWarnTitle}>Your signed records stay</Text>
+                  </View>
+                  <Text style={s.delWarnBody}>{retentionSentence(null)}</Text>
+                </GlassCard>
+
+                {/* THE ONLY LINE HERE THAT CAN SAVE HIM SOMETHING. */}
+                <GlassCard style={s.delWarnCard}>
+                  <View style={s.delWarnHeader}>
+                    <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                    <Text style={s.delWarnTitle}>Before you request this</Text>
+                  </View>
+                  <Text style={s.delWarnBody}>{drainWarning(null)}</Text>
+                </GlassCard>
 
                 <Text style={s.delBody}>
                   Your administrator will action this request and can contact
@@ -1169,6 +1204,20 @@ function buildStyles(colors) {
     delRowText:        { fontSize: 15, color: '#f87171', fontWeight: '500' },
     delRequestedTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
     delSheetTitle:     { fontSize: 18, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.md },
+    // The app's warning-block treatment, not a variant of it. Identical to
+    // notifCard / notifHeader / notifTitle / notifWorker on the CP's logbook
+    // screen, so a destructive warning here reads the same as a compliance
+    // warning there.
+    delWarnCard: {
+      marginBottom: spacing.md, padding: spacing.md,
+      backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder,
+    },
+    delWarnHeader: {
+      flexDirection: 'row', alignItems: 'center',
+      gap: spacing.sm, marginBottom: spacing.sm,
+    },
+    delWarnTitle: { fontSize: 14, fontWeight: '500', color: semantic.attention, flex: 1 },
+    delWarnBody:  { fontSize: 13, lineHeight: 19, color: colors.text.secondary },
     delBody:           { fontSize: 14, lineHeight: 20, color: colors.text.secondary, marginBottom: spacing.md },
     delBodyStrong:     { fontSize: 14, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
     delConfirmBtn:     { marginTop: spacing.sm },
