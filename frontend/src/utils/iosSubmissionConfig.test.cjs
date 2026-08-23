@@ -49,7 +49,12 @@ console.log('\n-- the version is the one being submitted --');
 {
   // 1.2.0, not 1.1.4. Eleven weeks past the 1.1.0 (5) Apple last saw, and
   // `runtimeVersion.policy: "appVersion"` makes this the OTA lane too.
-  ok(APP_JSON.version === '1.2.0', `expo.version is 1.2.0 (found ${APP_JSON.version})`);
+  // The RULE, not the number. Pinning a literal version means editing this
+  // test every release, and a test edited on every release is one nobody
+  // reads. What must hold is that the version is a real semver and that the
+  // Android versionCode below is derived from it.
+  ok(/^[0-9]+[.][0-9]+[.][0-9]+$/.test(APP_JSON.version),
+    `expo.version is a three-part semver (found ${APP_JSON.version})`);
   ok(APP_JSON.runtimeVersion?.policy === 'appVersion',
     'and the RV policy still derives the runtime from it, so the lane moves with the build');
 }
@@ -130,6 +135,33 @@ console.log('\n-- the three that are real stay --');
     'ANCHOR: nfc-manager is installed');
   ok(!!IP.NFCReaderUsageDescription,
     'NFCReaderUsageDescription kept — this is the capability Apple asked about');
+}
+
+console.log('\n-- the Play submit key can never be committed --');
+{
+  // eas.json points submit.production.android at a service-account JSON. That
+  // key can publish to the Play Store on the account holder's behalf, so the
+  // one thing that must be true of it is that git refuses to take it.
+  const easCfg = JSON.parse(fs.readFileSync(path.join(FRONTEND, 'eas.json'), 'utf8'));
+  const droid = (easCfg.submit && easCfg.submit.production
+    && easCfg.submit.production.android) || {};
+  const keyPath = droid.serviceAccountKeyPath;
+  ok(!!keyPath, 'the android submit profile names a service-account key');
+  if (keyPath) {
+    const ign = fs.readFileSync(path.join(FRONTEND, '.gitignore'), 'utf8');
+    const base = keyPath.replace(/^\.\//, '');
+    ok(ign.includes(base) || /\*-service-account\.json/.test(ign),
+      `${base} is gitignored — a committed Play key is a publish credential`);
+    ok(!fs.existsSync(path.join(FRONTEND, base)),
+      `${base} is not present in the tree`);
+  }
+  // Draft, not live. The first upload should land in the console for a person
+  // to look at, not go straight to testers.
+  ok(droid.releaseStatus === 'draft',
+    'the first Play upload lands as a DRAFT rather than going live');
+  ok(droid.track === 'internal',
+    'and on the internal track -- Play blocks production uploads that have not '
+    + 'passed review, and internal testing is the lane that accepts a first AAB');
 }
 
 console.log('\n-- the rest of the manifest is untouched --');

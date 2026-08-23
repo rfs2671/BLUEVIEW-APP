@@ -92,7 +92,7 @@ export default function LoginScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={s.container}>
+      <SafeAreaView style={s.container} edges={['top']}>
         <ScrollView
           style={s.scroll}
           contentContainerStyle={s.scrollContent}

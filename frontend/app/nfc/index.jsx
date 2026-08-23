@@ -216,7 +216,7 @@ export default function NfcCheckInScreen() {
   if (status === 'loading') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.centerContent}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={s.loadingText}>Detecting site...</Text>
@@ -233,7 +233,7 @@ export default function NfcCheckInScreen() {
     const isConnectivity = errorKind === 'offline' || errorKind === 'error';
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.centerContent}>
             {isConnectivity ? (
               <OfflineNotice mode={errorKind} detail={errorMessage} />
@@ -328,7 +328,7 @@ export default function NfcCheckInScreen() {
   if (status === 'checking_in') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.centerContent}>
             <Animated.View style={[s.checkingIcon, { transform: [{ scale: pulseAnim }] }]}>
               <Nfc size={60} strokeWidth={1} color="#3b82f6" />
@@ -346,7 +346,7 @@ export default function NfcCheckInScreen() {
   if (status === 'success') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.centerContent}>
             <View style={s.successIcon}>
               <CheckCircle size={100} strokeWidth={1.5} color={semantic.verified} />

@@ -1022,7 +1022,7 @@ export default function PermitRenewalScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator
               size="large"
@@ -1037,7 +1037,7 @@ export default function PermitRenewalScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={s.container}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>

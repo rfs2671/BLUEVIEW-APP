@@ -248,7 +248,7 @@ export default function ReportSettingsScreen() {
   if (!isAdmin) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.accessDenied}>
             <AlertCircle size={56} strokeWidth={1} color={colors.status.error} />
             <Text style={s.accessDeniedTitle}>Admin Access Required</Text>
@@ -269,7 +269,7 @@ export default function ReportSettingsScreen() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={s.loadingText}>Loading settings...</Text>

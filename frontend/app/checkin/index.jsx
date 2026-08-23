@@ -173,7 +173,7 @@ export default function CheckInScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={s.loadingText}>Loading...</Text>

@@ -872,7 +872,7 @@ export default function DOBLogsScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={s.loadingText}>Loading compliance data...</Text>

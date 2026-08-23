@@ -38,3 +38,10 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Google Play service-account key, read by eas.json submit.production.android.
+# NEVER COMMITTED: this key can publish to the Play Store on the account
+# owner behalf. It lives on the machine that runs eas submit, and in EAS
+# credentials for CI - never in the repo.
+play-service-account.json
+*-service-account.json

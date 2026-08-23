@@ -162,7 +162,7 @@ export default function PublicCheckInScreen() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={s.loadingText}>Loading check-in...</Text>
@@ -175,7 +175,7 @@ export default function PublicCheckInScreen() {
   if (!projectInfo) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.errorContainer}>
             <Text style={s.errorTitle}>Invalid Check-In Link</Text>
             <Text style={s.errorText}>
@@ -189,7 +189,7 @@ export default function PublicCheckInScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={s.container}>
+      <SafeAreaView style={s.container} edges={['top']}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={s.keyboardView}

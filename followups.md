@@ -2,6 +2,44 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MEASURED, NOT FIXED] The bottom inset is a constant, and here is the number.**
+  API 36 enforces edge-to-edge, so content draws under the navigation bar. The
+  app handles the top with `SafeAreaView edges={['top']}` (67 usages) and the
+  bottom with **scroll padding**, deliberately — no screen insets the bottom at
+  the screen level except one.
+
+  The measurement, so a future device with a larger inset has it in front of it:
+
+  | | |
+  |---|---|
+  | `paddingBottom: 120` | 32 screens |
+  | `paddingBottom: 140` | 2 screens |
+  | `paddingBottom: 100 / 80 / 60` | 1 each |
+  | gesture-navigation inset | —24dp |
+  | 3-button navigation inset | —48dp |
+
+  **120 clears both comfortably and nothing was reported clipped on a Pixel 10
+  Pro XL**, which is why this is recorded rather than changed. Rewriting 32
+  screens to chase a constant that is currently adequate is a larger risk than
+  the thing it would fix.
+
+  **What would make it wrong:** a device whose navigation inset exceeds —96dp
+  (120 minus the —24dp of intended breathing room), or a screen whose last
+  element is a control rather than text. Neither exists today.
+
+  **The real exception, and it is NOT scroll padding.** `CpNav` and
+  `FloatingNav` are `position: 'absolute', bottom: 24` with no inset. Absolute
+  positioning takes them OUT of the inset flow entirely, so no parent padding
+  and no scroll padding reaches them. 24 approximates a gesture bar, which is
+  why it looks right on a gesture device; on 3-button navigation the nav sits
+  under the system buttons. `CpNav` is on every CP screen. Tracked separately
+  from this entry because it is a real defect rather than a measurement.
+
+  Same shape, smaller: `Toast.js` uses a fixed `top: 60` rather than
+  `insets.top`, and three bottom-anchored modal sheets (`checklists.jsx`,
+  `project/[id].jsx`, `projects/index.jsx`) have no bottom padding — and a
+  Modal is a separate window, so no screen-level SafeAreaView reaches them.
+
 - **[UNCONFIRMED] Why the 588 Thomas tags could be programmed before the write
   path could format a blank one.**
   The Android write path never had a format branch until 2026-08-23, and

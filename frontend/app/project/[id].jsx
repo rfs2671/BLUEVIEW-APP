@@ -783,7 +783,7 @@ export default function ProjectDetailScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={s.loadingText}>Loading project...</Text>
@@ -796,7 +796,7 @@ export default function ProjectDetailScreen() {
     if (!project) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             {/* "Project not found" is what a 404 means. When the read FAILED and
                 nothing is cached, the project's existence is unknown. */}
