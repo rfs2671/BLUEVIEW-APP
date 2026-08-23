@@ -350,7 +350,7 @@ export default function AdminUsersScreen() {
   if (!isAdmin) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.accessDenied}>
             <ShieldAlert size={56} strokeWidth={1} color={colors.status.error} />
             <Text style={s.accessDeniedTitle}>Admin Access Required</Text>

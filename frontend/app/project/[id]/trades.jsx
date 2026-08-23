@@ -242,7 +242,7 @@ export default function ProjectTradesScreen() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
           </View>
@@ -254,7 +254,7 @@ export default function ProjectTradesScreen() {
   if (!isAdmin) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={s.container}>
+        <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.header}>
             <GlassButton
               variant="icon"
