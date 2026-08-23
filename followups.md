@@ -27,13 +27,13 @@ Known gaps and deferred work, newest first.
   (120 minus the —24dp of intended breathing room), or a screen whose last
   element is a control rather than text. Neither exists today.
 
-  **The real exception, and it is NOT scroll padding.** `CpNav` and
-  `FloatingNav` are `position: 'absolute', bottom: 24` with no inset. Absolute
-  positioning takes them OUT of the inset flow entirely, so no parent padding
-  and no scroll padding reaches them. 24 approximates a gesture bar, which is
-  why it looks right on a gesture device; on 3-button navigation the nav sits
-  under the system buttons. `CpNav` is on every CP screen. Tracked separately
-  from this entry because it is a real defect rather than a measurement.
+  **The real exception was NOT scroll padding, and it is now FIXED.** `CpNav`
+  and `FloatingNav` were `position: 'absolute', bottom: 24` with no inset —
+  absolute positioning takes them out of the inset flow, so neither parent
+  padding nor scroll padding reached them, and on 3-button navigation the nav
+  sat under the system buttons on every CP screen. Both now render
+  `{ bottom: insets.bottom + 24 }` inline; it has to be inline because a
+  StyleSheet is built once at module load, before any inset exists.
 
   Same shape, smaller: `Toast.js` uses a fixed `top: 60` rather than
   `insets.top`, and three bottom-anchored modal sheets (`checklists.jsx`,

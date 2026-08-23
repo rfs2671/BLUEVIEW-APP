@@ -10,6 +10,7 @@
 import React from 'react';
 import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { LayoutDashboard, FolderOpen, Settings } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
@@ -39,6 +40,7 @@ const NavItem = ({ item, isActive, onPress, colors: c }) => {
 const CpNav = () => {
   const router   = useRouter();
   const pathname = usePathname();
+  const insets   = useSafeAreaInsets();
   const { isDark, colors: c } = useTheme();
 
   // blurContent already carries a near-opaque background, so the nav
@@ -66,7 +68,7 @@ const CpNav = () => {
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { bottom: insets.bottom + 24 }]}>
       <View style={styles.innerContainer}>
         {/* Web keeps expo-blur; native falls back to a plain View —
             the native BlurView was throwing a render exception on
@@ -87,6 +89,16 @@ const CpNav = () => {
 
 const styles = StyleSheet.create({
   container: {
+    // OVERRIDDEN AT RENDER. The component passes
+    // { bottom: insets.bottom + 24 } inline, which REPLACES this value — it
+    // does not add to it. The 24 below is therefore a fallback that only
+    // applies if these styles are used without the component.
+    //
+    // It has to be done inline: a StyleSheet is built once at module load,
+    // before any inset exists. And it has to be done at all because
+    // absolute positioning puts this outside the inset flow — neither the
+    // screen's SafeAreaView nor its paddingBottom: 120 reaches it, so a
+    // hardcoded 24 leaves the nav under the buttons on 3-button navigation.
     position: 'absolute',
     bottom: 24, left: 0, right: 0,
     alignItems: 'center',

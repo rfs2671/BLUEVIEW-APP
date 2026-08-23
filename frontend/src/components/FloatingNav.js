@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import {
   LayoutDashboard,
@@ -374,6 +375,7 @@ const SettingsNavItem = ({ onPress, isActive }) => {
 const FloatingNav = () => {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const isDesktop = useIsDesktop();
@@ -392,7 +394,7 @@ const FloatingNav = () => {
 
   return (
     <>
-      <View style={styles.container}>
+      <View style={[styles.container, { bottom: insets.bottom + 24 }]}>
         <View style={[styles.innerContainer, !isDark && {
           // shadow-xl shadow-blue-900/10
           shadowColor: 'rgba(30, 58, 138, 0.10)',
@@ -444,6 +446,16 @@ const FloatingNav = () => {
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: {
+    // OVERRIDDEN AT RENDER. The component passes
+    // { bottom: insets.bottom + 24 } inline, which REPLACES this value — it
+    // does not add to it. The 24 below is therefore a fallback that only
+    // applies if these styles are used without the component.
+    //
+    // It has to be done inline: a StyleSheet is built once at module load,
+    // before any inset exists. And it has to be done at all because
+    // absolute positioning puts this outside the inset flow — neither the
+    // screen's SafeAreaView nor its paddingBottom: 120 reaches it, so a
+    // hardcoded 24 leaves the nav under the buttons on 3-button navigation.
     position: 'absolute',
     bottom: 24,
     left: 0,
