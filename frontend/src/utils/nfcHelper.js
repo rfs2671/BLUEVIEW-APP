@@ -1,6 +1,59 @@
 import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
 
 /**
+ * THE TWO TECHS A WRITE CAN LAND ON, and why both are requested.
+ *
+ * A BLANK tag is `NdefFormatable`, not `Ndef`. Android only exposes the `Ndef`
+ * tech once a tag has actually been NDEF-formatted, so on a virgin tag
+ * `Ndef.get(tag)` returns null, the library has no tech handle, and
+ * `writeNdefMessage` reports "unsupported tag api" — an error that names the
+ * write while the real problem is that there was nothing to write THROUGH.
+ *
+ * Confirmed on device rather than reasoned about. logcat, Pixel 10 Pro XL:
+ *
+ *   dispatchTag: TAG: Tech [android.nfc.tech.NfcV, android.nfc.tech.NdefFormatable]
+ *   parseIntent ... action android.nfc.action.TAG_DISCOVERED
+ *   ReactNativeJS: 'NFC register error:', [Error: unsupported tag api]
+ *
+ * The OS dispatched the tag and the app parsed the intent — so this was never
+ * about Android 17, the New Architecture, or the SDK 54 migration. Three
+ * hypotheses died before the readout; the readout answered it in one line.
+ * The tag advertises NdefFormatable and this helper never asked for it.
+ *
+ * `requestTechnology` takes an ARRAY, tries each in order, and RESOLVES TO THE
+ * NAME of the one it acquired — TagTechnologyRequest.connect() takes the first
+ * non-null handle and passes that name back to JS. So the branch below is on
+ * observed fact, not a guess about the tag.
+ *
+ * NdefFormatable is asked for FIRST. The two are mutually exclusive in
+ * practice: a tag stops advertising NdefFormatable once it is formatted, so a
+ * blank tag lands on format and a written tag falls through to write.
+ *
+ * NfcV (ISO 15693) does not change any of this. It is the TRANSPORT; Ndef and
+ * NdefFormatable are the data layer above it, and Android exposes them
+ * independently of whether the radio is ISO 14443A or ISO 15693. The tag's own
+ * tech list above is what proves NdefFormatable is obtainable here.
+ */
+const WRITE_TECHS = [NfcTech.NdefFormatable, NfcTech.Ndef];
+
+/**
+ * Write `bytes` through whichever tech was acquired.
+ *
+ * NOT a shared abstraction over read and write — reading is a legitimately
+ * different flow and one wrapper over two intents is how the wrong path gets
+ * taken silently. This is only the write half, used by the two writers below.
+ */
+async function writeThroughTech(tech, bytes) {
+  if (tech === 'NdefFormatable') {
+    // format() writes the message AS PART OF formatting, so a virgin tag is
+    // formatted and populated in one operation.
+    await NfcManager.ndefFormatableHandlerAndroid.formatNdef(bytes);
+  } else {
+    await NfcManager.ndefHandler.writeNdefMessage(bytes);
+  }
+}
+
+/**
  * Initialize NFC Manager
  * Call this once when app starts
  */
@@ -53,36 +106,38 @@ export async function readNfcTag() {
  * @param {string} baseUrl - Base URL (e.g., "https://levelog.com")
  */
 export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.com') {
+  let tech = null;
   try {
-    // Request NDEF technology for writing
-    await NfcManager.requestTechnology(NfcTech.Ndef);
-    
-    // Create the check-in URL
+    // Blank OR already formatted — see WRITE_TECHS above.
+    tech = await NfcManager.requestTechnology(WRITE_TECHS);
+
     const url = `${baseUrl}/checkin/${projectId}/${tagId}`;
-    
-    // Create NDEF record with the URL
     const bytes = Ndef.encodeMessage([Ndef.uriRecord(url)]);
-    
+
     if (!bytes) {
       throw new Error('Failed to encode NDEF message');
     }
-    
-    // Write to the tag
-    await NfcManager.ndefHandler.writeNdefMessage(bytes);
-    
+
+    await writeThroughTech(tech, bytes);
     await NfcManager.cancelTechnologyRequest();
-    
+
     return {
       success: true,
-      url: url,
+      url,
+      tech,
       message: 'NFC tag programmed successfully',
     };
   } catch (ex) {
-    console.warn('NFC write error:', ex);
+    console.warn('NFC write error:', tech, ex);
     await NfcManager.cancelTechnologyRequest();
     return {
       success: false,
-      error: ex.message || 'Failed to write to NFC tag',
+      tech,
+      // THE TECH GOES IN THE MESSAGE. Three rounds went to a bare
+      // "unsupported tag api", which named the write and not the handle it
+      // was missing.
+      error: `${ex.message || 'Failed to write to NFC tag'}`
+        + `${tech ? ` (tech: ${tech})` : ' (no tech acquired)'}`,
     };
   }
 }
@@ -92,45 +147,48 @@ export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.c
  * This is the main function for admin tag registration
  */
 export async function registerNfcTag(projectId, baseUrl = 'https://levelog.com') {
+  let tech = null;
   try {
-    // Step 1: Request NDEF technology
-    await NfcManager.requestTechnology(NfcTech.Ndef);
-    
-    // Step 2: Read the tag to get its ID
+    // Step 1: acquire whichever write tech this tag actually offers.
+    tech = await NfcManager.requestTechnology(WRITE_TECHS);
+
+    // Step 2: the UID, read BEFORE branching — both paths need it, and it is
+    // what gets registered server-side whether the tag was formatted or not.
     const tag = await NfcManager.getTag();
-    const tagId = tag.id || '';
-    
+    const tagId = tag?.id || '';
+
     if (!tagId) {
       throw new Error('Could not read tag ID');
     }
-    
-    // Step 3: Create the check-in URL
+
+    // Steps 3 and 4: build the check-in URL and put it on the tag.
     const url = `${baseUrl}/checkin/${projectId}/${tagId}`;
-    
-    // Step 4: Write the URL to the tag
     const bytes = Ndef.encodeMessage([Ndef.uriRecord(url)]);
-    
+
     if (!bytes) {
       throw new Error('Failed to encode NDEF message');
     }
-    
-    await NfcManager.ndefHandler.writeNdefMessage(bytes);
-    
-    // Step 5: Clean up
+
+    await writeThroughTech(tech, bytes);
     await NfcManager.cancelTechnologyRequest();
-    
+
     return {
       success: true,
-      tagId: tagId,
-      url: url,
+      tagId,
+      url,
+      tech,
       message: 'NFC tag registered and programmed successfully',
     };
   } catch (ex) {
-    console.warn('NFC register error:', ex);
+    console.warn('NFC register error:', tech, ex);
     await NfcManager.cancelTechnologyRequest();
     return {
       success: false,
-      error: ex.message || 'Failed to register NFC tag',
+      tech,
+      // See writeNfcTag: the acquired tech goes in the message, because its
+      // absence is what made this take three rounds to find.
+      error: `${ex.message || 'Failed to register NFC tag'}`
+        + `${tech ? ` (tech: ${tech})` : ' (no tech acquired)'}`,
     };
   }
 }
