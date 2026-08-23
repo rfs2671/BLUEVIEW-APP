@@ -1,0 +1,28 @@
+diff --git a/node_modules/react-native-nfc-manager/android/src/main/java/community/revteltech/nfc/NfcManager.java b/node_modules/react-native-nfc-manager/android/src/main/java/community/revteltech/nfc/NfcManager.java
+index 062c82a..3521251 100644
+--- a/node_modules/react-native-nfc-manager/android/src/main/java/community/revteltech/nfc/NfcManager.java
++++ b/node_modules/react-native-nfc-manager/android/src/main/java/community/revteltech/nfc/NfcManager.java
+@@ -1346,7 +1346,22 @@ class NfcManager extends ReactContextBaseJavaModule implements ActivityEventList
+         }
+ 
+         WritableMap parsed = null;
+-        Tag tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG);
++        // PATCHED (patches/react-native-nfc-manager+3.17.2.patch).
++        //
++        // The untyped getParcelableExtra(String) is deprecated since
++        // API 33 and returns null on newer Android, so parseNfcIntent
++        // bailed out below and NO tag ever reached JS. Downstream that
++        // surfaces as "unsupported tag api" from writeNdefMessage,
++        // because techRequest.getTechHandle() has nothing to hand back.
++        //
++        // The typed overload is the documented replacement. Guarded on
++        // SDK 33 because minSdkVersion here is 26.
++        Tag tag;
++        if (Build.VERSION.SDK_INT >= 33) {
++            tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag.class);
++        } else {
++            tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG);
++        }
+         if (tag == null) {
+             return null;
+         }
