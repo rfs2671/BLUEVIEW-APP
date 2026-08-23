@@ -1288,6 +1288,12 @@ export default function DailyJobsiteLog() {
       if (refused && submitStatus === 'submitted') {
         const code = finalizeErrorCode(pushErr);
         console.warn('daily_jobsite REFUSED by the server:', status, code);
+        // NO SPECIAL CASE FOR "already filed" HERE, deliberately. A 409 was
+        // built for a SUBMITTED row and withdrawn: the LOCK is the line and
+        // signed is not, so an end-of-day log stays writable through the day
+        // and the server never refuses on that ground. The only refusal that
+        // reaches here on a filed row is 423, which the lock bar already
+        // handles by offering an amendment.
         await recordFinalizeError(existingLogId || _key, code, _key, 'editor');
         toast.error(tFinalize('errorTitle'), gateCopy(code));
         return undefined;

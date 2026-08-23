@@ -247,41 +247,103 @@ console.log('\n-- the day he never signed reaches the CP --');
   // The sweep leaves an unsigned stale log OPEN on purpose and tells the admin
   // through compliance_alerts. The CP is the only person who can finish it and
   // has no admin login, so the same fact reaches him here.
-  ok(/const staleUnsigned = notifications\?\.stale_unsigned_logbooks \|\| 0;/.test(SCREEN),
-    'the count comes off the notifications endpoint');
-  const at = SCREEN.indexOf('staleUnsigned > 0');
+  //
+  // IT IS NOW ONE CARD. The two detectors overlap totally on a `cp_signature: {}`
+  // row, so the old pair counted the same days twice and tapped to opposite ends
+  // of the same list. The server merges and de-duplicates them into
+  // `attestation_gaps`; what the CP must still be TOLD is unchanged, and that is
+  // what this block holds to.
+  ok(/const gaps = notifications\?\.attestation_gaps \|\| \[\];/.test(SCREEN),
+    'the list comes off the notifications endpoint, already de-duplicated');
+  const at = SCREEN.indexOf('{gaps.length > 0 && (');
   ok(at > -1, 'and the card is gated on it');
-  const card = SCREEN.slice(at, at + 900);
+  const card = SCREEN.slice(at, SCREEN.indexOf('OLDER SERVER FALLBACK'));
+  ok(card.length > 200, 'ANCHOR: the card slice is non-empty');
   ok(/never signed/.test(card), 'it says what happened');
-  ok(/still yours to finish/.test(card),
+  // JSX wraps the copy across lines, so the assertion tolerates the wrap
+  // rather than the copy being reflowed to suit a test.
+  ok(/still yours\s+to finish/.test(card),
     'and that it is HIS to finish — an unfinished obligation, not a sealed record');
-  ok(/handleOpenStaleUnsigned/.test(card),
+  ok(/not affirmed for that day/.test(card),
+    'and the OTHER state is named separately, because it needs a different act');
+  ok(/You do not need to sign again/.test(card),
+    'THE LINE THAT STOPS A SECOND SIGNATURE. A `{}` signature is present but '
+    + 'unaffirmed; tell him it was "never signed" and he concludes the app lost '
+    + 'his mark and signs again, which is the one thing that must not happen');
+  ok(/handleOpenGap/.test(card),
     'tapping it opens the log rather than being a dead badge');
 }
 {
-  const fn = SCREEN.slice(SCREEN.indexOf('const handleOpenStaleUnsigned'),
-    SCREEN.indexOf('const handleOpenUnaffirmed'));
-  ok(/refs\[refs\.length - 1\]/.test(fn),
-    'OLDEST first — the refs arrive newest-first for the badge, and the day '
-    + 'most likely to be forgotten is the one furthest back');
-  ok(fn.includes('router.push(`/logbooks/${log_type}?projectId=${projectId}&date=${date}`)'),
+  const fn = SCREEN.slice(SCREEN.indexOf('const handleOpenGap'),
+    SCREEN.indexOf('const gapLabel'));
+  ok(fn.length > 100, 'ANCHOR: the handler slice is non-empty');
+  ok(/handleOpenGap = \(gap\)/.test(fn),
+    'EVERY ROW IS A DOOR. The handler takes the row it was tapped from, so the '
+    + 'CP is not made to fix the oldest and refetch to discover the second');
+  ok(fn.includes('router.push('),
     'and it deep-links to that exact day, not to the list');
-  ok(/refs\.length === 0\) return;/.test(fn), 'an empty list taps to nothing');
+  ok(/!gap\) return;/.test(fn), 'a missing row taps to nothing');
 }
 {
-  // NOT A FOURTH TREATMENT. followups.md already logs this screen for carrying
-  // three different ones; the closest analogue is the unaffirmed-signature
-  // card — a record that exists and lacks the CP's attestation.
-  const mine = SCREEN.slice(SCREEN.indexOf('staleUnsigned > 0'), SCREEN.indexOf('staleUnsigned > 0') + 900);
-  const theirs = SCREEN.slice(SCREEN.indexOf('unaffirmedLogbooks > 0'), SCREEN.indexOf('unaffirmedLogbooks > 0') + 900);
+  // THE WIDENING. A count with one door still hides everything behind the
+  // first row; and a list windowed to today drops a filed log the morning
+  // after, which is how three of these sat unseen for three weeks.
+  ok(/const gapsOldestFirst = \[...gaps\].reverse\(\);/.test(SCREEN),
+    'OLDEST first — the server sorts newest-first for the count, but a worklist '
+    + 'reads with the most overdue day at the top');
+  const card = SCREEN.slice(SCREEN.indexOf('{gaps.length > 0 && ('),
+    SCREEN.indexOf('OLDER SERVER FALLBACK'));
+  ok(card.length > 200, 'ANCHOR: the card slice is non-empty');
+  ok(/gapsOldestFirst.map\(/.test(card), 'EVERY gap row is rendered, not just a count');
+  ok(/onPress={\(\) => handleOpenGap\(g\)}/.test(card),
+    'and each row opens its own day');
+  ok(/g.state === 'unsigned' \? 'never signed' : 'not affirmed'/.test(card),
+    'the row names which of the two states it is in, because they need '
+    + 'different acts from him');
+  ok(/gapLabel\(g.log_type\)/.test(card),
+    'and it names the log the same way the list above it does');
+  ok(!/gapOldest/.test(SCREEN),
+    'the single-door path is GONE, not left beside the list to disagree with it');
+}
+{
+  // A DATE THAT IS OFF BY ONE IS WORSE THAN AN ISO STRING. `new Date('2026-08-11')`
+  // is UTC midnight and renders as the 10th on New York time, so the card would
+  // name a different day than the log is filed under.
+  const fn = SCREEN.slice(SCREEN.indexOf('const gapDate'),
+    SCREEN.indexOf('const getLogStatus'));
+  ok(fn.length > 100, 'ANCHOR: the formatter slice is non-empty');
+  ok(fn.includes("split(&-&)".replace(/&/g, String.fromCharCode(39))),
+    'the ISO date is split by string');
+  ok(!fn.includes('new Date('), 'and never parsed through Date, which would shift it a day');
+  ok(fn.includes('today.slice(0, 4)'),
+    'the year shows only when it is not this one — an inspector asking about '
+    + 'last August must not read it as this August');
+}
+{
+  // NOT A NEW TREATMENT. It reuses the card the two it replaced both used.
+  const mine = SCREEN.slice(SCREEN.indexOf('{gaps.length > 0 && ('),
+    SCREEN.indexOf('OLDER SERVER FALLBACK'));
+  const theirs = SCREEN.slice(SCREEN.indexOf('{gaps.length === 0 && ('),
+    SCREEN.indexOf('{gaps.length === 0 && (') + 1200);
+  ok(mine.length > 200 && theirs.length > 200, 'ANCHOR: both slices are non-empty');
   for (const bit of ['styles.notifCard', 'styles.notifHeader', 'AlertTriangle',
     'semantic.attention', 'styles.notifTitle', 'styles.notifWorker']) {
     ok(mine.includes(bit) && theirs.includes(bit),
       `reuses the unaffirmed card's ${bit} rather than inventing a variant`);
   }
 }
-ok(SCREEN.includes('stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: []'),
-  'the offline default carries the new keys, so a failed fetch reads 0 not undefined');
+{
+  // THE FALLBACK MUST NOT DOUBLE UP. An older SERVER sends only the two counts
+  // and its CP would otherwise lose the cards entirely; a current server sends
+  // the merged list, and the old pair has to disappear the moment it arrives or
+  // the double-count is back with one extra card.
+  ok(SCREEN.includes('{gaps.length === 0 && (unaffirmedLogbooks > 0 || staleUnsigned > 0) && ('),
+    'the old pair renders ONLY when the merged list is absent');
+  ok(/const staleUnsigned = notifications\?\.stale_unsigned_logbooks \|\| 0;/.test(SCREEN),
+    'and the old counts are still read, so that fallback has something to show');
+}
+ok(SCREEN.includes('stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [], attestation_gaps: []'),
+  'the offline default carries the new keys, so a failed fetch reads 0/[] not undefined');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
