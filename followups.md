@@ -2,6 +2,34 @@
 
 Known gaps and deferred work, newest first.
 
+- **[UNCONFIRMED] Why the 588 Thomas tags could be programmed before the write
+  path could format a blank one.**
+  The Android write path never had a format branch until 2026-08-23, and
+  `nfcHelper.js` has not otherwise changed since 2026-02-04. So programming
+  those tags from blanks should have been impossible, and it evidently was not.
+
+  **Probable explanation, not a certainty: they were already NDEF-formatted.**
+  NTAG213 and most ISO 14443A stock ships NDEF-formatted from the factory, so
+  those tags would have offered `Ndef` on the first try and written fine. The
+  blanks that fail today are **NfcV / ISO 15693**, a different chip family, and
+  arrive unformatted — hence `[NfcV, NdefFormatable]` in the logcat.
+
+  Two other readings fit and cannot be excluded from here: the tags were
+  written with a third-party NFC app and only the ID typed into the manual
+  entry field, or they arrived pre-formatted from a different supplier. The
+  database cannot distinguish any of them — `nfc_tags` records no provenance,
+  and the scan path and the manual-entry field post an identical row.
+
+  **One scan settles it.** Next time anyone is on site, run Scan & Program
+  against a 588 tag and read the `tech` now included in the result and in any
+  error. `Ndef` confirms the tags were already formatted; `NdefFormatable`
+  means they were not, and the explanation is wrong.
+
+  **Nothing is built on this.** The fix branches on the tech actually acquired,
+  so it handles both cases regardless of which reading is true — which is what
+  makes it a fix rather than a workaround for one tag type. This entry exists
+  so the question is not later mistaken for answered.
+
 - **[LOW] Three of the four `variant` names passed to `GlassButton` do nothing.**
   The component special-cases exactly one: `if (variant === 'icon')`. Its own
   default is annotated `// 'default' | 'icon'`. Every other value falls straight
