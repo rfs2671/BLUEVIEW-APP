@@ -134,10 +134,50 @@ console.log('\n-- vision-camera needs no patch, and must not acquire one --');
     `vision-camera must be >= 4.7.2 — found ${vc}. The RN 0.81 Android break `
     + '(MapBuilder converted to Kotlin, build() returning an immutable Map) '
     + 'was fixed in 4.7.2 and 4.7.3 carries it.');
-  ok(!fs.existsSync(path.join(FRONTEND, 'patches')),
-    'and NO patch-package directory — an earlier draft called for patching '
-    + 'vision-camera and that was withdrawn after a tarball diff. A patch here '
-    + 'would re-break what the upstream fix already fixed.');
+  // NARROWED, not deleted. This forbade a `patches/` directory OUTRIGHT, which
+  // was the right instinct aimed at the wrong target: the thing that must never
+  // come back is a VISION-CAMERA patch, because 4.7.2 already carries the RN
+  // 0.81 fix upstream and re-patching it would re-break what is already fixed.
+  //
+  // A blanket ban also forbids patches that are the only available fix. The
+  // case that proved it: nfc-manager 3.17.2 AND 4.0.0-beta.7 both call the
+  // untyped `intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)`, deprecated since
+  // API 33, which returns null on newer Android — so `parseNfcIntent` bails and
+  // no tag ever reaches JS. There is no alternative library (`expo-nfc` is a
+  // 0.0.0 placeholder from 2022) and no upstream fix in either release, so a
+  // one-line local patch is the fix rather than a workaround.
+  const patchDir = path.join(FRONTEND, 'patches');
+  const patches = fs.existsSync(patchDir) ? fs.readdirSync(patchDir) : [];
+  const camPatch = patches.filter((f) => /vision-camera/i.test(f));
+  ok(camPatch.length === 0,
+    `NO vision-camera patch — 4.7.2 already contains the RN 0.81 Android fix `
+    + `(MapBuilder to Kotlin, immutable Map), verified by tarball diff. A patch `
+    + `would re-break it. Found: ${JSON.stringify(camPatch)}`);
+
+  // Every patch that DOES exist must actually apply, or the build silently
+  // ships unpatched code. `postinstall` runs patch-package, and EAS Build runs
+  // `npm ci`, so a stale patch fails there rather than here.
+  if (patches.length > 0) {
+    const PKG = JSON.parse(fs.readFileSync(path.join(FRONTEND, 'package.json'), 'utf8'));
+    ok(PKG.scripts && PKG.scripts.postinstall === 'patch-package',
+      'patches/ exists, so postinstall must run patch-package — EAS runs '
+      + '`npm ci`, and without the hook the cloud build gets unpatched sources '
+      + 'while the local one looks fine');
+    ok(!!(PKG.devDependencies && PKG.devDependencies['patch-package']),
+      'and patch-package is a devDependency rather than assumed present');
+    // The filename encodes the version it was cut against. If the dependency
+    // moves, patch-package refuses to apply and the build fails - which is
+    // correct, but the name should still match what is installed.
+    for (const f of patches) {
+      const m = f.match(/^(.+)\+(\d+\.\d+\.\d+.*)\.patch$/);
+      if (!m) continue;
+      const [, name, ver] = m;
+      const installed = (PKG.dependencies || {})[name] || (PKG.devDependencies || {})[name];
+      ok(!installed || installed.includes(ver),
+        `${f} targets ${ver} and package.json pins ${installed} — a patch cut `
+        + 'against a different version will not apply');
+    }
+  }
 }
 
 console.log('\n-- async-storage 2.x is the ceiling, not a floor --');
