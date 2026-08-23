@@ -2,6 +2,39 @@
 
 Known gaps and deferred work, newest first.
 
+- **[LOW] Three of the four `variant` names passed to `GlassButton` do nothing.**
+  The component special-cases exactly one: `if (variant === 'icon')`. Its own
+  default is annotated `// 'default' | 'icon'`. Every other value falls straight
+  through to the default branch.
+
+  Counted across `app/` and `src/`:
+
+  | value | uses | handled? |
+  |---|---|---|
+  | `"icon"` | 52 | yes |
+  | `"modal"` | 21 | **no** |
+  | `"secondary"` | 11 | **no** |
+  | `"primary"` | 4 | **no** |
+
+  So **36 call sites pass a variant name that is silently ignored**, and every
+  one renders as the default button.
+
+  Nothing is visibly broken: the default branch is a working button and the
+  sites presumably look acceptable, or somebody would have said. What it costs
+  is that the code reads as though three visual treatments exist when there is
+  one — so a future change to "the secondary button" would edit something with
+  no effect and appear to do nothing.
+
+  Surfaced while fixing the two call sites that passed their LABEL as children
+  (the React 19 sweep). `SyncButton` passes `variant="secondary"`, which is
+  exactly why it took the default path and rendered an icon beside an empty
+  text slot rather than the icon-only control it appeared to be. The dead
+  variant name is what made the real defect look intentional.
+
+  **Deliberately not chased.** Either implement the three variants or delete
+  the names from all 36 sites — both are real changes to how buttons look
+  across the app, and neither belongs inside an SDK migration.
+
 - **[DATED 2026-08-22] SDK 55+ / New Architecture — do it in ONE migration, and
   the trigger is `react-native-nfc-manager@4.x` going stable.**
   Not "someday". The actual consideration, with the numbers as of today.

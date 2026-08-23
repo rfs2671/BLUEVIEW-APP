@@ -92,6 +92,20 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # REACT 19 THROWS on text outside a <Text>; React 18 only warned, so
+      # these sat in the tree for months. Two were found by hand only after
+      # the SDK 54 upgrade turned them into crashes: a literal ")}" left
+      # behind on the daily-jobsite crew card when a conditional was
+      # deleted, and a stray backslash on the worker detail screen. Nothing
+      # was checking, which is why nobody knew.
+      #
+      # Runs BEFORE the JS suite: it is a parse-only sweep of every file, so
+      # it is fast, and a crash-on-open is worth failing the job earlier
+      # than an assertion is.
+      - name: No text rendered outside a <Text> (React 19 throws)
+        working-directory: frontend
+        run: node scripts/find-bare-jsx-text.cjs
+
       # Globbed rather than hard-coded so a new *.test.cjs / *.test.js is
       # picked up automatically — a test nobody runs is the thing this workflow
       # exists to prevent. Fails the job on the FIRST non-zero exit, and fails
