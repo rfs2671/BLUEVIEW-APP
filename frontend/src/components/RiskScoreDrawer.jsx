@@ -549,13 +549,17 @@ const RiskScoreDrawer = ({
               style={styles.reviewNotes}
               multiline
             />
+            {/* title=, NOT children. GlassButton renders {title} inside its
+                own <Text> and never reads children, so the label passed as
+                a child was dropped and this button submitted a review with
+                no text on it. React 18 said nothing because the children
+                were discarded rather than rendered. */}
             <GlassButton
+              title={reviewBusy ? 'Sending…' : 'Submit review'}
               onPress={onSubmitReview}
               disabled={reviewBusy}
               style={styles.reviewSubmit}
-            >
-              {reviewBusy ? 'Sending…' : 'Submit review'}
-            </GlassButton>
+            />
           </View>
         </View>
       </Modal>

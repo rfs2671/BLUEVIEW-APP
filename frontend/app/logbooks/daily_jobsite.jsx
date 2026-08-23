@@ -1893,8 +1893,7 @@ export default function DailyJobsiteLog() {
                   onPress={() => toggleLocationChip(i, OTHER_LOCATION_ID)}
                 />
               </View>
-              </>
-            )}
+            </>
 
             {/* CAMERA — only once crew, activity and location are all set. */}
             {!ready ? (
