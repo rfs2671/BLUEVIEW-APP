@@ -72,10 +72,15 @@ console.log('\n-- the build numbers are stated, not counted up to --');
   ok(!('autoIncrement' in EAS.build.production),
     'and autoIncrement is gone — with both, the explicit value is only ever '
     + 'the first one, and the next build silently goes back to counting');
-  ok(APP_JSON.ios.buildNumber === '1',
-    'iOS build 1: CFBundleVersion need only be unique WITHIN a version train, '
-    + 'and 1.2.0 is a new train, so it starts clean rather than inheriting 6 '
-    + 'from the rejected one');
+  // THE RULE, not the number. CFBundleVersion need only be unique WITHIN a
+  // CFBundleShortVersionString train, so it starts at 1 for a new version and
+  // climbs from there — 1.3.0 build 1 was refused at processing for the NDEF
+  // entitlement, so that pair is spent and this is 2. Pinning a literal means
+  // editing the test on every resubmission.
+  ok(/^[0-9]+$/.test(APP_JSON.ios.buildNumber),
+    `iOS buildNumber is a positive integer string (found ${APP_JSON.ios.buildNumber})`);
+  ok(Number(APP_JSON.ios.buildNumber) >= 1,
+    'and at least 1');
   const vc = APP_JSON.android.versionCode;
   ok(Number.isInteger(vc) && vc > 0 && vc < 2100000000,
     `Android versionCode is a valid integer (${vc})`);
@@ -152,8 +157,23 @@ console.log('\n-- the Play submit key can never be committed --');
     const base = keyPath.replace(/^\.\//, '');
     ok(ign.includes(base) || /\*-service-account\.json/.test(ign),
       `${base} is gitignored — a committed Play key is a publish credential`);
-    ok(!fs.existsSync(path.join(FRONTEND, base)),
-      `${base} is not present in the tree`);
+    // NOT "absent". The key MUST exist on the machine that runs eas submit —
+    // what must never happen is git taking it. Asking git directly is the
+    // real check; reading .gitignore only proves a pattern is written down.
+    const { execSync } = require('child_process');
+    let refused = false;
+    try {
+      execSync(`git check-ignore -q ${JSON.stringify(base)}`, { cwd: FRONTEND });
+      refused = true;
+    } catch (e) { refused = false; }
+    ok(refused, `${base} is refused by git check-ignore`);
+    let tracked = true;
+    try {
+      execSync(`git ls-files --error-unmatch ${JSON.stringify(base)}`,
+        { cwd: FRONTEND, stdio: 'ignore' });
+    } catch (e) { tracked = false; }
+    ok(!tracked, `${base} is not tracked — a committed Play key is a `
+      + 'publish credential in the repo');
   }
   // Draft, not live. The first upload should land in the console for a person
   // to look at, not go straight to testers.
