@@ -31,7 +31,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.levelog.app",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "infoPlist": {
         "NFCReaderUsageDescription": "This app needs NFC to register and scan check-in tags for workers.",
         "NSCameraUsageDescription": "This app needs camera access to take photos for daily logs and reports.",
@@ -135,7 +135,8 @@
       [
         "react-native-nfc-manager",
         {
-          "nfcPermission": "This app uses NFC to scan worker check-in tags."
+          "nfcPermission": "This app uses NFC to scan worker check-in tags.",
+          "includeNdefEntitlement": false
         }
       ],
       [

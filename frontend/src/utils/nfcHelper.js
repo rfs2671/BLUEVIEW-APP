@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
 
 /**
@@ -34,7 +35,30 @@ import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
  * independently of whether the radio is ISO 14443A or ISO 15693. The tag's own
  * tech list above is what proves NdefFormatable is obtainable here.
  */
-const WRITE_TECHS = [NfcTech.NdefFormatable, NfcTech.Ndef];
+const WRITE_TECHS = Platform.OS === 'ios'
+  // iOS: Ndef ALONE, and that is a TAG session underneath.
+  //
+  // requestTechnology opens an NFCTagReaderSession polling
+  // NFCPollingISO14443 | NFCPollingISO15693, and the detect handler treats
+  // "Ndef" as a special case that connects to WHATEVER tag turns up:
+  //
+  //     // here we treat Ndef is a special case, because all specific tech
+  //     // types inherites from NFCNDEFTag, so we simply allow it to connect
+  //     if ([tagType isEqualToString:requestType] ||
+  //         [requestType isEqualToString:@"Ndef"]) {
+  //
+  // NOT pinned to Iso15693IOS. The 588 Thomas tag type is UNCONFIRMED — it may
+  // be pre-formatted NTAG213, which is ISO14443A, and pinning ISO15693 would
+  // make exactly those tags unwritable from an iPhone. Polling both families
+  // and letting the Ndef case connect is the point of the TAG session.
+  //
+  // NdefFormatable is omitted because it is an ANDROID tech. getRNTechName
+  // never returns it on iOS, so passing it could only ever fall through to the
+  // Ndef case — relying on a fallthrough rather than asking for something real.
+  ? [NfcTech.Ndef]
+  // Android: unchanged, and device-verified on a blank NfcV tag. A virgin tag
+  // is NdefFormatable and not Ndef, so Ndef alone cannot write one.
+  : [NfcTech.NdefFormatable, NfcTech.Ndef];
 
 /**
  * Write `bytes` through whichever tech was acquired.

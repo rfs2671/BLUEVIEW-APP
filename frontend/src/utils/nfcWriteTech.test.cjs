@@ -40,9 +40,16 @@ function body(name) {
 
 console.log('\n-- both write techs are requested, formatable first --');
 {
-  ok(/const WRITE_TECHS = \[NfcTech\.NdefFormatable, NfcTech\.Ndef\];/.test(SRC),
-    'NdefFormatable FIRST — the two are mutually exclusive in practice, so a '
-    + 'blank tag lands on format and a written tag falls through to write');
+  // BRANCHED BY PLATFORM since the iOS entitlement fix. Android is what was
+  // device-verified; iOS asks for Ndef alone over a TAG session, which polls
+  // ISO14443 and ISO15693 both and connects to whichever turns up.
+  ok(/: \[NfcTech\.NdefFormatable, NfcTech\.Ndef\];/.test(SRC),
+    'ANDROID gets NdefFormatable FIRST — the two are mutually exclusive in '
+    + 'practice, so a blank tag lands on format and a written tag falls '
+    + 'through to write');
+  ok(/\? \[NfcTech\.Ndef\]/.test(SRC),
+    'and iOS gets Ndef alone — NdefFormatable is an Android tech that iOS '
+    + 'would only ever resolve through a fallthrough');
 }
 
 console.log('\n-- the branch is on what was ACQUIRED, not on a guess --');
