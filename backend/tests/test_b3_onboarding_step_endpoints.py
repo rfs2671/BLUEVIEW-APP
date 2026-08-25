@@ -168,12 +168,26 @@ class TestOnboardingCompany(unittest.TestCase):
             restore()
 
     def test_409_when_onboarding_completed(self):
+        """FIXTURE CORRECTED: a completed user HAS a company.
+
+        This read `company_id: None, onboarding_step: "completed"` - a pair
+        that cannot occur, because completing step 1 is the only thing that
+        sets company_id. It passed only because the gate looked at the step
+        field alone, and that is exactly the bug: onboarding_step="skipped"
+        with no company was likewise treated as finished, which trapped
+        test@ios.com permanently with no in-app way out at any privilege level.
+
+        The replay guard this test exists for is real and still holds - a user
+        who genuinely finished cannot re-run step 1. It is now pinned against a
+        state that can actually exist. The company-less case is asserted, in the
+        opposite direction, by test_onboarding_skip_trap.py.
+        """
         import server
 
         user = {
             "id": "u1", "_id": "u1",
             "role": "admin",
-            "company_id": None,
+            "company_id": "companyA",
             "onboarding_step": "completed",
         }
         db = _build_db()

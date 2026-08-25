@@ -106,7 +106,19 @@ class TestOnboardingRoute(unittest.TestCase):
     def test_advance_step_via_patch(self):
         self.assertIn("patchStep", self.text)
         self.assertIn("'completed'", self.text)
-        self.assertIn("'skipped'", self.text)
+
+    def test_step_one_cannot_write_skipped(self):
+        """INVERTED, DELIBERATELY. This asserted that the screen CONTAINS
+        'skipped' - it pinned the defect as an invariant.
+
+        Step 1 is company creation, and "I'll do this later" wrote
+        onboarding_step="skipped": terminal on both sides, with no in-app exit
+        for any role. Steps 2-4 keep their skip because each is a real deferral;
+        step 1 had no later. The screen no longer contains the string at all,
+        which is the point - see test_onboarding_skip_trap.py and
+        frontend/src/utils/onboardingSkipTrap.test.cjs.
+        """
+        self.assertNotIn("'skipped'", self.text)
 
     def test_mobile_breakpoint(self):
         self.assertIn("MOBILE_BREAKPOINT = 768", self.text)

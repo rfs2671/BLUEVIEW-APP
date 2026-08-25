@@ -3,9 +3,12 @@
  *
  * Surfaces a 4-step progressive form to a newly-registered GC user
  * (onboarding_step ∈ {1,2,3,4} on the user doc). On every step the
- * user can either submit and advance, or skip. Skipping at step 1
- * sets onboarding_step="skipped" and drops the user on the dashboard
- * empty-state. Submitting step 4 sets onboarding_step="completed"
+ * user can either submit and advance, or skip — EXCEPT step 1, which has no
+ * skip. Step 1 is company creation, and skipping it wrote
+ * onboarding_step="skipped", a terminal state that no in-app path could leave:
+ * the account was permanently without a company_id, and every company-scoped
+ * read and write refused it. Steps 2-4 keep their skip because each is a real
+ * deferral. Submitting step 4 sets onboarding_step="completed"
  * and redirects to the project they just created (or the dashboard
  * if they skipped step 2).
  *
@@ -191,8 +194,17 @@ export default function OnboardingScreen() {
     try {
       await onboardingAPI.patchStep('completed');
     } catch (_e) {
-      // Even if the PATCH fails, fall through and route the user out
-      // — the next login will resume them at the saved step.
+      // A FAILED WRITE MUST NOT LOOK LIKE A SUCCESSFUL ONE. This used to
+      // swallow the error and route out silently, so the user believed setup
+      // was finished while the server still held step 4 — and was pulled back
+      // into onboarding on the next launch with no idea why. Say it, and stay
+      // put so "Finish setup" can be tapped again.
+      toast.error(
+        'Setup not saved',
+        'We could not finish setting up your account. Check your connection '
+        + 'and tap Finish setup again.',
+      );
+      return;
     }
     // Refresh /auth/me so AuthContext picks up the new
     // company_id / company_name / onboarding_completed_at.
@@ -208,15 +220,20 @@ export default function OnboardingScreen() {
   };
 
   const skipFromCurrentStep = async () => {
-    if (currentStep === '1') {
-      // Skipping the entire flow at step 1 marks the user as skipped.
-      try {
-        await onboardingAPI.patchStep('skipped');
-      } catch (_e) { /* noop */ }
-      try { await validateSession(); } catch (_e) { /* noop */ }
-      router.replace('/');
-      return;
-    }
+    // NO SKIP ON STEP 1, and the footer does not render one. Step 1 is company
+    // creation, and it was the ONLY path to onboarding_step="skipped" — a
+    // terminal state with no way back. _onboarding_in_flight() returned False,
+    // so POST /onboarding/company 409'd; _userInOnboarding() returned false, so
+    // nothing redirected here again; and no admin or platform operator could
+    // repair it, because ALLOWED_USER_FIELDS carries neither company_id nor
+    // onboarding_step. "I'll do this later" was a promise the product could not
+    // keep: for step 1 there was no later.
+    //
+    // Steps 2, 3 and 4 keep their skip. Project, filing reps and notification
+    // preferences are real deferrals — each is reachable afterwards from an
+    // ordinary screen, and skipping them advances the step number rather than
+    // ending the flow.
+    if (currentStep === '1') return;
     // Skipping mid-flow advances to the next step.
     const next = String(parseInt(currentStep, 10) + 1);
     if (parseInt(currentStep, 10) >= 4) {
@@ -622,8 +639,9 @@ export default function OnboardingScreen() {
       3: 'Continue',
       4: 'Finish setup',
     };
+    // NO ENTRY FOR STEP 1. Deliberately absent rather than hidden by a
+    // falsy label, so adding one back is a decision someone has to type.
     const skipLabels = {
-      1: "I'll do this later",
       2: 'Skip this step',
       3: 'Skip this step',
       4: 'Use Critical only',
@@ -646,16 +664,18 @@ export default function OnboardingScreen() {
           loading={submitting}
           style={styles.cta}
         />
-        <Pressable
-          onPress={
-            currentStep === '4' ? finalizeAndExit : skipFromCurrentStep
-          }
-          disabled={submitting}
-          style={styles.skipBtn}
-          accessibilityRole="button"
-        >
-          <Text style={styles.skipBtnText}>{skipLabels[currentStep]}</Text>
-        </Pressable>
+        {!!skipLabels[currentStep] && (
+          <Pressable
+            onPress={
+              currentStep === '4' ? finalizeAndExit : skipFromCurrentStep
+            }
+            disabled={submitting}
+            style={styles.skipBtn}
+            accessibilityRole="button"
+          >
+            <Text style={styles.skipBtnText}>{skipLabels[currentStep]}</Text>
+          </Pressable>
+        )}
       </View>
     );
   };

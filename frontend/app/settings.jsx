@@ -637,6 +637,53 @@ export default function SettingsScreen() {
           </GlassCard>
 
           {/* ── INSURANCE & LICENSE (admin only) ───────────────────────── */}
+          {/* COMPANY SETUP - only when there is no company.
+
+              THE WAY BACK OUT OF THE SKIP TRAP. Renders ONLY for an
+              owner/admin with no company_id, so a finished account never sees
+              it - the same discriminator _onboarding_in_flight uses
+              server-side: the company is the FACT, the onboarding_step field
+              is a CLAIM that can be wrong.
+
+              Until this existed there was NO in-app path from company-less
+              back to onboarding: the RouteGuard stops redirecting once the
+              step is terminal, POST /onboarding/company 409'd, and
+              ALLOWED_USER_FIELDS carries neither company_id nor
+              onboarding_step, so no admin or platform operator could repair
+              the account either.
+
+              The copy states the CONSEQUENCE, not the mechanism. A user does
+              not know what a company_id is; they know their projects are
+              missing, and that is what brought them to Settings.
+          */}
+          {isAdmin && !user?.company_id && (
+            <>
+              <Text style={s.sectionLabel}>COMPANY</Text>
+              <GlassCard
+                style={[s.card, {
+                  backgroundColor: semantic.attentionBg,
+                  borderColor: semantic.attentionBorder,
+                }]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+                  <AlertTriangle size={18} color={semantic.attention} />
+                  <Text style={[s.fieldLabel, { color: semantic.attention }]}>
+                    No company on your account
+                  </Text>
+                </View>
+                <Text style={[s.hintText, { marginTop: spacing.sm }]}>
+                  Projects, workers and reports all belong to a company, so none
+                  of them will load until yours is set up. It takes one step.
+                </Text>
+                <GlassButton
+                  title="Finish setting up"
+                  onPress={() => router.push('/onboarding')}
+                  style={{ marginTop: spacing.md, minHeight: touchTarget.min }}
+                />
+              </GlassCard>
+            </>
+          )}
+
           {isAdmin && (
             <>
               <Text style={s.sectionLabel}>INSURANCE & LICENSE</Text>
