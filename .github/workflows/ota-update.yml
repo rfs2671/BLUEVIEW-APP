@@ -25,7 +25,18 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # NODE 22, NOT 20. eas-version: latest resolved to eas-cli 22.4.0
+          # on 2026-08-25, whose dependency @oclif/plugin-autocomplete@3.3.0
+          # requires node >=22. The job died in Setup Expo BEFORE the
+          # publish step ever ran, so the merge showed success in the PR
+          # while NO BUNDLE WAS PUBLISHED. That is the worst shape of
+          # failure: the phone silently keeps the previous bundle and the
+          # operator reads a stale build as a failed fix.
+          #
+          # Nothing in the repo changed. The workflow passed on 2026-08-24
+          # and failed on 2026-08-25 because a floating dependency moved.
+          # GitHub also deprecated Node 20 on Actions runners.
+          node-version: '22'
 
       - name: Setup Expo
         uses: expo/expo-github-action@v8
