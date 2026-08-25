@@ -60,10 +60,22 @@ for (const nav of NAVS) {
     'the gap above the bar is 24, applied on top of the measured inset');
 }
 
-console.log('\n-- the screens themselves are unchanged --');
+console.log('\n-- no screen both insets the bottom AND pads for it --');
 {
-  // This fix must not have quietly added bottom insets at the screen level —
-  // that was ruled out, and it would double-pad against paddingBottom: 120.
+  // THIS WAS A COUNT, AND THE COUNT WAS THE WRONG INVARIANT. It read "at most
+  // one screen insets the bottom at the screen level", which was really asking
+  // "did the nav fix quietly add bottom insets to screens?". It then failed the
+  // moment login and register legitimately needed the bottom edge back
+  // (0e87696 had removed it and pushed their signup link onto the home
+  // indicator) — a test blocking a correct fix for a reason it never meant.
+  //
+  // The real hazard is DOUBLE PADDING: a screen that insets the bottom AND
+  // carries the 120pt scroll padding pads for the same bar twice, leaving a
+  // visible dead band above the nav.
+  //
+  // login and register inset the bottom deliberately and pad only
+  // spacing.xxl (48) for keyboard clearance, which is not the 120pt scroll
+  // pattern and does not stack into a dead band.
   const walk = (dir, out = []) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
@@ -72,13 +84,20 @@ console.log('\n-- the screens themselves are unchanged --');
     }
     return out;
   };
-  const withBottom = walk(path.join(FRONTEND, 'app'))
+  const doubled = walk(path.join(FRONTEND, 'app'))
     .map((f) => [f, fs.readFileSync(f, 'utf8')])
-    .filter(([, s]) => /edges=\{\[[^\]]*'bottom'/.test(s));
-  ok(withBottom.length <= 1,
-    'at most one screen insets the bottom at the screen level — the rest use '
-    + `scroll padding, measured as adequate. Found: `
-    + JSON.stringify(withBottom.map(([f]) => path.basename(f))));
+    .filter(([, src]) => /edges=\{\[[^\]]*'bottom'/.test(src)
+      && /paddingBottom: 1[024]0/.test(src));
+  ok(doubled.length === 0,
+    'no screen pads for the navigation bar twice — once via the safe-area '
+    + 'inset and again via 120pt of scroll padding. Found: '
+    + JSON.stringify(doubled.map(([f]) => path.basename(f))));
+
+  // And the navs themselves are still the only things reading insets for their
+  // own position, which is what this file is actually about.
+  ok(NAVS.every((n) => /useSafeAreaInsets/.test(
+    fs.readFileSync(path.join(FRONTEND, 'src', 'components', `${n}.js`), 'utf8'))),
+    'both navs still read the inset themselves');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

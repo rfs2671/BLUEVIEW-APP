@@ -85,7 +85,11 @@ export default function RegisterScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={s.container} edges={['top']}>
+      // BOTTOM EDGE IS LOAD-BEARING HERE, unlike the other screens that take
+    // edges={['top']}. This layout is CENTRED and its last element is a link;
+    // dropping the bottom inset puts that link on the home indicator. See
+    // 02649d3, which fixed the same symptom, and 0e87696, which undid it.
+      <SafeAreaView style={s.container} edges={['top', 'bottom']}>
         <ScrollView
           style={s.scroll}
           contentContainerStyle={s.scrollContent}
@@ -212,7 +216,13 @@ function buildStyles(colors, isDark) {
     // flexGrow centers when the viewport has room and scrolls when the taller
     // signup stack exceeds it, so the submit button + "Sign in" link are always
     // reachable on a standard (~768px) viewport.
-    scrollContent: { flexGrow: 1, justifyContent: 'center' },
+    // Trailing scroll extent so the submit button and the "Sign in" link
+    // below the card clear a raised keyboard rather than resting on it.
+    scrollContent: {
+      flexGrow: 1,
+      justifyContent: 'center',
+      paddingBottom: spacing.xxl,
+    },
     content: {
       padding: spacing.lg,
       maxWidth: 440,
