@@ -5351,6 +5351,50 @@ async def update_onboarding_step(
                    f"Must be one of {sorted(VALID_ONBOARDING_STEPS)}.",
         )
 
+    # ── NEITHER TERMINAL STATE IS REACHABLE WITHOUT A COMPANY ───────────────
+    #
+    # A CLIENT IS NOT A CONSTRAINT. #208 removed the step-1 skip button, and
+    # that is the right UX fix, but every bundle already installed still has
+    # it, and this endpoint accepts any step from any state over plain HTTP.
+    # Removing an affordance does not remove a state; only this does.
+    #
+    # WHAT THE TWO TERMINAL STATES CLAIM, and why the claim has to be true:
+    #
+    #   "completed"  claims step 1 ran. Step 1 IS company creation and the only
+    #                writer of company_id, so completed-without-a-company is
+    #                not a state, it is a contradiction. It is also exactly the
+    #                pair a pre-existing test asserted (company_id=None,
+    #                step="completed"), which is how the impossible combination
+    #                looked normal for long enough to trap a live account.
+    #
+    #   "skipped"    claimed the user would come back later. For step 1 there
+    #                was no later: _onboarding_in_flight() went False, POST
+    #                /onboarding/company 409'd, _userInOnboarding() stopped
+    #                redirecting, and ALLOWED_USER_FIELDS carries neither
+    #                company_id nor onboarding_step, so no admin and no
+    #                platform operator could repair the account either. One tap
+    #                on the first screen of the product, permanent.
+    #
+    # A user who HAS a company may still write either value freely: skipping
+    # steps 2/3 is a real deferral and finishing is a real finish. The refusal
+    # is narrow on purpose - it constrains the two states that assert step 1
+    # happened, and nothing else. Deliberately NOT added here: a
+    # monotonic-forward rule and a role check. Both are cheap, neither is the
+    # trap, and the forward rule would encode the UX's shape (skip 2 -> 3) in
+    # the API where a flow change would then need a backend change.
+    #
+    # 409, not 422: the request is well-formed, the account state is wrong -
+    # the same code and the same reasoning as the other onboarding conflicts.
+    if step in ("skipped", "completed") and not (current_user.get("company_id") or ""):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Onboarding cannot be marked "
+                f"{step!r} before a company exists on this account. "
+                "Complete step 1 first."
+            ),
+        )
+
     now = datetime.now(timezone.utc)
     set_ops = {"onboarding_step": step, "updated_at": now}
     if step == "completed":

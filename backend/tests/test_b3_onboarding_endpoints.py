@@ -41,10 +41,20 @@ sys.path.insert(0, str(_BACKEND))
 from fastapi.testclient import TestClient  # noqa: E402
 
 
-def _setup_client(*, role="owner", user_id="u_b3"):
+def _setup_client(*, role="owner", user_id="u_b3", company_id=None):
     """Override the auth dependency with a fixed user dict and
     return (client, teardown). Each test injects its own mocked
-    `server.db` via patch.object inside the test body."""
+    `server.db` via patch.object inside the test body.
+
+    `company_id` DEFAULTS TO None, unchanged, so every existing caller keeps
+    the user it had. The two step-mechanics tests below opt in to a company
+    because the terminal states now require one: "skipped" and "completed"
+    both assert step 1 happened, and step 1 is company creation. Those tests
+    are about WHAT THE PATCH WRITES (skipped must not stamp completed_at;
+    completed must), which is only reachable in a state where the write is
+    allowed. The refusal itself is asserted in
+    test_onboarding_step_preconditions.py.
+    """
     import server
 
     user = {
@@ -53,7 +63,7 @@ def _setup_client(*, role="owner", user_id="u_b3"):
         "user_id": user_id,
         "email": "owner@example.com",
         "role": role,
-        "company_id": None,
+        "company_id": company_id,
     }
 
     async def _fake_user():
@@ -217,7 +227,8 @@ class TestOnboardingStepUpdate(unittest.TestCase):
         import server
 
         db = _build_users_db(find_one_result=None)
-        client, restore = _setup_client()
+        # Terminal states require a company - see _setup_client.
+        client, restore = _setup_client(company_id="companyA")
         try:
             with patch.object(server, "db", db):
                 r = client.patch(
@@ -238,7 +249,8 @@ class TestOnboardingStepUpdate(unittest.TestCase):
         import server
 
         db = _build_users_db(find_one_result=None)
-        client, restore = _setup_client()
+        # Terminal states require a company - see _setup_client.
+        client, restore = _setup_client(company_id="companyA")
         try:
             with patch.object(server, "db", db):
                 r = client.patch(
