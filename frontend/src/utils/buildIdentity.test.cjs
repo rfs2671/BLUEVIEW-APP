@@ -121,6 +121,26 @@ ok(/JS_COMMIT: \$\{\{ github\.sha \}\}/.test(ota),
 ok(/- 'frontend\/app\.config\.js'/.test(ota),
   'and a change to app.config.js triggers a publish — otherwise the fix sits on main unshipped');
 
+// AND IT CAN BE PUBLISHED BY HAND. The path filter above does not match
+// .github/**, so a fix to the publish pipeline itself cannot trigger the
+// pipeline. Without a button the only recoveries are a no-op commit or a
+// laptop publishing outside CI.
+ok(/^  workflow_dispatch:/m.test(ota),
+  'the publish can be invoked manually — a pipeline that only fires on a '
+  + 'qualifying commit cannot recover from its own failure');
+
+// The button has to WORK, which is a separate fact. github.event.head_commit
+// is populated on push and empty on dispatch, and eas rejects an empty
+// --message as a missing flag. The first manual dispatch died exactly here.
+ok(/if \[ -z "\$MSG" \]; then/.test(ota),
+  'and the publish step falls back when COMMIT_MSG is empty, which is every '
+  + 'workflow_dispatch run');
+ok(/git log -1 --pretty=%s/.test(ota),
+  'to the checked-out commit subject — the same string a push supplies, so '
+  + 'a dispatched publish is labelled identically to an automatic one');
+ok(/\[ -n "\$MSG" \]/.test(ota),
+  'with a final guard so nothing reaches eas with an empty message');
+
 console.log('\n-- It never claims a match it cannot make --');
 
 ok(/Boolean\(jsCommit && backendCommit\)/.test(code),
