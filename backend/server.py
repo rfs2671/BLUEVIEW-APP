@@ -4160,12 +4160,44 @@ def get_user_company_id(current_user):
     return current_user.get("company_id")
 
 async def require_company_access(current_user = Depends(get_current_user)):
-    """Ensure user has a company_id (for company-scoped operations)"""
+    """Refuse a caller with no company_id, for anything that STAMPS tenancy.
+
+    This existed and was wired to nothing. It is now the gate on the two
+    endpoints that mint a tenant-owned document from the caller's own
+    company_id, because both stamped it UNCONDITIONALLY - None included:
+
+      POST /projects   project_dict["company_id"] = admin.get("company_id")
+      POST /workers    if company_id: worker_dict["company_id"] = company_id
+
+    A project born with company_id None is an ORPHAN FACTORY, not just an
+    orphan. Every worker created at that project's gate reads
+    `company_id = project.get("company_id")` and inherits the None, so one
+    mis-stamped project mints an unbounded number of unreachable worker rows.
+
+    WHY REFUSE AND NOT RESOLVE. There is nothing to resolve from. A company is
+    created from a NAME the user types at POST /onboarding/company;
+    ProjectCreate carries no such field, and /auth/register sets
+    `company_id = None` outright. The only other candidate is the user's
+    `company_name`, and resolving on that would re-open precisely the hole
+    register closed - a self-registrant who types an existing GC's name would
+    land inside that tenant. Guessing at tenancy is the failure class this
+    whole batch exists to close, so the honest answer is to refuse and name
+    the step that fixes it.
+
+    NEVER PUT THIS IN FRONT OF A CHECK-IN. The gate paths derive company_id
+    from the PROJECT, not the caller, and they are governed by a standing
+    ruling: an unfilled admin form must never stop a man from working. A
+    refusal there is a worker turned away at a turnstile. The fix belongs at
+    project creation, where a human is at a desk and can complete onboarding.
+    """
     company_id = get_user_company_id(current_user)
     if not company_id:
         raise HTTPException(
-            status_code=403, 
-            detail="Company access required. Please contact your administrator."
+            status_code=403,
+            detail=(
+                "Your account is not linked to a company yet. "
+                "Complete onboarding before creating projects."
+            ),
         )
     return current_user
 
@@ -9783,7 +9815,15 @@ async def get_projects_dob_summary(
     return {"by_project": by_project, "totals": totals}
 
 
-@api_router.post("/projects", response_model=ProjectResponse, dependencies=[Depends(require_approved)])
+@api_router.post(
+    "/projects",
+    response_model=ProjectResponse,
+    # require_approved gates SPEND. require_company_access gates TENANCY:
+    # the stamp below takes admin.get("company_id") verbatim, so without
+    # this a company-less admin mints a project owned by nobody, and every
+    # worker who later taps in at its gate inherits that None.
+    dependencies=[Depends(require_approved), Depends(require_company_access)],
+)
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
     project_dict = project_data.model_dump()
 
@@ -9833,8 +9873,23 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
         [], project_dict.get("trade_assignments") or [],
     )
     
-    # IMPORTANT: Auto-inject company_id from admin
-    project_dict["company_id"] = admin.get("company_id")
+    # Auto-inject company_id from admin. require_company_access on the route
+    # has already refused a falsy one, so this can no longer stamp None - but
+    # the assert states the invariant at the stamp rather than only at the
+    # decorator, because that is where a future edit would break it.
+    # NOT an assert: python -O strips those, and an AssertionError here would
+    # surface as a 500 rather than the 403 this is. Defence in depth that
+    # behaves correctly on its own.
+    _company_id = admin.get("company_id")
+    if not _company_id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Your account is not linked to a company yet. "
+                "Complete onboarding before creating projects."
+            ),
+        )
+    project_dict["company_id"] = _company_id
     project_dict["company_name"] = admin.get("company_name")
     project_dict["admin_id"] = admin.get("id")
     
@@ -12216,26 +12271,30 @@ async def get_workers(
     result = await paginated_query(db.workers, query, sort_field="name", sort_dir=1, limit=limit, skip=skip)
     return result
 
-@api_router.post("/workers/register")
-async def register_worker(worker_data: WorkerCreate):
-    """Public endpoint - allows workers to self-register via NFC check-in."""
-    # Check if worker with phone exists
-    existing = await db.workers.find_one({"phone": worker_data.phone, "is_deleted": {"$ne": True}})
-    if existing:
-        return {"worker_id": str(existing["_id"]), "message": "Worker already registered"}
-    
-    worker_dict = worker_data.model_dump()
-    worker_dict["status"] = "active"
-    now = datetime.now(timezone.utc)
-    worker_dict["created_at"] = now
-    worker_dict["updated_at"] = now
-    worker_dict["certifications"] = []
-    worker_dict["signature"] = None
-    worker_dict["is_deleted"] = False
-    
-    result = await db.workers.insert_one(worker_dict)
-    
-    return {"worker_id": str(result.inserted_id), "message": "Worker registered successfully"}
+# POST /workers/register IS DELETED. It was public, unauthenticated, and had no
+# caller anywhere - not the app, not checkin.html, not card_audit, not the seed
+# scripts. Its only frontend wrapper (`registerWorker` in api.js) was added by
+# 9bf110b on 2026-01-31 and removed by 87c08c4 on 2026-03-01, and `git grep` at
+# both commits shows NO SCREEN EVER CALLED IT - it was a dead wrapper for its
+# entire five-week life, so even the oldest installed bundle cannot miss it.
+#
+# Three separate defects, any one of which is disqualifying:
+#
+#   1. It never set company_id AT ALL - not `if company_id:`, the field was
+#      simply absent from the insert. Every worker it ever created is an orphan
+#      by construction, and those orphans are what the osha-card leak needed:
+#      `worker_company != company_id` compared two Nones as EQUAL.
+#   2. It was an unauthenticated ENUMERATION ORACLE. Before inserting it did a
+#      global, unscoped phone lookup and returned the existing row's id, so
+#      anyone on the internet could POST a phone number and learn whether it
+#      belonged to a registered construction worker, and get that worker's id.
+#   3. `worker_data.model_dump()` wrote `trade` and `company` onto the workers
+#      document wholesale - precisely what the worker_project_trades design
+#      forbids ("Nothing writes trade or company to the global workers
+#      document"), because a worker-level trade answers for every project.
+#
+# Worker self-registration at the gate is POST /checkin/register-and-checkin,
+# which is public BY DESIGN and derives company_id from the project.
 
 # ==================== WORKER CERTIFICATION MANAGEMENT ====================
 
@@ -12426,9 +12485,21 @@ async def delete_worker(
 
 # ==================== CHECK-INS ====================
 
-@api_router.post("/workers")
+@api_router.post("/workers", dependencies=[Depends(require_company_access)])
 async def create_worker(worker_data: WorkerCreate, current_user = Depends(get_current_user)):
-    """Create a new worker (admin)"""
+    """Create a new worker (admin).
+
+    The stamp below was `if company_id:` - a company-less caller silently
+    created a worker owned by nobody. Since the /workers tenant fix that row is
+    unreachable to every legitimate admin rather than leaked, but minting an
+    unreachable record is still wrong, so the mint is refused at the door.
+
+    Costs nothing: no screen calls this. workersAPI.create reaches only
+    useWorkers.createWorker, which no component destructures, and the offline
+    queue can only replay an item nothing enqueues. Every worker a real user
+    creates comes from the two GATE endpoints, which derive company_id from
+    the project and are deliberately untouched.
+    """
     # Check if worker with phone exists
     existing = await db.workers.find_one({"phone": worker_data.phone, "is_deleted": {"$ne": True}})
     if existing:
@@ -12443,9 +12514,11 @@ async def create_worker(worker_data: WorkerCreate, current_user = Depends(get_cu
     worker_dict["certifications"] = []
     worker_dict["signature"] = None
     worker_dict["is_deleted"] = False
-    if company_id:
-        worker_dict["company_id"] = company_id
-    
+    # require_company_access has refused a falsy company_id at the door; the
+    # unconditional stamp is what makes an orphan impossible rather than
+    # merely unlikely.
+    worker_dict["company_id"] = company_id
+
     result = await db.workers.insert_one(worker_dict)
     worker_dict["id"] = str(result.inserted_id)
     worker_dict.pop("_id", None)
