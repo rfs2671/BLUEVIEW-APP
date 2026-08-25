@@ -107,8 +107,10 @@ export default function LogbookStepper({
   const total = steps.length;
 
   if (loading) {
+    // PINNED, like the tree below: this branch tints its spinner
+    // outdoor.text, which is invisible on the live dark canvas.
     return (
-      <AnimatedBackground>
+      <AnimatedBackground pinned>
         <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingCenter}>
             <ActivityIndicator size="large" color={outdoor.text} />
@@ -120,8 +122,17 @@ export default function LogbookStepper({
 
   const current = steps[step - 1];
 
+  // PINNED CANVAS. Every logbook editor that mounts this stepper styles its
+  // content from the `outdoor` palette, which never follows the theme — a dark
+  // card in direct sun is unreadable whatever the CP has set. That pin was
+  // applied to the CONTENT and never to the CANVAS, so in dark mode the step
+  // title, "STEP 1 OF 5", the section headers and "Saved automatically" were
+  // drawn #0A1929 on AnimatedBackground's live #050a12 — present, and
+  // invisible. Only chrome carrying its own surface (the back button, the
+  // cards) survived. outdoor.backgroundStart/Middle/End existed for exactly
+  // this and were consumed by nothing.
   return (
-    <AnimatedBackground>
+    <AnimatedBackground pinned>
       <SafeAreaView style={s.container} edges={['top']}>
         <View style={s.header}>
           <Pressable

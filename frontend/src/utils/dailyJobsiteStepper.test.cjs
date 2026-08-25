@@ -439,7 +439,13 @@ ok(jsxHex.length === 0, `no hardcoded icon colours${jsxHex.length ? ` — ${JSON
 console.log('\n── It looks like the rest of the app ──');
 
 // 1. BACKGROUND — AnimatedBackground's blue gradient, not a flat grey.
-ok(/<AnimatedBackground>/.test(chromeSrc), 'the screen still renders AnimatedBackground');
+// Widened from the exact literal `<AnimatedBackground>`: the wrapper now takes
+// `pinned`, and this assertion was pinning PRESENCE, not the absence of props.
+ok(/<AnimatedBackground\b/.test(chromeSrc), 'the screen still renders AnimatedBackground');
+ok(/<AnimatedBackground pinned>/.test(chromeSrc),
+  'and pinned - the comment above already notes GlassCard "would go dark '
+  + 'outdoors"; the same is true of the canvas, which was the one surface '
+  + 'the pin never reached');
 const scrollBlock = stylesBody.match(/\n\s{4}scroll:\s*\{([\s\S]*?)\n?\s{4}\},/);
 ok(scrollBlock && !/backgroundColor/.test(scrollBlock[1]),
   'the scroll view paints NO background — the flat grey was hiding the gradient');
