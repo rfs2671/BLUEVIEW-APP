@@ -17,7 +17,17 @@ jobs:
       - name: Setup Expo
         uses: expo/expo-github-action@v8
         with:
-          eas-version: latest
+          # PINNED TO THE MAJOR, not floating on latest. On 2026-08-25
+          # latest resolved to eas-cli 22.4.0, whose dependency
+          # @oclif/plugin-autocomplete@3.3.0 requires node >=22, and the
+          # job died before publishing anything. Nothing in the repo had
+          # changed - green on the 24th, red on the 25th.
+          #
+          # 22.x still takes patches and minors, so server-side
+          # deprecations of an old client stay a slow problem rather than
+          # a frozen one. What it stops is a MAJOR landing unannounced.
+          # Bump deliberately when EAS asks for it.
+          eas-version: '22.x'
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Install dependencies
