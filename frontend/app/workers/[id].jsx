@@ -1,4 +1,4 @@
-import { workersAPI } from '../../src/utils/api';
+import apiClient, { workersAPI } from '../../src/utils/api';
 import React, { useState, useEffect } from 'react';
 import {
   View,
