@@ -88,4 +88,20 @@ jobs:
         run: |
           # Truncate to first line and sanitize for shell safety
           MSG=$(echo "$COMMIT_MSG" | head -1 | tr -d '"' | cut -c1-100)
+          # head_commit EXISTS ONLY ON PUSH. Under workflow_dispatch the env
+          # var above is empty, and eas treats an empty --message as if the
+          # flag were absent:
+          #
+          #   --branch and --message ... are required when updating in
+          #   non-interactive mode unless --auto is specified
+          #
+          # So the button added to recover from a failed publish failed on
+          # its first use. Fall back to the checked-out commit subject, which
+          # is the same string a push would have handed us.
+          if [ -z "$MSG" ]; then
+            MSG=$(git log -1 --pretty=%s | tr -d '"' | cut -c1-100)
+          fi
+          # And never reach eas with nothing: an unreadable message is a bad
+          # changelog entry, an empty one is a failed publish.
+          [ -n "$MSG" ] || MSG="manual dispatch ${GITHUB_SHA}"
           eas update --branch production --message "$MSG"
