@@ -5088,11 +5088,42 @@ _IN_FLIGHT_ONBOARDING_STEPS = {"1", "2", "3", "4"}
 
 
 def _onboarding_in_flight(user: dict) -> bool:
-    """True iff the user is mid-onboarding (step 1-4). Pre-B3 users
-    (no field on doc) and completed/skipped users get False — their
-    onboarding endpoints are 409'd to prevent replays."""
+    """True iff onboarding is still open for this user.
+
+    TWO WAYS TO BE OPEN, and the second one is the fix for a trap.
+
+    1. MID-FLIGHT - onboarding_step is 1-4. Unchanged.
+
+    2. NO COMPANY - whatever the step field claims. A user with no company_id
+       has NOT completed onboarding, because step 1 IS company creation and is
+       the only thing that sets the field.
+
+    THE TRAP THIS CLOSES. Tapping "I'll do this later" on step 1 wrote
+    onboarding_step="skipped", which is terminal: _userInOnboarding() stopped
+    redirecting, this function returned False, and POST /onboarding/company
+    409'd. The account could never acquire a company through any in-app path,
+    at any privilege level - ALLOWED_USER_FIELDS excludes company_id, so not
+    even an admin or the platform operator could repair it. One tap on the
+    first screen of the product, permanent.
+
+    HOW THE TWO POPULATIONS ARE TOLD APART: by the COMPANY, not by the step.
+    `onboarding_step` is a claim about progress, and it is exactly the field
+    that lies here. `company_id` is the fact - set by POST /onboarding/company,
+    never unset by anything, so its presence is proof step 1 actually happened.
+    Someone who legitimately finished has it and gets False; someone stuck does
+    not and gets True. A completed user cannot re-open the flow, which is what
+    the 409 replay guard existed for.
+
+    SAFE FOR THE OTHER TWO CONSUMERS. /onboarding/project and
+    /onboarding/filing-reps each carry their OWN `if not company_id: 409`
+    downstream of this call, so widening the gate cannot let a company-less
+    caller mint a project or push filing reps - they still refuse, with the
+    message that names step 1.
+    """
     step = user.get("onboarding_step")
-    return step in _IN_FLIGHT_ONBOARDING_STEPS
+    if step in _IN_FLIGHT_ONBOARDING_STEPS:
+        return True
+    return not (user.get("company_id") or "")
 
 
 @api_router.post("/onboarding/company")
