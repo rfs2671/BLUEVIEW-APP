@@ -438,9 +438,9 @@ export default function SafetyStaffScreen() {
                   class would require so the absence is actionable rather than
                   merely an error. */}
               {selectedProject && !classAssessed && (
-                <View style={styles.warnCard}>
-                  <Text style={styles.warnTitle}>Classification not assessed</Text>
-                  <Text style={styles.warnText}>
+                <View style={s.warnCard}>
+                  <Text style={s.warnTitle}>Classification not assessed</Text>
+                  <Text style={s.warnText}>
                     This project&apos;s §3310 classification hasn&apos;t been set, so
                     required safety staffing can&apos;t be determined. A Major A
                     project requires a Site Safety Coordinator and a Major B

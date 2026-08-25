@@ -84,7 +84,12 @@ const getFileTypeInfo = (filename) => {
     dxf: { icon: File, color: semantic.neutral, label: 'DXF' },
   };
 
-  return typeMap[ext] || { icon: File, color: colors.text.muted, label: ext?.toUpperCase() || 'FILE' };
+  // `colors` is not in scope here — this helper is module-level, not a
+  // component. semantic.neutral IS colors.text.muted (a getter over the
+  // active theme), and is what every neutral entry in typeMap above already
+  // uses, so the unknown-extension fallback now renders what it always
+  // meant to rather than throwing.
+  return typeMap[ext] || { icon: File, color: semantic.neutral, label: ext?.toUpperCase() || 'FILE' };
 };
 
 // Format file size

@@ -11,7 +11,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { demoAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { withAlpha } from '../src/styles/semanticColors';
+import { semantic, withAlpha } from '../src/styles/semanticColors';
 
 // Contact/email only — deliberately NOT a web page that sells or processes
 // payment (App Store 3.1.1). Change this address to your activation inbox.

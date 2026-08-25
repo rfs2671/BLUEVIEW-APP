@@ -92,10 +92,18 @@ export default function LoginScreen() {
 
   return (
     <AnimatedBackground>
-      // BOTTOM EDGE IS LOAD-BEARING HERE, unlike the other screens that take
-    // edges={['top']}. This layout is CENTRED and its last element is a link;
-    // dropping the bottom inset puts that link on the home indicator. See
-    // 02649d3, which fixed the same symptom, and 0e87696, which undid it.
+      {/* BOTTOM EDGE IS LOAD-BEARING HERE, unlike the other screens that take
+          edges={['top']}. This layout is CENTRED and its last element is a
+          link; dropping the bottom inset puts that link on the home
+          indicator. See 02649d3, which fixed the same symptom, and 0e87696,
+          which undid it.
+
+          AND IT IS A JSX COMMENT, not //. In JSX child position `//` is not
+          a comment, it is text: f486caf shipped these four lines as visible
+          copy above the logo on both auth screens, and the `['top']` inside
+          them parsed as an expression container and rendered as `top`.
+          React 19 throws on bare text in a <View>, and AnimatedBackground
+          renders its children inside one. */}
       <SafeAreaView style={s.container} edges={['top', 'bottom']}>
         <ScrollView
           style={s.scroll}
