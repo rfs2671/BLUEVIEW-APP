@@ -4369,6 +4369,105 @@ async def require_project_access(
     return await _assert_project_access(project_id, current_user)
 
 
+# --- Per-worker tenant isolation ---------------------------------------------
+# THE scoping gate for any route that takes a {worker_id}. It is the worker-level
+# twin of require_project_access, and it exists for the same reason: before this,
+# the worker id went from the path straight into the query on most of these
+# routes, so any authenticated caller who knew an id could read, rename or
+# soft-delete a worker in another tenant.
+#
+# What was actually open (SEV-0, 2026-08-25):
+#   GET    /workers/{id}                     `if company_id and ...` -> falsy passes
+#   PUT    /workers/{id}                     NO check at all
+#   DELETE /workers/{id}                     NO check at all
+#   GET    /workers/{id}/certifications      NO check at all
+#   POST   /workers/{id}/certifications      NO check at all
+#   DELETE /workers/{id}/certifications/{i}  NO check at all
+#
+# The falsy-company_id case is not exotic, it is the DEFAULT: self-serve
+# registration sets company_id = None and a company is only attached later by
+# POST /onboarding/company. Opening self-registration to trial users therefore
+# turns every trial signup into a reader of the whole platform's worker roster
+# until they onboard.
+#
+# READ and WRITE are deliberately DIFFERENT rules, which is why this takes a
+# flag rather than being one dependency:
+#
+#   WRITE  same company, and nothing else. _same_company on both sides, so a
+#          missing company on EITHER side is a refusal - absence is not
+#          authorization. A site device must never rename or delete a worker,
+#          and "he checked in on my job" is grounds to READ his card, never to
+#          edit the record another tenant owns.
+#
+#   READ   same company, OR one of two operational paths that already existed
+#          on /workers/{id}/osha-card and would break the gate if dropped:
+#            1. a SITE DEVICE, for a worker who has checked in on the ONE
+#               project it was provisioned for. A kiosk has to show the card of
+#               whoever is standing at the gate, including a sub's man whose
+#               worker record belongs to the sub's tenant.
+#            2. a company that has a CHECK-IN for this worker. A GC reviewing
+#               its own site's compliance evidence needs the SST card of a
+#               sub's worker who entered the job. That is the existing
+#               osha-card rule, preserved verbatim in intent.
+#
+# Both read fallbacks are guarded on a TRUTHY company/project id, because
+# {"company_id": None} is a matching filter in Mongo, not an empty one - it
+# would match precisely the orphan rows this is meant to keep out of reach.
+#
+# There is no platform-operator branch. The operator carve-out lives on the
+# LIST endpoints (matching GET /projects); no single-worker route grants it.
+async def _assert_worker_access(
+    worker_id: str, current_user: dict, *, write: bool = False,
+) -> dict:
+    worker = await db.workers.find_one({
+        "_id": to_query_id(worker_id), "is_deleted": {"$ne": True},
+    })
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    if _same_company(current_user, worker):
+        return worker
+
+    if write:
+        raise HTTPException(
+            status_code=403, detail="Not authorized for this worker",
+        )
+
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        device_project = str(current_user.get("project_id") or "")
+        if device_project and await db.checkins.find_one({
+            "worker_id": str(worker_id), "project_id": device_project,
+        }):
+            return worker
+        raise HTTPException(
+            status_code=403, detail="Not authorized for this worker",
+        )
+
+    company_id = get_user_company_id(current_user)
+    if company_id and await db.checkins.find_one({
+        "worker_id": str(worker_id), "company_id": str(company_id),
+    }):
+        return worker
+
+    raise HTTPException(status_code=403, detail="Not authorized for this worker")
+
+
+async def require_worker_access(
+    worker_id: str,
+    current_user = Depends(get_current_user),
+) -> dict:
+    """READ gate. Returns the worker doc, so a handler can drop its own lookup."""
+    return await _assert_worker_access(worker_id, current_user)
+
+
+async def require_worker_write_access(
+    worker_id: str,
+    current_user = Depends(get_current_user),
+) -> dict:
+    """WRITE gate. Same company only - no site device, no check-in fallback."""
+    return await _assert_worker_access(worker_id, current_user, write=True)
+
+
 async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
     """Every id must belong to the ACTOR's company before it can be written into
     anyone's assigned_projects.
@@ -12088,11 +12187,32 @@ async def get_workers(
     skip: int = Query(0, ge=0),
 ):
     company_id = get_user_company_id(current_user)
-    
+
     query = {"is_deleted": {"$ne": True}}
+    # THE TENANT FILTER WAS CONDITIONAL - the same leak already closed on GET
+    # /projects, in the same shape. `if company_id:` meant a caller with NO
+    # company_id skipped the filter and received EVERY tenant's workers: names,
+    # phones, OSHA numbers and ids.
+    #
+    # That is the DEFAULT account state, not an exotic one. Self-serve
+    # registration sets company_id = None and a company is only attached later
+    # by POST /onboarding/company, so opening self-registration to trial users
+    # hands each of them the whole platform's worker roster until they onboard.
+    #
+    # A caller with no company owns no workers, so the honest answer is an empty
+    # list. `_id: None` cannot match any document - an unsatisfiable filter
+    # rather than a second return path, so pagination and the response shape
+    # stay identical to a company that simply owns nobody. NOT
+    # `company_id: None`, which would match precisely the orphan rows.
+    #
+    # The platform operator keeps the unfiltered list: the same deliberate
+    # cross-company carve-out GET /projects makes, and never inferred from
+    # `role` - "owner" is what every self-serve signup receives.
     if company_id:
         query["company_id"] = company_id
-    
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
+
     result = await paginated_query(db.workers, query, sort_field="name", sort_dir=1, limit=limit, skip=skip)
     return result
 
@@ -12120,22 +12240,30 @@ async def register_worker(worker_data: WorkerCreate):
 # ==================== WORKER CERTIFICATION MANAGEMENT ====================
 
 @api_router.get("/workers/{worker_id}/certifications")
-async def get_worker_certifications(worker_id: str, current_user=Depends(get_current_user)):
-    """Get structured certifications with validation status."""
-    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found")
+async def get_worker_certifications(worker_id: str, worker = Depends(require_worker_access)):
+    """Get structured certifications with validation status.
+
+    Certifications are the SST/OSHA evidence, so the read gate is the same one
+    osha-card already used: same company, the provisioned site device, or a
+    company this worker has actually checked in for.
+    """
     certs = worker.get("certifications", [])
     validation = validate_worker_certifications(worker)
     return {"worker_id": worker_id, "worker_name": worker.get("name"), "certifications": certs, "validation": validation}
 
 @api_router.post("/workers/{worker_id}/certifications")
-async def add_worker_certification(worker_id: str, cert: WorkerCertification, admin=Depends(get_admin_user)):
-    """Add a certification to a worker's record."""
+async def add_worker_certification(
+    worker_id: str,
+    cert: WorkerCertification,
+    admin=Depends(get_admin_user),
+    worker=Depends(require_worker_write_access),
+):
+    """Add a certification to a worker's record.
+
+    WRITE gate, not the read one: forging a cleared SST on another tenant's
+    worker is how a man walks onto a job he is not cleared for.
+    """
     try:
-        worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
-        if not worker:
-            raise HTTPException(status_code=404, detail="Worker not found")
         now = datetime.now(timezone.utc)
         cert_dict = cert.model_dump()
         cert_dict["added_by"] = str(admin.get("id") or admin.get("_id") or "")
@@ -12167,11 +12295,13 @@ async def add_worker_certification(worker_id: str, cert: WorkerCertification, ad
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)[:200]}")
 
 @api_router.delete("/workers/{worker_id}/certifications/{cert_index}")
-async def remove_worker_certification(worker_id: str, cert_index: int, admin=Depends(get_admin_user)):
+async def remove_worker_certification(
+    worker_id: str,
+    cert_index: int,
+    admin=Depends(get_admin_user),
+    worker=Depends(require_worker_write_access),
+):
     """Remove a certification by index."""
-    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found")
     certs = worker.get("certifications", [])
     if cert_index < 0 or cert_index >= len(certs):
         raise HTTPException(status_code=400, detail="Invalid certification index")
@@ -12188,8 +12318,13 @@ async def scan_expiring_certifications(admin=Depends(get_admin_user)):
     """Scan all workers for expiring or missing certifications."""
     company_id = get_user_company_id(admin)
     query = {"is_deleted": {"$ne": True}}
+    # Same conditional-filter leak as GET /workers, and worse in kind: this one
+    # returns a per-worker COMPLIANCE VERDICT, so a falsy company_id yielded
+    # every tenant's blocked and expiring workers by name.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(admin):
+        query["_id"] = None
     workers = await db.workers.find(query).to_list(5000)
     blocked_workers = []
     warning_workers = []
@@ -12213,25 +12348,23 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
 	)
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
-    
-    # Check access: admin must have worker in their company OR worker checked into their projects
+
+    # ROLE restriction stays: this endpoint is for an admin console and the
+    # kiosk, not for every authenticated principal.
     user_role = current_user.get("role")
     if user_role not in ["admin", "site_device"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    company_id = get_user_company_id(current_user)
-    worker_company = worker.get("company_id")
-    
-    # Check if worker's company matches OR worker has checked into this company's projects
-    if worker_company != company_id:
-        # Check if worker checked into any of this admin's projects
-        has_checkin = await db.checkins.find_one({
-            "worker_id": worker_id,
-            "company_id": company_id
-        })
-        if not has_checkin:
-            raise HTTPException(status_code=403, detail="Access denied to this worker's data")
-    
+
+    # TENANCY is now the shared gate. The check that stood here compared
+    # `worker_company != company_id` directly, so two Nones compared EQUAL and
+    # a pre-onboarding admin passed straight through to another tenant's card.
+    # It also queried checkins with a possibly-None company_id, which matches
+    # orphan rows rather than nothing. _assert_worker_access preserves both
+    # legitimate paths this endpoint had - the site device on its provisioned
+    # project, and a company that holds a check-in for this worker - and fails
+    # closed on absence instead of passing.
+    await _assert_worker_access(worker_id, current_user)
+
     return {
         "name": worker.get("name"),
         "osha_card_image": worker.get("osha_card_image"),
@@ -12241,20 +12374,23 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
 		"signature": worker.get("signature"),
     }
 @api_router.get("/workers/{worker_id}", response_model=WorkerResponse)
-async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
-    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found")
-    
-    # Check company access
-    company_id = get_user_company_id(current_user)
-    if company_id and worker.get("company_id") != company_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-    
+async def get_worker(worker_id: str, worker = Depends(require_worker_access)):
+    # The hand-rolled check here was `if company_id and ...` - the `and`
+    # short-circuited on a falsy company_id and let a pre-onboarding account
+    # read any worker in the database. require_worker_access fails closed.
+    # It also does the lookup and the 404, so nothing is re-fetched.
     return WorkerResponse(**serialize_id(worker))
 
 @api_router.put("/workers/{worker_id}", response_model=WorkerResponse)
-async def update_worker(worker_id: str, worker_data: dict, current_user = Depends(get_current_user)):
+async def update_worker(
+    worker_id: str,
+    worker_data: dict,
+    worker = Depends(require_worker_write_access),
+):
+    # HAD NO TENANT CHECK AT ALL. Any authenticated caller who knew a worker id
+    # could rename or re-phone a worker in another tenant. `company_id` is not
+    # in ALLOWED_WORKER_FIELDS and stays out - moving a worker between tenants
+    # is a separate, audited operation, not a field edit.
     ALLOWED_WORKER_FIELDS = {"name", "phone", "trade", "company", "osha_number", "certifications", "emergency_contact", "emergency_phone", "notes"}
     update_data = {k: v for k, v in worker_data.items() if v is not None and k in ALLOWED_WORKER_FIELDS}
     update_data["updated_at"] = datetime.now(timezone.utc)
@@ -12271,7 +12407,14 @@ async def update_worker(worker_id: str, worker_data: dict, current_user = Depend
     return WorkerResponse(**serialize_id(worker))
 
 @api_router.delete("/workers/{worker_id}")
-async def delete_worker(worker_id: str, admin = Depends(get_admin_user)):
+async def delete_worker(
+    worker_id: str,
+    admin = Depends(get_admin_user),
+    worker = Depends(require_worker_write_access),
+):
+    # HAD NO TENANT CHECK AT ALL - get_admin_user proved the caller was AN
+    # admin, never that they were THIS worker's admin. Both dependencies stay:
+    # one answers "is this an admin", the other "is this their worker".
     # Soft delete
     result = await db.workers.update_one(
         {"_id": to_query_id(worker_id)},
