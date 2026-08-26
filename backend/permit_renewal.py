@@ -1371,6 +1371,81 @@ def create_permit_renewal_routes(
             "total": total,
         }
 
+    # ── LITERAL PATHS REGISTER BEFORE {renewal_id}, AND MUST STAY HERE ──────
+    #
+    # FastAPI matches in REGISTRATION order, so a parameterised route declared
+    # first swallows every literal sibling underneath it. These two were
+    # declared ~600 lines below `get_renewal` and were therefore DEAD: a call
+    # to /permit-renewals/dashboard-alerts ran get_renewal with
+    # renewal_id="dashboard-alerts", found nothing, and returned
+    # 404 "Renewal not found" -- which a dashboard reads as "no alerts".
+    #
+    # Nothing about these handlers changed. They moved.
+    #
+    # test_route_order_literals_first.py fails for ANY parameterised route
+    # registered before a literal sibling, not just these two -- the class, not
+    # the instance.
+    # GET /api/permit-renewals/dashboard-alerts
+    @api_router.get("/permit-renewals/dashboard-alerts")
+    async def get_dashboard_alerts(
+        current_user=Depends(get_current_user),
+    ):
+        """Active renewal alerts for the dashboard."""
+        company_id = get_user_company_id(current_user)
+        query = {
+            "is_deleted": {"$ne": True},
+            "status": {"$nin": [
+                RenewalStatus.COMPLETED,
+                RenewalStatus.FAILED,
+            ]},
+        }
+        if company_id:
+            query["company_id"] = company_id
+
+        renewals = (
+            await db.permit_renewals
+            .find(query)
+            .sort("days_until_expiry", 1)
+            .to_list(50)
+        )
+
+        alerts = []
+        for r in renewals:
+            alerts.append({
+                "id": str(r["_id"]),
+                "project_id": r.get("project_id"),
+                "project_name": r.get("project_name"),
+                "job_number": r.get("job_number"),
+                "permit_type": r.get("permit_type"),
+                "days_until_expiry": r.get("days_until_expiry"),
+                "status": r.get("status"),
+                "dob_now_url": r.get("dob_now_url"),
+                "blocking_reasons": r.get("blocking_reasons", []),
+            })
+
+        return {"alerts": alerts, "total": len(alerts)}
+
+    # GET /api/permit-renewals/health-status
+    @api_router.get("/permit-renewals/health-status")
+    async def get_health_status(admin=Depends(get_admin_user)):
+        """Latest DOB NOW health check result (admin only)."""
+        result = await db.system_config.find_one(
+            {"key": "dob_now_health_check"}
+        )
+        if not result:
+            return {
+                "status": "never_run",
+                "last_run": None,
+                "issues": [],
+            }
+        return {
+            "status": result.get("status", "unknown"),
+            "last_run": result.get("last_run"),
+            "issues": result.get("issues", []),
+            "js_hash": result.get("js_hash"),
+        }
+
+
     # GET /api/permit-renewals/{renewal_id}
     @api_router.get("/permit-renewals/{renewal_id}")
     async def get_renewal(
@@ -1986,63 +2061,3 @@ def create_permit_renewal_routes(
             renewal_fields["id"] = str(result.inserted_id)
 
         return serialize_id(renewal_fields)
-
-    # GET /api/permit-renewals/dashboard-alerts
-    @api_router.get("/permit-renewals/dashboard-alerts")
-    async def get_dashboard_alerts(
-        current_user=Depends(get_current_user),
-    ):
-        """Active renewal alerts for the dashboard."""
-        company_id = get_user_company_id(current_user)
-        query = {
-            "is_deleted": {"$ne": True},
-            "status": {"$nin": [
-                RenewalStatus.COMPLETED,
-                RenewalStatus.FAILED,
-            ]},
-        }
-        if company_id:
-            query["company_id"] = company_id
-
-        renewals = (
-            await db.permit_renewals
-            .find(query)
-            .sort("days_until_expiry", 1)
-            .to_list(50)
-        )
-
-        alerts = []
-        for r in renewals:
-            alerts.append({
-                "id": str(r["_id"]),
-                "project_id": r.get("project_id"),
-                "project_name": r.get("project_name"),
-                "job_number": r.get("job_number"),
-                "permit_type": r.get("permit_type"),
-                "days_until_expiry": r.get("days_until_expiry"),
-                "status": r.get("status"),
-                "dob_now_url": r.get("dob_now_url"),
-                "blocking_reasons": r.get("blocking_reasons", []),
-            })
-
-        return {"alerts": alerts, "total": len(alerts)}
-
-    # GET /api/permit-renewals/health-status
-    @api_router.get("/permit-renewals/health-status")
-    async def get_health_status(admin=Depends(get_admin_user)):
-        """Latest DOB NOW health check result (admin only)."""
-        result = await db.system_config.find_one(
-            {"key": "dob_now_health_check"}
-        )
-        if not result:
-            return {
-                "status": "never_run",
-                "last_run": None,
-                "issues": [],
-            }
-        return {
-            "status": result.get("status", "unknown"),
-            "last_run": result.get("last_run"),
-            "issues": result.get("issues", []),
-            "js_hash": result.get("js_hash"),
-        }
