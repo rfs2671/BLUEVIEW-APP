@@ -17979,7 +17979,24 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     # so the insert below creates the next instance instead of 423-ing the CP out
     # of filing it. (END_OF_DAY logs deliberately keep the 423 — the daily
     # narrative is one record per day; corrections go through /amend.)
-    if is_immediate_preshift(data.log_type):
+    #
+    # SUBCONTRACTOR_ORIENTATION IS THE EXCEPTION, AND IT COST THIRTY RECORDS.
+    #
+    # It is `immediate`, so it inherited the exclusion above -- and it is also
+    # PER-WORKER, which the block below already knew. The two together are the
+    # defect: every submit LOCKS the row (is_locked is set when an immediate
+    # type is submitted), the locked row then falls out of this filter, and the
+    # next create for the SAME worker matches nothing and INSERTS. Self-
+    # accelerating: the more it fires the more certainly it fires again.
+    #
+    # 30 rows for one worker on 2026-08-25, 14 of them SUBMITTED -- fourteen
+    # signed attestations that a CP witnessed one orientation. It recurred on
+    # 08-26 for two more workers before this landed.
+    #
+    # A scaffold inspection genuinely recurs (the post-alteration one is a new
+    # discrete record). A man is oriented ONCE. There is no second discrete
+    # orientation of the same worker.
+    if is_immediate_preshift(data.log_type) and data.log_type != "subcontractor_orientation":
         dedupe_filter["is_locked"] = {"$ne": True}
     if data.log_type == "subcontractor_orientation":
         orientation_worker_id = (data.data or {}).get("worker_id")
@@ -17998,6 +18015,25 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             orientation_worker_id = f"srv_{uuid.uuid4().hex}"
             data.data = {**(data.data or {}), "worker_id": orientation_worker_id}
         dedupe_filter["data.worker_id"] = orientation_worker_id
+        # AND THE DATE COMES OUT, matching the gate's filter exactly.
+        #
+        # register_and_checkin keys on (log_type, project_id, data.worker_id,
+        # is_deleted) with NO date scope -- one orientation per worker per
+        # project, ever. Orientation is FIRST-TIME-ON-PROJECT, not daily, and
+        # the combined report already treats it that way: its coverage section
+        # reads "a worker oriented weeks ago counts as covered" and matches
+        # across ALL dates. Leaving `date` here would be the same bug on a
+        # slower clock -- the same worker re-oriented tomorrow minting a second
+        # record.
+        dedupe_filter.pop("date", None)
+        # company_id and is_amendment STAY, deliberately, and neither can
+        # reintroduce the duplication: both are constant for a given
+        # (project, worker), so they narrow the match without ever splitting it.
+        # company_id is the tenant guard added after a cross-tenant overwrite
+        # was found reachable here; is_amendment stops an upsert clobbering an
+        # amendment that shares (project, type, date) with its locked original.
+        # Dropping either to mirror the gate literally would trade this defect
+        # for a worse one.
 
     existing = await db.logbooks.find_one(dedupe_filter)
     if existing:
