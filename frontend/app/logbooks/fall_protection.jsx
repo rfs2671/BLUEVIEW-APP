@@ -760,6 +760,7 @@ export default function FallProtectionLog() {
       </View>
 
       <SignaturePad
+          pinned
         value={cpSignature}
         onChange={setCpSignature}
         signerName={cpName}

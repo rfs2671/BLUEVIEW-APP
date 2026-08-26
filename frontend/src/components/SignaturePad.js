@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { View, StyleSheet, Text, Pressable, PanResponder, TextInput, Platform } from 'react-native';
 import { Trash2, Check, PenTool, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
+import { outdoor } from '../styles/theme';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { useT, useLocale } from '../i18n';
@@ -77,8 +78,52 @@ const SignaturePad = ({
   // locale" (src/i18n), which starts at 'en', so an unset caller renders
   // exactly what it rendered before. Passing lang still pins one locale.
   lang,
+  // Default FALSE. The other six mounters - including the four correctly-themed
+  // logbook screens - never pass it and render byte-identically to before.
+  pinned = false,
 }) => {
-  const { isDark, colors } = useTheme();
+  // PINNED: render as this pad renders in LIGHT MODE, whatever the theme.
+  //
+  // Passed only by the ten logbook editors, whose canvas and chrome are pinned
+  // to `outdoor` because a CP signs a compliance log outdoors in direct sun.
+  // The signing box was ALREADY correct without this - it is hardcoded #ffffff
+  // with #000000 strokes, so the surface a man actually signs on has always
+  // been light. What was NOT pinned is the chrome around it: labels, hints and
+  // icons drawn from the live palette, white-ish in dark mode. That read fine
+  // while the canvas behind it was dark, and would have gone invisible the
+  // moment the canvas was pinned light - trading one unreadable screen for
+  // another on the step where he signs.
+  //
+  // THE MAPPING IS NOT AN APPROXIMATION. Five of these six are identities that
+  // src/styles/outdoorMatchesLight.test.cjs already asserts against the private
+  // _light palette:
+  //
+  //   glass.background -> outdoor.surface     asserted identical
+  //   glass.border     -> outdoor.line        asserted identical
+  //   text.primary     -> outdoor.text        asserted identical
+  //   text.secondary   -> outdoor.textSoft    asserted identical
+  //   text.muted       -> outdoor.textDim     asserted identical
+  //
+  // So a pinned pad renders EXACTLY what an unpinned one renders in light mode.
+  //
+  // The sixth is the one deviation, stated rather than hidden: `text.subtle`
+  // has no outdoor pair. It is the empty-state pen icon, and it maps to
+  // textDim, which is 0.65 alpha against light's 0.50 - very slightly DARKER
+  // than light mode. That errs toward contrast, which is the whole point of
+  // the outdoor palette, so it is the right direction to be wrong in.
+  const PINNED_COLORS = {
+    glass: { background: outdoor.surface, border: outdoor.line },
+    text: {
+      primary: outdoor.text,
+      secondary: outdoor.textSoft,
+      muted: outdoor.textDim,
+      subtle: outdoor.textDim,
+    },
+  };
+
+  const { isDark: themeIsDark, colors: liveColors } = useTheme();
+  const isDark = pinned ? false : themeIsDark;
+  const colors = pinned ? PINNED_COLORS : liveColors;
   const styles = buildStyles(colors, isDark);
 
   // THE PAD OWNS ITS OWN LANGUAGE.

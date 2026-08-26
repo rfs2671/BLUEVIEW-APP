@@ -126,6 +126,97 @@ console.log('\n-- and the ten pinned editors still route through the stepper --'
     + `pixel they own comes from outdoor. Found: ${JSON.stringify(live)}`);
 }
 
+console.log('\n-- SignaturePad renders its LIGHT-MODE self on the pinned ten --');
+{
+  const PAD = code(read('src/components/SignaturePad.js'));
+  ok(/pinned\s*=\s*false/.test(PAD),
+    'the prop DEFAULTS TO FALSE - the other six mounters never pass it');
+  ok(/const isDark = pinned \? false : themeIsDark/.test(PAD),
+    'isDark is forced too, so the two isDark ternaries inside buildStyles '
+    + 'resolve to their light branch as well as the palette');
+  ok(/const colors = pinned \? PINNED_COLORS : liveColors/.test(PAD),
+    'and the palette is substituted once rather than at each call site');
+
+  // FIVE OF SIX ARE IDENTITIES that outdoorMatchesLight.test.cjs already
+  // asserts against the private _light palette, so a pinned pad is not an
+  // approximation of light mode - it IS light mode. The sixth, text.subtle,
+  // has no outdoor pair and lands on textDim: slightly DARKER than light,
+  // which errs toward contrast and is the right direction to be wrong in.
+  for (const pin of ['outdoor.surface', 'outdoor.line', 'outdoor.text',
+    'outdoor.textSoft', 'outdoor.textDim']) {
+    ok(PAD.includes(pin), 'the pinned palette maps to ' + pin);
+  }
+
+  // THE SIGNING BOX WAS ALREADY RIGHT and stays hardcoded: a man signs on
+  // white with black ink whatever the theme. That is why this defect only
+  // ever affected the chrome around it.
+  ok(/backgroundColor: '#ffffff'/.test(PAD),
+    'the signing surface stays hardcoded white, untouched by the pin');
+  ok(/strokeColor="#000000"/.test(PAD), 'and the strokes stay black');
+}
+
+console.log('\n-- the six other mounters are byte-identical --');
+{
+  // Only the ten pinned editors pass it. Everything else - including the four
+  // correctly-themed logbook screens - must render exactly as before.
+  // THE FOUR THAT ACTUALLY RENDER ONE. `grep -l SignaturePad` returns more
+  // files than this, and every extra is a false positive: review.jsx only
+  // discusses the pad in comments, and workers/[id].jsx has a local
+  // `showSignaturePad` flag over its own inline signature UI. Neither mounts
+  // the component, so neither belongs in a list about how it is mounted.
+  const OTHERS = [
+    'app/daily-log.jsx',
+    'app/logbooks/preshift_signin.jsx',
+    'app/logbooks/subcontractor_orientation.jsx',
+    'app/site/daily-logs.jsx',
+  ];
+  for (const f of OTHERS) {
+    const src = code(read(f));
+    ok(/<SignaturePad/.test(src), 'ANCHOR: ' + path.basename(f) + ' mounts a pad');
+    ok(!/\bpinned\b/.test(src),
+      path.basename(f) + ' passes no pinned - live-themed, unchanged');
+  }
+}
+
+console.log('\n-- every render site is accounted for, pinned or live --');
+{
+  // 14 render sites: 10 pinned, 4 live. Pinned so a NEW one cannot appear
+  // without someone deciding which half it belongs to - which is exactly
+  // the decision that was never made for the canvas.
+  const walk = (d, out = []) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p, out);
+      else if (/[.]jsx?$/.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  const sites = walk(path.join(FRONTEND, 'app'))
+    .map((f) => [f, code(fs.readFileSync(f, 'utf8'))])
+    .filter(([, src]) => /<SignaturePad[\s>]/.test(src));
+  const live = sites.filter(([, src]) => !/<SignaturePad\s+pinned/.test(src));
+  ok(sites.length === 14,
+    'ANCHOR: 14 render sites (' + sites.length + ')');
+  ok(live.length === 4,
+    'exactly four stay live: ' + JSON.stringify(live.map(([f]) => path.basename(f))));
+}
+
+console.log('\n-- and every pinned editor that mounts a pad pins it --');
+{
+  const dir = path.join(FRONTEND, 'app', 'logbooks');
+  const LIVE = new Set(['index.jsx', 'preshift_signin.jsx', 'review.jsx',
+    'subcontractor_orientation.jsx']);
+  const missing = fs.readdirSync(dir)
+    .filter((f) => f.endsWith('.jsx') && !LIVE.has(f))
+    .filter((f) => {
+      const src = code(read(path.join('app', 'logbooks', f)));
+      return /<SignaturePad/.test(src) && !/<SignaturePad\s+pinned/.test(src);
+    });
+  ok(missing.length === 0,
+    'otherwise its chrome goes invisible on the now-light canvas. Missing: '
+    + JSON.stringify(missing));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

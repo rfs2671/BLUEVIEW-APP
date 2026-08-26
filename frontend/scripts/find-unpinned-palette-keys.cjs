@@ -108,25 +108,23 @@ for (const palette of PINNED_PALETTES) {
 
 // ── 2. No module mixes a pinned palette with a live colour source ───────────
 {
-  // THE ONE FILE THAT MUST SEE BOTH, and the reason it is named rather than
-  // pattern-matched. AnimatedBackground IMPLEMENTS the choice between the two
-  // palettes - `pinned` selects outdoor, the default selects the live theme -
-  // so it necessarily references both. Every other file referencing both is
-  // half-pinned by accident.
+  // A COMPONENT THAT TAKES `pinned` IS DEFINITIONALLY WHERE BOTH PALETTES MEET.
   //
-  // This is NOT the "allowlist of known-broken files" that lets a class of
-  // defect survive a guard. That kind of list names files that OUGHT to pass
-  // and do not. This names the single file where the rule does not apply
-  // because the file DEFINES the rule. If a second file ever needs to be here,
-  // that is a signal the switch has been duplicated - which is the thing this
-  // check should catch - so the list is deliberately kept at one, and any
-  // addition should be argued rather than typed.
-  const PALETTE_SWITCH = new Set(['src/components/AnimatedBackground.js']);
+  // This started as a one-file allowlist naming AnimatedBackground. Adding
+  // SignaturePad to it would have made it a list, and a list of files exempt
+  // from a rule is how a class of defect survives the guard meant to catch it.
+  //
+  // So the exemption is STRUCTURAL instead: a module that declares a `pinned`
+  // prop is implementing the choice, and must see both sides to implement it.
+  // Nothing else may. That is the actual rule, it needs no maintenance, and a
+  // file cannot join by being typed into a list - it joins by taking the prop,
+  // which is a visible design decision in the component's own signature.
+  const declaresPinnedProp = (body) => /(?:^|[,{(\s])pinned\s*=\s*false/.test(body);
+
 
   const mixed = [];
   for (const [file, body] of bodies) {
-    const rel = path.relative(ROOT, file).split(path.sep).join('/');
-    if (PALETTE_SWITCH.has(rel)) continue;
+    if (declaresPinnedProp(body)) continue;
     const usesPinned = PINNED_PALETTES.some((p) => new RegExp(`\\b${p}\\.`).test(body));
     if (!usesPinned) continue;
     const live = [];

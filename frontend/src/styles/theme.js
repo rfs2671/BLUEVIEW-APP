@@ -315,7 +315,6 @@ export const outdoor = {
   warnBg: '#fef3c7',
   warnBorder: '#d97706',
   warn: '#92400e',
-  dangerBg: '#fee2e2',
   danger: '#b91c1c',
   okBg: '#dcfce7',
   okBorder: '#15803d',
