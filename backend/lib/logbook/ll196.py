@@ -32,6 +32,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from lib.cert_vocab import SST_CLASS_TYPES
 from lib.logbook.schema import (
     CATEGORY_LL196,
     SOURCE_AUTO_DETECTED,
@@ -44,7 +45,15 @@ logger = logging.getLogger(__name__)
 
 # Cert types that count as a current SST card. Mirrors
 # server.py::validate_worker_certifications.
-_SST_CERT_TYPES = ("SST_FULL", "SST_LIMITED", "SST_SUPERVISOR")
+# THE COPY IS GONE. This read
+#
+#     _SST_CERT_TYPES = ("SST_FULL", "SST_LIMITED", "SST_SUPERVISOR")
+#
+# three members against the canonical four, dropping SST_TEMPORARY. A worker
+# holding a temporary card was admitted at the gate as a legible class and
+# counted MISSING in the roster below -- a filed DOB attestation contradicting
+# the gate about the same man.
+_SST_CERT_TYPES = SST_CLASS_TYPES
 
 
 def _worker_sst_status(
