@@ -30,6 +30,52 @@
  * another.
  */
 
+/**
+ * THE FIELDS THAT BELONG TO ONE DOCUMENT AND MUST NEVER RIDE A CREDENTIAL.
+ *
+ * The profile signature is a REUSABLE CREDENTIAL. Every field below records
+ * something about a single act of attestation on a single record, so carrying
+ * any of them onto the next document makes that document assert something
+ * nobody did.
+ *
+ * A LIST, NOT THREE LITERALS, AND THAT IS THE POINT. useCpProfile's strip was
+ * written as `const { affirmed, affirmedAt, ...rest }` when the attestation had
+ * two fields. `affirmedLang` was added to the attestation later, by a different
+ * commit, and nobody widened the strip - so a credential kept carrying it and
+ * two logs filed on 2026-08-25 asserted the signer was shown English on a
+ * document he never affirmed at all. The omission was invisible because the
+ * strip named its fields inline.
+ *
+ * So the strip now DERIVES from this list. Adding a field to the attestation
+ * means adding it here, and the strip widens with it - the failure mode is a
+ * missing entry in one obvious place rather than a silent divergence between
+ * two files.
+ *
+ * `timestamp` is DELIBERATELY ABSENT and is a separate decision. It is also
+ * carried (it is why both of those logs claim 2026-08-19T15:01:10.726Z, the
+ * credential's capture instant), but it is what SignaturePad renders beside an
+ * inherited signature, so removing it changes what the CP sees rather than only
+ * what the record claims. Reported, not bundled in here.
+ */
+export const PER_DOCUMENT_SIGNATURE_FIELDS = Object.freeze([
+  'affirmed',
+  'affirmedAt',
+  'affirmedLang',
+]);
+
+/**
+ * A reusable credential: the signature with every per-document stamp removed.
+ *
+ * Lives here rather than in useCpProfile because the rule is the same one this
+ * module already owns - what makes a signature belong to a document.
+ */
+export function toCredential(sig) {
+  if (!sig || typeof sig !== 'object') return sig;
+  const credential = { ...sig };
+  for (const field of PER_DOCUMENT_SIGNATURE_FIELDS) delete credential[field];
+  return credential;
+}
+
 /** True only for a signature affirmed for the document being signed. */
 export function isAffirmedSignature(sig) {
   return !!(sig && typeof sig === 'object' && sig.affirmed === true);

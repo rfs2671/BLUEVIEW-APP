@@ -15,21 +15,29 @@
 import { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { cpProfileAPI } from '../utils/api';
+import { toCredential } from '../utils/signatureAffirmed';
 
 const CP_PROFILE_CACHE_KEY = 'blueview_cp_profile';
 
 /**
  * The profile signature is a REUSABLE CREDENTIAL, never a per-document
- * attestation. Strip any per-document affirmation stamp (affirmed / affirmedAt)
- * before caching it, so an affirmed signature saved from one logbook can never
- * flow back into the profile and make the NEXT document render as already
- * VERIFIED without its own affirmation. See SignaturePad's affirmation flow.
+ * attestation. Strip every per-document stamp before caching it, so an
+ * affirmed signature saved from one logbook can never flow back into the
+ * profile and make the NEXT document render as already VERIFIED without its
+ * own affirmation. See SignaturePad's affirmation flow.
+ *
+ * THE FIELD LIST IS NOT WRITTEN HERE ANY MORE, and that is the fix. This was
+ * `const { affirmed, affirmedAt, ...credential } = sig` — correct when the
+ * attestation had two fields. `affirmedLang` was added to the attestation by a
+ * later commit and nobody widened this, so the credential kept carrying it:
+ * two logs filed on 2026-08-25 asserted the signer was shown English on
+ * documents he never affirmed at all.
+ *
+ * The list now lives beside the predicate that defines what "affirmed" means
+ * (PER_DOCUMENT_SIGNATURE_FIELDS in utils/signatureAffirmed), so widening the
+ * attestation and widening the strip are the same edit instead of two.
  */
-function stripAffirmation(sig) {
-  if (!sig || typeof sig !== 'object') return sig;
-  const { affirmed, affirmedAt, ...credential } = sig;
-  return credential;
-}
+const stripAffirmation = toCredential;
 
 export function useCpProfile() {
   const [cpName, setCpName] = useState('');
