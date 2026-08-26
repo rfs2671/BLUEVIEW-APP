@@ -330,7 +330,8 @@ def _payload(inline=False):
             "visitors_deliveries": "",
             "time_in": "07:00", "time_out": "15:30", "areas_visited": "Cellar",
         },
-        "cp_signature": {"paths": [[1, 2]], "signed_at": "2026-08-07T15:31:00Z"},
+        "cp_signature": {"paths": [[1, 2]], "signed_at": "2026-08-07T15:31:00Z",
+                     "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"},
         "cp_name": "Casey CP",
         "status": "submitted",
     }
@@ -675,7 +676,8 @@ def _logbook_with(photo):
     return {
         "_id": "lb1", "project_id": "proj1", "company_id": "co_test",
         "log_type": "daily_jobsite", "date": "2026-08-07",
-        "cp_signature": {"paths": [[1, 2]]}, "cp_name": "Casey CP",
+        "cp_signature": {"paths": [[1, 2]], "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"},
+        "cp_name": "Casey CP",
         "data": {"activities": [{
             "activity_id": "act_7", "crew_id": "C1", "company": "Acme",
             "num_workers": 3, "work_description": "shoring",

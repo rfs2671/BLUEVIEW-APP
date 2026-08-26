@@ -283,7 +283,11 @@ class OrientationUpsertWorkerKey(unittest.TestCase):
         dj = LogbookCreate(
             project_id=PROJECT_ID, log_type="daily_jobsite", date=DATE,
             data={"weather": "rain", "activities": [{"crew_id": "C-9"}]},
-            cp_signature={"paths": [[1, 2]], "signed_at": "2026-08-09T12:00:00Z"},
+            # AFFIRMED: the submit gate asks `affirmed is True` now, not
+            # whether a signature object exists. This test is about the
+            # dedupe key, so the signature just has to be valid.
+            cp_signature={"paths": [[1, 2]], "signed_at": "2026-08-09T12:00:00Z",
+                          "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"},
             cp_name="Carl CP", status="submitted",
         )
         self._create(dj)

@@ -46,7 +46,11 @@ USER = {
 }
 ORIENT = "subcontractor_orientation"
 # cp_signature is Optional[Dict] on the models, never a bare string.
-SIG = {"image": "data:image/png;base64,AAA", "signed_at": "2026-03-04T12:00:00Z"}
+SIG = {"image": "data:image/png;base64,AAA", "signed_at": "2026-03-04T12:00:00Z",
+       # AFFIRMED: this fixture stands for a CP who signed AND affirmed.
+       # The submit gate now asks `affirmed is True`, the same question the
+       # PDF renderer and the EOD sweep ask, instead of mere presence.
+       "affirmed": True, "affirmedAt": "2026-03-04T12:00:00Z"}
 
 
 def _data(**over):

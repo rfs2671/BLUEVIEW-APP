@@ -258,7 +258,8 @@ def _payload():
             "visitors_deliveries": "",
             "time_in": "07:00", "time_out": "15:30", "areas_visited": "Cellar",
         },
-        "cp_signature": {"paths": [[1, 2]], "signed_at": "2026-08-07T15:31:00Z"},
+        "cp_signature": {"paths": [[1, 2]], "signed_at": "2026-08-07T15:31:00Z",
+                         "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"},
         "cp_name": "Casey CP",
         "status": "submitted",
     }
