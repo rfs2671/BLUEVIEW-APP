@@ -120,6 +120,20 @@ jobs:
         working-directory: frontend
         run: node scripts/find-unbound-identifiers.cjs
 
+      # AND NO PINNED PALETTE KEY THAT NOTHING PAINTS. `outdoor` is the app's
+      # light look, frozen, worn by the ten logbook editors because a CP fills
+      # a compliance log in direct sun. The pin was applied to the CONTENT and
+      # never to the CANVAS: outdoor.backgroundStart/Middle/End were defined
+      # for AnimatedBackground and consumed by nothing, so dark mode drew
+      # #0A1929 ink on a #050a12 gradient and every element without its own
+      # surface went invisible on all ten screens.
+      #
+      # A palette that describes a surface nobody paints IS that bug, in one
+      # line. Parse-only, so it runs beside the other two sweeps.
+      - name: No unpainted keys in a pinned palette
+        working-directory: frontend
+        run: node scripts/find-unpinned-palette-keys.cjs
+
       # Globbed rather than hard-coded so a new *.test.cjs / *.test.js is
       # picked up automatically — a test nobody runs is the thing this workflow
       # exists to prevent. Fails the job on the FIRST non-zero exit, and fails

@@ -673,6 +673,7 @@ export default function SSCDailySafetyLog() {
             SSC/SSM signs each day himself rather than inheriting a cached
             credential belonging to somebody else. */}
         <SignaturePad
+          pinned
           title="SSC/SSM Signature"
           signerName={cpName}
           onNameChange={setCpName}

@@ -2268,6 +2268,7 @@ export default function DailyJobsiteLog() {
 
       <Card s={s}>
         <SignaturePad
+          pinned
           title={t('sectionSignOff')}
           signerName={cpName}
           onNameChange={setCpName}

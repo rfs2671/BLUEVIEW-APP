@@ -94,7 +94,15 @@ ok(/canFinalize=\{false\}/.test(chrome), 'the lock bar never offers finalize fro
 
 console.log('\n-- Lifted verbatim, and still token-only --');
 
-ok(/<AnimatedBackground>/.test(chrome), 'the blue gradient background, not a flat grey');
+// PINNED. This asserted the exact literal `<AnimatedBackground>`, which the
+// added prop breaks without the intent changing - it was pinning that the
+// wrapper is PRESENT, not that it takes no props. Widened, and the pin itself
+// is now asserted: the stepper's content is styled from `outdoor` (frozen
+// light, for direct sun), so the canvas under it has to be pinned too or the
+// ink is #0A1929 on #050a12.
+ok(/<AnimatedBackground\b/.test(chrome), 'the blue gradient background, not a flat grey');
+ok(/<AnimatedBackground pinned>/.test(chrome),
+  'and it is PINNED, so the canvas matches the outdoor ink drawn on it');
 ok(!/backgroundColor/.test(block(styles, 'scroll')),
   'the scroll view paints NO background — a flat fill hid the gradient once');
 ok(/colors=\{\[outdoor\.cardTop, outdoor\.cardBottom\]\}/.test(prims),

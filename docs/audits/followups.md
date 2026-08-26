@@ -792,3 +792,23 @@ dimensions are contaminated by rodent data and must not be trusted.
 `server.py` (`_build_dob_link` inspection branch ~16899, severity map entry,
 `dob-logs.jsx` `renderInspectionCard`) and the existing `dob_logs` rodent rows
 (deleted separately in COMMIT 2).
+
+## Toast is foreign-looking on the ten pinned logbook editors
+
+Logged 2026-08-25, alongside the outdoor canvas pin (PR #210).
+
+The ten logbook editors are pinned to the `outdoor` palette - frozen light,
+because a CP fills a compliance log in direct sun. With the canvas now pinned
+too, a toast raised on one of those screens in dark mode is a DARK opaque box
+on a light page.
+
+NOT INVISIBLE, which is why it is logged rather than fixed. `Toast` paints an
+opaque fill in both themes (`#2a1313` dark, a mixed light value otherwise), so
+it is a self-contained surface and its text contrasts with its own background.
+Nothing disappears; it simply does not match the page it floats over.
+
+The fix, if it is ever wanted, is the same `pinned` prop AnimatedBackground and
+SignaturePad now take - but it is more awkward here, because a toast is raised
+through a CONTEXT from anywhere, not mounted by the screen, so the screen has
+no natural place to declare the pin. That is a real design question and not a
+colour swap, which is the other reason it is not in #210.

@@ -831,6 +831,7 @@ export default function ToolboxTalkLog() {
         </Text>
         <Text style={s.noteText}>{t('signAttests')}</Text>
         <SignaturePad
+          pinned
           title="Competent Person Signature"
           signerName={cpName}
           onNameChange={setCpName}

@@ -749,6 +749,7 @@ export default function ExcavationMonitoringLog() {
           {incomplete.length > 0 ? t('stepsIncomplete') : t('stepsAllComplete')}
         </Text>
         <SignaturePad
+          pinned
           title="Competent Person Signature"
           signerName={cpName}
           onNameChange={setCpName}
