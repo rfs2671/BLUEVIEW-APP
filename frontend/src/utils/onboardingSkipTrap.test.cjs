@@ -124,6 +124,68 @@ console.log('\n-- the copy says what is wrong, not what a company_id is --');
     'no field names or status codes in user-facing copy');
 }
 
+console.log('\n-- onboarding has a way out of the SESSION --');
+{
+  // It was the ONLY confined state in the app without one. The site device
+  // has it, Inspector Mode has it (its comment: "/login stays reachable so a
+  // logout is still possible"), the CP reaches it through Settings, and
+  // /demo renders this exact control. A user who wanted to abandon setup or
+  // switch accounts had to clear site data.
+  //
+  // The guard already permits /login; what made it unreachable is that
+  // login.jsx evicts an authenticated user, so the URL bounced
+  // /login -> / -> /onboarding. Clearing the session is what makes /login
+  // stick, which is why the fix is a control and not a guard change.
+  ok(/logout/.test(ONB_CODE),
+    'the screen takes logout from the context that already exports it');
+  ok(/useAuth\(\)/.test(ONB_CODE) && /,\s*logout\s*}\s*=\s*useAuth/.test(ONB_CODE),
+    'destructured from useAuth, the same way demo.jsx does it');
+  ok(/onPress=\{logout\}/.test(ONB_CODE),
+    'and a control calls it directly - no wrapper that could quietly do more');
+
+  // logout() must not touch onboarding_step. The step is a fact about the
+  // ACCOUNT, not the session: a user at step 3 has a company and a project on
+  // the server, and resetting the marker would desynchronise it from the data
+  // it describes. Asserted at the source, since that is where it would break.
+  const AUTH = code(fs.readFileSync(
+    path.join(FRONTEND, 'src', 'context', 'AuthContext.js'), 'utf8'));
+  const fn = AUTH.slice(AUTH.indexOf('const logout'), AUTH.indexOf('const logout') + 800);
+  ok(fn.length > 100, 'ANCHOR: the logout body was found');
+  ok(!/onboarding/.test(fn),
+    'logout touches NO onboarding field - the step survives the session, so a '
+    + 'user at step 3 resumes at step 3');
+
+  ok(/accessibilityRole="button"/.test(ONB_CODE),
+    'it is a button to a screen reader');
+  ok(/minHeight: touchTarget\.min/.test(ONB_CODE),
+    "and carries the app-wide 56pt floor - it sits above a form the user is "
+    + 'mid-way through, so a mis-tap costs them the session');
+}
+
+console.log('\n-- and the copy does not promise an escape from the flow --');
+{
+  // SCOPED TO THE CONTROL ITSELF, not a byte window around it. A window wide
+  // enough to catch the label also catches skipLabels and the step-2/3 skip
+  // styles, and then the assertion fails on code that is entirely correct.
+  // The block between signOutRow and its closing View IS the control.
+  const start = ONB_CODE.indexOf('<View style={styles.signOutRow}>');
+  ok(start > -1, 'ANCHOR: the sign-out row exists');
+  const block = ONB_CODE.slice(start, ONB_CODE.indexOf('</View>', start));
+
+  const visible = [...block.matchAll(/>([^<>{}]+)</g)]
+    .map((m) => m[1].trim()).filter(Boolean);
+  ok(JSON.stringify(visible) === JSON.stringify(['Log out']),
+    'the ONLY visible string in the control is "Log out", matching /demo. '
+    + 'Found: ' + JSON.stringify(visible));
+
+  // Since #208, _onboarding_in_flight returns True for ANY company-less user
+  // whatever the step, so signing back in returns them here. That is correct,
+  // and the copy must not suggest otherwise.
+  ok(!/[Ss]kip|[Ll]ater|[Ee]xit|[Aa]bandon/.test(block),
+    'no word in the control implies escaping the FLOW - this leaves the '
+    + 'SESSION, and a company-less user who signs back in lands here again');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');
