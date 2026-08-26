@@ -2176,16 +2176,22 @@ class WorkerCertification(BaseModel):
 # ==================== CERTIFICATION GATE LOGIC ====================
 
 # ── Cert type vocabularies ────────────────────────────────────────────────
-# SST types that name a SPECIFIC, legible class. A card whose class we could
-# read is one of these.
-SST_CLASS_TYPES = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR", "SST_TEMPORARY"}
-# The class was on the card but OCR could not read it. Recognized as "an SST
-# card is present" (satisfies the OSHA baseline) but NEVER as a valid,
-# class-confirmed credential — see the three-state gate below.
-SST_UNSPECIFIED = "SST_UNSPECIFIED"
-# Every value the gate treats as "a NYC SST card exists on this worker".
-RECOGNIZED_SST_TYPES = SST_CLASS_TYPES | {SST_UNSPECIFIED}
-OSHA_TYPES = {"OSHA_10", "OSHA_30", "OSHA_UNSPECIFIED"}
+#
+# DEFINED IN lib/cert_vocab.py, NOT HERE. This block held the canonical
+# four-member SST_CLASS_TYPES while lib/logbook/ll196.py and
+# lib/statistical_engine/score.py each carried a hardcoded THREE-member copy
+# that dropped SST_TEMPORARY — so a worker with a temporary card was admitted
+# at the gate and simultaneously counted "missing" on the LL196 attestation PDF.
+#
+# The definition moved BELOW both consumers rather than being imported upward:
+# server.py imports ll196 and score, so a lib module importing server would be
+# circular. Same names, same values, one address.
+from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
+    SST_CLASS_TYPES,
+    SST_UNSPECIFIED,
+    RECOGNIZED_SST_TYPES,
+    OSHA_TYPES,
+)
 
 
 

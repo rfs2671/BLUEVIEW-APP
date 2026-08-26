@@ -43,6 +43,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from lib.cert_vocab import SST_CLASS_TYPES
 from lib.server_http import ServerHttpClient
 from lib.statistical_engine.baselines import (
     compare_project_to_peers,
@@ -471,9 +472,15 @@ async def gather_score_inputs(
                     for c in certs:
                         if not isinstance(c, dict):
                             continue
-                        if c.get("type") not in (
-                            "SST_FULL", "SST_LIMITED", "SST_SUPERVISOR",
-                        ):
+                        # THE COPY IS GONE. This was a hardcoded
+                        # ("SST_FULL", "SST_LIMITED", "SST_SUPERVISOR") --
+                        # three members against the canonical four, dropping
+                        # SST_TEMPORARY. A temporary card is the SHORTEST-LIVED
+                        # SST credential, so it is the one most likely to lapse
+                        # unnoticed, which made this the worst place to drop it:
+                        # the expiring-soon count silently excluded exactly the
+                        # cards most likely to be expiring soon.
+                        if c.get("type") not in SST_CLASS_TYPES:
                             continue
                         exp = c.get("expiration_date")
                         if not exp:
