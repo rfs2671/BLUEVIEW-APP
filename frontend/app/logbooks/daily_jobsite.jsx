@@ -79,6 +79,7 @@ import {
 // recordFinalizeError RAISES that same banner, so a refusal taken here in the
 // foreground leaves the identical durable trace a background one does.
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+import { chooseEditableLog } from '../../src/utils/logbookEditable';
 // The app-wide OFFLINE discriminator — the same one settleFetch is built on.
 // "Offline" here has to mean what it means everywhere else: no response at all.
 import { isOfflineError, settleFetch } from '../../src/utils/offlineState';
@@ -550,8 +551,8 @@ export default function DailyJobsiteLog() {
       // locked original that shares (project, type, date).
       let builtCrews = [];
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
-      if (existing?.is_locked) { setLocked(true); markFinalized(_key); }
+      const { log: existing, readOnly } = chooseEditableLog(arr);
+      if (readOnly) { setLocked(true); markFinalized(_key); }
 
       if (existing) {
         setExistingLogId(existing.id || existing._id);

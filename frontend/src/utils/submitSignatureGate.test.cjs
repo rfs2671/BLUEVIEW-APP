@@ -266,9 +266,17 @@ ok(gateHits === 2, `the signature gate exists in BOTH endpoints (${gateHits} sit
 // too-short slice makes indexOf return -1 and the comparison below passes or
 // fails for the wrong reason, so the window is asserted to contain both
 // landmarks before they are compared.
+// SLICED AT THE FUNCTION'S END, not at a byte count. This was
+// `indexOf(...) + 6000` — a number equal to the distance to the landmark at
+// the moment it was written, so ANY insertion above silently moved the target
+// out of the window. Adding the filed-log guard to update_logbook did exactly
+// that: the behaviour this pins was untouched, the window simply ran out, and
+// it turned main red on a correct change.
+const updateStart = serverSrc.indexOf('async def update_logbook');
+const updateEnd = serverSrc.indexOf('\nasync def ', updateStart + 1);
 const updateFn = serverSrc.slice(
-  serverSrc.indexOf('async def update_logbook'),
-  serverSrc.indexOf('async def update_logbook') + 6000,
+  updateStart,
+  updateEnd > 0 ? updateEnd : serverSrc.length,
 );
 ok(updateFn.includes('SUBMIT_MISSING_CP_SIGNATURE') && updateFn.includes('update = {"updated_at"'),
   'the update_logbook window holds both the gate and the write it must precede');

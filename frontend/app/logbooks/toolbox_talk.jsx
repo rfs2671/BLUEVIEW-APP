@@ -24,6 +24,7 @@ import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 // recordFinalizeError RAISES that same banner, so a refusal taken here in the
 // foreground leaves the identical durable trace a background one does.
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+import { chooseEditableLog } from '../../src/utils/logbookEditable';
 import { isOfflineError } from '../../src/utils/offlineState';
 import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
 import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
@@ -275,10 +276,10 @@ export default function ToolboxTalkLog() {
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
       // locked original that shares (project, type, date).
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
+      const { log: existing, readOnly } = chooseEditableLog(arr);
 
       if (existing) {
-        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
+        if (readOnly) { setLocked(true); markFinalized(_key); }
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
         hydrate(d);
