@@ -63,14 +63,43 @@ ok(M.affirmationHintKey(null, false) === 'submitSignatureLoading',
   'a CP is never accused of being unsigned while his profile is still loading');
 ok(M.affirmationHintKey(null, true) === 'submitNeedsSignature',
   'nothing on file -> sign the pad');
-ok(M.affirmationHintKey({}, true) === 'submitNeedsAffirmation',
-  'something on file but unaffirmed -> AFFIRM it, a different tap');
-ok(M.affirmationHintKey({ paths: [], signerName: 'CP' }, true) === 'submitNeedsAffirmation',
-  'an inherited credential gets the affirm sentence, not the sign sentence');
+// INVERTED, AND THESE THREE ASSERTED THE DEFECT.
+//
+// They read:
+//
+//   affirmationHintKey({}, true)                      === 'submitNeedsAffirmation'
+//   affirmationHintKey({paths: [], signerName}, true)  === 'submitNeedsAffirmation'
+//   affirmationHintKey({}, true) !== affirmationHintKey(null, true)
+//
+// `{}` was picked as the fixture for "something on file". It is not something
+// on file — it is an empty object with no ink, the shape an old bundle wrote,
+// and calling it "unaffirmed" is what told a CP to "tap your signature above
+// to affirm it" over an empty pad. Worse, the pad then OFFERED Affirm, and
+// handleAffirm stamped `affirmed: true` onto nothing; the PDF printed
+// "✓ AFFIRMED for this document" in green over a blank DOB filing.
+//
+// `paths: []` is the same mistake: a confirmed signature always carries at
+// least one stroke, because canConfirm requires paths.length > 0.
+//
+// The INTENT below is unchanged and still right — a man looking at his own
+// signature must never be told he has none. It is now pinned with a fixture
+// that actually is one.
+const INHERITED = { paths: [[{ x: 1, y: 2 }]], signerName: 'CP', timestamp: '2026-08-19T15:01:10.726Z' };
+
+ok(M.affirmationHintKey({}, true) === 'submitNeedsSignature',
+  'an EMPTY object asks him to SIGN. There is no ink to affirm, and affirming '
+  + 'it would mint an attestation nobody made');
+ok(M.affirmationHintKey({ paths: [] }, true) === 'submitNeedsSignature',
+  'and so does an empty stroke list, for the same reason');
+ok(M.affirmationHintKey(INHERITED, true) === 'submitNeedsAffirmation',
+  'a REAL inherited credential gets the affirm sentence, not the sign sentence');
 // Telling a man looking at his own signature that he has no signature is how
 // he learns to ignore the hint.
-ok(M.affirmationHintKey({}, true) !== M.affirmationHintKey(null, true),
+ok(M.affirmationHintKey(INHERITED, true) !== M.affirmationHintKey(null, true),
   'the two states do not share one sentence');
+ok(M.affirmationHintKey({}, true) === M.affirmationHintKey(null, true),
+  'but an empty object and nothing DO — they are the same state, and treating '
+  + 'them as different is the whole defect');
 
 console.log('\n-- the renderer and the gate ask the same question --');
 const serverSrc = fs.readFileSync(
@@ -91,7 +120,10 @@ ok(/sig\.affirmed === true/.test(MOD_SRC),
 
 console.log('\n-- SignaturePad no longer owns a private copy --');
 const padSrc = fs.readFileSync(path.join(SRC, 'components', 'SignaturePad.js'), 'utf8');
-ok(/import \{ isAffirmedSignature \} from '\.\.\/utils\/signatureAffirmed'/.test(padSrc),
+// THE NAMED IMPORT, not the exact brace contents. This pinned
+// `{ isAffirmedSignature }` literally and broke when hasSignatureInk was
+// added to the same import — a syntax pin failing on a correct change.
+ok(/import \{[^}]*isAffirmedSignature[^}]*\} from '\.\.\/utils\/signatureAffirmed'/.test(padSrc),
   'the pad imports the shared predicate');
 ok(!/function sigIsAffirmed\(sig\) \{/.test(padSrc),
   'and its private definition is gone, not shadowing the shared one');

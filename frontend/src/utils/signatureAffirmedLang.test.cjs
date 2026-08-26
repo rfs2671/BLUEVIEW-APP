@@ -21,8 +21,33 @@
 const fs = require('fs');
 const path = require('path');
 
+const babel = require('@babel/core');
+
 const PAD = path.join(__dirname, '..', 'components', 'SignaturePad.js');
 const padSrc = fs.readFileSync(PAD, 'utf8');
+
+/**
+ * THE REAL hasSignatureInk, loaded rather than stubbed.
+ *
+ * handleAffirm now refuses on no ink, so the extracted body closes over that
+ * predicate. A stub here would let this harness pass while the shipped guard
+ * did something else — and "nothing here re-implements the logic under test"
+ * is the rule this file was written under.
+ */
+function loadSignatureAffirmed() {
+  const file = path.join(__dirname, 'signatureAffirmed.js');
+  const { code } = babel.transformSync(fs.readFileSync(file, 'utf8'), {
+    filename: file,
+    plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
+    configFile: false,
+    babelrc: false,
+  });
+  const mod = { exports: {} };
+  // eslint-disable-next-line no-new-func
+  new Function('module', 'exports', 'require', code)(mod, mod.exports, require);
+  return mod.exports;
+}
+const { hasSignatureInk } = loadSignatureAffirmed();
 
 let passed = 0, failed = 0;
 function ok(cond, label) {
@@ -56,6 +81,7 @@ function runHandler(body, closure) {
   const emitted = [];
   const env = {
     ...closure,
+    hasSignatureInk,
     onSignatureCapture: (sig) => emitted.push(sig),
     setSignatureData: () => {},
     setIsAffirmed: () => {},
@@ -145,12 +171,53 @@ ok(!/signatureData\??\.affirmedLang/.test(padSrc),
 ok(/const activeLang = lang \?\? padLang \?\? appLocale;/.test(padSrc),
   'activeLang resolves to a concrete locale, so affirmedLang is never undefined');
 {
+  // FIXTURE CORRECTED. This passed `signatureData: {}` and called it "an
+  // untouched pad". An untouched pad is exactly what handleAffirm now REFUSES:
+  // `{}` has no ink, and stamping affirmed onto it produced the attestation
+  // that printed "✓ AFFIRMED for this document" in green over a blank. The
+  // claim under test — affirmedLang is a concrete locale, never undefined — is
+  // unchanged, and is now made against a signature that exists.
   const emitted = runHandler(affirmBody, {
-    signatureData: {},
+    signatureData: { paths: [[1, 2]] },
     signerName: 'X',
     activeLang: 'en',            // the resolved default
   });
-  ok(emitted[0].affirmedLang === 'en', 'an untouched pad records "en", not undefined');
+  ok(emitted[0].affirmedLang === 'en', 'a resolved default records "en", not undefined');
+}
+
+// ── 5. an inkless signature is never affirmed ──────────────────────────────
+// The guard, executed against the shipped handler rather than read out of it.
+{
+  const emitted = runHandler(affirmBody, {
+    signatureData: {},
+    signerName: 'X',
+    activeLang: 'en',
+  });
+  ok(emitted.length === 0,
+    'handleAffirm emits NOTHING for an empty signature. It used to emit '
+    + '{ signerName, timestamp, affirmed: true, affirmedAt, affirmedLang } — '
+    + 'affirmed, and containing no signature');
+}
+{
+  const emitted = runHandler(affirmBody, {
+    signatureData: { paths: [] },
+    signerName: 'X',
+    activeLang: 'en',
+  });
+  ok(emitted.length === 0, 'nor for an empty stroke list');
+}
+{
+  // Unchanged behaviour, pinned so the guard cannot be widened by accident: a
+  // real inherited credential is still affirmable, which is the entire point
+  // of the Affirm button.
+  const emitted = runHandler(affirmBody, {
+    signatureData: { paths: [[1, 2]], signerName: 'Roy', timestamp: '2026-08-19T15:01:10.726Z' },
+    signerName: 'Roy',
+    activeLang: 'en',
+  });
+  ok(emitted.length === 1 && emitted[0].affirmed === true,
+    'and a REAL inherited credential still affirms — the guard refuses empty '
+    + 'signatures, not inherited ones');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

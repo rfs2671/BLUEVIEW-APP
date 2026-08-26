@@ -80,7 +80,10 @@ function ok(cond, label) {
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
 
-ok(/import \{ isAffirmedSignature \} from '\.\.\/utils\/signatureAffirmed'/.test(PAD_SRC),
+// THE NAMED IMPORT, not the exact brace contents. This pinned
+// `{ isAffirmedSignature }` literally and broke when hasSignatureInk was
+// added to the same import — a syntax pin failing on a correct change.
+ok(/import \{[^}]*isAffirmedSignature[^}]*\} from '\.\.\/utils\/signatureAffirmed'/.test(PAD_SRC),
   'SignaturePad imports the shared predicate rather than owning a copy');
 ok(/const sigIsAffirmed = isAffirmedSignature;/.test(PAD_SRC),
   'and its local name is an ALIAS, so every use in the pad is the shared rule');
