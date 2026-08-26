@@ -132,7 +132,9 @@ def _payload(log_type=IMMEDIATE, date=DATE, status="draft", signed=True):
     return LogbookCreate(
         project_id=PROJECT_ID, log_type=log_type, date=date,
         data={"note": "x"},
-        cp_signature={"image": "data:image/png;base64,iVBOR"} if signed else None,
+        cp_signature=({"image": "data:image/png;base64,iVBOR",
+                       "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"}
+                      if signed else None),
         cp_name="Carl CP" if signed else None,
         status=status,
     )

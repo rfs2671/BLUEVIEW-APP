@@ -231,16 +231,24 @@ class ScopeOfThisChange(unittest.TestCase):
         i = self.SRC.index("async def update_logbook(")
         return self.SRC[i:self.SRC.index("async def _purge_finalized_photo_base64", i)]
 
-    def test_no_affirmation_enforcement_was_added(self):
-        """Sequenced separately and deliberately. If this fails, enforcement
-        landed in the wrong PR."""
-        setops, written = _call(
-            {**DRAFT, "cp_signature": INHERITED},
-            {"data": {"x": 1}, "status": "submitted", "cp_signature": INHERITED},
-        )
-        self.assertTrue(written,
-                        "an unaffirmed submit was refused -- that is a "
-                        "different PR")
+    def test_affirmation_enforcement_HAS_now_landed(self):
+        """INVERTED, DELIBERATELY, AND THIS TEST DID ITS JOB.
+
+        It was written to pin that the filed-log guard's PR did NOT add
+        affirmation enforcement -- the two were sequenced apart on purpose. It
+        failed the moment enforcement landed, which is exactly what a scope pin
+        is for. The assertion is inverted rather than deleted so the pairing
+        stays visible: this file's guard is about REWRITING a filed log, the
+        refusal below is about SUBMITTING one unaffirmed, and they are
+        different rules that happen to meet on the same handler.
+        """
+        with self.assertRaises(HTTPException) as c:
+            _call(
+                {**DRAFT, "cp_signature": INHERITED},
+                {"data": {"x": 1}, "status": "submitted",
+                 "cp_signature": INHERITED},
+            )
+        self.assertEqual(c.exception.detail, {"code": "SUBMIT_MISSING_CP_SIGNATURE"})
 
     def test_the_existing_lock_423_is_untouched(self):
         body = self._body()

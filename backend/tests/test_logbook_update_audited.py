@@ -159,10 +159,12 @@ class WhatTheEntryHasToCarry(unittest.TestCase):
         # A signature is present because the server already refuses a submit
         # without one (SUBMIT_MISSING_CP_SIGNATURE). Unaffirmed, which is the
         # production shape and which that guard admits.
+        # AFFIRMED: the submit gate refuses an unaffirmed one now, so a
+        # fixture that has to REACH the audit call must carry a real signature.
         call = _run({"status": "submitted"},
                     {"_id": "lb1", "log_type": "preshift_signin",
                      "date": "2026-08-25", "status": "submitted",
-                     "cp_signature": {"affirmedLang": "en"}})
+                     "cp_signature": {"affirmed": True}})
         self.assertEqual(call[4]["log_type"], "preshift_signin")
         self.assertEqual(call[4]["date"], "2026-08-25")
 
@@ -177,23 +179,29 @@ class NothingElseChanged(unittest.TestCase):
         i = self.SRC.index("async def update_logbook(")
         return self.SRC[i:self.SRC.index("async def _purge_finalized_photo_base64", i)]
 
-    def test_an_unaffirmed_submit_is_still_accepted(self):
-        """DELIBERATE. Refusing it is a behaviour change with a live blast
-        radius on an operating jobsite and belongs in its own PR. If this test
-        ever fails, enforcement landed -- confirm that was intended."""
-        call = _run(
-            {"status": "submitted"},
-            {"_id": "lb1", "status": "submitted", "cp_signature": {"affirmedLang": "en"}},
-        )
-        self.assertIsNotNone(call, "the request was refused, not merely audited")
-        self.assertIs(call[4]["affirmed"], False)
+    def test_an_unaffirmed_submit_is_NOW_refused(self):
+        """INVERTED. It read "enforcement landed -- confirm that was intended".
+        It has, and it was: both submit gates now call _is_affirmed_signature
+        instead of testing presence.
 
-    def test_no_affirmation_refusal_was_added_to_this_handler(self):
+        The audit entry still records `affirmed` off the STORED doc, which is
+        what the assertions below cover. This one only pins that the refusal
+        exists, so the two changes cannot be confused for each other."""
+        from fastapi import HTTPException as _HTTPException
+        with self.assertRaises(_HTTPException) as c:
+            _run(
+                {"status": "submitted"},
+                {"_id": "lb1", "status": "submitted",
+                 "cp_signature": {"affirmedLang": "en"}},
+            )
+        self.assertEqual(c.exception.detail, {"code": "SUBMIT_MISSING_CP_SIGNATURE"})
+
+    def test_the_affirmation_refusal_is_now_here(self):
+        """Also inverted. The audit entry and the refusal are separate changes
+        that landed in separate PRs; both live in this handler now, and the
+        audit entry reports the outcome of the one below it."""
         body = self._body()
-        self.assertNotIn("Onboarding", body)
-        self.assertNotIn("not _is_affirmed_signature", body,
-                         "an enforcement guard appeared in a PR that was "
-                         "scoped to auditing")
+        self.assertIn("not _is_affirmed_signature", body)
 
     def test_the_audit_call_is_after_the_write_not_before(self):
         """It reports what the document BECAME. Auditing before the write would

@@ -10,8 +10,17 @@ status=draft) then Submit — and because the log already exists by then, Submit
 arrives as a PUT. A gate on create alone would never see the path the CP
 actually walks.
 
-WHAT THIS GATE DOES NOT DO — stated here because the previous round's tests hid
-exactly this. It is a PRESENCE check, matching the finalize gate. Every fixture
+IT IS AN AFFIRMATION CHECK, NOT A PRESENCE CHECK. It used to be the latter --
+`if not data.cp_signature` / `if not _eff_sig` -- and `not {}` is False, so
+`cp_signature: {}` satisfied it while every document it signed printed
+"UNAFFIRMED — inherited signature" on the PDF. A populated inherited credential
+passed comfortably: that is how 65 submitted logs on one project came to carry
+a signature that attests to nothing. Both sites now call
+_is_affirmed_signature, the SAME predicate the PDF renderer, the EOD sweep and
+generate_combined_report already ask.
+
+WHAT THIS GATE STILL DOES NOT DO — stated here because the previous round's
+tests hid exactly this. Every fixture
 below is the REAL payload its form produces when untouched, read off each
 form's `const data = {...}` and its initial useState. Those payloads are
 non-empty DICTS full of blank VALUES, so SUBMIT_EMPTY_LOG does not fire for any
@@ -118,7 +127,20 @@ DAILY_JOBSITE_UNTOUCHED = {
     "equipment_on_site": {}, "checklist_items": {}, "observations": [],
 }
 
-_SIG = {"paths": [[1, 2]], "signed_at": "2026-08-09T12:00:00Z"}
+# AFFIRMED. The gate no longer asks whether a signature is PRESENT -- see
+# the docstring. This fixture stands for a CP who signed and affirmed THIS
+# document, which is the only thing that now passes.
+_SIG = {"paths": [[1, 2]], "signed_at": "2026-08-09T12:00:00Z",
+        "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"}
+
+# The shape production actually held: an inherited profile credential.
+# Populated -- paths, a signer, a timestamp -- and affirmed for NOTHING.
+# `not {}` and `not <this>` are both False, which is how it passed the
+# presence gate while every document it signed printed "UNAFFIRMED".
+_INHERITED_SIG = {
+    "paths": [[1, 2]], "signerName": "Roy Fishman",
+    "timestamp": "2026-08-19T15:01:10.726Z", "affirmedLang": "en",
+}
 
 
 class _Result:

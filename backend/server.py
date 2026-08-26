@@ -17818,7 +17818,22 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_EMPTY_LOG"},
             )
-        if not data.cp_signature:
+        # AFFIRMED, NOT MERELY PRESENT. This asked `if not data.cp_signature`,
+        # which refuses None and {} (in PYTHON `not {}` is True) and accepts
+        # anything with a key in it. What walked through was the POPULATED
+        # inherited credential: paths, a signer name, a timestamp from the day
+        # he last affirmed something else -- everything except an affirmation
+        # of the document being filed. 65 submitted logs carry it, and every
+        # one prints "UNAFFIRMED - inherited signature" on its PDF.
+        #
+        # (The `!{}` reading that let an EMPTY object through is the JS half of
+        # this, on the client gates -- see signatureAffirmed.js. Different
+        # language, different truthiness, same hole one level up.)
+        #
+        # _is_affirmed_signature is the SINGLE definition, already asked by the
+        # PDF renderer, the EOD sweep and generate_combined_report. The gate now
+        # asks the same question those three do, instead of a weaker one.
+        if not _is_affirmed_signature(data.cp_signature):
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
             )
@@ -18121,7 +18136,15 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_EMPTY_LOG"},
             )
-        if not _eff_sig:
+        # AFFIRMED, NOT MERELY PRESENT -- see create_logbook above. This is
+        # the path the CP actually walks (Save Draft, then Submit arrives here
+        # as a PUT), so a gate on create alone would never see it.
+        #
+        # THE REPAIR PATH IS UNAFFECTED, and that is why the predicate reads
+        # _eff_sig. A CP fixing one of the existing unaffirmed rows posts a
+        # cp_signature with affirmed true and no data; _eff_sig is that new
+        # signature, it passes, and the row is repaired.
+        if not _is_affirmed_signature(_eff_sig):
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
             )
