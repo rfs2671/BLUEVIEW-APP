@@ -64,7 +64,7 @@ import GlassButton from '../src/components/GlassButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import apiClient, { onboardingAPI } from '../src/utils/api';
 import InfoTooltip from '../src/components/InfoTooltip';
 import {
@@ -112,7 +112,7 @@ const STEP_META = {
 export default function OnboardingScreen() {
   const router = useRouter();
   const toast = useToast();
-  const { user, isAuthenticated, isLoading: authLoading, validateSession } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, validateSession, logout } = useAuth();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
 
@@ -697,6 +697,41 @@ export default function OnboardingScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
+          {/* THE WAY OUT OF THE SESSION — not out of the flow.
+
+              Onboarding force-routes on every authed page, and until now it
+              was the ONLY confined state in the app with no sign-out. The site
+              device has one, Inspector Mode has one (its comment says "/login
+              stays reachable so a logout is still possible"), the CP reaches
+              one through Settings, and /demo renders this exact control. A
+              user who wanted to abandon setup or switch accounts had to clear
+              site data.
+
+              THE GUARD ALREADY PERMITS /login — `pathname !== '/login'` is in
+              the redirect condition. What made it unreachable is that
+              login.jsx evicts an authenticated user immediately, so typing the
+              URL bounced /login -> / -> /onboarding. Clearing the session is
+              what makes /login stick, which is why the fix is this control and
+              not a change to the guard.
+
+              IT DOES NOT ESCAPE THE FLOW, and the copy must not imply it does.
+              Since #208 _onboarding_in_flight returns True for ANY company-less
+              user whatever the step, so signing back in returns them here —
+              correctly, they still have no company. This is "leave the
+              session", never "skip setup". The word `skip` is deliberately
+              absent: step 1 has no skip, and this must not become one. */}
+          <View style={styles.signOutRow}>
+            <Pressable
+              onPress={logout}
+              hitSlop={8}
+              style={styles.signOutBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Log out"
+            >
+              <Text style={styles.signOutText}>Log out</Text>
+            </Pressable>
+          </View>
+
           {renderProgress()}
           <GlassCard style={styles.card}>
             {renderStepHeader()}
@@ -713,6 +748,19 @@ function buildStyles(colors, isDark) {
   return StyleSheet.create({
     safe: { flex: 1, backgroundColor: 'transparent' },
     scroll: { flex: 1 },
+    signOutRow: { alignItems: 'flex-end', marginBottom: spacing.sm },
+    signOutBtn: {
+      // The app-wide 56pt floor, not demo.jsx's bare hitSlop. This sits above
+      // a form a user is mid-way through; a mis-tap costs them the session.
+      minHeight: touchTarget.min,
+      justifyContent: 'center',
+      paddingHorizontal: spacing.sm,
+    },
+    signOutText: {
+      color: colors.text.muted,
+      fontSize: typography.sizes.dense,
+      fontWeight: '500',
+    },
     scrollContent: {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.lg,
