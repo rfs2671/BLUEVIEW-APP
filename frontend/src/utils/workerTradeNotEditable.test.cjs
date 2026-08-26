@@ -90,15 +90,23 @@ console.log('\n-- the READ path is untouched, deliberately --');
     + 'them, and hiding a value that IS stored would be a different defect');
 }
 
-console.log('\n-- the copy fix has NOT landed, and this is not it --');
+console.log('\n-- the copy fix HAS landed --');
 {
-  // INVERT WHEN THE COPY FIX LANDS. The card still asserts absence where the
-  // truth is "set per project". Sequenced separately and deliberately: this PR
-  // closes a write, that one changes a sentence.
-  ok(/No trade specified/.test(src) && /No company/.test(src),
-    'the card still reads "No trade specified" / "No company" — INVERT THIS '
-    + 'when the copy fix lands, so a write fix and a copy fix are never '
-    + 'mistaken for one another');
+  // INVERTED, AND IT DID ITS JOB. It read:
+  //
+  //   ok(/No trade specified/.test(src) && /No company/.test(src),
+  //     'the card still reads ... INVERT THIS when the copy fix lands')
+  //
+  // pinning that closing the WRITE had not quietly changed what the card SAYS.
+  // The two were sequenced apart on purpose: one closes a path that wrote a
+  // per-project fact onto the worker document, the other stops the screen
+  // reporting a designed absence as missing data. Both have landed, so the
+  // assertion inverts rather than being deleted and the pairing stays visible.
+  ok(!/No trade specified/.test(src) && !/No company/.test(src),
+    'the card no longer asserts absence. "No company" is what sent an admin to '
+    + 'the edit form to write the worker-level copy this file exists to forbid');
+  ok(/pairingLine\(/.test(src),
+    'it states the rule through the shared copy instead');
 }
 
 console.log('\n-- the server allowlist agrees --');

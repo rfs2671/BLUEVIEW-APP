@@ -51,6 +51,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
 import { certLabel, certExpiration } from '../../src/utils/oshaLogModel';
+import { pairingLine, hasPairing } from '../../src/utils/workerPairingCopy';
 import { settleFetch, failureDetail } from '../../src/utils/offlineState';
 
 /**
@@ -104,7 +105,25 @@ export default function WorkerDetailScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { id: workerId } = useLocalSearchParams();
+  // THE PROJECT CONTEXT, forwarded by whoever navigated here.
+  //
+  // This route has no project segment, and WorkerResponse cannot fill trade or
+  // company -- its docstring says why: "a worker with pairings on two projects
+  // has two companies, and this endpoint has no project context to choose
+  // between them." The caller in workers.jsx is holding a CHECK-IN row, which
+  // carries the pairing the server already resolved through
+  // _get_worker_project_trade, so it passes it through rather than the screen
+  // guessing or the endpoint being widened.
+  //
+  // ABSENT IS THE NORMAL CASE. Every other entry point has no project, and the
+  // copy handles that by stating the rule instead of asserting a deficiency.
+  const {
+    id: workerId,
+    projectId: routeProjectId,
+    projectName: routeProjectName,
+    trade: routeTrade,
+    company: routeCompany,
+  } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
@@ -190,6 +209,21 @@ export default function WorkerDetailScreen() {
     || (cert?.card_number ? `Card ${cert.card_number}` : '')
     || 'Certification (no type recorded)'
   );
+  /**
+   * PREFER THE FORWARDED PAIRING, and never fall back to the worker document.
+   *
+   * `trade` / `company` state is still read off the worker doc by applyWorker,
+   * because a LEGACY row may carry them and hiding a stored value is a
+   * different defect. But they are not used as a fallback here:
+   * _get_worker_project_trade refuses the same fallback for the same reason --
+   * "a value from another project is worse than no value, because it is
+   * silently wrong instead of visibly absent."
+   */
+  const workerPairing = pairingLine({
+    trade: routeTrade,
+    company: routeCompany,
+    projectName: routeProjectName,
+  });
 
   const flaggedCerts = (certifications || []).filter(
     (c) => c && (c.needs_review || c.review_reason)
@@ -585,12 +619,20 @@ export default function WorkerDetailScreen() {
             ) : (
               <View style={s.profileInfo}>
                 <Text style={s.workerName}>{name}</Text>
-                <Text style={s.workerTrade}>{trade || 'No trade specified'}</Text>
+                {/*
+                  ONE LINE, and it never says "No company".
                 
-                <View style={s.infoRow}>
-                  <Building2 size={16} color={colors.text.muted} />
-                  <Text style={s.infoText}>{company || 'No company'}</Text>
-                </View>
+                  These were two reads off the WORKERS document -- fields
+                  nothing writes, because a trade belongs to the
+                  {worker, project} pair. "No trade specified" reported a
+                  designed absence as missing data, which is what sent an admin
+                  to the edit form to write the worker-level copy the design
+                  forbids.
+                
+                  The Building2 row goes with it: an icon for a company we are
+                  not naming is decoration on an absence.
+                */}
+                <Text style={s.workerTrade}>{workerPairing}</Text>
                 
                 {oshaNumber ? (
                   <View style={s.infoRow}>
