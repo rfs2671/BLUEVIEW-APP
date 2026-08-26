@@ -608,6 +608,105 @@ a check that cannot match anything and reports success.
 
 ---
 
+## Three process failures from 2026-08-25, and the pattern under the third
+
+Logged at the operator's instruction. The first two are mine and are already
+corrected in habit; the third is a property of the test suite and is NOT yet
+fixed - the sweep below is the inventory, deliberately without changes.
+
+### 1. Never pipe a test command into `tail` before a commit
+
+```
+python -m pytest tests/ -q | tail -2 && git commit ...
+```
+
+`&&` reads the exit code of `tail`, which is 0 whatever pytest did. That
+chain pushed a commit with 16 failing subtests while appearing to guard
+against exactly that.
+
+Use `${PIPESTATUS[0]}`, or run the command bare and read its own status.
+
+### 2. Never merge on a partial view of checks
+
+Read every check by name. `gh pr checks --watch | tail -4` shows four lines
+of eight and the missing four are not sorted to the bottom - they are
+wherever the API returned them.
+
+THREE MERGES PAST A RED CHECK THIS SESSION:
+
+  #201  find-bare-jsx-text failed on the PR run at 00:05:57, naming all four
+        bare `//` lines. Merged anyway, then PUBLISHED - the login and
+        register screens rendered a source comment as visible copy on
+        production devices until the rollback.
+  #214  frontend suite (node) was red; `tail -4` did not include it. Left
+        main red until #215.
+  the 16-subtest push above, which is item 1 wearing a different hat.
+
+### 3. Tests that pin POSITION or SYNTAX rather than BEHAVIOUR
+
+FIVE broke this session on changes that did not touch what they guard:
+
+  test_409_when_onboarding_completed   fixture pinned an impossible state
+                                       (completed + no company)
+  test_advance_step_via_patch          asserted the screen CONTAINS
+                                       "skipped" - it pinned the defect
+  _setup_client                        hardcoded company_id=None
+  stepper/dailyJobsiteStepper          matched `<AnimatedBackground>`
+                                       exactly; a new prop broke both
+  test_submit_no_content_gate          `fn[:5000]` / `fn[:6000]`
+  submitSignatureGate.test.cjs         `indexOf(...) + 6000` - this one
+                                       turned main red
+
+THE WINDOWED-SLICE VARIANT IS THE WORST OF THEM, because the number is
+invisible as a dependency: it equals the distance to the landmark at the
+moment it was written, so any insertion above silently moves the target out
+and the failure names something unrelated to the change.
+
+THE FIX, WHERE IT HAS BEEN APPLIED, is to slice at a STRUCTURAL boundary -
+the next top-level `def`, or the next sibling key - rather than a byte count.
+See `_fn_body()` in test_submit_no_content_gate.py and the equivalent in
+submitSignatureGate.test.cjs. Both keep the identical assertion.
+
+#### Sweep: 31 windowed source slices across 17 files, unfixed
+
+Response-body truncation in assertion MESSAGES (`r.text[:300]`) is excluded -
+that is formatting and is fine. These are windows an assertion then searches:
+
+```
+backend/tests/test_company_less_tenancy.py            :137 :156 :180  (mine)
+backend/tests/test_report_six_defects.py              :229 :358 :396 :437 :623 :641
+backend/tests/test_worker_response_model.py           :85 :120 :138
+backend/tests/test_eastern_date_helper.py             :117 :123 :135
+backend/tests/test_startup_seed_guard.py              :94 :99
+backend/tests/test_email_consolidation.py             :171 :193
+backend/tests/test_activity_chips_endpoint.py         :408
+backend/tests/test_logbook_write_guards.py            :311
+backend/tests/test_onboarding_skip_trap.py            :193  (mine)
+backend/tests/test_pending_deletion_and_purge_scope.py :199
+backend/tests/test_report_print_width.py              :81
+backend/tests/test_workers_tenant_isolation.py        :425  (mine)
+frontend/src/utils/authScreenFold.test.cjs            :127  (mine)
+frontend/src/utils/dailyJobsiteModel.test.cjs         :825
+frontend/src/utils/onboardingSkipTrap.test.cjs        :99 :118  (mine)
+frontend/src/utils/rowSaveState.test.cjs              :149
+```
+
+THREE OF THE 31 ARE NOT THE DEFECT and should be left alone:
+
+  dailyJobsiteStepper.test.cjs:533-534  computes the block end by SEARCHING
+                                        for the next sibling key, then
+                                        slices. Structural already.
+  test_worker_response_model.py:120     anchored to a landmark
+                                        (`fn.index("return NfcTagInfo")`)
+                                        with padding - partly structural.
+  find-bare-jsx-text.cjs:134            truncates a DISPLAY snippet, not an
+                                        assertion window. Not a test pin.
+
+Six of the remaining 28 are mine, from this session. Marked above so the
+inventory is not read as someone else's debt.
+
+---
+
 ## ENHANCEMENT (FUTURE, LOW) — 2026-08-01 — optional per-worker signature on pre-shift sign-in
 
 **Not a compliance gap — rigor only.** The pre-shift sign-in is compliant as-is:
