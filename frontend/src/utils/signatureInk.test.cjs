@@ -196,13 +196,31 @@ console.log('\n-- the PDF branch this closes --');
     + 'Python either');
 }
 
-console.log('\n-- scope: the server query is untouched --');
+console.log('\n-- the server half has landed, and asks the same question --');
 {
+  // INVERTED, AND IT DID ITS JOB. It read:
+  //
+  //   ok(server.includes('"cp_signature": {"$ne": None},'),
+  //     'the attestation_gaps query still classifies {} as unaffirmed')
+  //
+  // pinning that a frontend-only PR had not quietly changed the server. The
+  // server half landed next, deliberately and second, so the assertion is
+  // inverted rather than deleted — the two halves are one rule and the pairing
+  // stays visible.
   const server = fs.readFileSync(path.join(REPO, 'backend', 'server.py'), 'utf8');
-  ok(server.includes('"cp_signature": {"$ne": None},'),
-    'the attestation_gaps query still classifies {} as unaffirmed. INVERT WHEN '
-    + 'THE SERVER HALF LANDS — it is sequenced separately and deliberately, and '
-    + 'this pins that a frontend-only PR did not quietly change it');
+  ok(!server.includes('"cp_signature": {"$ne": None},'),
+    'the attestation_gaps query no longer selects on presence');
+  ok(/def _has_signature_ink\(sig\) -> bool:/.test(server),
+    'the server owns the mirror predicate. THE INVARIANT signatureAffirmed.js '
+    + 'states: if one changes the other changes with it, or the app gates on '
+    + 'one rule and prints another');
+  ok(/_SIGNATURE_HAS_INK_CLAUSES/.test(server),
+    'and a query form of it, so a selector never hauls signature blobs across '
+    + 'the wire to ask what Mongo can answer');
+  ok(/"\$nor": _SIGNATURE_HAS_INK_CLAUSES/.test(server),
+    'THE THIRD SELECTOR. Requiring ink in the unaffirmed query is only half — '
+    + 'without this, an inkless toolbox_talk or a daily_jobsite dated today '
+    + 'matches no selector and vanishes from attestation_gaps entirely');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
