@@ -26775,6 +26775,51 @@ async def get_company_roster(current_user=Depends(get_current_user)):
     return out
 
 
+async def _annotation_for_user(annotation_id: str, current_user: dict) -> dict:
+    """Load an annotation and prove the caller may act on its PROJECT.
+
+    THE HOLE THIS CLOSES. Three routes looked an annotation up by id alone:
+
+        PUT    /annotations/{id}/reply     no check of any kind
+        PUT    /annotations/{id}/resolve   creator / recipient / ROLE only
+        DELETE /annotations/{id}           creator / ROLE only
+
+    `is_admin = user_role in ["admin", "owner"]` is a ROLE test with no tenant
+    in it, so an admin of ANY company could resolve or delete another company's
+    plan note, and reply needed nothing at all beyond a token. The annotation
+    id was the only thing standing between a caller and another tenant's
+    document.
+
+    THE PROJECT IS THE SCOPE, not company_id. Every annotation stores a
+    project_id (create requires one), and _assert_project_access is the same
+    rule require_project_access wraps -- it is used directly here because the
+    project id comes off the DOCUMENT, not the path, so FastAPI has nothing to
+    resolve a dependency from. Same rule, same 403, one address.
+
+    It also subsumes the company check the reviewer asked for: project_access_ok
+    compares company on the project, so a cross-tenant admin fails here without
+    a second, hand-rolled `if company_id and ...` -- the conditional shape that
+    passes for a company-less caller and is open on 24 other routes.
+
+    FAILS CLOSED ON A PROJECTLESS ROW. A legacy annotation with no project_id
+    cannot be scoped, so it cannot be acted on. Create has required project_id
+    for as long as this endpoint has existed; if such a row is ever found, it
+    needs a migration, not an exception here.
+    """
+    annotation = await db.document_annotations.find_one(
+        {"_id": to_query_id(annotation_id), "is_deleted": {"$ne": True}}
+    )
+    if not annotation:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+    project_id = str(annotation.get("project_id") or "")
+    if not project_id:
+        raise HTTPException(
+            status_code=403, detail="Not authorized for this annotation",
+        )
+    await _assert_project_access(project_id, current_user)
+    return annotation
+
+
 @api_router.post("/annotations")
 async def create_annotation(data: dict, background_tasks: BackgroundTasks, current_user=Depends(get_current_user)):
     """Create a document annotation (plan note).
@@ -26793,6 +26838,15 @@ async def create_annotation(data: dict, background_tasks: BackgroundTasks, curre
 
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
+    # THE CALLER MUST BE ABLE TO REACH THE PROJECT HE NAMES. This route took
+    # project_id from the BODY and never checked it, so any authenticated user
+    # could plant a note on any project in any tenant -- and the doc below then
+    # stamps company_id from the CALLER, so the row would carry his tenancy
+    # while pointing at someone else's project.
+    #
+    # _assert_project_access, not require_project_access: the id is in the body,
+    # so there is no path parameter for a dependency to resolve. Same rule.
+    await _assert_project_access(project_id, current_user)
     # Prefer file_id when present — it's stable across renames / R2 keys
     # (direct-upload files have empty dropbox_path).
     if file_id:
@@ -26889,6 +26943,17 @@ async def add_annotation_reply(annotation_id: str, data: dict, background_tasks:
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
 
+    # HAD NO CHECK OF ANY KIND. A valid token plus an annotation id was enough
+    # to append to any thread in any tenant -- the only one of the five
+    # annotation routes with no authorization at all.
+    #
+    # PROJECT ACCESS, NOT CREATOR-ONLY, and that is deliberate. A thread is the
+    # collaborative half of a plan note: the creator asks a question and someone
+    # else answers it, so restricting replies to the creator or the named
+    # recipients would break the feature to close the hole. Everyone who can
+    # open the drawing can answer a note on it; nobody else can see it at all.
+    await _annotation_for_user(annotation_id, current_user)
+
     user_id = current_user.get("id") or str(current_user.get("_id"))
     now = datetime.now(timezone.utc)
 
@@ -26919,11 +26984,12 @@ async def resolve_annotation(annotation_id: str, current_user=Depends(get_curren
     user_id = current_user.get("id") or str(current_user.get("_id"))
     user_role = current_user.get("role")
 
-    annotation = await db.document_annotations.find_one(
-        {"_id": to_query_id(annotation_id), "is_deleted": {"$ne": True}}
-    )
-    if not annotation:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+    # TENANCY FIRST. The lookup below was by annotation id alone, and the
+    # `is_admin` branch is a ROLE test with no tenant in it -- so an admin of
+    # any company could resolve any company's note. This scopes the row to a
+    # project the caller can reach BEFORE the ownership rule is applied; the
+    # ownership rule then decides which of those people may resolve it.
+    annotation = await _annotation_for_user(annotation_id, current_user)
 
     is_creator = annotation.get("created_by") == user_id
     is_recipient = user_id in (annotation.get("recipients") or [])
@@ -26946,11 +27012,10 @@ async def delete_annotation(annotation_id: str, current_user=Depends(get_current
     user_id = current_user.get("id") or str(current_user.get("_id"))
     user_role = current_user.get("role")
 
-    annotation = await db.document_annotations.find_one(
-        {"_id": to_query_id(annotation_id), "is_deleted": {"$ne": True}}
-    )
-    if not annotation:
-        raise HTTPException(status_code=404, detail="Annotation not found")
+    # TENANCY FIRST, same as resolve above: `is_admin` is a role test with no
+    # tenant in it, so a cross-tenant admin could soft-delete another company's
+    # plan note. Project access is checked before ownership is considered.
+    annotation = await _annotation_for_user(annotation_id, current_user)
 
     is_creator = annotation.get("created_by") == user_id
     is_admin = user_role in ["admin", "owner"]
