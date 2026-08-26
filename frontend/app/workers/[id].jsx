@@ -268,14 +268,17 @@ export default function WorkerDetailScreen() {
   const handleSave = async () => {
     setSaving(true);
     try {
+      // NO trade, NO company. They belong to the {worker, project} pair and
+      // live in worker_project_trades; a worker-level copy is what bled across
+      // jobs. The server no longer accepts them either — ALLOWED_WORKER_FIELDS
+      // dropped both — so sending them would be a silent no-op, which is the
+      // worse failure: the admin would be told "Worker information updated".
       await updateWorker(workerId, {
         name,
-        trade,
-        company,
         osha_number: oshaNumber,
         certifications,
       });
-      setWorker({ ...worker, name, trade, company, oshaNumber });
+      setWorker({ ...worker, name, oshaNumber });
       setEditMode(false);
       toast.success('Saved', 'Worker information updated');
     } catch (error) {
@@ -476,19 +479,19 @@ export default function WorkerDetailScreen() {
                   placeholder="Full Name"
                   leftIcon={<User size={18} color={colors.text.subtle} />}
                 />
-                <GlassInput
-                  value={trade}
-                  onChangeText={setTrade}
-                  placeholder="Trade"
-                  style={s.inputSpacing}
-                />
-                <GlassInput
-                  value={company}
-                  onChangeText={setCompany}
-                  placeholder="Company"
-                  leftIcon={<Building2 size={18} color={colors.text.subtle} />}
-                  style={s.inputSpacing}
-                />
+                {/*
+                  THE TRADE AND COMPANY INPUTS ARE GONE, and the payload with
+                  them. They wrote a worker-level copy of a value that belongs
+                  to the {worker, project} pair — the bleed worker_project_trades
+                  exists to prevent — and they sat directly under a card reading
+                  "No trade specified / No company", so the screen invited the
+                  forbidden write at the moment an admin was most motivated to
+                  make it.
+
+                  REMOVED RATHER THAN DISABLED. Leaving a field the server now
+                  ignores is worse than the write it replaced: the admin types a
+                  company, taps Save, and is told "Worker information updated".
+                */}
                 <GlassInput
                   value={oshaNumber}
                   onChangeText={setOshaNumber}
@@ -503,8 +506,9 @@ export default function WorkerDetailScreen() {
                     onPress={() => {
                       setEditMode(false);
                       setName(worker?.name || '');
-                      setTrade(worker?.trade || '');
-                      setCompany(worker?.company || '');
+                      // No trade/company reset: there are no inputs that could
+                      // have changed them. Resetting state the form cannot
+                      // touch would imply the fields are still editable.
                       setOshaNumber(worker?.osha_number || worker?.oshaNumber || '');
                     }}
                     style={s.cancelBtn}

@@ -12525,7 +12525,25 @@ async def update_worker(
     # could rename or re-phone a worker in another tenant. `company_id` is not
     # in ALLOWED_WORKER_FIELDS and stays out - moving a worker between tenants
     # is a separate, audited operation, not a field edit.
-    ALLOWED_WORKER_FIELDS = {"name", "phone", "trade", "company", "osha_number", "certifications", "emergency_contact", "emergency_phone", "notes"}
+    # TRADE AND COMPANY ARE NOT EDITABLE FIELDS ON A WORKER.
+    #
+    # They belong to the {worker, project} PAIR and live in
+    # worker_project_trades. register_and_checkin says so where it builds the
+    # document: "no `trade` / `company` here. Those are per-project and live
+    # in worker_project_trades; a worker-level copy is what bled across jobs."
+    #
+    # This allowlist admitted both, and the worker detail screen offered an
+    # admin two inputs for them -- directly under a card reading "No trade
+    # specified / No company". So the screen invited exactly the write the
+    # design forbids, at the moment an admin was most motivated to make it,
+    # and the result would have been a global value overriding nothing and
+    # contradicting every per-project pairing.
+    #
+    # Absent is the correct state. _get_worker_project_trade refuses to fall
+    # back to the worker document for the same reason: "a value from another
+    # project is worse than no value, because it is silently wrong instead of
+    # visibly absent."
+    ALLOWED_WORKER_FIELDS = {"name", "phone", "osha_number", "certifications", "emergency_contact", "emergency_phone", "notes"}
     update_data = {k: v for k, v in worker_data.items() if v is not None and k in ALLOWED_WORKER_FIELDS}
     update_data["updated_at"] = datetime.now(timezone.utc)
     
