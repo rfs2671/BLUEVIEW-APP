@@ -18058,6 +18058,39 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if _lock_target and _lock_target.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
 
+    # ── A FILED LOG'S CONTENT IS NOT REWRITABLE ─────────────────────────────
+    #
+    # THE 423 ABOVE CANNOT FIRE HERE. It keys on `is_locked`, and an END_OF_DAY
+    # log is not locked when it is submitted -- the sweep freezes it overnight,
+    # and only if affirmed. Between Submit and the sweep every daily narrative
+    # sits `status: submitted, is_locked: false` and PUT $set over `data`.
+    #
+    # Two daily_jobsite records at 588 Thomas were overwritten this way on
+    # 2026-08-25 (6a8c4acd, 6a8d867d) -- and the CP changed nothing. Opening the
+    # log dirties the form (hydrate sets fourteen fields, all in the autosave
+    # deps, no dirty tracking), the local autosave rewrites the draft, and
+    # syncPendingDrafts PUTs it at app startup with no user action in the path.
+    #
+    # THE PREDICATE IS THE STORED STATUS. Not the request's -- a draft being
+    # submitted sends data and status together and must pass. Not is_locked --
+    # that is the 423 above, and its absence is the defect.
+    #
+    # SCOPED TO `data`, WHICH IS LOAD-BEARING: 65 submitted logs carry an
+    # unaffirmed signature and the only remedy is the CP affirming, a
+    # cp_signature write with data.data None. A blanket refusal would lock out
+    # the repair for all 65 -- worse than the hole.
+    #
+    # 409 not 423 (423 says "locked"; this is not). Machine code follows the
+    # SUBMIT_EMPTY_LOG convention -- server names the condition, client owns the
+    # wording -- but not the SUBMIT_ prefix: this is not a submit gate, it fires
+    # on any data write to a filed log. The CP's next action is AMEND and the
+    # client needs a distinguishable code to say so.
+    if data.data is not None and (existing_lb or {}).get("status") == "submitted":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "FILED_LOG_DATA_IMMUTABLE"},
+        )
+
     # ── SUBMIT GATE ─────────────────────────────────────────────────────────
     # THE PRIMARY PATH, not a mirror of create_logbook's. The ordinary CP flow is
     # Save Draft (POST, status=draft) then Submit — and because the log now
