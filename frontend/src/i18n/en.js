@@ -85,6 +85,22 @@ export default {
     // above: the server names the condition, the client owns the wording.
     code_SUBMIT_EMPTY_LOG: 'This log is empty. Fill it in before submitting.',
     code_SUBMIT_MISSING_CP_SIGNATURE: 'This log is not signed. Sign it before submitting.',
+    // TWO REFUSALS, NOT ONE, and the difference is which tap fixes it.
+    //
+    // The server gate now asks whether the signature is AFFIRMED for this
+    // document, not merely present. A CP looking at his own signature on the
+    // screen and being told "this log is not signed" is being given the wrong
+    // instruction: his credential IS there, the affirmation of THIS record is
+    // what is missing, and the fix is Affirm rather than sign again. The pad
+    // already draws this distinction — affirmationHintKey returns
+    // submitNeedsAffirmation vs submitNeedsSignature for the same reason.
+    //
+    // SHIPPED BEFORE THE SERVER EMITS IT, deliberately. gateCopy() falls back
+    // to genericError for a code it does not know, so a server switching
+    // first would show "something went wrong" on every device that has not
+    // fetched this bundle — and the device still writing the bad shape is
+    // the one least likely to be current.
+    code_SUBMIT_SIGNATURE_NOT_AFFIRMED: 'Your signature is on this log but not affirmed for it. Tap your signature to affirm, then submit. You do not need to sign again.',
     // A safety orientation may be CREATED without a trade — the gate check-in
     // writes one that way, and a worker at the turnstile is never blocked for
     // an admin's unfinished roster. It may not be SUBMITTED without one: the
