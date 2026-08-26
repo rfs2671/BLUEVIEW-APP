@@ -18809,12 +18809,22 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     # unsigned_orientations — an honest deficiency, not a hard block. We return
     # the count (drives the badge) AND lightweight refs (log_type + date) so
     # the hub can deep-link the alert straight to a logbook that needs fixing.
+    #
+    # INK, NOT PRESENCE. This read `"cp_signature": {"$ne": None}`, and `{}` is
+    # not null in Mongo, so a row holding an EMPTY signature was reported as
+    # "signed but not affirmed" and the CP was told to open it and "tap your
+    # signature to affirm it. You do not need to sign again." There was no
+    # signature to tap. Worse, the pad then offered AFFIRM over an empty canvas
+    # and stamped `affirmed: True` onto nothing, which printed
+    # "✓ AFFIRMED for this document" in green on a DOB filing.
+    #
+    # An inkless row is UNSIGNED, and the third selector below claims it.
     unaffirmed_docs = await db.logbooks.find(
         {
             "project_id": project_id,
             "status": "submitted",
             "is_deleted": {"$ne": True},
-            "cp_signature": {"$ne": None},
+            "$or": _SIGNATURE_HAS_INK_CLAUSES,
             "cp_signature.affirmed": {"$ne": True},
         },
         {"log_type": 1, "date": 1},
@@ -18865,6 +18875,39 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         and not _is_affirmed_signature(d.get("cp_signature"))
     ]
 
+    # ── FILED WITH NO SIGNATURE AT ALL — the third selector ─────────────────
+    #
+    # WHY A THIRD AND NOT A WIDER SECOND. Requiring ink above removes inkless
+    # rows from `unaffirmed_docs`, and the stale pass cannot catch what falls
+    # out: it is scoped to END_OF_DAY types on a PAST date. So an inkless
+    # `toolbox_talk`, or a `daily_jobsite` dated today, would match neither
+    # selector and vanish from attestation_gaps entirely — a filed, unsigned DOB
+    # record with nothing on any screen pointing at it. Making a wrong label
+    # disappear is not the same as fixing it.
+    #
+    # DELIBERATELY UNSCOPED by type and by date. The stale pass is narrow
+    # because it mirrors what the freeze sweep declined to freeze, which is a
+    # statement about END_OF_DAY logs. This one is a different fact — a record
+    # was FILED with nothing on it — and that is equally true of an immediate
+    # type and equally true today.
+    #
+    # `$nor` over the same clauses, so the two halves of the ink rule cannot
+    # drift: whatever counts as ink above is exactly what fails to count here.
+    #
+    # cp_signature NULL IS INCLUDED, and correctly. A submitted log with no
+    # signature field is unsigned by the plainest reading, and the stale pass
+    # already surfaces exactly that for end-of-day rows. This extends the same
+    # treatment to the types and dates it could not reach.
+    inkless_filed_docs = await db.logbooks.find(
+        {
+            "project_id": project_id,
+            "status": "submitted",
+            "is_deleted": {"$ne": True},
+            "$nor": _SIGNATURE_HAS_INK_CLAUSES,
+        },
+        {"log_type": 1, "date": 1},
+    ).sort("date", -1).to_list(200)
+
     # ── ONE LIST, BECAUSE IT IS ONE PROBLEM ─────────────────────────────────
     #
     # The two sets above OVERLAP, and on a live site the overlap was total. A
@@ -18880,12 +18923,17 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     # signal; it reads as noise, and it is one reason three weeks passed.
     #
     # THE STATE IS PER ROW, not per card, because it is what the CP acts on:
-    #   unsigned    — nothing was ever put on it. He signs it.
-    #   unaffirmed  — a signature is present but was never affirmed FOR THIS
-    #                 document (an inherited one, or the `{}` an old bundle
-    #                 wrote). He opens it and affirms; re-signing is not the
-    #                 fix and telling him to sign would make him think the app
-    #                 lost the signature he already gave.
+    #   unsigned    — nothing was ever put on it. He signs it. INCLUDES the
+    #                 `{}` an old bundle wrote: an empty object is not a
+    #                 signature, and this comment used to file it under
+    #                 `unaffirmed` below, which is how a CP came to be told to
+    #                 "tap your signature to affirm it" over an empty pad.
+    #   unaffirmed  — REAL INK is present but was never affirmed FOR THIS
+    #                 document — an inherited credential. He opens it and
+    #                 affirms; re-signing is not the fix and telling him to sign
+    #                 would make him think the app lost the signature he already
+    #                 gave. The distinction is ink, and _has_signature_ink is
+    #                 the only thing that draws it.
     #
     # THE OLD FIELDS STAY. Bundles in the field read them, and this whole
     # incident exists because a two-week-old phone cannot take an OTA. Removing
@@ -18893,6 +18941,13 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     _gaps = {}
     for _ref in stale_unsigned_refs:
         _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
+    # The third selector, merged as UNSIGNED — the banner's existing sentence
+    # ("never signed — still open and still yours to finish") is already the
+    # right one for it, so this needs no new copy and no fourth state.
+    for _doc in inkless_filed_docs:
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if _lt and _dt:
+            _gaps[(_lt, _dt)] = "unsigned"
     for _doc in unaffirmed_docs:
         _lt, _dt = _doc.get("log_type"), _doc.get("date")
         if not _lt or not _dt:
@@ -19997,6 +20052,63 @@ def _is_affirmed_signature(sig) -> bool:
     changes with it, or the app gates on one rule and prints another.
     """
     return isinstance(sig, dict) and sig.get("affirmed") is True
+
+
+def _has_signature_ink(sig) -> bool:
+    """IS THERE ACTUALLY A MARK ON THIS SIGNATURE?
+
+    The second predicate, and the companion to the one above. Three places asked
+    "is there a signature OBJECT" when they meant "is there ink", and an object
+    is not ink -- `{}` is truthy in JS, is not null in Mongo, and `not {}` is
+    True in Python only by accident of a different rule.
+
+    THE TWO SHAPES THAT ARE REAL INK, and there are only two:
+
+        paths: [...]   SignaturePad's vector output. canConfirm requires
+                       paths.length > 0, so a confirmed signature always carries
+                       at least one stroke -- an EMPTY list is therefore not "a
+                       signature with no strokes", it is no signature.
+        data: "..."    a base64 raster. The legacy / pre-rendered path.
+
+    A bare string IS a signature: render_signature_html treats `isinstance(sig,
+    str)` as a base64 image. An empty one is not.
+
+    NOT A REPLACEMENT FOR _is_affirmed_signature. Ink says a mark exists;
+    affirmed says the signer adopted it for THIS document. Both are required and
+    they fail for different reasons -- an inkless `{"affirmed": True}` passes the
+    second and fails this one, and that is precisely the shape a pad offering
+    AFFIRM over an empty canvas used to mint.
+
+    MIRRORS frontend/src/utils/signatureAffirmed.js:hasSignatureInk, field for
+    field and in the same order. If one changes the other changes with it, or
+    the app gates on one rule and prints another.
+    """
+    if not sig:
+        return False
+    if isinstance(sig, str):
+        return len(sig) > 0
+    if not isinstance(sig, dict):
+        return False
+    paths = sig.get("paths")
+    if isinstance(paths, list) and len(paths) > 0:
+        return True
+    data = sig.get("data")
+    return isinstance(data, str) and len(data) > 0
+
+
+# THE SAME PREDICATE IN QUERY LANGUAGE, so a selector never hauls signature
+# blobs across the wire to ask a question Mongo can answer. `paths.0` exists
+# iff the array is non-empty, which is the list-length half; the two string
+# clauses are the `data` half and the bare-string shape.
+#
+# Kept adjacent to _has_signature_ink because it is the same rule written twice
+# and the only defence against them drifting is that they are read together.
+# test_signature_ink_predicate.py asserts they agree on every shape.
+_SIGNATURE_HAS_INK_CLAUSES = [
+    {"cp_signature.paths.0": {"$exists": True}},
+    {"cp_signature.data": {"$type": "string", "$ne": ""}},
+    {"cp_signature": {"$type": "string", "$ne": ""}},
+]
 
 
 def _signature_affirmation_html(sig):
