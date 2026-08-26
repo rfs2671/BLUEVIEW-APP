@@ -50,7 +50,29 @@ const sigIsAffirmed = extractFn(AFFIRMED_MOD, 'isAffirmedSignature');
 // The pad must still USE it, or the VERIFIED stamp it renders and the rule
 // asserted here would drift apart.
 const PAD_SRC = fs.readFileSync(SIG, 'utf8');
-const stripAffirmation = extractFn(HOOK, 'stripAffirmation');
+// MOVED, NOT DELETED. useCpProfile used to declare this inline as
+// `function stripAffirmation(sig) { const { affirmed, affirmedAt, ...rest } }`
+// — an inline field list that diverged from the attestation when affirmedLang
+// shipped, which is how two logs on 2026-08-25 carried a language nobody
+// affirmed in. The rule now lives beside the predicate that defines it, driven
+// by PER_DOCUMENT_SIGNATURE_FIELDS, and the hook aliases it.
+//
+// LOADED, NOT TEXT-EXTRACTED. extractFn evaluates a function body in
+// isolation, so it cannot see a module-level constant — which is precisely the
+// limit that makes a list-driven rule untestable by text. This transpiles the
+// real module and takes the real export.
+const stripAffirmation = (() => {
+  const babel = require('@babel/core');
+  const { code } = babel.transformSync(fs.readFileSync(AFFIRMED_MOD, 'utf8'), {
+    filename: AFFIRMED_MOD,
+    plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
+    configFile: false,
+    babelrc: false,
+  });
+  const mod = { exports: {} };
+  new Function('module', 'exports', 'require', code)(mod, mod.exports, require);
+  return mod.exports.toCredential;
+})();
 
 let passed = 0, failed = 0;
 function ok(cond, label) {
