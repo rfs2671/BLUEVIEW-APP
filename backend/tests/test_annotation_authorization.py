@@ -351,12 +351,26 @@ class TheRuleIsTheEXISTINGOne(unittest.TestCase):
         self.assertEqual(c.exception.status_code, 404)
 
     def test_the_GET_route_still_carries_its_dependency(self):
-        """Unchanged, and pinned: it was the one route that was already right."""
+        """Unchanged, and pinned: it was the one route that was already right.
+
+        WALKS THE DEPENDENCY GRAPH. This asserted on `str(route.dependant)` plus
+        the endpoint's __annotations__, which is a REPR -- it passed locally and
+        failed in CI on a different FastAPI build, because a repr is not an API.
+        `_proj = Depends(require_project_access)` carries no type annotation, so
+        it was never in __annotations__ on either; the local pass was luck.
+        Reading dependant.dependencies[].call is the actual contract.
+        """
+        def call_names(dep, out):
+            for sub in dep.dependencies:
+                fn = getattr(sub, "call", None)
+                if fn is not None:
+                    out.append(getattr(fn, "__name__", ""))
+                call_names(sub, out)
+            return out
+
         for r in server.app.routes:
             if getattr(r, "path", "") == "/api/annotations/{project_id}/{document_path:path}":
-                deps = str(getattr(r, "dependant", ""))
-                self.assertIn("require_project_access",
-                              deps + str(r.endpoint.__annotations__))
+                self.assertIn("require_project_access", call_names(r.dependant, []))
                 return
         self.fail("the GET annotations route disappeared")
 
