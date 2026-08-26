@@ -50,6 +50,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
+import { certLabel, certExpiration } from '../../src/utils/oshaLogModel';
 import { settleFetch, failureDetail } from '../../src/utils/offlineState';
 
 /**
@@ -172,6 +173,24 @@ export default function WorkerDetailScreen() {
     EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
     DUPLICATE_SST: 'Duplicate SST records — resolve to one',
   };
+  /**
+   * What this certification is called, on the screen the CP checks it on.
+   *
+   * RENDER, NEVER FILTER. A credential the app cannot describe is itself a
+   * finding, and a row that vanishes tells the CP nothing. A blank row with a
+   * delete button beside it is worse still -- he cannot tell what he would be
+   * deleting, and this same certification is what satisfies the OSHA baseline
+   * at the gate.
+   *
+   * The chain ends in a sentence rather than an empty string for that reason:
+   * "no type recorded" is a true statement the CP can act on.
+   */
+  const certDisplayName = (cert) => (
+    certLabel(cert)
+    || (cert?.card_number ? `Card ${cert.card_number}` : '')
+    || 'Certification (no type recorded)'
+  );
+
   const flaggedCerts = (certifications || []).filter(
     (c) => c && (c.needs_review || c.review_reason)
   );
@@ -332,10 +351,52 @@ export default function WorkerDetailScreen() {
     }
   };
 
+  /**
+   * WIRED. It used to be local state only.
+   *
+   * It filtered the row out of `certifications`, toasted "Certification
+   * removed", and never called DELETE /api/workers/{id}/certifications/{i}.
+   * The record was untouched and came back on the next fetch -- unless the CP
+   * then opened the edit form and saved, at which point the whole array PUTs
+   * and the certification is genuinely gone. So the control was either a lie
+   * or a delayed, unannounced deletion, depending on what he did next.
+   *
+   * A control that reports success for something that did not happen is worse
+   * than no control, and this one sits beside a credential the GATE depends on:
+   * validate_worker_certifications reads `type` for the OSHA baseline, which is
+   * the one hard block on check-in.
+   *
+   * BY INDEX, because that is what the endpoint takes. The list rendered is
+   * `certifications` in order, so the row's index IS the stored index -- no
+   * filtering happens between the two, which is one more reason the render
+   * path must never drop a row it cannot describe.
+   */
   const handleDeleteCertification = (index) => {
-    const confirmDelete = () => {
-      const updated = certifications.filter((_, i) => i !== index);
-      setCertifications(updated);
+    const confirmDelete = async () => {
+      const workerIdForDelete = worker?._id || worker?.id || workerId;
+      try {
+        await apiClient.delete(
+          `/api/workers/${workerIdForDelete}/certifications/${index}`,
+        );
+      } catch (err) {
+        // NOTHING WAS REMOVED, and the list is not touched. Announcing a
+        // failure and leaving the row is the honest pair; the previous code
+        // announced success and left the record.
+        console.error('Failed to delete certification:', err);
+        toast.error(
+          'Not deleted',
+          'The certification is still on this worker. Check your connection and try again.',
+        );
+        return;
+      }
+      // Re-read rather than splicing locally: the server owns the array, and a
+      // local filter is what made the old control look like it had worked.
+      try {
+        const updated = await getWorkerById(workerIdForDelete);
+        setCertifications(updated?.certifications || []);
+      } catch (_e) {
+        setCertifications(certifications.filter((_, i) => i !== index));
+      }
       toast.success('Deleted', 'Certification removed');
     };
 
@@ -787,12 +848,25 @@ export default function WorkerDetailScreen() {
                       <Award size={18} strokeWidth={1.5} color={semantic.neutral} />
                     </IconPod>
                     <View style={s.certInfo}>
-                      <Text style={s.certName}>{cert.name}</Text>
-                      {cert.expiry && (
-                        <Text style={[s.certExpiry, expiryTone(cert.expiry)]}>
-                          Expires: {cert.expiry}{expirySuffix(cert.expiry)}
+                      {/*
+                        THE REAL KEYS. This read `cert.name` and `cert.expiry`,
+                        and a stored certification carries NEITHER -- the model
+                        is {type, card_number, expiration_date, ...} and pydantic
+                        drops anything else, so even this screen's own add form
+                        could not produce a cert it could render. Result: an
+                        award icon, a blank line, and a delete button.
+
+                        certLabel/certExpiration are the accessors oshaLogModel
+                        already exports for exactly this bug. They handle the
+                        legacy name/expiry fallbacks and map the stored enum to
+                        a label a DOB inspector reads. NOT a sixth copy.
+                      */}
+                      <Text style={s.certName}>{certDisplayName(cert)}</Text>
+                      {certExpiration(cert) ? (
+                        <Text style={[s.certExpiry, expiryTone(certExpiration(cert))]}>
+                          Expires: {certExpiration(cert)}{expirySuffix(certExpiration(cert))}
                         </Text>
-                      )}
+                      ) : null}
                     </View>
                     {isAdmin && (
                       <Pressable onPress={() => handleDeleteCertification(index)} style={s.deleteBtn}>
