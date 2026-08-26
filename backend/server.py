@@ -18058,6 +18058,56 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if _lock_target and _lock_target.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
 
+    # ── A FILED LOG'S CONTENT IS NOT REWRITABLE ─────────────────────────────
+    #
+    # THE 423 ABOVE CANNOT FIRE FOR THE CASE THIS CATCHES. It keys on
+    # `is_locked`, and an END_OF_DAY log is not locked when it is submitted --
+    # sweep_stale_end_of_day_logs freezes it overnight, and only if its
+    # signature is affirmed. So between Submit and the sweep, every daily
+    # narrative sits `status: submitted, is_locked: false`, and PUT would $set
+    # straight over `data`.
+    #
+    # THAT IS NOT HYPOTHETICAL. Two daily_jobsite records at 588 Thomas were
+    # re-entered and overwritten on 2026-08-25:
+    #
+    #   6a8c4acd  date 2026-08-24  created 13:44 Aug 24  updated 14:28 Aug 25
+    #   6a8d867d  date 2026-08-25  created 12:11         updated 14:24
+    #
+    # Both submitted, both unlocked, `$set` on data, no amendment, no version --
+    # and no audit entry either, because update_logbook wrote none until
+    # a6068ee. A filed DOB record was replaced and the prior content is not
+    # recoverable from the database.
+    #
+    # THE PREDICATE IS THE STORED STATUS, NOT is_locked AND NOT THE REQUEST'S.
+    # Stored, because a draft being submitted sends `data` and
+    # `status: "submitted"` in one call and must still be allowed -- its stored
+    # status is `draft`. Status rather than the lock, because the lock is
+    # exactly what is missing here.
+    #
+    # IT IS SCOPED TO `data`, AND THAT SCOPE IS LOAD-BEARING. 65 submitted logs
+    # on this project carry an unaffirmed signature, and the ONLY remedy is the
+    # CP opening one and affirming it -- a `cp_signature` write with
+    # `data.data is None`. A blanket refusal on submitted logs would lock out
+    # the repair for every one of them, which would be worse than the hole.
+    # Signature-only and status-only updates stay allowed.
+    #
+    # 409, not 423: 423 says "locked", and this log is not. The condition is a
+    # conflict with the document's state. The machine code follows the
+    # SUBMIT_EMPTY_LOG / SUBMIT_MISSING_CP_SIGNATURE convention -- the server
+    # names the condition, the client owns the wording -- and departs from the
+    # `SUBMIT_` prefix deliberately, because this is not a submit gate: it
+    # fires on any data write to a filed log, including one whose request
+    # carries `status: "draft"`.
+    #
+    # The correct next action for the CP is AMEND, which leaves the original
+    # intact as a linked child. The client needs a distinguishable code to say
+    # so rather than reporting a generic failure.
+    if data.data is not None and (existing_lb or {}).get("status") == "submitted":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "FILED_LOG_DATA_IMMUTABLE"},
+        )
+
     # ── SUBMIT GATE ─────────────────────────────────────────────────────────
     # THE PRIMARY PATH, not a mirror of create_logbook's. The ordinary CP flow is
     # Save Draft (POST, status=draft) then Submit — and because the log now
