@@ -32,6 +32,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { loadEsm } = require('./esmHarness.cjs');
 
 const UTILS = __dirname;
 const FRONTEND = path.join(__dirname, '..', '..');
@@ -404,35 +405,38 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
       ] }] },
       cp_signature: null, cp_name: 'Casey', status: 'draft', backend_id: 'lb1', finalized: false,
     };
-    // eslint-disable-next-line no-new-func
-    const sync = new Function('__env', `
-      const AsyncStorage = __env.AsyncStorage;
-      const NetInfo = { addEventListener: () => () => {} };
-      const logbooksAPI = __env.logbooksAPI;
-      const getPendingKeys = __env.getPendingKeys;
-      const readDraft = __env.readDraft;
-      const setDraftBackendId = async () => {};
-      const clearPending = __env.clearPending;
-      const writeDraft = __env.writeDraft;
-      const uploadPendingActivityPhotos = __env.uploadPendingActivityPhotos;
-      const console = { log: () => {}, warn: () => {} };
-      ${strip(syncSrc)}
-      return { syncPendingDrafts };
-    `)({
-      AsyncStorage: { getItem: async () => null, setItem: async () => {} },
-      logbooksAPI: { update: async (id, body) => { posted.push(body); }, finalize: async () => {} },
-      getPendingKeys: async () => ['logbook_draft:proj1:daily_jobsite:2026-08-07'],
-      readDraft: async () => draft,
-      clearPending: async () => { pendingCleared += 1; },
-      writeDraft: async () => true,
-      uploadPendingActivityPhotos: async (projectId, activities) => {
-        uploads.push(projectId);
-        return {
-          activities: activities.map((a) => ({
-            ...a, photos: a.photos.map((p) => ({ ...p, original_r2_key: `k/${p.id}` })),
-          })),
-          uploaded: 1, remaining: 0, offline: false,
-        };
+    // THE DRAIN, LOADED. This is the one draftSync harness that DID declare
+    // writeDraft and uploadPendingActivityPhotos -- because the photo branch is
+    // exactly what it exercises. The two gate harnesses declared neither and
+    // passed only by not reaching them.
+    const sync = loadEsm('src/utils/draftSync.js', {
+      globals: { console: { log: () => {}, warn: () => {} } },
+      stubs: {
+        '@react-native-async-storage/async-storage': {
+          getItem: async () => null, setItem: async () => {},
+        },
+        '@react-native-community/netinfo': { addEventListener: () => () => {} },
+        './api': {
+          logbooksAPI: {
+            update: async (id, body) => { posted.push(body); }, finalize: async () => {},
+          },
+        },
+        './logbookDrafts': {
+          getPendingKeys: async () => ['logbook_draft:proj1:daily_jobsite:2026-08-07'],
+          readDraft: async () => draft,
+          setDraftBackendId: async () => {},
+          clearPending: async () => { pendingCleared += 1; },
+          writeDraft: async () => true,
+          uploadPendingActivityPhotos: async (projectId, activities) => {
+            uploads.push(projectId);
+            return {
+              activities: activities.map((a) => ({
+                ...a, photos: a.photos.map((p) => ({ ...p, original_r2_key: `k/${p.id}` })),
+              })),
+              uploaded: 1, remaining: 0, offline: false,
+            };
+          },
+        },
       },
     });
 
@@ -452,28 +456,25 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
       data: { activities: [{ activity_id: 'act_1', photos: [{ id: 'cap_1', uri: 'file:///docs/1.jpg' }] }] },
       cp_signature: null, cp_name: 'Casey', status: 'draft', backend_id: 'lb1', finalized: false,
     };
-    // eslint-disable-next-line no-new-func
-    const sync = new Function('__env', `
-      const AsyncStorage = __env.AsyncStorage;
-      const NetInfo = { addEventListener: () => () => {} };
-      const logbooksAPI = __env.logbooksAPI;
-      const getPendingKeys = __env.getPendingKeys;
-      const readDraft = __env.readDraft;
-      const setDraftBackendId = async () => {};
-      const clearPending = __env.clearPending;
-      const writeDraft = async () => true;
-      const uploadPendingActivityPhotos = async (p, acts) => ({
-        activities: acts, uploaded: 0, remaining: 1, offline: true,
-      });
-      const console = { log: () => {}, warn: () => {} };
-      ${strip(syncSrc)}
-      return { syncPendingDrafts };
-    `)({
-      AsyncStorage: { getItem: async () => null, setItem: async () => {} },
-      logbooksAPI: { update: async () => {}, finalize: async () => {} },
-      getPendingKeys: async () => ['logbook_draft:proj1:daily_jobsite:2026-08-07'],
-      readDraft: async () => draft,
-      clearPending: async () => { pendingCleared += 1; },
+    const sync = loadEsm('src/utils/draftSync.js', {
+      globals: { console: { log: () => {}, warn: () => {} } },
+      stubs: {
+        '@react-native-async-storage/async-storage': {
+          getItem: async () => null, setItem: async () => {},
+        },
+        '@react-native-community/netinfo': { addEventListener: () => () => {} },
+        './api': { logbooksAPI: { update: async () => {}, finalize: async () => {} } },
+        './logbookDrafts': {
+          getPendingKeys: async () => ['logbook_draft:proj1:daily_jobsite:2026-08-07'],
+          readDraft: async () => draft,
+          setDraftBackendId: async () => {},
+          clearPending: async () => { pendingCleared += 1; },
+          writeDraft: async () => true,
+          uploadPendingActivityPhotos: async (p, acts) => ({
+            activities: acts, uploaded: 0, remaining: 1, offline: true,
+          }),
+        },
+      },
     });
     await sync.syncPendingDrafts();
     ok(pendingCleared === 0,

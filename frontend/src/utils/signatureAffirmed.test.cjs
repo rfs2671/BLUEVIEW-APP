@@ -128,16 +128,32 @@ ok(/import \{[^}]*isAffirmedSignature[^}]*\} from '\.\.\/utils\/signatureAffirme
 ok(!/function sigIsAffirmed\(sig\) \{/.test(padSrc),
   'and its private definition is gone, not shadowing the shared one');
 
-console.log('\n-- the drain\'s inline copy still agrees --');
+console.log('\n-- the drain asks the real predicate, not a copy of it --');
+// THE STRING-EQUALITY CHECK IS GONE, and so is what it compared.
+//
+// It read:
+//
+//   const bodyOf = (src) => src.slice(i, src.indexOf('}', i) + 1)...;
+//   ok(bodyOf(drainSrc) === bodyOf(MOD_SRC),
+//     'draftSync\'s deliberate duplicate is character-identical to the shared one')
+//
+// draftSync carried a hand-copy of isAffirmedSignature because its harness
+// deleted every import by regex, including `./signatureAffirmed`, which
+// imports nothing and would have loaded cleanly. esmHarness resolves relative
+// imports for real, so the copy is deleted and the drain imports the module.
+//
+// A dead check is worse than none: it would keep passing over two empty
+// slices and report agreement between things that no longer exist. And it was
+// living on borrowed time either way -- once the shared predicate also
+// requires INK, no copy can be character-identical without duplicating a
+// second predicate too.
 const drainSrc = fs.readFileSync(path.join(UTILS, 'draftSync.js'), 'utf8');
-const bodyOf = (src) => {
-  const i = src.indexOf('function isAffirmedSignature(sig) {');
-  return src.slice(i, src.indexOf('}', i) + 1).replace(/\s+/g, ' ');
-};
-ok(bodyOf(drainSrc) === bodyOf(MOD_SRC),
-  'draftSync\'s deliberate duplicate is character-identical to the shared one');
+ok(!/^function isAffirmedSignature/m.test(drainSrc),
+  'draftSync no longer defines its own copy');
+ok(/import \{ isAffirmedSignature \} from '\.\/signatureAffirmed'/.test(drainSrc),
+  'it imports the shared one instead');
 ok(/status === 'submitted' && !isAffirmedSignature\(body\.cp_signature\)/.test(drainSrc),
-  'and the drain refuses an UNAFFIRMED submit, not merely an absent one');
+  'and the drain still refuses an UNAFFIRMED submit, not merely an absent one');
 
 console.log('\n-- all nine IMMEDIATE forms gate on affirmation --');
 const timingBlock = serverSrc.slice(

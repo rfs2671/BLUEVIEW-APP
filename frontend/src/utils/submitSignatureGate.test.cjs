@@ -26,6 +26,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { loadEsm } = require('./esmHarness.cjs');
 
 const UTILS = __dirname;
 const SRC = path.join(UTILS, '..');
@@ -321,25 +322,48 @@ for (const t of [...NEWLY_GUARDED, 'daily_jobsite']) {
 }
 
 // ── 7. the drain, running for real ───────────────────────────────────────────
-const draftSyncSrc = fs.readFileSync(path.join(UTILS, 'draftSync.js'), 'utf8');
-
+// THE DRAIN, LOADED RATHER THAN RECONSTRUCTED.
+//
+// This read the source and deleted its imports by regex, then hand-declared
+// the identifiers the exercised path happened to touch. Two costs, both real:
+//
+//   * `./signatureAffirmed` imports nothing and loads cleanly, but the strip
+//     is line-based and deleted it with the rest -- which is why draftSync
+//     carried a hand-copy of isAffirmedSignature.
+//   * draftSync also imports writeDraft and uploadPendingActivityPhotos, and
+//     this harness declared NEITHER. It passed because no test here reaches
+//     them: a latent ReferenceError, not a proof of anything.
+//
+// esmHarness resolves a relative import for real and requires an explicit stub
+// for anything plain node cannot load. Every stub throws on a key it does not
+// define, so the second bullet is now a named error instead of silence.
 function loadDraftSync(env) {
-  const body = draftSyncSrc
-    .replace(/^import[\s\S]*?;\s*$/gm, '')
-    .replace(/^export (async function|function|const) /gm, '$1 ');
-  // eslint-disable-next-line no-new-func
-  return new Function('__env', `
-    const AsyncStorage = __env.AsyncStorage;
-    const NetInfo = __env.NetInfo;
-    const logbooksAPI = __env.logbooksAPI;
-    const getPendingKeys = __env.getPendingKeys;
-    const readDraft = __env.readDraft;
-    const setDraftBackendId = __env.setDraftBackendId;
-    const clearPending = __env.clearPending;
-    const console = __env.console;
-    ${body}
-    return { syncPendingDrafts, readFinalizeError };
-  `)(env);
+  return loadEsm('src/utils/draftSync.js', {
+    globals: { console: env.console },
+    stubs: {
+      '@react-native-async-storage/async-storage': env.AsyncStorage,
+      '@react-native-community/netinfo': env.NetInfo,
+      './api': { logbooksAPI: env.logbooksAPI },
+      './logbookDrafts': {
+        getPendingKeys: env.getPendingKeys,
+        readDraft: env.readDraft,
+        setDraftBackendId: env.setDraftBackendId,
+        clearPending: env.clearPending,
+        // DECLARED NOW, AND THIS IS THE POINT. draftSync imports both. The old
+        // harness did not name them, so reaching either would have thrown a
+        // ReferenceError from inside generated source. Here they are stubs that
+        // fail loudly if a test ever does reach them.
+        writeDraft: async () => {
+          throw new Error('writeDraft reached: this harness does not exercise the photo branch');
+        },
+        uploadPendingActivityPhotos: async () => {
+          throw new Error('uploadPendingActivityPhotos reached: see writeDraft above');
+        },
+      },
+      // NOT STUBBED, DELIBERATELY: './signatureAffirmed' loads for real, so the
+      // drain gate under test is the same predicate the PDF renderer asks.
+    },
+  });
 }
 
 const KEY = 'logbook_draft:proj1:hot_work:2026-08-09';
