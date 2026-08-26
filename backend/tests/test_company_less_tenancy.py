@@ -215,7 +215,20 @@ class GateIsUntouched(unittest.TestCase):
         "/api/checkin/submit",
         "/api/checkin/lookup-worker",
         "/api/checkin/{project_id}/{tag_id}/info",
-        "/api/checkin/{project_id}/companies",
+        # "/api/checkin/{project_id}/companies" WAS HERE AND IS DELETED.
+        #
+        # THE NOTE MATTERS MORE THAN THE REMOVAL. This set exists so nobody can
+        # quietly drop a route a worker at a turnstile depends on, so taking a
+        # line out of it needs a reason on the record.
+        #
+        # That endpoint had NO CALLER. checkin.html reads the roster from
+        # /{tag_id}/info above, which returns `trade_assignments:
+        # [{trade, company}]`. The deleted one returned `[{name, trade}]` -- a
+        # different key for the same company -- and injected a synthetic
+        # {"name": <main company>, "trade": "General Contractor"} row the gate
+        # never saw. Two shapes for one roster, one unreachable, already
+        # drifted. Deleting an unreachable route is not the risk this class
+        # guards against; leaving two disagreeing shapes was.
     ]
 
     def test_gate_routes_all_still_mounted(self):

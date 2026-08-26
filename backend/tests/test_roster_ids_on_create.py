@@ -64,75 +64,144 @@ class TestBothPathsMintByTheSameRule(unittest.TestCase):
         self.assertNotIn("update_many", create)
 
 
-class TestSubsCountsTheRosterNotTheLoginTable(unittest.TestCase):
-    """`db.subcontractors` is the subcontractor LOGIN directory — email,
-    password, unique email index. The crew-level ruling retired it, so it is
-    correctly empty and "Subs 0" was an accurate count of the wrong thing."""
+class TestNoCheckinPathReadsTheRetiredLoginDirectory(unittest.TestCase):
+    """RE-ANCHORED, NOT DELETED.
 
-    def _endpoint(self):
-        src = _SRC[_SRC.index('@api_router.get("/checkin/{project_id}/companies")'):]
-        return src[:src.index("@api_router", 10)]
+    This class was written against GET /checkin/{project_id}/companies, which
+    once read `db.subcontractors` -- the subcontractor LOGIN directory, with
+    email, password and a unique email index. The crew-level ruling retired
+    that concept: a roster entry is (trade x company) on a project and there
+    are no subcontractor logins, so the collection is correctly empty and
+    "Subs 0" was an accurate count of the wrong thing.
 
-    def test_it_no_longer_reads_the_login_directory(self):
+    That endpoint is now DELETED -- it had no caller and had already drifted
+    from the one the gate reads. Deleting it would have deleted this guard with
+    it, so the assertion moves to the endpoint that survived, and widens: no
+    check-in path may query the retired directory.
+
+    THE CONCERN IS STILL LIVE. `db.subcontractors` has seven other call sites
+    in the owner/subcontractor admin routes. This is not a dead collection; it
+    is a collection the GATE must not consult.
+    """
+
+    def _checkin_handlers(self):
+        """Every /checkin route handler body, sliced to the next decorator."""
+        import re
+        out = {}
+        for m in re.finditer(r'@api_router\.\w+\("(/checkin[^"]*)"', _SRC):
+            start = m.start()
+            nxt = _SRC.find("@api_router", start + 10)
+            out[m.group(1)] = _SRC[start:nxt if nxt != -1 else len(_SRC)]
+        return out
+
+    def test_there_are_checkin_handlers_to_check(self):
+        """A scan that silently matched nothing would pass forever."""
+        handlers = self._checkin_handlers()
+        self.assertGreaterEqual(len(handlers), 4, f"found only {list(handlers)}")
+        self.assertIn("/checkin/{project_id}/{tag_id}/info", handlers)
+
+    def test_no_checkin_handler_queries_the_login_directory(self):
         """Asserted as a QUERY, not as a word.
 
-        assertNotIn("db.subcontractors", ...) failed on the endpoint's own
-        docstring and on the comment explaining why the collection was
-        dropped — the fifth time on this project that a source assertion
-        matched prose ABOUT the thing instead of the thing. A call has
-        parentheses; an explanation does not.
+        assertNotIn("db.subcontractors", ...) used to fail on the endpoint's own
+        docstring and on the comment explaining why the collection was dropped
+        -- a source assertion matching prose ABOUT the thing instead of the
+        thing. A call has parentheses; an explanation does not.
         """
         import re
-        self.assertIsNone(
-            re.search(r"db\.subcontractors\.\w+\(", self._endpoint()),
-            "the endpoint still queries the retired login directory")
+        for path, body in self._checkin_handlers().items():
+            with self.subTest(path=path):
+                self.assertIsNone(
+                    re.search(r"db\.subcontractors\.\w+\(", body),
+                    f"{path} queries the retired login directory")
 
-    def test_it_reads_the_project_roster(self):
-        self.assertIn('project.get("trade_assignments")', self._endpoint())
+    def test_the_gate_reads_the_project_roster_instead(self):
+        """The roster the admin maintains, not an accounts table."""
+        body = _SRC[_SRC.index("def _active_assignments"):]
+        body = body[:body.index("def _merge_trade_assignments")]
+        self.assertIn('"trade_assignments"', body)
+        self.assertNotIn("subcontractors", body)
 
-    def test_it_returns_the_roster_and_nothing_else(self):
-        """BEHAVIOURAL, not textual.
+    def test_the_dead_endpoint_is_really_gone(self):
+        """Both the route and the handler. A decorator removed while the
+        function survives leaves a reachable name and a confusing grep."""
+        paths = {getattr(r, "path", "") for r in server.app.routes}
+        self.assertNotIn("/api/checkin/{project_id}/companies", paths)
+        self.assertFalse(hasattr(server, "get_project_companies"))
 
-        The two assertions this replaces checked that `_assignment_is_inactive`
-        and `_roster_key` APPEARED in the endpoint, and both survived a mutation
-        that removed the call — the identifier still appeared elsewhere in the
-        slice. Calling the endpoint settles what it does.
-        """
+
+class TestTheGateRosterIsIndexStable(unittest.TestCase):
+    """BEHAVIOURAL, and it pins the contract the check-in <select> rests on.
+
+    checkin.html builds its options with the ARRAY INDEX as the option value
+    (`opt.value = String(i)`) and resolves the pick back by index. The server
+    filters inactive rows HERE so the two stay in step -- filtering on the
+    client would desynchronize it and a worker would pick one crew and file
+    another.
+    """
+
+    def _info(self, assignments):
         import asyncio
         from unittest.mock import patch
 
-        project = {
-            "_id": "p1", "company_id": None,
-            "trade_assignments": [
-                {"id": "r1", "company": "Vanguard", "trade": "Concrete"},
-                {"id": "r2", "company": "vanguard ", "trade": " concrete"},
-                {"id": "r3", "company": "Gone Ltd", "trade": "Demolition",
-                 "status": "inactive"},
-                {"id": "r4", "company": "Air Star", "trade": "HVAC / Mechanical"},
-            ],
-        }
-
-        class _Projects:
-            async def find_one(self, *_a, **_k):
-                return project
+        project = {"_id": "p1", "name": "588 Thomas", "company_name": "GC",
+                   "trade_assignments": assignments}
 
         class _Db:
-            projects = _Projects()
+            class nfc_tags:
+                @staticmethod
+                async def find_one(*_a, **_k):
+                    return {"tag_id": "t1", "project_id": "p1",
+                            "location_description": "North Gate"}
+
+            class projects:
+                @staticmethod
+                async def find_one(*_a, **_k):
+                    return project
 
             def __getattr__(self, name):
                 raise AssertionError(f"the endpoint queried db.{name}")
 
         with patch.object(server, "db", _Db()):
-            out = asyncio.run(server.get_project_companies("p1"))
+            return asyncio.run(server.get_checkin_info("p1", "t1"))
 
-        rows = out["companies"] if isinstance(out, dict) else out
-        names = [(r["name"], r["trade"]) for r in rows]
-        self.assertIn(("Vanguard", "Concrete"), names)
-        self.assertIn(("Air Star", "HVAC / Mechanical"), names)
-        self.assertNotIn("Gone Ltd", [n for n, _ in names])
-        self.assertEqual(
-            len([n for n, _ in names if n.strip().lower() == "vanguard"]), 1,
-            "a case-only edit must not produce two entries for one crew")
+    def test_inactive_rows_are_dropped_server_side(self):
+        out = self._info([
+            {"id": "r1", "company": "Vanguard", "trade": "Concrete"},
+            {"id": "r2", "company": "Gone Ltd", "trade": "Demolition",
+             "status": "inactive"},
+            {"id": "r3", "company": "Air Star", "trade": "HVAC / Mechanical"},
+        ])
+        rows = out["trade_assignments"]
+        self.assertEqual([r["company"] for r in rows], ["Vanguard", "Air Star"],
+                         "an inactive crew must not be offered at the gate")
+
+    def test_order_is_preserved(self):
+        """The index contract. Reordering here silently repoints every option
+        value the client already rendered."""
+        out = self._info([
+            {"id": "r1", "company": "A", "trade": "Concrete"},
+            {"id": "r2", "company": "B", "trade": "Framing"},
+            {"id": "r3", "company": "C", "trade": "Drywall"},
+        ])
+        self.assertEqual([r["trade"] for r in out["trade_assignments"]],
+                         ["Concrete", "Framing", "Drywall"])
+
+    def test_rows_missing_either_field_are_dropped(self):
+        out = self._info([
+            {"id": "r1", "company": "A", "trade": "Concrete"},
+            {"id": "r2", "company": "", "trade": "Framing"},
+            {"id": "r3", "company": "C", "trade": ""},
+        ])
+        self.assertEqual(len(out["trade_assignments"]), 1)
+
+    def test_it_returns_trade_and_company_not_name(self):
+        """The shape the gate actually reads. The deleted /companies endpoint
+        returned `name` for the same value, which is how two shapes for one
+        roster drifted apart unnoticed."""
+        out = self._info([{"id": "r1", "company": "Vanguard", "trade": "Concrete"}])
+        row = out["trade_assignments"][0]
+        self.assertEqual(set(row), {"trade", "company"})
 
 
 if __name__ == "__main__":
