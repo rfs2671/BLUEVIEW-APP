@@ -32,6 +32,7 @@ import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, workersAPI, checkinsAPI } from '../../src/utils/api';
+import { pairingLine } from '../../src/utils/workerPairingCopy';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -292,8 +293,22 @@ export default function CheckInScreen() {
                     </View>
                     <View style={s.workerInfo}>
                       <Text style={s.workerName}>{selectedWorker.name}</Text>
+                      {/*
+                        THESE FIELDS ARE STRUCTURALLY EMPTY. workersAPI.getAll()
+                        returns raw WORKERS documents, and nothing writes trade
+                        or company there -- they belong to the {worker, project}
+                        pair. So this rendered a bare bullet followed by "No
+                        company", reporting a designed absence as missing data.
+
+                        selectedProject NAMES the project; it cannot supply the
+                        pairing, because this screen's worker list has no
+                        pairing join. Saying which project the trade would be
+                        set for is the true statement available here -- and on
+                        a CHECK-IN screen it is the useful one, since checking
+                        in is what records it.
+                      */}
                       <Text style={s.workerTrade}>
-                        {selectedWorker.trade} • {selectedWorker.company || 'No company'}
+                        {pairingLine({ projectName: project?.name })}
                       </Text>
                     </View>
                     <Pressable 
@@ -394,7 +409,7 @@ export default function CheckInScreen() {
                     <View style={s.workerItemInfo}>
                       <Text style={s.workerItemName}>{worker.name}</Text>
                       <Text style={s.workerItemTrade}>
-                        {worker.trade || 'Worker'} • {worker.company || 'No company'}
+                        {pairingLine({ projectName: project?.name })}
                       </Text>
                     </View>
                   </Pressable>

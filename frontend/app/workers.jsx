@@ -344,7 +344,29 @@ export default function WorkersScreen() {
                         onPress={() => {
                           const workerId = checkin.worker_id;
                           if (workerId) {
-                            router.push(`/workers/${workerId}`);
+                            // THE PROJECT CONTEXT THIS ROW ALREADY HAD.
+                            //
+                            // The worker detail screen has no project in its
+                            // route, so it rendered "No trade specified / No
+                            // company" off the workers document -- fields
+                            // nothing writes, because a trade belongs to the
+                            // {worker, project} PAIR.
+                            //
+                            // This row is a CHECK-IN, and the server resolved
+                            // that pairing through _get_worker_project_trade
+                            // when it was written (server.py:12780) and stamped
+                            // it on as worker_trade / worker_company. The
+                            // context was in hand and only the worker id was
+                            // forwarded.
+                            router.push({
+                              pathname: `/workers/${workerId}`,
+                              params: {
+                                projectId: checkin.project_id || '',
+                                projectName: checkin.project_name || checkin.projectName || '',
+                                trade: checkin.worker_trade || '',
+                                company: checkin.worker_company || '',
+                              },
+                            });
                           }
                         }}
                       >
