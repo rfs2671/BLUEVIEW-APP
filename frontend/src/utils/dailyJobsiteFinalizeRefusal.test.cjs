@@ -46,6 +46,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { loadEsm } = require('./esmHarness.cjs');
 
 const UTILS = __dirname;
 const SRC = path.join(UTILS, '..');
@@ -135,29 +136,37 @@ const gateCopyFor = (locale) =>
 // draftSync — the REAL module over an in-memory AsyncStorage, so the refusal the
 // editor records and the refusal LogbookLockBar reads are the same bytes in the
 // same store rather than two independent beliefs about a key name.
+//
+// LOADED, NOT RECONSTRUCTED. The regex import-strip this used to do also
+// deleted `./signatureAffirmed`, which is why draftSync carried a duplicate
+// predicate; esmHarness resolves it for real and stubs only what plain node
+// cannot require. Nothing in this file exercises the drain, so the
+// logbookDrafts stubs are inert -- but they are DECLARED, and a stub throws on
+// any key it does not define, so "inert" is now checkable rather than assumed.
 function loadDraftSync() {
   const store = {};
-  const body = draftSyncSrc
-    .replace(/^import[\s\S]*?;\s*$/gm, '')
-    .replace(/^export (async function|function|const) /gm, '$1 ');
-  // eslint-disable-next-line no-new-func
-  const mod = new Function('__env', `
-    const AsyncStorage = __env.AsyncStorage;
-    const NetInfo = __env.NetInfo;
-    const logbooksAPI = {};
-    const getPendingKeys = async () => [];
-    const readDraft = async () => null;
-    const setDraftBackendId = async () => {};
-    const clearPending = async () => {};
-    const console = { log: () => {}, warn: () => {} };
-    ${body}
-    return { finalizeErrorCode, recordFinalizeError, readFinalizeError, clearFinalizeError };
-  `)({
-    AsyncStorage: {
-      getItem: async (k) => (k in store ? store[k] : null),
-      setItem: async (k, v) => { store[k] = v; },
+  const mod = loadEsm('src/utils/draftSync.js', {
+    globals: { console: { log: () => {}, warn: () => {} } },
+    stubs: {
+      '@react-native-async-storage/async-storage': {
+        getItem: async (k) => (k in store ? store[k] : null),
+        setItem: async (k, v) => { store[k] = v; },
+      },
+      '@react-native-community/netinfo': { addEventListener: () => () => {} },
+      './api': { logbooksAPI: {} },
+      './logbookDrafts': {
+        getPendingKeys: async () => [],
+        readDraft: async () => null,
+        setDraftBackendId: async () => {},
+        clearPending: async () => {},
+        writeDraft: async () => {
+          throw new Error('writeDraft reached: this file tests the refusal record, not the drain');
+        },
+        uploadPendingActivityPhotos: async () => {
+          throw new Error('uploadPendingActivityPhotos reached: see writeDraft above');
+        },
+      },
     },
-    NetInfo: { addEventListener: () => () => {} },
   });
   return { ...mod, store };
 }

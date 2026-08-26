@@ -5,6 +5,7 @@ import {
   getPendingKeys, readDraft, setDraftBackendId, clearPending, writeDraft,
   uploadPendingActivityPhotos,
 } from './logbookDrafts';
+import { isAffirmedSignature } from './signatureAffirmed';
 
 /**
  * RECONNECT DRAIN for logbook drafts — the missing half of "draft + sync".
@@ -37,16 +38,22 @@ import {
  * confirmed success.
  */
 
-/**
- * Affirmed for THIS document. Duplicated from src/utils/signatureAffirmed.js
- * ON PURPOSE: this module is loaded by its tests with `new Function` over the
- * stripped source, so every import has to be hand-stubbed by each harness. One
- * three-line predicate is cheaper than five stubs, and signatureAffirmed.test
- * asserts the two definitions still agree.
- */
-function isAffirmedSignature(sig) {
-  return !!(sig && typeof sig === 'object' && sig.affirmed === true);
-}
+// THE DUPLICATE IS GONE. It read: "Duplicated from signatureAffirmed.js ON
+// PURPOSE: this module is loaded by its tests with `new Function` over the
+// stripped source, so every import has to be hand-stubbed by each harness. One
+// three-line predicate is cheaper than five stubs, and signatureAffirmed.test
+// asserts the two definitions still agree."
+//
+// The harness was the only reason, and it no longer strips imports — see
+// esmHarness.cjs, which resolves a relative import for real and stubs only the
+// react-native and expo packages plain node cannot load. So the drain now
+// imports the same predicate the PDF renderer, the submit gates and the pad
+// ask, and there is nothing left to keep in step.
+//
+// Keeping them in step was string equality, and it would not have survived the
+// next change: the moment the shared predicate also requires INK, a
+// character-identical copy is impossible without duplicating a second
+// predicate too.
 
 const PREFIX = 'logbook_draft:';
 // Handled by dailyLogsAPI with a different payload shape — see note above.

@@ -25,6 +25,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { loadEsm } = require('./esmHarness.cjs');
 
 const UTILS = __dirname;
 const SRC = path.join(UTILS, '..');
@@ -156,27 +157,46 @@ ok(/readFinalizeError/.test(barSrc) && /clearFinalizeError/.test(barSrc),
 ok((barSrc.match(/\{notLockedBanner\}/g) || []).length === 3,
   'the not-locked banner renders on all 3 of LogbookLockBar`s return paths');
 
-// ── Load draftSync against stubs ─────────────────────────────────────────────
+// ── Load draftSync FOR REAL, against stubs ───────────────────────────────────
+//
+// Was: read the source, delete its imports by regex, hand-declare the
+// identifiers the exercised path happened to touch. That deleted
+// `./signatureAffirmed` too -- it imports nothing and loads cleanly, but the
+// strip is line-based -- which is why draftSync carried a hand-copy of
+// isAffirmedSignature. It also declared neither writeDraft nor
+// uploadPendingActivityPhotos, both of which draftSync imports; that passed
+// only because nothing here reaches them.
+//
+// esmHarness loads relative imports for real and demands an explicit stub for
+// what plain node cannot require. Every stub throws on an undeclared key.
+// The raw text as well: the assertions further down scan the SOURCE for
+// ordering and for absences, which is a different question from executing
+// it and stays a string search.
 const draftSyncSrc = fs.readFileSync(path.join(UTILS, 'draftSync.js'), 'utf8');
 
 function loadDraftSync(env) {
-  const body = draftSyncSrc
-    .replace(/^import[\s\S]*?;\s*$/gm, '')
-    .replace(/^export (async function|function|const) /gm, '$1 ');
-  // eslint-disable-next-line no-new-func
-  return new Function('__env', `
-    const AsyncStorage = __env.AsyncStorage;
-    const NetInfo = __env.NetInfo;
-    const logbooksAPI = __env.logbooksAPI;
-    const getPendingKeys = __env.getPendingKeys;
-    const readDraft = __env.readDraft;
-    const setDraftBackendId = __env.setDraftBackendId;
-    const clearPending = __env.clearPending;
-    const console = __env.console;
-    ${body}
-    return { parseDraftKey, syncPendingDrafts, finalizeErrorCode,
-             readFinalizeError, clearFinalizeError };
-  `)(env);
+  return loadEsm('src/utils/draftSync.js', {
+    globals: { console: env.console },
+    stubs: {
+      '@react-native-async-storage/async-storage': env.AsyncStorage,
+      '@react-native-community/netinfo': env.NetInfo,
+      './api': { logbooksAPI: env.logbooksAPI },
+      './logbookDrafts': {
+        getPendingKeys: env.getPendingKeys,
+        readDraft: env.readDraft,
+        setDraftBackendId: env.setDraftBackendId,
+        clearPending: env.clearPending,
+        writeDraft: async () => {
+          throw new Error('writeDraft reached: this file does not exercise the photo branch');
+        },
+        uploadPendingActivityPhotos: async () => {
+          throw new Error('uploadPendingActivityPhotos reached: see writeDraft above');
+        },
+      },
+      // './signatureAffirmed' is NOT stubbed: the drain gate under test is the
+      // real predicate, the same one the PDF renderer asks.
+    },
+  });
 }
 
 const KEY = 'logbook_draft:proj1:hot_work:2026-08-04';
