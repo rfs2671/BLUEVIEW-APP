@@ -22,6 +22,7 @@ import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearP
 // here for the one failure a toast cannot carry: the sheet is signed at the
 // gate and the CP walks off with it.
 import { recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
+import { chooseEditableLog } from '../../src/utils/logbookEditable';
 // PER-ROW SAVE STATE. A screen-level "Saving…" is decoration; this is a fact
 // about one man's row — see src/utils/rowSaveState.js for why the fact is
 // "changed since the last write that landed" rather than a spinner.
@@ -260,8 +261,8 @@ export default function PreShiftSignIn() {
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
       const _existingArr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = _existingArr.find(l => !l.is_locked) || _existingArr[0] || null;
-      if (existing?.is_locked) {
+      const { log: existing, readOnly } = chooseEditableLog(_existingArr);
+      if (readOnly) {
         setLocked(true);
         markFinalized(draftKey({ projectId, logType: 'preshift_signin', date }));
       }
