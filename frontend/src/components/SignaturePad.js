@@ -6,7 +6,7 @@ import { outdoor } from '../styles/theme';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { useT, useLocale } from '../i18n';
-import { isAffirmedSignature } from '../utils/signatureAffirmed';
+import { isAffirmedSignature, hasSignatureInk } from '../utils/signatureAffirmed';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -149,8 +149,19 @@ const SignaturePad = ({
 
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
-  const [isSigned, setIsSigned] = useState(autoLock ? !!existingSignature : false);
-  const [signatureData, setSignatureData] = useState(existingSignature);
+  // INK, NOT PRESENCE. This read `!!existingSignature`, and `{}` is truthy, so
+  // the pad locked itself over a signature that did not exist: no paths to
+  // draw, so it rendered the literal text "✓ Signed", and because isAffirmed
+  // was false it offered AFFIRM. See hasSignatureInk for where that ended up.
+  // An inkless signature must present as UNSIGNED — the draw surface open, the
+  // panResponder live, and Confirm the only way forward.
+  const [isSigned, setIsSigned] = useState(autoLock ? hasSignatureInk(existingSignature) : false);
+  // Inkless in means nothing held. handleAffirm spreads whatever is here, so
+  // an empty object parked in this slot is the raw material the bad
+  // attestation was built from.
+  const [signatureData, setSignatureData] = useState(
+    hasSignatureInk(existingSignature) ? existingSignature : null,
+  );
   // Affirmed FOR THIS DOCUMENT. An inherited profile signature starts
   // UNAFFIRMED; a signature persisted as affirmed on this doc (a reopened
   // draft) starts affirmed; drawing or tapping Affirm this session affirms it.
@@ -161,14 +172,23 @@ const SignaturePad = ({
   // ── Refs to avoid stale closures in PanResponder ──
   const pathsRef = useRef([]);
   const currentPathRef = useRef([]);
-  const isSignedRef = useRef(!!existingSignature);
+  // Same predicate as isSigned above, and it has to be: this ref is what the
+  // panResponder consults, so a mismatch would lock the draw surface against a
+  // pad that renders as unsigned.
+  const isSignedRef = useRef(hasSignatureInk(existingSignature));
   const disabledRef = useRef(disabled);
 
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
   useEffect(() => { isSignedRef.current = isSigned; }, [isSigned]);
 
+  // THE LATE ARRIVAL. The cached credential resolves after mount, so this is
+  // the path that actually locked the pad in the field — the initial state
+  // above sees null and this effect sees the loaded signature.
+  //
+  // Gated on ink for the same reason, and gated as a WHOLE: an inkless object
+  // must not reach signatureData either, because handleAffirm spreads it.
   useEffect(() => {
-    if (existingSignature) {
+    if (hasSignatureInk(existingSignature)) {
       setIsSigned(true);
       setSignatureData(existingSignature);
       isSignedRef.current = true;
@@ -253,10 +273,21 @@ const SignaturePad = ({
   // Precedent for storing it at all: subcontractor_orientation.jsx already
   // stores language_provided and renders it back.
   const handleAffirm = useCallback(() => {
-    const now = new Date().toISOString();
     const base = (signatureData && typeof signatureData === 'object')
       ? signatureData
       : { data: signatureData };
+    // NO INK, NO AFFIRMATION — the last line, not the first.
+    //
+    // With isSigned now gated on ink the button cannot render for an inkless
+    // signature, so this should be unreachable. It stays because of what is
+    // downstream if it ever is reached: the object below is spread from `base`
+    // and stamped `affirmed: true`, and nothing after this point asks again.
+    // isAffirmedSignature says yes, the submit gate lets it through, and
+    // render_signature_html prints "✓ AFFIRMED for this document" in green
+    // over a blank. An affirmation is a claim a person made; it cannot be
+    // constructed out of an empty object by any route.
+    if (!hasSignatureInk(base)) return;
+    const now = new Date().toISOString();
     const affirmedSig = {
       ...base,
       signerName: signerName?.trim() || base.signerName,

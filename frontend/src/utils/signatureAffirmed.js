@@ -82,6 +82,60 @@ export function isAffirmedSignature(sig) {
 }
 
 /**
+ * IS THERE ACTUALLY INK ON THIS SIGNATURE?
+ *
+ * The second question, and it lives here because it is the same question this
+ * module already owns — what makes a signature real for a document. Three
+ * places asked "is there a signature OBJECT" when they meant "is there ink",
+ * and an object is not ink:
+ *
+ *   affirmationHintKey     `sig ? ...`               `{}` is truthy
+ *   SignaturePad           `!!existingSignature`     so is `{}`
+ *   server.py:18817        `{"$ne": None}`           `{}` is not null either
+ *
+ * WHAT THAT COST. With `existingSignature = {}` — the shape an old bundle
+ * wrote, and what production actually held — the pad set isSigned true,
+ * rendered the literal text "✓ Signed" because there were no paths to draw,
+ * and offered AFFIRM. handleAffirm spreads the base object and stamps
+ * `affirmed: true` / `affirmedAt` onto it, so the tap produced a signature
+ * that was affirmed and contained NOTHING. That object satisfies
+ * isAffirmedSignature, passes the submit gate, and reaches the PDF renderer,
+ * which finds no `data` and no `paths`, falls through to its signer-only
+ * branch, and prints
+ *
+ *     CP Signature: <name> (signed)
+ *     ✓ AFFIRMED for this document        <- in green
+ *
+ * on a record filed with the DOB. The app minted an attestation nobody made,
+ * and the tap that did it was the one the CP dashboard told him to make.
+ *
+ * THE TWO SHAPES THAT ARE REAL INK, and there are only two:
+ *
+ *   paths: [...]   SignaturePad's vector output. handleConfirm writes
+ *                  `pathsRef.current`, and `canConfirm` requires
+ *                  `paths.length > 0`, so a confirmed signature always has at
+ *                  least one stroke. An EMPTY array is therefore not "a
+ *                  signature with no strokes" — it is no signature.
+ *   data: "..."    a base64 raster. The legacy/pre-rendered path, and what
+ *                  handleAffirm wraps a bare string into. render_signature_html
+ *                  checks the same two fields in the same order.
+ *
+ * A bare string IS a signature: the renderer treats `isinstance(sig, str)` as a
+ * base64 image, and the pad wraps it as `{ data: sig }`. An empty one is not.
+ *
+ * NOT A REPLACEMENT FOR isAffirmedSignature. Ink says a mark exists; affirmed
+ * says the signer adopted it for THIS document. Both are required, they fail
+ * for different reasons, and the CP is told a different thing in each case.
+ */
+export function hasSignatureInk(sig) {
+  if (!sig) return false;
+  if (typeof sig === 'string') return sig.length > 0;
+  if (typeof sig !== 'object') return false;
+  if (Array.isArray(sig.paths) && sig.paths.length > 0) return true;
+  return typeof sig.data === 'string' && sig.data.length > 0;
+}
+
+/**
  * Which `finalize` copy key explains why Submit is unavailable.
  *
  * THREE STATES, NOT TWO. A disabled button with no reason stops a CP at the
@@ -96,9 +150,12 @@ export function isAffirmedSignature(sig) {
 export function affirmationHintKey(sig, profileLoaded) {
   if (isAffirmedSignature(sig)) return null;
   if (!profileLoaded) return 'submitSignatureLoading';
-  // Something is stored but unaffirmed — including `{}`, which is what
-  // production actually held. He signs the pad below, or taps Affirm.
-  return sig ? 'submitNeedsAffirmation' : 'submitNeedsSignature';
+  // INK, NOT PRESENCE. This read `sig ?`, and `{}` is truthy — so the shape
+  // production actually held was called "unaffirmed" and the CP was told to
+  // "tap your signature above to affirm it" over an empty pad. There is
+  // nothing to affirm without ink, and the only thing that fixes it is
+  // signing, so an inkless signature asks for exactly that.
+  return hasSignatureInk(sig) ? 'submitNeedsAffirmation' : 'submitNeedsSignature';
 }
 
 export default isAffirmedSignature;
