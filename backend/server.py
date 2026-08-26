@@ -18128,6 +18128,47 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Logbook not found")
     updated = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+
+    # THE WRITE THAT LEFT NO TRACE.
+    #
+    # create / finalize / amend / delete all audited. This did not, and it is
+    # the only path that bumps `updated_at`, can change `status`, and can set
+    # `is_locked` on an immediate type. So a document could move from draft to
+    # SUBMITTED AND FROZEN with nothing anywhere recording who did it or when.
+    #
+    # It cost four rounds of investigation on 2026-08-25. Two logs on 588
+    # Thomas showed `logbook_create` in the audit trail and an `updated_at`
+    # 3.4s and 5.9s later with no second entry, and the gap could not be
+    # attributed from the trail at all - every other writer was excluded by
+    # elimination rather than by evidence. An audit entry here would have named
+    # the second write immediately.
+    #
+    # WHAT IS RECORDED, and why these fields. `status` is the one that changes
+    # what the document IS; `affirmed` is the one that decides whether the
+    # signature on it means anything, and it is read straight off the STORED
+    # doc rather than off the request, so the entry describes what was
+    # persisted and not what was asked for. Neither is inferable later: a
+    # subsequent write overwrites both, and the audit row is then the only
+    # record that this transition happened.
+    #
+    # NO ENFORCEMENT HERE, deliberately. Refusing an unaffirmed submit is a
+    # behaviour change with a live blast radius on an operating jobsite, and it
+    # belongs in its own PR after the client cause is known. This one only
+    # makes the write visible.
+    await audit_log(
+        "logbook_update",
+        str(current_user.get("_id", current_user.get("id", ""))),
+        "logbook",
+        str(logbook_id),
+        {
+            "status": (updated or {}).get("status"),
+            "affirmed": _is_affirmed_signature((updated or {}).get("cp_signature")),
+            "is_locked": bool((updated or {}).get("is_locked")),
+            "log_type": (updated or {}).get("log_type"),
+            "date": (updated or {}).get("date"),
+        },
+    )
+
     if data.data is not None:
         await _remember_other_activities((updated or {}).get("project_id"), data.data)
     return serialize_id(updated)
