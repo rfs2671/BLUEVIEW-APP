@@ -261,6 +261,26 @@ class ItDeclinesToAnswerForEverythingElse(unittest.TestCase):
         )
 
 
+def _fn_body(name):
+    """A function's body, sliced at the NEXT top-level def rather than at a
+    byte count.
+
+    These assertions used `fn[:5000]` / `fn[:6000]`. Those numbers are the
+    distance to the thing being asserted at the moment they were written, so
+    ANY insertion above it silently moves the target out of the window and the
+    test fails on a change that did not touch what it guards. That is what
+    happened when the filed-log guard was added to update_logbook: the
+    behaviour it pins was untouched, the window simply ran out.
+
+    Slicing to the end of the function pins the same thing and cannot drift.
+    """
+    start = _SRC.index(name)
+    nxt = _SRC.find("\nasync def ", start + 1)
+    if nxt < 0:
+        nxt = _SRC.find("\ndef ", start + 1)
+    return _SRC[start:nxt if nxt > 0 else len(_SRC)]
+
+
 class ItIsWiredIntoBothEndpoints(unittest.TestCase):
     """The ordinary flow is create-then-submit, so the submit arrives as a PUT.
     A gate on create alone never sees it."""
@@ -269,22 +289,19 @@ class ItIsWiredIntoBothEndpoints(unittest.TestCase):
         self.assertEqual(_SRC.count("_submit_no_content_detail("), 3)  # def + 2 sites
 
     def test_create_logbook_carries_it(self):
-        fn = _SRC[_SRC.index("async def create_logbook"):]
-        fn = fn[:6000]
+        fn = _fn_body("async def create_logbook")
         self.assertIn("_submit_no_content_detail(data.log_type, data.data)", fn)
 
     def test_update_logbook_judges_the_STORED_content(self):
         """_eff_data, not data.data. A submit that patches only `status` must
         still be judged on what is already stored, or a blank register walks
         straight through on the path a CP actually takes."""
-        fn = _SRC[_SRC.index("async def update_logbook"):]
-        fn = fn[:5000]
+        fn = _fn_body("async def update_logbook")
         self.assertIn('_submit_no_content_detail(_cur.get("log_type"), _eff_data)', fn)
 
     def test_it_runs_after_the_signature_check_in_both(self):
         for name in ("async def create_logbook", "async def update_logbook"):
-            fn = _SRC[_SRC.index(name):]
-            fn = fn[:6000]
+            fn = _fn_body(name)
             with self.subTest(fn=name):
                 self.assertLess(
                     fn.index("SUBMIT_MISSING_CP_SIGNATURE"),
@@ -293,8 +310,7 @@ class ItIsWiredIntoBothEndpoints(unittest.TestCase):
 
     def test_it_runs_before_anything_is_written(self):
         """A refused submit must mutate nothing at all."""
-        fn = _SRC[_SRC.index("async def update_logbook"):]
-        fn = fn[:6000]
+        fn = _fn_body("async def update_logbook")
         self.assertLess(
             fn.index("_submit_no_content_detail"), fn.index('update = {"updated_at"'),
         )
