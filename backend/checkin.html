@@ -778,7 +778,10 @@ const SAFETY_ITEMS = SAFETY_ITEMS_I18N.en;
 let projectId = '';
 let tagId = '';
 let siteInfo = null;
-let companies = [];
+// `let companies = []` WAS HERE. It held the response of
+// GET /checkin/{project_id}/companies, which nothing ever called: this page
+// reads the roster from /{tag_id}/info into tradeAssignments below. The
+// endpoint is deleted; this was its last trace.
 let oshaImage = null;
 let oshaData = null;
 let selfieImage = null;  // base64 selfie, stored inline for spot-check only

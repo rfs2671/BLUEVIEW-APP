@@ -1831,36 +1831,88 @@ class UpdatePasswordRequest(BaseModel):
     new_password: str
 
 # Project Models
-# Default construction trade list used by the NFC check-in dropdown
-# as a template when an admin opens the trade-assignments editor on a
-# brand-new project (the frontend 'Load suggested trades' shortcut
-# seeds pairs with this list + empty company field). Not used as a
-# runtime fallback — the check-in page shows only the admin-configured
-# {trade, company} pairs. Admins assign each trade to the specific
-# subcontractor working on that trade for that project, so workers
-# check in by picking their combined trade+company entry.
-DEFAULT_TRADES: List[str] = [
-    "General Labor",
-    "Carpenter",
-    "Electrician",
+# ── THE TRADE VOCABULARY ───────────────────────────────────────────
+#
+# ONE SOURCE OF TRUTH. This list was duplicated as DEFAULT_TRADES here and
+# TRADE_SUGGESTIONS in app/project/[id]/trades.jsx -- twenty identical strings
+# in two files, and NEITHER validated anything. The admin's control was a plain
+# TextInput; the suggestion dropdown only filled it in. So "Framers" reached
+# production, which is in neither list, and the file header on that screen
+# claimed "No free-text" while sitting directly above a free-text field.
+#
+# The server owns the list. The client fetches it. A test asserts there is no
+# second copy.
+#
+# THE LABEL IS THE KEY, NOT A CODE. A filed record must hold the canonical
+# ENGLISH string -- the DOB reads English -- so storing CONCRETE and rendering
+# a label was ruled out. Translation, when it lands, keys on the label.
+#
+# ** A PUBLISHED LABEL IS IMMUTABLE. **
+#
+# Deprecate an entry; NEVER re-spell one. A filed subcontractor_orientation
+# holds the string forever, and re-spelling "Concrete / Cement" to "Concrete"
+# would orphan every record carrying the old text -- silently, because nothing
+# joins on it. That is why the deprecated list below exists instead of edits.
+TRADE_VOCABULARY: List[str] = [
+    "Concrete",
+    # STAYS SEPARATE from Concrete, ruled: always done by the foundation
+    # company on these sites, and it is a distinct crew.
+    "Formwork",
+    "Excavation",
+    "Masonry",
+    "Steel / Ironwork",
+    "Framing",
+    "Drywall",
+    "Roofing",
+    "Waterproofing",
     "Plumber",
+    # STAYS SEPARATE from Plumber, ruled: never the same crew in NYC.
+    "Water Main",
+    "Electrical",
     "HVAC / Mechanical",
-    "Ironworker",
-    "Mason",
-    "Concrete / Cement",
-    "Roofer",
-    "Painter",
-    "Sheet Metal",
-    "Operating Engineer",
+    "Sprinkler",
+    "Fire Protection",
+    "Elevator",
+    "Glazing",
+    "Painting",
+    "Flooring",
     "Demolition",
-    "Fire Protection / Sprinkler",
-    "Drywall / Plasterer",
-    "Glazier",
-    "Insulator",
-    "Foreman / Supervisor",
-    "Surveyor",
+    "Abatement",
+    "Scaffolding",
+    "Surveying",
     "Safety",
+    "Cleaning",
 ]
+
+# Valid on rows that already carry them, hidden from the picker, NEVER
+# re-spelled. The stored string stays exactly as filed; the value here records
+# what supersedes it so a reader is not left guessing why two spellings of one
+# trade both count as vocabulary.
+DEPRECATED_TRADES: Dict[str, str] = {
+    "Concrete / Cement": "Concrete",
+    "Framers": "Framing",
+    "Electrician": "Electrical",
+    # Ruled: always under Framing on these sites.
+    "Carpentry": "Framing",
+}
+
+# Match key -> canonical label, for BOTH lists. Populated beside _roster_key,
+# which is where the one normalization rule lives.
+_TRADE_BY_KEY: Dict[str, str] = {}
+
+
+def _trade_source(trade) -> str:
+    """"vocabulary" if this string is a known trade, else "custom".
+
+    THE ONLY THING THE MIGRATION WRITES. The stored `trade` is never touched --
+    a value that matches nothing keeps its exact spelling and renders, files and
+    prints identically. Only this flag differs, which is what lets a translator
+    know no lookup exists and lets the admin screen count off-vocabulary rows.
+
+    Deprecated labels count as VOCABULARY. They were published; a row carrying
+    one is not an admin's off-list improvisation.
+    """
+    return "vocabulary" if _roster_key(trade) in _TRADE_BY_KEY else "custom"
 
 
 class TradeAssignment(BaseModel):
@@ -1874,6 +1926,12 @@ class TradeAssignment(BaseModel):
         discards whatever the client sends and re-derives the id by
         matching the row against the stored roster (see
         _merge_trade_assignments).
+    trade_source: "vocabulary" | "custom" -- SERVER-DERIVED, never accepted
+        from the client. It says whether `trade` matches a published label, so
+        a translator knows when no lookup exists and the admin screen can count
+        off-vocabulary rows. The stored `trade` is a plain English string with
+        no marker either way, so the DOB record, the report and the PDF are
+        byte-identical whichever path produced the row.
     status: "inactive" marks a soft-deleted row. MUST stay a string —
         ProjectResponse.trade_assignments is List[Dict[str, str]], so a
         bool (or a None id) in the stored array 500s every later GET.
@@ -1882,6 +1940,7 @@ class TradeAssignment(BaseModel):
     company: str
     id: Optional[str] = None
     status: Optional[str] = None
+    trade_source: Optional[str] = None
 
 
 class ProjectGate(BaseModel):
@@ -10896,54 +10955,48 @@ async def upload_osha_card(file_data: dict, request: Request):
             detail=f"OCR processing failed: {str(e)}",
         )
 
-@api_router.get("/checkin/{project_id}/companies")
-async def get_project_companies(project_id: str):
-    """Public endpoint - get list of companies/subcontractors for a project's company"""
-    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    company_id = project.get("company_id")
+@api_router.get("/trades/vocabulary")
+async def get_trade_vocabulary(current_user=Depends(get_current_user)):
+    """The controlled trade list. ONE SOURCE OF TRUTH, and this is it.
 
-    # ── THE ROSTER IS THE PROJECT'S, NOT AN ACCOUNTS TABLE ──────────────────
-    #
-    # This read `db.subcontractors`, which is the subcontractor LOGIN directory
-    # — it carries email and password and has a unique email index. The
-    # operator ruled CREW-LEVEL identity: a roster entry is (trade x company)
-    # on a project, and there are no subcontractor logins. So that collection
-    # is correctly EMPTY, and "Subs 0" was an accurate count of a concept the
-    # ruling retired, not a broken query.
-    #
-    # `project.trade_assignments` is the roster the admin actually maintains
-    # and the same array `_merge_trade_assignments` mints ids into, so this
-    # endpoint and the daily headcount now describe one thing.
-    #
-    # Inactive rows are excluded: a sub who has left the job should not be
-    # offered at the gate. Distinct on the NORMALISED (company, trade), the
-    # roster-match rule used everywhere else here, so a case-only edit does not
-    # produce two entries for one crew.
-    _seen: set = set()
-    companies = []
-    for _row in (project.get("trade_assignments") or []):
-        if not isinstance(_row, dict) or _assignment_is_inactive(_row):
-            continue
-        _name = str(_row.get("company") or "").strip()
-        _trade = str(_row.get("trade") or "").strip()
-        if not _name:
-            continue
-        _key = (_roster_key(_name), _roster_key(_trade))
-        if _key in _seen:
-            continue
-        _seen.add(_key)
-        companies.append({"name": _name, "trade": _trade})
-    
-    # Also add the main company name
-    if company_id:
-        main_company = await db.companies.find_one({"_id": to_query_id(company_id)})
-        if main_company:
-            companies.insert(0, {"name": main_company.get("name"), "trade": "General Contractor"})
-    
-    return companies
+    The list lived twice -- DEFAULT_TRADES here and TRADE_SUGGESTIONS in
+    app/project/[id]/trades.jsx -- as twenty identical strings that validated
+    nothing. The client now fetches instead of carrying a copy, and a test
+    asserts no second copy exists.
+
+    `deprecated` is returned SEPARATELY rather than merged: those labels stay
+    valid on rows that already carry them and must never be re-spelled, but an
+    admin picking a new trade should not be offered them. The client hides them
+    from the picker and still renders a row that holds one as a normal
+    vocabulary value.
+
+    Not tenant-scoped -- it is a static list with no project or company in it --
+    but authenticated, because nothing anonymous needs it. THE GATE DOES NOT
+    CALL THIS. A worker's pick is validated against the project roster by
+    _roster_key, and adding a vocabulary check there would be a new way to
+    refuse a man at a turnstile.
+    """
+    return {
+        "trades": list(TRADE_VOCABULARY),
+        "deprecated": dict(DEPRECATED_TRADES),
+    }
+
+
+# ── GET /checkin/{project_id}/companies IS GONE ─────────────────────────
+#
+# It had NO CALLER. checkin.html reads the roster from
+# /checkin/{project_id}/{tag_id}/info, which returns `trade_assignments:
+# [{trade, company}]`; the deleted endpoint returned `[{name, trade}]` -- a
+# different key for the company -- and injected a synthetic
+# {"name": <main company>, "trade": "General Contractor"} row the gate never
+# saw. Two shapes for one roster, one of them unreachable, already drifted.
+#
+# `let companies = []` in checkin.html was its only trace and is gone with it.
+#
+# The GATE_ROUTES set in test_company_less_tenancy.py listed this path; it has
+# been removed there WITH A NOTE, because that set exists to stop someone
+# quietly deleting a route workers depend on, and the note is what distinguishes
+# this deletion from the thing the set guards against.
 
 
 # ── worker_project_trades: a worker's trade + company, PER PROJECT ──────
@@ -11048,6 +11101,14 @@ def _roster_key(value) -> str:
     leading/trailing whitespace, internal whitespace, and renames.
     """
     return str(value or "").strip().casefold()
+
+
+# POPULATED HERE, not beside the lists, because THIS is where the one
+# normalization rule lives. Building the index next to TRADE_VOCABULARY would
+# mean either importing the rule upward or re-implementing it -- and a second
+# implementation of _roster_key is exactly the drift this file keeps closing.
+_TRADE_BY_KEY.update({_roster_key(_t): _t for _t in TRADE_VOCABULARY})
+_TRADE_BY_KEY.update({_roster_key(_t): _t for _t in DEPRECATED_TRADES})
 
 
 def _assignment_is_inactive(row) -> bool:
@@ -11204,7 +11265,14 @@ def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str
         seen_keys.add(key)
         prior = existing_by_key.get(key) or {}
         row_id = str(prior.get("id") or "").strip() or f"srv_{uuid.uuid4().hex}"
-        out: Dict[str, str] = {"trade": t, "company": c, "id": row_id}
+        # trade_source is DERIVED, never accepted from the client: it is a
+        # statement about the vocabulary, not a field an admin owns. Stamped on
+        # every save so a row that becomes vocabulary (because the label was
+        # added) flips without anyone editing the trade.
+        out: Dict[str, str] = {
+            "trade": t, "company": c, "id": row_id,
+            "trade_source": _trade_source(t),
+        }
         # Only an explicit "inactive" is persisted; an active row keeps the
         # historical {trade, company, id} shape with no status key.
         if _assignment_is_inactive(row):
@@ -11220,6 +11288,7 @@ def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str
         row_id = str(row.get("id") or "").strip() or f"srv_{uuid.uuid4().hex}"
         merged.append({
             "trade": t, "company": c, "id": row_id, "status": "inactive",
+            "trade_source": _trade_source(t),
         })
     return merged
 

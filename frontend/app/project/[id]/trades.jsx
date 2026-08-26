@@ -25,7 +25,7 @@ import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
-import { projectsAPI } from '../../../src/utils/api';
+import { projectsAPI, tradesAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
@@ -37,34 +37,28 @@ import { isOfflineError, settleFetch } from '../../../src/utils/offlineState';
 /**
  * Per-project subcontractor roster editor.
  *
- * Each entry pairs a trade (HVAC, Electrical, etc.) with the specific
- * company doing that trade on this project. Workers pick one combined
- * entry from the NFC check-in dropdown — both their `trade` and
- * `company` fields get populated from it. No free-text.
+ * Each entry pairs a trade with the specific company doing that trade on this
+ * project.
+ *
+ * TWO ACTORS, AND THE OLD COMMENT ONLY DESCRIBED ONE. It ended "No free-text",
+ * which was true of the WORKER and false of the ADMIN — and it sat directly
+ * above the admin's free-text TextInput. That is how "Framers" reached
+ * production while a twenty-entry list sat two files away validating nothing.
+ *
+ *   THE WORKER, at the NFC gate: picks one combined trade+company entry from a
+ *   dropdown built out of this roster. Both fields come from the pick. No
+ *   free-text, and that was always true.
+ *
+ *   THE ADMIN, here: picks a trade from the server's controlled vocabulary.
+ *   Free-text is still reachable — a fixed list always lags a live jobsite —
+ *   but only through an explicit "add a trade not on the list" step, so an
+ *   admin who goes off-vocabulary knows he did.
+ *
+ * The vocabulary is FETCHED, never carried. TRADE_SUGGESTIONS used to live in
+ * this file as a second copy of the server's list; a test now asserts no such
+ * copy exists.
  */
 
-const TRADE_SUGGESTIONS = [
-  'General Labor',
-  'Carpenter',
-  'Electrician',
-  'Plumber',
-  'HVAC / Mechanical',
-  'Ironworker',
-  'Mason',
-  'Concrete / Cement',
-  'Roofer',
-  'Painter',
-  'Sheet Metal',
-  'Operating Engineer',
-  'Demolition',
-  'Fire Protection / Sprinkler',
-  'Drywall / Plasterer',
-  'Glazier',
-  'Insulator',
-  'Foreman / Supervisor',
-  'Surveyor',
-  'Safety',
-];
 
 export default function ProjectTradesScreen() {
   const { colors, isDark } = useTheme();
@@ -81,6 +75,13 @@ export default function ProjectTradesScreen() {
   const [newTrade, setNewTrade] = useState('');
   const [newCompany, setNewCompany] = useState('');
   const [showSuggest, setShowSuggest] = useState(false);
+  // The server's controlled list, fetched. `deprecated` labels stay VALID on
+  // rows that already carry them but are never offered for a new pick, so they
+  // are held separately and only consulted by isVocabularyTrade.
+  const [vocabulary, setVocabulary] = useState([]);
+  const [deprecatedTrades, setDeprecatedTrades] = useState([]);
+  // The explicit off-list step. Never entered by mistyping.
+  const [customMode, setCustomMode] = useState(false);
   const [dirty, setDirty] = useState(false);
   // 'ok' | 'offline' | 'error'. Anything but 'ok' means the roster on screen is
   // a cached copy (or nothing) — and that saving is impossible right now.
@@ -91,6 +92,31 @@ export default function ProjectTradesScreen() {
   // Soft-deleted rows are kept in state (they must be SENT back marked
   // inactive) but are never shown and never offered for selection.
   const visibleAssignments = assignments.filter((a) => a.status !== 'inactive');
+
+  /**
+   * Is this trade a published label?
+   *
+   * MIRRORS server._trade_source, which uses _roster_key -- strip + casefold --
+   * the project's one normalization rule, already mirrored a third time by
+   * rosterKey() in checkin.html. The server is authoritative; this copy only
+   * decides what the screen SAYS, never what is stored.
+   *
+   * Deprecated labels count. They were published, so a row carrying one is not
+   * an admin's off-list improvisation -- it is history, and it must never be
+   * re-spelled.
+   */
+  const rosterKey = (v) => String(v || '').trim().toLowerCase();
+  const knownTradeKeys = React.useMemo(
+    () => new Set([...vocabulary, ...deprecatedTrades].map(rosterKey)),
+    [vocabulary, deprecatedTrades],
+  );
+  const isVocabularyTrade = (t) => knownTradeKeys.has(rosterKey(t));
+
+  // Surfaced so the vocabulary earns its next entries: an admin who sees five
+  // rows off the list can say which of them should be on it.
+  const offVocabularyCount = visibleAssignments.filter(
+    (a) => !isVocabularyTrade(a.trade),
+  ).length;
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -103,6 +129,23 @@ export default function ProjectTradesScreen() {
       fetchProject();
     }
   }, [isAuthenticated, projectId]);
+
+  // NON-FATAL. A failed vocabulary fetch leaves the picker empty, and the
+  // "add a trade not on the list" step still works -- an admin standing on a
+  // site at 6am must not be stopped from adding a crew because a list did not
+  // load. The roster itself is what matters and it has its own cache.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    let alive = true;
+    tradesAPI.getVocabulary()
+      .then((v) => {
+        if (!alive) return;
+        setVocabulary(v.trades);
+        setDeprecatedTrades(Object.keys(v.deprecated || {}));
+      })
+      .catch(() => { /* picker stays empty; custom entry still reachable */ });
+    return () => { alive = false; };
+  }, [isAuthenticated]);
 
   const fetchProject = async () => {
     setLoading(true);
@@ -183,6 +226,9 @@ export default function ProjectTradesScreen() {
     setDirty(true);
     setNewTrade('');
     setNewCompany('');
+    // Back to the list. A custom entry is a deliberate act each time, not a
+    // mode the screen quietly stays in for the next row.
+    setCustomMode(false);
   };
 
   // Removal is a SOFT delete: the row stays in the payload marked inactive.
@@ -200,6 +246,7 @@ export default function ProjectTradesScreen() {
   const pickSuggestion = (trade) => {
     setNewTrade(trade);
     setShowSuggest(false);
+    setCustomMode(false);
   };
 
   const save = async () => {
@@ -346,39 +393,102 @@ export default function ProjectTradesScreen() {
                   <HardHat size={14} strokeWidth={1.5} color={colors.text.muted} />
                   <Text style={s.addLabel}>TRADE</Text>
                 </View>
-                <TextInput
-                  style={s.input}
-                  value={newTrade}
-                  onChangeText={setNewTrade}
-                  placeholder="e.g. HVAC / Mechanical"
-                  placeholderTextColor={colors.text.subtle}
-                  onFocus={() => setShowSuggest(true)}
-                  autoCapitalize="words"
-                />
-                {showSuggest && (
-                  <View style={s.suggestBox}>
-                    <ScrollView
-                      style={{ maxHeight: 180 }}
-                      keyboardShouldPersistTaps="handled"
+
+                {/*
+                  A PICKER, NOT A TEXT BOX. The control here used to be a plain
+                  TextInput with a filtered suggestion list that merely filled
+                  it in, so anything an admin typed was stored. That is how
+                  "Framers" reached production while a twenty-entry list sat in
+                  this same file validating nothing.
+                */}
+                {customMode ? (
+                  <>
+                    <TextInput
+                      style={s.input}
+                      value={newTrade}
+                      onChangeText={setNewTrade}
+                      placeholder="Trade not on the list"
+                      placeholderTextColor={colors.text.subtle}
+                      autoCapitalize="words"
+                      autoFocus
+                    />
+                    {/*
+                      SAID PLAINLY, because the whole point of the explicit step
+                      is that the admin knows what he is choosing. The stored
+                      string is a plain English trade either way — no marker, no
+                      prefix — so the DOB record, the report and the PDF are
+                      byte-identical whichever path produced the row. Only
+                      trade_source differs, and the server derives that.
+                    */}
+                    <Text style={s.customNote}>
+                      This trade is not on the standard list. It will be saved
+                      exactly as typed and flagged as a custom trade.
+                    </Text>
+                    <Pressable onPress={() => { setCustomMode(false); setNewTrade(''); }}>
+                      <Text style={s.customToggle}>Choose from the list instead</Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <Pressable
+                      style={s.input}
+                      onPress={() => setShowSuggest((v) => !v)}
                     >
-                      {TRADE_SUGGESTIONS.filter(
-                        (t) =>
-                          !newTrade ||
-                          t.toLowerCase().includes(newTrade.toLowerCase())
-                      ).map((t) => (
-                        <Pressable
-                          key={t}
-                          style={({ pressed }) => [
-                            s.suggestItem,
-                            pressed && { opacity: 0.7 },
-                          ]}
-                          onPress={() => pickSuggestion(t)}
+                      <Text style={newTrade ? s.pickerValue : s.pickerPlaceholder}>
+                        {newTrade || 'Select a trade'}
+                      </Text>
+                    </Pressable>
+                    {/*
+                      A CUSTOM VALUE SHOWS BACK AS CHOSEN. Reopening a row whose
+                      trade is off-vocabulary must not blank the field — that
+                      would turn "we do not recognise this" into "you never
+                      entered anything".
+                    */}
+                    {newTrade && !isVocabularyTrade(newTrade) && (
+                      <Text style={s.customNote}>Custom trade — not on the standard list.</Text>
+                    )}
+                    {showSuggest && (
+                      <View style={s.suggestBox}>
+                        <ScrollView
+                          style={{ maxHeight: 220 }}
+                          keyboardShouldPersistTaps="handled"
                         >
-                          <Text style={s.suggestItemText}>{t}</Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
-                  </View>
+                          {vocabulary.map((t) => (
+                            <Pressable
+                              key={t}
+                              style={({ pressed }) => [
+                                s.suggestItem,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                              onPress={() => pickSuggestion(t)}
+                            >
+                              <Text style={s.suggestItemText}>{t}</Text>
+                            </Pressable>
+                          ))}
+                          {/*
+                            THE EXPLICIT STEP. One tap away, and deliberately at
+                            the bottom of the list rather than beside the field:
+                            an admin reaches it by looking for it, not by
+                            mistyping. A fixed list always lags a live jobsite,
+                            so removing this escape hatch would push every
+                            off-list crew to "My company isn't listed" at the
+                            gate and land the work on the CP.
+                          */}
+                          <Pressable
+                            style={({ pressed }) => [
+                              s.suggestItem,
+                              s.customItem,
+                              pressed && { opacity: 0.7 },
+                            ]}
+                            onPress={() => { setCustomMode(true); setShowSuggest(false); setNewTrade(''); }}
+                          >
+                            <Plus size={13} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={s.customItemText}>Add a trade not on the list</Text>
+                          </Pressable>
+                        </ScrollView>
+                      </View>
+                    )}
+                  </>
                 )}
               </View>
 
@@ -423,6 +533,21 @@ export default function ProjectTradesScreen() {
             <Text style={s.sectionLabel}>
               ROSTER ({visibleAssignments.length})
             </Text>
+
+            {/*
+              WHAT IS OFF THE LIST, counted. Not a warning and not an error --
+              a custom trade is a legitimate answer to a jobsite the vocabulary
+              has not caught up with. It is surfaced so the vocabulary can earn
+              its next entries: an admin who can see which rows are off the list
+              is the one who can say which of them belong on it.
+            */}
+            {offVocabularyCount > 0 && (
+              <Text style={s.offVocabNote}>
+                {offVocabularyCount === 1
+                  ? '1 trade on this roster is not on the standard list.'
+                  : `${offVocabularyCount} trades on this roster are not on the standard list.`}
+              </Text>
+            )}
 
             {visibleAssignments.length === 0 && readOnly ? (
               // A failed read is not "nobody is configured" — that claim would
@@ -604,6 +729,47 @@ function buildStyles(colors, isDark) {
     suggestItemText: {
       fontSize: 14,
       color: colors.text.primary,
+    },
+    // The picker's closed state reuses `input` for its box, so these only
+    // carry the text: a chosen value reads like typed text, a placeholder
+    // reads like a placeholder.
+    pickerValue: {
+      color: colors.text.primary,
+      fontSize: 15,
+    },
+    pickerPlaceholder: {
+      color: colors.text.subtle,
+      fontSize: 15,
+    },
+    // A custom trade is a legitimate answer, not an error — muted, never a
+    // warning colour. Saying it plainly is the point of the explicit step.
+    customNote: {
+      marginTop: spacing.xs,
+      fontSize: 12,
+      lineHeight: 17,
+      color: colors.text.muted,
+    },
+    customToggle: {
+      marginTop: spacing.xs,
+      fontSize: 13,
+      color: colors.text.secondary || colors.text.muted,
+      textDecorationLine: 'underline',
+    },
+    customItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      borderBottomWidth: 0,
+    },
+    customItemText: {
+      fontSize: 14,
+      color: colors.text.muted,
+    },
+    offVocabNote: {
+      marginBottom: spacing.sm,
+      fontSize: 12,
+      lineHeight: 17,
+      color: colors.text.muted,
     },
     addBtn: {
       flexDirection: 'row',

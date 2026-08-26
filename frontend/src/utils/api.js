@@ -252,6 +252,30 @@ export const versionAPI = {
   },
 };
 
+/**
+ * THE TRADE VOCABULARY, fetched -- never carried.
+ *
+ * The list used to exist twice: DEFAULT_TRADES in server.py and
+ * TRADE_SUGGESTIONS in app/project/[id]/trades.jsx, twenty identical strings
+ * that validated nothing. The server owns it now and a test asserts there is
+ * no second copy, so this call is the only way the client learns the list.
+ *
+ * `deprecated` comes back separately on purpose: those labels stay VALID on
+ * rows that already carry them and must never be re-spelled, but they are not
+ * offered for a new pick.
+ */
+export const tradesAPI = {
+  getVocabulary: async () => {
+    const response = await apiClient.get('/api/trades/vocabulary');
+    const data = response.data || {};
+    return {
+      trades: Array.isArray(data.trades) ? data.trades : [],
+      deprecated: data.deprecated && typeof data.deprecated === 'object'
+        ? data.deprecated : {},
+    };
+  },
+};
+
 export const projectsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/projects');
