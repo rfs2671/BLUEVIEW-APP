@@ -326,10 +326,15 @@ export function ensurePdfJsViewer() {
   return inflight;
 }
 
-/** `viewer.html?file=<encoded local pdf uri>` for the staged viewer. */
+/** `viewer.html?file=<encoded local pdf uri>` for the staged viewer.
+ *
+ *  #pagemode=none closes pdf.js's thumbnail sidebar -- the library's default,
+ *  which eats half a phone screen and persists across documents once opened.
+ *  The offline path needs it for the same reason the hosted one does; a cellar
+ *  is exactly where the screen is smallest and the drawing matters most. */
 export function localViewerUrlFor(viewerUri, pdfFileUri) {
   if (!viewerUri || !pdfFileUri) return null;
-  return `${viewerUri}?file=${encodeURIComponent(pdfFileUri)}`;
+  return `${viewerUri}?file=${encodeURIComponent(pdfFileUri)}#pagemode=none`;
 }
 
 /** Directory WKWebView must be granted read access to (iOS allowingReadAccessToURL). */

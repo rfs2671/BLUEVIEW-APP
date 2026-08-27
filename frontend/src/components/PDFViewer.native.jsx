@@ -45,8 +45,13 @@ async function resolvePdfSrc(rawUrl) {
 // Mozilla's hosted pdf.js viewer. On iOS, WKWebView renders application/pdf
 // content natively via PDFKit with smooth pinch/zoom/pan, so we load the
 // PDF URL directly.
+// #pagemode=none CLOSES pdf.js's thumbnail sidebar. It is the library's own
+// default, not ours -- we ship no sidebar code at all -- and on a 6" phone it
+// takes half the screen. pdf.js also PERSISTS sidebar state in its ViewHistory,
+// so once it opens it reopens for every later document, which is why it read as
+// undismissable. iOS never reaches here: PDFKit has no sidebar.
 function pdfJsViewerUrl(pdfUrl) {
-  return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(pdfUrl)}`;
+  return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(pdfUrl)}#pagemode=none`;
 }
 
 /**
