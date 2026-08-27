@@ -91,6 +91,7 @@ import {
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
   isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
   hasNoWorkersOnSite, reconcileCrewsWithRoster,
+  applyHeadcountEdit, isHeadcountOverridden, gateHeadcount, CP_SOURCE,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
   deriveGeneralDescription,
@@ -749,6 +750,24 @@ export default function DailyJobsiteLog() {
     setActivities((prev) => prev.map((a, i) => (i === index ? { ...a, [field]: value } : a)));
   };
 
+  /**
+   * The CP correcting how many men a crew had on site.
+   *
+   * WHY THIS IS NOT updateActivity(i, 'num_workers', v). One keystroke has to
+   * move THREE fields together -- the printed count, who supplied it, and (when
+   * he clears the box) a revert to the gate's own number. Writing them one at a
+   * time through the generic setter would leave a row that says 'cp' with the
+   * gate's count on it, or the reverse, both of which print.
+   *
+   * The rule lives in applyHeadcountEdit so the reconcile and the renderer read
+   * the same definition of an override rather than three of them.
+   */
+  const updateCrewHeadcount = (index, raw) => {
+    setActivities((prev) => prev.map((a, i) => (
+      i === index ? { ...a, ...applyHeadcountEdit(a, raw) } : a
+    )));
+  };
+
   const addActivity = () => setActivities((prev) => [...prev, {
     ...EMPTY_ACTIVITY(), crew_id: `C${prev.length + 1}`,
   }]);
@@ -968,6 +987,11 @@ export default function DailyJobsiteLog() {
       num_workers: Number.isFinite(parseInt(c.num, 10))
         ? String(parseInt(c.num, 10))
         : '',
+      // A TYPED COUNT IS THE CP'S, A BLANK ONE IS NOBODY'S. Marking a blank
+      // 'cp' would put "(CP)" on the filed record against a number he never
+      // supplied; the blank means nobody counted, and that is not an assertion
+      // he made.
+      num_workers_source: Number.isFinite(parseInt(c.num, 10)) ? CP_SOURCE : undefined,
       // Added by hand — it did NOT come from the gate and must not claim to.
       gate_sourced: false,
       subcontractor_id: resolveRosterId(company, trade, rosterIdsRef.current),
@@ -1881,6 +1905,40 @@ export default function DailyJobsiteLog() {
               <Text style={s.crewRowFlag}>{t('emptyCrewHint')}</Text>
             )}
 
+            {/* THE CORRECTION. #244 gave the CP a card that explains why it is
+                not being asked for work; this is the first release in which he
+                can do something about it.
+                Editable on a gate row AND a hand-added one: the gate misses men
+                (a failed tag, a wrong project) and a hand-added crew can be
+                left with no count at all, and both are a headcount he is the
+                only one able to fix.
+                Correcting 0 to 4 immediately puts this crew back into
+                describableRows, so the log starts asking it for an activity and
+                a location and Next goes back to disabled. That is the point,
+                not a side effect. */}
+            <View style={s.headcountRow}>
+              <Text style={s.headcountLabel}>{t('headcountLabel')}</Text>
+              <TextInput
+                style={s.headcountInput}
+                value={String(a.num_workers ?? '')}
+                onChangeText={(v) => updateCrewHeadcount(i, v)}
+                keyboardType="number-pad"
+                editable={!locked}
+                maxLength={4}
+                accessibilityLabel={`${t('headcountLabel')} — ${crewName(a)}`}
+                placeholder={t('headcountPlaceholder')}
+                placeholderTextColor={outdoor.textSoft}
+              />
+              {/* WHAT THE TURNSTILE SAID, KEPT VISIBLE WHILE HE OVERRIDES IT.
+                  He is editing a 3301.2 record; the number he is standing over
+                  should not vanish from the screen the moment he types. */}
+              {isHeadcountOverridden(a) && gateHeadcount(a) !== null && (
+                <Text style={s.headcountGate}>
+                  {t('headcountGateWas').replace('{n}', String(gateHeadcount(a)))}
+                </Text>
+              )}
+            </View>
+
             <>
               {/* ACTIVITY. Ranked, never pre-selected. */}
               <Text style={s.question}>{t('activityQuestion')}</Text>
@@ -2539,6 +2597,27 @@ function buildStyles() {
       fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text, flexShrink: 1,
     },
     crewMeta: { fontSize: typography.sizes.sm, color: outdoor.textSoft },
+
+    // The headcount editor. Full touch target: this is a gloved thumb on a
+    // site, and it is the control the whole card now hangs on.
+    headcountRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      minHeight: touchTarget.min, marginTop: spacing.sm,
+    },
+    headcountLabel: {
+      fontSize: typography.sizes.sm, fontWeight: '600', color: outdoor.textDim,
+    },
+    headcountInput: {
+      minWidth: 64, minHeight: touchTarget.min,
+      paddingHorizontal: spacing.sm,
+      borderWidth: 1, borderColor: outdoor.lineStrong,
+      borderRadius: borderRadius.md,
+      backgroundColor: outdoor.surfaceSunk,
+      color: outdoor.text, fontSize: typography.sizes.md, textAlign: 'center',
+    },
+    headcountGate: {
+      flex: 1, fontSize: typography.sizes.fine, color: outdoor.textSoft,
+    },
 
     // The app renders a count / status as a small rounded pill badge - see the
     // reference screen's countBadge and autoFilledBadge.

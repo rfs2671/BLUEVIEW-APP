@@ -114,13 +114,32 @@ const text = (node) => {
   return out.join(' | ');
 };
 
+// ── The REAL headcount formatter, not a stub ───────────────────────────────
+// This renderer prints a crew row an INSPECTOR reads off the gate tablet, and
+// what it must print is the number AND who supplied it. Stubbing this would
+// leave the file asserting that a headcount appears while staying blind to
+// whether it is attributed, which is the whole point of the cell.
+const MODEL = path.join(FRONTEND, 'src', 'utils', 'dailyJobsiteModel.js');
+const _model = {};
+// eslint-disable-next-line no-new-func
+new Function('exports', 'module', 'require', babel.transformSync(
+  fs.readFileSync(MODEL, 'utf8'),
+  {
+    filename: MODEL,
+    plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
+    configFile: false,
+    babelrc: false,
+  },
+).code)(_model, { exports: _model }, require);
+
 // ── Stubs for everything the block closes over ──────────────────────────────
 const styleProxy = new Proxy({}, { get: () => ({}) });
 const Icon = function IconStub() { return null; };
 const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'colors', 'semantic',
   'spacing', 'withAlpha', 'rosterClock', 'logbookPhotoUri',
   'ShieldCheck', 'AlertTriangle', 'Truck', 'MapPin', 'ClipboardList', 'FileText',
-  'Users', 'CheckCircle', 'BookOpen', 'Pen', 'CloudSun', 'Clock', 'Eye', 'Wrench'];
+  'Users', 'CheckCircle', 'BookOpen', 'Pen', 'CloudSun', 'Clock', 'Eye', 'Wrench',
+  'headcountDisplay'];
 const VALUES = {
   View: 'View', Text: 'Text', Image: 'Image', React,
   s: styleProxy, t,
@@ -130,6 +149,7 @@ const VALUES = {
   withAlpha: () => 'rgba(0,0,0,0.1)',
   rosterClock: (v) => (v ? String(v) : '—'),
   logbookPhotoUri: () => null,
+  headcountDisplay: _model.headcountDisplay,
 };
 for (const n of NAMES) if (!(n in VALUES)) VALUES[n] = Icon;
 
@@ -478,6 +498,32 @@ ok(!phantom.includes('PHANTOM'),
   'daily_jobsite: crew_name is not read — it has no writer anywhere in the repo');
 ok(!/act\.crew_name/.test(src),
   'app/site/logbooks.jsx: no reader of act.crew_name is left in the source');
+
+// THE HEADCOUNT AN INSPECTOR READS OFF THE TABLET IS ATTRIBUTED.
+// This is the FOURTH surface printing a daily-jobsite crew row (the other three
+// are the combined report, the per-logbook PDF and the CP's own card). A number
+// a person typed must not render identically to one a turnstile counted on any
+// of them.
+ok(daily.includes('6'), 'daily_jobsite: a plain gate headcount still renders bare');
+ok(!daily.includes('(CP)'),
+  'daily_jobsite: a gate headcount is NOT falsely attributed to the CP');
+
+const overridden = render(doc('daily_jobsite', {
+  weather: 'Clear',
+  activities: [{ ...DAILY_ACT, num_workers: '4', num_workers_source: 'cp',
+    gate_num_workers: '6' }],
+}));
+ok(overridden.includes('4 (CP)'),
+  'daily_jobsite: a CP override says so on the tablet');
+ok(overridden.includes('gate recorded 6'),
+  'daily_jobsite: and what the turnstile counted is printed beside it');
+
+// A row from before the field existed carries no marker and must stay bare.
+const legacy = render(doc('daily_jobsite', {
+  weather: 'Clear', activities: [{ crew_id: 'C9', company: 'aaz', num_workers: 6 }],
+}));
+ok(!legacy.includes('(CP)'),
+  'daily_jobsite: a pre-existing row is not retroactively attributed');
 ok(/act\.crew_id/.test(src),
   'app/site/logbooks.jsx: ...and crew_id is what it reads instead');
 
