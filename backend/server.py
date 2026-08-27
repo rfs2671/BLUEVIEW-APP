@@ -11472,6 +11472,23 @@ def _assignment_is_inactive(row) -> bool:
 # That is deliberate: the divergence is real and each reader's order is part of
 # its meaning, so the fix is to make the order visible on one line rather than
 # to average four orders into a hidden default.
+def _recorded_trade(value) -> str:
+    """The trade a frozen check-in ACTUALLY recorded — '' when it recorded none.
+
+    "UNASSIGNED" is not a trade. register_and_checkin stamps it onto the
+    check-in row when the project has no roster, or when the worker picked "my
+    company isn't listed" — it is the frozen way of saying NOTHING WAS
+    RECORDED, which is why _store_worker_project_trade refuses to persist it as
+    a pairing and _display_sub_company renders it as "Pending assignment".
+
+    Anything that reads a frozen trade to decide whether one exists has to ask
+    through here, or the sentinel reads as a real answer and suppresses the
+    lookup that would have produced one.
+    """
+    s = str(value or "").strip()
+    return "" if s.upper() == "UNASSIGNED" else s
+
+
 def _worker_company(*candidates) -> str:
     """The company string from the first candidate that carries one.
 
@@ -20155,6 +20172,43 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
         legacy = []
         _degraded.append("legacy")
 
+    # ── THE PAIRING, FOR ROWS THAT FROZE NO TRADE ───────────────────────────
+    #
+    # `checkins.worker_trade` is an OBSERVATION: what was recorded at the gate
+    # the moment this man walked through, frozen onto an immutable row. When it
+    # holds a trade, that trade stands — see the row below.
+    #
+    # When it holds NOTHING, the row is not evidence that this worker has no
+    # trade; it is evidence that nobody had recorded one yet. The answer to
+    # "what does he do on this project" lives in worker_project_trades, and
+    # until now this endpoint never looked: an admin correcting a pairing could
+    # not change a check-in written that morning, so the daily jobsite log named
+    # crews with no trade on a signed §3301.2 record, and every crew fell back
+    # to the unfiltered activity-chip catalogue because chips key on the trade.
+    #
+    # ONE QUERY, NOT ONE PER WORKER. The loop below already does a per-row
+    # `workers.find_one`; adding a second per-row round trip to the roster read
+    # that thirteen men at shift start are waiting on is not a trade worth
+    # making. The pairings for this project are fetched once and indexed.
+    _pair_by_wid: Dict[str, Dict[str, Any]] = {}
+    _legacy_wids = [str(c.get("worker_id")) for c in legacy if c.get("worker_id")]
+    if _legacy_wids:
+        try:
+            async for _row in db[WORKER_PROJECT_TRADES_COLLECTION].find({
+                "project_id": str(project_id),
+                "worker_id": {"$in": _legacy_wids},
+            }):
+                _t = str(_row.get("trade") or "").strip()
+                # Mirrors _get_worker_project_trade: a pairing with no trade
+                # tells us nothing, so it is treated as absent rather than
+                # written back as an empty answer.
+                if _t:
+                    _pair_by_wid[str(_row.get("worker_id"))] = {"trade": _t}
+        except Exception as _e:
+            # A pairing read that fails must not cost the CP the roster. He gets
+            # what the check-ins froze, which is what he got before this existed.
+            logger.warning(f"checkins-today pairing lookup failed: {_e!r}")
+
     seen_legacy_wids: set = set()
     for c in legacy:
         wid = c.get("worker_id")
@@ -20186,7 +20240,29 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "worker_id": wid,
             "worker_name": name or "Unknown",
             "company": company,
-            "trade": c.get("worker_trade") or (worker.get("trade") if worker else ""),
+            # FROZEN FIRST, PAIRING ONLY TO FILL A GAP, and never the worker doc.
+            #
+            # A frozen trade is never overwritten. It is either what the worker
+            # picked at the gate or what a CP put there through
+            # POST /checkins/{id}/assign-trade, which writes the row AND the
+            # pairing together — both are authoritative for that day. Letting
+            # today's pairing win over it would mean a pairing edited next week
+            # silently rewrites the roster on a log that has already been signed,
+            # which is the retroactive mutation the frozen cert snapshot on this
+            # same row exists to prevent.
+            #
+            # THE `workers` DOCUMENT FALLBACK IS GONE. `workers.trade` is the
+            # cross-project bleed that register_and_checkin deliberately stopped
+            # writing (server.py: "a worker-level copy is what bled across
+            # jobs") — one slot for a man who holds different trades on
+            # different jobs, answered by whichever project filled it first.
+            # Reading it here kept that wrong answer alive on the one surface
+            # that prints it onto a compliance record. The pairing replaces it
+            # and is scoped to THIS project by construction.
+            "trade": (
+                _recorded_trade(c.get("worker_trade"))
+                or (_pair_by_wid.get(str(wid), {}).get("trade", "") if wid else "")
+            ),
             "check_in_time": c.get("check_in_time").isoformat() if isinstance(c.get("check_in_time"), datetime) else str(c.get("check_in_time", "")),
             "osha_number": worker.get("osha_number") if worker else "",
             "certifications": worker.get("certifications", []) if worker else [],
