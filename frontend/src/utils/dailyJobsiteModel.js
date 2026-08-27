@@ -214,6 +214,92 @@ export function headcountDisplay(activity, blank = '') {
   return `${text} (CP) - gate recorded ${gate}`;
 }
 
+/**
+ * Named men recorded on this row. The gate writes these; nothing else does.
+ */
+export const crewWorkerIdentities = (activity) => {
+  const ids = Array.isArray(activity?.worker_ids) ? activity.worker_ids : [];
+  const names = Array.isArray(activity?.worker_names) ? activity.worker_names : [];
+  return ids.length + names.length;
+};
+
+/**
+ * Whether this crew card may be REMOVED from the log.
+ *
+ * THE TEST IS ABSENT WORKER IDENTITIES, NOT THE gate_sourced FLAG, and the
+ * difference is the reason rather than a detail. A row carrying worker_ids or
+ * worker_names represents named men who tapped a turnstile; removing it takes
+ * them off a filed 3301.2 record with no trace, and no confirmation dialog
+ * makes that acceptable. A hand-added row is the CP's own assertion with nobody
+ * behind it, so deleting it retracts a statement rather than erasing a person.
+ *
+ * Reading identities rather than the flag means a row whose gate_sourced was
+ * lost in a round-trip is still protected, and a hand-added row that somehow
+ * acquired the flag is still removable. The flag describes provenance; this
+ * question is about people.
+ *
+ * A DELETED GATE ROW WOULD COME BACK ANYWAY. reconcileCrewsWithRoster
+ * re-appends every fresh crew it did not match, so removing one would need a
+ * persistent tombstone -- and a tombstone is itself a record that men were
+ * suppressed, which is worse than leaving the row at 0 and letting him say why.
+ * #244 already settled that disposition: an absent gate crew drops to 0 and
+ * stays visible.
+ */
+export const isDeletableCrew = (activity) => Boolean(activity)
+  && !isUnassignedWorkerRow(activity)
+  && crewWorkerIdentities(activity) === 0;
+
+/**
+ * What deleting this card actually DOES, as facts the screen turns into a
+ * sentence.
+ *
+ * WHY THIS IS NOT "ARE YOU SURE". The duplicate #244 deliberately creates has
+ * the CP's description on one row and the gate's men on the other. Deleting the
+ * described row leaves a crew with six workers and no work recorded, which puts
+ * it straight back into crewsWithoutWork and re-disables Next -- he taps
+ * through a bland confirmation and discovers the consequence two steps later at
+ * a control that will not advance. The dialog has to say that before he taps,
+ * not after.
+ *
+ * `stranded` is the sibling that would be left holding men and no work. Matched
+ * on COMPANY ALONE and deliberately: the duplicate exists precisely because the
+ * two rows disagree about the trade -- the hand-added one usually has none --
+ * so keying on (company, trade) would find nothing in the one case this is for.
+ */
+export function crewDeleteImpact(activities, index) {
+  const rows = Array.isArray(activities) ? activities : [];
+  const row = rows[index];
+  if (!row) return null;
+
+  const described = String(row.work_description || '').trim() !== '';
+  const company = rosterKey(row.company);
+
+  let stranded = null;
+  if (described && company) {
+    for (let i = 0; i < rows.length; i += 1) {
+      if (i === index) continue;
+      const other = rows[i];
+      if (isUnassignedWorkerRow(other)) continue;
+      if (rosterKey(other.company) !== company) continue;
+      if (String(other.work_description || '').trim() !== '') continue;
+      const n = crewHeadcount(other);
+      if (n === null || n === 0) continue;
+      stranded = { company: other.company, workers: n };
+      break;
+    }
+  }
+
+  return {
+    deletable: isDeletableCrew(row),
+    hasDescription: described,
+    stranded,
+    // The log does not end up empty. reconcileCrewsWithRoster returns the whole
+    // fresh roster when nothing is stored, so a CP who deletes down to a blank
+    // screen and reopens to a full one would think the app lost his work.
+    isLastRow: workRows(rows).length === 1,
+  };
+}
+
 export function applyHeadcountEdit(activity, raw) {
   const text = String(raw ?? '').trim();
 
@@ -1075,6 +1161,9 @@ export default {
   gateHeadcount,
   headcountDisplay,
   applyHeadcountEdit,
+  crewWorkerIdentities,
+  isDeletableCrew,
+  crewDeleteImpact,
   isUnassignedCompany,
   isUnassignedTrade,
   cleanTrade,

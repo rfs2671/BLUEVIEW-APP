@@ -43,7 +43,7 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
-  Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock,
+  Check, Camera, X, ImageIcon, Plus, AlertTriangle, Lock, Trash2,
 } from 'lucide-react-native';
 import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
@@ -54,6 +54,7 @@ import { useT } from '../../src/i18n';
 import {
   spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
 } from '../../src/styles/theme';
+import { opacity } from '../../src/styles/tokens';
 import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
@@ -92,6 +93,7 @@ import {
   isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
   hasNoWorkersOnSite, reconcileCrewsWithRoster,
   applyHeadcountEdit, isHeadcountOverridden, gateHeadcount, CP_SOURCE,
+  isDeletableCrew, crewDeleteImpact,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
   deriveGeneralDescription,
@@ -359,6 +361,8 @@ export default function DailyJobsiteLog() {
 
   // ── Modals ────────────────────────────────────────────────────────────
   const [addingCrew, setAddingCrew] = useState(null);      // {company, trade, num}
+  // The card the CP has asked to remove, with its impact already computed.
+  const [deletingCrew, setDeletingCrew] = useState(null);
   const [otherPrompt, setOtherPrompt] = useState(null);    // {index, kind, value}
   const [photoLightbox, setPhotoLightbox] = useState(null);
 
@@ -960,6 +964,37 @@ export default function DailyJobsiteLog() {
       };
     }));
     setOtherPrompt(null);
+  };
+
+  /**
+   * REMOVING A CREW CARD.
+   *
+   * Two steps on purpose. The confirm states a CONSEQUENCE the CP cannot see
+   * from the card in front of him -- deleting the described half of a duplicate
+   * leaves the other half holding men with no work recorded, which re-disables
+   * Next -- so the impact is computed from the whole list before anything is
+   * asked, and the sentence is built from it.
+   */
+  const requestDeleteCrew = (index) => {
+    const impact = crewDeleteImpact(activities, index);
+    if (!impact || !impact.deletable) return;
+    setDeletingCrew({ index, impact, name: crewName(activities[index]) });
+  };
+
+  const confirmDeleteCrew = () => {
+    const target = deletingCrew;
+    setDeletingCrew(null);
+    if (!target) return;
+    setActivities((prev) => {
+      // RE-CHECKED AGAINST THE LIST AS IT IS NOW, not as it was when the dialog
+      // opened. A reconcile can land between the tap and the confirm, and
+      // removing by a stale index would take a different crew than the one
+      // named in the sentence he agreed to.
+      const row = prev[target.index];
+      if (!row || !isDeletableCrew(row)) return prev;
+      if (crewName(row) !== target.name) return prev;
+      return prev.filter((_, i) => i !== target.index);
+    });
   };
 
   const commitAddCrew = () => {
@@ -1939,6 +1974,27 @@ export default function DailyJobsiteLog() {
               )}
             </View>
 
+            {/* REMOVING THE CARD. #244's reconcile deliberately appends a
+                second row when the CP hand-added a company the gate later
+                reports, and justified it as "visible on the screen and
+                correctable". This is what makes correctable true.
+                A gate card says WHY it has no Remove rather than simply not
+                showing one -- an absent control reads as a bug, and the CP
+                would go looking for it. */}
+            {!locked && (isDeletableCrew(a) ? (
+              <Pressable
+                onPress={() => requestDeleteCrew(i)}
+                accessibilityRole="button"
+                accessibilityLabel={`${t('deleteCrew')} — ${crewName(a)}`}
+                style={({ pressed }) => [s.deleteCrewBtn, pressed && s.deleteCrewBtnPressed]}
+              >
+                <Trash2 size={16} strokeWidth={1.5} color={outdoor.danger} />
+                <Text style={s.deleteCrewText}>{t('deleteCrew')}</Text>
+              </Pressable>
+            ) : (
+              <Text style={s.deleteCrewRefused}>{t('deleteCrewRefused')}</Text>
+            ))}
+
             <>
               {/* ACTIVITY. Ranked, never pre-selected. */}
               <Text style={s.question}>{t('activityQuestion')}</Text>
@@ -2520,6 +2576,63 @@ export default function DailyJobsiteLog() {
         </View>
       </Modal>
 
+      {/* THE CONSEQUENCE, BEFORE HE TAPS. A bland "are you sure" would let him
+          through to discover at a disabled Next, two steps later, that a crew
+          he can still see now has men and no work recorded. */}
+      <Modal
+        visible={!!deletingCrew}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeletingCrew(null)}
+      >
+        <View style={s.modalOverlay}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>
+              {t('deleteCrewTitle').replace('{crew}', deletingCrew?.name || '')}
+            </Text>
+
+            {deletingCrew?.impact?.stranded ? (
+              <Text style={s.modalBody}>
+                {t('deleteCrewStrands')
+                  .replace('{crew}', deletingCrew.impact.stranded.company)
+                  .replace('{n}', plural(
+                    'workers_one', 'workers_other',
+                    deletingCrew.impact.stranded.workers,
+                  ))}
+              </Text>
+            ) : deletingCrew?.impact?.hasDescription ? (
+              <Text style={s.modalBody}>{t('deleteCrewLosesWork')}</Text>
+            ) : (
+              <Text style={s.modalBody}>{t('deleteCrewPlain')}</Text>
+            )}
+
+            {/* Deleting everything does not empty the log. Said here, because a
+                CP who deletes to a blank screen and reopens to a full one will
+                think the app lost his work. */}
+            {deletingCrew?.impact?.isLastRow && (
+              <Text style={s.modalNote}>{t('deleteCrewLastRow')}</Text>
+            )}
+
+            <View style={s.modalActions}>
+              <Pressable
+                style={s.secondaryBtn}
+                accessibilityRole="button"
+                onPress={() => setDeletingCrew(null)}
+              >
+                <Text style={s.secondaryBtnText}>{t('deleteCrewCancel')}</Text>
+              </Pressable>
+              <Pressable
+                style={s.dangerBtn}
+                accessibilityRole="button"
+                onPress={confirmDeleteCrew}
+              >
+                <Text style={s.dangerBtnText}>{t('deleteCrewConfirm')}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <Modal
         visible={!!photoLightbox}
         transparent
@@ -2617,6 +2730,45 @@ function buildStyles() {
     },
     headcountGate: {
       flex: 1, fontSize: typography.sizes.fine, color: outdoor.textSoft,
+    },
+
+    // ── Removing a crew card ──────────────────────────────────────────────
+    // Destructive, so it is NOT a primary button: outlined in the danger
+    // colour, full touch target, and it never sits next to Next.
+    deleteCrewBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.min,
+      paddingHorizontal: spacing.md, marginTop: spacing.sm,
+      alignSelf: 'flex-start',
+      borderRadius: borderRadius.full,
+      borderWidth: 1, borderColor: outdoor.danger,
+    },
+    deleteCrewBtnPressed: { opacity: opacity.o50 },
+    deleteCrewText: {
+      fontSize: typography.sizes.sm, fontWeight: '600', color: outdoor.danger,
+    },
+    // WHY THERE IS NO REMOVE ON THIS CARD. Stated, not silently absent.
+    deleteCrewRefused: {
+      fontSize: typography.sizes.fine, color: outdoor.textSoft,
+      marginTop: spacing.sm,
+    },
+    modalBody: {
+      fontSize: typography.sizes.md, color: outdoor.text, lineHeight: 22,
+    },
+    // The last-row note is secondary to the consequence above it.
+    modalNote: {
+      fontSize: typography.sizes.sm, color: outdoor.textSoft, lineHeight: 20,
+    },
+    dangerBtn: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: spacing.sm, minHeight: touchTarget.min,
+      paddingHorizontal: spacing.lg, borderRadius: borderRadius.full,
+      backgroundColor: outdoor.danger,
+    },
+    dangerBtnText: {
+      // outdoor.textOnSelected, not a raw #ffffff: tokens.test.cjs counts the
+      // distinct hex literals in this tree, and the token already IS white.
+      fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.textOnSelected,
     },
 
     // The app renders a count / status as a small rounded pill badge - see the
