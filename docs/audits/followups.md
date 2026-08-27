@@ -4,6 +4,107 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## THEMING — 2026-08-27 — the outdoor pin is asserted for half the palette and none of the native layer
+
+Reported from the CP's device: fields on the Daily Jobsite Log render with
+dark-mode chrome on a light screen. The ruling behind the pin (#210, "the
+pinned ink finally has a pinned canvas under it") is that light mode must be
+PIXEL-IDENTICAL to before. Two independent holes let that ruling go unenforced.
+
+### 1. `outdoorMatchesLight` covers 12 of the 25 `outdoor` tokens
+
+The file's own docstring is the standard: "Every value below is asserted
+against its source, so that drift fails here instead of on a jobsite." Every
+value is not.
+
+    ASSERTED (12)   backgroundStart, backgroundMiddle, backgroundEnd, cardTop,
+                    cardBottom, surface, surfaceSelected, text, textSoft,
+                    textDim, line, lineStrong
+
+    NOT ASSERTED    surfaceSunk, textOnSelected, accent, accentBg,
+    (13)            accentBorder, warnBg, warnBorder, warn, danger, okBg,
+                    okBorder, ok, scrim
+
+`surfaceSunk` is the one that stings: it is the READ-ONLY FIELD WELL, the exact
+surface the report is about, and it is a free literal with nothing tying it to
+`_light`. The light theme can be retuned and thirteen of these will sit still
+while the other twelve follow, which is precisely the drift the file was
+written to catch.
+
+### 2. NOTHING asserts the native appearance, and no JS pin can reach it
+
+`frontend/app.json` has carried
+
+    "userInterfaceStyle": "dark"
+
+since `446f8f2` (2026-01-30), flipped from `"light"`. It is a NATIVE setting --
+baked into Info.plist / the Android theme at build time -- so every surface the
+OS draws inside those screens follows it regardless of the palette: the
+keyboard, the caret, selection handles and the magnifier, the autofill bar.
+Nothing in the app sets `keyboardAppearance`, `selectionColor` or `cursorColor`
+(zero occurrences), so nothing overrides it per-field either.
+
+`outdoorCanvasPin.test.cjs` is 39 assertions of STRUCTURE -- the prop exists,
+defaults false, both wrap sites carry it, the ten editors reference no live
+palette. Not one of them compares a rendered pixel to light mode, and neither
+test knows `app.json` exists.
+
+So the pin is verified to EXIST and to be WIRED; the equivalence it exists to
+guarantee is checked for half the palette and none of the native layer. The JS
+side is provably clean -- every colour on daily_jobsite.jsx, the stepper
+styles, primitives and DateField is an `outdoor.*` token -- which is what makes
+the remaining dark chrome native by elimination.
+
+NOT A REGRESSION FROM THE PIN. The flip predates #210 by seven months. The pin
+never covered native surfaces and could not have; what is missing is anything
+that says so out loud.
+
+Two fixes, and they are separable: assert the remaining 13 tokens against
+`_light` (mechanical, and it is what the file already claims to do), and decide
+`userInterfaceStyle` deliberately -- pinning it, or setting `keyboardAppearance`
+on the pinned editors -- with a test that pins whichever is chosen. Changing it
+is a NATIVE change: a rebuild, not an OTA.
+
+---
+
+## PRACTICE — 2026-08-27 — a line-ending change voided five assertions and the suite still said ALL PASSED
+
+Same class as the AST entry below, and a new way in. During PR #244 a
+`git reset --hard` (recovering a commit that landed on the wrong branch)
+re-checked-out the tree, and git normalised line endings to CRLF. A source
+extraction in `dailyJobsiteEmptyCrew.test.cjs` was anchored on a bare newline:
+
+    SCREEN.match(/num_workers: (Number\.isFinite[\s\S]*?),
+/)
+
+Against `,\r\n` it matches nothing. The match guard was `if (m) { ... }`, so
+the five assertions inside -- the ones that actually EXECUTE the shipped
+`commitAddCrew` expression rather than grepping for it -- silently did not run.
+Count dropped 43 -> 37 and the suite reported ALL PASSED, because a skipped
+block is not a failure.
+
+It was caught only because the count moved and I looked. Nothing about the
+output said anything was missing.
+
+    A conditional around an extraction converts "I could not read the source"
+    into "there was nothing to check". Those must never be the same result.
+
+THREE RULES, all cheap:
+
+- Strip `\r` at the boundary when reading source for assertions -- this repo
+  normalises on checkout, so any Windows working tree hits it.
+- A failed extraction is a FAILING ASSERTION, never a skipped block. Assert the
+  match, then run the body unconditionally with a sentinel that cannot pass.
+- Prefer an assertion count the runner reports, so a silent drop is visible as
+  a number even when nothing fails.
+
+The AST entry below says an assertion satisfiable by an explanation is not
+checking anything. This is the mirror: an assertion that cannot be REACHED is
+not checking anything either, and it is quieter -- there is no wrong number to
+notice, only an absent one.
+
+---
+
 ## DROPBOX — 2026-08-27 — two bounds left standing by #242
 
 Both are real, both were reported before merging, and neither is fixed. #242
