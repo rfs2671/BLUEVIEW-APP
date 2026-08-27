@@ -276,15 +276,28 @@ class TheEndpointReportsBothTheSetAndTheDoubt(unittest.TestCase):
     the app being wrong about his site."""
 
     def _get(self, project):
+        # AUTHORIZATION IS NOT WHAT THIS FILE TESTS, and the fixture used to
+        # depend on it being broken. It passed `current_user={}` -- a caller
+        # with NO company_id -- which reached the payload only because the
+        # tenancy check was `if company_id and ...` and short-circuited on a
+        # falsy company. The route now fails closed, so the fixture supplies a
+        # caller who legitimately has access and these assertions stay about
+        # the classification payload.
+        scoped = None
+        if project is not None:
+            scoped = dict(project)
+            scoped.setdefault("company_id", "c1")
+
         class _Projects:
             async def find_one(self, *a, **k):
-                return dict(project) if project is not None else None
+                return dict(scoped) if scoped is not None else None
 
         class _DB:
             projects = _Projects()
 
         with patch.object(S, "db", _DB()),              patch.object(S, "to_query_id", lambda x: x):
-            return asyncio.run(S.get_project_required_logbooks("p1", current_user={}))
+            return asyncio.run(S.get_project_required_logbooks(
+                "p1", current_user={"company_id": "c1"}))
 
     def test_an_assessed_non_major_project_says_so_and_drops_both(self):
         out = self._get({"_id": "p1", "project_class": "regular"})

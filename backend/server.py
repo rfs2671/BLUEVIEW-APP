@@ -6482,8 +6482,12 @@ async def get_project_prediction(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(
             status_code=403, detail="Access denied to this project",
         )
@@ -10230,9 +10234,12 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Check company access
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     # MR.5+ — defensive lift for legacy docs that have list fields
@@ -10316,8 +10323,12 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     # NO "regular" DEFAULT HERE EITHER. A missing class is reported as missing;
     # substituting the non-major class at the read is the same silent default
@@ -16162,7 +16173,12 @@ async def list_dropbox_subfolders(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     company_id = company_id or project.get("company_id")
     folder_path = project.get("dropbox_folder_path") or ""
@@ -16316,7 +16332,12 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
         raise HTTPException(status_code=404, detail="Project not found")
 
     company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     company_id = company_id or project.get("company_id")
@@ -16626,7 +16647,12 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
         raise HTTPException(status_code=404, detail="Project not found")
 
     company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     company_id = company_id or project.get("company_id")
@@ -19947,8 +19973,12 @@ async def get_project_daily_headcount(
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     # Aggregate in two passes — new gate sign_ins + legacy checkins —
@@ -25854,8 +25884,12 @@ async def get_dob_config(project_id: str, current_user=Depends(get_current_user)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     return {
@@ -25942,8 +25976,12 @@ async def get_dob_logs(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     # Caller's user_id — used for read_by_user filtering + per-row is_read flag.
@@ -26092,8 +26130,12 @@ async def _verify_dob_log_access(project_id: str, current_user: dict) -> dict:
     })
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    # project_access_ok is the same rule require_project_access applies;
+    # the lookup above is deliberately left exactly as it was.
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     return project
 

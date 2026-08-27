@@ -272,13 +272,14 @@ class TheSignatureRouteIsScoped(unittest.TestCase):
 
 class TheSweepCountWentDownBySEVEN(unittest.TestCase):
 
-    def test_the_pinned_total_is_now_25(self):
+    def test_the_sweep_agrees_with_the_single_pinned_total(self):
+        """NO LITERAL HERE. This class asserted exactly 25 and the very next PR
+        broke it -- the same flaw this series already fixed once, reintroduced.
+        The total is DESIGNED to keep falling, so it is pinned in exactly one
+        place and every other file asserts agreement with it."""
         mod = __import__("test_pm_load_project_fails_closed")
-        self.assertEqual(mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL, 25)
-
-    def test_the_sweep_agrees(self):
-        mod = __import__("test_pm_load_project_fails_closed")
-        self.assertEqual(len(mod.sweep_bypass_sites()), 25)
+        self.assertEqual(len(mod.sweep_bypass_sites()),
+                         mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
     def test_permit_renewal_contributes_nothing_to_the_sweep(self):
         """All six were in it. None should remain."""
