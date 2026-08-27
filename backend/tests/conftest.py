@@ -80,7 +80,8 @@ def _reset_server_ip_limiters():
     server = sys.modules.get("server")
     if server is None:
         return
-    for name in ("checkin_rate_limiter", "auth_rate_limiter"):
+    for name in ("checkin_rate_limiter", "auth_rate_limiter",
+                 "gate_failure_rate_limiter"):
         limiter = getattr(server, name, None)
         reset = getattr(limiter, "reset", None)
         if callable(reset):

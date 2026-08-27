@@ -354,7 +354,19 @@ select option{background:#1e293b;color:#f1f5f9}
             <input type="text" id="regExpiration" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
           </div>
         </div>
-        <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled data-i18n="nextCompany">Next: Select Company</button>
+        <!-- NEVER `disabled`. It was, and the ONLY line that ever cleared it
+             lived inside handleOcrOutcome() -- reachable only from a card photo
+             that made it all the way through FileReader, canvas compression and
+             the OCR round-trip. Any failure before that point (an undecodable
+             frame, a FileReader error, a thrown promise) left this button grey
+             with no message on screen, and the always-visible card fields above
+             could not be typed past: nothing but OCR enabled it. A worker with a
+             worn card tapped a dead button, re-tapped the NFC tag, and landed
+             back on the phone screen with everything lost.
+             goStep() is the single gate -- it already requires a name AND
+             (photo OR typed card details) -- exactly as this file has said since
+             the photo-optional fix. The attribute contradicted that and is gone. -->
+        <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" data-i18n="nextCompany">Next: Select Company</button>
       </div>
     </div>
 
@@ -572,6 +584,10 @@ const TRANSLATIONS = {
     blockMissingOsha: 'No OSHA card on file',
     blockExpiredSst: 'SST card expired',
     blockMissingSst: 'No SST card on file',
+    // The purple card is a Worker Wallet, not an SST credential. This block
+    // used to render as blockMissingOsha, which named the wrong document and
+    // gave the worker nothing to do. Say which card, and say what to do.
+    blockCardNotSst: 'That is a Worker Wallet, not an SST card — please scan your SST card',
     // Backend-error fallbacks
     genericError: 'Something went wrong. Please try again, or ask your supervisor for help.',
     errInvalidPoint: 'This check-in point is not valid. Ask your supervisor.',
@@ -675,6 +691,7 @@ const TRANSLATIONS = {
     blockMissingOsha: 'No hay tarjeta OSHA registrada',
     blockExpiredSst: 'Tarjeta SST vencida',
     blockMissingSst: 'No hay tarjeta SST registrada',
+    blockCardNotSst: 'Esa es una Worker Wallet, no una tarjeta SST — por favor escanee su tarjeta SST',
     // Mensajes de respaldo para errores del servidor
     genericError: 'Algo salió mal. Intente de nuevo o pida ayuda a su supervisor.',
     errInvalidPoint: 'Este punto de registro no es válido. Consulte a su supervisor.',
@@ -830,10 +847,18 @@ function setupPhoneFormatting(input) {
 }
 
 // ==================== IMAGE COMPRESSION ====================
+// RESOLVES null ON FAILURE, NEVER HANGS. There was no `onerror` here, so an
+// undecodable frame (a corrupt capture, a format the canvas refuses, a photo
+// past the browser's canvas ceiling) left this promise pending FOREVER. The
+// caller awaits it before it has shown so much as a spinner, so the worker saw
+// an absolutely blank result: no photo, no error, no spinner, a dead Next
+// button. Every failure now settles as null and the caller decides what to say.
 function compressImage(dataUrl, maxWidth, quality) {
   return new Promise((resolve) => {
     const img = new Image();
+    img.onerror = function() { resolve(null); };
     img.onload = function() {
+      try {
       let w = img.width, h = img.height;
       if (w > maxWidth) {
         h = Math.round(h * maxWidth / w);
@@ -844,16 +869,26 @@ function compressImage(dataUrl, maxWidth, quality) {
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, w, h);
-      resolve(canvas.toDataURL('image/jpeg', quality));
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } catch (e) {
+        // toDataURL / getContext can throw (out of memory on a very large
+        // frame, a canvas the browser refuses to allocate). A throw inside an
+        // event handler is invisible; null is not.
+        resolve(null);
+      }
     };
     img.src = dataUrl;
   });
 }
 
+// Display-only (see the call site). null means "no crop" -- the full frame
+// stays on screen -- and it must never be able to hang the card step either.
 function cropImage(dataUrl, box) {
   return new Promise((resolve) => {
     const img = new Image();
+    img.onerror = function() { resolve(null); };
     img.onload = function() {
+      try {
       const x = Math.round(img.width * box[1] / 1000);
       const y = Math.round(img.height * box[0] / 1000);
       const w = Math.round(img.width * (box[3] - box[1]) / 1000);
@@ -863,7 +898,10 @@ function cropImage(dataUrl, box) {
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+      } catch (e) {
+        resolve(null);
+      }
     };
     img.src = dataUrl;
   });
@@ -1012,6 +1050,55 @@ async function api(path, method = 'GET', body = null) {
     throw new Error(err.detail || 'Request failed');
   }
   return res.json();
+}
+
+// ==================== GATE FAILURE TELEMETRY ====================
+// WHY THIS EXISTS: two men failed at this step on 588 Thomas and there was no
+// record anywhere of why. Every silent path in the card step wrote its reason
+// into `ocrLastFailureReason`, which is only ever persisted by
+// register-and-checkin — so a worker who never got PAST the card step left
+// nothing behind at all. The failures that matter most were precisely the ones
+// that recorded nothing.
+//
+// THREE RULES, and they are the point of the shape:
+//   1. IT NEVER BLOCKS. Nothing awaits it, it returns void, and the whole body
+//      is inside a try/catch. A worker must never wait on, or be stopped by, a
+//      log line — the same rule that took the rate limiter off upload-osha.
+//   2. IT SURVIVES THE PAGE. sendBeacon is used first BECAUSE the failure mode
+//      being recorded ends with the worker giving up and re-tapping the tag,
+//      which unloads the page; a plain fetch would be cancelled in flight and
+//      lose exactly the events worth having. keepalive:true is the fallback.
+//   3. IT CARRIES NO PII AND NO IMAGE. Kind, project, tag, attempt count,
+//      language, device fingerprint. No name, no phone, no card number, no
+//      frame. The UA and IP are read server-side from the request headers —
+//      the client is not trusted to report them and does not send them.
+function reportGateFailure(kind, detail) {
+  try {
+    const body = JSON.stringify({
+      project_id: projectId || null,
+      tag_id: tagId || null,
+      kind: String(kind || 'unknown'),
+      detail: String(detail == null ? '' : detail).slice(0, 300),
+      ocr_attempts: ocrAttempts,
+      lang: currentLang,
+      fingerprint_id: deviceFingerprint || null,
+      source: 'checkin_html',
+    });
+    const url = API_BASE + '/checkin/gate-failure';
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+      return;
+    }
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body,
+      keepalive: true,
+    }).catch(function () {});
+  } catch (e) {
+    // Deliberately swallowed. A telemetry bug must never be able to become a
+    // gate bug — that would be this PR causing the class of defect it fixes.
+  }
 }
 
 // ==================== SCREENS ====================
@@ -1246,12 +1333,33 @@ async function quickCheckIn() {
 }
 
 // ==================== OSHA PHOTO ====================
+// EVERY EXIT FROM THIS FUNCTION REACHES handleOcrOutcome(). That is the whole
+// contract. It previously had exactly one error handler — the try/catch around
+// the OCR request — and three unguarded ways to die before ever reaching it:
+// a FileReader that errored, a frame compressImage could not decode, and any
+// throw inside this async onload (an unhandled rejection, which shows the
+// worker nothing at all). Each one left the card step frozen with no message.
+// The step-1 button is no longer gated on this function, so a failure here is
+// now recoverable by typing — but the worker still has to be TOLD, and the
+// failure still has to be recorded. Both happen on every path below.
 async function handleOshaPhoto(input) {
   const file = input.files[0];
   if (!file) return;
 
   const reader = new FileReader();
+  // A FileReader error fired into the void: no handler existed, so onload never
+  // ran, nothing was logged and nothing was shown.
+  reader.onerror = function() {
+    hideLoading();
+    ocrAttempts++;
+    ocrLastFailureReason = 'file_read_error';
+    reportGateFailure('card_file_read_failed', 'FileReader error');
+    showError(t('readCardFailed') + ' — ' + t('needCardOrManual'), true);
+    resetCardCameraZone();
+    handleOcrOutcome(null);
+  };
   reader.onload = async function(e) {
+    try {
     const rawImage = e.target.result;
     
     // Item 4: OCR reads the WHOLE card (full native-camera photo — there is no
@@ -1260,6 +1368,20 @@ async function handleOshaPhoto(input) {
     // course text but missed Supervisor/Limited. Capture at higher res/quality so
     // the class label is legible to OCR.
     const compressed = await compressImage(rawImage, 1600, 0.85);
+    // null = the browser could not decode or re-encode this frame. Previously
+    // compressImage could not report that at all (it simply never resolved) and
+    // this line was `oshaImage = compressed` unconditionally, so the worker got
+    // a broken <img> and a dead step. Tell him, log it, and leave him on the
+    // typed-entry path — which now works.
+    if (!compressed) {
+      ocrAttempts++;
+      ocrLastFailureReason = 'image_decode_error';
+      reportGateFailure('card_image_decode_failed', 'compressImage returned null');
+      showError(t('readCardFailed') + ' — ' + t('needCardOrManual'), true);
+      resetCardCameraZone();
+      handleOcrOutcome(null);
+      return;
+    }
     oshaImage = compressed;
     
     const zone = document.getElementById('cameraZone');
@@ -1278,8 +1400,11 @@ async function handleOshaPhoto(input) {
         // box_2d crop was producing a badly-cropped stored card. OCR already ran on
         // the full image; box_2d is a display convenience, not the record.
         const displayCrop = await cropImage(oshaImage, res.box_2d);
+        // null = the crop failed. The uncropped frame is already on screen and
+        // is a perfectly good preview, so there is nothing to say and nothing
+        // to do — but assigning null would blank it.
         const zoneImg = document.querySelector('#cameraZone img');
-        if (zoneImg) zoneImg.src = displayCrop;
+        if (zoneImg && displayCrop) zoneImg.src = displayCrop;
       }
       hideLoading();
       ocrAttempts++;
@@ -1300,12 +1425,34 @@ async function handleOshaPhoto(input) {
       // failed when in reality the request often never reached it.
       console.error('OSHA OCR upload failed:', e);
       const reason = (e && e.message) ? e.message : 'Unknown error';
-      showError(t('readCardFailed') + ': ' + reason);
+      // PERSISTENT, and it names the way out. This was a 4-SECOND TOAST — the
+      // exact vanishing-message shape this file already identified twice as
+      // what drives the re-scan loop (see showError and submitFailureHint),
+      // never converted at this call site. A worker who looked away while the
+      // request was in flight saw nothing at all and re-tapped the tag.
+      // needCardOrManual is appended because typing the number is now a real
+      // way through, not a theoretical one.
+      showError(t('readCardFailed') + ': ' + reason + ' — ' + t('needCardOrManual'), true);
+      reportGateFailure('card_ocr_http_failed', reason);
       oshaData = oshaData || {};
       ocrAttempts++;
       // FEATURE 2.10: the OCR call itself failed — record the transport reason.
       ocrLastFailureReason = 'ocr_error:' + reason;
       // null = the OCR call itself failed (not just missing fields).
+      handleOcrOutcome(null);
+    }
+    } catch (fatal) {
+      // THE UNHANDLED REJECTION. Anything thrown in this async handler outside
+      // the OCR try/catch used to escape as a rejected promise nobody awaited:
+      // no console entry the operator would find, no toast, no state change,
+      // and — before the button fix — a permanently dead step 1.
+      console.error('Card photo handler crashed:', fatal);
+      hideLoading();
+      ocrAttempts++;
+      ocrLastFailureReason = 'handler_error:' + ((fatal && fatal.message) || 'unknown');
+      reportGateFailure('card_handler_crashed', (fatal && fatal.message) || 'unknown');
+      showError(t('readCardFailed') + ' — ' + t('needCardOrManual'), true);
+      resetCardCameraZone();
       handleOcrOutcome(null);
     }
   };
@@ -1376,6 +1523,12 @@ function handleOcrOutcome(missing) {
     }
   }
 
+  // NOTHING TO ENABLE ANY MORE. This line used to be the ONLY thing that
+  // cleared `disabled` on the step-1 button, which made every silent failure
+  // above it a dead end. The attribute is gone from the markup and goStep() is
+  // the single gate, so this is left as a no-op assertion of that fact rather
+  // than as state management: if it ever needs to do work again, the button has
+  // been re-gated on OCR and that is the bug coming back.
   document.getElementById('btnStep1Next').disabled = false;
 
   // Point the worker at the first thing still missing so manual entry is
@@ -1401,11 +1554,26 @@ async function handleSelfiePhoto(input) {
   if (!file) return;
 
   const reader = new FileReader();
+  // The selfie is OPTIONAL and never gates anything, so a failure here is
+  // logged and dropped rather than shown — but it is no longer silent to the
+  // operator, and a null frame can no longer blank the zone with a broken img.
+  reader.onerror = function() {
+    reportGateFailure('selfie_file_read_failed', 'FileReader error');
+  };
   reader.onload = async function(e) {
-    const compressed = await compressImage(e.target.result, 1200, 0.7);
-    selfieImage = compressed;
-    const zone = document.getElementById('selfieZone');
-    zone.innerHTML = '<img src="' + compressed + '" alt="Selfie">';
+    try {
+      const compressed = await compressImage(e.target.result, 1200, 0.7);
+      if (!compressed) {
+        reportGateFailure('selfie_image_decode_failed', 'compressImage returned null');
+        return;
+      }
+      selfieImage = compressed;
+      const zone = document.getElementById('selfieZone');
+      zone.innerHTML = '<img src="' + compressed + '" alt="Selfie">';
+    } catch (fatal) {
+      console.error('Selfie handler crashed:', fatal);
+      reportGateFailure('selfie_handler_crashed', (fatal && fatal.message) || 'unknown');
+    }
   };
   reader.readAsDataURL(file);
 }
@@ -1792,6 +1960,11 @@ function showBlockedScreen(data) {
     MISSING_OSHA: 'blockMissingOsha',
     EXPIRED_SST: 'blockExpiredSst',
     MISSING_SST: 'blockMissingSst',
+    // Emitted by register_and_checkin when resolve_card_class identified the
+    // photographed card as not-an-SST-card at all. Unmapped codes fall through
+    // to the bilingual generic, which is what this one used to hit before it
+    // was re-labelled from MISSING_OSHA server-side.
+    CARD_NOT_SST: 'blockCardNotSst',
   };
   const reasonsHtml = blocks.map(b => {
     const key = BLOCK_LABELS[b.type];
