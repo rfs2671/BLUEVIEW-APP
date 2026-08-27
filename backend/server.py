@@ -20090,8 +20090,22 @@ async def get_signature_image(signin_id: str, current_user=Depends(get_current_u
     })
     if not project:
         return JSONResponse(status_code=404, content={"error": "signature_not_found"})
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    # THE BYPASS: `if company_id and ...` short-circuits, so a company-less
+    # caller never reached the comparison and the 403 could not fire.
+    # /auth/register sets company_id = None on every self-serve signup.
+    #
+    # project_access_ok, NOT _assert_project_access, and that is deliberate on
+    # two counts:
+    #   * the RESPONSE SHAPE is preserved. This route returns
+    #     JSONResponse({"error": ...}) rather than raising, and its documented
+    #     contract lists those bodies. _assert_project_access raises
+    #     {"detail": ...}. SignatureImage.jsx branches only on
+    #     err.response.status, so either would have worked -- but changing a
+    #     documented shape for no gain is not a fix.
+    #   * the LOOKUP stays `is_deleted` only. ACTIVE_PROJECT_FILTER also
+    #     excludes marked_for_deletion, which would turn a signature on a
+    #     just-marked project into a 404 for the CP who needs it.
+    if not project_access_ok(project, str(sign_in.get("project_id") or ""), current_user):
         return JSONResponse(status_code=403, content={"error": "forbidden"})
 
     # Resolve the R2 key via daily_signatures (spec: "No schema changes"

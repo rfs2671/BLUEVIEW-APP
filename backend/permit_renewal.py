@@ -1338,6 +1338,44 @@ def create_permit_renewal_routes(
 ):
     """Register all permit renewal endpoints on the FastAPI router."""
 
+    def _assert_renewal_access(renewal, current_user):
+        """The caller's company must MATCH the renewal's. Six call sites.
+
+        THE BYPASS THIS CLOSES. Every one of them read
+
+            company_id = get_user_company_id(current_user)
+            if company_id and renewal.get("company_id") != company_id:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        and `and` short-circuits, so a caller whose company_id is falsy never
+        reached the comparison and the 403 could not fire. That is the DEFAULT
+        state of a self-serve signup -- /auth/register sets company_id = None
+        and onboarding attaches one later.
+
+        BOTH SIDES MUST BE TRUTHY. A renewal with no company_id is refused too,
+        rather than becoming everyone's: an unowned record is a data defect, and
+        answering it to any caller turns one defect into a disclosure.
+
+        WHY COMPANY EQUALITY AND NOT project_access_ok, which every other route
+        in this sweep moved to. A renewal carries BOTH project_id and
+        company_id, so the project rule was available -- and rejected for two
+        reasons:
+
+          * A permit renewal OUTLIVES its project. Resolving through the project
+            would 403 or 404 a historical renewal whose project has since been
+            soft-deleted, which is exactly when somebody needs to read it.
+          * Renewals are a COMPANY-level filing concern, not a per-project CP
+            one. project_access_ok's third branch admits a user with the project
+            in assigned_projects; a CP assigned to a jobsite has no business in
+            the GC's permit filings.
+
+        It also avoids a project lookup on every one of these reads.
+        """
+        company_id = get_user_company_id(current_user)
+        renewal_company = str((renewal or {}).get("company_id") or "")
+        if not company_id or renewal_company != str(company_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+
     # GET /api/permit-renewals
     @api_router.get("/permit-renewals")
     async def list_renewals(
@@ -1460,11 +1498,7 @@ def create_permit_renewal_routes(
             raise HTTPException(
                 status_code=404, detail="Renewal not found"
             )
-        company_id = get_user_company_id(current_user)
-        if company_id and renewal.get("company_id") != company_id:
-            raise HTTPException(
-                status_code=403, detail="Access denied"
-            )
+        _assert_renewal_access(renewal, current_user)
         return serialize_id(renewal)
 
     # MR.4: GET /api/permit-renewals/{renewal_id}/pw2-field-map
@@ -1492,9 +1526,7 @@ def create_permit_renewal_routes(
         )
         if not renewal:
             raise HTTPException(status_code=404, detail="Renewal not found")
-        company_id = get_user_company_id(current_user)
-        if company_id and renewal.get("company_id") != company_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        _assert_renewal_access(renewal, current_user)
 
         # Readiness gate — refuse the field map when readiness fails.
         # Lets MR.6 (the enqueue endpoint) call this directly without
@@ -1555,11 +1587,7 @@ def create_permit_renewal_routes(
             raise HTTPException(
                 status_code=404, detail="Renewal not found"
             )
-        company_id = get_user_company_id(current_user)
-        if company_id and renewal.get("company_id") != company_id:
-            raise HTTPException(
-                status_code=403, detail="Access denied"
-            )
+        _assert_renewal_access(renewal, current_user)
 
         report = await check_filing_readiness(db, renewal_id)
         return report.model_dump()
@@ -1677,9 +1705,7 @@ def create_permit_renewal_routes(
         )
         if not renewal:
             raise HTTPException(status_code=404, detail="Renewal not found")
-        company_id = _server.get_user_company_id(current_user)
-        if company_id and renewal.get("company_id") != company_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        _assert_renewal_access(renewal, current_user)
 
         # Readiness gate — same shape as the MR.4 /pw2-field-map
         # endpoint above. We don't 409 silently; the operator gets
@@ -1756,9 +1782,7 @@ def create_permit_renewal_routes(
         )
         if not renewal:
             raise HTTPException(status_code=404, detail="Renewal not found")
-        company_id = _server.get_user_company_id(current_user)
-        if company_id and renewal.get("company_id") != company_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        _assert_renewal_access(renewal, current_user)
 
         cursor = (
             _server.db.filing_jobs.find({
@@ -1812,9 +1836,7 @@ def create_permit_renewal_routes(
         )
         if not renewal:
             raise HTTPException(status_code=404, detail="Renewal not found")
-        company_id = _server.get_user_company_id(current_user)
-        if company_id and renewal.get("company_id") != company_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        _assert_renewal_access(renewal, current_user)
 
         # Latest FilingJob — supplies confirmation_number + watch_start
         # signal + stuck flag from audit_log.
