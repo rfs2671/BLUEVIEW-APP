@@ -11373,6 +11373,45 @@ async def _get_worker_project_trade(worker_id, project_id):
     return {"trade": trade, "company": company}
 
 
+async def _project_trades_for(project_id, worker_ids) -> Dict[str, str]:
+    """{worker_id: trade} for these workers on THIS project. One query.
+
+    The batch form of _get_worker_project_trade, for the check-in list
+    endpoints. They serialise a page of rows at a time, so the per-row helper
+    would be an N+1 on screens a CP opens every morning.
+
+    SAME TWO RULES AS THE SINGLE-ROW HELPER, so the two cannot disagree:
+    a pairing whose trade is blank is treated as ABSENT rather than returned as
+    an empty answer, and the `workers` document is never consulted.
+
+    Returns {} on any failure. A pairing read is bookkeeping; it must never be
+    the reason a roster does not load.
+    """
+    out: Dict[str, str] = {}
+    ids = [str(w) for w in (worker_ids or []) if w]
+    if not project_id or not ids:
+        return out
+    try:
+        # to_list, not `async for`. One round trip for a bounded page of rows,
+        # and it is the cursor method this codebase's callers and fakes
+        # actually implement -- an `async for` against a cursor without
+        # __aiter__ raises TypeError, which the fail-open below would swallow
+        # into "no pairings found". A lookup that cannot run must not be
+        # indistinguishable from one that ran and found nothing.
+        rows = await db[WORKER_PROJECT_TRADES_COLLECTION].find({
+            "project_id": str(project_id),
+            "worker_id": {"$in": ids},
+        }).to_list(len(ids))
+        for row in rows:
+            trade = str(row.get("trade") or "").strip()
+            if trade:
+                out[str(row.get("worker_id"))] = trade
+    except Exception as e:
+        logger.warning(f"[pairings] lookup failed for project {project_id}: {e!r}")
+        return {}
+    return out
+
+
 async def _store_worker_project_trade(worker_id, project_id, trade, company):
     """Upsert the pairing for this worker on this project.
 
@@ -13065,7 +13104,18 @@ async def get_all_checkins(
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
-                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+                # THE ONE THAT CANNOT RESOLVE, AND WHY. This list is
+                # COMPANY-scoped -- one response spans every project the company
+                # runs -- so there is no single project_id to key a pairing on.
+                # Resolving here would need a per-row (worker_id, project_id)
+                # lookup, which is a different query and a different PR.
+                #
+                # The fallback still goes, because the fallback was the wrong
+                # answer everywhere: `workers.trade` is one slot for a man who
+                # holds different trades on different jobs, filled by whichever
+                # project got to him first. An admin list showing a blank trade
+                # is visibly incomplete; one showing another site's trade is
+                # invisibly wrong.
                 s["name"] = s["worker_name"]
                 s["company"] = s["worker_company"]
                 s["trade"] = s["worker_trade"]
@@ -13355,6 +13405,9 @@ async def get_flagged_project_checkins(
     # Batch-fetch the workers so each row can carry the card image + a name
     # fallback, without an N+1 per row.
     worker_ids = {c.get("worker_id") for c in checkins if c.get("worker_id")}
+    # And the pairings, the same way and for the same reason. See the trade
+    # resolution below.
+    _proj_trades = await _project_trades_for(project_id, worker_ids)
     workers_map = {}
     if worker_ids:
         query_ids = [to_query_id(w) for w in worker_ids]
@@ -13371,7 +13424,20 @@ async def get_flagged_project_checkins(
         if not s.get("worker_name"):
             s["worker_name"] = worker.get("name", "Unknown Worker")
         s["worker_company"] = s.get("worker_company") or worker.get("company")
-        s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        # THE ONE THAT MATTERS MOST. This is the trade the CP reads on the
+        # picker before tapping Change (preshift_signin.jsx `current_trade`) and
+        # on the review row. Two different wrong answers were possible here:
+        # a trade from ANOTHER PROJECT via the workers document, or -- once that
+        # is removed -- a blank on a worker whose pairing has since been set.
+        #
+        # Frozen first, pairing second, `workers` never. Same precedence as the
+        # roster read in get_project_checkins_today, and it has to be the same:
+        # the CP decides whether to change a trade by reading this, and the log
+        # he is deciding about reads that.
+        s["worker_trade"] = (
+            _recorded_trade(s.get("worker_trade"))
+            or _proj_trades.get(str(s.get("worker_id")), "")
+        )
         s["osha_card_image"] = worker.get("osha_card_image")
         s["osha_number"] = s.get("sst_card_number") or worker.get("osha_number")
         # Explicit reason list so the UI doesn't have to re-derive it.
@@ -13693,6 +13759,16 @@ async def get_project_checkins(
         for w in workers_list:
             workers_map[str(w["_id"])] = w
 
+    # This list is scoped to ONE project, so the pairing is well defined and
+    # is the right answer for a row that froze no trade. Applied to all three
+    # of these endpoints rather than only the one with a consumer today
+    # (/today renders it on the site check-ins screen; /active and the bare
+    # list do not) -- a rule that holds only where someone currently looks is
+    # a rule that breaks the first time someone else looks.
+    _proj_trades = await _project_trades_for(
+        project_id, [c.get("worker_id") for c in checkins],
+    )
+
     results = []
     for c in checkins:
         s = serialize_id(c)
@@ -13701,7 +13777,13 @@ async def get_project_checkins(
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
-                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        # OUTSIDE the missing-name branch, deliberately. The trade has nothing
+        # to do with whether the name needed filling in; nesting it there meant
+        # a row that already had a name never got its trade resolved at all.
+        s["worker_trade"] = (
+            _recorded_trade(s.get("worker_trade"))
+            or _proj_trades.get(str(s.get("worker_id")), "")
+        )
         results.append(s)
     return results
 
@@ -13726,6 +13808,16 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
         for w in wlist:
             workers_map[str(w["_id"])] = w
 
+    # This list is scoped to ONE project, so the pairing is well defined and
+    # is the right answer for a row that froze no trade. Applied to all three
+    # of these endpoints rather than only the one with a consumer today
+    # (/today renders it on the site check-ins screen; /active and the bare
+    # list do not) -- a rule that holds only where someone currently looks is
+    # a rule that breaks the first time someone else looks.
+    _proj_trades = await _project_trades_for(
+        project_id, [c.get("worker_id") for c in checkins],
+    )
+
     results = []
     for c in checkins:
         s = serialize_id(c)
@@ -13734,7 +13826,13 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
-                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        # OUTSIDE the missing-name branch, deliberately. The trade has nothing
+        # to do with whether the name needed filling in; nesting it there meant
+        # a row that already had a name never got its trade resolved at all.
+        s["worker_trade"] = (
+            _recorded_trade(s.get("worker_trade"))
+            or _proj_trades.get(str(s.get("worker_id")), "")
+        )
         results.append(s)
     return results
 
@@ -13758,6 +13856,16 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
         for w in wlist:
             workers_map[str(w["_id"])] = w
 
+    # This list is scoped to ONE project, so the pairing is well defined and
+    # is the right answer for a row that froze no trade. Applied to all three
+    # of these endpoints rather than only the one with a consumer today
+    # (/today renders it on the site check-ins screen; /active and the bare
+    # list do not) -- a rule that holds only where someone currently looks is
+    # a rule that breaks the first time someone else looks.
+    _proj_trades = await _project_trades_for(
+        project_id, [c.get("worker_id") for c in checkins],
+    )
+
     results = []
     for c in checkins:
         s = serialize_id(c)
@@ -13766,7 +13874,13 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
-                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        # OUTSIDE the missing-name branch, deliberately. The trade has nothing
+        # to do with whether the name needed filling in; nesting it there meant
+        # a row that already had a name never got its trade resolved at all.
+        s["worker_trade"] = (
+            _recorded_trade(s.get("worker_trade"))
+            or _proj_trades.get(str(s.get("worker_id")), "")
+        )
         results.append(s)
     return results
 
@@ -20232,24 +20346,11 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
     # `workers.find_one`; adding a second per-row round trip to the roster read
     # that thirteen men at shift start are waiting on is not a trade worth
     # making. The pairings for this project are fetched once and indexed.
-    _pair_by_wid: Dict[str, Dict[str, Any]] = {}
-    _legacy_wids = [str(c.get("worker_id")) for c in legacy if c.get("worker_id")]
-    if _legacy_wids:
-        try:
-            async for _row in db[WORKER_PROJECT_TRADES_COLLECTION].find({
-                "project_id": str(project_id),
-                "worker_id": {"$in": _legacy_wids},
-            }):
-                _t = str(_row.get("trade") or "").strip()
-                # Mirrors _get_worker_project_trade: a pairing with no trade
-                # tells us nothing, so it is treated as absent rather than
-                # written back as an empty answer.
-                if _t:
-                    _pair_by_wid[str(_row.get("worker_id"))] = {"trade": _t}
-        except Exception as _e:
-            # A pairing read that fails must not cost the CP the roster. He gets
-            # what the check-ins froze, which is what he got before this existed.
-            logger.warning(f"checkins-today pairing lookup failed: {_e!r}")
+    # Hoisted into _project_trades_for when four more endpoints needed the same
+    # thing. Behaviour is unchanged and the tests for it are unchanged.
+    _pair_by_wid = await _project_trades_for(
+        project_id, [c.get("worker_id") for c in legacy],
+    )
 
     seen_legacy_wids: set = set()
     for c in legacy:
@@ -20303,7 +20404,7 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             # and is scoped to THIS project by construction.
             "trade": (
                 _recorded_trade(c.get("worker_trade"))
-                or (_pair_by_wid.get(str(wid), {}).get("trade", "") if wid else "")
+                or (_pair_by_wid.get(str(wid), "") if wid else "")
             ),
             "check_in_time": c.get("check_in_time").isoformat() if isinstance(c.get("check_in_time"), datetime) else str(c.get("check_in_time", "")),
             "osha_number": worker.get("osha_number") if worker else "",

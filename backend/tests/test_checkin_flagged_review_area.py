@@ -139,8 +139,19 @@ def _mk_db(*, checkin_docs=None, company_id="co_a"):
     db.checkins.docs = checkin_docs or []
     db.workers.docs = [{
         "_id": "w1", "name": "Jane Worker", "company": "Acme Co",
+        # The BLEED, kept in the fixture on purpose: `workers.trade` is one slot
+        # for a man who works different trades on different jobs, and this value
+        # stands in for one another project filled. The endpoint must never
+        # surface it. Deliberately different from the pairing below so a test
+        # cannot pass by reading the wrong source and getting a right-looking
+        # answer.
         "trade": "Carpenter", "osha_number": "SST999",
         "osha_card_image": "data:image/jpeg;base64,CARD",
+    }]
+    # THIS project's answer for this worker.
+    db[server.WORKER_PROJECT_TRADES_COLLECTION].docs = [{
+        "worker_id": "w1", "project_id": "proj1",
+        "trade": "Framers", "company": "Acme Co",
     }]
     return db
 
@@ -214,7 +225,16 @@ class FlaggedEndpointTest(unittest.TestCase):
         item = data["items"][0]
         self.assertEqual(item["osha_card_image"], "data:image/jpeg;base64,CARD")
         self.assertEqual(item["worker_company"], "Acme Co")
-        self.assertEqual(item["worker_trade"], "Carpenter")
+        # THIS ASSERTION USED TO READ "Carpenter", which is the value on the
+        # WORKERS DOCUMENT -- so it pinned the cross-project bleed as the
+        # expected behaviour. The row froze no trade, so the answer now comes
+        # from this project's pairing, and the worker-document value must not
+        # appear at all.
+        self.assertEqual(item["worker_trade"], "Framers")
+        self.assertNotEqual(
+            item["worker_trade"], "Carpenter",
+            "a trade from another project must never surface as this one's",
+        )
 
     def test_returns_project_roster_for_trade_assignment(self):
         db = _mk_db(checkin_docs=[_NEEDS_TRADE_ROW])
