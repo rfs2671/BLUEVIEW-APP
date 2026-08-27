@@ -77,15 +77,33 @@ class ThePdfPathStillUsesThisHtml(unittest.TestCase):
     is pointed at the wrong document and should fail loudly."""
 
     def test_the_pdf_renders_the_combined_report(self):
-        fn = SRC[SRC.index("async def get_combined_report_pdf"):]
-        fn = fn[:2000]
-        # RE-POINTED, not relaxed. The call now spans lines because it also
-        # passes the admin-only `diagnostics` flag; the guarantee asserted here
-        # — that the PDF path renders THIS html and not a second template — is
-        # unchanged, and the multi-line form is still an exact match.
-        self.assertIn("await generate_combined_report(", fn)
-        self.assertIn("project_id, date,", fn)
-        self.assertIn("HTML(string=html).write_pdf()", fn)
+        # RE-POINTED A SECOND TIME, and read as CODE rather than as text.
+        #
+        # It pinned the literal `HTML(string=html).write_pdf()`, which broke
+        # when the render moved off the event loop into
+        # `asyncio.to_thread(_render_pdf, html)` -- a syntax pin failing on a
+        # correct change, the shape followups.md now warns about.
+        #
+        # THE GUARANTEE IS UNCHANGED: the PDF path renders THIS html, the one
+        # generate_combined_report returned, and not a second template. That is
+        # a dataflow claim, so it is asserted on the dataflow.
+        import ast
+        tree = ast.parse(SRC)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.AsyncFunctionDef)
+                  and n.name == "get_combined_report_pdf")
+
+        assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                   and any(isinstance(t, ast.Name) and t.id == "html" for t in n.targets)]
+        self.assertEqual(len(assigns), 1, "html is assigned more than once")
+        self.assertIn("generate_combined_report", ast.unparse(assigns[0].value))
+        self.assertIn("project_id, date", ast.unparse(assigns[0].value))
+
+        # ...and that same `html` is what reaches the renderer.
+        rendered = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Await)]
+        self.assertTrue(
+            any("to_thread" in r and "html" in r for r in rendered),
+            f"the html is not what gets rendered: {rendered}")
 
 
 if __name__ == "__main__":

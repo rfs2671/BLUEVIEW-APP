@@ -5072,12 +5072,66 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
 
     return UserResponse(**user_dict)
 
+# Field names that must never leave the server on a principal document. A
+# DENYLIST, not a response model, and the difference is deliberate -- see the
+# note on get_me below.
+#
+# Adding a secret to a user or device document means adding its key here. That
+# is one obvious place, which is the whole point: the previous code deleted
+# exactly one key by name, so the SECOND secret anybody stored would have
+# shipped to the client with nothing to stop it.
+_PRINCIPAL_PRIVATE_FIELDS = frozenset({
+    "password",
+    "password_hash",
+    "reset_token",
+    "password_reset_token",
+    "refresh_token",
+    "access_token",
+    "client_secret",
+    "mfa_secret",
+    "totp_secret",
+    "api_key",
+    "credentials",
+})
+
+
 @api_router.get("/auth/me")
 async def get_me(current_user = Depends(get_current_user)):
-    user = dict(current_user)
-    if "password" in user:
-        del user["password"]
-    return user
+    """The authenticated principal, minus anything secret.
+
+    NOT response_model=UserResponse, and that is a considered refusal rather
+    than an oversight. This endpoint serves TWO shapes:
+
+      a USER   -- id, email, name, role, onboarding_step, full_name,
+                  first_name, display_name, ...
+      a SITE DEVICE -- id, role="site_device", site_mode=True, project_id,
+                  project_name, project, device_name, username -- and NO email
+                  and NO name at all.
+
+    UserResponse requires email and name, so applying it would raise a pydantic
+    ValidationError -> 500 for EVERY site device on boot. AuthContext calls
+    /auth/me on every session start and then branches on `site_mode`, so that
+    is not a corner case; it is the gate tablet failing to start.
+
+    It would also SILENTLY STRIP what it does not declare -- site_mode,
+    project_id, project_name, onboarding_step, full_name, first_name,
+    display_name, device_name -- breaking site mode and the onboarding redirect
+    for users it did not 500.
+
+    That is the WorkerResponse incident exactly: a response model demanding a
+    field the writers deliberately never record, turning a working read into an
+    unhandled 500. The lesson there was "a model must not demand a fact the
+    writers stopped recording"; the same applies to one that never recorded it.
+
+    So the hardening is a denylist. It closes the real risk the reviewer named
+    -- that the NEXT sensitive field stored on a principal ships to the client
+    -- without inventing a contract two different document shapes cannot both
+    satisfy.
+    """
+    return {
+        k: v for k, v in dict(current_user).items()
+        if k not in _PRINCIPAL_PRIVATE_FIELDS
+    }
 
 
 # ── Phase B3: customer onboarding state ────────────────────────────
@@ -6185,7 +6239,16 @@ async def export_logbook(
 
     try:
         from weasyprint import HTML  # type: ignore
-        pdf_bytes = HTML(string=html).write_pdf()
+        # OFF THE EVENT LOOP. weasyprint is CPU-bound and synchronous, and a
+        # render here blocked every other request for its whole duration --
+        # including the once-a-minute report scheduler. The scheduled path
+        # already does exactly this and says why: "doing it inline would stall
+        # the once-a-minute scheduler for every other project due this tick."
+        # These three on-demand endpoints were the ones it did not cover.
+        def _render_pdf(h: str) -> bytes:
+            return HTML(string=h).write_pdf()
+
+        pdf_bytes = await asyncio.to_thread(_render_pdf, html)
     except Exception as e:
         logger.error(f"[logbook] export weasyprint failed: {e!r}")
         raise HTTPException(status_code=500, detail="PDF render failed")
@@ -14434,7 +14497,11 @@ async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, c
     
     try:
         from weasyprint import HTML
-        pdf_bytes = HTML(string=html).write_pdf()
+        # OFF THE EVENT LOOP -- see the note at the first of these three.
+        def _render_pdf(h: str) -> bytes:
+            return HTML(string=h).write_pdf()
+
+        pdf_bytes = await asyncio.to_thread(_render_pdf, html)
     except Exception as e:
         logger.error(f"PDF generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
@@ -22566,7 +22633,11 @@ async def get_combined_report_pdf(project_id: str, date: str, token: Optional[st
     )
     try:
         from weasyprint import HTML
-        pdf_bytes = HTML(string=html).write_pdf()
+        # OFF THE EVENT LOOP -- see the note at the first of these three.
+        def _render_pdf(h: str) -> bytes:
+            return HTML(string=h).write_pdf()
+
+        pdf_bytes = await asyncio.to_thread(_render_pdf, html)
     except Exception as e:
         logger.error(f"PDF generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")

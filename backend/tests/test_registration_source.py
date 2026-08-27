@@ -176,5 +176,18 @@ def test_the_screen_reads_the_same_stamped_field():
 def test_auth_me_returns_the_field_so_the_client_can_read_it():
     """No new endpoint: /auth/me returns the user doc minus the password, so
     the stamped field reaches the client for free."""
-    src = inspect.getsource(server.get_me)
-    assert "password" in src and "return user" in src
+    # BEHAVIOURAL. This asserted the SOURCE contained "password" and
+    # "return user", which broke when get_me moved from `del user["password"]`
+    # to a denylist comprehension -- a syntax pin failing on a correct change.
+    # The claim is about what the endpoint RETURNS, so it is asserted on the
+    # return value.
+    import asyncio
+    principal = {
+        "id": "u1", "email": "a@b.c", "name": "A", "role": "cp",
+        "registration_source": "self_serve",
+        "password": "$2b$12$hash",
+    }
+    out = asyncio.run(server.get_me(current_user=principal))
+    assert out["registration_source"] == "self_serve", (
+        "the stamped field no longer reaches the client")
+    assert "password" not in out, "the hash is being returned"
