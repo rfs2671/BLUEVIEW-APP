@@ -251,16 +251,24 @@ class ItUsesTheSharedRule(unittest.TestCase):
         self.assertNotIn("marked_for_deletion", captured[0])
 
 
-class TheSweepCountWentDownByTWO(unittest.TestCase):
-    """The mechanism from the previous PR, exercised rather than trusted."""
+class TheseTwoRoutesLeftTheSweep(unittest.TestCase):
+    """The mechanism from the previous PR, exercised rather than trusted.
 
-    def test_the_pinned_total_is_now_32(self):
-        mod = __import__("test_pm_load_project_fails_closed")
-        self.assertEqual(mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL, 32)
+    NO LITERAL TOTAL HERE. An earlier version of this class asserted the count
+    was exactly 32, and the very next PR in the series broke it -- the total is
+    designed to keep falling, so pinning it in more than one file makes every
+    subsequent fix look like a regression and trains people to edit the number
+    until the suite goes quiet.
 
-    def test_the_sweep_agrees(self):
+    EXPECTED_TOTAL lives in ONE place. This file asserts the sweep agrees with
+    it, and that these two routes are no longer among the hits -- which is the
+    claim this PR is actually making.
+    """
+
+    def test_the_sweep_agrees_with_the_single_pinned_total(self):
         mod = __import__("test_pm_load_project_fails_closed")
-        self.assertEqual(len(mod.sweep_bypass_sites()), 32)
+        self.assertEqual(len(mod.sweep_bypass_sites()),
+                         mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
     def test_neither_route_is_still_in_the_sweep(self):
         mod = __import__("test_pm_load_project_fails_closed")

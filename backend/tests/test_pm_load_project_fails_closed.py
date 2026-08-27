@@ -243,7 +243,9 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     # conditional was the only control).
     #   -1  _pm_load_project_or_403                    (covered six routes)
     #   -2  POST /admin/site-devices, /admin/cs-registrations
-    EXPECTED_TOTAL = 32
+    #   -7  six permit_renewal routes (one _assert_renewal_access helper)
+    #       plus GET /signatures/{signin_id}
+    EXPECTED_TOTAL = 25
 
     def test_the_sweep_finds_the_expected_number(self):
         hits = sweep_bypass_sites()
