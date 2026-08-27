@@ -262,14 +262,22 @@ export default function ProjectDropboxSettingsScreen() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      await dropboxAPI.syncProject(projectId);
+      // TAKE THE COUNT FROM THE RESPONSE. sync-dropbox says it in its own
+      // docstring -- "returns immediately, runs sync in background" -- so
+      // re-reading project_files here counted rows the background task had not
+      // finished inserting. That is where "3 files synced" came from on a
+      // folder holding 15, and it stuck, because nothing refreshes this number
+      // until the screen remounts.
+      // The endpoint already does a recursive Dropbox listing for exactly this
+      // ("Quick count from Dropbox for immediate response") and returns it.
+      const res = await dropboxAPI.syncProject(projectId);
       setLastSynced(new Date().toISOString());
-      
-      // Refresh file count
-      const files = await dropboxAPI.getProjectFiles(projectId);
-      setFileCount(Array.isArray(files) ? files.length : 0);
-      
-      toast.success('Synced', 'Files synchronized from Dropbox');
+      setFileCount(Number.isFinite(res?.file_count) ? res.file_count : 0);
+
+      // NOT "synced". The task is still running when this fires, so the copy
+      // may not be complete yet; claiming it is would be the same false claim
+      // the count was making.
+      toast.success('Sync started', 'Files are being copied from Dropbox.');
     } catch (error) {
       console.error('Failed to sync:', error);
       toast.error('Sync Error', error.response?.data?.detail || 'Could not sync files');
@@ -424,7 +432,15 @@ export default function ProjectDropboxSettingsScreen() {
                         </IconPod>
                         <View style={s.folderInfo}>
                           <Text style={s.folderPath}>{selectedFolder}</Text>
-                          <Text style={s.folderMeta}>{fileCount} files synced</Text>
+                          {/* "files", not "files synced". Two different
+                              quantities reach this number: on mount it is the
+                              rows we hold, and after a sync it is the count
+                              Dropbox reported. Both are honestly "files"; only
+                              one of them was ever "synced", and the Last Synced
+                              stat beside it carries that claim on its own, from
+                              a timestamp the background task stamps when it
+                              actually finishes. */}
+                          <Text style={s.folderMeta}>{fileCount} files</Text>
                         </View>
                         {isAdmin && <ChevronRight size={20} strokeWidth={1.5} color={colors.text.muted} />}
                       </Pressable>
