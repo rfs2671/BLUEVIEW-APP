@@ -4,6 +4,55 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## DROPBOX — 2026-08-27 — two bounds left standing by #242
+
+Both are real, both were reported before merging, and neither is fixed. #242
+made the displayed count come from the sync response instead of a mid-sync
+re-read of `project_files`; these are what that did not reach.
+
+### 1. `file_count` never paginates, so the displayed target undercounts
+
+`sync_project_dropbox` gathers its "Quick count from Dropbox for immediate
+response" with a single `list_folder` call:
+
+    json={"path": api_path, "recursive": True}
+
+and never checks `has_more` / `list_folder/continue`. Past roughly 500 entries
+the returned `file_count` is short by everything after page one.
+
+STORED ROWS STAY CORRECT. `_sync_project_to_r2` paginates properly, so the
+files themselves all arrive; only the number the screen shows is low. That
+asymmetry is why this was left: the bug is cosmetic today and becomes a
+support call only on a project big enough to cross a page boundary.
+
+Note the same missing pagination in `get_dropbox_folders`, where it is NOT
+cosmetic -- a directory whose first page is all files returns an empty folder
+list, and the picker renders "no folders" on a folder that plainly has some.
+
+### 2. Pressing Sync caches a PARTIAL list for offline
+
+`sync-dropbox` "returns immediately, runs sync in background". The plans screen
+then re-reads the list -- it renders rows, so it must -- and hands the result to
+`adoptFiles`, which runs `cacheDocList`. That write-through is therefore a
+MID-SYNC snapshot: the saved-for-offline list can be a strict subset of what
+the project holds, and it is the copy the CP gets in a cellar.
+
+Fixing it needs a completion signal the endpoint does not offer. `sync-dropbox`
+returns before the task starts writing, and nothing polls or pushes. Options
+are a status endpoint, a job id, or having the task stamp a terminal marker the
+client can wait on -- all of which are the redesign, not a patch.
+
+FILE THIS WITH ITEM 12, the offline warm with no observable state. They are one
+problem: `warmDocCache` is fire-and-forget, sequential, `limit: 15` with no
+sort despite a docstring promising "newest first", swallowed by `.catch(() =>
+{})`, and NOTHING on screen ever reports what is on disk -- `getCachedDocFile`
+is never called in the render path. A partial cached list is invisible for the
+same reason a failed warm is: the feature has no readable state, so the CP
+cannot verify readiness while they still have signal, which is the only moment
+verification is worth anything.
+
+---
+
 ## PRACTICE — 2026-08-26 — source assertions must read the AST, never text
 
 A test that greps source for a construct can be satisfied by an EXPLANATION of
