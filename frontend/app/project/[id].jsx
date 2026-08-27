@@ -633,7 +633,18 @@ export default function ProjectDetailScreen() {
   const handleDisconnectDropbox = () => {
     const confirmDisconnect = async () => {
       try {
-        await dropboxAPI.linkFolder(projectId, '');
+        // NULL, NEVER ''. The server treats null as unlink and BOTH '' and '/'
+        // as "link to the root of the Dropbox scope" (link_dropbox_to_project).
+        // Sending '' from a control labelled Disconnect stored '/' instead of
+        // clearing the field, and the next sync -- which lists recursively --
+        // would have pulled the company's ENTIRE Dropbox into project_files
+        // for this one project and copied every file to R2.
+        // It never fired only because isDropboxConnected reads dropbox_enabled
+        // and dropbox_folder, two fields nothing has written since
+        // create_project, so this button has never rendered. Correcting those
+        // field names is what arms it; this is fixed first so that correction
+        // is safe to make.
+        await dropboxAPI.linkFolder(projectId, null);
         toast.success('Disconnected', 'Dropbox folder unlinked');
         setDropboxFiles([]);
         await fetchData();
