@@ -353,6 +353,17 @@ export default {
     // it never blocks the CP.
     unassignedTitle: 'On site, no company assigned',
     unassignedHint: 'He is counted as present. Work is logged per company, so there is nothing to fill in for him until a company is assigned.',
+    // A CREW WITH NOBODY ON IT. Stated, never silent: the log has quietly
+    // stopped asking this crew for an activity and a location, and a CP who
+    // sees one card asking and another not asking, with no reason given,
+    // learns to distrust the screen.
+    //
+    // THE COPY PROMISES NOTHING HE CANNOT DO. There is no headcount edit and
+    // no crew delete on this screen, so it says what is true and what will be
+    // filed — it does not tell him to "set a headcount" against a field that
+    // does not exist.
+    emptyCrewTitle: 'No workers recorded',
+    emptyCrewHint: 'Nobody was recorded on site for this crew, so the log does not ask what they did. It stays on the record with a count of 0.',
     unassignedNoCard_one: '1 worker on site has no company assigned, so he has no work card here. He is recorded on the previous step.',
     unassignedNoCard_other: '{n} workers on site have no company assigned, so they have no work cards here. They are recorded on the previous step.',
     workers_one: '1 worker',

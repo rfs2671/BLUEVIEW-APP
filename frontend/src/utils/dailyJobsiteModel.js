@@ -209,6 +209,104 @@ export function buildCrewsFromRoster(workers, headcount) {
   return all;
 }
 
+/**
+ * Bring a STORED crew list back into line with today's gate roster.
+ *
+ * THE GAP THIS CLOSES. Crews were rebuilt from the roster only when the stored
+ * list was EMPTY (daily_jobsite.jsx, both load branches). That fix was right
+ * and is untouched — an autosaved `activities: []` used to make the roster
+ * unrecoverable. But nothing ever reconciled a NON-empty list, so the moment
+ * one crew existed the log stopped listening to the gate for the rest of the
+ * day. Two failures come out of that, and the second is worse than the first:
+ *
+ *   * a crew on the card that is no longer on the roster keeps its original
+ *     headcount forever — the reported defect; and
+ *   * A CREW THAT ARRIVED AFTER THE DRAFT WAS OPENED NEVER APPEARS AT ALL.
+ *     A CP who opens the log at 07:00 and signs at 16:00 files a §3301.2
+ *     record that omits every sub who arrived at 09:00. A missing crew on a
+ *     signed record is not visible to anyone reading it.
+ *
+ * WHAT IT MAY TOUCH, and the rule is provenance:
+ *
+ *   GATE-SOURCED ROWS  are the gate's facts, so the gate's facts are refreshed:
+ *                      headcount, worker ids and names, first check-in. Never
+ *                      the work description, the locations or the photos —
+ *                      those are the CP's and this must not be able to eat
+ *                      them. A gate row with no matching crew today drops to a
+ *                      headcount of 0 rather than being deleted, because
+ *                      deleting it would take anything he had already written
+ *                      with it.
+ *
+ *   HAND-ADDED ROWS    are the CP asserting a crew the gate missed. They are
+ *                      returned untouched. This is exactly why a reconciliation
+ *                      cannot fix the reported defect on its own: the manually
+ *                      added zero is not the gate's to correct.
+ *
+ *   LOOSE ROWS         (a worker with no company) carry no CP content — they
+ *                      render no card and there is nothing to fill in on them
+ *                      — so they are replaced wholesale from today's roster.
+ *
+ * An empty stored list still returns the freshly built one, so the existing
+ * rebuild keeps working through this function rather than around it.
+ */
+export function reconcileCrewsWithRoster(stored, fresh) {
+  const storedRows = Array.isArray(stored) ? stored : [];
+  const freshRows = Array.isArray(fresh) ? fresh : [];
+  if (storedRows.length === 0) return freshRows;
+
+  const keyOf = (r) => `${rosterKey(r?.company)}|${rosterKey(r?.trade)}`;
+
+  const freshCrews = new Map();
+  for (const f of freshRows) {
+    if (!isUnassignedWorkerRow(f)) freshCrews.set(keyOf(f), f);
+  }
+
+  const matched = new Set();
+  const out = [];
+  for (const row of storedRows) {
+    if (isUnassignedWorkerRow(row)) continue;      // replaced below
+    if (!row.gate_sourced) { out.push(row); continue; }   // the CP's, untouched
+    const f = freshCrews.get(keyOf(row));
+    if (f) {
+      matched.add(keyOf(row));
+      out.push({
+        ...row,
+        num_workers: f.num_workers,
+        worker_ids: f.worker_ids,
+        worker_names: f.worker_names,
+        check_in_time: f.check_in_time,
+        // Only fill a missing binding; never replace one the row already has.
+        subcontractor_id: row.subcontractor_id || f.subcontractor_id || null,
+      });
+    } else {
+      out.push({ ...row, num_workers: '0', worker_ids: [], worker_names: [] });
+    }
+  }
+
+  // Crews that came through the gate after this list was built.
+  //
+  // APPENDED EVEN WHEN THE CP ALREADY ADDED THAT COMPANY BY HAND. Two rows for
+  // one sub is visible on the screen and correctable; silently folding the
+  // gate's men into a hand-typed row would drop them from the headcount, and
+  // nobody reading the filed log could tell.
+  //
+  // crew_id counts from the highest one already present rather than from the
+  // list length: it is the PDF's first column and an existing row's id must
+  // never be reused by a different crew.
+  let seq = 0;
+  for (const r of out) {
+    const n = parseInt(String(r.crew_id || '').replace(/^C/, ''), 10);
+    if (Number.isFinite(n) && n > seq) seq = n;
+  }
+  for (const f of freshRows) {
+    if (isUnassignedWorkerRow(f) || matched.has(keyOf(f))) continue;
+    seq += 1;
+    out.push({ ...f, crew_id: `C${seq}` });
+  }
+
+  return [...out, ...freshRows.filter(isUnassignedWorkerRow)];
+}
+
 /** rosterKey(company)|rosterKey(trade) -> subcontractor_id, from /daily-headcount. */
 export function rosterIdIndex(headcount) {
   const out = new Map();
@@ -374,9 +472,63 @@ export const isUnassignedWorkerRow = (activity) => Boolean(
   activity && activity.gate_sourced && !String(activity.company || '').trim(),
 );
 
-/** The rows that represent a company's work — the ones Step 2 asks about. */
+/** The rows that RENDER a crew card on Step 2. */
 export const workRows = (activities) => (Array.isArray(activities) ? activities : [])
   .filter((a) => !isUnassignedWorkerRow(a));
+
+/**
+ * Workers recorded on one crew row. `''` and `'0'` both read as none.
+ *
+ * `num_workers` is a STRING on the row because both PDF renderers print it
+ * verbatim, so every reader has to parse it and every reader was parsing it
+ * differently — the two card headers already do `parseInt(...) || 0` inline.
+ * One function, so "how many men" cannot be answered two ways.
+ */
+export const crewHeadcount = (activity) => {
+  const raw = String(activity?.num_workers ?? '').trim();
+  if (raw === '') return null;                 // never counted — see below
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * A crew AFFIRMATIVELY RECORDED AS HAVING NOBODY ON IT. The rule, from the
+ * operator: a crew that was not on site has nothing to describe.
+ *
+ * ZERO IS NOT BLANK, AND THE DIFFERENCE IS THE WHOLE POINT.
+ *
+ *   '0'  something said NOBODY. Either the CP typed it, or — far more often —
+ *        `commitAddCrew` manufactured it out of an untyped count
+ *        (`String(parseInt('') || 0)`), or the roster reconciliation found no
+ *        crew under that key today. All three are evidence of absence.
+ *   ''   nobody ever counted. That is not evidence of ANYTHING, so the log
+ *        keeps asking. A gate-sourced row can never hold it (buildCrewsFromRoster
+ *        increments from the first worker, so a crew that exists has ≥ 1), and
+ *        commitAddCrew no longer mints it as a zero.
+ *
+ * Reading a blank as "nobody" would be the more convenient rule and the wrong
+ * one: it would silently stop demanding work from a crew that WAS on site
+ * whenever a count went unrecorded, and a §3301.2 log that omits a present
+ * crew's work is exactly the failure this file exists to prevent — invisible
+ * to whoever reads the filed record.
+ *
+ * THIS IS NOT A DELETION AND NOT A HIDE. The row still renders, still prints,
+ * and still carries anything the CP wrote on it. All that changes is that the
+ * log stops DEMANDING an activity and a location for men who were not here.
+ */
+export const hasNoWorkersOnSite = (activity) => crewHeadcount(activity) === 0;
+
+/**
+ * The rows the log actually demands work from — rendered crew cards, minus
+ * the ones with nobody on them.
+ *
+ * SEPARATE FROM workRows ON PURPOSE. workRows answers "what is on screen" and
+ * is what loadChips keys on; this answers "what must be filled in". Collapsing
+ * them would stop fetching chips for a zero-worker crew, so the moment the CP
+ * corrected its headcount he would face a card with no chips on it.
+ */
+export const describableRows = (activities) => workRows(activities)
+  .filter((a) => !hasNoWorkersOnSite(a));
 
 /**
  * Crews the CP has left with NO WORK DESCRIBED — the sentence the submit gate
@@ -401,6 +553,16 @@ export function crewsWithoutWork(activities) {
   const total = rows.length;
   return rows
     .map((a, i) => ({ a, n: i + 1 }))
+    // NOTHING TO DESCRIBE. A crew with no workers recorded was not on site, so
+    // the log stops asking it for an activity and a location.
+    //
+    // FILTERED HERE, AFTER THE INDEX IS TAKEN, AND NOT IN THE SOURCE LIST.
+    // `row`/`total` are a position on the screen — "Crew 3 of 5" is how the CP
+    // finds the card — so they have to count the rendered rows. Filtering
+    // before the index would renumber every crew below an empty one and point
+    // him at the wrong card, which is the same defect the comment below
+    // records for the unassigned-worker rows.
+    .filter(({ a }) => !hasNoWorkersOnSite(a))
     .map(({ a, n }) => {
       const missing = [];
       if (String(a?.work_description || '').trim() === '') missing.push('activity');
@@ -575,7 +737,20 @@ export function stepComplete(step, state) {
       // COMPLETE and the Next button sit dead. A CP stopped by something the
       // screen has just told him is finished learns to distrust the screen, and
       // that is the failure this pair is watched for.
-      const work = workRows(acts);
+      // describableRows, NOT workRows: a crew with nobody on it is not asked
+      // for a description, so it must not be able to hold the pip incomplete
+      // either. The pip and the Next gate read the same set or the CP is
+      // stopped by something the screen says is finished.
+      const work = describableRows(acts);
+      // `work.length > 0` STAYS. A day on which no crew's work is described is
+      // not a completed Step 2, and that ruling is not this change's to
+      // overturn — it is asserted directly in dailyJobsiteModel.test.cjs for
+      // the unassigned-worker case. All that moves here is WHICH rows count as
+      // askable, so an empty crew can no longer hold the pip incomplete.
+      //
+      // This marker is advisory: only crewsWithoutWork disables Next
+      // (daily_jobsite.jsx nextDisabled). The two read the same set so they
+      // cannot disagree, which is the property the comment above was added for.
       return work.length > 0 && work.every(
         (a) => String(a.work_description || '').trim()
           && String(a.work_locations || '').trim(),
