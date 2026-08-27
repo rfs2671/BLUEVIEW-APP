@@ -34032,13 +34032,50 @@ from app.scheduling import aggregator as _pm_aggregator  # noqa: E402
 
 
 async def _pm_load_project_or_403(project_id: str, current_user):
+    """Load a project and prove the caller may act on it. SIX CALLERS.
+
+    THE BYPASS THIS CLOSES. The check was
+
+        if company_id and project.get("company_id") != company_id:
+
+    and `and` short-circuits: a caller whose company_id is falsy never reaches
+    the comparison, so the 403 could not fire. That is not an exotic state --
+    /auth/register sets `user_dict["company_id"] = None` on every self-serve
+    signup, so it is the DEFAULT until onboarding attaches a company.
+
+    Three of the six callers carry Depends(require_project_access) and were
+    therefore already safe. THE OTHER THREE HAD ONLY THIS LINE:
+
+        GET /projects/{project_id}/model
+        GET /projects/{project_id}/model/unconfirmed
+        GET /projects/{project_id}/schedule
+
+    project_access_ok is the SAME three-branch rule require_project_access
+    applies, extracted for exactly this case -- its docstring says so: "a caller
+    that must do its OWN project lookup can still reach the same decision
+    instead of restating it." It fails closed on a falsy company because the
+    company branch requires `user_company` to be truthy before it can return
+    True.
+
+    THE LOOKUP IS DELIBERATELY UNCHANGED. This keeps `is_deleted` rather than
+    adopting ACTIVE_PROJECT_FILTER, which also excludes marked_for_deletion.
+    Switching would newly 404 these reads on a project an admin has just marked
+    -- a CP losing his schedule to an admin action. Authorization is what was
+    missing; the existence semantics are left exactly as they were. Same choice
+    create_logbook made, for the same reason.
+
+    IT ALSO WIDENS ACCESS SLIGHTLY, and that is intended: the three-branch rule
+    admits a site device provisioned for this project, and a user with the
+    project in assigned_projects. Both are already true of the three sibling
+    routes that carry the dependency, so this makes the six agree rather than
+    inventing a rule.
+    """
     project = await db.projects.find_one(
         {"_id": to_query_id(project_id), "is_deleted": {"$ne": True}}
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
+    if not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     return project
 
