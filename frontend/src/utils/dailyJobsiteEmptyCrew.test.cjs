@@ -211,6 +211,39 @@ console.log('\n-- the stored list is brought back into line with the roster --')
   eq(out[0].worker_ids, ['new'], 'and it is today\'s, not yesterday\'s');
 }
 
+{
+  // A TRADE BEING RESOLVED IS NOT A NEW CREW. Found by testing this change
+  // against the NEXT one rather than after merging it: once the roster
+  // resolves a pairing, the crew arrives carrying a trade it did not have,
+  // the (company, trade) key misses, and the same crew appears TWICE -- one
+  // row holding the description with nobody on it, one row with the men and
+  // nothing written. Both print on the filed log.
+  //
+  // Reachable today without any roster change: POST /checkins/{id}/assign-trade
+  // already rewrites checkins.worker_trade.
+  const stored = [crew({ company: 'Arkon Builders', trade: '', num_workers: '6',
+    crew_id: 'C1', work_description: 'sheathing', work_locations: 'L2' })];
+  const fresh = [crew({ company: 'Arkon Builders', trade: 'Framers', num_workers: '6' })];
+  const out = M.reconcileCrewsWithRoster(stored, fresh);
+  eq(out.length, 1, 'a resolved trade updates the crew in place -- it does not duplicate it');
+  eq(out[0].trade, 'Framers', 'and the row adopts the trade the roster now resolves');
+  eq(out[0].work_description, 'sheathing', 'while keeping what the CP wrote against it');
+  eq(out[0].crew_id, 'C1', 'and its crew_id, which is the PDF first column');
+}
+{
+  // ONLY WHEN UNAMBIGUOUS. One company can field two crews in different trades;
+  // guessing would put a description against the wrong trade on a signed
+  // record, so the untraded row is left alone instead.
+  const stored = [crew({ company: 'Arkon', trade: '', num_workers: '6',
+    crew_id: 'C1', work_description: 'x' })];
+  const fresh = [crew({ company: 'Arkon', trade: 'Framing', num_workers: '4' }),
+    crew({ company: 'Arkon', trade: 'Concrete', num_workers: '2' })];
+  const out = M.reconcileCrewsWithRoster(stored, fresh);
+  eq(out.length, 3, 'two candidate crews means no guess: the untraded row stays');
+  eq(out[0].num_workers, '0', 'it reads zero, which is visible and wrong in the safe direction');
+  eq(out[0].work_description, 'x', 'and still holds what he wrote');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 4. THE PRODUCER — commitAddCrew no longer mints a zero from a blank
 // ═══════════════════════════════════════════════════════════════════════════

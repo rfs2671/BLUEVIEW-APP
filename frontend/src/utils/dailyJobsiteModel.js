@@ -261,16 +261,50 @@ export function reconcileCrewsWithRoster(stored, fresh) {
     if (!isUnassignedWorkerRow(f)) freshCrews.set(keyOf(f), f);
   }
 
+  // A TRADE BEING RESOLVED IS NOT A DIFFERENT CREW.
+  //
+  // The key is (company, trade), so the moment a crew's trade stops being blank
+  // — an admin fixing worker_project_trades, or a CP using
+  // POST /checkins/{id}/assign-trade, both of which change what the roster
+  // returns — the stored row stopped matching, dropped to a headcount of 0,
+  // and the SAME crew was appended again beside it. Arkon Builders twice: one
+  // row holding the CP's description with nobody on it, one row with six men
+  // and nothing written. Both print.
+  //
+  // So a stored gate row with NO trade may also match on the company alone,
+  // and adopts the trade the roster has now resolved.
+  //
+  // ONLY WHEN IT IS UNAMBIGUOUS. One company can legitimately field two crews
+  // in different trades (Arkon framing and Arkon concrete); guessing which one
+  // an untraded row meant would put a description against the wrong trade on a
+  // signed record. With more than one candidate the row is left alone and
+  // reads zero, which is visible and wrong in the safe direction.
+  const freshByCompany = new Map();
+  for (const f of freshRows) {
+    if (isUnassignedWorkerRow(f)) continue;
+    const c = rosterKey(f.company);
+    freshByCompany.set(c, (freshByCompany.get(c) || []).concat(f));
+  }
+
   const matched = new Set();
   const out = [];
   for (const row of storedRows) {
     if (isUnassignedWorkerRow(row)) continue;      // replaced below
     if (!row.gate_sourced) { out.push(row); continue; }   // the CP's, untouched
-    const f = freshCrews.get(keyOf(row));
+    let f = freshCrews.get(keyOf(row));
+    if (!f && !rosterKey(row.trade)) {
+      const candidates = (freshByCompany.get(rosterKey(row.company)) || [])
+        .filter((c) => !matched.has(keyOf(c)));
+      if (candidates.length === 1) f = candidates[0];
+    }
     if (f) {
-      matched.add(keyOf(row));
+      matched.add(keyOf(f));
       out.push({
         ...row,
+        // The roster's trade wins when this row had none — that is the whole
+        // point of the company-only match above. A row that already had one
+        // keeps it (keyOf matched, so they are equal anyway).
+        trade: row.trade || f.trade,
         num_workers: f.num_workers,
         worker_ids: f.worker_ids,
         worker_names: f.worker_names,
