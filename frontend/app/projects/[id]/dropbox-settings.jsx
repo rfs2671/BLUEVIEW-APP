@@ -235,9 +235,17 @@ export default function ProjectDropboxSettingsScreen() {
   };
 
   const handleSelectFolder = async (folderPath) => {
+    // THE CLASS, not the one control. '' and '/' both mean "the whole Dropbox"
+    // to the server; refusing them here means a new call site cannot
+    // reintroduce a root link by passing a falsy path.
+    const target = (folderPath || '').trim();
+    if (!target || target === '/') {
+      toast.error('Pick a folder', 'A project cannot be linked to all of Dropbox.');
+      return;
+    }
     try {
-      await dropboxAPI.linkToProject(projectId, folderPath);
-      setSelectedFolder(folderPath);
+      await dropboxAPI.linkToProject(projectId, target);
+      setSelectedFolder(target);
       setShowFolderPicker(false);
       toast.success('Linked', 'Dropbox folder linked successfully');
 
@@ -587,17 +595,33 @@ export default function ProjectDropboxSettingsScreen() {
                     </Text>
                   </View>
 
-                  {/* Select Current Folder */}
-                  <Pressable
-                    onPress={() => handleSelectFolder(currentPath || '/')}
-                    style={({ pressed }) => [
-                      s.selectCurrentBtn,
-                      pressed && s.selectCurrentBtnPressed,
-                    ]}
-                  >
-                    <CheckCircle size={18} strokeWidth={1.5} color="#4ade80" />
-                    <Text style={s.selectCurrentText}>Select This Folder</Text>
-                  </Pressable>
+                  {/* Select Current Folder.
+
+                      ROOT IS NOT A PROJECT FOLDER. At depth 0 currentPath is
+                      '', and the server reads both '' and '/' as "link to the
+                      root of the Dropbox scope". The sync lists RECURSIVELY, so
+                      a root link copies every file the company owns into this
+                      one project's files and onto R2. Open a folder first. */}
+                  {currentPath ? (
+                    <Pressable
+                      onPress={() => handleSelectFolder(currentPath)}
+                      style={({ pressed }) => [
+                        s.selectCurrentBtn,
+                        pressed && s.selectCurrentBtnPressed,
+                      ]}
+                    >
+                      <CheckCircle size={18} strokeWidth={1.5} color="#4ade80" />
+                      <Text style={s.selectCurrentText}>Select This Folder</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={s.selectRootBlocked}>
+                      <Text style={s.selectRootBlockedText}>
+                        Open a folder to link it. A project cannot be linked to
+                        all of Dropbox — every file your company stores would be
+                        copied into this project.
+                      </Text>
+                    </View>
+                  )}
 
                   {/* Folder List */}
                   {loadingFolders ? (
@@ -909,6 +933,19 @@ function buildStyles(colors, isDark) {
     fontSize: 13,
     color: colors.text.secondary,
     flex: 1,
+  },
+  selectRootBlocked: {
+    padding: spacing.md,
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    marginBottom: spacing.md,
+  },
+  selectRootBlockedText: {
+    fontSize: typography.sizes.sm,
+    color: colors.text.muted,
+    lineHeight: 18,
   },
   selectCurrentBtn: {
     flexDirection: 'row',
