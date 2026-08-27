@@ -339,6 +339,28 @@ export default {
     headcountLabel: 'Workers on site',
     headcountPlaceholder: '—',
     headcountGateWas: 'Gate recorded {n}',
+
+    // ── REMOVING A CREW CARD ────────────────────────────────────────────────
+    // The dialog STATES THE CONSEQUENCE. The duplicate #244 creates has the
+    // description on one row and the men on the other, so deleting the
+    // described one leaves a crew with workers and no work recorded — which
+    // re-disables Next. A bland "are you sure" means he taps through and finds
+    // that out two steps later at a control that will not advance.
+    deleteCrew: 'Remove this crew',
+    deleteCrewTitle: 'Remove {crew}?',
+    // No description on the row: nothing is stranded, so say only what is true.
+    deleteCrewPlain: 'This card will be removed from the log.',
+    // Described, and a sibling is left holding the men.
+    deleteCrewStrands: 'This card has a work description. Deleting it leaves {crew} {n} with no work recorded — you will need to describe their work on the other card.',
+    // Described, with nothing to inherit it.
+    deleteCrewLosesWork: 'This card has a work description. Deleting it removes what you wrote, and it will not appear on the filed log.',
+    // Deleting everything does not empty the log.
+    deleteCrewLastRow: 'This is the only crew on the log. Removing it does not empty the day — crews that came through the gate are read again the next time this log is opened.',
+    deleteCrewConfirm: 'Remove',
+    deleteCrewCancel: 'Keep it',
+    // WHY A GATE CARD HAS NO REMOVE. Stated on screen rather than the control
+    // being silently absent, so the CP is not left looking for it.
+    deleteCrewRefused: 'Recorded at the gate and cannot be removed — these men tapped in. If nobody from this crew worked today, set the count to 0.',
     crewsOnSite: 'Crews on site',
     noCrews: 'No crews came through the gate for this day.',
     addCrew: 'Add a crew the gate missed',
