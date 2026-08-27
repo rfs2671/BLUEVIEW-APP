@@ -93,10 +93,29 @@ ok((preshift.match(/roster\.map\(/g) || []).length === 1
 ok(/tradePickerFor === key/.test(preshift),
   'one picker open at a time, keyed by worker');
 
-// No trade-CHANGE affordance: the picker is reachable only from needs_trade.
-ok(/f\.needs_trade &&/.test(preshift)
-  && !/Change trade|Edit trade|changeTrade/i.test(preshift),
-  'no "change trade" affordance — the picker only appears where NO trade was captured');
+// INVERTED, AND IT DID ITS JOB. It read:
+//
+//   ok(/f\.needs_trade &&/.test(preshift) && !/Change trade|.../i.test(preshift),
+//     'no "change trade" affordance — the picker only appears where NO trade
+//      was captured');
+//
+// pinning the scope of the original assign-trade work: offer the picker only
+// where the gate captured NOTHING, and never let a CP edit a trade already set.
+//
+// That scope turned out to be the defect. A worker who picked a VALID roster
+// entry that was simply the WRONG one had no flag, no row and no route, so the
+// pairing was corrected by hand in mongosh twice in one week. The operator
+// ruled the gate lifted; the assertion inverts rather than being deleted, so
+// the change of intent stays visible.
+//
+// WHAT STILL HOLDS is asserted above and unchanged: ONE roster from ONE source,
+// one picker open at a time. Widening WHO can be corrected did not widen WHAT
+// can be picked.
+ok(/Change Trade/.test(preshift),
+  'every row offers a trade change — a valid-but-wrong pairing is reachable');
+ok(/f\.needs_trade \?/.test(preshift),
+  'and needs_trade now chooses the LABEL (Assign vs Change) rather than '
+  + 'deciding whether the picker exists at all');
 
 // Honest degradation when there is no check-in row to act on.
 ok(/const canAct = !!f\.checkin_id;/.test(preshift),

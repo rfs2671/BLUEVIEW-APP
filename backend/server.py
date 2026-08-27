@@ -13395,9 +13395,51 @@ async def get_flagged_project_checkins(
         s["flag_reasons"] = reasons
         results.append(s)
 
+    # ── WHAT A TRADE CORRECTION WILL NOT CHANGE ─────────────────────────────
+    #
+    # Assigning or correcting a trade rewrites the check-in it is applied to
+    # and the worker_project_trades pairing, so FUTURE check-ins use it. It
+    # does NOT rewrite earlier check-in rows, and it cannot touch a filed
+    # logbook at all -- those are signed records.
+    #
+    # The confirm step has to say so with a NUMBER, because "earlier check-ins
+    # keep what they recorded" is abstract until a CP sees that it means four
+    # of them. Computed here, in ONE aggregate keyed by worker_id, rather than
+    # per row: a lookup inside the loop above would be an N+1 on a screen a CP
+    # opens every morning.
+    #
+    # FILED LOGS ARE DELIBERATELY NOT COUNTED. A preshift sheet stores its
+    # roster as data.workers[] keyed by name, an orientation by data.worker_id,
+    # and an OSHA register by neither -- so any single count would be wrong for
+    # two of the three. The copy says "any filed logs" without a number for
+    # exactly that reason, which is honest rather than vague.
+    prior_checkins: Dict[str, int] = {}
+    try:
+        _worker_ids = [str(r.get("worker_id")) for r in results if r.get("worker_id")]
+        if _worker_ids:
+            async for _row in db.checkins.aggregate([
+                {"$match": {"project_id": project_id,
+                            "worker_id": {"$in": _worker_ids},
+                            "is_deleted": {"$ne": True}}},
+                {"$group": {"_id": "$worker_id", "n": {"$sum": 1}}},
+            ]):
+                # MINUS THE ONE BEING CORRECTED. The row on screen is itself a
+                # check-in, and counting it would tell the CP his own edit is
+                # among the records he is not changing.
+                prior_checkins[str(_row["_id"])] = max(0, int(_row.get("n") or 0) - 1)
+    except Exception as e:
+        # NON-FATAL, and the client renders the sentence without a number
+        # rather than blocking a correction on a count. Never a reason a CP
+        # cannot fix a trade.
+        logger.warning(f"[flagged] prior check-in count failed: {e!r}")
+        prior_checkins = {}
+
     return {
         "project_id": project_id,
         "project_name": project.get("name"),
+        # Per worker: how many OTHER check-in rows this project holds for him.
+        # The trade correction leaves every one of them as filed.
+        "prior_checkin_counts": prior_checkins,
         # The review screen offers these as the choices for assign-trade, so
         # soft-deleted rows are excluded. Surviving rows are passed through
         # untouched — this filters the list, it does not reshape the rows.
