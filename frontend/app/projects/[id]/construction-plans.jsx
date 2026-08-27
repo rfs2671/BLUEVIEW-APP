@@ -194,12 +194,22 @@ export default function ConstructionPlansScreen() {
     setSyncing(true);
     setSyncStatus('syncing');
     try {
-      await dropboxAPI.syncProject(projectId);
+      // sync-dropbox returns as soon as the background task is scheduled, and
+      // carries the recursive Dropbox count with it. The list read below is
+      // therefore a MID-SYNC read: it is what we hold right now, not the result
+      // of the sync. Say the target rather than implying the copy is complete.
+      const res = await dropboxAPI.syncProject(projectId);
       const filesData = await dropboxAPI.getProjectFiles(projectId);
       adoptFiles(filesData);
       setLastSynced(new Date().toISOString());
       setSyncStatus('success');
-      toast.success('Synced', 'Files synchronized from Dropbox');
+      const target = Number.isFinite(res?.file_count) ? res.file_count : null;
+      toast.success(
+        'Sync started',
+        target === null
+          ? 'Files are being copied from Dropbox.'
+          : `Copying ${target} file${target === 1 ? '' : 's'} from Dropbox. This list fills in as they arrive.`,
+      );
     } catch (error) {
       console.error('Failed to sync:', error);
       setSyncStatus('error');
