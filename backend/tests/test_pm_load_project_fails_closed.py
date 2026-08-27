@@ -245,7 +245,8 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     #   -2  POST /admin/site-devices, /admin/cs-registrations
     #   -7  six permit_renewal routes (one _assert_renewal_access helper)
     #       plus GET /signatures/{signin_id}
-    EXPECTED_TOTAL = 25
+    #  -10  the project-path reads, incl. the _verify_dob_log_access helper
+    EXPECTED_TOTAL = 15
 
     def test_the_sweep_finds_the_expected_number(self):
         hits = sweep_bypass_sites()
