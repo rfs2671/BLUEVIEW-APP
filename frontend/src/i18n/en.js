@@ -333,6 +333,12 @@ export default {
     // and that it already matches the check-in record.
     fromGate: 'From gate check-in',
     gateLocked: 'Recorded at the gate',
+    // THE HEADCOUNT THE CP CAN CORRECT. Editable on a gate row and a
+    // hand-added one; when it stands over a gate count, what the turnstile
+    // said stays on screen beside it rather than disappearing as he types.
+    headcountLabel: 'Workers on site',
+    headcountPlaceholder: '—',
+    headcountGateWas: 'Gate recorded {n}',
     crewsOnSite: 'Crews on site',
     noCrews: 'No crews came through the gate for this day.',
     addCrew: 'Add a crew the gate missed',

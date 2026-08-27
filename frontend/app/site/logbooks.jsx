@@ -24,6 +24,7 @@ import {
   cacheDocList, readCachedDocList, ensureCachedDocFile, warmDocCache,
 } from '../../src/utils/docCache';
 import { settleFetch } from '../../src/utils/offlineState';
+import { headcountDisplay } from '../../src/utils/dailyJobsiteModel';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -492,7 +493,11 @@ export default function SiteLogbooksViewer() {
                   // C1/C2/...). crew_name has no writer anywhere in the repo,
                   // so this cell showed company only on every record.
                   { text: `${act.crew_id || ''} ${act.company || 'Unknown'}`.trim(), flex: 1.5 },
-                  { text: String(act.num_workers || 0), flex: 0.6 },
+                  // ATTRIBUTED, NOT BARE. An inspector reads this tablet, and
+                  // a headcount a person typed must not print identically to
+                  // one a turnstile counted. Same helper the app card and both
+                  // server renderers use, so the four surfaces cannot drift.
+                  { text: headcountDisplay(act, '0'), flex: 0.6 },
                   { text: act.work_description || 'N/A', flex: 2 },
                   { text: act.work_locations || 'N/A', flex: 1 },
                 ]} />

@@ -15100,7 +15100,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 # generate_combined_report read the same row correctly.
                 f'<tr><td {TD}>{_capitalize_first(act.get("crew_id", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
-                f'<td {TD}>{act.get("num_workers", 0)}</td>'
+                f'<td {TD}>{_headcount_cell(act, blank="0")}</td>'
                 f'<td {TD}>{_sentence_case(act.get("work_description", "N/A"))}</td>'
                 f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td></tr>'
             )
@@ -21028,6 +21028,40 @@ def _sentence_case(text):
             if ch in ".!?":
                 cap_next = True
     return "".join(out)
+def _headcount_cell(act, blank=""):
+    """The crew row's headcount, SAYING WHERE THE NUMBER CAME FROM.
+
+    A daily 3301.2 log already carries two headcounts from two provenances: the
+    gate table, computed here from the check-ins (_headcount_by_sub), and the
+    crew rows, which print activities[].num_workers. Until now the crew row
+    never said which kind it was, so a number a person typed and a number a
+    turnstile counted printed identically on a signed record.
+
+    The CP can now correct a crew's headcount, so the distinction stopped being
+    cosmetic. `4 (CP) - gate recorded 6` is the whole point of retaining
+    gate_num_workers: if his correction simply replaced the turnstile's number,
+    nothing downstream -- an inspector, an audit, this renderer -- could tell
+    that a person had changed a gate count, or what it had been.
+
+    ABSENCE MEANS GATE. Drafts written before num_workers_source existed carry
+    no marker and hold numbers that came from the roster; labelling those "(CP)"
+    would put a false attribution on records that are already filed.
+    """
+    raw = act.get("num_workers", "")
+    text = str(raw).strip() if raw is not None else ""
+    if text == "":
+        return blank
+    if act.get("num_workers_source") != "cp":
+        return text
+    gate = act.get("gate_num_workers")
+    gate_text = str(gate).strip() if gate is not None else ""
+    if gate_text == "":
+        # A hand-added crew: the CP's own assertion, with no gate count to
+        # stand over. It is still his number and still says so.
+        return f"{text} (CP)"
+    return f"{text} (CP) - gate recorded {gate_text}"
+
+
 def _display_sub_company(name):
     """Render a subcontractor/company for a report or headcount. The
     'UNASSIGNED' sentinel — a worker whose sub was not on the project roster at
@@ -21928,7 +21962,7 @@ async def generate_combined_report(
                 f'<tr>'
                 f'<td {TD}>{act.get("crew_id", "")}</td>'
                 f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
-                f'<td {TD}>{act.get("num_workers", "")}</td>'
+                f'<td {TD}>{_headcount_cell(act)}</td>'
                 f'<td {TD}>{_sentence_case(act.get("work_description", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td>'
                 f'</tr>'

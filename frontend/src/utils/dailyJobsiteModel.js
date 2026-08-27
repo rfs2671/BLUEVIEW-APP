@@ -142,6 +142,95 @@ export const EMPTY_OBSERVATION = () => ({
  *  3. THE COMPANY IS NEVER THE SENTINEL. "UNASSIGNED" is seeded as empty, and
  *     the row is marked unbound rather than being stamped with a placeholder.
  */
+export const GATE_SOURCE = 'gate';
+export const CP_SOURCE = 'cp';
+
+/**
+ * Who supplied the headcount standing on this row.
+ *
+ * ABSENCE MEANS GATE, DELIBERATELY. Drafts written before this field existed
+ * carry no marker, and every one of them holds a number that came from the
+ * roster or from commitAddCrew. Reading a missing marker as 'cp' would label
+ * historical rows as hand-typed on a record somebody signs.
+ */
+export const headcountSource = (activity) => (
+  activity?.num_workers_source === CP_SOURCE ? CP_SOURCE : GATE_SOURCE
+);
+
+/**
+ * A CP number standing OVER a gate count. This is what the reconcile has to
+ * check: without it, reconcileCrewsWithRoster refreshes num_workers from the
+ * roster on every load and the correction the CP typed is silently reverted the
+ * next time he opens the screen -- a control that appears to work and does not.
+ *
+ * A hand-added crew is NOT an override. Its number is the CP's own assertion
+ * with nothing to stand over, and the reconcile never touches those rows.
+ */
+export const isHeadcountOverridden = (activity) => Boolean(
+  activity?.gate_sourced && headcountSource(activity) === CP_SOURCE,
+);
+
+/** The gate's own count, retained even when the CP has overridden it. */
+export const gateHeadcount = (activity) => {
+  const raw = String(activity?.gate_num_workers ?? '').trim();
+  if (raw === '') return null;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Apply a typed headcount to a crew row and return the fields that change.
+ *
+ * CLEARING THE BOX ON A GATE ROW WITHDRAWS THE OVERRIDE rather than asserting
+ * an empty count. '' means "nobody counted" everywhere else in this file, and
+ * on a crew the turnstile DID count that would be false -- so the row goes back
+ * to tracking the gate, which is the state it would have had if he had never
+ * typed. On a hand-added row a blank is the honest answer and stays blank,
+ * matching commitAddCrew.
+ *
+ * A NON-NUMERIC ENTRY CHANGES NOTHING. Returning a partial patch for garbage
+ * would let a stray keystroke overwrite a real count.
+ */
+/**
+ * The headcount AS IT SHOULD BE READ ON A FILED RECORD — the number, and who
+ * supplied it.
+ *
+ * Mirrors server.py `_headcount_cell`, deliberately: the same row is printed by
+ * four surfaces (the combined report, the per-logbook PDF, this app, and the
+ * gate tablet an inspector reads from), and a headcount that is attributed on
+ * one of them and bare on another is worse than one that is bare everywhere.
+ *
+ * ABSENCE MEANS GATE, for the same reason it does everywhere else in this file:
+ * rows written before num_workers_source existed hold roster numbers, and
+ * labelling those "(CP)" would be a false attribution on an already-filed log.
+ */
+export function headcountDisplay(activity, blank = '') {
+  const text = String(activity?.num_workers ?? '').trim();
+  if (text === '') return blank;
+  if (headcountSource(activity) !== CP_SOURCE) return text;
+  const gate = String(activity?.gate_num_workers ?? '').trim();
+  // A hand-added crew has no gate count to cite; it is still the CP's number.
+  if (gate === '') return `${text} (CP)`;
+  return `${text} (CP) - gate recorded ${gate}`;
+}
+
+export function applyHeadcountEdit(activity, raw) {
+  const text = String(raw ?? '').trim();
+
+  if (text === '') {
+    if (activity?.gate_sourced) {
+      const gate = String(activity?.gate_num_workers ?? '').trim();
+      return { num_workers: gate === '' ? '0' : gate, num_workers_source: GATE_SOURCE };
+    }
+    return { num_workers: '', num_workers_source: GATE_SOURCE };
+  }
+
+  if (!/^\d+$/.test(text)) return {};
+  const n = parseInt(text, 10);
+  if (!Number.isFinite(n)) return {};
+  return { num_workers: String(n), num_workers_source: CP_SOURCE };
+}
+
 export function buildCrewsFromRoster(workers, headcount) {
   const rows = Array.isArray(workers) ? workers : [];
   const rosterIds = rosterIdIndex(headcount);
@@ -205,7 +294,17 @@ export function buildCrewsFromRoster(workers, headcount) {
   ));
   const all = [...ordered, ...loose];
   // crew_id is the PDF's first column and must be stable and present.
-  all.forEach((r, i) => { r.crew_id = `C${i + 1}`; });
+  //
+  // gate_num_workers IS THE GATE'S OWN COUNT, KEPT SEPARATELY FROM THE MOMENT
+  // THE ROW IS BORN. num_workers is what the log prints and what the step gate
+  // reads, and the CP can now correct it; if his correction simply replaced the
+  // turnstile's number the override would be unauditable, and a signed 3301.2
+  // record could not show that a person had changed a gate count.
+  all.forEach((r, i) => {
+    r.crew_id = `C${i + 1}`;
+    r.gate_num_workers = r.num_workers;
+    r.num_workers_source = GATE_SOURCE;
+  });
   return all;
 }
 
@@ -299,13 +398,31 @@ export function reconcileCrewsWithRoster(stored, fresh) {
     }
     if (f) {
       matched.add(keyOf(f));
+      // THE OVERRIDE SURVIVES THE RECONCILE, AND THE GATE'S NUMBER SURVIVES THE
+      // OVERRIDE. This function runs on EVERY load, so before this branch knew
+      // about num_workers_source a corrected headcount was overwritten from the
+      // roster the next time the screen opened -- the CP would have watched his
+      // own correction disappear with no trace, which is the "form he already
+      // filled asking again" failure recorded on the scaffold prefill.
+      //
+      // gate_num_workers is refreshed either way. It is evidence, not display:
+      // the filed record has to be able to say 4 (CP) alongside what the
+      // turnstile actually counted, and that is only possible if the gate's
+      // number keeps tracking the gate while the printed one does not.
+      const _overridden = isHeadcountOverridden(row);
       out.push({
         ...row,
         // The roster's trade wins when this row had none — that is the whole
         // point of the company-only match above. A row that already had one
         // keeps it (keyOf matched, so they are equal anyway).
         trade: row.trade || f.trade,
-        num_workers: f.num_workers,
+        num_workers: _overridden ? row.num_workers : f.num_workers,
+        num_workers_source: _overridden ? CP_SOURCE : GATE_SOURCE,
+        gate_num_workers: f.num_workers,
+        // WORKER IDENTITIES ARE GATE FACTS AND ARE NEVER OVERRIDDEN. The CP
+        // corrects a COUNT; he does not add or remove named men, and PR 2's
+        // delete refusal reads these to decide whether a row represents real
+        // people.
         worker_ids: f.worker_ids,
         worker_names: f.worker_names,
         check_in_time: f.check_in_time,
@@ -313,7 +430,19 @@ export function reconcileCrewsWithRoster(stored, fresh) {
         subcontractor_id: row.subcontractor_id || f.subcontractor_id || null,
       });
     } else {
-      out.push({ ...row, num_workers: '0', worker_ids: [], worker_names: [] });
+      // Absent from today's roster. The gate's count for this crew is now zero
+      // and is recorded as such; a CP override still stands over it, because
+      // "the gate saw nobody but I say four were here" is exactly the
+      // correction this feature exists to allow.
+      const _overridden = isHeadcountOverridden(row);
+      out.push({
+        ...row,
+        num_workers: _overridden ? row.num_workers : '0',
+        num_workers_source: _overridden ? CP_SOURCE : GATE_SOURCE,
+        gate_num_workers: '0',
+        worker_ids: [],
+        worker_names: [],
+      });
     }
   }
 
@@ -939,6 +1068,13 @@ export function composeChipBands({ chips, allChips, resolvedTrades, priorDate })
 
 export default {
   rosterKey,
+  GATE_SOURCE,
+  CP_SOURCE,
+  headcountSource,
+  isHeadcountOverridden,
+  gateHeadcount,
+  headcountDisplay,
+  applyHeadcountEdit,
   isUnassignedCompany,
   isUnassignedTrade,
   cleanTrade,
