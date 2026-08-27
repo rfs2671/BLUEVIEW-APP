@@ -111,6 +111,14 @@ export default function PreShiftSignIn() {
   const [roster, setRoster] = useState([]);
   // worker_id whose trade picker is currently open (one at a time).
   const [tradePickerFor, setTradePickerFor] = useState(null);
+  // Per worker: how many OTHER check-ins this project holds for him. The
+  // confirm step names it, because "earlier check-ins keep what they recorded"
+  // is abstract until a CP sees it means four of them.
+  const [priorCounts, setPriorCounts] = useState({});
+  // The assignment awaiting confirmation: { workerKey, index, assignment }.
+  // A trade correction is not retroactive and the CP has to be told that
+  // BEFORE it happens, not in a toast afterwards.
+  const [pendingTrade, setPendingTrade] = useState(null);
   // worker_id with an in-flight review / assign call.
   const [actingId, setActingId] = useState(null);
 
@@ -244,6 +252,13 @@ export default function PreShiftSignIn() {
       ]);
 
       setRoster(Array.isArray(flaggedData?.trade_assignments) ? flaggedData.trade_assignments : []);
+      // Absent on an older server, or when the aggregate failed. The confirm
+      // step then omits the number rather than printing a wrong one.
+      setPriorCounts(
+        flaggedData?.prior_checkin_counts && typeof flaggedData.prior_checkin_counts === 'object'
+          ? flaggedData.prior_checkin_counts
+          : {},
+      );
 
       if (projectData) {
         setProjectLocation(projectData.address || projectData.location || projectData.name || '');
@@ -379,7 +394,17 @@ export default function PreShiftSignIn() {
         ? c.sst_status
         : null;
       const needsTrade = !!c.needs_trade_assignment;
-      if (!sst && !needsTrade) continue;
+      // THE GATE IS LIFTED, and this is the whole defect it caused.
+      //
+      // It read `if (!sst && !needsTrade) continue;`, so a row only appeared
+      // when something was WRONG with it. A worker who picked a VALID roster
+      // entry that was simply the WRONG one had no flag, no row, and no way to
+      // be corrected -- the pairing was fixed by hand in mongosh twice this
+      // week.
+      //
+      // Every non-blocked check-in now gets an entry. `sst` and `needs_trade`
+      // still drive which WARNINGS are drawn; they no longer decide whether the
+      // worker is reachable at all.
       map[key] = {
         // null for gate sign-ins / turned-away rows: no check-in row exists,
         // so no action can be offered. Never fabricated client-side either.
@@ -389,6 +414,10 @@ export default function PreShiftSignIn() {
         review_decision: c.review_decision || null,
         assigned_trade: '',
         assigned_company: '',
+        // What the check-in currently records, so a row can show what it is
+        // being changed FROM. Read-only; never written into `workers`.
+        current_trade: c.worker_trade || c.trade || '',
+        current_company: c.worker_company || c.company || '',
       };
     }
     setFlags(map);
@@ -437,6 +466,26 @@ export default function PreShiftSignIn() {
    * assign-trade clears needs_trade_assignment server-side, which is what
    * retires the flag.
    */
+  /**
+   * What a trade change does and does not touch, in the CP's words.
+   *
+   * NEVER "corrected" OR "fixed". Both imply the record was wrong and is now
+   * right everywhere, and neither is true: the change applies to the pairing
+   * and to future check-ins on this project. Earlier check-ins keep what they
+   * recorded, and a filed logbook cannot be rewritten at all.
+   */
+  const tradeChangeCaveat = (workerKey) => {
+    const n = priorCounts[workerKey];
+    if (typeof n === 'number' && n > 0) {
+      return `Future check-ins on this project will use it. ${n} earlier `
+        + `check-in${n === 1 ? '' : 's'} and any filed logs keep what they recorded.`;
+    }
+    // No number rather than a wrong one -- see prior_checkin_counts on the
+    // server, which omits the field rather than guessing when the count fails.
+    return 'Future check-ins on this project will use it. Earlier check-ins and '
+      + 'any filed logs keep what they recorded.';
+  };
+
   const handleAssignTrade = async (workerKey, index, assignment) => {
     const f = flags[workerKey];
     if (!f?.checkin_id || !assignment) return;
@@ -456,7 +505,11 @@ export default function PreShiftSignIn() {
       // No reason string or flag state is written here.
       if (res.company) updateWorker(index, 'company', res.company);
       setTradePickerFor(null);
-      toast.success('Trade assigned', `${res.trade} — ${res.company}`);
+      setPendingTrade(null);
+      toast.success(
+        'Trade updated',
+        `${res.trade} — ${res.company}. ${tradeChangeCaveat(workerKey)}`,
+      );
     } catch (e) {
       // Picker stays open and the flag stays up: nothing reached the server.
       toast.error('Not assigned', e?.response?.data?.detail || 'Could not assign the trade.');
@@ -740,14 +793,27 @@ export default function PreShiftSignIn() {
           </>
         )}
 
-        {f.needs_trade && (
+        {/*
+          EVERY ROW IS REACHABLE, not only flagged ones. `needs_trade` still
+          decides the WARNING above; it no longer decides whether the picker
+          exists. A worker who picked a valid roster entry that was the wrong
+          one had no route here at all.
+        */}
+        {true && (
           <>
-            <View style={styles.flagReasonRow}>
-              <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
-              <Text style={[styles.flagReasonText, { color: '#93c5fd' }]}>
-                No trade assigned
+            {f.needs_trade ? (
+              <View style={styles.flagReasonRow}>
+                <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
+                <Text style={[styles.flagReasonText, { color: '#93c5fd' }]}>
+                  No trade assigned
+                </Text>
+              </View>
+            ) : f.current_trade ? (
+              <Text style={styles.flagHint}>
+                Trade on this check-in: {f.current_trade}
+                {f.current_company ? ` — ${f.current_company}` : ''}
               </Text>
-            </View>
+            ) : null}
             {!canAct ? (
               <Text style={styles.flagHint}>
                 No check-in record to assign a trade on for this worker.
@@ -757,13 +823,39 @@ export default function PreShiftSignIn() {
                 This project has no trades configured yet, so there is nothing
                 to pick from. An admin adds them on the project.
               </Text>
+            ) : pendingTrade?.workerKey === key ? (
+              /*
+                THE CONFIRM STEP. It names what is NOT changing, with a count,
+                BEFORE the write -- a toast afterwards is too late to be a
+                decision. The verb is "update", never "correct" or "fix":
+                nothing retroactive happens.
+              */
+              <View style={styles.tradePicker}>
+                <Text style={styles.flagHint}>
+                  Set {pendingTrade.assignment.trade} — {pendingTrade.assignment.company}?
+                </Text>
+                <Text style={styles.flagHint}>
+                  {tradeChangeCaveat(key)}
+                </Text>
+                <Pressable
+                  onPress={() => handleAssignTrade(
+                    key, pendingTrade.index, pendingTrade.assignment)}
+                  disabled={busy}
+                  style={[styles.tradeOption, busy && styles.flagBtnBusy]}
+                >
+                  <Text style={styles.tradeOptionText}>Update trade</Text>
+                </Pressable>
+                <Pressable onPress={() => setPendingTrade(null)} style={styles.tradeCancel}>
+                  <Text style={styles.flagHint}>Cancel</Text>
+                </Pressable>
+              </View>
             ) : tradePickerFor === key ? (
               <View style={styles.tradePicker}>
                 <Text style={styles.flagHint}>Select this worker's trade &amp; company</Text>
                 {roster.map((a, i) => (
                   <Pressable
                     key={`${a.trade}|${a.company}|${i}`}
-                    onPress={() => handleAssignTrade(key, index, a)}
+                    onPress={() => setPendingTrade({ workerKey: key, index, assignment: a })}
                     disabled={busy}
                     style={[styles.tradeOption, busy && styles.flagBtnBusy]}
                   >
@@ -783,7 +875,7 @@ export default function PreShiftSignIn() {
               >
                 <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
                 <Text style={[styles.flagBtnText, { color: '#93c5fd' }]}>
-                  Assign Trade
+                  {f.needs_trade ? 'Assign Trade' : 'Change Trade'}
                 </Text>
               </Pressable>
             )}
