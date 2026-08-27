@@ -13695,9 +13695,21 @@ async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # Check company access
-    company_id = get_user_company_id(admin)
-    if company_id and project.get("company_id") != company_id:
+    # THE PROJECT ID CAME FROM THE BODY, and the check that scoped it could not
+    # fire for a company-less caller: `if company_id and ...` short-circuits, and
+    # /auth/register sets company_id = None on every self-serve signup.
+    #
+    # get_admin_user above is a ROLE gate, not a tenancy one -- an admin of any
+    # company reached this line -- so the conditional was the only thing
+    # standing between him and provisioning a site device onto another tenant's
+    # project. Note what the insert does with it: `device_dict["company_id"] =
+    # project.get("company_id")`, so the device would have been stamped into the
+    # VICTIM's tenancy and then authenticated against it.
+    #
+    # project_access_ok is the same rule require_project_access applies; it is
+    # called directly because the id is in the body, so there is no path
+    # parameter for a dependency to resolve.
+    if not project_access_ok(project, str(device_data.project_id), admin):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     
     device_dict = device_data.model_dump()
@@ -14061,7 +14073,13 @@ async def register_construction_superintendent(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    if company_id and project.get("company_id") != company_id:
+    # Same bypass, same fix as the site-device route above: the project id is in
+    # the BODY, the conditional could not fire for a company-less caller, and
+    # get_admin_user is a role gate rather than a tenant one. A Construction
+    # Superintendent registration asserts who is responsible for a jobsite, so
+    # writing one onto another tenant's project is a false statement about a
+    # DOB-facing role.
+    if not project_access_ok(project, str(data.project_id), admin):
         raise HTTPException(status_code=403, detail="Access denied to this project")
     
     # Check if this project already has an active CS

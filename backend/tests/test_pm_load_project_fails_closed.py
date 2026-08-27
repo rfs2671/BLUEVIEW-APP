@@ -239,10 +239,11 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     than you changed, something else moved and you want to know why.
     """
 
-    # Was 35 before this PR (11 belt-and-braces on tenancy-guarded routes,
-    # 24 where the conditional was the only control). This PR removes ONE:
-    # _pm_load_project_or_403, which covered six routes.
-    EXPECTED_TOTAL = 34
+    # 35 originally (11 belt-and-braces on tenancy-guarded routes, 24 where the
+    # conditional was the only control).
+    #   -1  _pm_load_project_or_403                    (covered six routes)
+    #   -2  POST /admin/site-devices, /admin/cs-registrations
+    EXPECTED_TOTAL = 32
 
     def test_the_sweep_finds_the_expected_number(self):
         hits = sweep_bypass_sites()
