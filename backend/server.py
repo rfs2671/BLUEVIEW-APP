@@ -2461,7 +2461,29 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
 
 
 def build_worker_certifications(existing_certs, osha_data, osha_number, osha_card_image, now):
-    """Given prior certs + ONE OCR scan, return (worker_certs, expiry_unparseable).
+    """Given prior certs + ONE OCR scan, return (worker_certs, not_sst).
+
+    SECOND ELEMENT CHANGED, DELIBERATELY, AND THE ARITY DID NOT.
+    It used to be `sst_expiration_unparseable`, which was computed here,
+    returned here, unpacked at the single call site — and never read by
+    anything, ever. It was also redundant: a suppressed expiry already reaches
+    the record as `expiration_raw_rejected` + `review_reason` on the cert row,
+    and as sst_status 'unknown' / sst_unknown_reason 'EXPIRY' frozen on the
+    check-in. Nothing was lost by dropping it and nothing needs to surface it.
+
+    What DID need to surface, and had nowhere to go, is `not_sst`.
+    resolve_card_class identifies a PURPLE Worker Wallet as not-an-SST-card at
+    all; this function then correctly declines to invent a certification for it
+    and returned early — discarding the reason. The caller saw only "no certs",
+    which validate_worker_certifications reports as MISSING_OSHA, so a man
+    holding the wrong card in his hand was told "No OSHA card on file". Wrong
+    (he may well have an OSHA card) and unactionable (it does not tell him the
+    card he just photographed is the wrong one). The comment below this
+    function's early return has claimed since it was written that "the caller
+    surfaces not_sst to the worker" — that is now true.
+
+    Every existing caller and all three test modules discard the second element
+    (`certs, _ = build(...)`), so the meaning changed without the shape changing.
 
     Pure (no I/O) so it is unit-testable and the endpoint just persists the
     result. Invariants:
@@ -2481,7 +2503,8 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
     """
     worker_certs = list(existing_certs or [])
     has_existing_osha = any(str(c.get("type", "")).startswith("OSHA") for c in worker_certs)
-    sst_expiration_unparseable = False
+    # None unless the scan was of a card that is not an SST card at all.
+    not_sst = None
     od = osha_data or {}
 
     def _parse_mdy(s):
@@ -2536,7 +2559,13 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         # baseline. The caller surfaces `not_sst` to the worker and asks him to
         # scan his SST card.
         if _res["not_sst"]:
-            return worker_certs, sst_expiration_unparseable
+            # THE REASON TRAVELS WITH THE REFUSAL NOW. Returning early with no
+            # cert row is right — a Worker Wallet is not an SST credential and
+            # must never be recorded as one, not even as SST_UNSPECIFIED, which
+            # RECOGNIZED_SST_TYPES would let satisfy the OSHA baseline. What was
+            # wrong was throwing away WHY, which left the worker with a block
+            # about a card he was never asked for.
+            return worker_certs, _res["not_sst"]
         sst_type = _res["sst_type"]
         class_source = _res["class_source"]
         color_seen = _res["color"]
@@ -2547,7 +2576,6 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         suppressed = False
         reason = None
         if raw_expiry and exp_dt is None:
-            sst_expiration_unparseable = True
             suppressed = True
             reason = "EXPIRY_UNPARSEABLE"
         elif exp_dt is not None:
@@ -2656,7 +2684,7 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
             if not c.get("review_reason"):
                 c["review_reason"] = "DUPLICATE_SST"
 
-    return worker_certs, sst_expiration_unparseable
+    return worker_certs, not_sst
 
 
 def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
@@ -10528,6 +10556,9 @@ _PROJECT_OWNED_COLLECTIONS = [
     "project_schedules", "sequence_graph", "risk_scores", "daily_panels",
     "prediction_models", "prediction_validation_ledger", "eligibility_shadow",
     "permit_renewals", "renewal_alert_sent", "site_devices", "subcontractors",
+    # Gate-side failure diagnostics (POST /checkin/gate-failure). Project-scoped
+    # rows, so they go when the project goes.
+    "gate_failures",
     # card_audit family — the runtime flow is route-shadowed, but rows may
     # exist from any earlier exercise of it, so sweep them.
     "worker_enrollments", "sign_ins", "daily_signatures", "pending_enrollments",
@@ -10943,17 +10974,26 @@ async def upload_osha_card(file_data: dict, request: Request):
     this was gated behind `Depends(get_current_user)`, which made every
     photo upload 401 and surface as "Could not read card" in the UI.
 
-    Rate-limited via the shared check-in limiter to prevent abuse of
-    the paid vision API.
+    RATE LIMIT REMOVED (operator ruling), for the reason already recorded on
+    register_and_checkin: "A config artifact must never stop a man from
+    working." This carried a 30/min PER-IP cap while every worker at one gate
+    — their own phones on the site WiFi, or one shared gate tablet — presents
+    a SINGLE client IP. Thirteen workers at shift start, three retake attempts
+    each, is thirty-nine requests from one address: the tail of the queue got a
+    429, and a 429 here reads to the worker as "could not read your card".
+    Dropped outright rather than tuned, same as the register path: no per-worker
+    limit and no raised threshold were substituted.
+
+    THE ABUSE CONCERN IS REAL AND IS NOT ADDRESSED HERE. This calls a paid
+    vision API and is public. A per-IP cap was simply the wrong instrument — it
+    priced a shared gate as a single abuser. If metering is wanted it belongs on
+    the device fingerprint the gate already collects, or as a global circuit
+    breaker on spend, neither of which can single out a busy turnstile.
 
     Mirrors the httpx+Together shape used by _qwen_visual_qa(). Input is
     a base64 image + content_type; output is the same {name, sst_number,
     issued, expiration, box_2d} JSON the frontend already consumes.
     """
-    client_ip = request.client.host if request.client else "unknown"
-    if not checkin_rate_limiter.is_allowed(client_ip):
-        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment.")
-
     import httpx
     import json as json_mod
 
@@ -11040,8 +11080,13 @@ async def upload_osha_card(file_data: dict, request: Request):
                 },
             )
             if resp.status_code != 200:
+                # UA + IP on the line: the client reports this same failure as
+                # `card_ocr_http_failed`, but a vision-provider outage should be
+                # answerable from the server's own logs without correlating.
                 logger.error(
-                    f"Qwen vision error {resp.status_code}: {resp.text[:300]}"
+                    f"Qwen vision error {resp.status_code}: {resp.text[:300]} "
+                    f"[ip={request.client.host if request.client else 'unknown'} "
+                    f"ua={request.headers.get('user-agent', '')[:200]}]"
                 )
                 raise HTTPException(
                     status_code=502,
@@ -11080,6 +11125,149 @@ async def upload_osha_card(file_data: dict, request: Request):
             status_code=500,
             detail=f"OCR processing failed: {str(e)}",
         )
+
+# ══ GATE FAILURE TELEMETRY ══════════════════════════════════════════════════
+#
+# WHY: two workers failed at the card step on 588 Thomas and there was no record
+# anywhere of why. `card_ocr_attempts` / `card_ocr_failure_reason` already exist
+# but are frozen onto the CHECK-IN ROW by register_and_checkin — so they only
+# ever describe workers who got PAST the card step. The population that most
+# needs explaining is precisely the population that wrote nothing down.
+#
+# This is the sink for that. It records that a gate step failed, on which
+# project, on what device, and of what kind. It is diagnostics, not evidence:
+# nothing reads it to make a decision about a worker.
+#
+# NO PII AND NO IMAGE, enforced by construction — the handler reads a fixed set
+# of keys off the body and ignores everything else, so a future client that
+# starts sending a name cannot leak one into this collection by accident. IP and
+# User-Agent are taken from the REQUEST HEADERS, never from the body: the client
+# is not trusted to describe itself, and this is the same presence evidence
+# register_and_checkin already captures.
+GATE_FAILURE_KINDS = {
+    "card_file_read_failed",
+    "card_image_decode_failed",
+    "card_handler_crashed",
+    "card_ocr_http_failed",
+    "selfie_file_read_failed",
+    "selfie_image_decode_failed",
+    "selfie_handler_crashed",
+}
+
+# A LIMITER HERE IS SAFE, AND ON upload-osha IT WAS NOT. The distinction is not
+# a preference, it is what the endpoint sits in front of: upload-osha is IN the
+# worker's path — a 429 there is a man not working — while this endpoint is
+# fire-and-forget from a handler that has already decided what to show him.
+# Dropping a log line costs a diagnostic, never a shift. Sized well above a
+# shift-start burst (13 workers x several failures each) so it only engages
+# against something that is not a gate.
+gate_failure_rate_limiter = RateLimiter(max_requests=120, window_seconds=60)
+
+
+@api_router.post("/checkin/gate-failure", status_code=204)
+async def record_gate_failure(data: dict, request: Request):
+    """PUBLIC, fire-and-forget sink for a gate-side failure. Always 204.
+
+    ALWAYS 204, INCLUDING WHEN IT DROPS THE EVENT. The caller is a
+    navigator.sendBeacon (or keepalive fetch) that cannot read a response and
+    will never retry; a 4xx would only surface as console noise on a worker's
+    phone at a turnstile. Nothing here is allowed to fail loudly, and nothing
+    here is allowed to be slow — it is one bounded insert.
+
+    Same-origin by construction (checkin.html builds the URL from
+    window.location.origin), which is what lets sendBeacon post JSON at all: a
+    cross-origin beacon with Content-Type application/json would need a
+    preflight, and sendBeacon cannot preflight.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    if not gate_failure_rate_limiter.is_allowed(client_ip):
+        return Response(status_code=204)
+
+    try:
+        raw_kind = str(data.get("kind") or "").strip()[:80]
+        # An unrecognised kind is KEPT, not dropped — a client sending something
+        # this server has not heard of is itself worth seeing — but it is
+        # normalised so the `kind` field keeps a bounded vocabulary and a typo
+        # cannot fragment a week of events across near-identical spellings.
+        kind = raw_kind if raw_kind in GATE_FAILURE_KINDS else "unknown"
+
+        project_id = data.get("project_id") or None
+        project_name = None
+        company_id = None
+        if project_id:
+            # Resolved server-side so the row is queryable per project and gets
+            # swept by project teardown. A failure to resolve is not a failure
+            # to record: the event is still worth having without the name.
+            try:
+                project = await db.projects.find_one(
+                    {"_id": to_query_id(project_id), "is_deleted": {"$ne": True}},
+                    {"name": 1, "company_id": 1},
+                )
+                if project:
+                    project_name = project.get("name")
+                    company_id = project.get("company_id")
+            except Exception:
+                pass
+
+        try:
+            ocr_attempts = int(data.get("ocr_attempts"))
+        except (TypeError, ValueError):
+            ocr_attempts = None
+
+        lang = str(data.get("lang") or "").strip().lower()
+        if lang not in ("en", "es"):
+            lang = None
+
+        await db.gate_failures.insert_one({
+            "kind": kind,
+            # Only set when the client sent something off-vocabulary, so the
+            # normalisation above is never silent.
+            "kind_raw": raw_kind if kind == "unknown" and raw_kind else None,
+            "detail": str(data.get("detail") or "")[:300] or None,
+            "project_id": project_id,
+            "project_name": project_name,
+            "company_id": company_id,
+            "tag_id": str(data.get("tag_id") or "")[:120] or None,
+            "ocr_attempts": ocr_attempts,
+            "lang": lang,
+            "fingerprint_id": str(data.get("fingerprint_id") or "")[:120] or None,
+            "source": str(data.get("source") or "")[:60] or None,
+            # From the headers, not the body — see the block comment above.
+            "source_ip": client_ip,
+            "user_agent": request.headers.get("user-agent", "")[:400],
+            "created_at": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        # A telemetry write must never be able to become a gate incident. This
+        # endpoint exists because failures went unrecorded; it would be its own
+        # counter-example if it could raise into a worker's flow.
+        logger.warning(f"gate_failure record dropped: {e!r}")
+
+    return Response(status_code=204)
+
+
+@api_router.get(
+    "/projects/{project_id}/gate-failures",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def list_gate_failures(
+    project_id: str,
+    limit: int = 100,
+    current_user = Depends(get_current_user),
+):
+    """The read path, so "why did these two men fail yesterday" is answerable
+    from the app rather than from a Mongo shell.
+
+    Project-scoped by dependency (require_project_access), newest first.
+    """
+    limit = max(1, min(int(limit or 100), 500))
+    rows = await db.gate_failures.find(
+        {"project_id": project_id},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    for r in rows:
+        r["_id"] = str(r["_id"])
+    return {"failures": rows, "count": len(rows)}
+
 
 @api_router.get("/trades/vocabulary")
 async def get_trade_vocabulary(current_user=Depends(get_current_user)):
@@ -11792,7 +11980,7 @@ async def register_and_checkin(data: dict, request: Request):
     # independent of the company/roster logic (Task D), so it can't weaken D.
     effective_osha_number = osha_number or worker.get("osha_number")
     effective_osha_card_image = osha_card_image or worker.get("osha_card_image")
-    worker_certs, sst_expiration_unparseable = build_worker_certifications(
+    worker_certs, not_sst = build_worker_certifications(
         existing_certs, osha_data, effective_osha_number, effective_osha_card_image, now
     )
     if worker_certs != existing_certs:
@@ -11803,6 +11991,26 @@ async def register_and_checkin(data: dict, request: Request):
         worker["certifications"] = worker_certs
 
     cert_result = validate_worker_certifications(worker, project)
+
+    # ── THE WRONG CARD SAYS SO ──────────────────────────────────────────────
+    # A purple Worker Wallet produces no SST cert (correctly — it is not an SST
+    # card), which lands as MISSING_OSHA: "No OSHA card on file". That is a
+    # refusal the worker cannot act on, and it is not even true — nothing was
+    # learned about his OSHA card, because he never photographed one.
+    #
+    # SCOPED TO THE BLOCK, not to the scan. `not_sst` is only allowed to
+    # re-label a refusal that has ALREADY been decided by
+    # validate_worker_certifications. It never creates one: a returning worker
+    # with certs on file who happens to photograph his wallet still clears,
+    # exactly as before. This changes what a blocked man is TOLD, not who is
+    # blocked — the standing rule is that the gate does not stop a man working,
+    # and this does not stop one more.
+    if not cert_result["cleared"] and not_sst:
+        cert_result["blocks"] = [
+            {**b, "type": "CARD_NOT_SST"} if b.get("type") == "MISSING_OSHA" else b
+            for b in (cert_result.get("blocks") or [])
+        ]
+
     if not cert_result["cleared"]:
         await create_cert_block_alert(worker, project, cert_result["blocks"])
         return {
