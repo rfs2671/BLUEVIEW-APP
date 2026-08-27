@@ -4,6 +4,53 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## SCOPE — 2026-08-27 — GET /checkins cannot resolve a trade pairing, and returns a blank instead
+
+#248 removed the `worker.get("trade")` fallback from all five check-in read
+paths that carried it. Four of them -- `/checkins/project/{id}` and its
+`/flagged`, `/active`, `/today` variants -- also gained pairing resolution, so a
+row that froze no trade now answers with THIS project's trade.
+
+`GET /checkins` got only the removal, deliberately.
+
+WHY IT CANNOT RESOLVE. The endpoint is COMPANY-scoped: its query is
+
+    query = {"is_deleted": {"$ne": True}}
+    query["company_id"] = company_id
+
+so one response spans every project the company runs. `worker_project_trades`
+is keyed `(worker_id, project_id)`, and there is no single project_id to key on
+-- the rows in one page belong to many. The batched helper the other four use,
+`_project_trades_for(project_id, worker_ids)`, takes exactly the argument this
+endpoint does not have.
+
+WHAT IT NOW RETURNS. A blank trade on any row that froze none, where it used to
+return whatever `workers.trade` held. That value was one slot for a man who
+works different trades on different jobs, filled by whichever project got to
+him first -- so on an admin list spanning projects it was wrong more often than
+right, and wrong invisibly. A blank is visibly incomplete. That is the trade
+this deliberately makes, and it is the same one #246 recorded: a trade from
+another project is worse than no trade.
+
+WHAT CLOSING IT WOULD TAKE. A per-row lookup keyed on the row's OWN project:
+
+  * group the page's rows by `project_id` (they are already on the check-in
+    row, so no extra read is needed to find them);
+  * one `worker_project_trades` query per distinct project in the page, or a
+    single `$or` over the (project_id, worker_id) pairs -- the pairs are known
+    up front, so it stays one round trip either way;
+  * index check before shipping: the existing queries are equality on both
+    keys, and an `$or` over pairs wants a compound (project_id, worker_id)
+    index to avoid a collection scan on a company with many projects.
+
+NOT DONE HERE because it is a different query shape from the other four, and
+because the consumer is an admin list rather than anything a CP reads at a
+gate or signs. Sized as small, not urgent. The four endpoints that feed the
+daily log, the picker and the site screens are the ones that had to be right,
+and they are.
+
+---
+
 ## THEMING — 2026-08-27 — the outdoor pin is asserted for half the palette and none of the native layer
 
 Reported from the CP's device: fields on the Daily Jobsite Log render with
