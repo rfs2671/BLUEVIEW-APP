@@ -302,13 +302,21 @@ class TheSweepAgrees(unittest.TestCase):
             self.assertNotIn(owner.get(int(lineno)), FIXED,
                              f"{owner.get(int(lineno))} is still in the sweep")
 
-    def test_what_REMAINS_is_the_reported_remainder(self):
-        """15 left: the belt-and-braces sites on tenancy-guarded routes, plus
-        the group-D routes that fit no dependency (the site-devices LIST filter
-        and the two WhatsApp writes) and the double-permissive lines. All
-        reported; none silently absorbed here."""
+    def test_what_REMAINS_is_reported_not_absorbed(self):
+        """NO LITERAL. This asserted exactly 15 and the next PR lowered it to
+        12 -- the third time in this series a duplicated total broke a sibling
+        file. The number is pinned in ONE place.
+
+        What remains is the belt-and-braces sites on already-guarded routes,
+        plus the group-D routes that fit no dependency: the /admin/site-devices
+        LIST filter (a `continue` in a loop, not a 403 -- it leaks rather than
+        refuses) and the WhatsApp group config write. All reported; none
+        silently absorbed by this sweep.
+        """
         mod = __import__("test_pm_load_project_fails_closed")
-        self.assertEqual(mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL, 15)
+        self.assertGreater(mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL, 0)
+        self.assertEqual(len(mod.sweep_bypass_sites()),
+                         mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
 
 if __name__ == "__main__":

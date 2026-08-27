@@ -246,7 +246,8 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     #   -7  six permit_renewal routes (one _assert_renewal_access helper)
     #       plus GET /signatures/{signin_id}
     #  -10  the project-path reads, incl. the _verify_dob_log_access helper
-    EXPECTED_TOTAL = 15
+    #   -3  the double-permissive lines (one _same_company_or_403 helper)
+    EXPECTED_TOTAL = 12
 
     def test_the_sweep_finds_the_expected_number(self):
         hits = sweep_bypass_sites()
@@ -287,30 +288,38 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
         self.assertNotIn('if company_id and project.get("company_id") != company_id:',
                          body)
 
-    def test_the_three_DOUBLE_permissive_sites_are_untouched(self):
-        """A DIFFERENT AND WORSE BUG, reported separately and deliberately not
-        swept up here.
+    def test_the_double_permissive_sites_are_now_CLOSED(self):
+        """INVERTED, AND IT DID ITS JOB.
+
+        It read `self.assertEqual(doubles, 3)`, pinning that this sweep had NOT
+        quietly absorbed a different and worse bug:
 
             if company_id and rec.get("company_id") and rec[...] != company_id
 
-        also passes when the RESOURCE has no company_id -- so any legacy or
-        unstamped row is readable by ANY authenticated user, including one with
-        a perfectly valid company. That is an unowned-resource bug, not a
-        company-less-caller bug, and fixing it needs a decision about what an
-        unowned document means. Pinned so this sweep cannot quietly absorb it.
+        which also passes when the RESOURCE has no company_id -- an
+        unowned-resource bug, invisible from the account side, and one whose fix
+        needed a decision about what an unowned document means.
+
+        The decision was made on evidence (production held ZERO unowned rows in
+        both collections), so all three closed in their own PR behind
+        _same_company_or_403. The assertion inverts rather than being deleted,
+        so the pairing stays visible.
         """
-        tree = ast.parse((BACKEND / "server.py").read_text(encoding="utf-8-sig"))
         doubles = 0
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.If):
-                continue
-            try:
-                cond = ast.unparse(node.test)
-            except Exception:
-                continue
-            if re.search(r"""^\w*company_id\s+and\s+\w+\.get\(['"]company_id['"]\)\s+and\s""", cond):
-                doubles += 1
-        self.assertEqual(doubles, 3)
+        for name in ("server.py", "permit_renewal.py"):
+            tree = ast.parse((BACKEND / name).read_text(encoding="utf-8-sig"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.If):
+                    continue
+                try:
+                    cond = ast.unparse(node.test)
+                except Exception:
+                    continue
+                if re.search(
+                        r"""^\w*company_id\s+and\s+\w+\.get\(['"]company_id['"]\)\s+and\s""",
+                        cond):
+                    doubles += 1
+        self.assertEqual(doubles, 0)
 
 
 if __name__ == "__main__":

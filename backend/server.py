@@ -4445,6 +4445,52 @@ def project_access_ok(project: dict, project_id: str, current_user: dict) -> boo
     return str(project_id) in (current_user.get("assigned_projects") or [])
 
 
+def _same_company_or_403(doc, current_user, detail: str = "Access denied") -> None:
+    """BOTH SIDES MUST BE TRUTHY AND EQUAL. For a record whose tenancy is its
+    own company_id, with no project to scope it through.
+
+    THE DOUBLE-PERMISSIVE BUG THIS REPLACES. Three sites read
+
+        if company_id and rec.get("company_id") and rec["company_id"] != company_id:
+
+    which has TWO ways to fall through, and the second is the dangerous one:
+
+      * a falsy CALLER company -- the same short-circuit closed everywhere else
+        in this series, and the default state of a self-serve signup, since
+        /auth/register sets company_id = None;
+      * a falsy DOCUMENT company -- which is a property of the DATA, not of the
+        account. Any unowned row was readable, writable or deletable by ANY
+        authenticated user, including one with a perfectly valid company. You
+        cannot find that by auditing users.
+
+    "" IS ABSENT, NOT A VALUE, and that is not a defensive nicety. The
+    whatsapp_checklists writers stamp it deliberately:
+
+        "company_id": company_id or "",                                (:30964)
+        company_id = (project.get("company_id") if project else None) or ""
+
+    so an unowned checklist has company_id PRESENT and EMPTY. A guard -- or an
+    audit query -- that tested `$exists` would have read clean while every row
+    was toggleable by anyone. project_files can hold null instead, from
+    `company_id = company_id or project.get('company_id')` resolving to None.
+    Absent, null and "" are one state and are treated as one.
+
+    NOT project_access_ok: these records carry no project to resolve through.
+    This is the company-level twin of it, and it is deliberately narrower --
+    there is no assigned_projects branch, because a per-project assignment says
+    nothing about a company-level document.
+
+    PREVENTION ONLY. Production held ZERO unowned rows in either collection at
+    the time this landed (project_files: 10 rows, all string; whatsapp_
+    checklists: empty), so nothing becomes unreachable. It stops the shape being
+    created, and stops it being answered if one ever is.
+    """
+    caller = str(get_user_company_id(current_user) or "").strip()
+    owner = str((doc or {}).get("company_id") or "").strip()
+    if not caller or not owner or owner != caller:
+        raise HTTPException(status_code=403, detail=detail)
+
+
 async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     project = await db.projects.find_one({
         "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
@@ -17044,9 +17090,10 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
 
-    user_company_id = str(current_user.get("company_id") or "")
-    if user_company_id and rec.get("company_id") and rec["company_id"] != user_company_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # An UNOWNED file was readable by anyone: the old check also fell through
+    # when rec["company_id"] was falsy, which is a property of the row rather
+    # than of the caller.
+    _same_company_or_403(rec, current_user)
 
     r2_key = rec.get("r2_key", "")
     if not r2_key or not _r2_client or not R2_BUCKET_NAME:
@@ -17097,9 +17144,10 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     if not rec:
         raise HTTPException(status_code=404, detail="File not found")
 
-    user_company_id = str(current_user.get("company_id") or "")
-    if user_company_id and rec.get("company_id") and rec["company_id"] != user_company_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # An UNOWNED file was readable by anyone: the old check also fell through
+    # when rec["company_id"] was falsy, which is a property of the row rather
+    # than of the caller.
+    _same_company_or_403(rec, current_user)
 
     r2_key = rec.get("r2_key", "")
     r2_deleted = False
@@ -32906,9 +32954,11 @@ async def update_whatsapp_checklist_item(
     if not doc:
         raise HTTPException(status_code=404, detail="Checklist not found")
 
-    company_id = get_user_company_id(current_user)
-    if company_id and doc.get("company_id") and doc["company_id"] != company_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # THE ROW'S OWN company_id, and "" counts as absent. Both writers of this
+    # collection stamp `company_id or ""`, so an unowned checklist is PRESENT
+    # and EMPTY -- an $exists audit would have read clean while every item on
+    # every such row was toggleable by any authenticated user.
+    _same_company_or_403(doc, current_user)
 
     items = list(doc.get("items") or [])
     if item_index < 0 or item_index >= len(items):
