@@ -16630,8 +16630,31 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
     """Link or unlink a Dropbox folder for a project.
 
     - folder_path: None  → unlink (clear dropbox_folder_path)
-    - folder_path: "" or "/" → link to root of the app's Dropbox scope
+    - folder_path: "" or "/" → REFUSED 400, unless allow_root is true
     - folder_path: "/Foo/Bar" → link to that folder (normalized)
+
+    ROOT IS NO LONGER WHAT AN EMPTY STRING FALLS THROUGH TO. "" is the value a
+    BUG produces -- a cleared input, a falsy variable, a missing key -- and it
+    used to mean "link this project to everything the company owns". A control
+    labelled Disconnect sent exactly that and stored "/" instead of clearing the
+    field; _sync_project_to_r2 lists with recursive=True, so the next sync would
+    have copied the whole company Dropbox into one project's project_files rows
+    and onto R2. It never fired only because the button rendered behind two
+    fields nothing writes.
+
+    The asymmetry is the argument: refusing a legitimate root link costs an
+    error message, accepting an accidental one costs a full-company copy. None
+    already gives "clear it" an unambiguous signal, so root gets its own —
+    allow_root, a second deliberate key that no falsy fallback can produce.
+
+    THE NEVER-BLOCK-AT-THE-GATE RULE DOES NOT APPLY HERE, and this is written
+    down so it is not invoked against this refusal later. "An unfilled admin
+    form must never stop a man from working" governs the check-in path: the
+    turnstile, the card step, register-and-checkin. This endpoint is admin
+    CONFIGURATION, reached from project settings by an approved admin with
+    project access. Nothing on this path is in a worker's way, and no 400
+    returned here can stop a man from working — it stops an admin from
+    misconfiguring a project, which is the opposite thing.
     """
     now = datetime.now(timezone.utc)
     folder_path = data.get("folder_path")
@@ -16655,10 +16678,23 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
         raise HTTPException(status_code=400, detail="folder_path must be a string or null")
 
     raw = folder_path.strip()
-    # "" and "/" both mean "link to root". Store as "/" so downstream
-    # truthiness checks ('if not folder_path') treat root-linked
-    # projects as linked.
     if raw in ("", "/"):
+        # Compared with `is True`, not for truthiness: "false", 0 and "" are all
+        # things a client can put in this key by accident, and none of them is
+        # an admin deciding to link an entire Dropbox.
+        if data.get("allow_root") is not True:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Pick a folder inside Dropbox — an empty path would link "
+                    "this project to your entire Dropbox and copy every file "
+                    "your company stores into it. To unlink, send "
+                    "folder_path: null. To deliberately link the whole "
+                    "Dropbox, send allow_root: true as well."
+                ),
+            )
+        # Stored as "/" so downstream truthiness checks ('if not folder_path')
+        # treat a root-linked project as linked.
         norm = "/"
     else:
         norm = raw if raw.startswith("/") else "/" + raw
