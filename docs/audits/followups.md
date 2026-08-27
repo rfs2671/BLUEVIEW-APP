@@ -4,6 +4,43 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-08-26 — source assertions must read the AST, never text
+
+A test that greps source for a construct can be satisfied by an EXPLANATION of
+that construct. Five instances this session, all in tests I wrote:
+
+- `find-bare-jsx-text` matched its own comment
+- `outdoorCanvasPin` matched the exemption comment
+- `signatureAffirmedLang` matched the comment quoting the literal
+- `str(route.dependant)` -- a repr is not an API. It passed locally and failed
+  in CI on a different FastAPI build; the local pass was luck, not a weaker
+  check
+- the `company_id` sweep count matched the fixed helper's own docstring, which
+  quotes the removed line so a reader knows what changed
+
+THE LAST IS THE WORST SHAPE. A green test asserting a number that is silently
+wrong, where the number is the entire mechanism -- the sweep exists so the
+bypass count cannot drift while individual PRs each look like progress. It read
+35 instead of 34 with the fix applied, and would have kept reading high as more
+prose about the bug was written.
+
+Skipping comments does not fix it: a docstring is not a comment. Neither does
+slicing to a function body: the docstring is inside it.
+
+    If an assertion can be satisfied by an explanation of the thing it checks,
+    it is not checking it.
+
+Read the AST. `ast.If.test` is a condition and prose cannot be one;
+`dependant.dependencies[].call` is a dependency and a repr is not one. Where a
+regex is unavoidable, prove it against a real instance AND a near-miss in the
+same file, so an edit that quietly stops matching fails loudly instead of
+letting the count drift to zero.
+
+Related: the ``-written-as-0x08 defect -- an escaped byte is the same class,
+a check that cannot match anything and reports success.
+
+---
+
 ## ENHANCEMENT (FUTURE, LOW) — 2026-08-01 — optional per-worker signature on pre-shift sign-in
 
 **Not a compliance gap — rigor only.** The pre-shift sign-in is compliant as-is:
