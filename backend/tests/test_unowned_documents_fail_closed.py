@@ -298,13 +298,19 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
                     found.append(f"{name}:{node.lineno} {cond}")
         self.assertEqual(found, [])
 
-    def test_all_three_sites_call_the_shared_helper(self):
+    def test_every_site_calls_the_shared_helper(self):
+        """WIDENS AS THE HELPER IS ADOPTED. This pinned 3 -- the two file routes
+        and the checklist write -- and grew to 4 when the WhatsApp group config
+        write moved onto it in the group-D PR. The claim is "no site rolls its
+        own", not "exactly three exist", so the count is a floor with the
+        current value named."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
-        self.assertEqual(calls, 3)
+        self.assertGreaterEqual(calls, 3)
+        self.assertEqual(calls, 4)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and
@@ -334,9 +340,10 @@ class TheSweepIsDown(unittest.TestCase):
         self.assertEqual(len(mod.sweep_bypass_sites()),
                          mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL)
 
-    def test_the_total_is_now_12(self):
-        mod = __import__("test_pm_load_project_fails_closed")
-        self.assertEqual(mod.TheSweepCountOnlyGoesDOWN.EXPECTED_TOTAL, 12)
+    # NO "the total is now N" TEST HERE, deliberately. Four times in this
+    # series a satellite file pinned the literal and the NEXT PR broke it. The
+    # total is designed to fall; it is pinned in ONE place and every other file
+    # asserts agreement with it.
 
 
 if __name__ == "__main__":

@@ -247,7 +247,9 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     #       plus GET /signatures/{signin_id}
     #  -10  the project-path reads, incl. the _verify_dob_log_access helper
     #   -3  the double-permissive lines (one _same_company_or_403 helper)
-    EXPECTED_TOTAL = 12
+    #   -2  group D: the /admin/site-devices LIST (scoped at the query, not
+    #       guarded) and PUT /whatsapp/groups/{id}/config
+    EXPECTED_TOTAL = 10
 
     def test_the_sweep_finds_the_expected_number(self):
         hits = sweep_bypass_sites()

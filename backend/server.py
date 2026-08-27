@@ -13721,21 +13721,59 @@ async def get_daily_log_by_date(project_id: str, date: str, current_user = Depen
 
 @api_router.get("/admin/site-devices")
 async def get_site_devices(admin = Depends(get_admin_user)):
-    """Get all site devices"""
+    """Every site device belonging to the caller's company.
+
+    THIS LEAKED RATHER THAN REFUSING, which is why it is scoped at the QUERY
+    instead of guarded after the fact. The old shape fetched every device in
+    the database and dropped foreign ones inside the loop:
+
+        if company_id and project.get("company_id") != company_id:
+            continue
+
+    TWO WAYS PAST IT, and neither produced a 403 -- they produced a 200 with
+    other tenants' rows in the body, so a test asserting a status code would
+    have passed while the response was wrong:
+
+      1. A FALSY CALLER COMPANY. `and` short-circuits, so the filter never
+         applied and the caller received every site device on the platform.
+         /auth/register sets company_id = None on every self-serve signup.
+      2. AN ORPHANED DEVICE. The filter lived inside `if device.get(
+         "project_id")` and `if project:`, so a device with no project_id, or
+         one whose project was soft-deleted, skipped the check entirely and
+         was appended regardless of company -- even for a caller WITH a valid
+         company.
+
+    A site device row is a CREDENTIAL: username, hashed password, and the
+    project it authenticates against. The projection drops the hash, but the
+    username and the site it opens are enough.
+
+    company_id is on the DEVICE, stamped from the project by both writers, so
+    the scope needs no per-device project lookup. The project read below is now
+    only for the display name and can no longer decide visibility.
+    """
     company_id = get_user_company_id(admin)
-    
-    devices = await db.site_devices.find({"is_deleted": {"$ne": True}}, {"password": 0}).to_list(200)
+    # REFUSED, NOT SILENTLY EMPTIED. Returning [] to a company-less admin would
+    # read as "no devices configured" -- the same class of false statement the
+    # per-project trade copy made.
+    if not company_id:
+        raise HTTPException(
+            status_code=403,
+            detail="This account has no company, so it has no site devices to list.",
+        )
+
+    devices = await db.site_devices.find(
+        {"is_deleted": {"$ne": True}, "company_id": company_id},
+        {"password": 0},
+    ).to_list(200)
     result = []
     for device in devices:
         device_data = serialize_id(device)
-        # Get project name
+        # Display name only. An unresolvable project no longer changes whether
+        # the row is returned -- the query already decided that.
         if device.get("project_id"):
             project = await db.projects.find_one({"_id": to_query_id(device["project_id"]), "is_deleted": {"$ne": True}})
             if project:
                 device_data["project_name"] = project.get("name")
-                # Filter by company
-                if company_id and project.get("company_id") != company_id:
-                    continue
         result.append(device_data)
     return result
 
@@ -32173,9 +32211,11 @@ async def whatsapp_update_group_config(
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    user_company_id = get_user_company_id(current_user)
-    if user_company_id and group.get("company_id") != user_company_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # _same_company_or_403 did not exist when this was first surveyed. A group
+    # carries its own company_id and no project to scope through, so this is
+    # the company-level twin of project_access_ok -- and it treats an absent,
+    # null or empty company_id on the GROUP as unowned rather than as a match.
+    _same_company_or_403(group, current_user)
 
     # ---- Validate payload ----
     if not isinstance(body, dict) or not body:
