@@ -949,9 +949,22 @@ console.log('DEVICE ROUND 5 -- the empty-roster trap, forms 3 and 4');
 const djDraft = code.slice(0, code.indexOf('const [projectData, roster, headcount, existingLogs]'));
 ok(/const _storedCrews = Array\.isArray\(draft\.data\.activities\)/.test(djDraft),
   'daily_jobsite: the draft path looks at what the stored roster actually holds');
-ok(/if \(_storedCrews\.length === 0\) \{/.test(djDraft)
-   && /buildCrewsFromRoster\(_roster\.workers \|\| \[\], _headcount\)/.test(djDraft),
-  'and REBUILDS when it is empty, in place');
+// THE GUARANTEE IS UNCHANGED; THE SHAPE THAT DELIVERS IT MOVED.
+// This used to require the literal `if (_storedCrews.length === 0)` branch.
+// The empty case is now handled INSIDE reconcileCrewsWithRoster, which returns
+// the freshly built list verbatim when nothing is stored — asserted
+// behaviourally in dailyJobsiteEmptyCrew.test.cjs rather than by shape here.
+// What is pinned is the property that mattered: the draft path builds from the
+// gate roster and the stored list goes through the reconcile, so an autosaved
+// `activities: []` can still never become permanent.
+ok(/buildCrewsFromRoster\(_roster\.workers \|\| \[\], _headcount\)/.test(djDraft),
+  'and BUILDS from the gate roster, in place');
+ok(/reconcileCrewsWithRoster\(_storedCrews, _fresh\)/.test(djDraft),
+  'and the stored list is reconciled against it rather than trusted forever '
+  + '— an empty one rebuilds, a stale one is corrected, a new crew is added');
+ok(!/if \(_storedCrews\.length === 0\) \{/.test(djDraft),
+  'and the rebuild is NO LONGER gated on the list being empty: gating it there '
+  + 'is what made a crew arriving after the draft was opened invisible all day');
 ok(/getCheckinsRoster\(projectId, date\)/.test(djDraft),
   'fetching the roster it needs to do that');
 // Rebuilt IN PLACE, not by falling through — falling through re-hydrates from
@@ -961,8 +974,13 @@ ok(/setLoading\(false\);[\s\S]{0,40}return;/.test(djDraft),
 ok(/if \(_roster\) \{/.test(djDraft),
   'and offline builds nothing rather than clearing the screen');
 // The server-path half.
-ok(/!existing\.is_locked[\s\S]{0,140}buildCrewsFromRoster\(roster\?\.workers/.test(code),
+ok(/!existing\.is_locked[\s\S]{0,300}buildCrewsFromRoster\(roster\?\.workers/.test(code),
   'daily_jobsite: a SERVER log saved with an empty roster rebuilds too');
+ok(/!existing\.is_locked[\s\S]{0,400}reconcileCrewsWithRoster\(_stored, _fresh\)/.test(code),
+  'and an unlocked one is reconciled, not merely rebuilt-if-empty');
+ok(/roster\s*\?\s*reconcileCrewsWithRoster/.test(code),
+  'guarded on the roster read having come back: no roster means no opinion, '
+  + 'never a reconcile against an empty list that would zero every crew');
 ok(/!existing\.is_locked/.test(code),
   'but a FILED log is left alone — its roster is part of the record');
 

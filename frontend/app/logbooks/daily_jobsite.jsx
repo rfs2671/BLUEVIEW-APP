@@ -90,6 +90,7 @@ import {
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
   isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
+  hasNoWorkersOnSite, reconcileCrewsWithRoster,
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   isOtherInspection,
   deriveGeneralDescription,
@@ -488,19 +489,29 @@ export default function DailyJobsiteLog() {
         // honest answer — it is also what was already on screen.
         const _storedCrews = Array.isArray(draft.data.activities)
           ? draft.data.activities : [];
-        let _rebuilt = [];
-        if (_storedCrews.length === 0) {
-          const [_roster, _headcount] = await Promise.all([
-            logbooksAPI.getCheckinsRoster(projectId, date).catch(() => null),
-            logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
-          ]);
-          if (_roster) {
-            rosterIdsRef.current = rosterIdIndex(_headcount);
-            _rebuilt = buildCrewsFromRoster(_roster.workers || [], _headcount);
-            if (_rebuilt.length > 0) setActivities(_rebuilt);
-          }
+        // AND A NON-EMPTY LIST IS RECONCILED. The empty-list rebuild above is
+        // unchanged and still necessary; what was missing is the other half.
+        // A stored list was never compared against today's roster again, so a
+        // crew that arrived after this draft was first opened never reached
+        // the log at all, and one that left kept its original headcount for
+        // the rest of the day. The fetch is no longer inside the empty branch
+        // because both cases need it.
+        //
+        // OFFLINE IS UNCHANGED: the fetches fail, `_roster` is null, nothing
+        // is rebuilt and nothing is reconciled — the stored list stands
+        // exactly as he left it, which is also what was already on screen.
+        let _resolved = _storedCrews;
+        const [_roster, _headcount] = await Promise.all([
+          logbooksAPI.getCheckinsRoster(projectId, date).catch(() => null),
+          logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
+        ]);
+        if (_roster) {
+          rosterIdsRef.current = rosterIdIndex(_headcount);
+          const _fresh = buildCrewsFromRoster(_roster.workers || [], _headcount);
+          _resolved = reconcileCrewsWithRoster(_storedCrews, _fresh);
+          if (_resolved.length > 0) setActivities(_resolved);
         }
-        loadChips(_storedCrews.length > 0 ? _storedCrews : _rebuilt);
+        loadChips(_resolved);
         loadProjectShell();
         setLoading(false);
         return;
@@ -563,9 +574,22 @@ export default function DailyJobsiteLog() {
         // so a SERVER log saved with an empty roster never rebuilt either, and
         // a draft pushed before anyone checked in is exactly that log. A filed
         // log is left alone: its roster is part of the record.
-        if (!existing.is_locked
-            && !(Array.isArray(existing.data?.activities) && existing.data.activities.length)) {
-          builtCrews = buildCrewsFromRoster(roster?.workers || [], headcount);
+        // A FILED LOG IS STILL LEFT ALONE — its roster is part of the record,
+        // and that rule is why `is_locked` gates everything below.
+        //
+        // An unlocked one is now RECONCILED rather than only rebuilt-if-empty,
+        // for the reason given on the draft path: a server-saved draft that
+        // already held one crew could never learn about the next one to arrive.
+        if (!existing.is_locked) {
+          const _stored = Array.isArray(existing.data?.activities)
+            ? existing.data.activities : [];
+          const _fresh = buildCrewsFromRoster(roster?.workers || [], headcount);
+          // No roster read (offline / failed) means no opinion: keep what was
+          // filed rather than reconciling against an empty list and zeroing
+          // every crew on the log.
+          builtCrews = roster
+            ? reconcileCrewsWithRoster(_stored, _fresh)
+            : _stored;
           if (builtCrews.length > 0) setActivities(builtCrews);
         }
       } else {
@@ -576,10 +600,12 @@ export default function DailyJobsiteLog() {
         // This is why they stay auto-populated while work_description does not.
         fetchWeather(fullAddress);
       }
-      loadChips(existing
-        ? ((existing.data || {}).activities || []).concat(
-          ((existing.data || {}).activities || []).length ? [] : builtCrews)
-        : builtCrews);
+      // builtCrews IS the reconciled list on the `existing` path now, so the
+      // old "stored, else built" concat is gone — it would have fetched chips
+      // for the pre-reconciliation trades and missed any crew just added.
+      loadChips(builtCrews.length > 0
+        ? builtCrews
+        : ((existing?.data || {}).activities || []));
     } catch (e) {
       console.error(e);
     } finally {
@@ -928,7 +954,20 @@ export default function DailyJobsiteLog() {
       crew_id: `C${prev.length + 1}`,
       company,
       trade,
-      num_workers: String(parseInt(c.num, 10) || 0),
+      // AN UNTYPED COUNT IS UNKNOWN, NOT ZERO. This was
+      // `String(parseInt(c.num, 10) || 0)`, so leaving the count blank wrote
+      // the literal string "0" onto the row — the app asserting, on a record
+      // the CP signs, that a crew he had just told it was on site had nobody
+      // in it. That manufactured zero is one of the two ways the reported
+      // 0-worker crew appears (the other is roster reconciliation, which is
+      // entitled to write a real zero because it has actually looked).
+      //
+      // Blank now stays blank, which hasNoWorkersOnSite reads as "nobody
+      // counted" rather than "nobody here", so the crew keeps being asked for
+      // its work — he added it precisely because it WAS on site.
+      num_workers: Number.isFinite(parseInt(c.num, 10))
+        ? String(parseInt(c.num, 10))
+        : '',
       // Added by hand — it did NOT come from the gate and must not claim to.
       gate_sourced: false,
       subcontractor_id: resolveRosterId(company, trade, rosterIdsRef.current),
@@ -1697,6 +1736,9 @@ export default function DailyJobsiteLog() {
             {isUnboundCrew(a) && (
               <Text style={s.crewRowFlag} numberOfLines={2}>{t('unboundCrewHint')}</Text>
             )}
+            {!flagged && hasNoWorkersOnSite(a) && (
+              <Text style={s.crewRowFlag} numberOfLines={2}>{t('emptyCrewHint')}</Text>
+            )}
             {!!a.company_gate && rosterKey(a.company_gate) !== rosterKey(a.company) && (
               <Text style={s.crewRowFlag} numberOfLines={1}>
                 {t('correctedFrom')}: {a.company_gate}
@@ -1832,6 +1874,12 @@ export default function DailyJobsiteLog() {
                 a.check_in_time ? formatCheckInTime(a.check_in_time) : null]
                 .filter(Boolean).join(' · ')}
             </Text>
+            {/* WHY THIS CARD IS NOT BEING ASKED. crewsWithoutWork skips it, so
+                without this the CP sees Next enabled while one card sits empty
+                and nothing on screen accounts for the difference. */}
+            {hasNoWorkersOnSite(a) && (
+              <Text style={s.crewRowFlag}>{t('emptyCrewHint')}</Text>
+            )}
 
             <>
               {/* ACTIVITY. Ranked, never pre-selected. */}
