@@ -42,7 +42,7 @@ import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { projectsAPI, dailyLogsAPI, reportsAPI, getToken } from '../src/utils/api';
+import { projectsAPI, dailyLogsAPI, reportsAPI, logbookTypesAPI, getToken } from '../src/utils/api';
 import apiClient from '../src/utils/api';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch } from '../src/utils/offlineState';
@@ -58,13 +58,27 @@ const TABS = [
   { key: 'history', label: 'Sent History' },
 ];
 
-const LOG_TYPE_LABELS = {
-  daily_jobsite: 'Daily Jobsite Log',
-  toolbox_talk: 'Tool Box Talk',
-  scaffold_maintenance: 'Scaffold Maintenance',
-  preshift_signin: 'Pre-Shift Sign-In',
-  osha_log: 'OSHA Log',
-};
+// ── LOGBOOK LABELS COME FROM THE SERVER ───────────────────────────────────
+//
+// LOGBOOK_TYPE_REGISTRY (server.py) is the one place that knows what the
+// twelve registered types are called, and GET /api/logbook-types serves it.
+// app/logbooks/index.jsx already reads it exactly this way.
+//
+// What was here was a five-entry hand-copied map — the sixth copy of that
+// list in the codebase. It covered fewer than half the registry, so seven
+// types rendered as their raw keys, and three of the five names it did carry
+// disagreed with the registry's ("Pre-Shift Sign-In" vs "Pre-Shift Safety
+// Meeting", "OSHA Log" vs "OSHA Log Book", "Scaffold Maintenance" vs
+// "Scaffold Maintenance Log").
+//
+// The fallback is a HUMANISED key rather than the bare key: if the registry
+// fetch fails, an unknown type reads "Subcontractor Orientation", never
+// "subcontractor_orientation". It is a degraded label, not a leaked one.
+const humanizeLogType = (key) => String(key || '')
+  .split('_')
+  .filter(Boolean)
+  .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+  .join(' ');
 
 export default function ReportsScreen() {
   const { colors, isDark } = useTheme();
@@ -84,6 +98,9 @@ export default function ReportsScreen() {
   // never fall through to this screen's confident empty copy ("No Data
   // Available"), which asserts the day has no report.
   const [projectsState, setProjectsState] = useState('ok');
+  // key -> label, straight off the server's registry. Empty until it lands;
+  // humanizeLogType covers that window and a failed fetch alike.
+  const [logTypeLabels, setLogTypeLabels] = useState({});
 
   // Today's preview
   const [preview, setPreview] = useState(null);
@@ -110,6 +127,28 @@ export default function ReportsScreen() {
       fetchProjects();
     }
   }, [isAuthenticated]);
+
+  // The registry, fetched once. NOT wired into settleFetch or any of this
+  // screen's offline states: nothing is gated on it and no claim about the
+  // day's report depends on it. If it never arrives the rows still name
+  // themselves, so a failure here is silent by design rather than by neglect.
+  useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    let cancelled = false;
+    logbookTypesAPI.getAll()
+      .then((types) => {
+        if (cancelled || !Array.isArray(types)) return;
+        const map = {};
+        types.forEach((t) => {
+          if (t?.key && t?.label) map[t.key] = t.label;
+        });
+        if (Object.keys(map).length > 0) setLogTypeLabels(map);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
+  const logTypeLabel = (key) => logTypeLabels[key] || humanizeLogType(key);
 
   useEffect(() => {
     if (selectedProject) {
@@ -503,8 +542,20 @@ export default function ReportsScreen() {
                             <View key={i} style={s.logbookRow}>
                               <View style={s.logbookInfo}>
                                 <Text style={s.logbookType}>
-                                  {LOG_TYPE_LABELS[lb.log_type] || lb.log_type}
+                                  {logTypeLabel(lb.log_type)}
                                 </Text>
+                                {/* WHOSE RECORD THIS IS. Orientations are one
+                                    logbook document PER WORKER, so a date with
+                                    four of them produced four rows carrying the
+                                    same type, the same CP and the same status —
+                                    visually identical, and unreadable as four
+                                    distinct records. The name is the only thing
+                                    that separates them. Types that file one
+                                    document a day carry no worker_name and are
+                                    unchanged. */}
+                                {lb.worker_name && (
+                                  <Text style={s.logbookWorker}>{lb.worker_name}</Text>
+                                )}
                                 {lb.cp_name && (
                                   <Text style={s.logbookCp}>By {lb.cp_name}</Text>
                                 )}
@@ -914,6 +965,11 @@ function buildStyles(colors, isDark) {
       fontSize: 14,
       color: colors.text.primary,
       fontWeight: '500',
+    },
+    logbookWorker: {
+      fontSize: 13,
+      color: colors.text.secondary,
+      marginTop: 2,
     },
     logbookCp: {
       fontSize: 12,
