@@ -254,8 +254,19 @@ export const radius = Object.freeze({
 // ported row puts that control in a header where nothing has to be nudged. A
 // measured scale may not keep shipping a value nothing measures.
 //
-// s100 / s120 / s140 are all `paddingBottom` on a ScrollView content style —
-// bottom clearance for the floating action bar, not a spacing step.
+// s100 / s120 are `paddingBottom` on a ScrollView content style — bottom
+// clearance for the floating action bar, not a spacing step.
+//
+// s140 IS GONE, and its removal is the point rather than a tidy-up. Its single
+// use was settings.jsx's scroll clearance, a number nothing justified: that
+// screen was 110 until 37227ee ("fix settings scroll on web") bumped it to 140
+// as a side effect of a react-native-web scroll-height fix unrelated to the
+// nav. app/index.jsx still carries 140 from an unexplained "Update index.jsx"
+// and is outside this file's measured set. The CP screens now derive their
+// clearance from CP_NAV_CLEARANCE in CpNav.js — the nav's own geometry plus
+// the safe-area inset — so there is no hand-written number left here to
+// measure. The remaining s100/s120 belong to screens that have not been
+// converted; see the followups entry on the FloatingNav sweep.
 export const space = Object.freeze({
   s0:   0,   // 2 uses,  2 files
   s1:   1,   // 3 uses,  2 files
@@ -266,8 +277,7 @@ export const space = Object.freeze({
   s8:   8,   // 4 uses,  2 files — theme spacing.sm
   s12:  12,  // 1 use
   s100: 100, // 1 use            — scroll bottom clearance
-  s120: 120, // 3 uses,  3 files — scroll bottom clearance
-  s140: 140, // 1 use            — scroll bottom clearance
+  s120: 120, // 1 use             — scroll bottom clearance (logbooks/review.jsx)
 });
 
 // ─── Border widths ───────────────────────────────────────────────────────────

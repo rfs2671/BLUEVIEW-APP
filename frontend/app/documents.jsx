@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Platform, Image as RNImage } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   FileText,
@@ -25,6 +25,7 @@ import GlassButton from '../src/components/GlassButton';
 import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
 import CpNav from '../src/components/CpNav';
+import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
@@ -102,6 +103,7 @@ export default function DocumentsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [projects, setProjects] = useState([]);
+  const insets = useSafeAreaInsets();
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [files, setFiles] = useState([]);
@@ -351,7 +353,16 @@ export default function DocumentsScreen() {
 
         <ScrollView
           style={s.scrollView}
-          contentContainerStyle={s.scrollContent}
+          // The clearance this nav actually needs, derived from its own
+          // styles rather than a literal sized by hand. The INSET is added
+          // here because CpNav cannot see it, and it is the term that was
+          // missing: on 3-button navigation it is ~48 rather than ~24, which
+          // is where the old hardcoded number went negative and the pill
+          // covered the last row.
+          contentContainerStyle={[
+            s.scrollContent,
+            { paddingBottom: insets.bottom + CP_NAV_CLEARANCE },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
@@ -554,7 +565,9 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   scrollView: { flex: 1 },
-  scrollContent: { padding: spacing.lg, paddingBottom: 120 },
+  // paddingBottom is set INLINE at the ScrollView, from
+  // insets.bottom + CP_NAV_CLEARANCE.
+  scrollContent: { padding: spacing.lg },
   titleSection: { marginBottom: spacing.xl },
   titleLabel: {
     ...typography.label,

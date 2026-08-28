@@ -9,7 +9,7 @@ import {
   Image,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ClipboardList,
   HardHat,
@@ -29,6 +29,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import CpNav from '../../src/components/CpNav';
+import { CP_NAV_CLEARANCE } from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -88,6 +89,7 @@ export default function LogBooksScreen() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const { isDark, colors } = useTheme();
   const toast = useToast();
+  const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
@@ -542,7 +544,16 @@ export default function LogBooksScreen() {
 
         <ScrollView
           style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          // The clearance this nav actually needs, derived from its own
+          // styles rather than a literal sized by hand. The INSET is added
+          // here because CpNav cannot see it, and it is the term that was
+          // missing: on 3-button navigation it is ~48 rather than ~24, which
+          // is where the old hardcoded number went negative and the pill
+          // covered the last row.
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: insets.bottom + CP_NAV_CLEARANCE },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           {/* ═══ SINGLE HERO CARD: title + CP banner + project + scaffold ═══ */}
@@ -918,7 +929,10 @@ function buildStyles(colors, isDark) {
       ...typography.label, fontSize: 18, color: colors.text.primary, letterSpacing: 6,
     },
     scrollView: { flex: 1 },
-    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
+    // paddingBottom is set INLINE at the ScrollView, from
+    // insets.bottom + CP_NAV_CLEARANCE. Nothing here, so there is no
+    // second number to drift from the first.
+    scrollContent: { padding: spacing.lg },
 
     // ── Hero card (single merged card) ──
     heroCard: { marginBottom: spacing.md },
