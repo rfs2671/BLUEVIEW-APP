@@ -1,19 +1,31 @@
 """Phase V2.0 — missing daily-log detector.
 
-For each active project, walks the configured date range and
-diffs `db.daily_logs` (the operator-recorded source of truth)
-against the expected-workday set (Mon-Fri by default, or every
-day for projects flagged `weekend_work=true`).
+For each active project, walks the configured date range and diffs the filed
+DAILY JOBSITE LOGBOOKS against the expected-workday set (Mon-Fri by default, or
+every day for projects flagged `weekend_work=true`).
 
-Days in the expected set without a daily_logs row get a
-logbook_entries upsert with:
+IT USED TO READ `db.daily_logs`, AND CALLED IT "the operator-recorded source of
+truth" right here. It was not: 92 rows, all written in a fortnight in April by
+"TEST" and "Roy Fishman", nothing since. Every working day on every project was
+therefore diffed against an empty set and flagged -- 285 rows asserting that a
+required daily log had not been filed, while the CP was filing one and signing
+it. See lib/logbook/daily_jobsite_source.py for the filter and why each clause
+is in it.
 
-    category="daily_log", status="missing",
-    source="auto_detected"
+Both outcomes are now written:
 
-Idempotent — the (project_id, entry_date, category) unique
-index makes the upsert a no-op when the row already exists.
-Re-running the detector on the same day produces no duplicates.
+    present  category="daily_log", status="complete"
+    absent   category="daily_log", status="missing"
+
+THE `complete` WRITE IS THE UN-FLAG PATH, AND IT DID NOT EXIST. The old loop
+only ever touched the absent days: a date that was flagged on Monday and filled
+on Tuesday kept its `missing` row for the life of the project, because nothing
+in this file could ever look at a present day and say so. A detector that can
+only accuse is not a detector.
+
+Idempotent — the (project_id, entry_date, category) unique index makes the
+upsert a no-op when the row already says the same thing. Re-running the
+detector on the same day produces no duplicates.
 
 Designed to run from the daily 3 AM ET scheduler tick AND from
 ad-hoc admin endpoints. Both code paths share the same async API.
@@ -25,9 +37,12 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from lib.logbook.daily_jobsite_source import submitted_dates
 from lib.logbook.schema import (
     CATEGORY_DAILY_LOG,
     SOURCE_AUTO_DETECTED,
+    SOURCE_MANUAL,
+    STATUS_COMPLETE,
     STATUS_MISSING,
     date_to_str,
     iter_expected_dates,
@@ -86,35 +101,49 @@ async def detect_missing_for_project(
     if start_date > end_date:
         return []
 
-    # ── Collect the dates that already have a daily_log ────────────
-    have_dates: set = set()
-    cursor = db.daily_logs.find(
-        {
-            "project_id": project_id,
-            "is_deleted": {"$ne": True},
-            "date": {
-                "$gte": date_to_str(start_date),
-                "$lte": date_to_str(end_date),
-            },
-        },
-        {"date": 1},
-    )
-    async for doc in cursor:
-        d = str_to_date(doc.get("date"))
+    # ── Collect the dates that already have a FILED daily jobsite log ──
+    have: set = set()
+    for d_str in await submitted_dates(
+        db, project_id,
+        start=date_to_str(start_date), end=date_to_str(end_date),
+    ):
+        d = str_to_date(d_str)
         if d is not None:
-            have_dates.add(d)
+            have.add(d)
 
-    # ── Walk the expected set; upsert missing ones ─────────────────
+    # Dates a person has already ruled on, read once for the window.
+    manual_dates: set = set()
+    try:
+        cursor = db.logbook_entries.find(
+            {
+                "project_id": project_id,
+                "category": CATEGORY_DAILY_LOG,
+                "source": SOURCE_MANUAL,
+                "entry_date": {
+                    "$gte": date_to_str(start_date),
+                    "$lte": date_to_str(end_date),
+                },
+            },
+            {"entry_date": 1},
+        )
+        async for doc in cursor:
+            if doc.get("entry_date"):
+                manual_dates.add(str(doc["entry_date"]))
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            f"[missing_detector] manual-row lookup failed for project={project_id}: {e!r}",
+        )
+
+    # ── Walk the expected set; record BOTH outcomes ────────────────
     written: List[Dict[str, Any]] = []
     for expected in iter_expected_dates(start_date, end_date, weekend_work=weekend_work):
-        if expected in have_dates:
-            continue
+        present = expected in have
         entry = {
             "company_id": company_id,
             "project_id": project_id,
             "entry_date": date_to_str(expected),
             "category": CATEGORY_DAILY_LOG,
-            "status": STATUS_MISSING,
+            "status": STATUS_COMPLETE if present else STATUS_MISSING,
             "source": SOURCE_AUTO_DETECTED,
             "linked_dob_log_ids": [],
             "deficiency_reason": None,
@@ -125,6 +154,20 @@ async def detect_missing_for_project(
         # index. $setOnInsert keeps created_at stable across re-runs;
         # $set updates updated_at every tick so dashboards can show
         # "last verified".
+        if entry["entry_date"] in manual_dates:
+            # A HUMAN'S ROW IS NOT OVERWRITTEN. `source` exists so a manual or
+            # attested entry can outrank an automatic one, and an auto-detector
+            # that stamps over a person's entry is a worse defect than the one
+            # this file fixes.
+            #
+            # SKIPPED HERE RATHER THAN FILTERED IN THE UPSERT. Adding
+            # `source: {$ne: manual}` to the update filter looks tidier and is
+            # wrong: the filter would not match the manual row, `upsert=True`
+            # would try to INSERT a second one, and the unique index on
+            # (project_id, entry_date, category) would reject it -- turning a
+            # protection into a duplicate-key exception on every tick, for every
+            # day anyone had ever attested by hand.
+            continue
         try:
             await db.logbook_entries.update_one(
                 {

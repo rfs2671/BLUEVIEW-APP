@@ -160,16 +160,32 @@ class TestExpectedDates(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────
 
 
-def _build_db_with_logs(*, daily_log_dates, project_id, project_created=None):
-    """Build a MagicMock db whose daily_logs.find() returns docs
-    with the given dates and whose logbook_entries.update_one is
-    AsyncMock-counted."""
+def _build_db_with_logs(*, daily_log_dates, project_id, project_created=None,
+                        manual_dates=()):
+    """Build a MagicMock db whose logbooks.find() returns FILED DAILY JOBSITE
+    logs on the given dates, and whose logbook_entries.update_one is
+    AsyncMock-counted.
+
+    THE DETECTOR READS `logbooks`, NOT `daily_logs`. It used to read the latter
+    and call it "the operator-recorded source of truth"; production held 92 rows
+    of April test data there and nothing since, so every working day on every
+    project was flagged. `daily_log_dates` keeps its name because it still means
+    "the days that HAVE a filed daily record" — only the collection changed.
+
+    `manual_dates` seeds logbook_entries rows a person owns, which the detector
+    must not overwrite.
+    """
     db = MagicMock()
-    db.daily_logs = MagicMock()
-    db.daily_logs.find = MagicMock(return_value=_AsyncCursor([
-        {"date": d, "project_id": project_id} for d in daily_log_dates
+    db.logbooks = MagicMock()
+    db.logbooks.find = MagicMock(return_value=_AsyncCursor([
+        {"date": d, "project_id": project_id, "log_type": "daily_jobsite",
+         "status": "submitted", "data": {}}
+        for d in daily_log_dates
     ]))
     db.logbook_entries = MagicMock()
+    db.logbook_entries.find = MagicMock(return_value=_AsyncCursor([
+        {"entry_date": d} for d in manual_dates
+    ]))
     db.logbook_entries.update_one = AsyncMock(
         return_value=MagicMock(matched_count=0, upserted_id="x"),
     )
@@ -185,7 +201,7 @@ class TestMissingDetector(unittest.TestCase):
 
     def test_weekday_gap_detected(self):
         # Mon-Fri week, only Mon + Wed have logs → 3 gaps (Tue,
-        # Thu, Fri).
+        # Thu, Fri) and 2 complete (Mon, Wed).
         db = _build_db_with_logs(
             daily_log_dates=["2026-05-04", "2026-05-06"],
             project_id="proj_a",
@@ -201,10 +217,17 @@ class TestMissingDetector(unittest.TestCase):
             end_date=date(2026, 5, 8),
             now=now,
         ))
-        # Tue, Thu, Fri = 3 missing.
-        self.assertEqual(len(written), 3)
-        gap_dates = sorted(e["entry_date"] for e in written)
-        self.assertEqual(gap_dates, ["2026-05-05", "2026-05-07", "2026-05-08"])
+        # BOTH OUTCOMES ARE RECORDED. The detector used to touch only the
+        # absent days, so a date flagged on Monday and filed on Tuesday kept a
+        # false `missing` row for the life of the project — there was no path
+        # that could ever look at a present day and say so.
+        self.assertEqual(len(written), 5)
+        gaps = sorted(e["entry_date"] for e in written
+                      if e["status"] == logbook_schema.STATUS_MISSING)
+        self.assertEqual(gaps, ["2026-05-05", "2026-05-07", "2026-05-08"])
+        done = sorted(e["entry_date"] for e in written
+                      if e["status"] == logbook_schema.STATUS_COMPLETE)
+        self.assertEqual(done, ["2026-05-04", "2026-05-06"])
 
     def test_weekends_skipped_by_default(self):
         # Mon-Sun with no logs → only 5 missing (Sat + Sun skipped).
