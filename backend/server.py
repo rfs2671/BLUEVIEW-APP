@@ -3295,6 +3295,28 @@ class SiteDeviceLogin(BaseModel):
     password: str
 
 # ==================== CHECKLIST MODELS ====================
+#
+# REQUEST MODELS ONLY, DELIBERATELY. ChecklistResponse,
+# ChecklistAssignmentResponse and ChecklistCompletionResponse used to sit here.
+# All three were declared and used NOWHERE — no checklist endpoint carries
+# response_model= — so they validated nothing and stripped nothing, which is
+# exactly how two of them drifted into describing shapes that do not exist:
+# ChecklistAssignmentResponse documented the flat checklist_title +
+# completion_stats payload the nested-shape fix removed, and
+# ChecklistCompletionResponse declared last_updated where complete_checklist
+# stores updated_at.
+#
+# That second one is why this was a deletion and not a rewrite. Wiring up a
+# response_model whose field list has drifted does not fail — it DELETES the
+# missing keys from the response. That is how ProjectResponse silently stripped
+# dropbox_folder_path, and it cost three investigations. A model kept "for
+# later" is a description nobody is maintaining, sitting one line away from
+# being switched on. If a checklist endpoint is ever to carry a response_model,
+# that is a deliberate change with its own tests.
+#
+# The shapes these endpoints actually serve are stated where they are built
+# (the CHECKLIST READ SHAPE block) and pinned by
+# tests/test_checklist_read_shape.py.
 
 class ChecklistItemCreate(BaseModel):
     text: str
@@ -3310,42 +3332,13 @@ class ChecklistCreate(BaseModel):
     description: Optional[str] = None
     items: List[Dict[str, Any]]
 
-class ChecklistResponse(BaseModel):
-    id: str
-    title: str
-    description: Optional[str] = None
-    items: List[Dict[str, Any]]
-    company_id: str
-    created_by: str
-    created_by_name: Optional[str] = None
-    created_at: datetime
-
 class ChecklistAssignmentCreate(BaseModel):
     checklist_id: str
     project_ids: List[str]
     user_ids: List[str]
 
-class ChecklistAssignmentResponse(BaseModel):
-    id: str
-    checklist_id: str
-    checklist_title: str
-    project_id: str
-    project_name: str
-    assigned_users: List[Dict[str, str]]
-    created_at: datetime
-    completion_stats: Optional[Dict[str, int]] = None
-
 class ChecklistCompletionUpdate(BaseModel):
     item_completions: Dict[str, Dict[str, Any]]
-
-class ChecklistCompletionResponse(BaseModel):
-    id: str
-    assignment_id: str
-    user_id: str
-    user_name: str
-    item_completions: Dict[str, Dict[str, Any]]
-    progress: Dict[str, int]
-    last_updated: datetime
 
 # ==================== LOGBOOK MODELS ====================
 

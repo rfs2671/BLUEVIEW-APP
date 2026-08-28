@@ -739,7 +739,7 @@ gone. The list endpoints already skipped such an assignment, so this only
 answers a stale deep link; serving `checklist: null` would have put the client
 back on the same dereference.
 
-### 2. Three response models that describe nothing — OPEN, DELIBERATELY
+### 2. Three response models that describe nothing — DELETED
 
 `ChecklistResponse`, `ChecklistAssignmentResponse` and
 `ChecklistCompletionResponse` (`server.py:3313-3345`) are declared and used
@@ -758,11 +758,16 @@ Two of the three are now actively misleading:
 `updated_at`, so wiring it up as written would drop the timestamp.
 `ChecklistResponse` alone still matches what `/admin/checklists` serves.
 
-**Recommendation: delete all three.** They validate nothing, strip nothing and
-document a shape that no longer exists; the shape that does exist is pinned by
-tests and by the block comment above the handlers. A model kept "for later" is
-a description nobody is maintaining. Not done here — deleting declared symbols
-is its own commit.
+**All three are now deleted.** They validated nothing, stripped nothing and
+documented a shape that no longer exists; the shape that does exist is pinned
+by `tests/test_checklist_read_shape.py` and stated in the block comment above
+the handlers. A note where they stood records why there are no response models
+in this section, so the next person does not read the absence as an oversight.
+
+`ChecklistItemCreate` and `ChecklistItemResponse` are equally dead — declared,
+referenced nowhere, and `ChecklistCreate` types its items as
+`List[Dict[str, Any]]` rather than using either. Left in place: they were not
+in scope, and unlike the three deleted they describe nothing that has drifted.
 
 ### 3. `checklist_title` was frozen at creation — FIXED BY DERIVATION
 
