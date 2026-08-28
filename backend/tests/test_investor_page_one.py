@@ -232,7 +232,7 @@ class ItAnswersTheQuestionThatWasAsked(Base):
         self.assertIn("0 of 3 required daily logs filed and signed", line)
         self.assertIn("1 filed without an affirmed signature (Daily Jobsite Log)",
                       line)
-        self.assertIn("2 not filed (Pre-Shift Safety Meeting, OSHA Log Book)", line)
+        self.assertIn("2 not filed (Pre-Shift Sign-In, OSHA Log Book)", line)
         self.assertNotIn("All 1 required", line)
 
     def test_the_denominator_is_the_PROJECTS_required_set(self):
