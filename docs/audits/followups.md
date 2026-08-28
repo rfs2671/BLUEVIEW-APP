@@ -4,6 +4,156 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PARKED — 2026-08-28 — PR #90's worker_project_trades backfill: do not run it as written, and find out whether it already ran
+
+`chore/production-mongosh-scripts` (PR #90) has been open since 2026-08-08 and
+is ~292 commits behind. Its three files exist NOWHERE on main:
+
+    backend/scripts/WORKER_PROJECT_TRADES_BACKFILL.md
+    backend/scripts/audit_company_values.js
+    backend/scripts/backfill_worker_project_trades.js
+
+Its own runbook gives the reason it should not have stayed on a branch: "a
+script that runs against production must outlive the session that wrote it."
+
+PARKED, not closed. Two separate questions, and the second matters more:
+whether the script is safe to run, and whether it ALREADY RAN from a copy that
+exists nowhere in this repository.
+
+### What it writes
+
+Collection `worker_project_trades`, keyed `(worker_id, project_id)` — the same
+unique index the live path uses. Fields `worker_id`, `project_id`, `trade`,
+`company`, `updated_at`: exactly the set `_store_worker_project_trade` writes,
+so the row SHAPE is still correct. Source is an aggregation over `checkins`
+grouped per worker+project, `$setOnInsert` + `upsert`, `EXECUTE = false` by
+default.
+
+### THE DEFECT — the sentinel is filtered on trade and not on company
+
+The aggregation excludes `worker_trade` in `[null, '', 'UNASSIGNED']`. The
+company handling is only:
+
+    const companies = (r.companies || []).filter(c => String(c || '').trim() !== '');
+    const company = companies.length === 1 ? companies[0] : '';
+
+A blank filter, and nothing else. But `register_and_checkin` stamps the two
+INDEPENDENTLY (server.py, the `no_roster` and `not_listed` branches):
+
+    trade   = trade   or "UNASSIGNED"
+    company = company or "UNASSIGNED"
+
+so a worker who picks a real trade while his sub is off the roster produces a
+row with a valid `worker_trade` and `worker_company: "UNASSIGNED"`. The script
+would write the literal string "UNASSIGNED" into `worker_project_trades.company`
+as though it were a company name.
+
+**This is not drift.** `git log -S` puts the company stamp at `d69e07c`,
+2026-07-29 — TEN DAYS BEFORE the script was written on 2026-08-08. It was wrong
+on day one. It has simply never been run, which is the only reason it has not
+already cost anything.
+
+### The blast radius grew while it sat on the branch
+
+When the script was authored, `worker_project_trades` was read at the gate.
+Since then:
+
+  * **#246** (`fe6805c`, 2026-08-27) — the daily-jobsite roster resolves the
+    pairing when the frozen check-in recorded none.
+  * **#248** (`e731d13`, 2026-08-27) — five check-in read paths carried
+    `s["worker_trade"] or worker.get("trade")`; FOUR of them now resolve the
+    pairing instead. Named in that commit: `GET /checkins`, and the `flagged`,
+    plain, `active` and `today` project variants.
+
+So rows this script INFERS from history are now rendered as the trade on the
+roster and across those read paths, for check-ins that recorded nothing
+themselves. That may be exactly what the backfill is for — but it is a much
+larger surface than the contract it was written against, and it should be
+re-reviewed against the current one rather than the 2026-08-08 one.
+
+### DID IT ALREADY RUN — four read-only queries
+
+**READ THE LIMITATION FIRST.** `_store_worker_project_trade` uses `$set`, not
+`$setOnInsert`. So ANY real check-in after a backfill overwrites `trade`,
+`company` and `updated_at` on that row and erases every signature below.
+
+**A zero across all four means no SURVIVING row carries the mark. It does not
+mean the script never ran.** Pairs that were backfilled and have since seen a
+real check-in are invisible to all of it.
+
+0. Denominator:
+
+       db.worker_project_trades.countDocuments({})
+
+1. **The signature.** The script writes `updated_at: r.last_seen` — a `$max` of
+   `check_in_time`, copied verbatim. The live writer calls
+   `datetime.now(timezone.utc)` INSIDE `_store_worker_project_trade`, separately
+   from the `now` that stamps `check_in_time`, so a live row's `updated_at` is
+   always some milliseconds later. Exact equality is unreachable from the live
+   path. Uses the `checkin_dedup_compound` index.
+
+       var sig = []
+       db.worker_project_trades.find({},{worker_id:1,project_id:1,trade:1,company:1,updated_at:1}).forEach(r => { if (db.checkins.countDocuments({worker_id:r.worker_id, project_id:r.project_id, check_in_time:r.updated_at},{limit:1})) sig.push(r) })
+       sig.length
+       printjson(sig.slice(0,20))
+
+2. **Wider net — rows older than the collection itself.** `bd66de9`
+   (2026-08-07 12:17:52Z) introduced `worker_project_trades`; nothing live can
+   predate it. Catches backfilled pairs whose millisecond did not line up.
+
+       db.worker_project_trades.countDocuments({updated_at:{$lt:ISODate("2026-08-07T12:17:52Z")}})
+       db.worker_project_trades.find({updated_at:{$lt:ISODate("2026-08-07T12:17:52Z")}}).limit(20).toArray()
+
+3. **Strongest positive — the sentinel as a company.** `_store_worker_project_trade`
+   refuses `UNASSIGNED` for trade and stores blanks as `""`. A pairing row
+   carrying it as a COMPANY is not reachable from the live path at all.
+
+       db.worker_project_trades.countDocuments({company:"UNASSIGNED"})
+       db.worker_project_trades.find({company:"UNASSIGNED"}).limit(20).toArray()
+
+4. **Blank company where the source check-ins disagree** — replicates the
+   script's own ambiguity rule verbatim (filter blanks only; more than one
+   survivor stores `""`).
+
+       var amb = []
+       db.worker_project_trades.find({company:""},{worker_id:1,project_id:1,trade:1,updated_at:1}).forEach(r => { var c = db.checkins.distinct("worker_company",{worker_id:r.worker_id, project_id:r.project_id, is_deleted:{$ne:true}}).filter(x => String(x||"").trim() !== ""); if (c.length > 1) amb.push({row:r, companies:c}) })
+       amb.length
+       printjson(amb.slice(0,20))
+
+If any of these come back non-zero, the question is no longer whether to fix
+the script — it is what those rows are currently driving on the roster and the
+four #248 read paths.
+
+### If it is ever revived
+
+**The sentinel filter goes through `_recorded_trade`, not a reimplementation.**
+That helper is the single place that knows `UNASSIGNED` is not a real value,
+and its own docstring states the rule: "Anything that reads a frozen trade to
+decide whether one exists has to ask through here, or the sentinel reads as a
+real answer." The script predates the helper and asks nowhere — a mongosh
+script cannot import Python, so reviving this means either porting the rule
+with a comment naming `_recorded_trade` as its source, or moving the backfill
+into Python where the helper is callable. The second is better; a second
+implementation of the sentinel rule is exactly the drift this codebase keeps
+closing.
+
+### The audit script is READ-ONLY and safe, but would misframe two things
+
+`audit_company_values.js` writes nothing. It would still mislead:
+
+  * It prints `workers.company` beside `checkins.worker_company` as comparable
+    sources. `workers.company` is now DELIBERATELY unpopulated — a worker
+    document created at check-in carries neither trade nor company, "a
+    worker-level copy is what bled across jobs". That row reads as data loss
+    when it is the design.
+  * It does not filter `is_deleted` on the collision scan or the blank count,
+    while the backfill does — so it describes a different population than the
+    one it exists to measure.
+  * `"UNASSIGNED"` counts as a distinct company spelling in the collision
+    groups, inflating the count with a sentinel.
+
+---
+
 ## INFRA — 2026-08-28 — no Vercel preview deployment can log in, and none ever could
 
 **THE GENERAL FINDING FIRST, because it was found through one screen and is not
