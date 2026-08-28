@@ -288,7 +288,13 @@ the rows also disagree with each other about the date.
 
 ---
 
-## 4. Proposal: the claim comes out
+## 4. The claim comes out
+
+**Status: implemented.** §4.1 and §4.2 shipped as the "the daily report stops
+claiming permits are expiring" PR. §4.3 (unschedule the reminder cron) shipped
+earlier, alongside the health-check removal. The writer stop — §11, which was
+not in the original proposal — shipped in between. The adapter, the dedupe
+guard, and the collection are untouched, as scoped.
 
 Not "0 permits expiring." Zero is an assertion, and we cannot make it — we do not
 know how many permits are expiring, we only know the number we were printing was

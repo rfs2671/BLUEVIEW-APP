@@ -1,12 +1,31 @@
 /**
  * RenewalAlertCard
  * ═══════════════
- * Drop-in component for the project detail screen ([id].jsx).
- * Shows a prominent card when permits are expiring.
+ * UNMOUNTED — nothing imports this file. Do not re-mount it without
+ * reading the note below.
  *
- * Usage in frontend/app/project/[id].jsx:
- *   import RenewalAlertCard from '../../../src/components/RenewalAlertCard';
- *   <RenewalAlertCard projectId={projectId} />
+ * It was mounted twice on the project detail screen (app/project/[id].jsx)
+ * and read /api/permit-renewals directly. Both mounts were removed because
+ * the rows it renders are not trustworthy:
+ *
+ *   • `days_until_expiry` is measured against the v2 limiting-factor
+ *     expiry, while `current_expiration` beside it holds the calendar
+ *     expiry — two different dates by construction
+ *     (backend/lib/eligibility_dispatcher.py:172,181). The card labelled
+ *     the first with the second's meaning: "N days until permit expires".
+ *   • `job_number` is hardcoded to None by the same adapter (:178), so the
+ *     mini-bar's `a.job_number ? ... : 'Permit'` fallback always took the
+ *     false branch — substituting a category noun for missing identity and
+ *     continuing to render the urgency bar, the colour, and the day count.
+ *     A control asserting that a specific thing expires in N days while
+ *     unable to say which thing.
+ *   • The rows themselves multiply: they key on a dob_logs _id, which
+ *     changes on every DOB status transition and on every reset-resync.
+ *
+ * The fix is in the writer and the adapter, not here. This component comes
+ * back when the permit-renewal module is unparked deliberately.
+ *
+ * See docs/audits/permit-expiry-claim-2026-08-27.md §7.
  */
 
 import React, { useState, useEffect } from 'react';

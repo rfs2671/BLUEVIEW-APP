@@ -27315,56 +27315,26 @@ async def reset_and_resync_dob_logs(project_id: str, current_user=Depends(get_ad
 
 # ==================== REPORT EMAIL SCHEDULER ====================
 
-async def _count_permits_expiring_soon(project_id: str, within_days: int = 30) -> int:
-    """Permits on this project expiring within `within_days` — the one
-    attention line on the daily report email.
-
-    Mirrors the reminder scanner's date strategy verbatim: current_expiration
-    is an Optional[str] stored in MIXED formats (ISO and M/D/YYYY both seen in
-    production), so a Mongo range query on the raw string silently mis-sorts.
-    Scan this project's eligible renewals and partition in Python instead;
-    volume is low (single tenant, <100 active renewals).
-
-    Returns 0 on ANY failure. This is a summary line on a notification — it
-    must never be the reason a compliance report fails to send, and a wrong
-    number on a compliance email is worse than no number.
-    """
-    try:
-        from dateutil import parser as dateparser
-        today_utc = datetime.now(timezone.utc).date()
-
-        # project_id form varies across writers (str vs ObjectId), so match
-        # both rather than silently counting zero.
-        pid_variants = [project_id]
-        try:
-            oid = to_query_id(project_id)
-            if oid != project_id:
-                pid_variants.append(oid)
-        except Exception:
-            pass
-
-        count = 0
-        cursor = db.permit_renewals.find({
-            "project_id": {"$in": pid_variants},
-            "status": {"$in": list(REMINDER_ELIGIBLE_STATUSES)},
-            "is_deleted": {"$ne": True},
-        })
-        async for renewal in cursor:
-            exp_str = renewal.get("current_expiration")
-            if not exp_str:
-                continue
-            try:
-                exp_date = dateparser.parse(str(exp_str)).date()
-            except Exception:
-                continue
-            if 0 <= (exp_date - today_utc).days <= within_days:
-                count += 1
-        return count
-    except Exception as e:
-        logger.warning(
-            f"expiring-permit count failed for project {project_id}: {e!r}"
-        )
-        return 0
+# `_count_permits_expiring_soon` is REMOVED.
+#
+# It counted ROWS in permit_renewals, not permits, and fed the
+# "N permits expiring within 30 days" line on the daily report email.
+# Rows are keyed on permit_dob_log_id -- a dob_logs _id, not a permit
+# identity -- so one real permit produced a row per DOB status change
+# and a fresh set after each reset-resync, and the count multiplied
+# with them. 588 Thomas was reported as "3 permits expiring" off rows
+# that carried job_number=None and permit_type=None.
+#
+# It is not replaced with a zero. "0 permits expiring" is also an
+# assertion, and we do not know how many permits are expiring -- only
+# that the number we were printing was not it. The section comes out.
+#
+# The dob_logs-sourced tile on the project screen (GET
+# /api/projects/dob-summary, permits_expiring facet) is unaffected and
+# stays: it dedupes by raw_dob_id and renders an em dash rather than a
+# zero when the read fails.
+#
+# See docs/audits/permit-expiry-claim-2026-08-27.md.
 
 
 async def check_and_send_reports():
@@ -27475,8 +27445,9 @@ async def check_and_send_reports():
                     f"({e!r}) — sending link only"
                 )
 
-            expiring_permits = await _count_permits_expiring_soon(project_id)
-
+            # No permit-expiry key in this context. The renderer no
+            # longer reads one, so a stale caller passing it cannot
+            # resurrect the claim.
             from lib.email_templates import render_for_trigger
             subject, html, text = render_for_trigger("project_daily_report", {
                 "recipient_name": "",          # per-recipient names aren't stored
@@ -27485,7 +27456,6 @@ async def check_and_send_reports():
                 "report_date": today,
                 "logbook_count": logbook_count,
                 "worker_count": checkin_count,
-                "expiring_permits": expiring_permits,
                 "attached": bool(attachments),
                 "action_link": f"{APP_BASE_URL.rstrip('/')}/reports",
             })
