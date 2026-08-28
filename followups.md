@@ -808,6 +808,104 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## A stale bundle looked exactly like a server fault for a day
+
+RESOLVED 2026-08-28 by clearing app data on the operator's phone. The log now
+renders correctly — read-only, with Amend.
+
+**The cause.** That device was running a JS bundle older than `2b157f6`
+(2026-07-29), which unwraps the paginated `{items: [...]}` envelope in
+`logbooksAPI.getByProject`. Without it the wrapper object reaches the editor,
+`Array.isArray` fails, `arr` is `[]`, `existing` is null, `locked` stays false,
+and the `else` branch rebuilds crews from the roster and fetches fresh weather.
+Every symptom follows from that one line, including the two that made no sense
+together: an editable form on a submitted row, and a screen that was empty of
+saved content while full of roster content. The api.js comment for that fix had
+already described it — *"the raw wrapper made existing=null, so they reopened
+blank"* — a month before this happened.
+
+**Nothing was wrong on the server.** The query was correct, authorization was
+correct, the company scope was correct, the date was correct, the field types
+matched, and the row was there the whole time.
+
+### Read the bundle id first
+
+Six source traces were built before anyone read it: the read path, the company
+scope, `require_project_access`, the date normalisation, a BSON type mismatch,
+and a missing `log_type` parameter. Each was a plausible reading of the source.
+All six were about a system nobody could observe, and five of them were
+disproved by a production query that took under a minute.
+
+`BuildMarker` renders the running bundle id and its build time, selectable, at
+the bottom of the CP logbook list — the screen the operator was standing on.
+`app/settings.jsx` shows the same thing. **It existed the whole time and was
+never captured.**
+
+THE RULE, and it is cheap enough to have no exception: **when a screen
+misbehaves on one device and not another, read the bundle id on both before
+reading any source.** A stale bundle is indistinguishable from a server fault
+from the outside, and it is the one hypothesis that source cannot rule out — the
+code in front of you is not the code that ran. Everything else in this
+investigation was answerable from a mongosh query or an access log; only this
+was not.
+
+The second-cheapest artifact was the access log, which is already on: the
+Procfile runs uvicorn with no `--no-access-log`, so every request is logged with
+its full path and query string. That, too, went unread for a day.
+
+### A draft that shadows a failed read hides the failure permanently
+
+The first visit rendered the blank form and the autosave wrote a local draft
+800ms later — no tap required, because `locked` was false. From then on the
+draft branch returned **before the server was ever asked**, so the fetch that
+caused the problem could not be re-observed on that device. The condition
+self-masked on every retry, including retries after the device had updated.
+
+That is a general property of local-first loading and it is worth naming: a
+draft written by a failed load looks exactly like a draft written by real work,
+and it will keep answering in place of the read that failed. It also survives
+sign-out — `clearAuth()` removes the token and the stored user, not drafts —
+which is why clearing app data was what finally moved it.
+
+Two consequences worth weighing separately, neither fixed here:
+
+  * the editor cannot distinguish "no log exists" from "the response was a
+    shape I did not understand". #285 made a FAILED read fail closed; a
+    successful read of an unparseable body still lands in the same `else`
+    branch as a genuinely unfiled day.
+  * there is no in-app way to discard a draft. `discardFinalizedDraft` is a
+    plain `AsyncStorage.removeItem` but its only caller is the amendment path,
+    guarded on server confirmation. Clearing app data is the only route, and it
+    takes every other draft on the device with it.
+
+### What keeps a phone on an old bundle
+
+Four mechanisms, and the first is silent by design:
+
+  1. **The runtimeVersion cutoff.** `app.json` sets
+     `runtimeVersion: {policy: "appVersion"}` and `version: 1.3.0`. A device
+     whose NATIVE build is 1.2.x receives no 1.3.x update, ever, and is told
+     nothing. It sits on its last compatible bundle until someone installs a new
+     binary from the store. This is the policy working as designed, and it is
+     the most likely explanation for a device months behind.
+  2. **The app is never cold-started.** expo-updates defaults to
+     `checkAutomatically: ON_LOAD` — the check happens at launch. A phone that
+     is backgrounded and resumed for weeks never launches, so it never checks. A
+     site phone lives exactly like this.
+  3. **Apply-on-next-launch.** `fallbackToCacheTimeout: 3000` means the launch
+     waits 3s for a new bundle, then boots the cached one and downloads in the
+     background. The new bundle applies on the NEXT cold start, so moving one
+     version takes two launches.
+  4. **A failed download.** The 3s budget on site connectivity means the check
+     often loses, and nothing retries until the next launch.
+
+Nothing in the app calls `Updates.checkForUpdateAsync` or `fetchUpdateAsync`,
+and neither `BuildMarker` nor the settings screen compares what it is running
+to what is published — they report an id, not a verdict. **The app cannot
+currently tell anyone it is behind.** What it would cost to change that, and
+why the obvious version does not catch this case, is in the reply that
+accompanied this entry.
+
 ## A fix for "the CP is told the wrong thing" shipped telling him the wrong thing
 
 The sharpest instance of the family so far, and the one worth reading twice.
