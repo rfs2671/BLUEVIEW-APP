@@ -116,6 +116,17 @@ export default {
     // completeness rule: it says the record contains nothing at all, which is
     // the one thing that is true of it regardless of which form it is.
     code_SUBMIT_NO_CONTENT: 'Every row on this log is empty, so there is nothing to file. Fill in at least one before submitting.',
+    // A FILED LOG, NOT A LOCKED ONE — 409, not the 423 above. An end-of-day log
+    // is submitted but not frozen until the overnight sweep, and in that window
+    // both update_logbook and create_logbook refuse a write to its `data`.
+    //
+    // SHIPPED LATE. The server has emitted this code since #214 and there was
+    // no copy for it, so gateCopy fell through to genericError — "could not be
+    // finalized, please try again" — which tells the CP to retry a write the
+    // server will refuse every time, and says nothing about the one action that
+    // does work. The code is now reachable from the create path too, which is
+    // how the gap surfaced.
+    code_FILED_LOG_DATA_IMMUTABLE: 'This day is already filed. It cannot be written over — open the filed log and create an amendment to correct it.',
     // Raised by the reconnect DRAIN, not by a screen — a pre-shift draft
     // written before the injury/PPE gate shipped replays with both answers
     // null, and no client gate can reach that path. It names the fix rather

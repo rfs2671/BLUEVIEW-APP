@@ -19553,31 +19553,45 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         # onto it is a tamper attempt — reject; corrections go through /amend.
         if existing.get("is_locked"):
             raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
-        # ── AND THE LOCK IS THE LINE. SIGNED IS NOT. ────────────────────────
+        # ── A FILED LOG'S CONTENT IS NOT REWRITABLE, ON THIS PATH TOO ───────
         #
-        # A guard was built here that refused any SUBMITTED row and routed it to
-        # amendment. It was withdrawn before shipping, and the reasoning is worth
-        # keeping because it is the same distinction twice:
+        # THIS COMMENT USED TO SAY THE OPPOSITE, and the client already carries
+        # the correction (daily_jobsite.jsx, "STALE, AND CORRECTED"). What stood
+        # here: a refusal of any SUBMITTED row was "built and withdrawn", because
+        # an END_OF_DAY log stays open through the day and routing a CP to
+        # amendment on his first afternoon photo would make amendment the normal
+        # path for ordinary work.
         #
-        #   AMENDMENT CORRECTS AN ATTESTED RECORD. A CP re-submitting an
-        #   UNSIGNED log is finishing it, not correcting it — nothing was
-        #   attested. And a CP adding an afternoon photo to a log he signed at
-        #   noon is ALSO finishing it: END_OF_DAY exists precisely so a daily
-        #   narrative stays open through the day, and observations and photos
-        #   arrive after the signature. Routing him to amendment on his first
-        #   afternoon photo would make amendment the normal path for ordinary
-        #   work, which is the opposite of what it is for.
+        # #214 (a0d5e6e) then added exactly that refusal to update_logbook,
+        # because an end-of-day log being writable after Submit is what let two
+        # filed daily_jobsite records at 588 Thomas be overwritten by the CP
+        # merely OPENING them. The afternoon-photo freedom this path was
+        # protecting has not existed since: the CP's own device holds the log id
+        # and sends a PUT, and that 409 refuses it.
         #
-        # So the only refusal here is the LOCK, above. An end-of-day log is
-        # writable until the nightly sweep seals it, and that window is the
-        # intended flow rather than a gap.
+        # So the freedom was already gone and only the hole was left — reachable
+        # by any client that could not SEE the row and therefore POSTed instead
+        # of PUT. A second device whose editor came up empty (the log invisible
+        # to it: company-scoped read, or a read that simply failed) matched this
+        # dedupe and $set an empty day over a filed one. Which VERB the client
+        # happened to use decided whether the record survived.
         #
-        # WHAT THAT LEAVES OPEN, named rather than papered over: a row that
-        # never gets locked never leaves the window. The sweep will not seal an
-        # unsigned log, so a log written by a bundle predating the affirmation
-        # gate (`cp_signature: {}`) stays editable indefinitely. That is a
-        # LOCKING question, not an upsert question, and it is open — see
-        # sweep_stale_end_of_day_logs.
+        # SAME PREDICATE, SAME CODE as update_logbook: the STORED status, and
+        # 409 FILED_LOG_DATA_IMMUTABLE. Not the request's status — a draft being
+        # submitted sends data and status together and must pass. Not is_locked
+        # — that is the 423 above, and its absence here is the defect.
+        #
+        # NO `data is not None` CLAUSE, and that is not a divergence: the update
+        # path needs one because LogbookUpdate.data is Optional and a
+        # signature-only write (the affirmation repair for the 65 unaffirmed
+        # logs) must still pass. LogbookCreate.data is REQUIRED, so every create
+        # is a data write and there is no signature-only create to exempt.
+        if existing.get("status") == "submitted":
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "FILED_LOG_DATA_IMMUTABLE"},
+            )
+
         # Update existing
         await db.logbooks.update_one(
             {"_id": existing["_id"]},

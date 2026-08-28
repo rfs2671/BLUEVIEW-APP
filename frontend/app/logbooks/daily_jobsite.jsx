@@ -1384,7 +1384,18 @@ export default function DailyJobsiteLog() {
       const offline = isOfflineError(pushErr);
       const status = pushErr?.response?.status;
       const refused = typeof status === 'number' && status >= 400 && status < 500;
-      if (refused && submitStatus === 'submitted') {
+      // KEYED ON THE 4xx, NOT ON THE SUBMIT STATUS. A refusal of a DRAFT
+      // save used to match neither this branch nor the 5xx branch below, so it
+      // fell through to markPending: the drain would re-send a write the server
+      // had already judged, on every reconnect, forever, under a banner
+      // promising it would sync. That path is now reachable — create_logbook
+      // refuses a data write onto a filed row (409 FILED_LOG_DATA_IMMUTABLE),
+      // and a second device saving a DRAFT over a filed day takes it.
+      //
+      // A 4xx is a judgement the server will keep making whatever the status
+      // on the request was. Recording it and showing its copy is right for all
+      // of them; queueing it for retry is right for none.
+      if (refused) {
         const code = finalizeErrorCode(pushErr);
         console.warn('daily_jobsite REFUSED by the server:', status, code);
         // STALE, AND CORRECTED. This said a 409 for a SUBMITTED row had been
