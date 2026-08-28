@@ -89,7 +89,24 @@ export function parseDraftKey(key) {
  * unchanged because it is the name every caller and test already uses; what
  * widened is the set of gates the server can refuse at, not the mechanism.
  */
-const GATE_CODE = /^(?:FINALIZE|SUBMIT)_[A-Z_]+$/;
+/**
+ * AND FILED_. This prefix was missed when #214 added FILED_LOG_DATA_IMMUTABLE,
+ * and the miss was silent in the way this convention always fails silently: the
+ * server emitted a code, this extractor did not recognise the shape of it,
+ * finalizeErrorCode returned null, and every caller fell through to the generic
+ * "could not be finalized — please try again". A CP was told to RETRY a write
+ * the server refuses every time, and the one remedy that works (amend) was
+ * never named. The copy for the code was unreachable from the moment it landed.
+ *
+ * The server chose the prefix deliberately — its comment says so: "follows the
+ * SUBMIT_EMPTY_LOG convention but not the SUBMIT_ prefix: this is not a submit
+ * gate, it fires on any data write to a filed log". That was right. What went
+ * wrong is that only one half of a two-sided convention was changed.
+ *
+ * codeExtraction.test.cjs now asserts the two halves against each other, so the
+ * next code with a new prefix fails a test instead of a CP's afternoon.
+ */
+const GATE_CODE = /^(?:FINALIZE|SUBMIT|FILED)_[A-Z_]+$/;
 
 export function finalizeErrorCode(e) {
   const detail = e?.response?.data?.detail;
@@ -376,11 +393,48 @@ async function pushOne(key) {
     // banner on, and the editor knows its own draft key. Same storage, same
     // record shape, same banner; only the lookup handle differs.
     if (isServerRefusal(e)) {
+      const code = finalizeErrorCode(e);
       const target = draft.backend_id || key;
-      await recordFinalizeError(target, finalizeErrorCode(e), key);
+      await recordFinalizeError(target, code, key);
+
+      // ── A CREATE THE SERVER CAN ONLY EVER REFUSE STOPS BEING RETRIED ─────
+      //
+      // Every other 4xx here stays pending on purpose: SUBMIT_MISSING_CP_-
+      // SIGNATURE, SUBMIT_NO_CONTENT and the rest name something the CP can
+      // FIX in the draft, and the next drain sends the corrected version. That
+      // is why "a 4xx is a judgement the server will keep making" ends in a
+      // retry rather than a discard.
+      //
+      // FILED_LOG_DATA_IMMUTABLE on a CREATE is the one that no edit can
+      // satisfy. The server is not judging this payload, it is stating that a
+      // filed record already exists for this (project, type, date) — so this
+      // key will never land however the draft changes, and re-sending it on
+      // every reconnect is work that cannot succeed.
+      //
+      // IT IS ALSO REACHED BY A LOG THAT FILED CORRECTLY. If the submit landed
+      // and the RESPONSE was lost, the device marked the key pending and this
+      // is the replay: before create_logbook refused it the replay was
+      // idempotent and cleared itself, and now it is refused forever. Leaving
+      // it pending puts a permanent banner on a day that filed perfectly well,
+      // and a banner that cannot come down is how a CP learns to read past all
+      // of them.
+      //
+      // SCOPED TO THE CREATE, deliberately. On an UPDATE the draft holds a
+      // backend_id, so the banner LogbookLockBar renders is ACTIONABLE — the
+      // Amend button needs that id and has it. A refused create has no logbook
+      // id to hang an amendment on, so the same banner would name a remedy the
+      // CP cannot reach from it.
+      //
+      // The record above is written ONCE and then the key is dropped, rather
+      // than being re-asserted on every reconnect for the life of the install.
+      if (!draft.backend_id && code === 'FILED_LOG_DATA_IMMUTABLE') {
+        await clearPending(key);
+        return { key, ok: false, reason: 'already-filed', code, logId: null };
+      }
+
       return {
         key, ok: false, reason: 'push-refused',
-        code: finalizeErrorCode(e), logId: draft.backend_id || null,
+        code, logId: draft.backend_id || null,
       };
     }
     return { key, ok: false, reason: e?.message || 'push-failed' };
@@ -398,7 +452,8 @@ export async function syncPendingDrafts() {
   for (const key of keys) {
     const r = await pushOne(key);
     if (r.ok) synced += 1;
-    else if (r.reason === 'finalize-refused' || r.reason === 'push-refused' || r.reason === 'unsigned-submit') {
+    else if (r.reason === 'finalize-refused' || r.reason === 'push-refused'
+      || r.reason === 'unsigned-submit' || r.reason === 'already-filed') {
       refused += 1;
       // Diagnostic only. The user-visible surface is the banner LogbookLockBar
       // renders from the record written above — this drain has no screen.

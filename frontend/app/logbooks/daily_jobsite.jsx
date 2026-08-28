@@ -598,6 +598,14 @@ export default function DailyJobsiteLog() {
 
       if (existing) {
         setExistingLogId(existing.id || existing._id);
+        // AND THE REFUSAL COMES DOWN. A create the drain gave up on records
+        // its refusal against the DRAFT KEY, because there was no logbook id
+        // to hang it on. Finding the day on the server is the proof that the
+        // banner has nothing left to say: it is filed, the CP is looking at
+        // it, and the id it lacked is right here. Cleared on the LOAD rather
+        // than on a push, because after the create path started refusing these
+        // there may never be another successful push on this key.
+        clearFinalizeError(_key).catch(() => {});
         hydrate(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
