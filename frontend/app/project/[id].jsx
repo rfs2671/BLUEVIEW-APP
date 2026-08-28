@@ -1416,8 +1416,34 @@ export default function ProjectDetailScreen() {
             </GlassCard>
           )}
 
-          {/* Checklists Section */}
-          <Text style={s.sectionLabel}>CHECKLISTS</Text>
+          {/* ── CHECKLISTS ───────────────────────────────────────────────
+              THE ASSIGN PATH ALREADY EXISTS AND WORKS. app/admin/checklists
+              has the full create/assign/track UI and
+              POST /api/admin/checklists/{id}/assign behind it, reachable from
+              the home screen tile. What was missing was any route to it from
+              HERE — the one screen that tells an admin a project has no
+              checklist. The empty card said "Checklists will appear here when
+              assigned to this project" and named nothing that could assign
+              one.
+
+              Admin only: the endpoint behind that screen is /api/admin/*, so
+              a CP standing on the same empty card gets the message without a
+              button that would 403. */}
+          {isAdmin ? (
+            <View style={s.sectionHeader}>
+              <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>CHECKLISTS</Text>
+              <Pressable
+                onPress={() => router.push(`/admin/checklists?assignTo=${encodeURIComponent(projectId)}`)}
+                style={s.headerAddBtn}
+                hitSlop={8}
+                accessibilityLabel="Assign a checklist to this project"
+              >
+                <Plus size={18} strokeWidth={2} color={colors.text.primary} />
+              </Pressable>
+            </View>
+          ) : (
+            <Text style={s.sectionLabel}>CHECKLISTS</Text>
+          )}
           {loadingChecklists ? (
             <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
           ) : checklists.length > 0 ? (
@@ -1511,7 +1537,23 @@ export default function ProjectDetailScreen() {
             <GlassCard style={s.emptyCard}>
               <ClipboardList size={40} strokeWidth={1} color={colors.text.subtle} />
               <Text style={s.emptyText}>No checklists assigned</Text>
-              <Text style={s.emptySubtext}>Checklists will appear here when assigned to this project</Text>
+              <Text style={s.emptySubtext}>
+                {isAdmin
+                  ? 'Pick a checklist and assign it to this project.'
+                  : 'Checklists will appear here when assigned to this project'}
+              </Text>
+              {/* The dead end is felt HERE, so the way out is here too — not
+                  only on the section header an admin has already scrolled
+                  past. Both land on the same screen with this project
+                  pre-ticked. */}
+              {isAdmin && (
+                <GlassButton
+                  title="Assign a Checklist"
+                  icon={<Plus size={16} strokeWidth={2} color={colors.text.primary} />}
+                  onPress={() => router.push(`/admin/checklists?assignTo=${encodeURIComponent(projectId)}`)}
+                  style={s.emptyCardBtn}
+                />
+              )}
             </GlassCard>
           )}
         </ScrollView>
@@ -2169,6 +2211,9 @@ function buildStyles(colors, isDark) {
     fontSize: 16,
     fontWeight: '500',
     color: colors.text.muted,
+  },
+  emptyCardBtn: {
+    marginTop: spacing.lg,
   },
   emptySubtext: {
     fontSize: 13,
