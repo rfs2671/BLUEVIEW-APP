@@ -4,6 +4,79 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-08-28 — a CRLF anchor made a mutation not apply, and the negative control reported a pass
+
+**The mirror of the line-ending entry below**, and worth recording separately
+because it fails in the opposite direction. There, a source EXTRACTION anchored
+on a bare newline read nothing and five assertions were skipped. Here, a source
+MUTATION anchored on a bare newline wrote nothing and a negative control passed.
+Both times, the edit that did not land looked exactly like an edit that landed
+and was fine.
+
+Verifying the registry-count assertion added in #271, four scenarios broke the
+guard on purpose to prove it could fail. The fourth registered a thirteenth
+logbook type with no tab and no render branch, by replacing the tail of
+`LOGBOOK_TYPE_REGISTRY` in `backend/server.py`:
+
+    const anchor = '        "activated_by": "cp",\n    },\n]';
+    return s.slice(0, at) + added + s.slice(at + anchor.length);
+
+`server.py` is CRLF. `indexOf` returned `-1`, the guard returned the input
+unchanged, the harness wrote the file back byte-identical, and the suite then
+ran against a **completely unmodified tree**:
+
+    ### a 13th type is registered with no tab and no branch
+      (nothing failed — THE GUARD IS BLIND)
+      94 passed / 0 failed
+
+The available reading was wrong in the most useful-looking way: *the count
+assertion does not catch a thirteenth type*. It says the opposite of the truth,
+and it says it in the voice of a completed check.
+
+It was caught only because the other three scenarios DID fail and a silent
+fourth was implausible beside them. Nothing in the output distinguished
+"the mutation applied and the guard missed it" from "the mutation never
+applied". **A negative control that cannot verify its own mutation is not a
+negative control** — it is a second copy of the green run.
+
+### The rule
+
+A mutation whose replacement is a no-op is a FAILING scenario, never a passing
+one. Assert it before writing:
+
+    if (next === backup) throw new Error('mutation was a no-op — the scenario proves nothing');
+
+That is the mutation-side twin of the rule below — *a failed extraction is a
+FAILING ASSERTION, never a skipped block* — and it is the same sentence with
+the read swapped for a write. With the anchors switched to explicit CRLF and
+that guard in place, all four scenarios failed as intended (1, 1, 2 and 3
+failures) and the restored tree returned to 94 passed, 0 failed.
+
+### The part that is easy to draw the wrong lesson from
+
+The regex that READ the registry in the same run was CRLF-safe, and by
+accident:
+
+    /^\s+"key": "([a-z_]+)",$/gm
+
+JS treats `\r` as a LineTerminator, so in multiline mode `,$` matches before
+`,\r\n` and this returned all twelve keys off a CRLF file without anyone
+thinking about it. The exposure is in **string-literal anchors** —
+`split` / `replace` / `indexOf` — not in regexes. So "we use regexes, we are
+fine" is not the takeaway: the thing that read the file was safe by luck, and
+the thing that wrote it was not, in the same script, in the same run.
+
+### Scope
+
+The harness was throwaway and is not in the repo — the defect is in the
+technique, not in that file, which is why it is recorded here rather than
+fixed somewhere. Any future mutation test, negative control or
+codemod-style script in this repo meets the same edge: the repo normalises
+line endings on checkout, so every Windows working tree is exposed, and
+`server.py`, `app/site/logbooks.jsx` and the `.cjs` suites are all CRLF today.
+
+---
+
 ## PRACTICE — 2026-08-28 — an enumeration grep that cannot see .cjs, which is where the fixtures live
 
 Same family as the AST entry below and the receiver-group one: a search that
