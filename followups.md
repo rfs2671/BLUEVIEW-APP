@@ -808,6 +808,89 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## A fix for "the CP is told the wrong thing" shipped telling him the wrong thing
+
+The sharpest instance of the family so far, and the one worth reading twice.
+
+**The convention.** The server names a condition with a machine code and no
+prose; the client owns the wording. `finalizeErrorCode` extracts the code,
+`gateCopy` maps it to a sentence, and an unmapped code falls back to a generic
+one. Two sides, and they only work as a pair.
+
+**What happened.** #214 added `FILED_LOG_DATA_IMMUTABLE` and deliberately did
+not give it the `SUBMIT_` prefix — its comment says why, in as many words:
+*"this is not a submit gate, it fires on any data write to a filed log"*. That
+reasoning was right. But `GATE_CODE` on the client was
+`/^(?:FINALIZE|SUBMIT)_[A-Z_]+$/`, and nothing widened it. So:
+
+    finalizeErrorCode(the 409)  ->  null
+    gateCopy(null)              ->  "This log could not be finalized.
+                                     Please try again."
+
+A CP was told to **RETRY** a write the server refuses every time, and the one
+remedy that works — amend — was never named. For weeks, on the exact refusal
+#214 existed to deliver.
+
+**And then #285 made it worse in the most literal way.** That PR's whole subject
+was a filed log being written over, and part of the fix was adding the missing
+copy for this code. The copy was **unreachable from the moment it landed**: it
+sat in `en.js` keyed on a code the extractor could never produce. A fix for
+"the CP is told the wrong thing" shipped telling him the wrong thing. It was
+found while building #286, not by anything that was watching.
+
+**Fixed in #286** — `FILED` added to the prefix set. But the prefix is not the
+lesson.
+
+### The durable form
+
+    every gate code the server emits is one the client can hear
+
+`drainAlreadyFiled.test.cjs` asserts exactly that: for each logbook gate code,
+that `server.py` still emits it AND that `finalizeErrorCode` returns it. **It
+would have failed the day #214 landed.** Nothing else could have — the code was
+correct, the copy was correct, the extractor was correct, and the three did not
+meet anywhere a test was looking.
+
+Deliberately scoped to the LOGBOOK gates. `ACTIVATION_REQUIRES_ADMIN`,
+`ACTIVATION_STATE_REQUIRED` and `LOGBOOK_NOT_ACTIVATABLE` also fail the pattern
+today; they belong to endpoints that do not route through this extractor, and
+widening it to them would change behaviour on screens that module knows nothing
+about. **If any of those three is ever surfaced through `gateCopy`, it needs
+this same pairing test first, or it arrives silent in the same way.**
+
+The general shape, which is what to carry: **a two-sided convention needs a test
+that runs both sides against each other.** Either side alone reviews as correct.
+
+## 22 test files were silently skipped on the dev machine
+
+`@babel/core` is a declared dependency and CI installs it with `npm ci`. It was
+absent from `frontend/node_modules` locally, and 22 of the JS test files need
+it: the execution harnesses (`esmHarness.cjs`) and all three parse-only sweeps
+(`find-bare-jsx-text`, `find-unbound-identifiers`, `find-unpinned-palette-keys`).
+
+They did not fail. Run one and it dies on `Cannot find module '@babel/core'`;
+run the suite the way a person does — a loop over the glob, eyes on the tail —
+and a run that never executed **22 of them** reported success. The three sweeps
+that catch a crash-on-open were among the missing.
+
+Found by installing it (`npm install --no-save @babel/core`) mid-session, which
+immediately caught a real breakage: `orientationTradeGate.test.cjs` pinned the
+`GATE_CODE` regex TEXT and failed on the widening above. That would otherwise
+have gone to CI as a red build on a PR whose diff looked unrelated to it.
+
+**Same family as the two already recorded**: a local run that covers less than
+it appears to and reports success. The `src/utils` glob missed the files that
+sorted after a failing one; the `--include=*.js` sweep missed `.jsx` entirely.
+Each time the gap was invisible *because the command exited 0*.
+
+The workflow already carries this scar and says so — its `npm ci` step exists
+because two tests "had never executed in CI even once" and "passed on
+developers' machines purely because node_modules happened to exist there".
+**The inverse is now on record: they fail on a developer's machine because it
+does not.** A `README` line, a `predev` check, or a first-line guard in the test
+runner that refuses to report success when a file could not be loaded — none of
+which is written yet.
+
 ## Nine logbook editors still read `.catch(() => [])`
 
 The daily jobsite editor's existing-log read was fixed in #285: a request that
