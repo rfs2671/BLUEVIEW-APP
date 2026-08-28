@@ -2045,8 +2045,36 @@ class ProjectResponse(BaseModel):
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     nfc_tags: List[Dict] = []
+    # ── Dropbox ───────────────────────────────────────────────────────────
+    # dropbox_folder and dropbox_enabled ARE DEAD FIELDS. create_project sets
+    # them False/None and NOTHING has written either since. They are declared
+    # here only because project/[id].jsx still reads them, and removing them
+    # changes that screen -- which belongs with the Dropbox redesign, not here.
     dropbox_folder: Optional[str] = None
     dropbox_enabled: bool = False
+
+    # THE THREE BELOW ARE THE LIVE ONES, AND THEIR ABSENCE WAS A SILENT OUTAGE.
+    #
+    # A response_model is an ALLOW-LIST: pydantic drops every field it does not
+    # declare, with no error anywhere. link-dropbox writes dropbox_folder_path,
+    # the sync writes dropbox_last_synced, and #252 writes dropbox_sync -- none
+    # were declared, so GET /projects/{id} reported every project as unlinked
+    # no matter what the database held.
+    #
+    # The consequence was not cosmetic. Construction Plans renders its Sync
+    # control as `project?.dropbox_folder_path ? <Sync> : <Link folder>`, so the
+    # sync button was UNREACHABLE on every project that has ever been linked,
+    # and Dropbox Settings showed a linked project as unlinked. The admin
+    # integrations screen looked correct only because it reads the LIST
+    # endpoint, which carries no response model -- two endpoints giving opposite
+    # answers about the same project.
+    dropbox_folder_path: Optional[str] = None
+    dropbox_last_synced: Optional[datetime] = None
+    # The run summary from #252: {run_id, status, expected, synced, failed,
+    # started_at, finished_at}. Dict rather than a model because the client
+    # reads it through dropboxSyncState.js, which already treats a missing or
+    # malformed summary as "never synced" and fails toward letting the CP work.
+    dropbox_sync: Optional[Dict] = None
     created_at: Optional[datetime] = None
     nyc_bin: Optional[str] = None
     # BBL field — 10-digit Borough-Block-Lot. Renamed from nyc_bbl
