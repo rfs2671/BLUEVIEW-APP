@@ -26,12 +26,95 @@ on:
   # only remedies left were inventing a no-op commit or bypassing CI from a
   # laptop, and both are worse than a button.
   workflow_dispatch:
+    inputs:
+      # THE EAS BRANCH TO PUBLISH TO. Was hardcoded `production` in the run
+      # step below, which meant workflow_dispatch could choose a git REF but
+      # not a destination -- so the only way to put an unmerged branch on a
+      # phone was to publish it to the branch every store install listens on.
+      # That is not a testing path, it is a production release with extra
+      # steps, and it is why this input exists.
+      #
+      # DEFAULT STAYS `production`, deliberately. The push trigger above is the
+      # normal path and must keep working unchanged; the input is here to make
+      # publishing somewhere ELSE possible and deliberate, not to make it easy.
+      #
+      # ⚠️ CHANNEL `preview` MAY NOT EXIST YET, AND A PUBLISH TO IT WOULD LAND
+      #    WHERE NOTHING IS LISTENING.
+      #
+      #    eas.json defines a `preview` build profile on channel `preview`,
+      #    but nothing in this repo has ever built it: android.yml runs
+      #    `--profile production` only, and its own comment says "The preview
+      #    profile (APK, `preview` channel) was wrong for this." EAS creates a
+      #    channel, and its same-named branch, on the FIRST BUILD that uses it.
+      #    So until such a build exists there is no channel `preview`, no
+      #    installed app pointing at it, and an update published there is a
+      #    bundle no device will ever fetch -- which looks identical to a
+      #    successful publish in this workflow's logs.
+      #
+      #    WHAT UNBLOCKS IT, in order:
+      #      1. `eas build --platform android --profile preview` (internal APK)
+      #      2. install that APK on the test device
+      #      3. then this workflow with branch=preview reaches it
+      #
+      #    Confirm the mapping at
+      #    expo.dev/accounts/rfs2671/projects/levelog/channels, or with
+      #    `eas channel:view preview`, before trusting a preview publish.
+      branch:
+        description: 'EAS branch to publish to (production = every store install)'
+        required: false
+        default: 'production'
+        type: string
+
+      # THE ONE COMBINATION THAT CANNOT HAPPEN BY ACCIDENT: publishing to
+      # `production` from a ref that is not main. That ships unreviewed code to
+      # every CP's phone, and it is reachable by dispatching against a feature
+      # branch and simply not touching the branch input above -- the dangerous
+      # thing being the default is exactly how it would happen.
+      #
+      # NOT A HARD BLOCK, because this workflow exists to be a recovery button
+      # and a hotfix ref is a real case. It is a second, explicit action.
+      confirm_production_from_non_main:
+        description: 'Required ONLY to publish production from a non-main ref'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # FIRST, before Setup Node / Setup Expo / npm ci / Metro. A refused
+      # publish costs seconds rather than four minutes of bundling, and
+      # nothing above it can have side effects worth undoing.
+      - name: Guard the destination
+        env:
+          EAS_BRANCH: ${{ inputs.branch || 'production' }}
+          CONFIRMED: ${{ inputs.confirm_production_from_non_main }}
+        run: |
+          set -euo pipefail
+          REF="${GITHUB_REF_NAME}"
+          echo "Publishing ref '${REF}' to EAS branch '${EAS_BRANCH}'"
+
+          if [ "$EAS_BRANCH" = "production" ] && [ "$REF" != "main" ]; then
+            if [ "$CONFIRMED" != "true" ]; then
+              echo "::error::Refusing to publish '${REF}' to the production EAS branch."
+              echo "Every store install listens on production, so this would ship"
+              echo "an unmerged ref to every phone."
+              echo ""
+              echo "If you are TESTING a branch, re-run with branch=preview -- but read"
+              echo "the note on that input first: channel 'preview' may not exist yet."
+              echo "If you are RECOVERING and this is intended, re-run with"
+              echo "confirm_production_from_non_main=true."
+              exit 1
+            fi
+            echo "::warning::Publishing non-main ref '${REF}' to production, explicitly confirmed."
+          fi
+
+          if [ "$EAS_BRANCH" != "production" ]; then
+            echo "::warning::Publishing to EAS branch '${EAS_BRANCH}'. If no build has ever used the matching channel, this update reaches no device. See the branch input note."
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -85,6 +168,9 @@ jobs:
           # the BUILD card in settings prints and compares against /api/version.
           # This is the commit being published, not the one checked out later.
           JS_COMMIT: ${{ github.sha }}
+          # Empty under `push`, where inputs do not exist -- hence the fallback,
+          # which keeps the normal path publishing to production unchanged.
+          EAS_BRANCH: ${{ inputs.branch || 'production' }}
         run: |
           # Truncate to first line and sanitize for shell safety
           MSG=$(echo "$COMMIT_MSG" | head -1 | tr -d '"' | cut -c1-100)
@@ -104,4 +190,4 @@ jobs:
           # And never reach eas with nothing: an unreadable message is a bad
           # changelog entry, an empty one is a failed publish.
           [ -n "$MSG" ] || MSG="manual dispatch ${GITHUB_SHA}"
-          eas update --branch production --message "$MSG"
+          eas update --branch "$EAS_BRANCH" --message "$MSG"
