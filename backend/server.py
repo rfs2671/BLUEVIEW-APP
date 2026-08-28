@@ -15895,7 +15895,12 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     elif log_type == "preshift_signin":
         type_title = "Pre-Shift Sign-In"
         workers = data.get("workers", [])
-        
+        # THE SAME OVERLAY AS THE COMBINED REPORT. Two renderers print this
+        # sheet, and a document that says AFFIRMED in one and NOT AFFIRMED in
+        # the other is worse than one that is wrong in both.
+        _affirm = await preshift_affirmations(
+            db, logbook.get("project_id"), logbook.get("date"))
+
         w_rows = ""
         for w in workers:
             if w.get("name", "").strip():
@@ -15906,7 +15911,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w, _affirm)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -22116,7 +22121,63 @@ def _inspection_label(key: str) -> str:
     return str(key or "").replace("_", " ").title()
 
 
-def _preshift_signature_cell(w) -> str:
+async def preshift_affirmations(db_, project_id: str, day: str) -> Dict[str, Dict]:
+    """Who affirmed their signature for THIS SHEET'S DATE, and when.
+
+    THE FILED SHEET DOES NOT CARRY THIS, AND NEVER HAS. preshift_signin.jsx
+    builds each worker row from the gate roster with name, company,
+    osha_number, signin_id, worker_signature, had_injury, inspected_ppe --
+    and no affirmation field at any point. `signature_affirmed` appears
+    nowhere in that screen. So the signature column read a key that was
+    absent from every row of every filed sheet and printed NOT AFFIRMED for
+    every worker, always, whatever he did at the gate.
+
+    On 2026-08-28 six men affirmed between 10:36 and 11:57 and the sheet said
+    NOT AFFIRMED for all sixteen. It was not stale; the field was never there.
+
+    RESOLVED AGAINST THE SHEET'S DATE, not the moment of filing. The
+    affirmation's own words are "I confirm this is my signature and authorize
+    its use on TODAY'S Pre-Shift Sign-In Log for this jobsite" -- a consent
+    about the sheet, granted at some point in that day. A document that prints
+    NOT AFFIRMED for a man who granted it is contradicting a record, not
+    preserving one.
+
+    Keyed on worker_id, which the stored row carries (`worker_id: c.worker_id`
+    in buildWorkerList) and which is the checkins row's own id. Nothing is
+    matched by name.
+    """
+    out: Dict[str, Dict] = {}
+    if db_ is None or not project_id or not day:
+        return out
+    try:
+        start, end = get_day_range_est(day)
+        cursor = db_.checkins.find(
+            {
+                "project_id": str(project_id),
+                "check_in_time": {"$gte": start, "$lt": end},
+                "is_deleted": {"$ne": True},
+                "signature_affirmed": True,
+            },
+            {"worker_id": 1, "signature_affirmed": 1, "signature_affirmed_at": 1},
+        )
+        async for row in cursor:
+            wid = str(row.get("worker_id") or "")
+            if wid:
+                out[wid] = {
+                    "affirmed": True,
+                    "at": row.get("signature_affirmed_at"),
+                }
+    except Exception as e:  # pragma: no cover
+        # A FAILED READ IS NOT A REFUSAL. An empty overlay leaves every row
+        # exactly as the stored document has it, which is the behaviour that
+        # existed before this function. It must never turn a read failure into
+        # a finding against a worker.
+        logger.warning(f"[preshift] affirmation overlay failed for {project_id} {day}: {e!r}")
+        return {}
+    return out
+
+
+def _preshift_signature_cell(w, affirmations: Optional[Dict[str, Dict]] = None) -> str:
     """The signature column on a filed pre-shift sheet. THREE STATES, never blank.
 
     Blank cannot be told apart from a column nobody filled, and this document has
@@ -22139,12 +22200,31 @@ def _preshift_signature_cell(w) -> str:
     _sig = str(w.get("worker_signature") or w.get("signature") or "").strip()
     if not _sig:
         return '<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>'
-    if not w.get("signature_affirmed"):
+
+    # THE OVERLAY, AND THE ONLY FIELD IT MAY TOUCH. `affirmations` is resolved
+    # from today's check-ins at render time; the stored row supplies everything
+    # else on this sheet and cannot be changed by it. See preshift_affirmations.
+    _hit = (affirmations or {}).get(str(w.get("worker_id") or ""))
+    _affirmed = bool(_hit and _hit.get("affirmed")) or bool(w.get("signature_affirmed"))
+    if not _affirmed:
         return '<span style="color:#b45309;">NOT AFFIRMED</span>'
+
+    # THE RENDERED DOCUMENT DIFFERS FROM THE STORED ONE, SO IT SAYS WHY ON ITS
+    # FACE. A PDF that quietly regenerates with a different answer tomorrow is
+    # the shape this repo has been bitten by; naming the time turns a silent
+    # change into a stated fact the reader can check against the gate log.
+    _when = _hit.get("at") if _hit else None
+    _stamp = ""
+    if isinstance(_when, datetime):
+        from zoneinfo import ZoneInfo
+        _local = _when if _when.tzinfo else _when.replace(tzinfo=timezone.utc)
+        _stamp = _local.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
     _src = _sig if _sig.startswith("data:") else f"data:image/png;base64,{_sig}"
+    _label = f"Affirmed {_stamp}" if _stamp else "Affirmed"
     return (
         f'<img src="{_src}" alt="Signature" '
         'style="max-height:34px;max-width:150px;display:block;" />'
+        f'<span style="font-size:10px;color:#475569;">{_label}</span>'
     )
 
 
@@ -23139,6 +23219,8 @@ async def generate_combined_report(
     preshift_html = ""
     if preshift:
         pd = preshift.get("data", {})
+        # Affirmation only. Every other cell below reads `w`, the stored row.
+        _affirm = await preshift_affirmations(db, project_id, date)
         w_rows = ""
         for w in pd.get("workers", []):
             if w.get("name", "").strip():
@@ -23149,7 +23231,7 @@ async def generate_combined_report(
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w, _affirm)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
