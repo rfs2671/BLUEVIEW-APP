@@ -48,16 +48,35 @@ for (const nav of NAVS) {
   // The override must be at the USE SITE. Putting insets in the StyleSheet is
   // impossible (it is created once at module load, before any inset exists),
   // so a fix that "looks right" in the stylesheet would silently be a constant.
-  ok(/style=\{\[styles\.container, \{ bottom: insets\.bottom \+ 24 \}\]\}/.test(src),
+  //
+  // THE OFFSET MAY BE A LITERAL OR A NAMED CONSTANT. It was `+ 24` in both
+  // navs until CpNav needed to EXPORT it: the three CP screens now derive
+  // their scroll clearance from the nav's own geometry
+  // (CP_NAV_CLEARANCE = offset + pill height + breathing room), and a
+  // clearance built on a number typed twice is the drift this whole change
+  // removes. Naming it is what lets one value serve both the pill's position
+  // and the clearance that keeps content off it.
+  //
+  // The VALUE is still pinned — see the check below — just pinned at its
+  // definition rather than at its use.
+  const OFFSET = '(?:24|[A-Z][A-Z0-9_]*_OFFSET)';
+  ok(new RegExp(`style=\\{\\[styles\\.container, \\{ bottom: insets\\.bottom \\+ ${OFFSET} \\}\\]\\}`).test(src),
     'the bottom is overridden per render, not baked into the StyleSheet — a '
     + 'StyleSheet is built once at module load, before any inset exists');
 
-  // The +24 in the INLINE expression is the real gap above the bar; the
+  // The offset in the INLINE expression is the real gap above the bar; the
   // stylesheet value is only a fallback, because the inline style REPLACES
   // bottom rather than adding to it. Asserting the stylesheet would be
   // asserting something inert.
-  ok(/insets\.bottom \+ 24/.test(src),
-    'the gap above the bar is 24, applied on top of the measured inset');
+  ok(new RegExp(`insets\\.bottom \\+ ${OFFSET}`).test(src),
+    'the gap above the bar is applied on top of the measured inset');
+
+  // AND IT IS STILL 24, whichever form it takes. A named constant that drifted
+  // to some other value would satisfy the shape checks above while moving the
+  // nav — and, for CpNav, moving every CP screen's clearance with it.
+  const named = src.match(/^export const ([A-Z][A-Z0-9_]*_OFFSET) = (\d+);$/m);
+  ok(named ? Number(named[2]) === 24 : /insets\.bottom \+ 24/.test(src),
+    'the gap above the bar is 24' + (named ? ` (via ${named[1]})` : ''));
 }
 
 console.log('\n-- no screen both insets the bottom AND pads for it --');
