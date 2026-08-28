@@ -808,6 +808,53 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## What the read-without-writer sweep does NOT see
+
+#290 is a ratchet over **Mongo query filters**: it walks `db.<collection>.find`
+and friends, pulls the literal keys out of the filter argument, and reports
+fields read on a collection and never written to it.
+
+**Five instances of read-a-field-nobody-writes surfaced on 2026-08-28. The
+sweep would have caught two.**
+
+| instance | seen? | why |
+|---|---|---|
+| `daily_logs.phase` (4 engines) | **yes** | a filter key: `{"phase": {"$nin": [None, ""]}}` |
+| `dropbox_enabled` | **yes** | a filter key |
+| `checklist_title` | no | it IS written — once, at creation, then goes stale. A different defect |
+| `daily_logs` itself | no | the collection is written; the writer is simply idle since April |
+| `signature_affirmed` on a filed pre-shift sheet | **no** | a `.get()` on a stored sub-document, not a query filter |
+
+The last one is the sharpest miss and the reason this entry exists. The
+pre-shift sheet's signature column read `w.get("signature_affirmed")` off a
+worker row inside `logbooks.data.workers[]`, and `preshift_signin.jsx` has
+never written that key. Every filed sheet printed NOT AFFIRMED against every
+worker, for as long as the column has existed. Nothing about that read is a
+query, so nothing about it is visible to a pass that scans queries.
+
+**DO NOT WIDEN THE SWEEP TO CHASE IT.** A pass that tried to resolve
+`.get("x")` calls against the shapes stored in a schemaless collection would
+have to model what each document *should* contain, which is the thing Mongo
+declines to know. It would report a large number of `.get()`s on optional keys
+that are absent for good reasons, and a ratchet that cries wolf gets its
+baseline padded until it means nothing — the failure the Resend boot check
+already demonstrates elsewhere in this file.
+
+What would actually catch the sub-document class is a different check with a
+different shape, and it is worth naming rather than pretending the existing one
+can grow into it:
+
+  * **a stored-shape contract.** For the document types that are rendered onto
+    a compliance record, assert that every key the renderer reads is a key the
+    writer writes. That is per-document-type, needs both ends named, and is
+    only worth building where the document is customer-facing.
+  * **a render-time absence counter.** Cheaper and blunter: when a renderer
+    falls to its "missing" branch for EVERY row of a document, say so. A
+    column that is unanimous is usually a field, not a finding.
+
+Neither is written. The sweep's limits are recorded here so the next person
+reading its 33-row baseline knows what its silence does and does not mean.
+
 ## A stale bundle looked exactly like a server fault for a day
 
 RESOLVED 2026-08-28 by clearing app data on the operator's phone. The log now
