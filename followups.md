@@ -482,3 +482,32 @@ than the thing the model was guarding against.
 **Survey result (device round 6, E5):** all 34 sites classified — 6 coerce in
 flight, 5 defend the pairing, 6 translate at render, 6 frontend, 11 tests.
 Every one sits cleanly on one side of the line. Nothing to build.
+
+## The site device has no fall_protection tab
+
+`LOG_TABS` in `frontend/app/site/logbooks.jsx:40` lists **eleven** of the
+twelve registered types. `fall_protection` is absent. The comment four lines
+above it records the last time this happened — five conditional types were
+added to the registry "and then had no tab that could show them", so "an
+inspector on the site device could not reach a hot work permit, a crane log or
+an orientation record at all." That fix added five and missed the sixth.
+
+So a fall protection equipment log can be filed by the CP and cannot be opened
+at the kiosk. **Both halves are missing, not just the tab.** `renderLogContent`
+(`site/logbooks.jsx:1302`) is an eleven-branch if-chain on `log.log_type` with
+no `fall_protection` case, and it does not fall through to a generic renderer —
+it returns the literal "No data available". So adding the tab alone would trade
+an unreachable log for a log that opens and claims to be empty, which is worse.
+The tab entry and the render branch have to land together.
+
+**This is reachability, not naming.** It is unrelated to the label-map work in
+the reports screen: the tab's *label* would come from `tabFallProtection` in
+`src/i18n/en.js`, which also does not exist yet, but adding the label without
+the tab entry changes nothing.
+
+Fix is a `LOG_TABS` entry, its `labelKey`, and a `renderFallProtection` branch
+— the same three pieces each of the five types restored last time needed. Note
+also that `fall_protection` is the only registry entry with no `dob_reference`, on
+purpose (`server.py:3545` explains why), and it carries
+`FALL_PROTECTION_NOTICE` — the inspector view should print that notice, since
+the whole point of it is that this log is not a DOB or OSHA filing.
