@@ -103,6 +103,19 @@ export default function LogbookStepper({
   // overlay, a modal. On native an absolute fill inside the safe area stops
   // at the inset instead of going full-bleed.
   overlays = null,
+  // A READ THAT FAILED IS NOT AN EMPTY FORM.
+  //
+  // {title, body, retryLabel, onRetry} renders a read-only notice INSTEAD of
+  // the steps: no fields, no footer, no lock bar. A form whose existing-log
+  // read did not come back cannot know whether the day is unfiled or already
+  // filed, and an editable blank form is the one answer that is never safe —
+  // it invites the CP to re-enter a day that may already be on the server, and
+  // (before the create path refused it) that re-entry overwrote the record.
+  //
+  // NOT `locked`: that renders LogbookLockBar's "FINALIZED — read-only" and
+  // offers Amend, which would be a claim about a document this device could
+  // not read.
+  unavailable = null,
 }) {
   const total = steps.length;
 
@@ -114,6 +127,42 @@ export default function LogbookStepper({
         <SafeAreaView style={s.container} edges={['top']}>
           <View style={s.loadingCenter}>
             <ActivityIndicator size="large" color={outdoor.text} />
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <AnimatedBackground pinned>
+        <SafeAreaView style={s.container} edges={['top']}>
+          <View style={s.header}>
+            <Pressable
+              style={s.headerBack}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              onPress={onExit}
+            >
+              <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
+            </Pressable>
+            <View style={s.headerText}>
+              <Text style={s.headerTitle}>{title}</Text>
+              <Text style={s.headerSub}>{subtitle}</Text>
+            </View>
+          </View>
+          <View style={s.unavailableBox}>
+            <Text style={s.unavailableTitle}>{unavailable.title}</Text>
+            <Text style={s.unavailableBody}>{unavailable.body}</Text>
+            {!!unavailable.onRetry && (
+              <Pressable
+                style={s.unavailableRetry}
+                accessibilityRole="button"
+                onPress={unavailable.onRetry}
+              >
+                <Text style={s.unavailableRetryText}>{unavailable.retryLabel}</Text>
+              </Pressable>
+            )}
           </View>
         </SafeAreaView>
       </AnimatedBackground>

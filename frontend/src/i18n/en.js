@@ -300,6 +300,14 @@ export default {
     chipOtherPrompt: 'What was the activity?',
     structuralSystemUnknown: 'Structural system not set for this project, so both concrete and CFS activities are shown.',
     chipsNoPriorDay: 'No earlier log to suggest from, so these are the project-start activities.',
+    // THE READ FAILED, so the screen cannot say whether this day is filed.
+    // It says that, and refuses to offer a blank form — re-entering a day that
+    // is already on the server is how a filed log gets written over.
+    // failureDetail() supplies the second half (offline / 404 / 403 / 500),
+    // so this string never guesses at the cause.
+    logUnavailableTitle: "Today's log could not be loaded",
+    logUnavailableBody: 'This device could not read the log for this day, so it cannot show you what is in it. It may already be filed — do not fill the day in again from here.',
+    logUnavailableRetry: 'Try again',
 
     // ── U1: the stepper ──────────────────────────────────────────────────
     // Read by a Competent Person who is older, not technical, outdoors,
