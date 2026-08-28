@@ -116,6 +116,17 @@ export default {
     // completeness rule: it says the record contains nothing at all, which is
     // the one thing that is true of it regardless of which form it is.
     code_SUBMIT_NO_CONTENT: 'Every row on this log is empty, so there is nothing to file. Fill in at least one before submitting.',
+    // A FILED LOG, NOT A LOCKED ONE — 409, not the 423 above. An end-of-day log
+    // is submitted but not frozen until the overnight sweep, and in that window
+    // both update_logbook and create_logbook refuse a write to its `data`.
+    //
+    // SHIPPED LATE. The server has emitted this code since #214 and there was
+    // no copy for it, so gateCopy fell through to genericError — "could not be
+    // finalized, please try again" — which tells the CP to retry a write the
+    // server will refuse every time, and says nothing about the one action that
+    // does work. The code is now reachable from the create path too, which is
+    // how the gap surfaced.
+    code_FILED_LOG_DATA_IMMUTABLE: 'This day is already filed. It cannot be written over — open the filed log and create an amendment to correct it.',
     // Raised by the reconnect DRAIN, not by a screen — a pre-shift draft
     // written before the injury/PPE gate shipped replays with both answers
     // null, and no client gate can reach that path. It names the fix rather
@@ -289,6 +300,14 @@ export default {
     chipOtherPrompt: 'What was the activity?',
     structuralSystemUnknown: 'Structural system not set for this project, so both concrete and CFS activities are shown.',
     chipsNoPriorDay: 'No earlier log to suggest from, so these are the project-start activities.',
+    // THE READ FAILED, so the screen cannot say whether this day is filed.
+    // It says that, and refuses to offer a blank form — re-entering a day that
+    // is already on the server is how a filed log gets written over.
+    // failureDetail() supplies the second half (offline / 404 / 403 / 500),
+    // so this string never guesses at the cause.
+    logUnavailableTitle: "Today's log could not be loaded",
+    logUnavailableBody: 'This device could not read the log for this day, so it cannot show you what is in it. It may already be filed — do not fill the day in again from here.',
+    logUnavailableRetry: 'Try again',
 
     // ── U1: the stepper ──────────────────────────────────────────────────
     // Read by a Competent Person who is older, not technical, outdoors,

@@ -26,6 +26,30 @@ export function buildStepperStyles() {
     container: { flex: 1 },
     loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
+    // THE READ FAILED — see LogbookStepper's `unavailable` prop. Lives here
+    // rather than in one form so the next editor to distinguish "no log" from
+    // "could not read the log" inherits the look instead of inventing it.
+    unavailableBox: {
+      margin: spacing.md, padding: spacing.lg,
+      backgroundColor: outdoor.warnBg, borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: outdoor.warnBorder, gap: spacing.sm,
+    },
+    unavailableTitle: {
+      fontSize: typography.sizes.lg, fontWeight: '700', color: outdoor.text,
+    },
+    unavailableBody: {
+      fontSize: typography.sizes.md, lineHeight: 22, color: outdoor.text,
+    },
+    unavailableRetry: {
+      alignSelf: 'flex-start', marginTop: spacing.sm,
+      paddingVertical: spacing.sm, paddingHorizontal: spacing.lg,
+      borderRadius: borderRadius.md, borderWidth: 1, borderColor: outdoor.line,
+      backgroundColor: outdoor.surface,
+    },
+    unavailableRetryText: {
+      fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
+    },
+
     header: {
       flexDirection: 'row', alignItems: 'center', gap: spacing.md,
       paddingHorizontal: spacing.md, paddingVertical: spacing.sm,

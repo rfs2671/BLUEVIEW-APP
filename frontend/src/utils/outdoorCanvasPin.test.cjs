@@ -71,15 +71,21 @@ console.log('\n-- AnimatedBackground can paint the pinned canvas --');
     'ANCHOR: the live path still exists and is still the default');
 }
 
-console.log('\n-- both LogbookStepper wrap sites are pinned --');
+console.log('\n-- every LogbookStepper wrap site is pinned --');
 {
+  // THE COUNT IS THE ANCHOR, not the point. The point is the assertion
+  // below: every wrap carries `pinned`. The count is here so that ADDING a
+  // wrap forces someone to look at this test, rather than shipping an
+  // unpinned canvas nothing checks. Three since the `unavailable` branch --
+  // a log read that FAILED renders read-only instead of an editable empty
+  // form. Raise it with the same deliberation if a fourth arrives.
   const wraps = STEPPER.match(/<AnimatedBackground[^>]*>/g) || [];
-  ok(wraps.length === 2,
-    `ANCHOR: two wrap sites found (${wraps.length}) — the loading branch and `
-    + 'the main tree');
+  ok(wraps.length === 3,
+    `ANCHOR: three wrap sites found (${wraps.length}) — the loading branch, `
+    + 'the unavailable branch and the main tree');
   ok(wraps.every((w) => /\bpinned\b/.test(w)),
-    'BOTH carry pinned. The loading branch matters as much: it tints its '
-    + `spinner outdoor.text. Found: ${JSON.stringify(wraps)}`);
+    'EVERY ONE carries pinned. The loading branch matters as much: it tints '
+    + `its spinner outdoor.text. Found: ${JSON.stringify(wraps)}`);
 }
 
 console.log('\n-- the four correctly-themed screens are untouched --');

@@ -83,7 +83,7 @@ import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../.
 import { chooseEditableLog } from '../../src/utils/logbookEditable';
 // The app-wide OFFLINE discriminator — the same one settleFetch is built on.
 // "Offline" here has to mean what it means everywhere else: no response at all.
-import { isOfflineError, settleFetch } from '../../src/utils/offlineState';
+import { isOfflineError, settleFetch, failureDetail } from '../../src/utils/offlineState';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -297,6 +297,10 @@ export default function DailyJobsiteLog() {
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
+  // The EXISTING-LOG read, as a three-way outcome rather than an array. null
+  // is "the read came back"; 'offline' / 'error' are the two ways it did not.
+  const [logReadFailed, setLogReadFailed] = useState(null);
+  const [logReadError, setLogReadError] = useState(null);
   const [signing, setSigning] = useState(false);
   const [locked, setLocked] = useState(false);
   // The last autosave did not land. Sticky: it clears only when a later
@@ -448,6 +452,8 @@ export default function DailyJobsiteLog() {
     // this is what lets the screen show it without the CP backing out and
     // re-entering. Everything below decides locked-ness from what it loads.
     setLocked(false);
+    setLogReadFailed(null);
+    setLogReadError(null);
     try {
       // Local-first: the on-device draft wins, so the screen works fully
       // offline and a reopened log is exactly where the CP left it.
@@ -523,12 +529,32 @@ export default function DailyJobsiteLog() {
         }
       }
 
-      const [projectData, roster, headcount, existingLogs] = await Promise.all([
+      const [projectData, roster, headcount, existingLogsRes] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsRoster(projectId, date).catch(() => null),
         logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
-        logbooksAPI.getByProject(projectId, 'daily_jobsite', date).catch(() => []),
+        // A LOG READ THAT FAILED IS NOT A DAY WITH NO LOG — the same
+        // distinction the roster read below already draws, and it was missing
+        // here. `.catch(() => [])` handed an empty array to everything
+        // downstream, so `existing` came out null, `locked` stayed false, and
+        // the screen rendered an EDITABLE EMPTY FORM for a day that may
+        // already be filed. That is what a second device showed the operator
+        // on 2026-08-28, one tap away from writing it over the record.
+        settleFetch(() => logbooksAPI.getByProject(projectId, 'daily_jobsite', date)),
       ]);
+
+      // FAIL CLOSED. Nothing below this line may run on a read that did not
+      // come back: hydrate would not fire, buildCrewsFromRoster would fill the
+      // form from the gate roster, and the CP would be looking at a blank day
+      // that says nothing about whether one was filed.
+      if (existingLogsRes.status !== 'ok') {
+        setLogReadFailed(existingLogsRes.status);
+        setLogReadError(existingLogsRes.error);
+        setLocked(true);
+        return;
+      }
+      const existingLogs = Array.isArray(existingLogsRes.data)
+        ? existingLogsRes.data : [];
 
       const fullAddress = projectData?.address || projectData?.location || '';
       setProjectAddress(fullAddress);
@@ -1384,7 +1410,18 @@ export default function DailyJobsiteLog() {
       const offline = isOfflineError(pushErr);
       const status = pushErr?.response?.status;
       const refused = typeof status === 'number' && status >= 400 && status < 500;
-      if (refused && submitStatus === 'submitted') {
+      // KEYED ON THE 4xx, NOT ON THE SUBMIT STATUS. A refusal of a DRAFT
+      // save used to match neither this branch nor the 5xx branch below, so it
+      // fell through to markPending: the drain would re-send a write the server
+      // had already judged, on every reconnect, forever, under a banner
+      // promising it would sync. That path is now reachable — create_logbook
+      // refuses a data write onto a filed row (409 FILED_LOG_DATA_IMMUTABLE),
+      // and a second device saving a DRAFT over a filed day takes it.
+      //
+      // A 4xx is a judgement the server will keep making whatever the status
+      // on the request was. Recording it and showing its copy is right for all
+      // of them; queueing it for retry is right for none.
+      if (refused) {
         const code = finalizeErrorCode(pushErr);
         console.warn('daily_jobsite REFUSED by the server:', status, code);
         // STALE, AND CORRECTED. This said a 409 for a SUBMITTED row had been
@@ -2463,6 +2500,14 @@ export default function DailyJobsiteLog() {
     <LogbookStepper
       s={s}
       loading={loading}
+      /* Read-only, with the reason, instead of a blank editable day. */
+      unavailable={logReadFailed ? {
+        title: t('logUnavailableTitle'),
+        body: `${t('logUnavailableBody')} ${failureDetail(
+          logReadFailed, logReadError, "today's log")}`,
+        retryLabel: t('logUnavailableRetry'),
+        onRetry: fetchData,
+      } : null}
       title={t('screenTitle')}
       subtitle={`${FORM_NUMBER} · ${formatLogDate(date)}`}
       step={step}
