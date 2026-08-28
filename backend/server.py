@@ -10866,19 +10866,88 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
 
     # Check if this tag_id exists ANYWHERE (including soft-deleted) due to unique index on tag_id
     existing_tag = await db.nfc_tags.find_one({"tag_id": tag_data.tag_id})
-    
+
     if existing_tag:
-        old_project_id = existing_tag.get("project_id")
-        if old_project_id and old_project_id != project_id and not existing_tag.get("is_deleted"):
-            logger.info(f"NFC tag {tag_data.tag_id} was registered to project {old_project_id}, reassigning to {project_id}")
-            await db.projects.update_one(
-                {"_id": to_query_id(old_project_id)},
-                {
-                    "$pull": {"nfc_tags": {"tag_id": tag_data.tag_id}},
-                    "$set": {"updated_at": now}
-                }
+        # ── A LIVE TAG ON ANOTHER PROJECT IS REFUSED ────────────────────────
+        #
+        # This used to SILENTLY MOVE it: $pull the tag off the other project's
+        # nfc_tags array, then repoint the row here. The company check above is
+        # on the TARGET project only, so an admin of company A could take a
+        # check-in point off company B's project document by typing its id —
+        # a cross-tenant edit reachable from a typo, with nothing but an
+        # info-level log line to show for it.
+        #
+        # NOTHING LEGITIMATE DEPENDED ON IT. A tag physically moved between
+        # sites is a real case and it is still served, explicitly and in the
+        # right order: DELETE it from the old project (which requires access to
+        # THAT project — the check the implicit move skipped), then add it
+        # here, where it arrives on the is_deleted path below. Moving a tag
+        # must be an action someone takes, not a side effect of entering an id.
+        #
+        # THE PROJECT IS NOT NAMED. "already registered to 250 Water Street"
+        # would leak another tenant's project name to whoever guessed an id,
+        # which is a smaller version of the hole being closed. The id is the
+        # caller's own input, so echoing that discloses nothing.
+        _blocked = (
+            not existing_tag.get("is_deleted")
+            and existing_tag.get("status") == "active"
+            and str(existing_tag.get("project_id") or "") != str(project_id)
+        )
+        if _blocked:
+            logger.warning(
+                "NFC tag %s is active on another project; refusing to reassign "
+                "to %s", tag_data.tag_id, project_id,
             )
-        
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Check-in point ID '{tag_data.tag_id}' is already in use. "
+                    "Remove it from the project it is registered to before "
+                    "adding it here."
+                ),
+            )
+
+        # ── THE THREE STATES THAT MUST STILL PASS ───────────────────────────
+        #
+        # The predicate above is narrow on purpose. Refusing on the mere
+        # EXISTENCE of a row would be a worse trap than the bug it closes,
+        # because the unique index on tag_id means an insert can never be the
+        # fallback — this branch is the ONLY way any of these three re-register:
+        #
+        #   1. SAME PROJECT, ACTIVE. Re-registering a tag already here is how
+        #      location_description gets renamed. Idempotent, and the only
+        #      rename path there is.
+        #
+        #   2. is_deleted. An admin removed it from a project; DELETE soft-
+        #      deletes rather than dropping the row, precisely so the id can
+        #      come back. This is the second half of the delete-then-add move
+        #      described above, so refusing it would break the very flow
+        #      offered as the remedy.
+        #
+        #   3. status == "project_closed". DO NOT "TIDY" THIS INTO THE
+        #      is_deleted CHECK. It is a DIFFERENT field set by a DIFFERENT
+        #      path: marking a project for deletion sweeps every one of its
+        #      tags to status "project_closed" and leaves is_deleted alone
+        #      (see mark_project_for_deletion). Such a tag is not deleted and
+        #      not active. Refuse it and a physical sticker from a closed site
+        #      can NEVER be reused — the only release is DELETE, DELETE needs
+        #      the old project_id, and that project is gone from every listing.
+        #      That is a permanent dead end created by the fix, which is why
+        #      the status check is written as `== "active"` and not as a
+        #      truthiness test on is_deleted.
+        #
+        # THE $pull IS GONE ON PURPOSE, and it did run for case 3 before.
+        # Reviving a "project_closed" tag used to also strip it from the old
+        # project's nfc_tags ARRAY. That write is the cross-tenant edit this
+        # whole change exists to stop, and keeping it "just for the tidy case"
+        # would leave the hole open through a narrower door. Not pulling costs
+        # one stale entry on a project that is marked for deletion — invisible
+        # to every listing (ACTIVE_PROJECT_FILTER), reachable only from the
+        # owner's pending-deletion review, and purged outright when the project
+        # is hard-deleted. Nothing functional reads that array: the gate,
+        # /info and register_and_checkin all query the nfc_tags COLLECTION,
+        # which this update repoints correctly.
+        #
         # Update the existing document in-place (avoids unique index conflict)
         await db.nfc_tags.update_one(
             {"_id": existing_tag["_id"]},
