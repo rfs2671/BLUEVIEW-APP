@@ -597,7 +597,7 @@ export default function AdminIntegrationsScreen() {
                         <GlassListItem
                           key={project._id || project.id}
                           onPress={() =>
-                            router.push(`/projects/${project._id || project.id}/dropbox-settings`)
+                            router.push(`/projects/${project._id || project.id}/files`)
                           }
                           style={s.projectItem}
                         >
@@ -637,7 +637,7 @@ export default function AdminIntegrationsScreen() {
                       <GlassListItem
                         key={project._id || project.id}
                         onPress={() =>
-                          router.push(`/projects/${project._id || project.id}/dropbox-settings`)
+                          router.push(`/projects/${project._id || project.id}/files`)
                         }
                         style={s.projectItem}
                       >

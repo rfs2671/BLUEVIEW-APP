@@ -10,6 +10,7 @@ import {
   TextInput,
   Platform,
   Image,
+  Modal,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,6 +34,10 @@ import {
   AlertCircle,
   Upload,
   Trash2,
+  ChevronLeft,
+  ChevronRight,
+  Unlink,
+  X,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -46,6 +51,10 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { settleFetch } from '../../../src/utils/offlineState';
 import { mayCacheList } from '../../../src/utils/dropboxSyncState';
+import {
+  UNFILED, folderLabel, groupByFolder, collidingNames, isColliding,
+  treeHeadline, COLLISION_NOTE,
+} from '../../../src/utils/dropboxTree';
 import {
   listCachedDocs, cachedDocName, freeDiskBytes, cacheDocFile, sweepDocCache,
 } from '../../../src/utils/docCache';
@@ -113,7 +122,7 @@ const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-export default function ConstructionPlansScreen() {
+export default function ProjectFilesScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
@@ -145,6 +154,35 @@ export default function ConstructionPlansScreen() {
   // `.catch(() => [])`, which rendered a silent blank plan list.
   const [fetchState, setFetchState] = useState('ok');
   const offline = fetchState === 'offline';
+
+  // ── Linking lives on THIS screen now ───────────────────────────────────
+  // dropbox-settings.jsx was a second screen for one field. Plans and
+  // documents were never two things -- they are one Dropbox tree -- and the
+  // folder that tree comes from is not a separate subject from the tree.
+  //
+  // LINKED-NESS IS `bool(project.dropbox_folder_path)` AND NOTHING ELSE.
+  // There is no `dropboxEnabled` state here. The old screen carried one, fed
+  // by a Switch, which made linked-ness a thing the UI remembered as well as a
+  // thing the server stored -- two sources of truth for one field, with the
+  // Switch's off-position quietly meaning "unlink". `dropbox_enabled` and
+  // `dropbox_folder` on the project document are dead in the same way: written
+  // once by create_project, read by three screens, never written again.
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [folders, setFolders] = useState([]);
+  const [currentPath, setCurrentPath] = useState('');
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
+
+  // Site-device visibility -- which top-level subfolders the kiosk role may
+  // see. Empty selection = the kiosk sees nothing.
+  const [siteDeviceSubfolders, setSiteDeviceSubfolders] = useState([]);
+  const [siteDeviceSelected, setSiteDeviceSelected] = useState([]);
+  const [savingSiteVisibility, setSavingSiteVisibility] = useState(false);
+
+  const isAdmin = ['owner', 'admin'].includes(String(user?.role || '').toLowerCase());
+  const linkedFolder = project?.dropbox_folder_path || null;
 
   const scopeKey = `plans:${projectId}`;
 
@@ -310,6 +348,10 @@ export default function ConstructionPlansScreen() {
       setFetchState(filesRes.status);
     }
 
+    if (isAdmin && effectiveProject?.dropbox_folder_path) {
+      fetchSiteDeviceVisibility();
+    }
+
     setLoading(false);
   };
 
@@ -343,6 +385,129 @@ export default function ConstructionPlansScreen() {
     } finally {
       setSyncing(false);
       setTimeout(() => setSyncStatus('idle'), 3000);
+    }
+  };
+
+  // ── Folder picker ──────────────────────────────────────────────────────
+  const fetchFolders = async (path = '') => {
+    setLoadingFolders(true);
+    try {
+      const foldersData = await dropboxAPI.getFolders(path);
+      setFolders(Array.isArray(foldersData) ? foldersData : []);
+      setCurrentPath(path);
+    } catch (error) {
+      console.error('Failed to fetch folders:', error);
+      toast.error('Error', 'Could not load Dropbox folders');
+      setFolders([]);
+    } finally {
+      setLoadingFolders(false);
+    }
+  };
+
+  const openFolderPicker = () => {
+    setShowFolderPicker(true);
+    fetchFolders(linkedFolder || '');
+  };
+
+  /**
+   * THE CLASS, NOT THE ONE CONTROL. '' and '/' both mean "the whole Dropbox"
+   * to link_dropbox_to_project, and the sync lists RECURSIVELY -- so a root
+   * link copies every file the company owns into one project. The picker has
+   * no control at depth 0, and this guard means a new call site cannot
+   * reintroduce one by passing a falsy path.
+   */
+  const handleSelectFolder = async (folderPath) => {
+    const target = (folderPath || '').trim();
+    if (!target || target === '/') {
+      toast.error('Pick a folder', 'A project cannot be linked to all of Dropbox.');
+      return;
+    }
+    setLinking(true);
+    try {
+      await dropboxAPI.linkToProject(projectId, target);
+      setProject((p) => (p ? { ...p, dropbox_folder_path: target } : p));
+      setShowFolderPicker(false);
+      toast.success('Linked', `This project now reads from ${target}.`);
+      handleSync();
+      if (isAdmin) fetchSiteDeviceVisibility();
+    } catch (error) {
+      console.error('Failed to link folder:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not link folder');
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  /**
+   * UNLINK IS ITS OWN CONTROL, AND IT SENDS null.
+   *
+   * It used to be the off-position of a Switch labelled "Enable Dropbox",
+   * which is not a label for deleting a link. It also has to send null and
+   * nothing else: link_dropbox_to_project reads null as "unlink" but reads ''
+   * and '/' as "link to the ROOT of the Dropbox scope", so the value that
+   * looks most like clearing a field is the one that links the project to the
+   * company's entire Dropbox.
+   *
+   * What it does and does not delete is stated on the dialog, not here, because
+   * the person pressing it is the one who needs to know.
+   */
+  const handleUnlink = async () => {
+    setUnlinking(true);
+    try {
+      await dropboxAPI.linkToProject(projectId, null);
+      setProject((p) => (p ? { ...p, dropbox_folder_path: null } : p));
+      setSiteDeviceSubfolders([]);
+      setSiteDeviceSelected([]);
+      setConfirmUnlink(false);
+      toast.success('Unlinked', 'This project no longer reads from Dropbox.');
+    } catch (error) {
+      console.error('Failed to unlink:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not unlink the folder');
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
+  // ── Site-device visibility ─────────────────────────────────────────────
+  const fetchSiteDeviceVisibility = async () => {
+    if (!projectId) return;
+    try {
+      const data = await dropboxAPI.getSiteDeviceSubfolders(projectId);
+      setSiteDeviceSubfolders(Array.isArray(data?.subfolders) ? data.subfolders : []);
+      setSiteDeviceSelected(Array.isArray(data?.selected) ? data.selected : []);
+    } catch (e) {
+      // Admin-only endpoint; a non-admin gets 403 and simply sees no card.
+      console.warn('Site device visibility load failed:', e?.message);
+      setSiteDeviceSubfolders([]);
+      setSiteDeviceSelected([]);
+    }
+  };
+
+  const toggleSiteSubfolder = (name) => {
+    if (!isAdmin) return;
+    setSiteDeviceSelected((prev) => {
+      const low = (name || '').toLowerCase();
+      const has = prev.some((x) => x.toLowerCase() === low);
+      return has ? prev.filter((x) => x.toLowerCase() !== low) : [...prev, name];
+    });
+  };
+
+  const handleSaveSiteVisibility = async () => {
+    if (!isAdmin) return;
+    setSavingSiteVisibility(true);
+    try {
+      await dropboxAPI.setSiteDeviceSubfolders(projectId, siteDeviceSelected);
+      toast.success(
+        'Saved',
+        siteDeviceSelected.length === 0
+          ? 'Site devices will see no files from this project.'
+          : `Site devices can see ${siteDeviceSelected.length} folder(s).`,
+      );
+    } catch (e) {
+      console.error('Save site visibility failed:', e);
+      toast.error('Error', e.response?.data?.detail || 'Could not save');
+    } finally {
+      setSavingSiteVisibility(false);
     }
   };
 
@@ -568,6 +733,15 @@ export default function ConstructionPlansScreen() {
     return true;
   });
 
+  // BOTH NUMBERS FROM THIS LIST. `POST /sync-dropbox` also returns a
+  // file_count, taken from a recursive Dropbox listing while the copy into
+  // project_files is still running -- correct about Dropbox, wrong about the
+  // tree below. Borrowing it for half the sentence would make "412 files in 9
+  // folders" true of neither. It climbs as rows arrive, which is what it means.
+  const fileGroups = groupByFolder(filteredFiles);
+  const collisions = collidingNames(files);
+  const headline = treeHeadline(filteredFiles, lastSynced);
+
   const filterOptions = [
     { key: 'all', label: 'All Files' },
     { key: 'pdf', label: 'PDFs' },
@@ -598,7 +772,7 @@ export default function ConstructionPlansScreen() {
           {/* Title */}
           <View style={s.titleSection}>
             <Text style={s.titleLabel}>{project?.name || 'PROJECT'}</Text>
-            <Text style={s.titleText}>Construction Plans</Text>
+            <Text style={s.titleText}>Files</Text>
           </View>
 
           {loading ? (
@@ -648,7 +822,7 @@ export default function ConstructionPlansScreen() {
                     </Pressable>
                   ) : (
                     <Pressable
-                      onPress={() => router.push(`/projects/${projectId}/dropbox-settings`)}
+                      onPress={openFolderPicker}
                       style={({ pressed }) => [
                         { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
                           paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha('#ffffff', 0.05),
@@ -663,6 +837,83 @@ export default function ConstructionPlansScreen() {
                     </Pressable>
                   )}
                 </View>
+              )}
+
+              {/* ── LINKED FOLDER ────────────────────────────────────────
+                  One row, one field. Linked-ness is bool(dropbox_folder_path),
+                  so there is nothing here to fall out of step with the server. */}
+              <GlassCard style={s.linkCard}>
+                <Text style={s.cardLabel}>DROPBOX FOLDER</Text>
+                {linkedFolder ? (
+                  <>
+                    <Pressable
+                      onPress={isAdmin ? openFolderPicker : undefined}
+                      disabled={!isAdmin}
+                      style={({ pressed }) => [
+                        s.linkedRow, pressed && isAdmin && { opacity: 0.7 },
+                      ]}
+                    >
+                      <FolderOpen size={20} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Text style={s.linkedPath} numberOfLines={2}>{linkedFolder}</Text>
+                      {isAdmin && (
+                        <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
+                      )}
+                    </Pressable>
+                    {isAdmin && (
+                      <Pressable
+                        onPress={() => setConfirmUnlink(true)}
+                        accessibilityRole="button"
+                        style={({ pressed }) => [s.unlinkBtn, pressed && { opacity: 0.7 }]}
+                      >
+                        <Unlink size={16} strokeWidth={1.5} color={semantic.neutral} />
+                        <Text style={s.unlinkText}>Unlink this folder</Text>
+                      </Pressable>
+                    )}
+                  </>
+                ) : (
+                  <View style={s.notLinkedRow}>
+                    <Text style={s.notLinkedInline}>Not linked</Text>
+                    {isAdmin && (
+                      <GlassButton
+                        title="Choose a folder"
+                        icon={<Folder size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                        onPress={openFolderPicker}
+                      />
+                    )}
+                  </View>
+                )}
+              </GlassCard>
+
+              {/* Site-device visibility. Lives beside the folder it scopes. */}
+              {isAdmin && linkedFolder && siteDeviceSubfolders.length > 0 && (
+                <GlassCard style={s.linkCard}>
+                  <Text style={s.cardLabel}>VISIBLE ON SITE DEVICES</Text>
+                  <Text style={s.siteHint}>
+                    Kiosks see only the folders ticked here. With none ticked they
+                    see no files from this project.
+                  </Text>
+                  {siteDeviceSubfolders.map((name) => {
+                    const on = siteDeviceSelected.some(
+                      (x) => x.toLowerCase() === name.toLowerCase());
+                    return (
+                      <Pressable
+                        key={name}
+                        onPress={() => toggleSiteSubfolder(name)}
+                        style={({ pressed }) => [s.siteRow, pressed && { opacity: 0.7 }]}
+                      >
+                        {on
+                          ? <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
+                          : <Folder size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                        <Text style={s.siteName}>{name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                  <GlassButton
+                    title={savingSiteVisibility ? 'Saving…' : 'Save visibility'}
+                    onPress={handleSaveSiteVisibility}
+                    loading={savingSiteVisibility}
+                  />
+                </GlassCard>
               )}
 
               {/* A failed load is not an empty project. Disclose which it was,
@@ -797,15 +1048,29 @@ export default function ConstructionPlansScreen() {
                 </Text>
               )}
 
-              {/* Files Count */}
-              <Text style={s.filesCount}>
-                {filteredFiles.length} file{filteredFiles.length !== 1 ? 's' : ''}
-              </Text>
+              {/* NEVER A BARE COUNT UNDER AN AMBIGUOUS LABEL. The sentence
+                  names both quantities and says what the timestamp refers to;
+                  both numbers are derived from the list rendered below it. */}
+              <Text style={s.filesCount}>{headline}</Text>
 
               {/* Files List */}
               <View style={s.filesList}>
                 {filteredFiles.length > 0 ? (
-                  filteredFiles.map((file, index) => {
+                  fileGroups.map(([folderPath, groupFiles]) => (
+                  <View key={folderPath} style={s.folderGroup}>
+                    <View style={s.folderGroupHeader}>
+                      <Folder size={14} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Text style={s.folderGroupName} numberOfLines={1}>
+                        {folderLabel(folderPath)}
+                      </Text>
+                      <Text style={s.folderGroupCount}>
+                        {groupFiles.length} file{groupFiles.length === 1 ? '' : 's'}
+                      </Text>
+                    </View>
+                    {folderPath !== UNFILED && folderLabel(folderPath) !== folderPath && (
+                      <Text style={s.folderGroupPath} numberOfLines={1}>{folderPath}</Text>
+                    )}
+                  {groupFiles.map((file, index) => {
                     const typeInfo = getFileTypeInfo(file.name || '');
                     const FileIcon = typeInfo.icon;
 
@@ -849,6 +1114,18 @@ export default function ConstructionPlansScreen() {
                               </>
                             )}
                           </View>
+                          {/* THE TREE MUST NOT CLAIM THESE ARE TWO FILES.
+                              The sync writes R2 under
+                              {'{'}company{'}'}/{'{'}project{'}'}/{'{'}filename{'}'} from a
+                              RECURSIVE listing, so the folder is not in the
+                              key: two rows in two folders sharing a filename
+                              are one object, and both open whichever copied
+                              last. A flat list hid it; a tree renders them side
+                              by side, which is a stronger claim than the data
+                              supports. The key is the backend's to fix. */}
+                          {isColliding(file, collisions) && (
+                            <Text style={s.collisionNote}>{COLLISION_NOTE}</Text>
+                          )}
                         </View>
 
                         {/* Actions */}
@@ -885,7 +1162,9 @@ export default function ConstructionPlansScreen() {
                         </View>
                       </Pressable>
                     );
-                  })
+                  })}
+                  </View>
+                  ))
                 ) : (searchQuery || filterType !== 'all' || fetchState === 'ok') ? (
                   <View style={s.emptyFiles}>
                     <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
@@ -918,6 +1197,123 @@ export default function ConstructionPlansScreen() {
           onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
         />
 
+        {/* ── FOLDER PICKER ─────────────────────────────────────────────
+            PICKER ONLY, NO TYPED PATH. Nobody types a Dropbox path, and the
+            one who tries types it wrong -- the old free-text field on
+            project/[id].jsx accepted anything and reported the server's
+            rejection as the user's fault. */}
+        <Modal
+          visible={showFolderPicker}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowFolderPicker(false)}
+        >
+          <View style={s.modalOverlay}>
+            <Pressable style={s.modalBackdrop} onPress={() => setShowFolderPicker(false)} />
+            <GlassCard style={s.pickerCard}>
+              <View style={s.pickerHeader}>
+                <Text style={s.pickerTitle}>Choose a Dropbox folder</Text>
+                <Pressable onPress={() => setShowFolderPicker(false)} accessibilityRole="button">
+                  <X size={20} strokeWidth={1.5} color={colors.text.muted} />
+                </Pressable>
+              </View>
+
+              <View style={s.currentPathRow}>
+                {!!currentPath && (
+                  <Pressable
+                    onPress={() => fetchFolders(currentPath.split('/').slice(0, -1).join('/'))}
+                    style={s.backBtn}
+                  >
+                    <ChevronLeft size={18} strokeWidth={1.5} color={colors.text.muted} />
+                    <Text style={s.backText}>Back</Text>
+                  </Pressable>
+                )}
+                <Text style={s.currentPathText} numberOfLines={1}>
+                  {currentPath || '/ (Root)'}
+                </Text>
+              </View>
+
+              {/* ROOT IS NOT A PROJECT FOLDER, and the reason is on screen.
+                  At depth 0 currentPath is '', which the server reads as "link
+                  to the root of the Dropbox scope". The sync lists RECURSIVELY,
+                  so a root link copies every file the company owns into this
+                  one project. There is no control here to press -- the branch
+                  states why instead of rendering a disabled button with no
+                  explanation. */}
+              {currentPath ? (
+                <Pressable
+                  onPress={() => handleSelectFolder(currentPath)}
+                  disabled={linking}
+                  style={({ pressed }) => [
+                    s.selectCurrentBtn,
+                    pressed && { opacity: 0.7 },
+                    linking && { opacity: 0.5 },
+                  ]}
+                >
+                  <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
+                  <Text style={s.selectCurrentText}>
+                    {linking ? 'Linking…' : 'Link this folder'}
+                  </Text>
+                </Pressable>
+              ) : (
+                <View style={s.selectRootBlocked}>
+                  <Text style={s.selectRootBlockedText}>
+                    Open a folder to link it. A project cannot be linked to all of
+                    Dropbox — every file your company stores would be copied into
+                    this project.
+                  </Text>
+                </View>
+              )}
+
+              <ScrollView style={s.pickerList}>
+                {loadingFolders ? (
+                  <ActivityIndicator size="small" color={colors.text.primary} style={s.mb12} />
+                ) : folders.length > 0 ? (
+                  folders.map((folder, index) => (
+                    <Pressable
+                      key={folder.path || index}
+                      onPress={() => fetchFolders(folder.path)}
+                      style={({ pressed }) => [s.folderItem, pressed && { opacity: 0.7 }]}
+                    >
+                      <Folder size={18} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                      <Text style={s.folderName} numberOfLines={1}>{folder.name}</Text>
+                      <ChevronRight size={16} strokeWidth={1.5} color={colors.text.subtle} />
+                    </Pressable>
+                  ))
+                ) : (
+                  <Text style={s.noFolders}>No subfolders here</Text>
+                )}
+              </ScrollView>
+            </GlassCard>
+          </View>
+        </Modal>
+
+        {/* SAYS WHAT IT DOES AND WHAT IT DOES NOT DELETE. Unlinking clears one
+            field; it does not touch Dropbox, and it does not remove the files
+            already copied into this project. Someone who believes it deletes
+            their drawings will not press it, and someone who believes it
+            cleans up will be surprised later. */}
+        <ConfirmDialog
+          visible={confirmUnlink}
+          title="Unlink this Dropbox folder?"
+          message={
+            linkedFolder
+              ? `This project will stop reading from ${linkedFolder}.`
+              : 'This project will stop reading from Dropbox.'
+          }
+          details={[
+            'Nothing in your Dropbox is changed or deleted',
+            'Files already synced into this project stay, and stay openable',
+            'New or changed files in Dropbox will no longer arrive here',
+            'You can link the same folder again at any time',
+          ]}
+          confirmLabel={unlinking ? 'Unlinking…' : 'Unlink folder'}
+          cancelLabel="Keep it linked"
+          destructive
+          onConfirm={handleUnlink}
+          onCancel={() => { if (!unlinking) setConfirmUnlink(false); }}
+        />
+
         <ConfirmDialog
           visible={!!fileToDelete}
           title="Delete this file?"
@@ -942,6 +1338,180 @@ function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: {
     flex: 1,
+  },
+  linkCard: {
+    marginBottom: spacing.md,
+    padding: spacing.lg,
+  },
+  cardLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+    marginBottom: spacing.md,
+  },
+  linkedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  linkedPath: {
+    flex: 1,
+    fontSize: 15,
+    color: colors.text.primary,
+  },
+  unlinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  unlinkText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: semantic.neutral,
+  },
+  notLinkedRow: {
+    gap: spacing.md,
+  },
+  notLinkedInline: {
+    fontSize: 15,
+    color: colors.text.muted,
+  },
+  siteHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.text.muted,
+    marginBottom: spacing.md,
+  },
+  siteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  siteName: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text.primary,
+  },
+  folderGroup: {
+    marginBottom: spacing.lg,
+  },
+  folderGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  folderGroupName: {
+    flex: 1,
+    ...typography.label,
+    color: colors.text.secondary,
+  },
+  folderGroupCount: {
+    fontSize: 12,
+    color: colors.text.subtle,
+  },
+  folderGroupPath: {
+    fontSize: 11,
+    color: colors.text.subtle,
+    marginBottom: spacing.sm,
+  },
+  collisionNote: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: semantic.neutral,
+    marginTop: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  pickerCard: {
+    padding: spacing.lg,
+    maxHeight: '80%',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  pickerTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  currentPathRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  backText: {
+    fontSize: 14,
+    color: colors.text.muted,
+  },
+  currentPathText: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  selectCurrentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: 12,
+    borderRadius: borderRadius.md,
+    backgroundColor: withAlpha('#ffffff', 0.06),
+    borderWidth: 1,
+    borderColor: withAlpha('#ffffff', 0.12),
+    marginBottom: spacing.md,
+  },
+  selectCurrentText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  selectRootBlocked: {
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: withAlpha('#ffffff', 0.04),
+    marginBottom: spacing.md,
+  },
+  selectRootBlockedText: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.text.muted,
+  },
+  pickerList: {
+    maxHeight: 320,
+  },
+  folderItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: 12,
+  },
+  folderName: {
+    flex: 1,
+    fontSize: 15,
+    color: colors.text.primary,
+  },
+  noFolders: {
+    fontSize: 14,
+    color: colors.text.subtle,
+    paddingVertical: spacing.md,
   },
   header: {
     flexDirection: 'row',

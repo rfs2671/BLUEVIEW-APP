@@ -236,7 +236,7 @@ async function main() {
   // ═════════════════════════════════════════════════════════════════════════
   {
     const screen = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'app', 'projects', '[id]', 'construction-plans.jsx'),
+      path.join(__dirname, '..', '..', 'app', 'projects', '[id]', 'files.jsx'),
       'utf8');
     const tree = parser.parse(screen, { sourceType: 'module', plugins: ['jsx'] });
     const seen = new Set();

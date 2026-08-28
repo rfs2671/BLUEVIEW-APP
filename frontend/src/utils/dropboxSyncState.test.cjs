@@ -161,7 +161,7 @@ ok(listIsComplete({ status: 'complete', expected: 0, synced: 0, failed: 0 }, NOW
 // ═══════════════════════════════════════════════════════════════════════════
 {
   const screen = fs.readFileSync(
-    path.join(__dirname, '..', '..', 'app', 'projects', '[id]', 'construction-plans.jsx'),
+    path.join(__dirname, '..', '..', 'app', 'projects', '[id]', 'files.jsx'),
     'utf8');
   const tree = parser.parse(screen, { sourceType: 'module', plugins: ['jsx'] });
 
