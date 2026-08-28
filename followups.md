@@ -2,6 +2,43 @@
 
 Known gaps and deferred work, newest first.
 
+- **[PRODUCT DECISION, NOT A DEFECT] A printed QR is a permanent,
+  silently-copyable credential.**
+  A printed check-in QR has **no expiry, no nonce and no rotation**. One
+  screenshot works from anywhere, for anyone, indefinitely — until an admin
+  deletes the tag, and deleting it also locks out the men actually standing at
+  the gate. There is no revocation that costs nothing.
+
+  **This gives away the only presence control the gate had.** An NFC tap
+  requires the phone to be physically at the post; that physical-presence
+  property was doing real work, and it was doing it alone. Scanning a code
+  requires only line of sight to a photograph of it. Nothing else on the live
+  path establishes location — see the geofence entry below, which does not run.
+
+  `checkin_method` (added with the QR) makes the exposure **queryable, not
+  controlled**: an admin can ask "show me every check-in on this project that
+  came through a QR", which is worth having. It stops nothing.
+
+  **Rotating tokens would fix it, and would destroy the printed-sign mode.**
+  A QR encoding a short-lived signed token instead of a bare `tag_id` closes
+  the sharing hole outright. It also means the code cannot be laminated and
+  posted at the entrance, because a printed code is by definition static — the
+  sign would be dead the moment its token expired. The gate is architecturally
+  a static URL and the printed sign is the mode most sites will actually use.
+
+  So this is a **decision about what the QR is for**, not a bug to be fixed:
+
+  | | keeps | costs |
+  |---|---|---|
+  | static printed code | laminate it at the gate, works offline for the CP, zero admin involvement per worker | permanently shareable |
+  | rotating token | sharing closed | no printed sign; the CP's screen becomes the only delivery, and it must be online to mint |
+
+  **Recorded rather than chosen**, because the answer depends on whether QR
+  check-in is a per-worker fallback (the CP holds up a phone when a radio is
+  missing — rotation is affordable) or a posted alternative to the tag
+  (rotation is not). Today it is built as the first and nothing stops it being
+  used as the second.
+
 - **[HIGH] The check-in geofence does not run, and must never be cited as a
   presence control.**
   `geofence_radius_m` is on the project model and `compute_geofence` is
