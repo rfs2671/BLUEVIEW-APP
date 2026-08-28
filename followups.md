@@ -608,34 +608,45 @@ than the thing the model was guarding against.
 flight, 5 defend the pairing, 6 translate at render, 6 frontend, 11 tests.
 Every one sits cleanly on one side of the line. Nothing to build.
 
-## The site device has no fall_protection tab
+## ~~The site device has no fall_protection tab~~ — FIXED
 
-`LOG_TABS` in `frontend/app/site/logbooks.jsx:40` lists **eleven** of the
-twelve registered types. `fall_protection` is absent. The comment four lines
-above it records the last time this happened — five conditional types were
-added to the registry "and then had no tab that could show them", so "an
-inspector on the site device could not reach a hot work permit, a crane log or
-an orientation record at all." That fix added five and missed the sixth.
+**Resolved in the fall-protection-tab PR.** Kept rather than deleted because
+the *class* it belongs to is still open, and the entry below points at it.
 
-So a fall protection equipment log can be filed by the CP and cannot be opened
-at the kiosk. **Both halves are missing, not just the tab.** `renderLogContent`
-(`site/logbooks.jsx:1302`) is an eleven-branch if-chain on `log.log_type` with
-no `fall_protection` case, and it does not fall through to a generic renderer —
-it returns the literal "No data available". So adding the tab alone would trade
-an unreachable log for a log that opens and claims to be empty, which is worse.
-The tab entry and the render branch have to land together.
+`LOG_TABS` in `frontend/app/site/logbooks.jsx:40` listed **eleven** of the
+twelve registered types. `fall_protection` was absent. The comment four lines
+above it records the previous occurrence — five conditional types added to the
+registry "and then had no tab that could show them", so "an inspector on the
+site device could not reach a hot work permit, a crane log or an orientation
+record at all." That fix added five and missed the sixth.
 
-**This is reachability, not naming.** It is unrelated to the label-map work in
-the reports screen: the tab's *label* would come from `tabFallProtection` in
-`src/i18n/en.js`, which also does not exist yet, but adding the label without
-the tab entry changes nothing.
+So a fall protection equipment log could be filed by the CP and not opened at
+the kiosk. **Both halves were missing, not just the tab.** `renderLogContent`
+was an eleven-branch if-chain on `log.log_type` with no `fall_protection` case
+and no generic fallthrough — it returned the literal "No data available", so
+adding the tab alone would have traded an unreachable log for one that opens
+and claims to be empty. All three pieces landed together:
 
-Fix is a `LOG_TABS` entry, its `labelKey`, and a `renderFallProtection` branch
-— the same three pieces each of the five types restored last time needed. Note
-also that `fall_protection` is the only registry entry with no `dob_reference`, on
-purpose (`server.py:3545` explains why), and it carries
-`FALL_PROTECTION_NOTICE` — the inspector view should print that notice, since
-the whole point of it is that this log is not a DOB or OSHA filing.
+- `LOG_TABS` entry (`site/logbooks.jsx:66`)
+- `tabFallProtection` (`src/i18n/en.js:1255`) plus ten `fp*` column labels (`:1448`)
+- `renderFallProtection` and its branch (`site/logbooks.jsx`)
+
+The renderer prints `FALL_PROTECTION_NOTICE` on the document, as this entry
+asked. It does **not** re-word it: the string comes from
+`fallProtection.standardNotice`, which `fallProtectionModel.test.cjs` already
+holds equal to server.py's constant, so the tablet is the third surface
+printing one wording rather than a fourth wording of the same sentence.
+`fall_protection` remains the only registry entry with no `dob_reference`, on
+purpose (`server.py:3545` explains why).
+
+Two shape decisions a future reader will want the reasoning for, both recorded
+in the renderer's own comments: the PDF's ten columns are split into a register
+and a defects table because ten columns of a printed page do not fit a tablet
+(`anchor_point` stays in the **register** — a Pass row that names its
+anchorage is not a finding); and `impact_loaded` renders `Yes`/`No` rather
+than this screen's ✓/✕, because everywhere else a ✓ is the good answer and here
+`true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
+mandatory-removal.
 
 ## The checklist assignment feature serves flat and both clients read nested
 
@@ -788,44 +799,98 @@ all updated with it. Recorded as a CLASS rather than as separate bugs, because
 the failure is structural: nothing makes adding a type update the lists, so the
 next type will land the same way.
 
+**STATUS: all four absences are now closed, and one of the four was closed by
+DELETING the list rather than adding to it.** The class is NOT closed — see
+"What is still hardcoded" below. The four rows are kept with their original
+finding so the next person can see what the failure looked like.
+
 **Three real absences, verified one at a time. Two more looked like absences in
 a bulk key-presence sweep and are not** — which is the reason each one needs
 its own read rather than a grep result.
 
-| List | Absent? | Consequence |
-|---|---|---|
-| `LOG_TABS` `site/logbooks.jsx:40` | **YES** | no kiosk tab — unreachable to an inspector |
-| `renderLogContent` `site/logbooks.jsx:1302` | **YES** | no branch; returns the literal "No data available" |
-| `ALL_TYPES` `logbookViewRenderers.test.cjs:177` | **YES** | **the guard for the two above, blind to the same type** |
-| `CATALOG` `requiredLogbooksWiring.test.cjs:76` | **YES** | fixture only; label assertions are shape-not-text, so nothing fails |
+| List | Absent? | Consequence | Now |
+|---|---|---|---|
+| `LOG_TABS` `site/logbooks.jsx:40` | **YES** | no kiosk tab — unreachable to an inspector | **FIXED** — entry added |
+| `renderLogContent` `site/logbooks.jsx:1302` | **YES** | no branch; returns the literal "No data available" | **FIXED** — `renderFallProtection` + branch |
+| `ALL_TYPES` `logbookViewRenderers.test.cjs:177` | **YES** | **the guard for the two above, blind to the same type** | **GONE** — the list is deleted, not corrected; the keys are derived from `LOGBOOK_TYPE_REGISTRY` |
+| `CATALOG` `requiredLogbooksWiring.test.cjs:76` | **YES** | fixture only; label assertions are shape-not-text, so nothing fails | **FIXED** — entry added; still a hardcoded fixture, and no assertion outcome changed (64 passed / 0 failed either way) |
 | `tokens.js` | NO — false positive | every type key there sits inside a COMMENT narrating which form-port contributed which colour. There is no per-type map to be absent from, and nothing is styled by log type. |
 | `submitSignatureGate.test.cjs` | NO — false positive, inverted | it does not hardcode a list. It DERIVES one from `LOGBOOK_TIMING_CLASS` in server.py by regex and asserts `IMMEDIATE.length === 10`, with a comment reading "TEN with the fall-protection log". The type is gated and tested. |
 
-### The one that matters
+### The one that mattered, and what replaced it
 
-`logbookViewRenderers.test.cjs:177` is headed *"every type has a tab, or the
-renderer is unreachable"* and asserts `ALL_TYPES.every((k) => tabKeys.includes(k))`.
-Its `ALL_TYPES` is a hardcoded eleven **with `fall_protection` missing**. So the
-test written precisely to catch "a registered type with no tab" cannot catch it
-for this type — it passes vacuously, for the same reason the gap exists.
+`logbookViewRenderers.test.cjs:177` was headed *"every type has a tab, or the
+renderer is unreachable"* and asserted `ALL_TYPES.every((k) => tabKeys.includes(k))`.
+Its `ALL_TYPES` was a hardcoded eleven **with `fall_protection` missing**. So
+the test written precisely to catch "a registered type with no tab" could not
+catch it for this type — it passed vacuously, for the same reason the gap
+existed.
 
 Same family as the AST entry, the receiver-group entry and the `.cjs` grep: a
 check that ran, reported clean, and could not see the thing it was for.
 
-### The rule, and the lesson the two false positives carry
+`ALL_TYPES` is now **deleted**. Section 0 of that file reads
+`LOGBOOK_TYPE_REGISTRY` out of `server.py` — the file-path arithmetic
+`submitSignatureGate.test.cjs:45` already uses — and holds three things
+against it:
+
+1. `ok(REGISTRY.length === 12)`
+2. every registered key has a `LOG_TABS` entry (and no tab stands for an
+   unregistered key)
+3. `renderLogContent` is **executed** once per registered key and must not
+   return the literal "No data available"
+
+(3) runs the chain rather than grepping it, because "the branch exists" is
+exactly what a source grep would have confirmed of the eight types that
+rendered nothing.
+
+**Verified by breaking it, four ways**, since a guard that cannot fail is the
+thing this entry is about. Removing the branch → 1 failure. Removing the tab →
+1 failure. Renaming `LOGBOOK_TYPE_REGISTRY` so the regex matches nothing → the
+count fails (2 failures). Registering a 13th type with no tab and no branch →
+3 failures. Restored: 94 passed, 0 failed.
+
+**Two caveats, stated in the test file itself and not only here.** The count is
+load-bearing, not decoration: without it a formatting change in server.py makes
+the regex yield `[]` and every `.every()` passes over an empty list — the same
+vacuous pass one level up, and harder to see. And it catches the DRIFT CLASS
+only: a branch that reads the wrong payload keys passes it exactly as loudly as
+a correct one. The per-type key assertions in section 1 are hand-written and a
+new type still needs its own set.
+
+### What is still hardcoded
 
 Adding a logbook type means updating: `LOGBOOK_TYPE_REGISTRY`, the `type_title`
 chain, the `section_title` chain, `FALLBACK_LOG_TYPES`, both `i18n/en.js` sets,
-`LOG_TABS`, `renderLogContent`, and the test lists `ALL_TYPES` and `CATALOG`.
+`LOG_TABS`, `renderLogContent`, and the fixture `CATALOG`. `ALL_TYPES` is off
+this list because it no longer exists.
 
-But note WHICH lists drifted. The two that DERIVE their contents from server.py
+But note WHICH lists drifted. The ones that DERIVE their contents from server.py
 at run time — submitSignatureGate's timing-class regex, and
 logbookViewRenderers' own `tabKeys` extraction — cannot drift, and did not.
 Every list that drifted was hardcoded. The durable fix is not a longer
-checklist; it is deriving these lists from the registry the way those two
-already do, and keeping a COUNT assertion (`IMMEDIATE.length === 10`) as the
-checkpoint that forces a new type to be handled rather than inherited by
-omission.
+checklist; it is deriving these lists from the registry the way those already
+do, and keeping a COUNT assertion (`IMMEDIATE.length === 10`,
+`REGISTRY.length === 12`) as the checkpoint that forces a new type to be
+handled rather than inherited by omission. That has now been done for the
+inspector-view surface. It has not been done for the `type_title` /
+`section_title` chains (if/elif chains rendering per-type BODIES, so collapsing
+them onto the registry means threading the label through — a real refactor),
+for `FALLBACK_LOG_TYPES`, or for the i18n sets.
+
+### Left deliberately: SPARSE / KEPT / ABSENT_FIELD
+
+`logbookViewRenderers.test.cjs` carries three more hardcoded per-type maps —
+`SPARSE`, `KEPT` and `ABSENT_FIELD` — feeding the "an absent field says so"
+sweep. Same drift shape as `ALL_TYPES` on paper, and **not** changed with it.
+
+They are **intentionally partial**: each entry is a hand-chosen sparse payload,
+the one value that must survive it, and the one field that must read
+"— Not recorded". There is no registry-derivable content to replace them with —
+the registry knows a type's key, not which of its fields is the interesting
+absence. A missing entry costs coverage of one type in one sweep; it does not
+make a filed log unreachable. Weaker case, recorded so the next reader does not
+mistake the omission for an oversight.
 
 ### Sweep caveat
 

@@ -37,6 +37,20 @@ import { useT } from '../../src/i18n';
 // could not reach a hot work permit, a crane log or an orientation record at
 // all. Labels resolve through src/i18n at render (`labelKey`), not here:
 // module scope is evaluated once at import, before a locale can be set.
+//
+// THAT FIX ADDED FIVE AND MISSED THE SIXTH. `fall_protection` was registered
+// afterwards and this list was not updated with it, so the same bug ran again
+// on one type — a filed fall protection log could not be opened at the kiosk
+// at all. The list this must cover is LOGBOOK_TYPE_REGISTRY (server.py:3398):
+// every key in it, or that type is unreachable to an inspector whatever the CP
+// filed.
+//
+// THE GUARD READS THAT REGISTRY NOW, and it did not before, which is why this
+// was missed. logbookViewRenderers.test.cjs checked its own hardcoded
+// ALL_TYPES — a list missing `fall_protection` for exactly the reason this one
+// was, so it reported clean the whole time the gap was open. It derives the
+// keys out of server.py now and holds a COUNT, so a thirteenth type fails
+// there rather than being inherited by omission here.
 const LOG_TABS = [
   { key: 'daily_jobsite', labelKey: 'tabDailyJobsite', icon: ClipboardList, color: '#3b82f6' },
   { key: 'toolbox_talk', labelKey: 'tabToolboxTalk', icon: BookOpen, color: '#8b5cf6' },
@@ -49,6 +63,7 @@ const LOG_TABS = [
   { key: 'ssc_daily_safety_log', labelKey: 'tabSsc', icon: ClipboardList, color: semantic.neutral },
   { key: 'osha_log', labelKey: 'tabOsha', icon: FileText, color: '#3b82f6' },
   { key: 'subcontractor_orientation', labelKey: 'tabOrientation', icon: Users, color: '#8b5cf6' },
+  { key: 'fall_protection', labelKey: 'tabFallProtection', icon: ShieldCheck, color: semantic.neutral },
 ];
 
 // How many days of submitted records we keep on the device. AsyncStorage is
@@ -107,6 +122,13 @@ export default function SiteLogbooksViewer() {
   const { isLocked, unlock } = useInspectorLock();
   const toast = useToast();
   const t = useT('logbookView');
+  // THE FALL-PROTECTION NOTICE IS NOT RE-WORDED HERE. It lives once, as
+  // fallProtection.standardNotice, and fallProtectionModel.test.cjs holds that
+  // string equal to server.py's FALL_PROTECTION_NOTICE — so the tablet, the
+  // per-log PDF and the combined report cannot end up saying three different
+  // things about what that log is. Its Yes/No pair comes from the same block,
+  // which is the wording the CP answered the question in.
+  const tFp = useT('fallProtection');
   const tabLabel = (key) => {
     const tab = LOG_TABS.find((x) => x.key === key);
     return tab ? t(tab.labelKey) : key;
@@ -1299,6 +1321,119 @@ export default function SiteLogbooksViewer() {
     );
   };
 
+  // src/utils/fallProtectionModel.js — draftBody writes { activities: rows },
+  // ROW_KEYS names the thirteen row keys, EMPTY_ROW seeds them. THE ROWS LIVE
+  // UNDER `activities` because get_logbook_activity_photo — the ONE production
+  // read of a logbook photo — indexes data.activities[ai].photos[pi]; that is
+  // also why the photo strip below is indexed by each row's position in the
+  // UNFILTERED array, not by its position in the rendered list.
+  //
+  // TWO TABLES, ONE PDF. The columns are the PDF's columns key for key
+  // (server.py generate_single_logbook_html, log_type == "fall_protection"),
+  // split because ten columns of a printed page do not fit a tablet. The split
+  // is by MEANING, not by what was left over: `anchor_point` stays in the
+  // register beside the inspection it belongs to, because a Pass row that
+  // names its anchorage is not a finding, and listing it under one would read,
+  // on a compliance surface, as a defect nobody recorded.
+  const renderFallProtection = (log) => {
+    const data = log.data || {};
+    // A ROW THAT NAMES NOBODY IS NOT A ROW — the rule both server renderers
+    // apply to this same log. What the row asserts is that a named man's
+    // fall-arrest equipment was inspected; without the name it asserts it
+    // about somebody the record cannot identify.
+    const rows = (data.activities || [])
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r && typeof r === 'object' && !Array.isArray(r) && hasVal(r, 'worker_name'));
+
+    // TRI-STATE, SEEDED NULL. An inspection nobody performed must never read
+    // as a Pass, so an absent verdict is STATED — case (a), in the same words
+    // the PDF prints for the same row. Filing drops resultless rows
+    // (rowsForFiling), so on a filed log this is the draft/legacy path only.
+    const resultCell = (r) => (hasVal(r, 'result') ? String(r.result) : t('fNotRecorded'));
+
+    // WORDS HERE, NOT THE ✓/✕ GLYPHS THIS SCREEN USES EVERYWHERE ELSE.
+    // Everywhere else a ✓ is the good answer. Here `true` means the equipment
+    // WAS impact loaded, which 1926.502(d)(19) makes mandatory-removal — a ✓
+    // beside it would read as the opposite of what it records. Both PDF
+    // renderers print Yes / No / "— Not recorded", and so does this.
+    const impactCell = (r) => (r.impact_loaded === null || r.impact_loaded === undefined
+      ? t('fNotRecorded')
+      : (r.impact_loaded ? tFp('yes') : tFp('no')));
+
+    // Case (b): a row with no defect and no action is not a finding, so it is
+    // DROPPED from this table rather than printed as a line of absences.
+    const defects = rows
+      .filter(({ r }) => hasVal(r, 'defect_found') || hasVal(r, 'action_taken'))
+      .map(({ r }) => [
+        { text: r.worker_name || '', flex: 1.2 },
+        // TYPE AND SERIAL TOGETHER. Two lanyards on one man would otherwise
+        // give two rows reading 'Lanyard' with no way to tell which one the
+        // defect is against — and the serial is the only thing that names the
+        // piece of equipment that came off the rack.
+        { text: [r.equipment_type, r.equipment_id].filter(Boolean).join(' ').trim(), flex: 1 },
+        { text: r.defect_found || '', flex: 2 },
+        { text: r.action_taken || '', flex: 2 },
+      ]);
+
+    return (
+      <View style={s.docContent}>
+        {rows.length > 0 && (
+          <>
+            <DocSectionLabel icon={ShieldCheck} label={t('fpRegister')} color={semantic.neutral} />
+            <DocTableRow isHeader cells={[
+              { text: t('fWorker'), flex: 1.3 }, { text: t('fCompany'), flex: 1 },
+              { text: t('fpEquipment'), flex: 1 }, { text: t('fpEquipmentId'), flex: 1 },
+              { text: t('fpMfgDate'), flex: 0.9 }, { text: t('fpResult'), flex: 1 },
+              { text: t('fpImpact'), flex: 0.9 }, { text: t('fpAnchor'), flex: 1 },
+            ]} />
+            {rows.map(({ r, i }) => (
+              <React.Fragment key={r.activity_id || i}>
+                <DocTableRow cells={[
+                  { text: r.worker_name || '', flex: 1.3 },
+                  { text: r.company || '', flex: 1 },
+                  { text: r.equipment_type || '', flex: 1 },
+                  { text: r.equipment_id || '', flex: 1 },
+                  { text: r.manufacture_date || '', flex: 0.9 },
+                  { text: resultCell(r), flex: 1 },
+                  { text: impactCell(r), flex: 0.9 },
+                  { text: r.anchor_point || '', flex: 1 },
+                ]} />
+                {/* THE PHOTO IS THE PART AN INSPECTOR CAN CHECK HIMSELF — cut
+                    webbing or a deployed indicator is visible, a sentence
+                    about one is an assertion. `i` is the row's index in
+                    data.activities, which is what the served URL is keyed on. */}
+                {(r.photos || []).length > 0 && (
+                  <View style={s.photoRow}>
+                    {r.photos.map((photo, pi) => {
+                      const uri = logbookPhotoUri(photo, log, i, pi);
+                      if (!uri) return null;
+                      return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
+                    })}
+                  </View>
+                )}
+              </React.Fragment>
+            ))}
+          </>
+        )}
+        <RowTable
+          title={t('fpFindings')}
+          icon={AlertTriangle}
+          headers={[
+            { text: t('fWorker'), flex: 1.2 }, { text: t('fpEquipment'), flex: 1 },
+            { text: t('fpDefect'), flex: 2 }, { text: t('fpAction'), flex: 2 },
+          ]}
+          rows={defects}
+        />
+        <CpSignature log={log} />
+        {/* WHAT THIS DOCUMENT IS, PRINTED ON THE DOCUMENT. Both PDF renderers
+            already carry this sentence for the same reason; this is the third
+            surface, and the one read standing on the site by the person most
+            likely to mistake the log for a required filing. */}
+        <Text style={s.docNotice}>{tFp('standardNotice')}</Text>
+      </View>
+    );
+  };
+
   const renderLogContent = (log) => {
     if (log.log_type === 'daily_jobsite') return renderDailyJobsite(log);
     if (log.log_type === 'toolbox_talk') return renderToolboxTalk(log);
@@ -1311,6 +1446,13 @@ export default function SiteLogbooksViewer() {
     if (log.log_type === 'ssc_daily_safety_log') return renderSscDailySafetyLog(log);
     if (log.log_type === 'osha_log') return renderOshaLog(log);
     if (log.log_type === 'subcontractor_orientation') return renderSubcontractorOrientation(log);
+    if (log.log_type === 'fall_protection') return renderFallProtection(log);
+    // NOT A GENERIC FALLTHROUGH, ON PURPOSE. A registered type with no branch
+    // must fail at the tab that cannot show it, not open and tell an inspector
+    // the record is blank — which is what a generic renderer would do for a
+    // payload shape it does not know. The other half is the guard:
+    // logbookViewRenderers.test.cjs RUNS this chain for every key in
+    // LOGBOOK_TYPE_REGISTRY and fails on any that lands here.
     return <Text style={s.logField}>No data available</Text>;
   };
 
@@ -1593,6 +1735,13 @@ function buildStyles(colors, isDark) {
   docInfoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   docInfoText: { fontSize: 16, color: colors.text.secondary, flex: 1 },
   docParagraph: { fontSize: 16, color: colors.text.secondary, lineHeight: 24, paddingLeft: 2 },
+  // A statement ABOUT the document rather than a field on it, so it is set
+  // apart the way both PDF renderers set it apart — a rule above, muted text
+  // below — and never reads as one more recorded value.
+  docNotice: {
+    fontSize: 13, color: colors.text.muted, lineHeight: 19, marginTop: spacing.md,
+    paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08),
+  },
   rosterLegend: { fontSize: 12, color: colors.text.muted, lineHeight: 17, paddingLeft: 2, marginTop: spacing.xs, fontStyle: 'italic' },
 
   // Photo row

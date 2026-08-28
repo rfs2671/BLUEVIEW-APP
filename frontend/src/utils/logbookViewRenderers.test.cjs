@@ -67,6 +67,15 @@ const ES = loadCatalogue('es.js');
 const t = (key) => (
   Object.prototype.hasOwnProperty.call(EN.logbookView, key) ? EN.logbookView[key] : key
 );
+// THE SECOND NAMESPACE THE SCREEN READS. renderFallProtection takes the
+// standard notice and its Yes/No pair from `fallProtection` rather than
+// re-wording them under `logbookView`, so the notice on the tablet is the same
+// string fallProtectionModel.test.cjs holds equal to server.py's
+// FALL_PROTECTION_NOTICE. Resolved through the REAL catalogue here too, so a
+// renamed key fails in this file rather than rendering its own name.
+const tFp = (key) => (
+  Object.prototype.hasOwnProperty.call(EN.fallProtection, key) ? EN.fallProtection[key] : key
+);
 
 // ── Slice the renderer block out of the screen ──────────────────────────────
 const START = '  const SignatureBlock = ({ signature, label }) => {';
@@ -135,14 +144,14 @@ new Function('exports', 'module', 'require', babel.transformSync(
 // ── Stubs for everything the block closes over ──────────────────────────────
 const styleProxy = new Proxy({}, { get: () => ({}) });
 const Icon = function IconStub() { return null; };
-const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'colors', 'semantic',
+const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'semantic',
   'spacing', 'withAlpha', 'rosterClock', 'logbookPhotoUri',
   'ShieldCheck', 'AlertTriangle', 'Truck', 'MapPin', 'ClipboardList', 'FileText',
   'Users', 'CheckCircle', 'BookOpen', 'Pen', 'CloudSun', 'Clock', 'Eye', 'Wrench',
   'headcountDisplay'];
 const VALUES = {
   View: 'View', Text: 'Text', Image: 'Image', React,
-  s: styleProxy, t,
+  s: styleProxy, t, tFp,
   colors: { text: { primary: '#fff', secondary: '#eee', muted: '#999', subtle: '#666' } },
   semantic: { neutral: '#999', verified: '#0f0' },
   spacing: new Proxy({}, { get: () => 8 }),
@@ -172,16 +181,83 @@ const fieldIsNotRecorded = (out, label) => out.includes(`${label}: ${NOT_RECORDE
 const rowIsNotRecorded = (out, label) => out.includes(`${label} | ${NOT_RECORDED}`);
 
 // ════════════════════════════════════════════════════════════════════════════
-//  0 — every type has a tab, or the renderer is unreachable
+//  0 — every REGISTERED type has a tab AND a render branch
 // ════════════════════════════════════════════════════════════════════════════
-const ALL_TYPES = ['daily_jobsite', 'toolbox_talk', 'preshift_signin', 'hot_work',
-  'crane_operations', 'excavation_monitoring', 'concrete_operations',
-  'scaffold_maintenance', 'ssc_daily_safety_log', 'osha_log',
-  'subcontractor_orientation'];
+// DERIVED FROM server.py, NOT HAND-COPIED — and that is the whole change.
+// This block used to open on a hardcoded `ALL_TYPES` of eleven under the
+// heading "every type has a tab, or the renderer is unreachable".
+// `fall_protection`, the twelfth registered type, was missing from it for
+// precisely the reason it was missing from LOG_TABS: nothing made adding a type
+// update either list. So the check written to catch "a registered type with no
+// tab" reported clean for the one type that had none — it could not see the
+// thing it was for.
+//
+// submitSignatureGate.test.cjs derives LOGBOOK_TIMING_CLASS out of server.py
+// for the same reason and did not drift. A list that CAN drift is not worth
+// asserting against; this reads the registry itself.
+const SERVER_SRC = fs.readFileSync(
+  path.join(FRONTEND, '..', 'backend', 'server.py'), 'utf8');
+const REGISTRY_AT = SERVER_SRC.indexOf('LOGBOOK_TYPE_REGISTRY = [');
+const REGISTRY = [...SERVER_SRC
+  .slice(REGISTRY_AT, SERVER_SRC.indexOf('\n]\n', REGISTRY_AT))
+  .matchAll(/^\s+"key": "([a-z_]+)",$/gm)].map((m) => m[1]);
+
+// ── THE COUNT IS LOAD-BEARING, NOT DECORATION ──────────────────────────────
+//
+// Deriving on its own does not close the hole, it MOVES it. If server.py's
+// registry formatting changes — a reordered key, a different quote style, the
+// list rewritten as a dict — the regex above yields `[]`, and every assertion
+// below then iterates an empty list and passes. That is the SAME vacuous pass
+// that let the old hardcoded ALL_TYPES miss fall_protection, reappearing one
+// level up and harder to see.
+//
+// This line is what fails instead. It is also the checkpoint that forces a
+// THIRTEENTH type to be handled deliberately rather than inherited by
+// omission: bump the number here only in the same change that gives the new
+// type its tab, its label and its render branch. Bumping it on its own to get
+// a red suite green is the bug this file exists to catch.
+ok(REGISTRY.length === 12,
+  `server.py registers 12 logbook types (got ${REGISTRY.length}: ${REGISTRY.join(', ') || 'NOTHING — the registry regex matched nothing'})`);
 
 const tabKeys = [...src.matchAll(/\{ key: '([a-z_]+)', labelKey:/g)].map((m) => m[1]);
-ok(ALL_TYPES.every((k) => tabKeys.includes(k)),
-  `LOG_TABS covers every log type — the tab filter is the only way in (${tabKeys.length} tabs)`);
+const noTab = REGISTRY.filter((k) => !tabKeys.includes(k));
+ok(noTab.length === 0,
+  `LOG_TABS covers every registered type — the tab filter is the only way in `
+  + `(${tabKeys.length} tabs${noTab.length ? `, NO TAB FOR ${noTab.join(', ')}` : ''})`);
+const strayTabs = tabKeys.filter((k) => !REGISTRY.includes(k));
+ok(strayTabs.length === 0,
+  `and no tab stands for a type the server does not register `
+  + `(${strayTabs.join(', ') || 'none'}) — a tab that can never match `
+  + `\`l.log_type === activeTab\` is an empty room with a door on it`);
+
+// ── AND A BRANCH, WHICH IS THE HALF THE TAB CANNOT PROVE ───────────────────
+//
+// A tab with no renderLogContent branch is WORSE than no tab: the log opens
+// and tells a DOB inspector "No data available" about a record the CP filed
+// and signed. Both halves or neither.
+//
+// This RUNS the chain rather than reading it. "The branch exists" is exactly
+// what was true of the eight types this file was originally written for while
+// they rendered nothing, and it is what a source grep would have confirmed.
+//
+// ── WHAT THIS DOES **NOT** DO ──────────────────────────────────────────────
+// It catches the DRIFT CLASS and nothing more: a registered type nobody wired
+// up. A branch that reads the wrong payload keys, or half of them, or reads
+// them off a shape no editor writes, passes here exactly as loudly as a
+// correct one. The per-type assertions in section 1 below are hand-written,
+// one set per type, and a new type still needs its own — this loop tells you
+// the door opens, not that the right document is behind it.
+for (const key of REGISTRY) {
+  let out;
+  try {
+    out = render(doc(key, {}, { cp_name: null, cp_signature: null }));
+  } catch (e) {
+    out = `THREW ${e.message}`;
+  }
+  ok(out !== 'No data available' && !out.startsWith('THREW '),
+    `renderLogContent has a branch for ${key} — it does not fall through to `
+    + `the literal "No data available"${out.startsWith('THREW ') ? ` [${out}]` : ''}`);
+}
 ok(/l\.log_type === activeTab/.test(src),
   'the tab filter is still the single gate the tabs must satisfy (premise of the test above)');
 const labelKeys = [...src.matchAll(/labelKey: '(\w+)'/g)].map((m) => m[1]);
