@@ -17043,6 +17043,128 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 
     return files
 
+# ══ DROPBOX SYNC RUN RECORD ═════════════════════════════════════════════════
+#
+# WHY THIS EXISTS. The plans screen caches its file list for offline use, and it
+# was writing that cache from whatever it happened to read -- including a read
+# taken while this background task was still inserting rows. The saved-for-
+# offline list could therefore be a strict SUBSET of the project, and a CP in a
+# cellar would be missing drawings with nothing on screen to say so.
+#
+# dropbox_last_synced IS NOT ENOUGH AND IS DELIBERATELY LEFT ALONE. It honestly
+# records that a sync finished, and it is stamped UNCONDITIONALLY at the end --
+# so it reads the same whether 15 of 15 arrived or 3 of 15 did. That is how 588
+# Thomas looked correct while being wrong. It keeps its meaning; the counts live
+# here beside it rather than being loaded onto it.
+#
+# NOT AN IN-PROCESS FLAG. "Is the task still running" could be answered from
+# memory today -- the Procfile runs one uvicorn process with no --workers -- and
+# that is exactly the objection: it would be correct by accident, resting on
+# deployment config, and would silently start lying the day anything scales to
+# two processes with no test able to notice.
+#
+# NOT POLLING FOR A STABLE COUNT EITHER. Files download one at a time and a
+# large drawing outlasts any poll interval, so a count that stopped moving is as
+# likely to mean mid-download as finished.
+DROPBOX_SYNC_RUNS = "dropbox_sync_runs"
+
+# A run older than this is not believed to be running any more. The process can
+# die mid-sync -- Railway restarts, an unhandled error above the try -- and a
+# record left at "running" for ever would make the client refuse to refresh its
+# offline list permanently.
+#
+# UNKNOWN MUST FAIL TOWARD LETTING THE MAN WORK. The only thing a fresh running
+# record buys is a short, bounded window in which the client declines to
+# OVERWRITE a good cached list. Past that window the client goes back to normal
+# behaviour; it never blocks, never refuses to render, never withholds what is
+# already on the device.
+DROPBOX_SYNC_STALE_AFTER_SECONDS = 15 * 60
+
+
+async def _sync_run_open(project_id: str, company_id: str, expected: int):
+    """Record that a sync has started, and how many files it expects to see.
+
+    `expected` comes from the recursive listing this task has ALREADY done, so
+    it costs nothing extra and is the number the client needs to know whether
+    the list it is holding is the whole list.
+    """
+    now = datetime.now(timezone.utc)
+    doc = {
+        "project_id": project_id,
+        "company_id": company_id,
+        "status": "running",
+        "expected": expected,
+        "synced": 0,
+        "failed": 0,
+        "failures": [],
+        "started_at": now,
+        "finished_at": None,
+        "created_at": now,
+    }
+    try:
+        res = await db[DROPBOX_SYNC_RUNS].insert_one(doc)
+        run_id = str(res.inserted_id)
+    except Exception as e:
+        # A diagnostic must never take the sync down with it.
+        logger.error(f"sync run open failed for project {project_id}: {e}")
+        return None
+
+    await _stamp_project_sync(project_id, {
+        "run_id": run_id, "status": "running", "expected": expected,
+        "synced": 0, "failed": 0,
+        "started_at": now, "finished_at": None,
+    })
+    return run_id
+
+
+async def _sync_run_close(run_id, project_id: str, status: str,
+                          expected: int, synced: int, failures: list):
+    """Close the run with counts, and mirror a compact summary onto the project.
+
+    MIRRORED ONTO THE PROJECT ON PURPOSE. GET /projects/{id} is already fetched
+    by every screen that needs this, so the client learns the state with no new
+    endpoint and no response-shape change. GET /projects/{id}/dropbox-files
+    returns a BARE ARRAY and has three callers; wrapping it would break all
+    three for nothing.
+    """
+    now = datetime.now(timezone.utc)
+    failed = len(failures)
+    try:
+        if run_id:
+            await db[DROPBOX_SYNC_RUNS].update_one(
+                {"_id": to_query_id(run_id)},
+                {"$set": {
+                    "status": status, "expected": expected, "synced": synced,
+                    "failed": failed,
+                    # Bounded: a pathological folder must not write a document
+                    # larger than the sync it describes.
+                    "failures": failures[:50],
+                    "finished_at": now,
+                }},
+            )
+    except Exception as e:
+        logger.error(f"sync run close failed for project {project_id}: {e}")
+
+    await _stamp_project_sync(project_id, {
+        "run_id": str(run_id) if run_id else None, "status": status,
+        "expected": expected, "synced": synced, "failed": failed,
+        "finished_at": now,
+    })
+
+
+async def _stamp_project_sync(project_id: str, summary: dict):
+    """Write the compact summary under `dropbox_sync` on the project.
+
+    SEPARATE FROM dropbox_last_synced, which keeps its own meaning and its own
+    field. Nothing here overloads it.
+    """
+    try:
+        sets = {f"dropbox_sync.{k}": v for k, v in summary.items()}
+        await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": sets})
+    except Exception as e:
+        logger.error(f"sync summary stamp failed for project {project_id}: {e}")
+
+
 async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str):
     """Background task: sync Dropbox files to R2 and update project_files collection."""
     try:
@@ -17055,6 +17177,15 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
         )
         if response.status_code != 200:
             logger.error(f"Sync failed for project {project_id}: Dropbox list_folder returned {response.status_code}")
+            # NO RUN IS OPEN YET -- the listing is what tells us how many files
+            # to expect, so there is nothing to count. Recorded anyway: a client
+            # that sees `failed` with expected 0 knows the sync never got far
+            # enough to say anything about the list, which is different from a
+            # sync that ran and found nothing.
+            await _sync_run_close(
+                None, project_id, "failed", 0, 0,
+                [{"reason": f"list_folder {response.status_code}"}],
+            )
             return
 
         data = response.json()
@@ -17074,6 +17205,11 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
 
         now = datetime.now(timezone.utc)
         synced = 0
+        # Countable, not retried. Making the silent per-file skips visible is
+        # this change; doing something about them is separate work.
+        failures = []
+
+        run_id = await _sync_run_open(project_id, company_id, len(entries))
 
         for entry in entries:
             dropbox_path = entry["path_lower"]
@@ -17102,6 +17238,10 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                 )
                 if dl_resp.status_code != 200:
                     logger.warning(f"Sync skip {dropbox_path}: download failed {dl_resp.status_code}")
+                    failures.append({
+                        "path": dropbox_path,
+                        "reason": f"download {dl_resp.status_code}",
+                    })
                     continue
 
                 file_bytes = dl_resp.content
@@ -17158,16 +17298,32 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                 synced += 1
             except Exception as entry_err:
                 logger.error(f"Sync error for {dropbox_path}: {entry_err}")
+                failures.append({"path": dropbox_path, "reason": str(entry_err)[:200]})
 
-        # Update sync timestamp
+        # Update sync timestamp. UNCHANGED, and deliberately: this field
+        # honestly records that a sync finished, and the counts that say WHAT it
+        # finished with live in the run record beside it.
         await db.projects.update_one(
             {"_id": to_query_id(project_id)},
             {"$set": {"dropbox_last_synced": now}}
+        )
+        await _sync_run_close(
+            run_id, project_id, "complete", len(entries), synced, failures,
         )
         logger.info(f"Sync complete for project {project_id}: {synced}/{len(entries)} files")
 
     except Exception as e:
         logger.error(f"Background sync failed for project {project_id}: {e}")
+        # A run left at "running" would make the client decline to refresh its
+        # offline list until the staleness window expired. Close it.
+        try:
+            await _sync_run_close(
+                locals().get("run_id"), project_id, "failed",
+                len(locals().get("entries") or []), locals().get("synced") or 0,
+                (locals().get("failures") or []) + [{"reason": str(e)[:200]}],
+            )
+        except Exception:
+            pass
 
 
 @api_router.post("/projects/{project_id}/sync-dropbox", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -29459,6 +29615,29 @@ async def run_whatsapp_startup_migrations():
             "created_at",
             expireAfterSeconds=60 * 60 * 24 * 45,
             name="whatsapp_send_log_ttl",
+        )
+
+        # ── Dropbox sync runs ────────────────────────────────────────────────
+        # THIS COLLECTION GROWS FASTER THAN ANY OTHER IF LEFT ALONE. The Dropbox
+        # webhook fans out across EVERY project a company has linked, so one
+        # person editing one file writes a run record per project -- a company
+        # with forty linked projects writes forty rows for one save. A TTL is
+        # not housekeeping here, it is the thing that keeps the collection
+        # bounded at all.
+        #
+        # 14 days: long enough to answer "why was that CP missing drawings last
+        # week", short enough that the fan-out cannot accumulate. The state the
+        # CLIENT reads is mirrored onto the project document and is not subject
+        # to this expiry, so a run ageing out never changes app behaviour -- it
+        # only ends the diagnostic trail.
+        await db[DROPBOX_SYNC_RUNS].create_index(
+            "created_at",
+            expireAfterSeconds=60 * 60 * 24 * 14,
+            name="dropbox_sync_runs_ttl",
+        )
+        await db[DROPBOX_SYNC_RUNS].create_index(
+            [("project_id", 1), ("created_at", -1)],
+            name="dropbox_sync_runs_by_project",
         )
 
         # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
