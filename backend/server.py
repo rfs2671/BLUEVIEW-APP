@@ -2832,7 +2832,13 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
                 warnings.append({
                     "type": "CERT_EXPIRING_SOON",
                     "detail": f"{c.get('type')} expires {exp_dt.strftime('%Y-%m-%d')} (within 30 days).",
-                    "cert_type": c.get("type")
+                    "cert_type": c.get("type"),
+                    # MACHINE-READABLE, mirroring EXPIRED_SST's `expired_on`.
+                    # `detail` is a sentence and the date inside it cannot be
+                    # compared; the nightly sweep needs the date itself to tell
+                    # "this expiry, already handled" from "a different expiry",
+                    # which is the whole of its resolve rule.
+                    "expires_on": exp_dt.strftime('%Y-%m-%d'),
                 })
 
     return {"cleared": len(blocks) == 0, "blocks": blocks, "warnings": warnings, "sst_state": sst_state}
@@ -26984,6 +26990,194 @@ async def nightly_compliance_check():
                             })
                 except Exception:
                     pass
+
+        # 5. Expiring worker certifications (within 30 days)
+        #
+        # THE ONLY SCHEDULED READER of workers.certifications, and the first
+        # query anywhere to use the worker_cert_expiry index. Until this
+        # existed, CERT_EXPIRING_SOON was computed by
+        # validate_worker_certifications and then dropped at every one of its
+        # four call sites: the check-in paths freeze it into the row's
+        # `cert_warnings` and emit nothing, and only EXPIRED_SST / SST_UNKNOWN
+        # ever reached an alert. A man who stopped coming to site had his SST
+        # lapse in silence -- and so did a man who came in every day.
+        #
+        # HERE AND NOT IN card_audit.check_card_expirations (02:15), because
+        # that job's subject is worker_enrollments.card_expiration_date -- a
+        # separate credential store with no join to workers.certifications --
+        # and its output is card_fraud_flags under a FraudFlagType vocabulary.
+        # A lapsed cert is not fraud. This is a compliance_alerts event read by
+        # the same screen as sections 1-4, and section 4 (safety-staff licences)
+        # is already this exact shape: a global non-project scan, 30-day window,
+        # open-alert dedup.
+        #
+        # ALERT ONLY, NO NOTIFICATION, deliberately. dispatch_notification fans
+        # out one inbox row per eligible user (capped at 100), so a nightly
+        # per-worker dispatch is the shape that sent 80 renewal emails. It is
+        # also the wrong substrate: compliance_alerts is in
+        # SOFT_DELETE_NEVER_PURGE and has no TTL, while cleanup_inbox DELETES
+        # read notifications after READ_RETENTION_DAYS -- and that row IS the
+        # inbox's dedup key. A digest built off these alert rows is how this
+        # gets pushed later, not a per-cert dispatch.
+        thirty_days_out = now + timedelta(days=30)
+
+        # `is_deleted: False` EXACTLY, not the `$ne: True` the rest of this file
+        # uses. worker_cert_expiry carries
+        # partialFilterExpression={"is_deleted": {"$eq": False}}, and Mongo uses
+        # a partial index only when the query predicate implies that filter;
+        # `$ne: True` does not. The mismatch is the index's to fix, not this
+        # query's -- recorded in followups.md.
+        cert_window_filter = {
+            "is_deleted": False,
+            "certifications.expiration_date": {"$gt": now, "$lte": thirty_days_out},
+        }
+
+        # TWO BLIND SPOTS, COUNTED RATHER THAN ASSUMED AWAY. The range query
+        # matches BSON dates only, so a legacy string-typed expiry is invisible
+        # to it, and `is_deleted: False` cannot see a worker document written
+        # before that field existed. Both writers set is_deleted=False and store
+        # a parsed datetime, so both numbers should be zero -- but "should be
+        # zero" is exactly what permit_renewals.current_expiration looked like
+        # before its mixed formats were found. If there is a gap the log says so
+        # rather than the scan quietly covering less than it claims to.
+        try:
+            loose_count = await db.workers.count_documents({
+                "is_deleted": {"$ne": True},
+                "certifications.expiration_date": {"$gt": now, "$lte": thirty_days_out},
+            })
+            covered_count = await db.workers.count_documents(cert_window_filter)
+            string_typed = await db.workers.count_documents({
+                "is_deleted": {"$ne": True},
+                "certifications.expiration_date": {"$type": "string"},
+            })
+            if loose_count != covered_count or string_typed:
+                logger.warning(
+                    "[cert_expiry] scan does not cover the whole collection: "
+                    "%d workers in window, %d reachable by the indexed filter, "
+                    "%d holding a string-typed expiration_date",
+                    loose_count, covered_count, string_typed,
+                )
+        except Exception as probe_err:
+            logger.warning(f"[cert_expiry] coverage probe failed: {probe_err!r}")
+
+        cert_alerts = 0
+        cert_no_company = 0
+        async for w in db.workers.find(cert_window_filter):
+            try:
+                # THE GATE'S OWN VERDICT, not a second copy of the date maths.
+                # validate_worker_certifications owns the 30-day window and the
+                # datetime/string coercion; re-deriving either here is how the
+                # cron and the gate drift into disagreeing about the same card.
+                expiring = [
+                    x for x in validate_worker_certifications(w).get("warnings", [])
+                    if x.get("type") == "CERT_EXPIRING_SOON"
+                ]
+                if not expiring:
+                    continue
+
+                wid = str(w["_id"])
+                w_company = w.get("company_id")
+                if not w_company:
+                    # get_compliance_alerts scopes on the admin's company_id, so
+                    # an alert carrying none is invisible to every admin who has
+                    # one. Skipped and counted, never written into a hole.
+                    cert_no_company += 1
+                    continue
+
+                # EARLIEST expiry is the alert's date. It is what the operator is
+                # racing, and it is stable under the array reordering a re-scan
+                # can cause -- min() of a set does not depend on arrival order.
+                dates = sorted(
+                    x.get("expires_on") for x in expiring if x.get("expires_on")
+                )
+                earliest = dates[0] if dates else None
+
+                # -- DEDUP: ONE OPEN ALERT PER WORKER ------------------------
+                # Keyed on worker_id ALONE, never on the certification.
+                #
+                # There is no per-cert identity to key on: subdocuments in
+                # workers.certifications[] carry no id, and the re-scan path
+                # rewrites every field that could stand in for one -- `type`
+                # when the class becomes legible, `expiration_date` when a
+                # flagged row is corrected, `card_number` from whatever OCR
+                # read. An array index is not an identity either. Key on any of
+                # them and the alert re-fires the moment the review queue does
+                # its job -- which is precisely how permit_renewal_id, a ROW id
+                # for a permit that inserts a new row on every DOB status
+                # change, sent one customer the same reminder six times.
+                #
+                # worker._id is the real stable thing here, the way raw_dob_id
+                # names a permit: the document is created once and updated in
+                # place, never re-inserted per state change. One open alert per
+                # worker is also what an operator acts on -- you call the man,
+                # not the card.
+                #
+                # THE SECOND CLAUSE IS THE RESOLVE RULE. Without it, an admin
+                # who resolves an alert for a cert still twelve days from
+                # expiring gets a fresh one that same night, and "resolved"
+                # decays into "cleared for one night". Matching a RESOLVED alert
+                # on the same earliest date makes resolve mean "I have handled
+                # this expiry". The date is a SUPPRESSION TEST, not part of the
+                # identity: when it changes -- a correction, or a renewal
+                # setting a new one -- the fact has changed, and a fresh alert
+                # is the correct outcome rather than a duplicate.
+                dedup = {"alert_type": "worker_cert_expiring", "details.worker_id": wid}
+                if earliest:
+                    dedup["$or"] = [
+                        {"resolved": False},
+                        {"details.earliest_expiration": earliest},
+                    ]
+                else:
+                    dedup["resolved"] = False
+                if await db.compliance_alerts.find_one(dedup):
+                    continue
+
+                types = ", ".join(
+                    sorted({str(x.get("cert_type") or "certification") for x in expiring})
+                )
+                await db.compliance_alerts.insert_one({
+                    "alert_type": "worker_cert_expiring",
+                    "severity": "high",
+                    # A worker is not project-scoped. Section 4 reads project_id
+                    # off its own record; there is no equivalent here, and
+                    # inventing one from a recent check-in would tie a
+                    # credential to whichever site he last happened to visit.
+                    "project_id": None,
+                    "message": (
+                        f"{w.get('name') or 'A worker'}"
+                        f"{' (' + w.get('company') + ')' if w.get('company') else ''}"
+                        f" has {len(expiring)} certification(s) expiring within 30 days"
+                        f"{' - earliest ' + earliest if earliest else ''}: {types}"
+                    ),
+                    "resolved": False,
+                    "created_at": now,
+                    "company_id": w_company,
+                    "details": {
+                        "worker_id": wid,
+                        "earliest_expiration": earliest,
+                        "certifications": [
+                            {
+                                "cert_type": x.get("cert_type"),
+                                "expires_on": x.get("expires_on"),
+                            }
+                            for x in expiring
+                        ],
+                    },
+                })
+                cert_alerts += 1
+            except Exception as cert_err:
+                # Per-worker isolation: one malformed certifications array must
+                # not end the sweep for everyone behind it in the cursor.
+                logger.warning(
+                    f"[cert_expiry] worker {w.get('_id')} skipped: {cert_err!r}"
+                )
+
+        if cert_alerts or cert_no_company:
+            logger.info(
+                "[cert_expiry] %d alert(s) raised; %d worker(s) skipped for "
+                "having no company_id",
+                cert_alerts, cert_no_company,
+            )
 
         logger.info("🔍 Nightly compliance check completed")
     except Exception as e:

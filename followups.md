@@ -2,6 +2,84 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MED] `sst_status` can be set to "expiring_soon" by a certification that is
+  not an SST card.**
+  `register_and_checkin` derives the frozen per-check-in SST verdict from a set
+  of warning TYPES:
+
+  ```
+  elif "CERT_EXPIRING_SOON" in _warning_types:
+      sst_status = "expiring_soon"
+  ```
+
+  `CERT_EXPIRING_SOON` is raised by `validate_worker_certifications` for **any**
+  certification carrying an expiry inside 30 days — check 3 loops `for c in
+  certs`, not over the SST rows. Every other branch in that chain is
+  SST-specific: `EXPIRED_SST` and `SST_UNKNOWN` come from the SST three-state
+  verdict, and the `_sst_cert is None` branch reads the SST cert directly.
+
+  So a worker whose SST is valid for another three years, holding any other
+  dated credential expiring next week, has `sst_status="expiring_soon"` frozen
+  onto his check-in row. That row is the immutable compliance record — the
+  whole point of the snapshot is that "did worker X hold a valid SST on date Y"
+  is answerable from `checkins` alone — and this makes it answer about a
+  different card.
+
+  **Why post-2020 OSHA does not save us.** The OSHA branch stores
+  `expiration_date: None` (lifetime), so today the SST row is usually the only
+  dated one and the mislabel is rare. It is not structural: `POST
+  /workers/{id}/certifications` accepts a `WorkerCertification` with an
+  arbitrary `type` and an `expiration_date`, so any admin-added dated
+  credential reaches this branch.
+
+  **The fix is narrowing, not reordering** — the branch needs the warning to
+  have come from a cert in `RECOGNIZED_SST_TYPES`, which means
+  `CERT_EXPIRING_SOON` warnings need to be filtered by `cert_type` at the point
+  of use rather than tested for mere presence in a set of type strings. Held
+  out of the expiry-sweep PR deliberately: it changes a value frozen onto
+  `checkins`, so it wants its own change and its own backfill question (rows
+  already written carry the wrong label and nothing rewrites them).
+
+- **[LOW] The `worker_cert_expiry` index cannot be used by any query written in
+  this codebase's own house style.**
+  The index carries `partialFilterExpression={"is_deleted": {"$eq": False}}`.
+  Mongo uses a partial index only when the query predicate *implies* that
+  filter, and `{"is_deleted": {"$ne": True}}` does not — `$ne: True` also
+  matches documents where the field is missing or null, which the index does
+  not contain.
+
+  Every other worker query in `server.py` uses `$ne: True`. So until section 5
+  of `nightly_compliance_check` was added, the index was unread; and section 5
+  can only read it by writing `{"is_deleted": False}`, which is the *one* place
+  in the file that spells the filter that way. That is a comment-load-bearing
+  inconsistency: the next person to "fix" it for consistency silently drops the
+  index.
+
+  **READ THIS BEFORE PLANNING THE FIX. `partialFilterExpression` DOES NOT
+  ACCEPT `$ne`.** MongoDB restricts it to equality, `$exists: true`,
+  `$gt`/`$gte`/`$lt`/`$lte`, `$type`, `$and`/`$or` and `$in`. `$ne` is not on
+  that list and `createIndex` rejects it.
+
+  So the obvious repair — "change the index to `{"is_deleted": {"$ne": True}}`
+  so it matches how the codebase queries" — **is not an available option.** It
+  is the first thing anyone will reach for, and it does not exist. There are
+  exactly two:
+
+  1. **Drop the `partialFilterExpression`.** The index then covers the whole
+     collection and the house-style `$ne: True` predicate can use it. Cost:
+     soft-deleted workers are indexed too.
+  2. **Keep it.** Cost: this index has exactly one legal caller, and that
+     caller is spelled differently from every other worker query in the file.
+     Whoever "tidies" that spelling silently drops the index.
+
+  There is no third choice where the index keeps a partial filter AND the
+  house-style predicate can use it. Pick 1 or 2.
+
+  Section 5 also logs a coverage probe on every run — it counts workers in the
+  expiry window reachable by the loose predicate versus the indexed one, and
+  warns when they differ. If that line never fires in production, the two sets
+  are identical and dropping the partial filter costs nothing.
+
 - **[MED] FloatingNav's 18 screens still hardcode their clearance, and the
   sweep CANNOT be mechanical.**
   The three CpNav screens now derive it: `{ paddingBottom: insets.bottom +
