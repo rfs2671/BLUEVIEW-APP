@@ -97,6 +97,50 @@ export async function cacheDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf
   } catch (_e) { return null; }
 }
 
+/**
+ * EVERY cached filename, in ONE call.
+ *
+ * The readiness strip has to answer "which of these files are on this device"
+ * on every render, and it must answer from the DISK rather than from a flag we
+ * set once -- a stored "saved" boolean goes stale the moment a drawing changes
+ * in Dropbox and bumps its cache_version.
+ *
+ * One readDirectoryAsync instead of a getInfoAsync per file: the filename
+ * already encodes `{fileId}.{cache_version}`, so intersecting this set with the
+ * file list gives exact per-file state INCLUDING staleness, for the cost of a
+ * single directory read.
+ *
+ * Returns a Set of bare names. An unreadable directory yields an empty set,
+ * which reads as "nothing saved" -- honest, and it never blocks the screen.
+ */
+export async function listCachedDocs() {
+  if (!canUseFs()) return new Set();
+  try {
+    const names = await FileSystem.readDirectoryAsync(DOC_DIR);
+    return new Set(Array.isArray(names) ? names : []);
+  } catch (_e) {
+    return new Set();
+  }
+}
+
+/** The on-disk name for a file, so callers can test membership of the set
+ *  above without knowing how the name is built. */
+export function cachedDocName(fileId, cacheVersion, ext = 'pdf') {
+  return safeName(fileId, cacheVersion, ext);
+}
+
+/** Free bytes on the device, or null if it cannot be determined.
+ *  Used to refuse a Save all BEFORE it starts rather than dying on file 9. */
+export async function freeDiskBytes() {
+  if (!canUseFs()) return null;
+  try {
+    const n = await FileSystem.getFreeDiskStorageAsync();
+    return Number.isFinite(n) ? n : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 /** Cached copy if present, else download it. Null if unavailable offline. */
 export async function ensureCachedDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf' }) {
   const hit = await getCachedDocFile(fileId, cacheVersion, ext);
