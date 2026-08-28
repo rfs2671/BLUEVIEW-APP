@@ -807,15 +807,48 @@ three are dead weight. Both served keys were KEPT by the shape fix —
 `count_documents` it replaced did — because removing a served key is its own
 decision, not a side effect of changing a different one.
 
-### Not fixed, noticed in passing: `/checklists/assignments/{id}` has no assignment check
+### The two `{assignment_id}` routes had no access check at all — FIXED
 
-`get_assignment_details` fetches any assignment by id for any authenticated
-user — it never checks that the caller is in `assigned_user_ids` (the
-completion it returns IS scoped to the caller, so this exposes the assignment
-and the checklist, not another person's answers). `/checklists/assigned` is
-correctly scoped. Left alone deliberately: adding a check is an authorization
-change that could refuse callers who legitimately reach an assignment some
-other way, and it wants its own tests either way.
+Recorded here first as a read-only leak on `get_assignment_details`. It was
+worse than that: `complete_checklist` had no check either, so any
+authenticated caller holding an assignment id could **file a completion**
+against another tenant's checklist under their own name. The read exposed the
+checklist body (project name, title, description, every item); the completion
+each route returns was already caller-scoped, so no third party's answers were
+ever exposed. Same class as the batch-1 read holes and the 25 company_id write
+sites: the path parameter went straight into the query.
+
+`_assert_assignment_access` is now the gate for both.
+
+**Scoped through the PROJECT, not the assignment's own `company_id`.** An
+assignment always names a project, so its tenancy resolves the way
+`/projects/{id}/checklists` — the route that lists these very assignments —
+already resolves it. That keeps the two answers consistent (what you can see
+listed is what you can open), keeps the cross-company contractor branch
+working, and means an assignment with a null or `""` company_id does **not**
+become unreachable. `_same_company_or_403` is for a record with no project to
+scope through; this is not one. An assignment with no `project_id` **is** fail
+closed — there is nothing to scope through, so only the people it names may
+read it.
+
+**READ and WRITE are different rules.** Read: named on it, or project access —
+an admin reviewing a checklist was never assigned it, and that is the entire
+admin surface. Write: named on it and nothing else — a completion is one named
+person's attestation that they did the work, and project access is never
+grounds to file one. The owning company's admin may read an assignment and may
+not complete it; that pair is tested against itself.
+
+**A site device is EXCLUDED, explicitly, from both**, and refused *before* the
+project branch it would otherwise satisfy on the `project_id` it carries. A
+kiosk is a gate for workers tapping in and an inspector reading logs; a
+checklist assignment is a task given to a named person and a site device is not
+a person. It has no user id, so it can never appear in `assigned_user_ids`.
+Stated in the code as an exclusion so nobody restores it as a fallthrough.
+
+`test_checklist_assignment_access.py` — 23 cases. All 11 refusals and both
+wiring pins fail against the pre-fix routes; the 10 allow cases pass before and
+after, which is the half that proves the guard closed nothing that was
+legitimately open.
 
 ## `checklist_items` means two unrelated things
 
