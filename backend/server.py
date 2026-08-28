@@ -23401,6 +23401,18 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
             "status": lb.get("status", "draft"),
             "has_signature": bool(lb.get("cp_signature")),
             "cp_name": lb.get("cp_name"),
+            # WHOSE RECORD THIS IS, for the per-worker types.
+            # subcontractor_orientation files ONE DOCUMENT PER WORKER (the
+            # upsert is keyed on data.worker_id), so this list can hold four
+            # rows that agree on log_type, cp_name and status and differ only
+            # here. Without it the reports screen drew four identical rows for
+            # four different workers.
+            #
+            # Only orientations write data.worker_name at the top level — the
+            # other forms keep their names inside per-row arrays (osha_log
+            # entries, fall_protection rows) — so every other type serves null
+            # and the client renders nothing extra.
+            "worker_name": (lb.get("data") or {}).get("worker_name"),
             "updated_at": lb.get("updated_at").isoformat() if isinstance(lb.get("updated_at"), datetime) else str(lb.get("updated_at", "")),
             "failed_photo_count": failed_photos,
         })

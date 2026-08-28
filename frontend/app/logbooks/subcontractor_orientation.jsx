@@ -215,6 +215,14 @@ export default function SubcontractorOrientation() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // The SYNCHRONOUS half of the create guard. `saving` drives what the button
+  // looks like; this decides whether the handler runs. setState is async, so
+  // between the first tap calling setSaving(true) and React re-rendering the
+  // button as disabled there is a window in which a second tap still lands on
+  // an enabled button and enters the handler — and `saving` is still false
+  // when it reads it. A ref is written and read in the same tick, so the
+  // second entry sees it and leaves.
+  const savingRef = useRef(false);
   // 'ok' | 'offline' | 'error' — how the LAST roster refresh went. Drives the
   // OfflineNotice; an empty list is only ever presented as "none exist" when
   // the server actually answered.
@@ -596,11 +604,19 @@ export default function SubcontractorOrientation() {
   // and is deliberately never blocked — that is the correct path for new
   // information later in the day.
   const handleCreateNew = async () => {
+    // FIRST LINE, BEFORE THE VALIDATION RETURNS. The guard used to sit below
+    // them, so a double-tap raced through validation twice before anything was
+    // set. Claiming the handler is now the first thing it does, and the
+    // validation return releases the claim on its way out.
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     if (!newName.trim() || !newCompany.trim()) {
       toast.warning('Required', 'Worker name and company are required');
+      savingRef.current = false;
+      setSaving(false);
       return;
     }
-    setSaving(true);
     const ident = draftIdent || {
       workerId: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
       date: todayISO(),
@@ -739,6 +755,7 @@ export default function SubcontractorOrientation() {
       console.error(e);
       toast.error('Error', 'Could not create orientation');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -891,10 +908,17 @@ export default function SubcontractorOrientation() {
                   onPress={() => setShowAddForm(false)}
                   style={styles.cancelBtn}
                 />
+                {/* `disabled` EXPLICITLY, not left to `loading`. GlassButton
+                    happens to pass `disabled || loading` down to the Pressable
+                    today, so the loading prop disables it as a side effect —
+                    but that is GlassButton's internal choice and nothing here
+                    depends on it on purpose. This says what it means, and it
+                    keeps meaning it if the spinner ever moves. */}
                 <GlassButton
                   title={saving ? 'Saving...' : 'Save Orientation'}
                   onPress={handleCreateNew}
                   loading={saving}
+                  disabled={saving}
                   style={styles.saveBtn}
                 />
               </View>
@@ -1144,14 +1168,28 @@ function OrientationSignaturePanel({ onSign }) {
   const tFinalize = useT('finalize');
   const hintKey = affirmationHintKey(cpSignature, profileLoaded);
   const [saving, setSaving] = useState(false);
+  // Same synchronous guard as handleCreateNew, and it matters MORE here.
+  // This panel FREEZES the record — the signature is the freeze for an
+  // IMMEDIATE type — so a second entry is not a duplicate draft, it is a
+  // second finalize against something already locked.
+  const savingRef = useRef(false);
 
   const handleSign = async () => {
-    if (!isAffirmedSignature(cpSignature)) return;
+    // Claimed before the affirmation check, released if that check turns the
+    // tap away — the same order as handleCreateNew, for the same reason.
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
+    if (!isAffirmedSignature(cpSignature)) {
+      savingRef.current = false;
+      setSaving(false);
+      return;
+    }
     try {
       await innerAutoSave(cpName, cpSignature);
       await onSign(cpSignature, cpName);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -1171,7 +1209,10 @@ function OrientationSignaturePanel({ onSign }) {
         icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
         onPress={handleSign}
         loading={saving}
-        disabled={!isAffirmedSignature(cpSignature)}
+        // `saving` explicitly, alongside the affirmation gate — the button is
+        // dead both while there is nothing to sign and while a sign is in
+        // flight, and neither reason is left to GlassButton to infer.
+        disabled={saving || !isAffirmedSignature(cpSignature)}
         style={s.signBtn}
       />
       {/* This panel FREEZES the record — status is derived from the signature,
