@@ -511,3 +511,88 @@ also that `fall_protection` is the only registry entry with no `dob_reference`, 
 purpose (`server.py:3545` explains why), and it carries
 `FALL_PROTECTION_NOTICE` — the inspector view should print that notice, since
 the whole point of it is that this log is not a DOB or OSHA filing.
+
+## The checklist assignment feature serves flat and both clients read nested
+
+Found while wiring a route from the project screen to the assign UI (held —
+the route is built on `checklist-assign-hold` and must not merge until this is
+fixed). Recorded here in four parts; none of them are fixed.
+
+### 1. The break that holds the route
+
+`app/checklists.jsx:101` calls `details.checklist.items.forEach(...)` on the
+payload from `/checklists/assignments/{id}`, which has **no `checklist` key** —
+it serves `checklist_title` and `checklist_items` flat (`server.py:16220`). That
+throws, the surrounding catch swallows it, and the CP sees "Could not load
+checklist". It only misses when a completion record already exists, because the
+other branch runs then. So **a newly assigned checklist can never be opened by
+the person it was assigned to** — and exposing an assign path from the project
+screen would ship exactly that to a CP.
+
+Same mismatch, cosmetic rather than fatal, on two more surfaces:
+`project/[id].jsx:1348` reads `assignment.checklist?.title` / `.description` /
+`.items` (renders "Checklist", nothing, and 0) and `assignment.completions`
+(never served, so Complete reads 0/N and the amber clock never clears);
+`admin/checklists/index.jsx:670` reads `assignment.completions` where
+`/admin/checklists/{id}/assignments` serves `completion_stats`, a count.
+
+`assigned_users` is NOT part of this — it is persisted on the assignment doc at
+creation (`server.py:16130`) and does reach the client. Names render.
+
+**`completions` is not a rename, it does not exist.** `complete_checklist`
+stores only `item_completions` (a dict) on `checklist_completions`: no
+`progress` object, no `user_name`. The `[{user_id, progress:{completed,total}}]`
+shape both admin surfaces expect has to be COMPUTED — truthy `checked` flags
+over `len(checklist["items"])`.
+
+The fix is on three endpoints — `/projects/{id}/checklists`,
+`/checklists/assigned`, `/checklists/assignments/{id}` — nest `checklist`
+(title, description, items), derive `completions`, keep `assigned_users`.
+Nothing else consumes them: the only backend test touching them is
+`test_tenant_isolation_reads.py`, which asserts `require_project_access` on the
+project route and reads nothing from the body.
+
+### 2. Three response models that describe nothing
+
+`ChecklistResponse`, `ChecklistAssignmentResponse` and
+`ChecklistCompletionResponse` (`server.py:3313-3345`) are declared and used
+nowhere — **no checklist endpoint carries a `response_model=`**. So nothing
+validates or strips today, which is why the shape drifted this far unnoticed.
+`ChecklistAssignmentResponse` in particular documents `checklist_title` +
+`completion_stats`: the flat shape, which no client reads and which the fix
+above would change. Move them with the endpoints or delete them; do not leave
+them describing a shape nothing serves.
+
+### 3. `checklist_title` is frozen at creation
+
+The assign path copies `checklist.get("title")` onto the assignment document
+(`server.py:16128`) and `update_checklist` never propagates a rename back to
+`checklist_assignments`. Rename a checklist and every existing assignment keeps
+printing the old name. An argument for deriving the title in the read rather
+than storing a second copy of it.
+
+### 4. The re-assign path leaves the displayed names stale
+
+`server.py:16110` — when an assignment already exists for a (checklist,
+project) pair, it `$set`s `assigned_user_ids` and returns. It does NOT update
+`assigned_users`, the denormalized `[{id, name}]` list both admin surfaces
+actually render. So changing WHO a checklist is assigned to updates the list
+the server queries by and not the list the screen prints. Same root cause as
+(3): two copies of one fact, one of them updated.
+
+## `checklist_items` means two unrelated things
+
+**Do not grep-and-replace this key.** Two features use the name for different
+shapes in different collections:
+
+| | |
+|---|---|
+| `logbooks.data.checklist_items` | a DICT of safety-check booleans on the daily jobsite log — read at `server.py:15138`, `:21972`, `:22157`, plus `daily_jobsite.jsx:387/713` and `site/logbooks.jsx:459` |
+| `checklist_assignments.checklist_items` | a LIST of checklist items on the assignment feature's read models — `server.py:15966`, `:16192`, `:16221` |
+
+Renaming the second (as the nested-shape fix above would) with a blind
+find-and-replace takes the first with it and breaks the investor page-one
+renderer, which reads the daily jobsite dict to build its compliance line.
+`test_investor_page_one.py:133` and `test_report_six_defects.py:649-679` seed
+that dict and would be the ones to fail — but only if the tests are run, and
+the two are far enough apart in the file that the connection is easy to miss.
