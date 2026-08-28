@@ -545,6 +545,67 @@ QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 # appeared and the only one that changing would have accomplished nothing.
 # Documentation that can go stale independently of the thing it documents is
 # worse than none: it reads as the source of truth and is not.
+# ── THE CLIENT VERSION FLOOR ────────────────────────────────────────────────
+#
+# `runtimeVersion: {policy: "appVersion"}` means a device whose NATIVE build is
+# older than the current expo.version receives no OTA update at all, forever,
+# and is told nothing. On 2026-08-28 that produced a filed log rendering as a
+# blank editable form on one phone and correctly on another, and six source
+# traces were built before anyone read the bundle id off the screen.
+#
+# DERIVED, NOT DUPLICATED. The value is read out of frontend/app.json, which is
+# where the version it must be compared against already lives. A second copy in
+# an env var or a Python constant is a number somebody has to remember to bump
+# in step with a release, and this session has already found four fields that
+# were read and never written. A floor that silently under-reports forever is
+# that same failure with a compliance consequence.
+#
+# The env var is an override for a deploy that cannot see the file (a
+# backend-only image), never the normal path.
+#
+# ── THE BUMP RULE ───────────────────────────────────────────────────────────
+#
+# WHO:      whoever ships a NATIVE build (a new binary to the stores).
+# WHEN:     in the same PR as the expo.version bump, never afterwards.
+# TO WHAT:  the oldest native version still receiving OTA updates -- which,
+#           under the appVersion policy, is the version being shipped.
+# WHY NOT:  do NOT bump it for a JS-only release. An OTA reaches every device
+#           on a supported native build; raising the floor for one would mark
+#           installs as stranded that are receiving updates perfectly well.
+#
+# IT IS BUMPED ONLY WHEN A NATIVE CHANGE ACTUALLY STRANDS PEOPLE. That is the
+# whole trigger, and the reason the value is MINIMUM SUPPORTED rather than
+# LATEST: a device one JS release behind is not stranded and must not be told
+# it is. The cost of a false "out of date" on a CP's screen is that the next
+# one gets ignored.
+#
+# A FORGOTTEN FLOOR UNDER-REPORTS FOREVER AND NOBODY NOTICES. That is the
+# failure class four fields in this codebase already belong to -- read and
+# never written, or written once and never propagated. Two things guard
+# against it: the value lives in app.json beside the version it tracks, so a
+# release PR touches both lines in the same diff; and
+# src/utils/clientVersion.test.cjs asserts the floor is never ABOVE the shipped
+# version, which is the shape a stale floor eventually takes.
+def _read_client_minimum_supported() -> Optional[str]:
+    override = os.environ.get("CLIENT_MINIMUM_SUPPORTED", "").strip()
+    if override:
+        return override
+    try:
+        app_json = Path(__file__).resolve().parent.parent / "frontend" / "app.json"
+        with open(app_json, encoding="utf-8") as fh:
+            declared = (
+                ((json.load(fh) or {}).get("expo") or {}).get("extra") or {}
+            ).get("minimumSupportedVersion")
+        value = str(declared or "").strip()
+        return value or None
+    except Exception as e:  # pragma: no cover — never block boot on a config read
+        logger.warning(f"client minimum-supported read failed: {e!r}")
+        return None
+
+
+CLIENT_MINIMUM_SUPPORTED = _read_client_minimum_supported()
+
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 SCREENSHOT_ENABLED = False
@@ -3926,7 +3987,39 @@ def create_token(user_id: str, email: str, role: str, site_mode: bool = False, p
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+async def _record_client_version(user_id, version: str) -> None:
+    """Stamp the version this user's app last reported. Fire-and-forget."""
+    try:
+        await db.users.update_one(
+            {"_id": user_id},
+            {"$set": {
+                "client_version": version,
+                "client_version_seen_at": datetime.now(timezone.utc),
+            }},
+        )
+    except Exception as e:  # pragma: no cover — telemetry must never fail a request
+        logger.warning(f"client version stamp failed for {user_id}: {e!r}")
+
+
+def _client_version_needs_stamp(user: dict, reported: str) -> bool:
+    """Write only on a CHANGE or once a day.
+
+    This runs on every authenticated request, so an unconditional write would
+    add one to every read in the product. The user document is already in hand,
+    so the throttle costs no extra query.
+    """
+    if reported != (user.get("client_version") or ""):
+        return True
+    seen = user.get("client_version_seen_at")
+    if not isinstance(seen, datetime):
+        return True
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - seen) > timedelta(hours=24)
+
+
 async def get_current_user(
+    request: Request = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     token: Optional[str] = None,
 ):
@@ -3979,6 +4072,16 @@ async def get_current_user(
 
         user_data = serialize_id(user)
         user_data["site_mode"] = False
+
+        # WHICH INSTALL IS ON THE OTHER END. The admin surface answers "whose
+        # phone is stranded" from this, because the person who can act on a
+        # stale install is not the person holding the phone. Fire-and-forget so
+        # it can never add latency to a read, and throttled so it is not a
+        # write per request.
+        if request is not None:
+            reported = (request.headers.get("x-client-version") or "").strip()[:32]
+            if reported and _client_version_needs_stamp(user, reported):
+                asyncio.create_task(_record_client_version(user["_id"], reported))
         logger.info(f"✅ AUTH SUCCESS: User {user_id}, role={user_data.get('role')}")
         # Phase C1: tag the Sentry scope with user_id + company_id +
         # role for every authenticated request.
@@ -4006,15 +4109,12 @@ async def get_owner_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Owner access required")
     return current_user
 
-# A project that has been marked for deletion by an admin is invisible and
-# inert everywhere except the owner's pending-deletion review list: it must
-# not appear in listings, must not be readable by id, and must not be picked
-# up by any background scan (DOB sync, report mailer, prediction sweeps).
-# Spread this into a projects query alongside the is_deleted filter.
-ACTIVE_PROJECT_FILTER = {
-    "is_deleted": {"$ne": True},
-    "marked_for_deletion": {"$ne": True},
-}
+# MOVED TO lib/project_state.py, and imported rather than redefined. The
+# compliance detectors carried their own {"status": "active", "is_deleted": ...}
+# instead of this one and were still flagging a project an admin had marked for
+# deletion. A constant whose whole job is "every background scan agrees on this"
+# cannot live where a scan outside this file has to copy it.
+from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
 
 
 # ── Account activation gating ────────────────────────────────────────
@@ -21739,6 +21839,12 @@ async def version():
         "short": sha[:7] if sha != "unknown" else "unknown",
         "branch": os.environ.get("RAILWAY_GIT_BRANCH") or None,
         "built_at": os.environ.get("RAILWAY_DEPLOYMENT_ID") or None,
+        # The floor a client compares its own NATIVE version against. Null when
+        # this deploy could not read it, and the client treats null as "do not
+        # judge" rather than as "behind" — an install we cannot assess must not
+        # be accused. Unauthenticated like the rest of this endpoint: it is a
+        # number about the product, not about anyone using it.
+        "client_minimum_supported": CLIENT_MINIMUM_SUPPORTED,
     }
 
 @app.get("/checkin/{tag_id}")

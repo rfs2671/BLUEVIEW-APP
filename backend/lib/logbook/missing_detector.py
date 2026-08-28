@@ -38,6 +38,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from lib.logbook.daily_jobsite_source import submitted_dates
+from lib.project_state import ACTIVE_PROJECT_FILTER
 from lib.logbook.schema import (
     CATEGORY_DAILY_LOG,
     SOURCE_AUTO_DETECTED,
@@ -200,6 +201,35 @@ async def detect_missing_for_project(
     return written
 
 
+async def _has_ever_had_gate_activity(db, project) -> bool:
+    """Has anyone EVER checked in to this project, by either path?
+
+    Both sources, because the gate rollout runs two: `sign_ins` is the new
+    turnstile and `checkins` is the legacy collection, and a project may have
+    only one of them. Existence only -- one indexed lookup each, and the answer
+    does not change often enough to be worth caching.
+    """
+    project_id = str(project.get("_id") or project.get("id") or "")
+    if not project_id:
+        return False
+    try:
+        if await db.checkins.find_one(
+            {"project_id": project_id, "is_deleted": {"$ne": True}}, {"_id": 1},
+        ):
+            return True
+        if await db.sign_ins.find_one({"project_id": project_id}, {"_id": 1}):
+            return True
+    except Exception as e:  # pragma: no cover -- a failed read is not evidence
+        # FAIL OPEN. If the lookup itself fails we do not know the project is
+        # unworked, and treating an unreadable answer as "skip" would silently
+        # stop checking a live jobsite.
+        logger.warning(
+            f"[missing_detector] gate-activity check failed for {project_id}: {e!r}",
+        )
+        return True
+    return False
+
+
 async def run_missing_detector_for_all_projects(
     db,
     *,
@@ -218,16 +248,40 @@ async def run_missing_detector_for_all_projects(
     """
     summary = {
         "projects_scanned": 0,
+        "projects_skipped_no_gate_activity": 0,
         "missing_entries_written": 0,
         "errors": 0,
     }
-    cursor = db.projects.find({
-        "status": "active",
-        "is_deleted": {"$ne": True},
-    })
+    # ACTIVE_PROJECT_FILTER, not a local pair. This iterated
+    # {"status": "active", "is_deleted": ...}, and `projects.status` is written
+    # "active" at creation and never changed by anything -- so that clause
+    # matched every project ever created while reading as though it excluded
+    # something, and what it actually omitted was marked_for_deletion. On
+    # 2026-08-28 the detector was still writing nightly flags for 587 Prescott
+    # Place, marked for deletion, which the rest of the product treats as
+    # invisible and inert.
+    cursor = db.projects.find({**ACTIVE_PROJECT_FILTER})
     async for project in cursor:
         summary["projects_scanned"] += 1
         try:
+            # A PROJECT NOBODY HAS EVER WORKED THROUGH THE GATE IS NOT A
+            # COMPLIANCE GAP. 8 Walworth Street carried 28 flags with no
+            # check-in and no sign-in in its whole life: every expected day was
+            # invented, because "expected" meant "a weekday since the project
+            # row was created" and nothing else.
+            #
+            # THIS IS NOT "no check-ins that day". A project that uses the
+            # system can have a day the gate missed, and skipping those would
+            # be a detector that goes quiet exactly when it matters. Never, in
+            # the project's whole life, is evidence about the PROJECT.
+            #
+            # COUNTED, NOT SILENT. A project run entirely on paper is skipped
+            # here forever, and a compliance check that stops checking without
+            # saying so is the failure this file already made once in the other
+            # direction. The tick line names the number.
+            if not await _has_ever_had_gate_activity(db, project):
+                summary["projects_skipped_no_gate_activity"] += 1
+                continue
             written = await detect_missing_for_project(
                 db, project=project, now=now,
             )
