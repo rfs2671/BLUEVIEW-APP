@@ -73,9 +73,16 @@ function build({ requiredLogbooks = null, logTypeCatalog = null,
   `)({ requiredLogbooks, logTypeCatalog, scaffoldActive, toolboxDoneThisWeek, notifications });
 }
 
+// STANDS IN FOR WHAT /api/logbook-types SERVES, so it has to say what the
+// server says. LOGBOOK_TYPE_REGISTRY is the source; nothing here asserts a
+// label's text except the crane row below, so a stale name fails no test and
+// is only ever read by the next person — which is exactly how a wrong name
+// gets learned. preshift_signin said "Pre-Shift Safety Meeting" until #259
+// moved the registry onto the name the filed document and the worker's gate
+// affirmation both use.
 const CATALOG = [
   { key: 'daily_jobsite', label: 'Daily Jobsite Log' },
-  { key: 'preshift_signin', label: 'Pre-Shift Safety Meeting' },
+  { key: 'preshift_signin', label: 'Pre-Shift Sign-In' },
   { key: 'toolbox_talk', label: 'Tool Box Talk' },
   { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation' },
   { key: 'osha_log', label: 'OSHA Log Book' },
