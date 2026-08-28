@@ -4,6 +4,55 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-08-28 — a check that runs and cannot see the thing it is for
+
+Same family as the AST entry below, and a worse shape: that one was an assertion
+satisfied by an EXPLANATION of what it checked. This one is an assertion that
+matched nothing at all in the place that mattered, reported a clean subset, and
+looked like it was working.
+
+`test_project_response_delivers_what_the_app_reads` sweeps the frontend for
+fields read off a project and requires each to be declared on `ProjectResponse`
+— because that model is a hand-maintained allow-list and pydantic drops
+undeclared fields silently. Its first version was:
+
+    ([A-Za-z_$][\w$]*[Pp]roject[\w$]*)\s*\??\.\s*([a-z_][a-z0-9_]*)
+
+The receiver group requires **one character before "project"**. So it matched
+`cachedProject`, `effectiveProject` and `projectData`, and never matched the
+bare `project` — which is the commonest receiver in this codebase and the exact
+one in the line that caused the outage:
+
+    project?.dropbox_folder_path ? <Sync Dropbox> : <Link Dropbox Folder>
+
+It found `dropbox_last_synced` and `dropbox_sync` and MISSED
+`dropbox_folder_path`, the field the whole investigation was about.
+
+NOTHING FAILED. The sweep ran, matched, and produced a plausible result. It was
+caught only because the count looked wrong — two of three known fields, when all
+three were equally undeclared — and that noticing was luck. Had the model been
+missing only `dropbox_folder_path`, the sweep would have returned empty and read
+as proof that nothing was wrong.
+
+THE RULE THAT WOULD HAVE CAUGHT IT: a pattern-based check needs an assertion
+that the PATTERN matches, on the literal shape it exists to find, separate from
+the sweep that uses it. The file now carries `test_the_pattern_matches_a_bare_
+project_variable` and three sibling receiver shapes, which fail on the old regex
+and pass on the new one.
+
+    A sweep that finds SOME of what it is looking for is not partially
+    correct. It is a green test with a blind spot, and the blind spot is
+    invisible precisely where the sweep is the only thing looking.
+
+Cost, for the record: this field's absence produced three separate
+investigations — a missing sync run record, an unreachable Sync button, and a
+project reported as unlinked while the database held its folder path — before
+the response model was suspected at all. The failure is invisible from every
+direction: the database is right, the write is right, the client code is right,
+and no error appears anywhere.
+
+---
+
 ## SCOPE — 2026-08-27 — GET /checkins cannot resolve a trade pairing, and returns a blank instead
 
 #248 removed the `worker.get("trade")` fallback from all five check-in read
