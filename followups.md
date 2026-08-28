@@ -2,6 +2,44 @@
 
 Known gaps and deferred work, newest first.
 
+- **[LOW] Two folder-grouping implementations now exist, and the kiosk keeping
+  its own was a decision, not drift.**
+  `src/utils/dropboxTree.js` is the shared one, lifted out of
+  `app/site/documents.jsx` during the Dropbox redesign and now used by
+  `app/projects/[id]/files.jsx` and `app/documents.jsx`. The kiosk screen still
+  carries its private original.
+
+  **They do not agree, and that is the whole reason one was not deleted.**
+
+  | | `site/documents.jsx`'s `folderOf` | `dropboxTree.js`'s `folderPathOf` |
+  |---|---|---|
+  | key | the immediate parent's NAME | the full path above the file |
+  | `Approved/Plans/a.pdf` | `Plans` | `Approved/Plans` |
+  | `Superseded/Plans/a.pdf` | `Plans` | `Superseded/Plans` |
+  | result | both files in ONE group | two groups |
+
+  So switching the kiosk to the shared helper is not a refactor — it changes
+  what a superintendent sees on the tablet. Today two same-named folders under
+  different parents merge into a single list; afterwards they separate, the
+  group headers grow from `Plans` to `Approved/Plans`, and the group count on
+  that screen goes up. On a narrow tablet the longer headers are the part most
+  likely to look wrong.
+
+  **Which behaviour is right is a question about the tablet, not about the
+  code.** The full path is more honest — two folders named `Plans` are two
+  folders, and merging them produces a list belonging to neither. But the kiosk
+  is a glanceable screen used one-handed outdoors, and short headers may be
+  worth more there than precision. Nobody has looked at a real project's folder
+  layout on the device to decide, and the redesign that produced the shared
+  helper was scoped to the CP/admin screens; changing kiosk output from inside
+  it would have been an unreviewed behaviour change riding along with a rename.
+
+  **To close this**, open a real project's Dropbox tree on the tablet and check
+  whether any two folders share a name under different parents. If none do, the
+  two implementations are behaviourally identical on live data and the kiosk can
+  adopt the shared one for free. If some do, decide deliberately which grouping
+  the kiosk wants, and if it wants the parent-name form, move THAT into
+  `dropboxTree.js` as a named option rather than leaving a second copy.
 - **[MED] `sst_status` can be set to "expiring_soon" by a certification that is
   not an SST card.**
   `register_and_checkin` derives the frozen per-check-in SST verdict from a set

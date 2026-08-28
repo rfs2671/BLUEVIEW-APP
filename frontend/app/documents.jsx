@@ -12,6 +12,7 @@ import {
   Download,
   ExternalLink,
   FolderOpen,
+  Folder,
   Building2,
   ChevronDown,
   RefreshCw,
@@ -39,6 +40,10 @@ import {
   warmDocCache,
 } from '../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import {
+  UNFILED, folderLabel, groupByFolder, collidingNames, isColliding,
+  treeHeadline, COLLISION_NOTE,
+} from '../src/utils/dropboxTree';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
@@ -129,9 +134,21 @@ export default function DocumentsScreen() {
     }
   }, [isAuthenticated]);
 
-  // Projects with Dropbox enabled — the only ones this screen can list files for.
+  /**
+   * Projects with a linked Dropbox folder — the only ones this screen can list
+   * files for.
+   *
+   * THIS FILTER EMPTIED THE WHOLE SCREEN. It read `dropbox_enabled &&
+   * dropbox_folder`, two fields create_project writes once (false and null)
+   * and nothing has written since. So it matched NOTHING, for every user, and
+   * the screen rendered "No projects have Dropbox folders linked yet" —
+   * a sentence about the operator's configuration, produced by a bug.
+   *
+   * Linked-ness is `bool(dropbox_folder_path)`. One field, the one the linker
+   * actually writes and the one ProjectResponse actually serves.
+   */
   const dropboxOnly = (list) =>
-    (Array.isArray(list) ? list : []).filter((p) => p.dropbox_enabled && p.dropbox_folder);
+    (Array.isArray(list) ? list : []).filter((p) => Boolean(p.dropbox_folder_path));
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -196,7 +213,7 @@ export default function DocumentsScreen() {
       setFiles([]);
       setFilesState('ok');
       cacheDocList(scopeKey, []);
-      if (!selectedProject?.dropbox_folder) {
+      if (!selectedProject?.dropbox_folder_path) {
         toast.warning('Not Connected', 'This project does not have a Dropbox folder linked. Ask your admin to connect it.');
       }
     } else {
@@ -206,6 +223,13 @@ export default function DocumentsScreen() {
     }
     setRefreshing(false);
   };
+
+  // Both numbers from THIS list. The sync response's recursive file_count is
+  // about Dropbox, not about the rows below, and half a sentence from each
+  // source is a sentence true of neither.
+  const fileGroups = groupByFolder(files);
+  const collisions = collidingNames(files);
+  const headline = treeHeadline(files, selectedProject?.dropbox_last_synced);
 
   const handleProjectChange = (project) => {
     setSelectedProject(project);
@@ -441,9 +465,8 @@ export default function DocumentsScreen() {
               {/* Actions row */}
               {selectedProject && (
                 <View style={s.refreshRow}>
-                  <Text style={s.fileCount}>
-                    {files.length} file{files.length !== 1 ? 's' : ''}
-                  </Text>
+                  {/* Never a bare count under an ambiguous label. */}
+                  <Text style={s.fileCount}>{headline}</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
                     {(user?.role === 'admin' || user?.role === 'owner') && (
                       <Pressable
@@ -483,7 +506,26 @@ export default function DocumentsScreen() {
 
               {/* File List */}
               {files.length > 0 ? (
-                files.map((file, index) => {
+                fileGroups.map(([folderPath, groupFiles]) => (
+                <View key={folderPath} style={s.folderGroup}>
+                  <View style={s.folderGroupHeader}>
+                    {/* A TOKEN, NOT THE DROPBOX BRAND HEX. This screen is one
+                        of the 17 under tokens.test.cjs's palette discipline, and
+                        the icon is a folder rather than a Dropbox mark -- the
+                        brand blue was borrowed from files.jsx, which is not in
+                        that scanned set. */}
+                    <Folder size={14} strokeWidth={1.5} color={colors.text.muted} />
+                    <Text style={s.folderGroupName} numberOfLines={1}>
+                      {folderLabel(folderPath)}
+                    </Text>
+                    <Text style={s.folderGroupCount}>
+                      {groupFiles.length} file{groupFiles.length === 1 ? '' : 's'}
+                    </Text>
+                  </View>
+                  {folderPath !== UNFILED && folderLabel(folderPath) !== folderPath && (
+                    <Text style={s.folderGroupPath} numberOfLines={1}>{folderPath}</Text>
+                  )}
+                {groupFiles.map((file, index) => {
                   const { Icon: FileIcon, color: iconColor } = getFileIcon(file.name);
                   const isLoading = loadingFile === file.path;
 
@@ -508,11 +550,20 @@ export default function DocumentsScreen() {
                           {formatFileSize(file.size)}
                           {file.modified ? ` • ${formatDate(file.modified)}` : ''}
                         </Text>
+                        {/* Two rows sharing a filename are ONE object in R2 —
+                            the sync key omits the folder. The tree renders them
+                            in two places, so it must not also claim they are
+                            two documents. */}
+                        {isColliding(file, collisions) && (
+                          <Text style={s.collisionNote}>{COLLISION_NOTE}</Text>
+                        )}
                       </View>
                       <ExternalLink size={16} strokeWidth={1.5} color={colors.text.muted} />
                     </Pressable>
                   );
-                })
+                })}
+                </View>
+                ))
               ) : selectedProject && filesState === 'ok' ? (
                 /* "No Documents" ONLY when the server actually returned none. */
                 <GlassCard style={s.emptyCard}>
@@ -546,6 +597,35 @@ export default function DocumentsScreen() {
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: { flex: 1 },
+  folderGroup: {
+    marginBottom: spacing.lg,
+  },
+  folderGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  folderGroupName: {
+    flex: 1,
+    ...typography.label,
+    color: colors.text.secondary,
+  },
+  folderGroupCount: {
+    fontSize: 12,
+    color: colors.text.subtle,
+  },
+  folderGroupPath: {
+    fontSize: 11,
+    color: colors.text.subtle,
+    marginBottom: spacing.sm,
+  },
+  collisionNote: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.text.muted,
+    marginTop: 4,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

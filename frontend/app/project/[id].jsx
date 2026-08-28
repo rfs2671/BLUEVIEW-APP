@@ -33,9 +33,7 @@ import {
   XCircle,
   Mail,
   Cloud,
-  Folder,
   FileText,
-  Link as LinkIcon,
   Zap,
   Radio,
   Clock,
@@ -94,20 +92,6 @@ const siteDevicesAPI = {
   },
   toggle: async (projectId, deviceId) => {
     const response = await apiClient.put(`/api/projects/${projectId}/site-devices/${deviceId}/toggle`);
-    return response.data;
-  },
-};
-
-// Dropbox API for project-specific integration
-const dropboxAPI = {
-  linkFolder: async (projectId, folderPath) => {
-    const response = await apiClient.post(`/api/projects/${projectId}/link-dropbox`, {
-      folder_path: folderPath,
-    });
-    return response.data;
-  },
-  getFiles: async (projectId) => {
-    const response = await apiClient.get(`/api/projects/${projectId}/dropbox-files`);
     return response.data;
   },
 };
@@ -190,7 +174,6 @@ export default function ProjectDetailScreen() {
   const [devicesState, setDevicesState] = useState('ok');
   const [onSiteState, setOnSiteState] = useState('ok');
   const [checklistsState, setChecklistsState] = useState('ok');
-  const [dropboxState, setDropboxState] = useState('ok');
   const [waGroupsState, setWaGroupsState] = useState('ok');
   const { getProjectById } = useProjects();
   const { getActiveCheckIns } = useCheckIns();
@@ -223,12 +206,6 @@ export default function ProjectDetailScreen() {
   const [addingDevice, setAddingDevice] = useState(false);
   const [showCredentials, setShowCredentials] = useState(null);
 
-  // Dropbox integration
-  const [showDropboxModal, setShowDropboxModal] = useState(false);
-  const [dropboxFolder, setDropboxFolder] = useState('');
-  const [linkingDropbox, setLinkingDropbox] = useState(false);
-  const [dropboxFiles, setDropboxFiles] = useState([]);
-  const [loadingFiles, setLoadingFiles] = useState(false);
   const [checklists, setChecklists] = useState([]);
   const [loadingChecklists, setLoadingChecklists] = useState(false);
   const [whatsappActive, setWhatsappActive] = useState(false);
@@ -298,7 +275,7 @@ export default function ProjectDetailScreen() {
     try {
       // PR D: read the SERVER object FIRST. WatermelonDB's local projects schema
       // omits ~29 server fields (nyc_bin, project_class, last_dob_sync_at,
-      // dropbox_folder/enabled, …), so a local-first read renders "No BIN" etc.
+      // dropbox_folder_path, …), so a local-first read renders "No BIN" etc.
       // even when the server has the value. The local record is the OFFLINE
       // FALLBACK only — this screen needs the network anyway (DOB tiles, sync
       // state, plans). We deliberately do NOT mirror those columns locally;
@@ -344,11 +321,6 @@ export default function ProjectDetailScreen() {
         setDevicesState(devR.status);
         if (devR.status === 'ok') {
           setSiteDevices(Array.isArray(devR.data) ? devR.data : []);
-        }
-
-        // Fetch Dropbox files if connected
-        if (projectData?.dropbox_enabled && projectData?.dropbox_folder) {
-          fetchDropboxFiles();
         }
       }
 
@@ -416,23 +388,6 @@ export default function ProjectDetailScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  };
-
-  const fetchDropboxFiles = async () => {
-    setLoadingFiles(true);
-    const r = await settleFetch(() => dropboxAPI.getFiles(projectId));
-    setDropboxState(r.status);
-    if (r.status === 'ok') {
-      // The endpoint returns a BARE ARRAY (not {files:[...]}); reading
-      // result.files left this [] on every project. Match the Array.isArray
-      // pattern the other file consumers use.
-      setDropboxFiles(Array.isArray(r.data) ? r.data : []);
-    } else {
-      console.error('Failed to fetch Dropbox files:', r.error);
-      // Do NOT blank to [] — that renders "No files in this folder", a claim
-      // about the folder we never got to look at.
-    }
-    setLoadingFiles(false);
   };
 
   const fetchChecklists = async () => {
@@ -666,63 +621,6 @@ export default function ProjectDetailScreen() {
     }
   };
 
-  const handleLinkDropbox = async () => {
-    if (!dropboxFolder.trim()) {
-      toast.error('Error', 'Please enter a Dropbox folder path');
-      return;
-    }
-
-    setLinkingDropbox(true);
-    try {
-      await dropboxAPI.linkFolder(projectId, dropboxFolder);
-      toast.success('Connected', 'Dropbox folder linked successfully');
-      setDropboxFolder('');
-      setShowDropboxModal(false);
-      await fetchData();
-    } catch (error) {
-      console.error('Failed to link Dropbox:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not link Dropbox folder');
-    } finally {
-      setLinkingDropbox(false);
-    }
-  };
-
-  const handleDisconnectDropbox = () => {
-    const confirmDisconnect = async () => {
-      try {
-        // NULL, NEVER ''. The server treats null as unlink and BOTH '' and '/'
-        // as "link to the root of the Dropbox scope" (link_dropbox_to_project).
-        // Sending '' from a control labelled Disconnect stored '/' instead of
-        // clearing the field, and the next sync -- which lists recursively --
-        // would have pulled the company's ENTIRE Dropbox into project_files
-        // for this one project and copied every file to R2.
-        // It never fired only because isDropboxConnected reads dropbox_enabled
-        // and dropbox_folder, two fields nothing has written since
-        // create_project, so this button has never rendered. Correcting those
-        // field names is what arms it; this is fixed first so that correction
-        // is safe to make.
-        await dropboxAPI.linkFolder(projectId, null);
-        toast.success('Disconnected', 'Dropbox folder unlinked');
-        setDropboxFiles([]);
-        await fetchData();
-      } catch (error) {
-        console.error('Failed to disconnect Dropbox:', error);
-        toast.error('Error', 'Could not disconnect Dropbox');
-      }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm('Disconnect Dropbox folder from this project?')) {
-        confirmDisconnect();
-      }
-    } else {
-      Alert.alert('Disconnect Dropbox', 'Remove Dropbox folder link from this project?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Disconnect', style: 'destructive', onPress: confirmDisconnect },
-      ]);
-    }
-  };
-
   // No valid BIN flag — shared isValidBin() (mirrors backend
   // _is_placeholder_bin). When false, DOB scans silently return nothing, so we
   // flag it on the DOB Compliance action card (the dob-logs screen has the full
@@ -730,7 +628,7 @@ export default function ProjectDetailScreen() {
   const hasValidBin = isValidBin(project?.nyc_bin);
 
   const quickActions = [
-    { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/construction-plans`, color: '#3b82f6' },
+    { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/files`, color: '#3b82f6' },
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
     // sits ABOVE the legacy DOB Compliance entry; both are reachable.
@@ -886,8 +784,6 @@ export default function ProjectDetailScreen() {
       </AnimatedBackground>
     );
   }
-  const isDropboxConnected = project?.dropbox_enabled && project?.dropbox_folder;
-
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -1308,70 +1204,43 @@ export default function ProjectDetailScreen() {
           {/* Permit Renewal Alert — REMOVED. Second of two identical
               mounts; see the note at the first one above. */}
 
-          {/* Dropbox Integration Section - Admin Only */}
+          {/* ── FILES ────────────────────────────────────────────────────
+              ONE ROW, AND THIS SCREEN IS NOT THE WRITER.
+
+              What stood here was a whole second Dropbox surface: a free-text
+              path modal, a Disconnect button, and a file list — all of it
+              behind `project.dropbox_enabled && project.dropbox_folder`, two
+              fields create_project writes once and nothing has written since.
+              So the section rendered its empty state on every project forever,
+              and the Disconnect inside it — which sent '' where the server
+              reads '' as "link to the ROOT of the Dropbox scope" — was never
+              reachable to fire. A dead control guarding a live trap.
+
+              Linked-ness is `bool(dropbox_folder_path)` and the folder is
+              managed on projects/[id]/files, which is the screen that renders
+              the tree. This row states which it is and taps through. */}
           {isAdmin && (
             <>
-              <View style={s.sectionHeader}>
-                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>DROPBOX INTEGRATION</Text>
-                {!isDropboxConnected && (
-                  <GlassButton
-                    title="Link Folder"
-                    icon={<LinkIcon size={16} color={colors.text.primary} />}
-                    onPress={() => setShowDropboxModal(true)}
-                  />
-                )}
-              </View>
-              
-              {isDropboxConnected ? (
-                <View style={s.itemsList}>
-                  <GlassCard style={s.dropboxCard}>
-                    <View style={s.dropboxHeader}>
-                      <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
-                      <View style={s.dropboxInfo}>
-                        <Text style={s.dropboxTitle}>Connected Folder</Text>
-                        <Text style={s.dropboxPath}>{project.dropbox_folder}</Text>
-                      </View>
-                      <Pressable
-                        onPress={handleDisconnectDropbox}
-                        style={s.disconnectBtn}
-                      >
-                        <Text style={s.disconnectText}>Disconnect</Text>
-                      </Pressable>
-                    </View>
-
-                    {loadingFiles ? (
-                      <View style={s.filesLoading}>
-                        <ActivityIndicator size="small" color={colors.text.primary} />
-                        <Text style={s.filesLoadingText}>Loading files...</Text>
-                      </View>
-                    ) : dropboxFiles.length > 0 ? (
-                      <View style={s.filesList}>
-                        <Text style={s.filesHeader}>FILES ({dropboxFiles.length})</Text>
-                        {dropboxFiles.map((file, idx) => (
-                          <View key={idx} style={s.fileRow}>
-                            <FileText size={16} strokeWidth={1.5} color={colors.text.muted} />
-                            <Text style={s.fileName} numberOfLines={1}>{file.name}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    ) : dropboxState !== 'ok' ? (
-                      /* We never got to look in the folder — don't report it
-                         as empty. */
-                      <OfflineNotice mode={dropboxState} />
-                    ) : (
-                      <View style={s.noFiles}>
-                        <Text style={s.noFilesText}>No files in this folder</Text>
-                      </View>
-                    )}
-                  </GlassCard>
-                </View>
-              ) : (
-                <GlassCard style={s.emptyCard}>
-                  <Cloud size={40} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={s.emptyText}>No Dropbox folder linked</Text>
-                  <Text style={s.emptySubtext}>Link a Dropbox folder to share project documents</Text>
+              <Text style={s.sectionLabel}>FILES</Text>
+              <Pressable
+                onPress={() => router.push(`/projects/${projectId}/files`)}
+                style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+              >
+                <GlassCard style={s.dropboxRow}>
+                  <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
+                  <View style={s.dropboxRowInfo}>
+                    <Text style={s.dropboxRowPath} numberOfLines={1}>
+                      {project?.dropbox_folder_path || 'Not linked'}
+                    </Text>
+                    <Text style={s.dropboxRowHint}>
+                      {project?.dropbox_folder_path
+                        ? 'Open the project files'
+                        : 'Choose a Dropbox folder for this project'}
+                    </Text>
+                  </View>
+                  <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
                 </GlassCard>
-              )}
+              </Pressable>
             </>
           )}
 
@@ -1745,57 +1614,6 @@ export default function ProjectDetailScreen() {
           </View>
         </Modal>
 
-        {/* Link Dropbox Folder Modal */}
-        <Modal
-          visible={showDropboxModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowDropboxModal(false)}
-        >
-          <View style={s.modalOverlay}>
-            <Pressable style={s.modalBackdrop} onPress={() => setShowDropboxModal(false)} />
-            <View style={s.modalContent}>
-              <GlassCard variant="modal" style={s.modalCard}>
-                <View style={s.modalHeader}>
-                  <Text style={s.modalTitle}>Link Dropbox Folder</Text>
-                  <Pressable onPress={() => setShowDropboxModal(false)}>
-                    <X size={24} color={colors.text.primary} />
-                  </Pressable>
-                </View>
-
-                <Text style={s.modalDesc}>
-                  Enter the path to your Dropbox folder containing project documents.
-                </Text>
-
-                <View style={s.modalForm}>
-                  <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>FOLDER PATH</Text>
-                    <GlassInput
-                      value={dropboxFolder}
-                      onChangeText={setDropboxFolder}
-                      placeholder="/Projects/Downtown Building"
-                    />
-                  </View>
-
-                  <View style={s.infoBox}>
-                    <Folder size={16} strokeWidth={1.5} color="#0061FF" />
-                    <Text style={s.infoText}>
-                      All users you create will be able to view files from this folder.
-                    </Text>
-                  </View>
-
-                  <GlassButton
-                    title={linkingDropbox ? 'Linking...' : 'Link Folder'}
-                    onPress={handleLinkDropbox}
-                    loading={linkingDropbox}
-                    style={s.addButton}
-                  />
-                </View>
-              </GlassCard>
-            </View>
-          </View>
-        </Modal>
-
         {/* Credentials Display Modal */}
         <Modal
           visible={!!showCredentials}
@@ -1977,6 +1795,25 @@ function buildStyles(colors, isDark) {
     marginBottom: 0,
     paddingHorizontal: 0,
   },
+  dropboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  dropboxRowInfo: {
+    flex: 1,
+  },
+  dropboxRowPath: {
+    fontSize: 15,
+    color: colors.text.primary,
+  },
+  dropboxRowHint: {
+    fontSize: 12,
+    color: colors.text.muted,
+    marginTop: 2,
+  },
   headerAddBtn: {
     width: 32,
     height: 32,
@@ -2128,78 +1965,6 @@ function buildStyles(colors, isDark) {
   },
   toggleBtn: {
     flex: 1,
-  },
-  dropboxCard: {
-    padding: spacing.md,
-  },
-  dropboxHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-    paddingBottom: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.glass.border,
-  },
-  dropboxInfo: {
-    flex: 1,
-  },
-  dropboxTitle: {
-    fontSize: 13,
-    color: colors.text.muted,
-    marginBottom: 2,
-  },
-  dropboxPath: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#0061FF',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  disconnectBtn: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  disconnectText: {
-    fontSize: 13,
-    color: colors.status.error,
-  },
-  filesLoading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-  filesLoadingText: {
-    fontSize: 13,
-    color: colors.text.muted,
-  },
-  filesList: {
-    gap: spacing.xs,
-  },
-  filesHeader: {
-    ...typography.label,
-    fontSize: 10,
-    color: colors.text.muted,
-    marginBottom: spacing.xs,
-  },
-  fileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  fileName: {
-    flex: 1,
-    fontSize: 13,
-    color: colors.text.primary,
-  },
-  noFiles: {
-    paddingVertical: spacing.md,
-    alignItems: 'center',
-  },
-  noFilesText: {
-    fontSize: 13,
-    color: colors.text.muted,
   },
   emptyCard: {
     alignItems: 'center',

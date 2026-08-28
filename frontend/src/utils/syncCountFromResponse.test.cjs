@@ -83,68 +83,76 @@ function textsIn(node) {
   return out;
 }
 
-const SETTINGS = 'app/projects/[id]/dropbox-settings.jsx';
-const PLANS = 'app/projects/[id]/construction-plans.jsx';
+const FILES = 'app/projects/[id]/files.jsx';
+const PLANS = FILES;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 1. The settings screen: the response is captured and used, and the
-//    mid-sync re-read is GONE.
+// 1. THE HEADLINE TAKES BOTH ITS NUMBERS FROM THE LIST, NOT FROM THE SYNC.
+//
+//    dropbox-settings.jsx is gone -- it was a second screen for one field, and
+//    its `setFileCount(res.file_count)` is gone with it. What replaced it is a
+//    sentence: "412 files in 9 folders · last synced 3:04 PM".
+//
+//    `POST /sync-dropbox` returns a file_count taken from a RECURSIVE Dropbox
+//    listing while the background copy into project_files is still running. It
+//    is correct about Dropbox and wrong about the tree on screen. Taking the
+//    file count from it and the folder count from the rows would produce a
+//    sentence true of neither -- so the headline is derived, in one call, from
+//    the one array being rendered.
 // ═══════════════════════════════════════════════════════════════════════════
-const settingsTree = ast(SETTINGS);
-const dsSync = findFn(settingsTree, 'handleSync');
+const filesTree = ast(FILES);
 
-// syncProject's result is assigned, not awaited-and-dropped.
-let captured = false;
-walk(dsSync, (n) => {
+// The headline is computed by the shared helper over the rendered list.
+let headlineFromList = false;
+walk(filesTree, (n) => {
+  if (n.type !== 'VariableDeclarator') return;
+  if (!n.id || n.id.name !== 'headline' || !n.init) return;
+  if (n.init.type === 'CallExpression'
+      && n.init.callee.type === 'Identifier'
+      && n.init.callee.name === 'treeHeadline') {
+    headlineFromList = true;
+  }
+});
+ok(headlineFromList, 'files: the headline is treeHeadline() over the file list');
+
+// And nothing anywhere on this screen feeds file_count into a rendered count.
+let countFromSync = false;
+walk(filesTree, (n) => {
   if (n.type !== 'VariableDeclarator' || !n.init) return;
+  const name = n.id && n.id.name;
+  if (!name || !/count|headline|total/i.test(name)) return;
   walk(n.init, (c) => {
-    if (c.type === 'CallExpression'
-        && c.callee.type === 'MemberExpression'
-        && c.callee.property.name === 'syncProject') captured = true;
+    if (c.type === 'MemberExpression' && c.property && c.property.name === 'file_count') {
+      countFromSync = true;
+    }
   });
 });
-ok(captured, 'settings: syncProject result is captured, not discarded');
+ok(!countFromSync,
+  'files: no rendered count is derived from the sync response file_count');
 
-ok(callsTo(dsSync, 'getProjectFiles').length === 0,
-  'settings: NO getProjectFiles re-read inside handleSync');
-
-// setFileCount's argument must mention file_count and must NOT use .length
-let usesFileCount = false;
-let usesLength = false;
-for (const call of callsTo(dsSync, 'setFileCount').concat(
-  (() => { const o = []; walk(dsSync, (n) => {
-    if (n.type === 'CallExpression' && n.callee.type === 'Identifier'
-        && n.callee.name === 'setFileCount') o.push(n); }); return o; })())) {
-  walk(call, (n) => {
-    if (n.type === 'MemberExpression' && n.property && n.property.name === 'file_count') usesFileCount = true;
-    if (n.type === 'MemberExpression' && n.property && n.property.name === 'length') usesLength = true;
-  });
-}
-ok(usesFileCount, 'settings: the count comes from response.file_count');
-ok(!usesLength, 'settings: the count is NOT a .length of a mid-sync row read');
+// There is no setFileCount state left to go stale between mounts.
+let hasFileCountState = false;
+walk(filesTree, (n) => {
+  if (n.type === 'Identifier' && n.name === 'setFileCount') hasFileCountState = true;
+});
+ok(!hasFileCountState,
+  'files: the standalone fileCount state is gone -- the count is derived');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. The label no longer claims the copy is complete.
+// 2. The label still never claims the copy is complete.
 // ═══════════════════════════════════════════════════════════════════════════
 let claimsSynced = false;
-walk(settingsTree, (n) => {
+walk(filesTree, (n) => {
   if (n.type !== 'JSXText') return;
   if (/files\s+synced/i.test(n.value)) claimsSynced = true;
 });
-ok(!claimsSynced, 'settings: no "N files synced" label survives');
-
-const dsToasts = textsIn(dsSync);
-ok(!dsToasts.some((t) => /synchronized/i.test(t)),
-  'settings: the toast does not claim files are synchronized');
-
-// "Last Synced" stays -- it is the one honest completed-sync claim, stamped by
-// the background task when it finishes.
-ok(textsIn(settingsTree).some((t) => /Last Synced/.test(t)),
-  'settings: the Last Synced stat is kept');
+ok(!claimsSynced, 'files: no "N files synced" label survives');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. The plans screen: same response used, same claim withdrawn. It still
-//    re-reads the LIST, because it renders rows -- that is not a count.
+// 3. handleSync: the response's file_count is still used for the TOAST --
+//    "Copying 412 files from Dropbox" is a statement about the TARGET, not
+//    about the tree, and it is the honest thing to say while the copy runs.
+//    The screen still re-reads the LIST, because it renders rows.
 // ═══════════════════════════════════════════════════════════════════════════
 const plansTree = ast(PLANS);
 const cpSync = findFn(plansTree, 'handleSync');

@@ -152,13 +152,57 @@ class TheAppCanReadWhatItAsksFor(unittest.TestCase):
         self.assertEqual(p.dropbox_folder_path, "/588 plans")
         self.assertEqual(p.dropbox_sync["synced"], 15)
 
-    def test_the_dead_fields_are_still_declared(self):
-        """dropbox_enabled and dropbox_folder are dead -- nothing has written
-        either since create_project -- but project/[id].jsx still reads them and
-        removing them changes that screen. Kept deliberately; pinned so the
-        removal is a decision taken with the redesign rather than a drive-by."""
+    def test_the_dead_fields_are_still_declared_but_nothing_reads_them_now(self):
+        """dropbox_enabled and dropbox_folder are dead on both sides now.
+
+        They were always dead as DATA -- create_project writes false and null
+        once and nothing writes either again. What kept them in the model was
+        that screens still READ them: project/[id].jsx gated its whole Dropbox
+        block on `dropbox_enabled && dropbox_folder`, and documents.jsx
+        filtered its project list on the same pair, which is why that screen
+        was empty for every user on every project. The redesign deleted the
+        block and repointed the filter, so the last reader is gone.
+
+        They stay declared because removing them is a server.py change and the
+        frontend half shipped first. This assertion is now the pin for that
+        removal rather than for their retention: when the backend half lands,
+        this test is what it deletes."""
         self.assertIn("dropbox_enabled", server.ProjectResponse.model_fields)
         self.assertIn("dropbox_folder", server.ProjectResponse.model_fields)
+
+    def test_no_screen_reads_the_dead_fields_any_more(self):
+        """The half of the above that is enforceable today.
+
+        A field nothing writes, read by a screen, is a control that renders
+        its empty state for ever -- and, on project/[id].jsx, a Disconnect
+        button that could never fire while still holding a live root-link
+        trap behind it.
+        """
+        pattern = re.compile(r"[?.]\s*(dropbox_enabled|dropbox_folder)(?![_a-zA-Z])")
+        # COMMENTS ARE STRIPPED FIRST, not filtered line by line. The screens
+        # now carry multi-line explanations of why these fields are dead, and
+        # those explanations name them -- a per-line "starts with //" test
+        # passes the opening line of such a block and then trips on its
+        # continuation lines.
+        block = re.compile(r"/\*.*?\*/", re.S)
+        line_comment = re.compile(r"^\s*//.*$", re.M)
+        blank = lambda m: re.sub(r"[^\n]", " ", m.group(0))
+
+        offenders = []
+        for path in _sources():
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            # Blanked, not deleted, so offsets stay true to the file and the
+            # reported line is the real one.
+            src = line_comment.sub(blank, block.sub(blank, raw))
+            for m in pattern.finditer(src):
+                nl = raw.rfind("\n", 0, m.start()) + 1
+                end = raw.find("\n", m.start())
+                line = raw[nl:end if end != -1 else len(raw)]
+                offenders.append("%s: %s" % (path.name, line.strip()[:90]))
+        self.assertEqual(
+            offenders, [],
+            "a screen still reads a field nothing writes:\n" + "\n".join(offenders),
+        )
 
 
 class TheSweepItselfWorks(unittest.TestCase):
@@ -169,8 +213,12 @@ class TheSweepItselfWorks(unittest.TestCase):
                  if "projectsAPI.getById" in p.read_text(encoding="utf-8", errors="replace")]
         self.assertGreaterEqual(len(files), 5, "the getById sweep found almost nothing")
         names = {p.name for p in files}
-        self.assertIn("construction-plans.jsx", names)
-        self.assertIn("dropbox-settings.jsx", names)
+        # ONE screen owns the Dropbox tree now. construction-plans.jsx and
+        # dropbox-settings.jsx were plans and documents split across two
+        # screens for one field; both are files.jsx.
+        self.assertIn("files.jsx", names)
+        self.assertNotIn("dropbox-settings.jsx", names)
+        self.assertNotIn("construction-plans.jsx", names)
 
     def test_the_pattern_matches_a_bare_project_variable(self):
         """The regression that made the first version of this file useless."""

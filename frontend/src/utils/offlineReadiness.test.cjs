@@ -225,7 +225,7 @@ ok(megabytes(5 * MB) === 5, 'and whole megabytes otherwise');
 // ═══════════════════════════════════════════════════════════════════════════
 {
   const screen = fs.readFileSync(
-    path.join(__dirname, '..', '..', 'app', 'projects', '[id]', 'construction-plans.jsx'), 'utf8');
+    path.join(__dirname, '..', '..', 'app', 'projects', '[id]', 'files.jsx'), 'utf8');
   const tree = parser.parse(screen, { sourceType: 'module', plugins: ['jsx'] });
 
   const seen = new Set();
