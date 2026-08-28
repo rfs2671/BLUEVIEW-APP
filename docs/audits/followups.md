@@ -4,6 +4,107 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-08-28 — two checks that ran, passed, and could not see the thing they were for
+
+Same family as the `.cjs` enumeration entry and the CRLF-anchor entry below.
+Both of these ran to completion, reported success, and were measuring nothing —
+or nearly nothing — of what they were supposed to measure. Recorded together
+because they are one failure with two surfaces, and the second is the pure form
+of it.
+
+### 1. A local test glob narrower than CI's, for the whole Dropbox redesign
+
+The frontend suites were run locally as:
+
+    for t in src/utils/*.test.cjs; do node "$t"; done
+
+CI (`.github/workflows/tests.yml`) runs:
+
+    find src app -type f \( -name '*.test.cjs' -o -name '*.test.js' \)
+
+**85 files against 93.** The eight never run locally were:
+
+    src/components/CpNav.clearance.test.cjs
+    src/components/RiskScoreCircle.bandFor.test.cjs
+    src/components/cameraPreview.test.cjs
+    src/components/logbookStepper/stepper.test.cjs
+    src/i18n/i18n.test.cjs
+    src/styles/outdoorMatchesLight.test.cjs
+    src/styles/theme.applyTheme.test.cjs
+    src/styles/tokens.test.cjs
+
+So "all frontend invariant suites pass" was reported four separate times, at
+four separate stages of #279, on evidence that could not have contained a
+failure in any of those eight. It did contain one: `tokens.test.cjs` measures
+17 CP screens — `app/logbooks/*`, `login.jsx`, `settings.jsx` and
+`documents.jsx` — and the redesign put a raw `#0061FF` into `documents.jsx`,
+failing two assertions. CI caught it. The local runs could not have.
+
+**Why the glob was wrong is the interesting part.** `src/utils/` holds ~85 of
+the 93 and is where nearly every invariant test lives, so the narrow glob felt
+exhaustive and behaved exhaustively for months of unrelated work. It only
+mattered when a change touched a screen measured from `src/styles/`. A glob
+that is right 91% of the time is worse than one that is obviously partial,
+because nothing ever prompts you to check it.
+
+**The fix is not a wider glob typed from memory.** It is to run what CI runs,
+by reading the workflow — the two are allowed to diverge, and the workflow is
+the authority.
+
+### 2. A harness that extracted nothing, so every case passed
+
+Verifying the destination guard added in #281, its shell body was extracted
+from the workflow YAML and run against all eight combinations of
+ref x branch x confirm. The extraction was:
+
+    python - <<'PY' > /tmp/guard.sh
+    ...
+    io.open('/dev/stdout','w').write(g['run'])
+    PY
+
+The inner write to `/dev/stdout` fought the outer redirect and **/tmp/guard.sh
+was written as 0 bytes.** `bash` on an empty file exits 0. So the matrix
+reported:
+
+    ref=feature-x branch=production confirm=false -> ALLOW
+
+for the one combination the guard exists to refuse, alongside seven other
+ALLOWs, and the table looked like a uniform, unremarkable pass. Re-run with a
+working extraction, that row is the only REFUSE.
+
+This is the cleaner specimen of the two: not a check that saw 91% of its
+subject, but a check that saw **none** of it and could not report a failure
+under any input.
+
+### THE RULE
+
+**A harness that produces no output is a failing harness, not a passing test.**
+
+An empty script exits 0. An empty match list satisfies every `all()`. An empty
+file read yields no assertions to break. In each case the absence of the
+subject is indistinguishable, at the exit code, from the subject being fine —
+and it is always the quieter of the two, so it never prompts a second look.
+
+Concretely, and in this order:
+
+1. **Assert the extraction is non-empty before running it.** Byte count, line
+   count, or a required substring — `assert "EAS_BRANCH" in body and "exit 1"
+   in body` would have failed the harness above instead of passing eight cases.
+   The `tokens.test.cjs` scanner already does this deliberately: it pins
+   `FILES.length === 17` and floors its literal counts, with the comment "a
+   regex that silently stops matching would turn this file green while
+   measuring nothing." That guard is the pattern; it was simply absent from
+   the ad-hoc harnesses.
+2. **Include a negative control where the harness is doing real work** — one
+   input that MUST fail. Eight ALLOWs with no REFUSE among them was the tell,
+   and it was visible in the output at the time.
+3. **Read the authority rather than restating it.** CI's glob, not a glob typed
+   from memory; the workflow's own `run:` body, not a paraphrase of it.
+
+None of this needs new tooling. All three were available and none were applied.
+
+---
+
 ## PRACTICE — 2026-08-28 — a CRLF anchor made a mutation not apply, and the negative control reported a pass
 
 **The mirror of the line-ending entry below**, and worth recording separately
