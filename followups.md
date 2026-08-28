@@ -2,6 +2,52 @@
 
 Known gaps and deferred work, newest first.
 
+- **[HIGH] The check-in geofence does not run, and must never be cited as a
+  presence control.**
+  `geofence_radius_m` is on the project model and `compute_geofence` is
+  implemented, so the geofence reads as a shipped feature. No check-in has ever
+  been geofenced. Two independent reasons — **both** must be fixed before the
+  field means anything, and fixing either alone changes nothing:
+
+  1. **The enforcing route is shadowed.** Enforcement lives only in
+     `backend/card_audit.py` (1264, 1380, 1557, 1909), on `gate_router`'s
+     `GET /checkin/{project_id}/{gate_id}`. But `serve_checkin_page_full`
+     (`server.py:21049`) declares `@app.get("/checkin/{project_id}/{tag_id}")`
+     at module scope, and `app.include_router(gate_router)` runs at
+     `server.py:34990` — later. (Symbol names given because these line numbers
+     move; this entry's own numbers shifted by 25 when the QR change landed.)
+     Module-scope decorators register at import, top to bottom, and FastAPI
+     matches in registration order. server.py wins; card_audit's gate is
+     unreachable. The live gate is `backend/checkin.html`, which contains no
+     `geolocation` call at all.
+  2. **There is no origin coordinate.** `project.lat` / `lng` are `Optional`
+     and *nothing* populates them — no geocoding on create, no field in any
+     frontend project form. `compute_geofence` returns `None` when either pair
+     is missing, so even wiring path 1 up would yield `None` for every project
+     on the platform.
+
+  **What the live path actually records** (`register_and_checkin` →
+  `db.checkins`): `source_ip`, `user_agent`, `device_fingerprint`, and now
+  `checkin_method`. No coordinates. The code says what these are worth in its
+  own comment — *"Detective, not preventive"* — and `source_ip` is weaker than
+  it looks, because the per-IP rate limit was removed on the finding that
+  workers are on their own phones behind one site WiFi.
+
+  **Why this is HIGH now.** NFC required physical presence. QR check-in does
+  not: a printed code is a permanent, silently-copyable credential — no expiry,
+  no nonce, no rotation — and one photograph works from anywhere until an admin
+  deletes the tag, which also locks out the men actually standing at the gate.
+  `checkin_method` makes that exposure queryable; it does not close it.
+
+  **If it is ever wired up: record, never block.** Populate project
+  coordinates, have `checkin.html` request `navigator.geolocation`, and store
+  `within_geofence` as `true` / `false` / `null`. GPS is denied, imprecise
+  indoors and dead below grade, and this codebase has twice refused to let a
+  control stop a man working — the removed per-IP rate limit, and
+  `needs_trade_assignment` admitting and flagging rather than turning him away.
+  A blocking geofence would be the first exception, and a config gap would
+  become a man sent home.
+
 - **[MEASURED, NOT FIXED] The bottom inset is a constant, and here is the number.**
   API 36 enforces edge-to-edge, so content draws under the navigation bar. The
   app handles the top with `SafeAreaView edges={['top']}` (67 usages) and the
