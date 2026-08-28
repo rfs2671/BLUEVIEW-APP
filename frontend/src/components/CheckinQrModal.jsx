@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, Modal, Pressable, ScrollView, useWindowDimensions,
   ActivityIndicator,
@@ -8,6 +8,8 @@ import QRCode from 'react-native-qrcode-svg';
 import { X, ChevronLeft, Wifi, Plus } from 'lucide-react-native';
 import { buildCheckinUrl } from '../utils/nfcHelper';
 import { projectsAPI } from '../utils/api';
+import { readCachedProjectList } from '../utils/projectCache';
+import { useAuth } from '../context/AuthContext';
 import {
   spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
 } from '../styles/theme';
@@ -52,6 +54,19 @@ import { opacity } from '../styles/tokens';
  * write, and the one case it exists for (no gate at all) is not the offline
  * case (a gate exists and the QR renders from cache).
  *
+ * IT RESOLVES ITS OWN PROJECT. `project` is OPTIONAL: a host that already has
+ * one passes it, and otherwise this reads the CP's cached project list and
+ * filters it to their assigned projects — the same filter and the same
+ * AsyncStorage cache /logbooks already uses, so it still renders with no
+ * signal.
+ *
+ * That is not a convenience. This opens from CpNav, which is on every CP
+ * screen, and no host can supply a project honestly: /settings has no project
+ * state at all, and /documents has one filtered to Dropbox-enabled projects,
+ * so a project without Dropbox is simply absent from it. A modal that took the
+ * host's idea of "the current project" would silently show the wrong gate on
+ * one screen and none on another.
+ *
  * PRESENCE. A tap requires the phone to be at the post. A photograph of this
  * code does not — see the header comment on CHECKIN_BASE_URL and the ?m=qr
  * marker, which is what makes a scanned check-in queryable after the fact.
@@ -73,7 +88,12 @@ const QR_MIN = 200;
 
 export default function CheckinQrModal({ visible, onClose, project, onChanged }) {
   const { width } = useWindowDimensions();
+  const { user } = useAuth();
   const [selected, setSelected] = useState(null);
+  // Only used when no `project` was passed. Null while unresolved, [] once the
+  // cache has been read and genuinely holds nothing for this CP.
+  const [ownProjects, setOwnProjects] = useState(null);
+  const [pickedProject, setPickedProject] = useState(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null);
   // The gate minted in THIS session. The parent's `project` comes from a
@@ -82,24 +102,58 @@ export default function CheckinQrModal({ visible, onClose, project, onChanged })
   // and is shown the same empty screen.
   const [minted, setMinted] = useState(null);
 
-  const projectId = project?.id || project?._id || null;
+  // Read on OPEN, not on mount. The nav renders this on every CP screen, so a
+  // mount-time read would hit AsyncStorage on every navigation for a sheet
+  // nobody opened.
+  useEffect(() => {
+    if (!visible || project) return;
+    let cancelled = false;
+    (async () => {
+      const list = await readCachedProjectList();
+      if (cancelled) return;
+      const arr = Array.isArray(list) ? list : [];
+      // The SAME scope rule as the CP's own project picker in
+      // app/logbooks/index.jsx. Defence in depth — the backend is the real
+      // gate — but a CP must not be shown a code for a site they are not on.
+      const visibleProjects = user?.role === 'cp'
+        ? arr.filter((p) => (user?.assigned_projects || []).includes(p.id || p._id))
+        : arr;
+      setOwnProjects(visibleProjects);
+      // One project is the common case, and asking a man to pick from a list
+      // of one while a worker waits is a question with a single answer.
+      setPickedProject(visibleProjects.length === 1 ? visibleProjects[0] : null);
+    })();
+    return () => { cancelled = true; };
+  }, [visible, project, user]);
+
+  const activeProject = project || pickedProject;
+  const projectId = activeProject?.id || activeProject?._id || null;
+  // Distinguishes "still reading the cache" from "the cache holds nothing",
+  // so a slow read is never rendered as "no check-in point registered".
+  const resolving = !project && ownProjects === null;
+  const needsProjectPick = !project && !pickedProject && (ownProjects?.length || 0) > 1;
 
   // Defensive: the cached project payload is whatever the server last sent, and
   // a row missing tag_id would render a QR pointing at /checkin/{p}/undefined.
   const tags = useMemo(() => {
-    const raw = Array.isArray(project?.nfc_tags) ? project.nfc_tags : [];
+    const raw = Array.isArray(activeProject?.nfc_tags) ? activeProject.nfc_tags : [];
     const clean = raw.filter((t) => t && typeof t.tag_id === 'string' && t.tag_id.trim());
     if (minted && !clean.some((t) => t.tag_id === minted.tag_id)) {
       return [...clean, minted];
     }
     return clean;
-  }, [project, minted]);
+  }, [activeProject, minted]);
 
   const qrSize = Math.max(QR_MIN, Math.min(QR_MAX, width - spacing.xl * 4));
 
   const close = () => {
     setSelected(null);
     setCreateError(null);
+    // Not ownProjects: re-reading the cache on every open would cost a read for
+    // no new information. The PICK is cleared so a CP on two sites is asked
+    // again next time rather than silently handed yesterday's gate.
+    if (!project && (ownProjects?.length || 0) > 1) setPickedProject(null);
+    setMinted(null);
     onClose?.();
   };
 
@@ -148,9 +202,9 @@ export default function CheckinQrModal({ visible, onClose, project, onChanged })
         <Pressable style={s.backdrop} onPress={close} accessibilityLabel="Close" />
         <View style={s.sheet}>
           <View style={s.header}>
-            {active && !only ? (
+            {(active && !only) || (!project && pickedProject && (ownProjects?.length || 0) > 1) ? (
               <Pressable
-                onPress={() => setSelected(null)}
+                onPress={() => (active && !only ? setSelected(null) : setPickedProject(null))}
                 style={s.headerBtn}
                 accessibilityRole="button"
                 accessibilityLabel="Back to check-in points"
@@ -160,7 +214,9 @@ export default function CheckinQrModal({ visible, onClose, project, onChanged })
             ) : <View style={s.headerSpacer} />}
 
             <Text style={s.title} numberOfLines={1}>
-              {active ? (active.location || 'Check-In Point') : 'Check-In QR'}
+              {needsProjectPick
+                ? 'Pick a project'
+                : (active ? (active.location || 'Check-In Point') : 'Check-In QR')}
             </Text>
 
             <Pressable
@@ -174,8 +230,43 @@ export default function CheckinQrModal({ visible, onClose, project, onChanged })
           </View>
 
           <ScrollView contentContainerStyle={s.body}>
-            {!projectId ? (
-              <Text style={s.empty}>No project selected.</Text>
+            {resolving ? (
+              <ActivityIndicator color={outdoor.text} />
+            ) : needsProjectPick ? (
+              <>
+                <Text style={s.lead}>
+                  You are on more than one project. Pick the site you are
+                  standing on.
+                </Text>
+                {ownProjects.map((p) => (
+                  <Pressable
+                    key={p.id || p._id}
+                    onPress={() => setPickedProject(p)}
+                    style={s.row}
+                    accessibilityRole="button"
+                    accessibilityLabel={p.name || 'Project'}
+                  >
+                    <Wifi size={20} strokeWidth={1.5} color={outdoor.textDim} />
+                    <View style={s.rowText}>
+                      <Text style={s.rowTitle}>{p.name || 'Project'}</Text>
+                      <Text style={s.rowSub} numberOfLines={1}>
+                        {p.address || p.location || ''}
+                      </Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </>
+            ) : !projectId ? (
+              /* The cache was read and held nothing for this CP. Distinct from
+                 `resolving` above, and from a project that simply has no gate
+                 yet — this one cannot be fixed from here. */
+              <View style={s.emptyBox}>
+                <Wifi size={40} strokeWidth={1} color={outdoor.textDim} />
+                <Text style={s.emptyTitle}>No project available</Text>
+                <Text style={s.empty}>
+                  Open your Dashboard once while online, then try again.
+                </Text>
+              </View>
             ) : tags.length === 0 ? (
               /* Not a failure to render — a project with no check-in point
                  registered. Name the fix; an admin has to register the tag,
