@@ -850,6 +850,37 @@ wiring pins fail against the pre-fix routes; the 10 allow cases pass before and
 after, which is the half that proves the guard closed nothing that was
 legitimately open.
 
+### Production state when both fixes landed: the collection was EMPTY
+
+Checked 2026-08-28, after the shape fix and the access gate:
+`db.checklist_assignments.countDocuments({})` returned **0**.
+
+**Both fixes are PREVENTION ONLY.** No row was ever served flat to a client, no
+assignment was ever read across a tenancy boundary, and no completion was ever
+filed against someone else's checklist — because there were no assignments. The
+read leak and the write hole were both found *before the feature was ever
+used*.
+
+Three consequences worth stating, because each is a question somebody will ask
+again:
+
+- **Nothing became unreachable.** The fail-closed branch on an assignment with
+  no `project_id` cannot strand a live row; there are none. Same shape as the
+  `project_files` count before the double-permissive fix, and the same answer:
+  the guard stops a shape being created, and answers it correctly if one ever
+  is.
+- **No migration and no backfill.** The frozen `checklist_title` copy that the
+  derived read makes invisible does not exist on any document yet, so the
+  question of what to do with stale copies is moot until an assignment is
+  created — and after the fix, the copy that gets written is never read.
+- **No disclosure to assess.** An `assignment_id` IDOR with an empty collection
+  had nothing to disclose. This is not "we found no evidence of access"; there
+  was nothing that could have been accessed.
+
+The first real assignment will be created through the fixed assign path, so
+every row the feature ever holds is written by code that denormalizes the
+roster on both paths and read by code that derives the title.
+
 ## `checklist_items` means two unrelated things
 
 **Do not grep-and-replace this key.** Two features use the name for different
