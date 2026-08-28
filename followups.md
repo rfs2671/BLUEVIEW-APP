@@ -2,6 +2,48 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MED] An admin holding the wrong sticker silently repoints a chip — the
+  physical-layer sibling of the tag reassignment closed in #267.**
+  Same shape, different layer, and it predates both changes.
+
+  | | the API layer (#267, FIXED) | the physical layer (OPEN) |
+  |---|---|---|
+  | what moves | a tag row between projects | the URL burned into a chip |
+  | trigger | an admin types an id already in use | an admin holds up a sticker already programmed |
+  | old behaviour | `$pull` it off the other project, repoint the row | overwrite the NDEF record |
+  | signal | an info-level log line | none at all |
+
+  `writeNfcTag` requests `NdefFormatable` first and falls through to `Ndef`,
+  which is correct and load-bearing — a blank tag only advertises the first, an
+  already-written tag only the second. The consequence is that the write path
+  cannot tell "blank sticker" from "a gate somebody is using": both are
+  writable, and both get written. Hold up the wrong sticker and the chip at
+  some other entrance quietly starts pointing at this project.
+
+  **The old row is not deleted, which makes it worse, not better.** Nothing
+  server-side changes: the other gate's `nfc_tags` row stays `active` and the
+  admin screen still lists it. So the record says that entrance has a working
+  tag, the tag exists, it is physically on the post — and it checks men in
+  somewhere else. Nobody is turned away and nothing errors; the check-ins land
+  on the wrong project, which is the same class of silent wrongness as a trade
+  from another project (`test_no_cross_project_trade_bleed.py`).
+
+  **Why it is not in scope of the change that surfaced it.** #269 wires
+  `writeNfcTag` to a "program a tag for this" action on a provisional gate,
+  which is the first UI that calls the write path with an explicit id. That
+  makes the behaviour easier to reach; it does not create it. The existing
+  registration flow has always been able to do this, and closing it means
+  reading the chip's current NDEF before writing and refusing when it already
+  carries a live gate for this company — a real change to the write path, on a
+  flow an operator has device-tested. Worth doing deliberately, not as a rider.
+
+  **What would fix it:** read the tag before writing (the tech is already
+  acquired, so this is a read on a handle we hold), parse any existing
+  `/checkin/{project}/{tag}` URL, and refuse when that tag_id resolves to an
+  ACTIVE row — with the same discretion as #267's 409: name that the sticker is
+  in use, never which project. An explicit "reprogram this tag" confirmation is
+  the escape hatch, because a genuinely reused sticker is a real case.
+
 - **[PRODUCT DECISION, NOT A DEFECT] A printed QR is a permanent,
   silently-copyable credential.**
   A printed check-in QR has **no expiry, no nonce and no rotation**. One

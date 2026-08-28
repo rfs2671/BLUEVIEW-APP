@@ -206,6 +206,9 @@ export default function ProjectDetailScreen() {
   const [nfcTagId, setNfcTagId] = useState('');
   const [addingNfc, setAddingNfc] = useState(false);
   const [scanningNfc, setScanningNfc] = useState(false);
+  // The tag_id currently being programmed, so the banner can show progress on
+  // the RIGHT row when a project holds more than one provisional gate.
+  const [programmingTag, setProgrammingTag] = useState(null);
   const [nfcSupported, setNfcSupported] = useState(false);
   const [nfcEnabled, setNfcEnabled] = useState(false);
   const [nfcTags, setNfcTags] = useState([]);
@@ -447,6 +450,61 @@ export default function ProjectDetailScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchData();
+  };
+
+  /**
+   * PROGRAM A BLANK STICKER WITH AN EXISTING GATE'S ID.
+   *
+   * Not registerNfcTag. That one READS the chip's UID and registers THAT as a
+   * new tag, which would leave the provisional gate untouched and create a
+   * second one beside it - two gates on one entrance, and the check-ins
+   * already recorded against the first stranded on a row still marked
+   * provisional. writeNfcTag takes an EXPLICIT id, so the chip's own UID is
+   * irrelevant: the sticker is programmed to carry THIS gate's qr- id, the row
+   * is unchanged, and every check-in against it stays attached.
+   *
+   * THE CHIP IS WRITTEN FIRST AND THE FLAG FLIPS SECOND. If the flag flipped
+   * first and the write then failed, the record would claim a physical tag
+   * that does not exist - exactly the silent state the flag exists to prevent.
+   * The other way round is merely over-cautious: the banner stays up, and
+   * re-writing the same URL to the same chip is idempotent.
+   */
+  const handleProgramProvisionalTag = async (tagId) => {
+    if (!nfcEnabled) {
+      toast.error('NFC Disabled', 'Please enable NFC in your device settings');
+      return;
+    }
+    setProgrammingTag(tagId);
+    toast.info('Ready to Program', 'Hold your phone near a blank NFC tag...');
+    try {
+      const result = await NfcHelper.writeNfcTag(projectId, tagId);
+      if (!result.success) {
+        toast.error('Write Failed', result.error || 'Could not write to the tag');
+        return;
+      }
+
+      // Only now. See the ordering note above.
+      try {
+        await projectsAPI.markCheckinPointProgrammed(projectId, tagId);
+        toast.success('Tag Programmed', 'This check-in point now has a physical tag');
+        await fetchData();
+      } catch (error) {
+        // NAMED, and it says the tag IS written. "Failed" alone would send an
+        // admin to reprogram a sticker that is already correct, and the retry
+        // they actually need is this call, not the write.
+        toast.error(
+          'Tag Written, Record Not Updated',
+          error.response?.data?.detail
+            || 'The tag is programmed. Tap again to finish updating the record.',
+        );
+      }
+    } catch (error) {
+      console.error('Program provisional tag error:', error);
+      toast.error('Error', 'Failed to program the tag');
+    } finally {
+      setProgrammingTag(null);
+      await NfcHelper.cancelNfc();
+    }
   };
 
   const handleScanNfcTag = async () => {
@@ -1154,6 +1212,21 @@ export default function ProjectDetailScreen() {
                             Provisional — created on site, no physical tag. Program
                             an NFC tag with ID {tag.tag_id} to make it tappable.
                           </Text>
+
+                          {/* The ONLY thing that clears this flag. There is no
+                              dismiss: the flag means "no chip exists", so the
+                              only honest way out is for a chip to exist. */}
+                          {nfcSupported && (
+                            <GlassButton
+                              title={programmingTag === tag.tag_id
+                                ? 'Hold phone near a blank tag…'
+                                : 'Program a tag for this'}
+                              icon={<Zap size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                              onPress={() => handleProgramProvisionalTag(tag.tag_id)}
+                              disabled={!nfcEnabled || programmingTag !== null}
+                              style={s.provisionalBtn}
+                            />
+                          )}
                         </View>
                       )}
                     </GlassCard>
@@ -2308,6 +2381,9 @@ function buildStyles(colors, isDark) {
     fontSize: 13,
     color: semantic.attention,
     lineHeight: 18,
+  },
+  provisionalBtn: {
+    marginTop: spacing.md,
   },
   scanButton: {
     backgroundColor: 'rgba(59, 130, 246, 0.1)',
