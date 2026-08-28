@@ -134,10 +134,20 @@ ok(/"status": "draft",[^\n]*\n\s*"cp_signature": None/.test(serverSrc),
 // ── The code plugs into the existing mechanism ───────────────────────────────
 console.log('\n── Built on what was already there ──');
 
-ok(/const GATE_CODE = \/\^\(\?:FINALIZE\|SUBMIT\)_\[A-Z_\]\+\$\//.test(draftSync),
-  'draftSync still validates gate codes with the same pattern');
-ok(/^(?:FINALIZE|SUBMIT)_[A-Z_]+$/.test('SUBMIT_MISSING_TRADE'),
+// THE BEHAVIOUR, NOT THE LITERAL. These two lines used to pin the regex TEXT
+// and a copy of it, so they failed the moment FILED_ was added — a widening
+// made for a good reason (#214's code carries neither existing prefix, which is
+// exactly why the client could not hear it) breaking a test that was never
+// about the alternation. What matters HERE is that SUBMIT_MISSING_TRADE goes
+// through the same extractor as every other gate code, and that an unknown
+// prefix still does not. Both now run the real pattern, read out of the module.
+const gateSrc = /const GATE_CODE = \/(.+)\/;/.exec(draftSync);
+ok(!!gateSrc, 'draftSync still validates gate codes with one pattern');
+const GATE_CODE = gateSrc && new RegExp(gateSrc[1]);
+ok(!!GATE_CODE && GATE_CODE.test('SUBMIT_MISSING_TRADE'),
   'SUBMIT_MISSING_TRADE matches it, so the drain can read it too');
+ok(!!GATE_CODE && !GATE_CODE.test('SOMETHING_ELSE'),
+  '...and a code that is not a gate code still does not');
 ok(/SUBMIT_EMPTY_LOG/.test(serverSrc) && /SUBMIT_MISSING_CP_SIGNATURE/.test(serverSrc),
   'the two codes it sits alongside are untouched');
 

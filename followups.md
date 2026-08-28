@@ -808,6 +808,53 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## Nine logbook editors still read `.catch(() => [])`
+
+The daily jobsite editor's existing-log read was fixed in #285: a request that
+never came back was handing an empty array to everything downstream, so
+`existing` came out null, `locked` stayed false, and the screen rendered an
+EDITABLE EMPTY FORM for a day that may already be filed. On a second device
+that is what the operator saw on 2026-08-28, one tap from writing over the
+record.
+
+**Nine other editors still have it**, on the same read:
+
+| screen | hydration |
+|---|---|
+| `preshift_signin.jsx` | `chooseEditableLog` — the identical shape |
+| `toolbox_talk.jsx` | `chooseEditableLog` — the identical shape |
+| `concrete_operations.jsx` | own |
+| `crane_operations.jsx` | own |
+| `excavation_monitoring.jsx` | own |
+| `fall_protection.jsx` | own |
+| `osha_log.jsx` | own |
+| `scaffold_maintenance.jsx` | own |
+| `ssc_daily_safety_log.jsx` | own |
+
+`hot_work.jsx` and `subcontractor_orientation.jsx` already use `settleFetch`
+and are not in this list. `logbooks/index.jsx` swallows the same way but is the
+LIST screen, not an editor — an empty list there is a different claim and wants
+its own decision.
+
+**Where they land: the `unavailable` prop on `LogbookStepper`** (#285). It
+takes `{title, body, retryLabel, onRetry}` and renders a read-only notice
+instead of the steps — no fields, no footer, and deliberately no
+`LogbookLockBar`, because "FINALIZED — read-only" plus an Amend button would be
+a claim about a document the device could not read. The copy keys and the
+`failureDetail()` composition are in `dailyJobsite`; a shared namespace would
+be the first thing to sort out.
+
+**The blast radius is not equal across the nine, and that is the argument for
+doing them deliberately rather than in one sweep.** For the two END_OF_DAY
+types the empty form could reach a filed row — that is the daily-jobsite
+defect. For the seven IMMEDIATE types a filed row is `is_locked` on submit, so
+the create path's dedupe excludes it and an empty re-entry mints a NEW instance
+rather than overwriting: a duplicate record, visible and recoverable, not a
+silent loss. Both are wrong; only one destroys.
+
+Not fixed in #285 deliberately. Each needs its own copy, its own read of what
+that form does with an empty payload, and its own control run.
+
 ## The checklist assignment feature serves flat and both clients read nested
 
 **Parts 1, 3 and 4 are FIXED** — the four read endpoints now serve `checklist`
