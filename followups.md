@@ -679,3 +679,115 @@ renderer, which reads the daily jobsite dict to build its compliance line.
 `test_investor_page_one.py:133` and `test_report_six_defects.py:649-679` seed
 that dict and would be the ones to fail — but only if the tests are run, and
 the two are far enough apart in the file that the connection is easy to miss.
+
+## Ten places state a logbook's display name
+
+Swept 2026-08-28, after the count moved three times in one session — reported
+as five, then six, then "a seventh" — for want of a stated definition. So the
+definition first.
+
+**A copy is a place that independently states display names for two or more of
+the twelve registered logbook types.** Not a place that mentions a type key
+(that is the entry below); not a place that renders a name it was handed.
+
+Method: `git ls-files`, **no `--include` allow-list**, filtered afterwards,
+matching the twelve canonical names plus every shipped variant, longest-first
+so `OSHA Log Book` is not eaten by `OSHA Log`. The allow-list is what hid a
+copy the first time round.
+
+### Shipped — five copies of one source
+
+| Location | Coverage |
+|---|---|
+| `LOGBOOK_TYPE_REGISTRY` `server.py:3398` | 12/12 — **source of truth** |
+| `type_title` chain `server.py:15104-15881` | 13 branches (12 + `.title()` fallback) |
+| `section_title` chain `server.py:22203-23113` | 13 calls |
+| `FALLBACK_LOG_TYPES` `logbooks/index.jsx:48` | 6/12 |
+| **`screenTitle` set `i18n/en.js:227+`** | 10 per-form headers |
+| **`tab*` set `i18n/en.js:1244+`** | 11/12 site-device tabs |
+
+### Tests — four more restatements
+
+`requiredLogbooksWiring.test.cjs` CATALOG (11/12), `test_investor_page_one.py`
+(7/12, assertions on the page-1 compliance line), `test_logbook_renderers.py`
+(6/12), `test_report_six_defects.py` (2/12).
+
+**One source of truth, five shipped copies, four test restatements.** Earlier
+counts said "five copies" because they counted only shipped ones AND missed
+the finding below.
+
+### i18n/en.js is TWO copies, not one
+
+The part no previous count had. The file holds two independent name sets about
+a thousand lines apart, and they disagree about the same types:
+
+| key | `screenTitle` (per-form header) | `tab*` (site device) |
+|---|---|---|
+| `daily_jobsite` | Daily Jobsite Log | Daily Jobsite |
+| `osha_log` | OSHA Log Book | OSHA / SST Log |
+| `hot_work` | Hot Work Permit | Hot Work |
+| `scaffold_maintenance` | Scaffold Maintenance Log | Scaffold Maintenance |
+| `ssc_daily_safety_log` | SSC/SSM Daily Safety Log | SSC Daily Safety Log |
+
+Treating them as one copy is why the shipped count read four. They are two,
+they were maintained separately, and the distance between them in the file is
+why nobody noticed they had drifted apart.
+
+Copies 2 and 3 (server.py's two chains) are if/elif chains rendering per-type
+BODIES, not lookup tables — collapsing them onto the registry means threading
+the label through, which is a real refactor. `scaffold_maintenance` and
+`osha_log` still disagree across all of them; `preshift_signin` was resolved
+in #259.
+
+## A new logbook type must be added to every list, and here are the lists
+
+`fall_protection` was the last type registered and the enumerations were not
+all updated with it. Recorded as a CLASS rather than as separate bugs, because
+the failure is structural: nothing makes adding a type update the lists, so the
+next type will land the same way.
+
+**Three real absences, verified one at a time. Two more looked like absences in
+a bulk key-presence sweep and are not** — which is the reason each one needs
+its own read rather than a grep result.
+
+| List | Absent? | Consequence |
+|---|---|---|
+| `LOG_TABS` `site/logbooks.jsx:40` | **YES** | no kiosk tab — unreachable to an inspector |
+| `renderLogContent` `site/logbooks.jsx:1302` | **YES** | no branch; returns the literal "No data available" |
+| `ALL_TYPES` `logbookViewRenderers.test.cjs:177` | **YES** | **the guard for the two above, blind to the same type** |
+| `CATALOG` `requiredLogbooksWiring.test.cjs:76` | **YES** | fixture only; label assertions are shape-not-text, so nothing fails |
+| `tokens.js` | NO — false positive | every type key there sits inside a COMMENT narrating which form-port contributed which colour. There is no per-type map to be absent from, and nothing is styled by log type. |
+| `submitSignatureGate.test.cjs` | NO — false positive, inverted | it does not hardcode a list. It DERIVES one from `LOGBOOK_TIMING_CLASS` in server.py by regex and asserts `IMMEDIATE.length === 10`, with a comment reading "TEN with the fall-protection log". The type is gated and tested. |
+
+### The one that matters
+
+`logbookViewRenderers.test.cjs:177` is headed *"every type has a tab, or the
+renderer is unreachable"* and asserts `ALL_TYPES.every((k) => tabKeys.includes(k))`.
+Its `ALL_TYPES` is a hardcoded eleven **with `fall_protection` missing**. So the
+test written precisely to catch "a registered type with no tab" cannot catch it
+for this type — it passes vacuously, for the same reason the gap exists.
+
+Same family as the AST entry, the receiver-group entry and the `.cjs` grep: a
+check that ran, reported clean, and could not see the thing it was for.
+
+### The rule, and the lesson the two false positives carry
+
+Adding a logbook type means updating: `LOGBOOK_TYPE_REGISTRY`, the `type_title`
+chain, the `section_title` chain, `FALLBACK_LOG_TYPES`, both `i18n/en.js` sets,
+`LOG_TABS`, `renderLogContent`, and the test lists `ALL_TYPES` and `CATALOG`.
+
+But note WHICH lists drifted. The two that DERIVE their contents from server.py
+at run time — submitSignatureGate's timing-class regex, and
+logbookViewRenderers' own `tabKeys` extraction — cannot drift, and did not.
+Every list that drifted was hardcoded. The durable fix is not a longer
+checklist; it is deriving these lists from the registry the way those two
+already do, and keeping a COUNT assertion (`IMMEDIATE.length === 10`) as the
+checkpoint that forces a new type to be handled rather than inherited by
+omission.
+
+### Sweep caveat
+
+The bulk key-presence pass counted `site/logbooks.jsx` as 12/12 because
+`fall_protection` is a substring of `fall_protection_required`, an orientation
+checklist item key at line 1229. Substring matching on type keys overstates
+coverage wherever a longer key shares a prefix.
