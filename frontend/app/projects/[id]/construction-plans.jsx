@@ -44,6 +44,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { settleFetch } from '../../../src/utils/offlineState';
+import { mayCacheList } from '../../../src/utils/dropboxSyncState';
 import { cacheProject, readCachedProject } from '../../../src/utils/projectCache';
 import {
   cacheDocList,
@@ -142,12 +143,33 @@ export default function ConstructionPlansScreen() {
     }
   }, [isAuthenticated, projectId]);
 
-  /** Write-through: every successful list read refreshes the offline copy. */
-  const adoptFiles = (list) => {
+  /**
+   * Write-through: a list read refreshes the offline copy — UNLESS a sync is
+   * in flight, in which case what we just read may not be the whole list.
+   *
+   * THIS IS THE DEFECT EVERYTHING ELSE IN THIS CHANGE EXISTS FOR.
+   * POST /sync-dropbox returns as soon as the background task is SCHEDULED, so
+   * the read that follows it catches the sync partway through. Caching that
+   * gave the CP a saved-for-offline list that was a strict SUBSET of the
+   * project, and he found out in a cellar.
+   *
+   * WHY NOT THE OBVIOUS HEURISTIC — "don't replace a longer list with a
+   * shorter one"? Because a shorter list is often CORRECT. Files are deleted
+   * from Dropbox, folders get re-pointed, the site-device allow-list changes.
+   * A rule that refuses to shrink would pin deleted drawings on a device for
+   * ever and call it caching. Length cannot tell "halfway through a sync" from
+   * "there are genuinely fewer files now" — only the sync knows, so the sync is
+   * asked.
+   *
+   * THE BYTES ARE STILL WARMED EITHER WAY. The files in a partial list are real
+   * files; pulling them down early is useful and costs nothing. It is only the
+   * LIST — the thing that decides what the CP believes he has — that waits.
+   */
+  const adoptFiles = (list, { mayCache = true } = {}) => {
     const arr = Array.isArray(list) ? list : [];
     setFiles(arr);
     setFetchState('ok');
-    cacheDocList(scopeKey, arr);
+    if (mayCache) cacheDocList(scopeKey, arr);
     // Fire-and-forget byte warm — the plans land on disk while there is signal.
     warmDocCache(arr.filter((f) => isPdf(f?.name)), { limit: 15 }).catch(() => {});
   };
@@ -164,7 +186,11 @@ export default function ConstructionPlansScreen() {
       settleFetch(() => dropboxAPI.getProjectFiles(projectId)),
     ]);
 
+    // The project document carries the sync summary, so whichever copy we end
+    // up using is the one that decides whether the list may be cached.
+    let effectiveProject = null;
     if (projRes.status === 'ok' && projRes.data) {
+      effectiveProject = projRes.data;
       setProject(projRes.data);
       setLastSynced(projRes.data?.dropbox_last_synced);
       cacheProject(projRes.data);
@@ -173,13 +199,16 @@ export default function ConstructionPlansScreen() {
       // `dropbox_folder_path` (which picks the empty state below) come from it.
       const cachedProject = await readCachedProject(projectId);
       if (cachedProject) {
+        effectiveProject = cachedProject;
         setProject(cachedProject);
         setLastSynced(cachedProject?.dropbox_last_synced);
       }
     }
 
     if (filesRes.status === 'ok') {
-      adoptFiles(filesRes.data);
+      adoptFiles(filesRes.data, {
+        mayCache: mayCacheList(effectiveProject?.dropbox_sync),
+      });
     } else {
       // KEEP the cached list. The old `.catch(() => [])` here is exactly the
       // silent blank this screen is being fixed for.
@@ -200,7 +229,10 @@ export default function ConstructionPlansScreen() {
       // of the sync. Say the target rather than implying the copy is complete.
       const res = await dropboxAPI.syncProject(projectId);
       const filesData = await dropboxAPI.getProjectFiles(projectId);
-      adoptFiles(filesData);
+      // NOT CACHED, AND NO RECORD NEEDS CONSULTING: we started the sync one
+      // line ago, so this read is mid-sync by construction. Asking the server
+      // would only race its own stamp.
+      adoptFiles(filesData, { mayCache: false });
       setLastSynced(new Date().toISOString());
       setSyncStatus('success');
       const target = Number.isFinite(res?.file_count) ? res.file_count : null;
