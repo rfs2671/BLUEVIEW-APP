@@ -66,10 +66,10 @@ const TABS = [
 //
 // What was here was a five-entry hand-copied map — the sixth copy of that
 // list in the codebase. It covered fewer than half the registry, so seven
-// types rendered as their raw keys, and three of the five names it did carry
-// disagreed with the registry's ("Pre-Shift Sign-In" vs "Pre-Shift Safety
-// Meeting", "OSHA Log" vs "OSHA Log Book", "Scaffold Maintenance" vs
-// "Scaffold Maintenance Log").
+// types rendered as their raw keys, and two of the five names it did carry
+// disagree with the registry's ("OSHA Log" vs "OSHA Log Book", "Scaffold
+// Maintenance" vs "Scaffold Maintenance Log"). A third, preshift_signin,
+// disagreed until the registry was corrected to "Pre-Shift Sign-In".
 //
 // The fallback is a HUMANISED key rather than the bare key: if the registry
 // fetch fails, an unknown type reads "Subcontractor Orientation", never

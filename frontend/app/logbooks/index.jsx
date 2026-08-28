@@ -50,7 +50,7 @@ const FALLBACK_LOG_TYPES = [
   // only this hardcoded semantic.neutral, which read as disabled. Give them active
   // accents like the other logbook types so the CP sees them enabled.
   { key: 'daily_jobsite', label: 'Daily Jobsite Log', subtitle: 'NYC DOB 3301-02', icon: 'Building2', color: '#10b981', frequency: 'daily' },
-  { key: 'preshift_signin', label: 'Pre-Shift Safety Meeting', subtitle: 'Daily sign-in', icon: 'Users', color: '#f59e0b', frequency: 'daily' },
+  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', subtitle: 'Daily sign-in', icon: 'Users', color: '#f59e0b', frequency: 'daily' },
   { key: 'toolbox_talk', label: 'Tool Box Talk', subtitle: 'OSHA — Weekly', icon: 'BookOpen', color: '#3b82f6', frequency: 'weekly' },
   { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', subtitle: 'First-time workers', icon: 'ShieldCheck', color: '#8b5cf6', frequency: 'as_needed' },
   { key: 'osha_log', label: 'OSHA Log Book', subtitle: 'Worker certifications', icon: 'ClipboardList', color: '#06b6d4', frequency: 'daily' },

@@ -3408,7 +3408,26 @@ LOGBOOK_TYPE_REGISTRY = [
     },
     {
         "key": "preshift_signin",
-        "label": "Pre-Shift Safety Meeting",
+        # THE NAME ON THE FILED DOCUMENT, and on the consent the worker gives.
+        # This label said "Pre-Shift Safety Meeting" and every other surface in
+        # the app said "Pre-Shift Sign-In": the single-log PDF (:15250), the
+        # combined daily report's section header (:22324), the inspector tab,
+        # and — the one that decides it — the affirmation the worker taps at
+        # the gate, "authorize its use on today's Pre-Shift Sign-In Log for
+        # this jobsite" (checkin.html:280). A worker consents to a NAMED
+        # document; the app does not get to call it something else afterwards.
+        #
+        # It was also printing BOTH names on ONE report. Page 1's compliance
+        # line resolves labels through this registry (_log_label, :22016) and
+        # page 2's section header is the hardcoded string, so a deficiency line
+        # read "not filed (Pre-Shift Safety Meeting, ...)" above a section
+        # headed "Pre-Shift Sign-In" — on a document that goes to investors and
+        # lenders, on the sentence that says something is missing.
+        #
+        # No DOB section is being deferred to here: §3301 does not name this
+        # record. The citation below is OSHA 1926.21, and the filed document
+        # plus the worker's consent are therefore the only authorities.
+        "label": "Pre-Shift Sign-In",
         "subtitle": "Daily sign-in with all workers",
         "frequency": "daily",
         "icon": "Users",

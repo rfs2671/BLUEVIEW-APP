@@ -914,8 +914,13 @@ export default function PreShiftSignIn() {
               onPress={() => router.push('/logbooks')}
             />
             <View>
-              <Text style={styles.headerTitle}>Daily Pre-Shift Safety Meeting</Text>
-              <Text style={styles.headerSub}>Sign-In Sheet</Text>
+              {/* The CP fills the same record the PDF files and the worker
+                  signs for at the gate, so it carries the same name here.
+                  The subtitle keeps what the old title said — this IS the
+                  safety meeting — and adds the citation the registry already
+                  holds, rather than dropping the fact on the floor. */}
+              <Text style={styles.headerTitle}>Daily Pre-Shift Sign-In</Text>
+              <Text style={styles.headerSub}>Safety meeting — OSHA 1926.21</Text>
             </View>
           </View>
           <View style={styles.countBadge}>
