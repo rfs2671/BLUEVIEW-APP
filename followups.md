@@ -2,6 +2,50 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MED] FloatingNav's 18 screens still hardcode their clearance, and the
+  sweep CANNOT be mechanical.**
+  The three CpNav screens now derive it: `{ paddingBottom: insets.bottom +
+  CP_NAV_CLEARANCE }`, from the nav's own style tokens. The same token would
+  serve FloatingNav — measured side by side, **both pills are 58pt at the same
+  24pt offset**, so one number covers both. What is not done is the other 18.
+
+  **Why this is not a find-and-replace, and the finding that makes it hard:**
+
+  `paddingBottom: 120` appears on **~34 screens**, and **most of them carry no
+  nav at all** — `project/[id]/trades.jsx`, `site/checkins.jsx`,
+  `workers/[id].jsx`, `admin/integrations.jsx`, `logbooks/*` step forms, and
+  more. On those screens 120 is the app's house-wide bottom scroll padding and
+  means nothing about a nav. On the ~18 that DO render one, the same literal is
+  load-bearing.
+
+  **The number is identical in both cases, and nothing in the source
+  distinguishes them.** A sweep that replaces every `paddingBottom: 120` with
+  the clearance token would over-pad twenty-odd screens that have no nav —
+  adding 106pt of dead space to the bottom of lists that do not need it, which
+  on a short list reads as a broken layout. A sweep that replaces none of them
+  leaves the real defect in place.
+
+  So it needs a **per-screen read**: does this screen render a nav, and is this
+  number clearing it or padding a list? That is ~34 judgements, not one regex.
+  Do not treat it as a rename.
+
+  **Two screens at 140, neither justified.** `settings.jsx` was **110** until
+  `37227ee` — *"Move insurance info to settings; fix settings scroll on web"* —
+  bumped it to 140 as a side effect of a react-native-web scroll-height fix
+  that had nothing to do with the nav. `app/index.jsx` carries 140 from an
+  unexplained *"Update index.jsx"*. settings has been converted to the derived
+  token and its 140 is gone; `app/index.jsx` still has it and is in scope for
+  the sweep.
+
+  **What the defect actually is,** so the sweep is not mistaken for tidying:
+  the pill sits at `insets.bottom + 24`. On gesture navigation the inset is
+  ~24, so it occupies ~106pt and a 120 clearance leaves ~14pt. On **3-button
+  navigation** the inset is ~48, so it occupies ~130pt against 120 — already
+  negative, and the pill covers the last row of the list. It does not look
+  broken in a screenshot, because the pill is ~90% opaque and a covered row
+  stays faintly visible. It is simply not tappable, which on a gloved hand
+  outdoors reads as the app ignoring the press.
+
 - **[MED] An admin holding the wrong sticker silently repoints a chip — the
   physical-layer sibling of the tag reassignment closed in #267.**
   Same shape, different layer, and it predates both changes.

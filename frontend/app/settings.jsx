@@ -10,7 +10,7 @@ import {
   Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   User,
@@ -43,6 +43,7 @@ import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
 import FloatingNav from '../src/components/FloatingNav';
 import CpNav from '../src/components/CpNav';
+import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast, ToastHost } from '../src/components/Toast';
@@ -191,6 +192,7 @@ export default function SettingsScreen() {
 
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
   const isCp    = user?.role === 'cp';
+  const insets  = useSafeAreaInsets();
 
   // Profile
   const [name, setName]             = useState('');
@@ -522,7 +524,16 @@ export default function SettingsScreen() {
 
         <ScrollView
           style={s.scroll}
-          contentContainerStyle={s.scrollContent}
+          // ONE NUMBER FOR BOTH NAVS. This screen renders CpNav or
+          // FloatingNav by role, and the two pills measure the same 58pt at
+          // the same 24pt offset — FloatingNav sizes to content and scrolls
+          // horizontally, CpNav shares its width and ellipsizes, and both land
+          // on the same height. So the CP_NAV_ name is about where the
+          // constant is defined, not about which nav is on screen.
+          contentContainerStyle={[
+            s.scrollContent,
+            { paddingBottom: insets.bottom + CP_NAV_CLEARANCE },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           {/* ── APPEARANCE ─────────────────────────────────────────────── */}
@@ -1284,8 +1295,18 @@ function buildStyles(colors) {
 
     scroll:        { flex: 1 },
     scrollContent: {
+      // paddingBottom is set INLINE at the ScrollView, from
+      // insets.bottom + CP_NAV_CLEARANCE.
+      //
+      // IT WAS 140, AND NOTHING JUSTIFIED THAT. This screen was 110 until
+      // 37227ee — "fix settings scroll on web" — bumped it to 140 as a side
+      // effect of a react-native-web scroll-height fix that had nothing to do
+      // with the nav. app/index.jsx carries 140 from an unexplained "Update
+      // index.jsx". Two screens at 140, neither with a reason, and the other
+      // ~34 uses of a bottom pad in this app are 120. The unexplained
+      // difference is not preserved: one derived number, for every screen that
+      // carries a floating nav.
       padding: spacing.lg,
-      paddingBottom: 140,
       maxWidth: 720,
       width: '100%',
       alignSelf: 'center',

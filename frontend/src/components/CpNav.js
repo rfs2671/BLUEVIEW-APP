@@ -23,6 +23,58 @@ import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
 import CheckinQrModal from './CheckinQrModal';
 
+// ─── The pill's geometry, and the clearance every CP screen owes it ─────────
+//
+// DERIVED, NOT MEASURED-AND-WRITTEN-DOWN. Every term below is the same token
+// the styles at the bottom of this file are built from, so changing
+// `spacing.sm` moves the pill and the clearance together. A number copied off
+// a screenshot would not.
+//
+// WHAT THE SCREENS DID BEFORE. /logbooks and /documents hardcoded
+// `paddingBottom: 120`, /settings `140`. None of the three was a measurement
+// against this nav: 120 is the app's house-wide bottom scroll padding (it
+// appears on ~34 screens, most of which have no nav at all), and settings was
+// 110 until an unrelated react-native-web scroll fix bumped it to 140. So the
+// clearance was a coincidence that happened to be roughly right on gesture
+// navigation and WRONG on 3-button, where the inset is ~48 rather than ~24
+// and the pill covered the last row of every list.
+//
+// `numberOfLines={1}` ON navLabel IS WHAT KEEPS THIS TRUE. The height below
+// assumes each item is ONE line tall. This nav is `width: '100%'` with
+// `navItem: flex: 1`, so items share the width and a squeezed label wraps —
+// two lines, a taller item, a taller pill, and this constant silently
+// understating the clearance on exactly the narrow phones where it is
+// tightest. Removing that prop without changing this number is the visible
+// error; they are one mechanism in two places.
+//   Measured, three items, 320pt wide: with the prop 58, without it 70.
+
+const NAV_ICON_SIZE = 18;
+
+// How far the pill floats above the safe-area inset. Applied inline at render
+// (see `container`), because a StyleSheet is built before any inset exists.
+export const CP_NAV_BOTTOM_OFFSET = 24;
+
+// blurContent's padding, top and bottom  +  navItem's padding, top and bottom
+//   + the tallest thing in the row, which is the icon, not the 11pt label.
+export const CP_NAV_PILL_HEIGHT =
+  spacing.sm * 2 + (spacing.sm + 4) * 2 + NAV_ICON_SIZE;
+
+// The gap left between the top of the pill and the last row of content. Not
+// styling slack: this is a gloved thumb outdoors reaching for the last item in
+// a list, and a row that is merely visible behind the pill is not tappable.
+const CP_NAV_BREATHING_ROOM = spacing.lg;
+
+/**
+ * What a screen carrying CpNav must leave at the bottom of its scroll content.
+ *
+ * Spread it as `{ paddingBottom: insets.bottom + CP_NAV_CLEARANCE }` — the
+ * inset is added by the SCREEN, not baked in here, because this module cannot
+ * see it and the value differs between gesture and 3-button navigation.
+ */
+export const CP_NAV_CLEARANCE =
+  CP_NAV_BOTTOM_OFFSET + CP_NAV_PILL_HEIGHT + CP_NAV_BREATHING_ROOM;
+
+
 // CHECK-IN IS NOT A ROUTE. It opens a modal in place, because the CP reaches
 // for it standing at a gate with a worker beside him — navigating away from
 // whatever he was doing, and back again afterwards, is the wrong shape for a
@@ -46,7 +98,7 @@ const NavItem = ({ item, isActive, onPress, colors: c }) => {
       onPress={onPress}
       style={[styles.navItem, isActive && styles.navItemActive]}
     >
-      <Icon size={18} strokeWidth={1.5} color={isActive ? c.text.primary : c.text.muted} />
+      <Icon size={NAV_ICON_SIZE} strokeWidth={1.5} color={isActive ? c.text.primary : c.text.muted} />
       {/* numberOfLines IS LOAD-BEARING. See the note on navLabel. */}
       <Text
         numberOfLines={1}
@@ -94,7 +146,7 @@ const CpNav = () => {
   );
 
   return (
-    <View style={[styles.container, { bottom: insets.bottom + 24 }]}>
+    <View style={[styles.container, { bottom: insets.bottom + CP_NAV_BOTTOM_OFFSET }]}>
       <View style={styles.innerContainer}>
         {/* Web keeps expo-blur; native falls back to a plain View —
             the native BlurView was throwing a render exception on
@@ -125,17 +177,19 @@ const CpNav = () => {
 const styles = StyleSheet.create({
   container: {
     // OVERRIDDEN AT RENDER. The component passes
-    // { bottom: insets.bottom + 24 } inline, which REPLACES this value — it
-    // does not add to it. The 24 below is therefore a fallback that only
-    // applies if these styles are used without the component.
+    // { bottom: insets.bottom + CP_NAV_BOTTOM_OFFSET } inline, which REPLACES
+    // this value — it does not add to it. The one below is therefore a
+    // fallback that only applies if these styles are used without the
+    // component.
     //
     // It has to be done inline: a StyleSheet is built once at module load,
-    // before any inset exists. And it has to be done at all because
-    // absolute positioning puts this outside the inset flow — neither the
-    // screen's SafeAreaView nor its paddingBottom: 120 reaches it, so a
-    // hardcoded 24 leaves the nav under the buttons on 3-button navigation.
+    // before any inset exists. And it has to be done at all because absolute
+    // positioning puts this outside the inset flow — neither the screen's
+    // SafeAreaView nor its scroll padding reaches it, so a hardcoded offset
+    // leaves the nav under the buttons on 3-button navigation. The screens
+    // add the same inset to their own clearance; see CP_NAV_CLEARANCE.
     position: 'absolute',
-    bottom: 24, left: 0, right: 0,
+    bottom: CP_NAV_BOTTOM_OFFSET, left: 0, right: 0,
     alignItems: 'center',
     paddingHorizontal: spacing.lg,
   },
