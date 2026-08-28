@@ -1,5 +1,13 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+
+// The NATIVE build's version, which is what eligibility for an OTA is keyed on.
+// Not the bundle id and not its age: an ineligible device can hold a perfectly
+// fresh bundle for the version it is stuck on.
+const CLIENT_VERSION = Constants.expoConfig?.version
+  || Constants.manifest?.version
+  || '';
 
 // API Base URL - uses the preview URL which proxies /api to backend
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
@@ -76,6 +84,12 @@ apiClient.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    // WHICH INSTALL IS ASKING. The server records it per user so an admin can
+    // answer "whose phone is stranded" without holding the phone -- a device
+    // below the runtimeVersion floor receives no OTA at all and is told
+    // nothing. Sent on every request rather than at login: a 30-day token
+    // means a login is far too coarse to notice an install that updated.
+    if (CLIENT_VERSION) config.headers['X-Client-Version'] = CLIENT_VERSION;
     return config;
   },
   (error) => Promise.reject(error)

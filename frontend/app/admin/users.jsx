@@ -34,7 +34,8 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
+import { adminUsersAPI, projectsAPI, versionAPI } from '../../src/utils/api';
+import { isBehindMinimum } from '../../src/utils/clientVersion';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../../src/utils/retentionCopy';
@@ -47,6 +48,15 @@ export default function AdminUsersScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+
+  // The floor this deploy supports, so a row can say whether an install is
+  // below it. Null until it answers, and null means say nothing.
+  const [clientFloor, setClientFloor] = useState(null);
+  useEffect(() => {
+    versionAPI.get()
+      .then((v) => setClientFloor(v?.client_minimum_supported || null))
+      .catch(() => { /* unknown is not behind */ });
+  }, []);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -429,6 +439,21 @@ export default function AdminUsersScreen() {
                         <Text style={s.userName}>{userItem.name}</Text>
                         <Text style={s.userEmail}>{userItem.email}</Text>
                         {userItem.phone ? <Text style={s.userEmail}>{formatPhoneDisplay(userItem.phone)}</Text> : null}
+                        {/* WHOSE PHONE IS STRANDED. A device below the
+                            runtimeVersion floor receives no OTA at all and is
+                            told nothing, so on 2026-08-28 a stale install
+                            looked exactly like a server fault for a day. The
+                            person who can act on it is an admin, not the CP
+                            holding the phone, so the actionable version lives
+                            here — on the row they already read — and the CP
+                            gets only a non-blocking marker.
+                            Silent when the version is current or unknown: an
+                            install we cannot judge must not be accused. */}
+                        {isBehindMinimum(userItem.client_version, clientFloor) ? (
+                          <Text style={s.staleAppBadge}>
+                            App v{userItem.client_version} — out of date, receives no updates
+                          </Text>
+                        ) : null}
                         {/* The request, where the admin already looks. It is a
                             field on the user's own row rather than a queue on
                             a screen nobody opens — an unread queue is the
@@ -801,6 +826,14 @@ function buildStyles(colors, isDark) {
   userEmail: {
     fontSize: 13,
     color: colors.text.muted,
+  },
+  // semantic.attention, not destructive: a stale install is a thing to fix,
+  // not a thing that has gone wrong with this person's account.
+  staleAppBadge: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: semantic.attention,
+    marginTop: 2,
   },
   // The deletion request. semantic.attention rather than a destructive red:
   // the REQUEST is not the destructive act, the admin pressing delete is.

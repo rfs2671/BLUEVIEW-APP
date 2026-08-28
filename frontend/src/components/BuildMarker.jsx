@@ -1,8 +1,15 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import { bundleAgeLabel } from '../utils/bundleAge';
+import { isBehindMinimum } from '../utils/clientVersion';
+import { versionAPI } from '../utils/api';
+
+// Fetched ONCE per app session and shared by every mount of this component.
+// The marker renders on several CP screens; asking the server on each of them
+// would put a request behind a line of 9pt grey text.
+let _floor = { asked: false, minimum: null };
 
 // Self-report the EXACT running bundle so "is my phone on the right code?" is
 // never a question again. `bundle: embedded` = running the JS baked into the APK;
@@ -12,6 +19,27 @@ export const BUILD_TAG = 'cam-stage-timing';
 
 export default function BuildMarker() {
   const version = Constants.expoConfig?.version ?? Constants.manifest?.version ?? '?';
+  const [minimum, setMinimum] = useState(_floor.minimum);
+
+  // NON-BLOCKING, AND IT STAYS THAT WAY. A device below the floor still files
+  // its day: a compliance app that stops a CP working because its own update
+  // pipeline fell behind has substituted one failure for a worse one. This
+  // line exists so the NEXT person asking "why does his phone do that" gets
+  // the answer in one glance instead of six source traces.
+  useEffect(() => {
+    let alive = true;
+    if (_floor.asked) return undefined;
+    _floor.asked = true;
+    versionAPI.get()
+      .then((v) => {
+        _floor.minimum = v?.client_minimum_supported || null;
+        if (alive) setMinimum(_floor.minimum);
+      })
+      .catch(() => { /* unknown is not behind — say nothing */ });
+    return () => { alive = false; };
+  }, []);
+
+  const behind = isBehindMinimum(version, minimum);
   let updateId = 'embedded';
   let channel = 'n/a';
   let runtime = '?';
@@ -44,6 +72,11 @@ export default function BuildMarker() {
       {!!age && (
         <Text selectable style={{ fontSize: 9, color: '#94a3b8', textAlign: 'center' }}>
           {age}
+        </Text>
+      )}
+      {behind && (
+        <Text selectable style={{ fontSize: 9, color: '#b45309', textAlign: 'center' }}>
+          this version is out of date — it no longer receives updates
         </Text>
       )}
     </View>
