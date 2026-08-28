@@ -26332,7 +26332,25 @@ async def nightly_compliance_check():
         logger.error(f"Nightly compliance check error: {e}")
 
 async def nightly_dob_scan():
-    """Cron job: runs daily at 04:00 AM EST."""
+    """DOB compliance sync. Runs EVERY 15 MINUTES, not nightly.
+
+    The name and this docstring are historical. MR.14 commit 2a moved
+    this to IntervalTrigger(minutes=15) for the v1 monitoring product
+    (operator F1: "DOB datasets at 15 min") and the docstring was left
+    saying "runs daily at 04:00 AM EST" — which is how a job firing 96
+    times a day went unnoticed for months while it drove a per-tick
+    writer. The name is kept because the scheduler id, the logs, and
+    the runbook all use it; the cadence is stated here so the next
+    reader gets it from the docstring rather than from the add_job
+    call ~9000 lines below.
+
+    (Do not write the scheduler id as a literal in this docstring —
+    TestSchedulerCadences anchors on its first occurrence in the file
+    and asserts the 15-min trigger sits just above it.)
+
+    Per tick: sync every tracked project's DOB records, then refresh
+    permit severity/next_action from those records.
+    """
     logger.info("🏗️ DOB nightly scan starting...")
  
     projects = await db.projects.find({
@@ -26357,9 +26375,43 @@ async def nightly_dob_scan():
             logger.error(f"DOB scan error for project {project.get('name')}: {e}")
  
     logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
-    # Check for expiring permits across all projects
+    # Check for expiring permits across all projects. Reads and writes
+    # dob_logs only — severity + next_action computed against each row's
+    # own expiration_date. Stays.
     await check_permit_expirations()
-    await nightly_renewal_scan(db)
+
+    # `await nightly_renewal_scan(db)` is REMOVED from this tick.
+    #
+    # It was the writer for permit_renewals, and because this function
+    # runs every 15 minutes (see docstring) it ran 96 times a day, not
+    # once. Each pass re-walked every record_type="permit" row in
+    # dob_logs and inserted a renewal for any whose permit_dob_log_id
+    # wasn't already covered by a live row.
+    #
+    # permit_dob_log_id is a dob_logs _id, and dob_logs inserts a NEW
+    # document with a NEW _id on every status change, so a single real
+    # permit accrues a row per status transition — plus a whole fresh
+    # set after a reset-resync, which mints new _ids for everything.
+    # The rows it produced carry job_number=None and permit_type=None
+    # (hardcoded in lib/eligibility_dispatcher.py:178-179) and a
+    # days_until_expiry measured against a different date than the
+    # current_expiration stored beside it. They are not recoverable by
+    # deduping; they were never identifiable in the first place.
+    #
+    # Growth was 12/18/16/34 rows per month May-August 2026.
+    #
+    # This also retires Job 2 (AWAITING_GC -> COMPLETED completion
+    # checks). Nothing else drives that transition, but nothing
+    # produces AWAITING_GC either now except the manual /prepare
+    # endpoint, and dob_approval_watcher still handles the
+    # AWAITING_DOB_APPROVAL -> COMPLETED path on its own schedule.
+    #
+    # nightly_renewal_scan stays in permit_renewal.py, uncalled. It
+    # comes back when the writer keys on a stable permit identity and
+    # the adapter stops nulling the fields — i.e. when the module is
+    # unparked, deliberately.
+    #
+    # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
 async def renewal_digest_daily_cron():
     """Daily 7am-ET digest run.
