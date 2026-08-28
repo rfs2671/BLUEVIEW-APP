@@ -3408,7 +3408,26 @@ LOGBOOK_TYPE_REGISTRY = [
     },
     {
         "key": "preshift_signin",
-        "label": "Pre-Shift Safety Meeting",
+        # THE NAME ON THE FILED DOCUMENT, and on the consent the worker gives.
+        # This label said "Pre-Shift Safety Meeting" and every other surface in
+        # the app said "Pre-Shift Sign-In": the single-log PDF (:15250), the
+        # combined daily report's section header (:22324), the inspector tab,
+        # and — the one that decides it — the affirmation the worker taps at
+        # the gate, "authorize its use on today's Pre-Shift Sign-In Log for
+        # this jobsite" (checkin.html:280). A worker consents to a NAMED
+        # document; the app does not get to call it something else afterwards.
+        #
+        # It was also printing BOTH names on ONE report. Page 1's compliance
+        # line resolves labels through this registry (_log_label, :22016) and
+        # page 2's section header is the hardcoded string, so a deficiency line
+        # read "not filed (Pre-Shift Safety Meeting, ...)" above a section
+        # headed "Pre-Shift Sign-In" — on a document that goes to investors and
+        # lenders, on the sentence that says something is missing.
+        #
+        # No DOB section is being deferred to here: §3301 does not name this
+        # record. The citation below is OSHA 1926.21, and the filed document
+        # plus the worker's consent are therefore the only authorities.
+        "label": "Pre-Shift Sign-In",
         "subtitle": "Daily sign-in with all workers",
         "frequency": "daily",
         "icon": "Users",
@@ -11718,6 +11737,29 @@ async def register_and_checkin(data: dict, request: Request):
     # apart from "no card". None on the returning/no-photo path.
     card_ocr_attempts = data.get("card_ocr_attempts")
     card_ocr_failure_reason = data.get("card_ocr_failure_reason")
+    # HOW HE REACHED THE GATE — "nfc" (tapped the tag) or "qr" (scanned the
+    # code the CP holds up when his phone has no NFC radio).
+    #
+    # NOT DERIVED FROM THE TAG ROW, and it must not be. A QR carries the SAME
+    # nfc_tags row as the tag on the same post — one gate, one registration,
+    # one location_description — so the row cannot distinguish them and there
+    # is nothing on it to read. Only the client knows, via ?m=qr.
+    #
+    # FROZEN ONTO THE CHECK-IN, like sst_status and the OCR telemetry beside
+    # it, because nfc_tags rows are mutable and soft-deletable while a check-in
+    # is the durable artifact. Reading the method back later must not be able
+    # to give a different answer than the day it happened.
+    #
+    # UNKNOWN VALUES BECOME "nfc", not an error and not the raw string. This is
+    # a public, unauthenticated endpoint, so the field is closed to the two
+    # values that exist; and absent must mean "nfc" permanently, because every
+    # tag already programmed into the field sends no marker and an NDEF write
+    # cannot be taken back.
+    #
+    # It is EVIDENCE, never a gate. A QR can be photographed and used off-site
+    # where a tap cannot — this is what makes that queryable after the fact. It
+    # is not a reason to turn a man away at the gate.
+    checkin_method = "qr" if str(data.get("checkin_method") or "").strip().lower() == "qr" else "nfc"
     # TOOLBOX ROSTER (optional): the worker tapped "Confirm attending toolbox
     # talk" at the gate. This is a ROSTER ENHANCEMENT for GCs/insurers — it is
     # NOT a legal attestation and NOT a gate. Under NYC DOB §3301.12.3 / OSHA
@@ -12229,6 +12271,8 @@ async def register_and_checkin(data: dict, request: Request):
         "source_ip": client_ip,
         "user_agent": user_agent,
         "device_fingerprint": device_fp,
+        # Tapped or scanned. See the resolution above for why absent is "nfc".
+        "checkin_method": checkin_method,
     }
 
     result = await db.checkins.insert_one(checkin_record)
@@ -23401,6 +23445,18 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
             "status": lb.get("status", "draft"),
             "has_signature": bool(lb.get("cp_signature")),
             "cp_name": lb.get("cp_name"),
+            # WHOSE RECORD THIS IS, for the per-worker types.
+            # subcontractor_orientation files ONE DOCUMENT PER WORKER (the
+            # upsert is keyed on data.worker_id), so this list can hold four
+            # rows that agree on log_type, cp_name and status and differ only
+            # here. Without it the reports screen drew four identical rows for
+            # four different workers.
+            #
+            # Only orientations write data.worker_name at the top level — the
+            # other forms keep their names inside per-row arrays (osha_log
+            # entries, fall_protection rows) — so every other type serves null
+            # and the client renders nothing extra.
+            "worker_name": (lb.get("data") or {}).get("worker_name"),
             "updated_at": lb.get("updated_at").isoformat() if isinstance(lb.get("updated_at"), datetime) else str(lb.get("updated_at", "")),
             "failed_photo_count": failed_photos,
         })
@@ -26276,7 +26332,25 @@ async def nightly_compliance_check():
         logger.error(f"Nightly compliance check error: {e}")
 
 async def nightly_dob_scan():
-    """Cron job: runs daily at 04:00 AM EST."""
+    """DOB compliance sync. Runs EVERY 15 MINUTES, not nightly.
+
+    The name and this docstring are historical. MR.14 commit 2a moved
+    this to IntervalTrigger(minutes=15) for the v1 monitoring product
+    (operator F1: "DOB datasets at 15 min") and the docstring was left
+    saying "runs daily at 04:00 AM EST" — which is how a job firing 96
+    times a day went unnoticed for months while it drove a per-tick
+    writer. The name is kept because the scheduler id, the logs, and
+    the runbook all use it; the cadence is stated here so the next
+    reader gets it from the docstring rather than from the add_job
+    call ~9000 lines below.
+
+    (Do not write the scheduler id as a literal in this docstring —
+    TestSchedulerCadences anchors on its first occurrence in the file
+    and asserts the 15-min trigger sits just above it.)
+
+    Per tick: sync every tracked project's DOB records, then refresh
+    permit severity/next_action from those records.
+    """
     logger.info("🏗️ DOB nightly scan starting...")
  
     projects = await db.projects.find({
@@ -26301,9 +26375,43 @@ async def nightly_dob_scan():
             logger.error(f"DOB scan error for project {project.get('name')}: {e}")
  
     logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
-    # Check for expiring permits across all projects
+    # Check for expiring permits across all projects. Reads and writes
+    # dob_logs only — severity + next_action computed against each row's
+    # own expiration_date. Stays.
     await check_permit_expirations()
-    await nightly_renewal_scan(db)
+
+    # `await nightly_renewal_scan(db)` is REMOVED from this tick.
+    #
+    # It was the writer for permit_renewals, and because this function
+    # runs every 15 minutes (see docstring) it ran 96 times a day, not
+    # once. Each pass re-walked every record_type="permit" row in
+    # dob_logs and inserted a renewal for any whose permit_dob_log_id
+    # wasn't already covered by a live row.
+    #
+    # permit_dob_log_id is a dob_logs _id, and dob_logs inserts a NEW
+    # document with a NEW _id on every status change, so a single real
+    # permit accrues a row per status transition — plus a whole fresh
+    # set after a reset-resync, which mints new _ids for everything.
+    # The rows it produced carry job_number=None and permit_type=None
+    # (hardcoded in lib/eligibility_dispatcher.py:178-179) and a
+    # days_until_expiry measured against a different date than the
+    # current_expiration stored beside it. They are not recoverable by
+    # deduping; they were never identifiable in the first place.
+    #
+    # Growth was 12/18/16/34 rows per month May-August 2026.
+    #
+    # This also retires Job 2 (AWAITING_GC -> COMPLETED completion
+    # checks). Nothing else drives that transition, but nothing
+    # produces AWAITING_GC either now except the manual /prepare
+    # endpoint, and dob_approval_watcher still handles the
+    # AWAITING_DOB_APPROVAL -> COMPLETED path on its own schedule.
+    #
+    # nightly_renewal_scan stays in permit_renewal.py, uncalled. It
+    # comes back when the writer keys on a stable permit identity and
+    # the adapter stops nulling the fields — i.e. when the module is
+    # unparked, deliberately.
+    #
+    # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
 async def renewal_digest_daily_cron():
     """Daily 7am-ET digest run.
@@ -35613,21 +35721,31 @@ async def startup_event():
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
 
-    # MR.9: daily 7am ET reminder cron — sends T-30 / T-14 / T-7
-    # notifications to filing_reps + the company admin for each
-    # operator-actionable renewal whose current_expiration falls in
-    # one of the three windows. Gated by NOTIFICATIONS_ENABLED
-    # (default off) so a misconfigured Resend key doesn't blast emails
-    # on first deploy. CronTrigger handles DST automatically — when
-    # ET shifts between EST and EDT the absolute UTC time of "7am ET"
-    # changes, but the trigger fires correctly because the timezone
-    # is named, not numeric.
-    scheduler.add_job(
-        renewal_reminder_cron,
-        CronTrigger(hour=7, minute=0, timezone="America/New_York"),
-        id='renewal_reminder_cron',
-        replace_existing=True,
-    )
+    # MR.9's renewal_reminder_cron scheduler entry is REMOVED.
+    #
+    # It sent T-30 / T-14 / T-7 emails to filing_reps + the company
+    # admin, one per permit_renewals row. Rows are keyed on
+    # permit_dob_log_id — a dob_logs _id, not a permit identity — so a
+    # single real permit accumulates a row per DOB status change and a
+    # fresh set after every reset-resync. send_notification's 23h
+    # idempotency keys on permit_renewal_id (lib/notifications.py:191),
+    # and each duplicate carries a different one, so nothing collapsed
+    # them: one customer received the same "renewal due in 7 days"
+    # email six times, and because the resync had deleted the dob_logs
+    # rows those renewals pointed at, every copy named the permit "—"
+    # (_renewal_reminder_context, server.py:34716 falls back to the
+    # renewal's job_number, which the v2 dispatcher adapter hardcodes
+    # to None — lib/eligibility_dispatcher.py:178).
+    #
+    # 80 such emails were sent between May and August 2026, accelerating
+    # month over month as the duplicate rows multiplied.
+    #
+    # `renewal_reminder_cron` itself is LEFT IN PLACE, unscheduled. The
+    # permit-renewal module is parked; making the emails correct means
+    # fixing the writer and the adapter, which is unparking it. Nothing
+    # calls the function now, and nothing should until that happens.
+    #
+    # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
     # 311 fast poll — every 30 minutes (operator F1 — kept at 30 min;
     # 311 itself updates ~hourly, pushing to 15 min would mostly burn

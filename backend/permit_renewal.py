@@ -1294,27 +1294,35 @@ async def nightly_renewal_scan(db):
                 f"{renewal.get('_id')}: {e}"
             )
 
-    # ── Job 3: DOB NOW health check (once per day only) ─────────────
-    try:
-        last_check = await db.system_config.find_one(
-            {"key": "dob_now_health_check"}
-        )
-        should_run = True
-        if last_check and last_check.get("last_run"):
-            last_run = _ensure_utc(last_check["last_run"])
-            if isinstance(last_run, datetime):
-                hours_since = (
-                    datetime.now(timezone.utc) - last_run
-                ).total_seconds() / 3600
-                if hours_since < 23:
-                    should_run = False
-                    logger.info(
-                        f"Health check skipped — last ran {hours_since:.1f}h ago"
-                    )
-        if should_run:
-            await run_dob_now_health_check(db)
-    except Exception as e:
-        logger.error(f"Health check scheduling error: {e}")
+    # ── Job 3: DOB NOW health check — REMOVED ───────────────────────
+    #
+    # The check GET DOB_NOW_BUILD_URL = https://a810-dobnow.nyc.gov/...
+    # through ServerHttpClient. That host is first on
+    # lib/server_http.py AKAMAI_BLOCKED_HOSTS, so the client raises
+    # EgressViolation ("...is forbidden... route through the worker
+    # queue instead") before any packet leaves. run_dob_now_health_check
+    # catches it with a blanket `except Exception` and files it as
+    # "DOB NOW UNREACHABLE: Could not connect to DOB NOW."
+    #
+    # So the alert email reported DOB NOW as down while quoting our own
+    # egress guard refusing our own request. It could never have
+    # reported anything else: the failure is structural, not a DOB
+    # outage. 60 such alerts went out, one a day.
+    #
+    # Removed rather than routed through the worker queue. The check
+    # exists to guard an RPA filing pipeline that is parked, nothing
+    # consumes a "DOB NOW is up" signal, and its success path already
+    # logs "all selectors valid" for a selector check that was never
+    # implemented (js_hash is persisted as None — see
+    # run_dob_now_health_check). Standing up worker-mediated fetch for
+    # a parked module is not a stop.
+    #
+    # run_dob_now_health_check and _send_health_check_alert are LEFT IN
+    # PLACE, uncalled. GET /permit-renewals/health-status keeps reading
+    # whatever system_config row already exists and will now report
+    # "never_run" once it is cleared.
+    #
+    # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
     logger.info(
         f"🔄 Nightly renewal scan complete: "

@@ -24,6 +24,7 @@ import {
   RefreshCw,
   Search,
   Filter,
+  Check,
   Clock,
   HardDrive,
   Folder,
@@ -45,6 +46,13 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { settleFetch } from '../../../src/utils/offlineState';
 import { mayCacheList } from '../../../src/utils/dropboxSyncState';
+import {
+  listCachedDocs, cachedDocName, freeDiskBytes, cacheDocFile, sweepDocCache,
+} from '../../../src/utils/docCache';
+import {
+  readinessOf, saveQueue, megabytes, hasRoomFor,
+  READY_UNCHECKED, READY_ALL, READY_PARTIAL, READY_NONE,
+} from '../../../src/utils/offlineReadiness';
 import { cacheProject, readCachedProject } from '../../../src/utils/projectCache';
 import {
   cacheDocList,
@@ -66,6 +74,10 @@ const extOf = (filename) => String(filename || '').split('.').pop()?.toLowerCase
 // PDFs are the only type with an offline story — everything else is handed to
 // another app via a REMOTE url and cannot open without a connection.
 const isPdf = (filename) => extOf(filename) === 'pdf';
+
+// The on-disk name for a file row. Built through docCache so the strip and the
+// cache cannot disagree about what "saved" means.
+const nameOfFile = (f) => cachedDocName(f?.id || f?._id, f?.cache_version ?? 0);
 
 // File type icons and colors
 const getFileTypeInfo = (filename) => {
@@ -113,6 +125,13 @@ export default function ConstructionPlansScreen() {
   const [syncing, setSyncing] = useState(false);
   const [project, setProject] = useState(null);
   const [files, setFiles] = useState([]);
+  // WHAT IS ACTUALLY ON THE DISK. Re-read rather than remembered: a stored
+  // "saved" flag goes stale the moment a drawing changes in Dropbox and bumps
+  // its cache_version, and the strip would then promise something untrue at the
+  // exact moment it matters.
+  const [cachedNames, setCachedNames] = useState(new Set());
+  const [savingAll, setSavingAll] = useState(false);
+  const [saveProgress, setSaveProgress] = useState({ done: 0, total: 0, failed: 0 });
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all'); // all, pdf, image, document
   const [lastSynced, setLastSynced] = useState(null);
@@ -165,13 +184,88 @@ export default function ConstructionPlansScreen() {
    * files; pulling them down early is useful and costs nothing. It is only the
    * LIST — the thing that decides what the CP believes he has — that waits.
    */
+  /** Re-read the disk. Cheap: one directory listing, not a stat per file. */
+  const refreshCachedNames = async () => {
+    try { setCachedNames(await listCachedDocs()); } catch (_e) { /* reads as none */ }
+  };
+
+  /**
+   * SAVE ALL — the control that makes a promise.
+   *
+   * The background warm stays, and it is useful, but it can never tell the CP
+   * he is ready because it never knew it was asked. He is deciding whether to
+   * walk into a cellar; only an action he took, with a definite answer, can
+   * support that decision.
+   *
+   * UNCAPPED, unlike the background warm's limit of 15. If he asked for all of
+   * them he gets all of them.
+   */
+  const handleSaveAll = async () => {
+    if (savingAll) return;
+    const queue = saveQueue({ files, cachedNames, nameOf: nameOfFile });
+    if (queue.length === 0) return;
+
+    // ROOM CHECKED BEFORE THE FIRST BYTE, not on file 9 of 15. `null` means the
+    // device would not say, and an unknown must not block him.
+    const needed = queue.reduce((n, f) => n + (Number(f?.size) || 0), 0);
+    const room = hasRoomFor(needed, await freeDiskBytes());
+    if (room === false) {
+      toast.error(
+        'Not enough space',
+        `Saving these plans needs about ${megabytes(needed)} MB and this device is nearly full. Free some space and try again.`,
+      );
+      return;
+    }
+
+    setSavingAll(true);
+    setSaveProgress({ done: 0, total: queue.length, failed: 0 });
+    let done = 0;
+    let failed = 0;
+    for (const f of queue) {
+      const got = await cacheDocFile({
+        fileId: f.id || f._id,
+        cacheVersion: f.cache_version ?? 0,
+        remoteUrl: f.r2_url || f.directUrl,
+      });
+      if (got) done += 1; else failed += 1;
+      setSaveProgress({ done, total: queue.length, failed });
+      // Re-read as it goes, so the per-row marks fill in while he watches
+      // rather than all at the end.
+      await refreshCachedNames();
+    }
+    setSavingAll(false);
+
+    if (failed === 0) {
+      toast.success('Saved', `${done} plan${done === 1 ? '' : 's'} saved on this device.`);
+    } else {
+      toast.error(
+        'Some plans did not save',
+        `${done} saved, ${failed} failed. Tap Save for offline again to retry just those.`,
+      );
+    }
+  };
+
   const adoptFiles = (list, { mayCache = true } = {}) => {
     const arr = Array.isArray(list) ? list : [];
     setFiles(arr);
     setFetchState('ok');
-    if (mayCache) cacheDocList(scopeKey, arr);
+    if (mayCache) {
+      cacheDocList(scopeKey, arr);
+      // HOUSEKEEPING, ONLY BEHIND A LIST WE JUST TRUSTED ENOUGH TO STORE.
+      // Removes superseded versions ({id}.1.pdf once {id}.2.pdf lands) and
+      // files no project's list mentions any more. Keyed on the union of ALL
+      // cached lists, because the cache directory is flat and shared -- see
+      // sweepDocCache. Fire-and-forget: a failed sweep must not disturb the
+      // screen, and it resolves every ambiguity toward keeping.
+      sweepDocCache().then(refreshCachedNames).catch(() => {});
+    }
     // Fire-and-forget byte warm — the plans land on disk while there is signal.
-    warmDocCache(arr.filter((f) => isPdf(f?.name)), { limit: 15 }).catch(() => {});
+    // Then re-read the disk so the strip reflects what the warm achieved rather
+    // than what it attempted.
+    warmDocCache(arr.filter((f) => isPdf(f?.name)), { limit: 15 })
+      .then(refreshCachedNames)
+      .catch(() => {});
+    refreshCachedNames();
   };
 
   const fetchData = async () => {
@@ -451,6 +545,12 @@ export default function ConstructionPlansScreen() {
   };
 
   // Filter files
+  // Recomputed whenever the list or the disk changes. Cheap: a set membership
+  // test per file over a Set built by one directory read.
+  const readiness = readinessOf({
+    files, cachedNames, nameOf: nameOfFile, sync: project?.dropbox_sync,
+  });
+
   const filteredFiles = files.filter((file) => {
     // Search filter
     if (searchQuery && !file.name?.toLowerCase().includes(searchQuery.toLowerCase())) {
@@ -634,6 +734,68 @@ export default function ConstructionPlansScreen() {
                   </Pressable>
                 ))}
               </ScrollView>
+
+              {/* ── OFFLINE READINESS ────────────────────────────────────
+                  The sentence the CP acts on before he goes underground.
+                  Computed from the DISK on every render, never from a stored
+                  flag: a flag goes stale the moment a drawing changes in
+                  Dropbox and bumps its cache_version, and it would then promise
+                  something untrue at the exact moment it matters. */}
+              {readiness.state === READY_UNCHECKED ? (
+                <View style={s.readyStrip}>
+                  <Text style={s.readyTextMuted}>
+                    {readiness.neverSynced
+                      ? 'Not checked yet — sync this project to see which plans are saved on this device.'
+                      : 'Not checked yet — the last sync did not finish, so what is saved here cannot be confirmed.'}
+                  </Text>
+                </View>
+              ) : readiness.state === READY_ALL ? (
+                <View style={s.readyStrip}>
+                  <Check size={16} strokeWidth={2} color={semantic.verified} />
+                  <Text style={s.readyTextOk}>
+                    All {readiness.savable} plan{readiness.savable === 1 ? '' : 's'} saved on this device
+                  </Text>
+                </View>
+              ) : (
+                <View style={s.readyStrip}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.readyText}>
+                      {readiness.state === READY_NONE
+                        ? `No plans saved on this device · ${megabytes(readiness.bytesRemaining)} MB`
+                        : `${readiness.saved} of ${readiness.savable} saved · ${megabytes(readiness.bytesRemaining)} MB to go`}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={handleSaveAll}
+                    disabled={savingAll || offline}
+                    accessibilityRole="button"
+                    style={({ pressed }) => [
+                      s.saveAllBtn,
+                      pressed && { opacity: 0.7 },
+                      (savingAll || offline) && { opacity: 0.5 },
+                    ]}
+                  >
+                    <Text style={s.saveAllText}>
+                      {savingAll
+                        ? `Saving ${saveProgress.done} of ${saveProgress.total}...`
+                        : 'Save for offline'}
+                    </Text>
+                  </Pressable>
+                </View>
+              )}
+
+              {/* OUT OF THE DENOMINATOR, WITH THE REASON. These files failed
+                  their R2 upload during the sync, so there are no bytes to
+                  fetch and retrying cannot help. Counting them would mean the
+                  CP can never reach a clean state, and a number that can never
+                  be satisfied is one he learns to ignore. */}
+              {readiness.unsavable > 0 && (
+                <Text style={s.readyUnsavable}>
+                  {readiness.unsavable} plan{readiness.unsavable === 1 ? '' : 's'} cannot be saved —
+                  {readiness.unsavable === 1 ? ' it did' : ' they did'} not finish syncing from Dropbox.
+                  Sync again to try to repair {readiness.unsavable === 1 ? 'it' : 'them'}.
+                </Text>
+              )}
 
               {/* Files Count */}
               <Text style={s.filesCount}>
@@ -926,6 +1088,32 @@ function buildStyles(colors, isDark) {
     fontSize: 13,
     color: colors.text.muted,
     marginBottom: spacing.md,
+  },
+
+  // ── Offline readiness strip ────────────────────────────────────────────
+  // Sits directly above the list it describes. Full touch target on the
+  // action: this is a gloved thumb, outdoors, deciding whether to go down.
+  readyStrip: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm, borderRadius: 12,
+    backgroundColor: withAlpha('#ffffff', 0.05),
+    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    minHeight: 56,
+  },
+  readyText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.text.secondary },
+  readyTextOk: { flex: 1, fontSize: 13, fontWeight: '600', color: semantic.verified },
+  readyTextMuted: { flex: 1, fontSize: 13, color: colors.text.muted, lineHeight: 18 },
+  saveAllBtn: {
+    minHeight: 44, justifyContent: 'center',
+    paddingHorizontal: spacing.md, borderRadius: 999,
+    borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)',
+    backgroundColor: 'rgba(59,130,246,0.15)',
+  },
+  saveAllText: { fontSize: 13, fontWeight: '700', color: '#3b82f6' },
+  readyUnsavable: {
+    fontSize: 12, color: colors.text.muted, lineHeight: 17,
+    marginBottom: spacing.sm,
   },
   filesList: {
     gap: spacing.sm,

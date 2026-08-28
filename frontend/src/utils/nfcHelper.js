@@ -2,6 +2,49 @@ import { Platform } from 'react-native';
 import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
 
 /**
+ * THE GATE HOST. One constant, and the only place this host may be written.
+ *
+ * It is NOT derivable from EXPO_PUBLIC_API_URL, and the reason it is not is
+ * the reason this constant exists rather than a second literal:
+ *
+ *   levelog.com      — Vercel. frontend/vercel.json rewrites /checkin/* and
+ *                      /api/* through to api.levelog.com.
+ *   api.levelog.com  — Railway. Serves checkin.html at /checkin/... directly.
+ *
+ * BOTH HOSTS SERVE A WORKING GATE. A QR built off the API base would not 404,
+ * would not log, and would not look wrong to anyone. What differs is the
+ * ORIGIN, and checkin.html keys the returning-worker skip on localStorage
+ * (bv_worker_id / bv_worker_phone) plus API_BASE = location.origin + '/api'.
+ * localStorage is per-origin. So a man who enrolled by TAPPING the tag on
+ * levelog.com and later SCANS a QR built on api.levelog.com is a stranger to
+ * that origin: OSHA card photo, OCR, the twelve-item orientation and a fresh
+ * signature, all over again, at a turnstile, at shift start.
+ *
+ * The drift does not present as a bug. It presents as a man doing his
+ * paperwork twice. Every consumer — the NFC write AND the QR — resolves the
+ * host HERE so the tag and the code can never name different hosts.
+ */
+export const CHECKIN_BASE_URL = 'https://levelog.com';
+
+/**
+ * The check-in URL, built once for both delivery methods.
+ *
+ * `method` appends the ?m= marker that checkin.html forwards to the server as
+ * checkin_method, which is what makes a scanned check-in distinguishable from
+ * a tapped one in the record. It is omitted for NFC: an NFC write is
+ * permanent, the tags already in the field carry no marker, and absent must
+ * keep meaning "tapped" for those to stay consistent with new ones.
+ *
+ * Query-safe against the gate's parser: checkin.html reads the path segments
+ * first and only falls back to ?project_id=/?tag_id= when the path yielded no
+ * tag, which it always does here.
+ */
+export function buildCheckinUrl(projectId, tagId, { method, baseUrl } = {}) {
+  const url = `${baseUrl || CHECKIN_BASE_URL}/checkin/${projectId}/${tagId}`;
+  return method === 'qr' ? `${url}?m=qr` : url;
+}
+
+/**
  * THE TWO TECHS A WRITE CAN LAND ON, and why both are requested.
  *
  * A BLANK tag is `NdefFormatable`, not `Ndef`. Android only exposes the `Ndef`
@@ -127,15 +170,16 @@ export async function readNfcTag() {
  * 
  * @param {string} projectId - The project ID
  * @param {string} tagId - The tag ID
- * @param {string} baseUrl - Base URL (e.g., "https://levelog.com")
+ * @param {string} baseUrl - Gate host. Defaults to CHECKIN_BASE_URL and
+ *   should be left alone; see that constant for why it is not the API base.
  */
-export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.com') {
+export async function writeNfcTag(projectId, tagId, baseUrl = CHECKIN_BASE_URL) {
   let tech = null;
   try {
     // Blank OR already formatted — see WRITE_TECHS above.
     tech = await NfcManager.requestTechnology(WRITE_TECHS);
 
-    const url = `${baseUrl}/checkin/${projectId}/${tagId}`;
+    const url = buildCheckinUrl(projectId, tagId, { baseUrl });
     const bytes = Ndef.encodeMessage([Ndef.uriRecord(url)]);
 
     if (!bytes) {
@@ -170,7 +214,7 @@ export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.c
  * Read AND Write NFC Tag in one operation
  * This is the main function for admin tag registration
  */
-export async function registerNfcTag(projectId, baseUrl = 'https://levelog.com') {
+export async function registerNfcTag(projectId, baseUrl = CHECKIN_BASE_URL) {
   let tech = null;
   try {
     // Step 1: acquire whichever write tech this tag actually offers.
@@ -186,7 +230,7 @@ export async function registerNfcTag(projectId, baseUrl = 'https://levelog.com')
     }
 
     // Steps 3 and 4: build the check-in URL and put it on the tag.
-    const url = `${baseUrl}/checkin/${projectId}/${tagId}`;
+    const url = buildCheckinUrl(projectId, tagId, { baseUrl });
     const bytes = Ndef.encodeMessage([Ndef.uriRecord(url)]);
 
     if (!bytes) {

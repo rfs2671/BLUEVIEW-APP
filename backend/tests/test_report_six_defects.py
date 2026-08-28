@@ -181,7 +181,15 @@ class TheRenderedDocument(unittest.TestCase):
 
     def test_the_nameless_rows_do_not_render(self):
         """Pre-shift skipped these already; toolbox did not until #126."""
-        preshift = self.html[self.html.index("Pre-Shift Sign-In"):]
+        # ANCHORED ON THE SECTION HEADER, not on the bare name. Page 1's
+        # compliance line names the required logs too, and it resolves them
+        # through LOGBOOK_TYPE_REGISTRY — which used to say "Pre-Shift Safety
+        # Meeting", so the first occurrence of this string happened to be the
+        # page-2 header. Now that the registry agrees with the renderer the
+        # name appears on page 1 as well, and a bare .index() slices from the
+        # compliance line into the wrong table. This is section_title's own
+        # closing markup, which nothing else emits.
+        preshift = self.html[self.html.index(">Pre-Shift Sign-In</td></tr></table>"):]
         preshift = preshift[:preshift.index("</table>", preshift.index("<th "))]
         # Two DATA rows — the third stored worker has no name and is dropped.
         self.assertEqual(preshift.count("<tr><td "), 2)

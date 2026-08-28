@@ -2,6 +2,89 @@
 
 Known gaps and deferred work, newest first.
 
+- **[PRODUCT DECISION, NOT A DEFECT] A printed QR is a permanent,
+  silently-copyable credential.**
+  A printed check-in QR has **no expiry, no nonce and no rotation**. One
+  screenshot works from anywhere, for anyone, indefinitely — until an admin
+  deletes the tag, and deleting it also locks out the men actually standing at
+  the gate. There is no revocation that costs nothing.
+
+  **This gives away the only presence control the gate had.** An NFC tap
+  requires the phone to be physically at the post; that physical-presence
+  property was doing real work, and it was doing it alone. Scanning a code
+  requires only line of sight to a photograph of it. Nothing else on the live
+  path establishes location — see the geofence entry below, which does not run.
+
+  `checkin_method` (added with the QR) makes the exposure **queryable, not
+  controlled**: an admin can ask "show me every check-in on this project that
+  came through a QR", which is worth having. It stops nothing.
+
+  **Rotating tokens would fix it, and would destroy the printed-sign mode.**
+  A QR encoding a short-lived signed token instead of a bare `tag_id` closes
+  the sharing hole outright. It also means the code cannot be laminated and
+  posted at the entrance, because a printed code is by definition static — the
+  sign would be dead the moment its token expired. The gate is architecturally
+  a static URL and the printed sign is the mode most sites will actually use.
+
+  So this is a **decision about what the QR is for**, not a bug to be fixed:
+
+  | | keeps | costs |
+  |---|---|---|
+  | static printed code | laminate it at the gate, works offline for the CP, zero admin involvement per worker | permanently shareable |
+  | rotating token | sharing closed | no printed sign; the CP's screen becomes the only delivery, and it must be online to mint |
+
+  **Recorded rather than chosen**, because the answer depends on whether QR
+  check-in is a per-worker fallback (the CP holds up a phone when a radio is
+  missing — rotation is affordable) or a posted alternative to the tag
+  (rotation is not). Today it is built as the first and nothing stops it being
+  used as the second.
+
+- **[HIGH] The check-in geofence does not run, and must never be cited as a
+  presence control.**
+  `geofence_radius_m` is on the project model and `compute_geofence` is
+  implemented, so the geofence reads as a shipped feature. No check-in has ever
+  been geofenced. Two independent reasons — **both** must be fixed before the
+  field means anything, and fixing either alone changes nothing:
+
+  1. **The enforcing route is shadowed.** Enforcement lives only in
+     `backend/card_audit.py` (1264, 1380, 1557, 1909), on `gate_router`'s
+     `GET /checkin/{project_id}/{gate_id}`. But `serve_checkin_page_full`
+     (`server.py:21049`) declares `@app.get("/checkin/{project_id}/{tag_id}")`
+     at module scope, and `app.include_router(gate_router)` runs at
+     `server.py:34990` — later. (Symbol names given because these line numbers
+     move; this entry's own numbers shifted by 25 when the QR change landed.)
+     Module-scope decorators register at import, top to bottom, and FastAPI
+     matches in registration order. server.py wins; card_audit's gate is
+     unreachable. The live gate is `backend/checkin.html`, which contains no
+     `geolocation` call at all.
+  2. **There is no origin coordinate.** `project.lat` / `lng` are `Optional`
+     and *nothing* populates them — no geocoding on create, no field in any
+     frontend project form. `compute_geofence` returns `None` when either pair
+     is missing, so even wiring path 1 up would yield `None` for every project
+     on the platform.
+
+  **What the live path actually records** (`register_and_checkin` →
+  `db.checkins`): `source_ip`, `user_agent`, `device_fingerprint`, and now
+  `checkin_method`. No coordinates. The code says what these are worth in its
+  own comment — *"Detective, not preventive"* — and `source_ip` is weaker than
+  it looks, because the per-IP rate limit was removed on the finding that
+  workers are on their own phones behind one site WiFi.
+
+  **Why this is HIGH now.** NFC required physical presence. QR check-in does
+  not: a printed code is a permanent, silently-copyable credential — no expiry,
+  no nonce, no rotation — and one photograph works from anywhere until an admin
+  deletes the tag, which also locks out the men actually standing at the gate.
+  `checkin_method` makes that exposure queryable; it does not close it.
+
+  **If it is ever wired up: record, never block.** Populate project
+  coordinates, have `checkin.html` request `navigator.geolocation`, and store
+  `within_geofence` as `true` / `false` / `null`. GPS is denied, imprecise
+  indoors and dead below grade, and this codebase has twice refused to let a
+  control stop a man working — the removed per-IP rate limit, and
+  `needs_trade_assignment` admitting and flagging rather than turning him away.
+  A blocking geofence would be the first exception, and a config gap would
+  become a man sent home.
+
 - **[MEASURED, NOT FIXED] The bottom inset is a constant, and here is the number.**
   API 36 enforces edge-to-edge, so content draws under the navigation bar. The
   app handles the top with `SafeAreaView edges={['top']}` (67 usages) and the
@@ -482,3 +565,229 @@ than the thing the model was guarding against.
 **Survey result (device round 6, E5):** all 34 sites classified — 6 coerce in
 flight, 5 defend the pairing, 6 translate at render, 6 frontend, 11 tests.
 Every one sits cleanly on one side of the line. Nothing to build.
+
+## The site device has no fall_protection tab
+
+`LOG_TABS` in `frontend/app/site/logbooks.jsx:40` lists **eleven** of the
+twelve registered types. `fall_protection` is absent. The comment four lines
+above it records the last time this happened — five conditional types were
+added to the registry "and then had no tab that could show them", so "an
+inspector on the site device could not reach a hot work permit, a crane log or
+an orientation record at all." That fix added five and missed the sixth.
+
+So a fall protection equipment log can be filed by the CP and cannot be opened
+at the kiosk. **Both halves are missing, not just the tab.** `renderLogContent`
+(`site/logbooks.jsx:1302`) is an eleven-branch if-chain on `log.log_type` with
+no `fall_protection` case, and it does not fall through to a generic renderer —
+it returns the literal "No data available". So adding the tab alone would trade
+an unreachable log for a log that opens and claims to be empty, which is worse.
+The tab entry and the render branch have to land together.
+
+**This is reachability, not naming.** It is unrelated to the label-map work in
+the reports screen: the tab's *label* would come from `tabFallProtection` in
+`src/i18n/en.js`, which also does not exist yet, but adding the label without
+the tab entry changes nothing.
+
+Fix is a `LOG_TABS` entry, its `labelKey`, and a `renderFallProtection` branch
+— the same three pieces each of the five types restored last time needed. Note
+also that `fall_protection` is the only registry entry with no `dob_reference`, on
+purpose (`server.py:3545` explains why), and it carries
+`FALL_PROTECTION_NOTICE` — the inspector view should print that notice, since
+the whole point of it is that this log is not a DOB or OSHA filing.
+
+## The checklist assignment feature serves flat and both clients read nested
+
+Found while wiring a route from the project screen to the assign UI (held —
+the route is built on `checklist-assign-hold` and must not merge until this is
+fixed). Recorded here in four parts; none of them are fixed.
+
+### 1. The break that holds the route
+
+`app/checklists.jsx:101` calls `details.checklist.items.forEach(...)` on the
+payload from `/checklists/assignments/{id}`, which has **no `checklist` key** —
+it serves `checklist_title` and `checklist_items` flat (`server.py:16220`). That
+throws, the surrounding catch swallows it, and the CP sees "Could not load
+checklist". It only misses when a completion record already exists, because the
+other branch runs then. So **a newly assigned checklist can never be opened by
+the person it was assigned to** — and exposing an assign path from the project
+screen would ship exactly that to a CP.
+
+Same mismatch, cosmetic rather than fatal, on two more surfaces:
+`project/[id].jsx:1348` reads `assignment.checklist?.title` / `.description` /
+`.items` (renders "Checklist", nothing, and 0) and `assignment.completions`
+(never served, so Complete reads 0/N and the amber clock never clears);
+`admin/checklists/index.jsx:670` reads `assignment.completions` where
+`/admin/checklists/{id}/assignments` serves `completion_stats`, a count.
+
+`assigned_users` is NOT part of this — it is persisted on the assignment doc at
+creation (`server.py:16130`) and does reach the client. Names render.
+
+**`completions` is not a rename, it does not exist.** `complete_checklist`
+stores only `item_completions` (a dict) on `checklist_completions`: no
+`progress` object, no `user_name`. The `[{user_id, progress:{completed,total}}]`
+shape both admin surfaces expect has to be COMPUTED — truthy `checked` flags
+over `len(checklist["items"])`.
+
+The fix is on three endpoints — `/projects/{id}/checklists`,
+`/checklists/assigned`, `/checklists/assignments/{id}` — nest `checklist`
+(title, description, items), derive `completions`, keep `assigned_users`.
+Nothing else consumes them: the only backend test touching them is
+`test_tenant_isolation_reads.py`, which asserts `require_project_access` on the
+project route and reads nothing from the body.
+
+### 2. Three response models that describe nothing
+
+`ChecklistResponse`, `ChecklistAssignmentResponse` and
+`ChecklistCompletionResponse` (`server.py:3313-3345`) are declared and used
+nowhere — **no checklist endpoint carries a `response_model=`**. So nothing
+validates or strips today, which is why the shape drifted this far unnoticed.
+`ChecklistAssignmentResponse` in particular documents `checklist_title` +
+`completion_stats`: the flat shape, which no client reads and which the fix
+above would change. Move them with the endpoints or delete them; do not leave
+them describing a shape nothing serves.
+
+### 3. `checklist_title` is frozen at creation
+
+The assign path copies `checklist.get("title")` onto the assignment document
+(`server.py:16128`) and `update_checklist` never propagates a rename back to
+`checklist_assignments`. Rename a checklist and every existing assignment keeps
+printing the old name. An argument for deriving the title in the read rather
+than storing a second copy of it.
+
+### 4. The re-assign path leaves the displayed names stale
+
+`server.py:16110` — when an assignment already exists for a (checklist,
+project) pair, it `$set`s `assigned_user_ids` and returns. It does NOT update
+`assigned_users`, the denormalized `[{id, name}]` list both admin surfaces
+actually render. So changing WHO a checklist is assigned to updates the list
+the server queries by and not the list the screen prints. Same root cause as
+(3): two copies of one fact, one of them updated.
+
+## `checklist_items` means two unrelated things
+
+**Do not grep-and-replace this key.** Two features use the name for different
+shapes in different collections:
+
+| | |
+|---|---|
+| `logbooks.data.checklist_items` | a DICT of safety-check booleans on the daily jobsite log — read at `server.py:15138`, `:21972`, `:22157`, plus `daily_jobsite.jsx:387/713` and `site/logbooks.jsx:459` |
+| `checklist_assignments.checklist_items` | a LIST of checklist items on the assignment feature's read models — `server.py:15966`, `:16192`, `:16221` |
+
+Renaming the second (as the nested-shape fix above would) with a blind
+find-and-replace takes the first with it and breaks the investor page-one
+renderer, which reads the daily jobsite dict to build its compliance line.
+`test_investor_page_one.py:133` and `test_report_six_defects.py:649-679` seed
+that dict and would be the ones to fail — but only if the tests are run, and
+the two are far enough apart in the file that the connection is easy to miss.
+
+## Ten places state a logbook's display name
+
+Swept 2026-08-28, after the count moved three times in one session — reported
+as five, then six, then "a seventh" — for want of a stated definition. So the
+definition first.
+
+**A copy is a place that independently states display names for two or more of
+the twelve registered logbook types.** Not a place that mentions a type key
+(that is the entry below); not a place that renders a name it was handed.
+
+Method: `git ls-files`, **no `--include` allow-list**, filtered afterwards,
+matching the twelve canonical names plus every shipped variant, longest-first
+so `OSHA Log Book` is not eaten by `OSHA Log`. The allow-list is what hid a
+copy the first time round.
+
+### Shipped — five copies of one source
+
+| Location | Coverage |
+|---|---|
+| `LOGBOOK_TYPE_REGISTRY` `server.py:3398` | 12/12 — **source of truth** |
+| `type_title` chain `server.py:15104-15881` | 13 branches (12 + `.title()` fallback) |
+| `section_title` chain `server.py:22203-23113` | 13 calls |
+| `FALLBACK_LOG_TYPES` `logbooks/index.jsx:48` | 6/12 |
+| **`screenTitle` set `i18n/en.js:227+`** | 10 per-form headers |
+| **`tab*` set `i18n/en.js:1244+`** | 11/12 site-device tabs |
+
+### Tests — four more restatements
+
+`requiredLogbooksWiring.test.cjs` CATALOG (11/12), `test_investor_page_one.py`
+(7/12, assertions on the page-1 compliance line), `test_logbook_renderers.py`
+(6/12), `test_report_six_defects.py` (2/12).
+
+**One source of truth, five shipped copies, four test restatements.** Earlier
+counts said "five copies" because they counted only shipped ones AND missed
+the finding below.
+
+### i18n/en.js is TWO copies, not one
+
+The part no previous count had. The file holds two independent name sets about
+a thousand lines apart, and they disagree about the same types:
+
+| key | `screenTitle` (per-form header) | `tab*` (site device) |
+|---|---|---|
+| `daily_jobsite` | Daily Jobsite Log | Daily Jobsite |
+| `osha_log` | OSHA Log Book | OSHA / SST Log |
+| `hot_work` | Hot Work Permit | Hot Work |
+| `scaffold_maintenance` | Scaffold Maintenance Log | Scaffold Maintenance |
+| `ssc_daily_safety_log` | SSC/SSM Daily Safety Log | SSC Daily Safety Log |
+
+Treating them as one copy is why the shipped count read four. They are two,
+they were maintained separately, and the distance between them in the file is
+why nobody noticed they had drifted apart.
+
+Copies 2 and 3 (server.py's two chains) are if/elif chains rendering per-type
+BODIES, not lookup tables — collapsing them onto the registry means threading
+the label through, which is a real refactor. `scaffold_maintenance` and
+`osha_log` still disagree across all of them; `preshift_signin` was resolved
+in #259.
+
+## A new logbook type must be added to every list, and here are the lists
+
+`fall_protection` was the last type registered and the enumerations were not
+all updated with it. Recorded as a CLASS rather than as separate bugs, because
+the failure is structural: nothing makes adding a type update the lists, so the
+next type will land the same way.
+
+**Three real absences, verified one at a time. Two more looked like absences in
+a bulk key-presence sweep and are not** — which is the reason each one needs
+its own read rather than a grep result.
+
+| List | Absent? | Consequence |
+|---|---|---|
+| `LOG_TABS` `site/logbooks.jsx:40` | **YES** | no kiosk tab — unreachable to an inspector |
+| `renderLogContent` `site/logbooks.jsx:1302` | **YES** | no branch; returns the literal "No data available" |
+| `ALL_TYPES` `logbookViewRenderers.test.cjs:177` | **YES** | **the guard for the two above, blind to the same type** |
+| `CATALOG` `requiredLogbooksWiring.test.cjs:76` | **YES** | fixture only; label assertions are shape-not-text, so nothing fails |
+| `tokens.js` | NO — false positive | every type key there sits inside a COMMENT narrating which form-port contributed which colour. There is no per-type map to be absent from, and nothing is styled by log type. |
+| `submitSignatureGate.test.cjs` | NO — false positive, inverted | it does not hardcode a list. It DERIVES one from `LOGBOOK_TIMING_CLASS` in server.py by regex and asserts `IMMEDIATE.length === 10`, with a comment reading "TEN with the fall-protection log". The type is gated and tested. |
+
+### The one that matters
+
+`logbookViewRenderers.test.cjs:177` is headed *"every type has a tab, or the
+renderer is unreachable"* and asserts `ALL_TYPES.every((k) => tabKeys.includes(k))`.
+Its `ALL_TYPES` is a hardcoded eleven **with `fall_protection` missing**. So the
+test written precisely to catch "a registered type with no tab" cannot catch it
+for this type — it passes vacuously, for the same reason the gap exists.
+
+Same family as the AST entry, the receiver-group entry and the `.cjs` grep: a
+check that ran, reported clean, and could not see the thing it was for.
+
+### The rule, and the lesson the two false positives carry
+
+Adding a logbook type means updating: `LOGBOOK_TYPE_REGISTRY`, the `type_title`
+chain, the `section_title` chain, `FALLBACK_LOG_TYPES`, both `i18n/en.js` sets,
+`LOG_TABS`, `renderLogContent`, and the test lists `ALL_TYPES` and `CATALOG`.
+
+But note WHICH lists drifted. The two that DERIVE their contents from server.py
+at run time — submitSignatureGate's timing-class regex, and
+logbookViewRenderers' own `tabKeys` extraction — cannot drift, and did not.
+Every list that drifted was hardcoded. The durable fix is not a longer
+checklist; it is deriving these lists from the registry the way those two
+already do, and keeping a COUNT assertion (`IMMEDIATE.length === 10`) as the
+checkpoint that forces a new type to be handled rather than inherited by
+omission.
+
+### Sweep caveat
+
+The bulk key-presence pass counted `site/logbooks.jsx` as 12/12 because
+`fall_protection` is a substring of `fall_protection_required`, an orientation
+checklist item key at line 1229. Substring matching on type keys overstates
+coverage wherever a longer key shares a prefix.

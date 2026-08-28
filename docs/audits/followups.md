@@ -4,6 +4,55 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-08-28 — an enumeration grep that cannot see .cjs, which is where the fixtures live
+
+Same family as the AST entry below and the receiver-group one: a search that
+ran, reported a clean answer, and could not see the place the answer lived.
+
+Enumerating every hand-copied copy of the logbook type list for #258, the sweep
+was:
+
+    grep -rn "<name>" --include=*.py --include=*.js --include=*.jsx --include=*.md
+
+**Five copies were reported. There were six.** The sixth is
+`frontend/src/utils/requiredLogbooksWiring.test.cjs` — `.cjs`, which no
+`--include` in that list matches. It was never in scope, so it could not appear
+as a miss; the grep returned five results and looked exhaustive.
+
+It surfaced only because the rename in #259 gave a second, differently-worded
+grep something to find, and it was found AFTER the enumeration had already been
+reported as complete.
+
+### Why this file extension in particular
+
+`.cjs` is not a rare corner of this repo. It is **96 files**: the entire
+frontend test suite (`src/**/*.test.cjs`, ~92 of them) plus the four static
+analysis scripts (`find-bare-jsx-text`, `find-unbound-identifiers`,
+`find-unpinned-palette-keys`, `smoke-mount`). So an `--include` list built from
+`*.js`/`*.jsx` sees the application and is blind to everything that checks it —
+the worst possible half to be blind to when the question is "where else is this
+duplicated".
+
+Note also what made it harmless HERE and would not next time: the fixture is a
+`CATALOG` standing in for `/api/logbook-types`, and the two assertions touching
+labels check SHAPE (`!/^[a-z_]+$/`, "not a raw key") not text. A stale name
+fails nothing. It is read by people, not by the suite.
+
+### The rule
+
+**Any repo-wide enumeration must include `.cjs`, or omit `--include` and filter
+after.** Prefer the second — `--include` is an allow-list, and an allow-list
+built from the extensions you happened to think of is exactly the shape of
+error above. `git grep` with a pathspec exclusion, or a bare `grep -rn` piped
+through a filter, both fail loud rather than quiet: they return the file you
+did not expect instead of silently declining to look at it.
+
+A grep whose result is a COUNT ("five copies", "three call sites", "nothing
+left") is an enumeration and carries this risk. A grep looking for one known
+thing does not.
+
+---
+
 ## PRACTICE — 2026-08-28 — a check that runs and cannot see the thing it is for
 
 Same family as the AST entry below, and a worse shape: that one was an assertion
