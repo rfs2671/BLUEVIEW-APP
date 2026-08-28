@@ -181,6 +181,27 @@ export default function ProjectFilesScreen() {
   const [siteDeviceSelected, setSiteDeviceSelected] = useState([]);
   const [savingSiteVisibility, setSavingSiteVisibility] = useState(false);
 
+  /**
+   * THE ONE ROLE PREDICATE ON THIS SCREEN. Every admin-gated control below
+   * uses this and nothing else.
+   *
+   * WIDE, because it has to match `get_admin_user`, which is what actually
+   * authorises the endpoints these controls call:
+   *
+   *     if current_user.get("role") not in ["admin", "owner"]:
+   *         raise HTTPException(403, "Admin access required")
+   *
+   * An `owner` is a role, not a platform-operator flag — `is_platform_operator`
+   * is explicitly "never inferred from role" — and the server admits it
+   * everywhere a company admin is admitted.
+   *
+   * THREE PREDICATES USED TO LIVE IN THIS FILE and they disagreed in the worst
+   * possible direction. `canDelete` and the per-row delete button were the wide
+   * form; the Upload/Sync action bar was `role === 'admin'`. So an owner could
+   * DELETE a file and could not UPLOAD one — the narrow guard sat on the safe
+   * controls and the wide guard on the destructive one. That split predates the
+   * one-screen redesign; it is closed here rather than carried forward.
+   */
   const isAdmin = ['owner', 'admin'].includes(String(user?.role || '').toLowerCase());
   const linkedFolder = project?.dropbox_folder_path || null;
 
@@ -684,7 +705,7 @@ export default function ProjectFilesScreen() {
 
   // Opens the themed confirmation modal. Actual delete happens in confirmDeleteFile().
   const handleDeleteFile = (file) => {
-    const canDelete = ['owner', 'admin'].includes(String(user?.role || '').toLowerCase());
+    const canDelete = isAdmin;
     if (!canDelete) {
       toast.error('Not allowed', 'Only company owners or admins can delete files.');
       return;
@@ -785,7 +806,7 @@ export default function ProjectFilesScreen() {
           ) : (
             <>
               {/* Action bar */}
-              {user?.role === 'admin' && (
+              {isAdmin && (
                 <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
                   <Pressable
                     onPress={handleUploadFile}
@@ -1148,7 +1169,7 @@ export default function ProjectFilesScreen() {
                           >
                             <Download size={18} strokeWidth={1.5} color={colors.text.muted} />
                           </Pressable>
-                          {['owner', 'admin'].includes(String(user?.role || '').toLowerCase()) && (
+                          {isAdmin && (
                             <Pressable
                               onPress={(e) => {
                                 e.stopPropagation();
