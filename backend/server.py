@@ -4686,6 +4686,89 @@ async def require_worker_write_access(
     return await _assert_worker_access(worker_id, current_user, write=True)
 
 
+# --- Per-assignment tenant isolation -----------------------------------------
+# THE scoping gate for the two routes that take an {assignment_id}. Before this,
+# both put the path parameter straight into the query and answered it:
+#
+#   GET /checklists/assignments/{id}           no check at all
+#   PUT /checklists/assignments/{id}/complete  no check at all
+#
+# so any authenticated caller holding an id could read another tenant's
+# assignment — project name, checklist title, description, every item — and FILE
+# A COMPLETION against it under their own name. Each route already scoped the
+# completion it returns to the caller, so no third party's answers were exposed;
+# what leaked was the checklist body, and what was open was the WRITE.
+#
+# SCOPED THROUGH THE PROJECT, NOT THROUGH THE ASSIGNMENT'S OWN company_id. An
+# assignment always names a project, so its tenancy resolves the way
+# /projects/{id}/checklists already resolves it — the route that LISTS these
+# very assignments and carries require_project_access. Scoping through the
+# project keeps the two answers consistent (what you can see listed is what you
+# can open), keeps the cross-company contractor branch working, and does not
+# make an unowned row unreachable. _same_company_or_403 is for a record with no
+# project to scope through; this is not one.
+#
+# READ and WRITE are DIFFERENT rules, which is why this takes a flag:
+#
+#   READ   NAMED on the assignment, or project access. An admin reviewing a
+#          checklist was never assigned it — that is the entire admin surface,
+#          so a membership-only test would refuse the people the feature is
+#          built for, and a guard that 403s a company's own staff is as broken
+#          as one that 403s nobody.
+#
+#   WRITE  NAMED on the assignment, and nothing else. A completion is one named
+#          person's attestation that they did the work. Project access is
+#          grounds to READ what was assigned; it is never grounds to file an
+#          attestation against a task nobody gave you. This is exactly what the
+#          only client does: app/checklists.jsx opens what /checklists/assigned
+#          returned, which is already filtered to assigned_user_ids.
+#
+# A SITE DEVICE IS EXCLUDED, EXPLICITLY, from both — and refused BEFORE the
+# project branch, which it would otherwise satisfy on the project_id it carries.
+# A kiosk is a gate for workers tapping in and an inspector reading logs. A
+# checklist assignment is a task given to a NAMED PERSON and a site device is
+# not a person: it has no user id, so it can never appear in assigned_user_ids,
+# and no screen behind it opens one. This is a stated exclusion, not a
+# fallthrough — do not let it pass on having a project_id.
+#
+# 404 (not 403) when the assignment does not exist or is deleted, matching the
+# routes' existing behaviour and not confirming ids to a prober. A caller who
+# reaches the project branch gets _assert_project_access's own 404 if the
+# project is gone; that is one rule stated once, not two.
+async def _assert_assignment_access(
+    assignment_id: str, current_user: dict, *, write: bool = False,
+) -> dict:
+    assignment = await db.checklist_assignments.find_one({
+        "_id": to_query_id(assignment_id), "is_deleted": {"$ne": True},
+    })
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    detail = "Not authorized for this checklist"
+
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        raise HTTPException(status_code=403, detail=detail)
+
+    user_id = str(current_user.get("id") or "")
+    named = bool(user_id) and user_id in [
+        str(u) for u in (assignment.get("assigned_user_ids") or [])
+    ]
+    if named:
+        return assignment
+
+    if write:
+        raise HTTPException(status_code=403, detail=detail)
+
+    project_id = str(assignment.get("project_id") or "")
+    if not project_id:
+        # Nothing to scope through, so nobody but the people it names may read
+        # it. Absent, null and "" are one state here as everywhere else.
+        raise HTTPException(status_code=403, detail=detail)
+
+    await _assert_project_access(project_id, current_user)
+    return assignment
+
+
 async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
     """Every id must belong to the ACTOR's company before it can be written into
     anyone's assigned_projects.
@@ -16831,12 +16914,8 @@ async def get_assigned_checklists(current_user = Depends(get_current_user)):
 @api_router.get("/checklists/assignments/{assignment_id}")
 async def get_assignment_details(assignment_id: str, current_user = Depends(get_current_user)):
     """Get details of a specific checklist assignment"""
-    assignment = await db.checklist_assignments.find_one({
-        "_id": to_query_id(assignment_id),
-        "is_deleted": {"$ne": True}
-    })
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    # Named on it, or project access. See _assert_assignment_access.
+    assignment = await _assert_assignment_access(assignment_id, current_user)
 
     checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
     if not checklist:
@@ -16864,12 +16943,11 @@ async def get_assignment_details(assignment_id: str, current_user = Depends(get_
 @api_router.put("/checklists/assignments/{assignment_id}/complete")
 async def complete_checklist(assignment_id: str, completion_data: ChecklistCompletionUpdate, current_user = Depends(get_current_user)):
     """Submit or update checklist completion"""
-    assignment = await db.checklist_assignments.find_one({
-        "_id": to_query_id(assignment_id),
-        "is_deleted": {"$ne": True}
-    })
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found")
+    # NAMED ON IT, AND NOTHING ELSE — a completion is one person's attestation
+    # that they did the work, so project access does not authorize filing one.
+    assignment = await _assert_assignment_access(
+        assignment_id, current_user, write=True,
+    )
     
     user_id = current_user.get("id")
     now = datetime.now(timezone.utc)
