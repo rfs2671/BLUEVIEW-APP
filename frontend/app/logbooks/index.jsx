@@ -24,6 +24,7 @@ import {
   Bell,
   ShieldAlert,
   AlertTriangle,
+  QrCode,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -38,6 +39,12 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import BuildMarker from '../../src/components/BuildMarker';
+import CheckinQrModal from '../../src/components/CheckinQrModal';
+
+// The blue icon-pod tint, shared by the Tool Box Talk card and the Check-In QR
+// entry. Named because it now has two callers, not to introduce a new value —
+// it is the literal the toolbox card already shipped.
+const ICON_POD_BLUE = 'rgba(59, 130, 246, 0.15)';
 
 // Icon mapping for dynamic logbook types from API
 const ICON_MAP = {
@@ -91,6 +98,7 @@ export default function LogBooksScreen() {
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
+  const [showCheckinQr, setShowCheckinQr] = useState(false);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [todayLogs, setTodayLogs] = useState({});
   const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [], stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [], attestation_gaps: [] });
@@ -803,6 +811,29 @@ export default function LogBooksScreen() {
             </Pressable>
           )}
 
+          {/* CHECK-IN QR — the fallback for a worker whose phone has no NFC.
+              Unconditional, not gated on a count: the CP finds out the phone
+              will not tap while the man is already standing at the gate, so
+              the way to it has to be somewhere they can already see. Shows the
+              SAME URL the tag on the post carries; it registers nothing. */}
+          {selectedProject && (
+            <Pressable
+              onPress={() => setShowCheckinQr(true)}
+              style={({ pressed }) => [styles.logCard, styles.qrEntry, pressed && styles.logCardPressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Show check-in QR code"
+            >
+              <View style={[styles.logIcon, { backgroundColor: ICON_POD_BLUE }]}>
+                <QrCode size={22} strokeWidth={1.5} color="#3b82f6" />
+              </View>
+              <View style={styles.logInfo}>
+                <Text style={styles.logLabel}>Check-In QR</Text>
+                <Text style={styles.logSubtitle}>For a worker whose phone will not tap</Text>
+              </View>
+              <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+            </Pressable>
+          )}
+
           {/* Log book cards */}
           {loading ? (
             <View style={styles.loadingCenter}>
@@ -849,7 +880,7 @@ export default function LogBooksScreen() {
                   onPress={() => handleOpenLog('toolbox_talk')}
                   style={({ pressed }) => [styles.logCard, styles.logCardDone, pressed && styles.logCardPressed]}
                 >
-                  <View style={[styles.logIcon, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
+                  <View style={[styles.logIcon, { backgroundColor: ICON_POD_BLUE }]}>
                     <BookOpen size={22} strokeWidth={1.5} color="#3b82f6" />
                   </View>
                   <View style={styles.logInfo}>
@@ -891,6 +922,12 @@ export default function LogBooksScreen() {
               live on THEIR screen (they can't reach the admin screen's marker). */}
           <BuildMarker />
         </ScrollView>
+
+        <CheckinQrModal
+          visible={showCheckinQr}
+          onClose={() => setShowCheckinQr(false)}
+          project={selectedProject}
+        />
 
         <CpNav />
       </SafeAreaView>
@@ -1016,6 +1053,7 @@ function buildStyles(colors, isDark) {
       borderWidth: 1, borderColor: colors.glass.border,
       padding: spacing.md, gap: spacing.md,
     },
+    qrEntry: { marginBottom: spacing.md },
     logCardDone: { opacity: 0.5 },
     logCardPressed: { opacity: 0.8 },
     logIcon: { width: 48, height: 48, borderRadius: borderRadius.lg, alignItems: 'center', justifyContent: 'center' },
