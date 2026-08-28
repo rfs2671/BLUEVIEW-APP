@@ -8,7 +8,7 @@ import {
   TextInput,
   Modal,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ClipboardList,
@@ -41,6 +41,11 @@ export default function AdminChecklistsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
+  // WHERE THE ADMIN CAME FROM. app/project/[id].jsx links here from a project
+  // that has no checklists, and passes the project it was standing on so the
+  // Assign sheet opens with that project already ticked. Absent on the normal
+  // entry from the home tile, which is unchanged.
+  const { assignTo } = useLocalSearchParams();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
@@ -166,7 +171,13 @@ export default function AdminChecklistsScreen() {
 
   const handleAssignChecklist = (checklist) => {
     setSelectedChecklist(checklist);
-    setAssignData({ selectedProjects: [], selectedUsers: [] });
+    // Pre-tick the project we were sent from, but ONLY if it is actually in
+    // the list the admin can see. If the projects fetch failed (supportState
+    // says so in the sheet) or the id does not match a loaded project, seed
+    // nothing: a selection with no visible checkbox would assign to a project
+    // the admin never saw themselves tick.
+    const preselect = projects.some(p => p.id === assignTo) ? [assignTo] : [];
+    setAssignData({ selectedProjects: preselect, selectedUsers: [] });
     setShowAssignModal(true);
   };
 
