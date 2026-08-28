@@ -808,6 +808,75 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## When a filed sheet needs a purpose line, and which kind
+
+**THE TEST.** A filed sheet is self-describing when it prints the QUESTION next
+to the ANSWER, or prose under a heading that names it. A reader who was not
+there can then work out what the signature attests from the document alone.
+
+All twelve types were surveyed against it on 2026-08-28. **Nine pass**, and for
+one structural reason: they are checklists or narratives, so the check is on
+the page.
+
+| sheet | what carries the claim |
+|---|---|
+| `daily_jobsite` | narrative under named headings; §3301.2 in the title |
+| `toolbox_talk` | `Topics:`; columns state who marked what (`Present` = CP, `Confirmed` = worker, `Added by`) |
+| `subcontractor_orientation` | `Conducted By (CP)` + `Orientation Date` + `Worker Signature` |
+| `hot_work` | "Permit"; `Precaution \| Confirmed`, precautions printed |
+| `crane_operations` | `Item \| Confirmed`, items printed; `Lift Log` |
+| `concrete_operations` | `Time \| Slump \| Result`; `Item \| Confirmed` |
+| `excavation_monitoring` | `Baseline \| Current \| Movement (Δ)` — a stated comparison |
+| `scaffold_maintenance` | `Question \| Answer`, questions printed |
+| `ssc_daily_safety_log` | `Item \| Status` + named narrative headings |
+
+`fall_protection` is the tenth: self-describing per row AND already carrying an
+explicit line.
+
+**TWO FAIL.**
+
+  * **`preshift_signin`** — the only sheet in the twelve that prints an ANSWER
+    WITHOUT ITS QUESTION. `Injury` and `PPE` are bare nouns over Yes/No; the
+    questions actually asked ("Injury / Incident last time?", "Inspected PPE
+    today?") live in `preshift_signin.jsx` and never reached the paper. Fixed:
+    `PRESHIFT_ATTESTATION`.
+  * **`osha_log`** — a signature over OTHER PEOPLE'S CREDENTIALS with no
+    statement of what it covers. Whether the CP sighted each card, took the
+    worker's word, or copied a prior record are three materially different
+    claims under one signature. Lands with finding 4, in the PR that decides
+    the `Review` column's wording, so that sheet gets one coherent pass.
+
+## SCOPE vs ATTESTATION — the next person adding one needs to know which
+
+Same mechanism, different sentence, **different placement**, and the placement
+is not decoration.
+
+  * **SCOPE** says what the log is NOT. `FALL_PROTECTION_NOTICE` — *"...is not
+    a DOB or OSHA filing."* It goes **BELOW** the signature, as a footer
+    qualifying a document the reader has already read.
+  * **ATTESTATION** says what the signature CLAIMS. `PRESHIFT_ATTESTATION`. It
+    goes **ABOVE** the signature, because a signer must see the claim before
+    making it and a reader must know it before weighing the name underneath.
+
+Both placements are asserted in both directions in
+`test_preshift_purpose_line.py`, so neither drifts into the other's position.
+
+**AN ATTESTATION MAY NAME ONLY QUESTIONS, NEVER ANSWERS**, unless the server
+enforces the answer. The pre-shift draft first read "confirmed they inspected
+their PPE", which is false on any row answered No — and `inspected_ppe` is a
+three-state field whose whole point is that No is a legitimate answer. Worse,
+the comment justifying that draft cited a server constant,
+`SUBMIT_INCOMPLETE_WORKER_ANSWERS`, **that does not exist anywhere in the
+repo**. The two-answer requirement is enforced by `answeredBoth` in
+`preshift_signin.jsx` and by nothing on the server; `create_logbook` gates an
+immediate submit on a CP signature, content and trade detail, and never reads
+either answer field. A sheet filed by any other caller can carry nulls and
+renders an em-dash. So the sentence says the answers *"appear in"* those
+columns — true of a row that shows none — rather than that they were given.
+
+Write the claim the code enforces, at the level the code enforces it, and check
+which end enforces it before naming one.
+
 ## What the read-without-writer sweep does NOT see
 
 #290 is a ratchet over **Mongo query filters**: it walks `db.<collection>.find`

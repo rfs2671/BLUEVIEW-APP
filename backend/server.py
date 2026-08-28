@@ -3661,6 +3661,70 @@ FALL_PROTECTION_NOTICE = (
     "OSHA filing."
 )
 
+# SCOPE vs ATTESTATION -- the two kinds of purpose line, and the next person
+# adding one needs to know which they are writing.
+#
+#   FALL_PROTECTION_NOTICE states SCOPE: what the log is NOT. It belongs in the
+#   footer, BELOW the signature, because it qualifies a document the reader has
+#   already read.
+#
+#   This states ATTESTATION: what the signature CLAIMS. It belongs ABOVE the
+#   signature, because a signer must see the claim before making it and a reader
+#   must know it before weighing the name underneath.
+#
+# THE PRE-SHIFT SHEET IS THE ONLY ONE IN THE TWELVE THAT PRINTS AN ANSWER
+# WITHOUT ITS QUESTION. The columns read "Injury" and "PPE" -- two bare nouns
+# over Yes/No -- while the questions actually asked live in
+# preshift_signin.jsx and have never reached the paper:
+#
+#     "Injury / Incident last time?"   ->  had_injury
+#     "Inspected PPE today?"           ->  inspected_ppe
+#
+# So "Injury: No" on a filed sheet supports at least three readings: no injury
+# exists, none occurred today, none occurred last shift. On a document that
+# goes to investors, lenders and inspectors, a reader who cannot find the claim
+# supplies one.
+#
+# WHAT BACKS EACH CLAUSE, and where. The roster is auto-filled from gate
+# check-ins with the identity fields locked (preshift_signin.jsx buildWorkerList,
+# auto_filled: true); the Signature column is the worker's own image plus the
+# affirmation taken at the gate (checkin.html, resolved by
+# preshift_affirmations); the CP signature is required to submit.
+#
+# THE TWO ANSWERS ARE ENFORCED ON THE CLIENT ONLY. `answeredBoth` and
+# `rowNeedsAnswers` (preshift_signin.jsx:555) block the submit button until
+# had_injury and inspected_ppe are both non-null for every named worker. The
+# SERVER checks neither -- create_logbook validates content and trade detail
+# and nothing else -- so a sheet filed by any other caller can carry nulls.
+#
+# THAT IS WHY THIS SENTENCE NAMES THE QUESTIONS AND NOT THE ANSWERS, and says
+# the answers "appear in" those columns rather than that they exist. An
+# unanswered row renders an em-dash, which reads as no answer, and the sentence
+# stays true of it. A sentence asserting both answers were given would be a
+# claim the server does not enforce, printed over a table that can show
+# otherwise.
+#
+# IT NAMES THE QUESTIONS, NOT THE ANSWERS. An earlier draft read "confirmed
+# they inspected their PPE", which is false on any row answered No. A document
+# must not assert a compliance fact its own table contradicts.
+PRESHIFT_ATTESTATION = (
+    "Each worker named below was present at the start of shift on this date and "
+    "was asked, before starting work, whether there was an injury or incident on "
+    "their last shift and whether they inspected their PPE for today. Those "
+    "answers appear in the Injury and PPE columns. Each signature in the "
+    "Signature column is that worker&#39;s own. The CP&#39;s signature below "
+    "attests that this roster and these answers were taken as recorded."
+)
+
+# ONE constant, printed by BOTH renderers, so the app cannot say two different
+# things about what a worker signed. The same rule FALL_PROTECTION_NOTICE is
+# under; the pre-shift sheet has two renderers for the identical reason.
+PRESHIFT_ATTESTATION_HTML = (
+    '<p style="color:#334155;font-size:12px;line-height:1.6;margin:14px 0 4px;'
+    'padding:9px 11px;background:#f8fafc;border-left:3px solid #4ade80;">'
+    + PRESHIFT_ATTESTATION + '</p>'
+)
+
 # HOW OFTEN EACH LOG IS DUE, read off the registry rather than restated.
 #
 # "Which types are due DAILY" was being decided in four places, and only one of
@@ -15929,6 +15993,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or f'<tr><td colspan="6" {TD}>—</td></tr>')
             + '</table>'
+            # ABOVE the signature: the claim, then the name that makes it.
+            + PRESHIFT_ATTESTATION_HTML
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + ps_sig
         )
@@ -23244,6 +23310,8 @@ async def generate_combined_report(
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or EMPTY_6)
             + '</table>'
+            # ABOVE the signature: the claim, then the name that makes it.
+            + PRESHIFT_ATTESTATION_HTML
             + bold_para("CP", _capitalize_first(preshift.get("cp_name", "N/A")))
             + ps_sig
         )
