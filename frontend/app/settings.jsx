@@ -38,6 +38,7 @@ import AnimatedBackground from '../src/components/AnimatedBackground';
 import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
+import { bundleAgeLabel } from '../src/utils/bundleAge';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
@@ -104,8 +105,13 @@ export default function SettingsScreen() {
   const appVersion = Constants.expoConfig?.version || 'unknown';
   const jsBundle = jsCommit
     || (Updates.updateId ? `${Updates.updateId.slice(0, 8)} (OTA id)` : 'embedded in build');
+  // AND HOW OLD THAT IS, in words that need no context. A timestamp asks the
+  // reader to do the arithmetic and to know what current looks like; "34 days
+  // ago" is the whole diagnosis. Absent for an embedded bundle, deliberately —
+  // see src/utils/bundleAge.js.
+  const _jsAge = bundleAgeLabel(Updates.createdAt);
   const jsBuiltAt = Updates.createdAt
-    ? new Date(Updates.createdAt).toLocaleString()
+    ? `${new Date(Updates.createdAt).toLocaleString()}${_jsAge ? ` — ${_jsAge}` : ''}`
     : 'shipped with the binary';
 
   // ── ACCOUNT DELETION (Apple 5.1.1(v)) ───────────────────────────────
