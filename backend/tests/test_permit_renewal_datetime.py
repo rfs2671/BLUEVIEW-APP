@@ -71,9 +71,16 @@ class TestEnsureUtc(unittest.TestCase):
 # ── nightly_renewal_scan integration with naive last_run ───────────
 
 class TestNightlyScanWithNaiveTimestamps(unittest.TestCase):
-    """Pre-fix: this test crashes inside the Job 3 health-check block
-    with TypeError. Post-fix: it completes cleanly and logs the
-    cooldown-skip path."""
+    """Job 3 (the DOB NOW health check) was REMOVED from
+    nightly_renewal_scan — it called an Akamai-blocked host through the
+    egress guard and emailed the guard's own refusal as a DOB outage.
+
+    This class used to pin the naive-datetime fix by driving Job 3's
+    cooldown subtraction. That path is gone, so it now pins the removal
+    instead: the scan must complete without reaching system_config at
+    all. The `_ensure_utc` fix itself stays pinned by TestEnsureUtc
+    above, and `_ensure_utc` is still live in
+    `_send_health_check_alert`'s cooldown check."""
 
     def _make_db(self, *, last_run_naive: datetime):
         db = MagicMock()
@@ -109,19 +116,28 @@ class TestNightlyScanWithNaiveTimestamps(unittest.TestCase):
 
         db = self._make_db(last_run_naive=one_hour_ago_naive)
 
-        # Should NOT raise. Pre-fix this call raises TypeError inside
-        # the Job 3 cooldown block.
+        # Should NOT raise.
         result = _run(permit_renewal.nightly_renewal_scan(db))
 
         # The function returns None; success is "didn't raise".
         self.assertIsNone(result)
 
-        # Cooldown branch must have been entered (i.e. the subtraction
-        # happened). Verified indirectly: find_one was awaited exactly
-        # once for the health-check key.
-        db.system_config.find_one.assert_awaited_once_with(
-            {"key": "dob_now_health_check"}
+    def test_health_check_is_not_invoked(self):
+        """The scan must not reach the DOB NOW health check. Re-adding
+        the Job 3 block fails here — that is the point of this test.
+
+        Asserted on system_config rather than on
+        run_dob_now_health_check because the cooldown read is the first
+        thing Job 3 did, so this catches a re-add even if the call is
+        restructured."""
+        db = self._make_db(
+            last_run_naive=datetime.now(timezone.utc).replace(tzinfo=None)
+            - timedelta(hours=48)   # old enough that the cooldown would NOT skip
         )
+
+        _run(permit_renewal.nightly_renewal_scan(db))
+
+        db.system_config.find_one.assert_not_awaited()
 
 
 if __name__ == "__main__":

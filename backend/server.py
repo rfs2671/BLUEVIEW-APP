@@ -35669,21 +35669,31 @@ async def startup_event():
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
 
-    # MR.9: daily 7am ET reminder cron — sends T-30 / T-14 / T-7
-    # notifications to filing_reps + the company admin for each
-    # operator-actionable renewal whose current_expiration falls in
-    # one of the three windows. Gated by NOTIFICATIONS_ENABLED
-    # (default off) so a misconfigured Resend key doesn't blast emails
-    # on first deploy. CronTrigger handles DST automatically — when
-    # ET shifts between EST and EDT the absolute UTC time of "7am ET"
-    # changes, but the trigger fires correctly because the timezone
-    # is named, not numeric.
-    scheduler.add_job(
-        renewal_reminder_cron,
-        CronTrigger(hour=7, minute=0, timezone="America/New_York"),
-        id='renewal_reminder_cron',
-        replace_existing=True,
-    )
+    # MR.9's renewal_reminder_cron scheduler entry is REMOVED.
+    #
+    # It sent T-30 / T-14 / T-7 emails to filing_reps + the company
+    # admin, one per permit_renewals row. Rows are keyed on
+    # permit_dob_log_id — a dob_logs _id, not a permit identity — so a
+    # single real permit accumulates a row per DOB status change and a
+    # fresh set after every reset-resync. send_notification's 23h
+    # idempotency keys on permit_renewal_id (lib/notifications.py:191),
+    # and each duplicate carries a different one, so nothing collapsed
+    # them: one customer received the same "renewal due in 7 days"
+    # email six times, and because the resync had deleted the dob_logs
+    # rows those renewals pointed at, every copy named the permit "—"
+    # (_renewal_reminder_context, server.py:34716 falls back to the
+    # renewal's job_number, which the v2 dispatcher adapter hardcodes
+    # to None — lib/eligibility_dispatcher.py:178).
+    #
+    # 80 such emails were sent between May and August 2026, accelerating
+    # month over month as the duplicate rows multiplied.
+    #
+    # `renewal_reminder_cron` itself is LEFT IN PLACE, unscheduled. The
+    # permit-renewal module is parked; making the emails correct means
+    # fixing the writer and the adapter, which is unparking it. Nothing
+    # calls the function now, and nothing should until that happens.
+    #
+    # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
     # 311 fast poll — every 30 minutes (operator F1 — kept at 30 min;
     # 311 itself updates ~hourly, pushing to 15 min would mostly burn
