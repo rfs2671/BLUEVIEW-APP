@@ -28,6 +28,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from lib.logbook.daily_jobsite_source import submitted_logs
 from lib.logbook.schema import (
     CATEGORY_DEFICIENCY,
     SOURCE_AUTO_DETECTED,
@@ -338,8 +339,8 @@ async def run_deficiency_detector_for_all_projects(
     lookback_days: int = 30,
 ) -> Dict[str, int]:
     """Cron-tick entry point. For every active project, scans
-    daily_logs in the lookback window, runs the rule engine on
-    each, upserts deficiency entries.
+    the FILED DAILY JOBSITE LOGS in the lookback window, runs the
+    rule engine on each, upserts deficiency entries.
 
     Soft-fails per-project so one bad doc doesn't kill the whole
     run.
@@ -367,12 +368,12 @@ async def run_deficiency_detector_for_all_projects(
         except Exception:
             subs = []
 
-        log_cursor = db.daily_logs.find({
-            "project_id": project_id,
-            "is_deleted": {"$ne": True},
-            "date": {"$gte": cutoff_date},
-        })
-        async for log in log_cursor:
+        # THE FILED DAILY JOBSITE LOG, adapted to the flat shape these rules
+        # read. This scanned `db.daily_logs` -- 92 rows of April test data --
+        # so it had nothing to scan and reported nothing, and "no deficiencies"
+        # reads as CLEAN. A compliance check that fails silent is worse than
+        # one that fails loud. See lib/logbook/daily_jobsite_source.py.
+        for log in await submitted_logs(db, project_id, start=cutoff_date):
             summary["logs_scanned"] += 1
             try:
                 deficiencies = detect_deficiencies(
