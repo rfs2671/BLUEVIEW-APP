@@ -47,7 +47,9 @@ import {
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
-import RenewalAlertCard from '../../src/components/RenewalAlertCard';
+// RenewalAlertCard is UNMOUNTED — see the note at its two former mount
+// sites below, and src/components/RenewalAlertCard.js. The component file
+// is kept; nothing imports it.
 // Phase V2.1.2 — RiskScoreCard is deprecated and no longer mounted.
 // Replaced by RiskScoreCircle (the compact gauge in the project
 // header) which itself opens RiskScoreDrawer on click. The old
@@ -1078,7 +1080,32 @@ export default function ProjectDetailScreen() {
             </Pressable>
           )}
 
-          <RenewalAlertCard projectId={projectId} />
+          {/* RenewalAlertCard — REMOVED (mounted here and again ~110
+              lines below; both are gone).
+
+              It read /api/permit-renewals directly and rendered
+              "N days until permit expires" from days_until_expiry — a
+              field the v2 dispatcher adapter measures against a
+              different date than the current_expiration stored beside
+              it (lib/eligibility_dispatcher.py:172,181). Its mini-bars
+              printed the literal word "Permit" when job_number was
+              null, which the same adapter hardcodes it to be. A control
+              asserting a specific thing is N days from expiring while
+              unable to name which thing.
+
+              Neither mount carried a role guard, and the route guard
+              (app/_layout.jsx) confines only `cp` and `site_device` —
+              so admin, owner, pm and user all saw it, twice.
+
+              The dob_logs-sourced "Permits expiring <30d" tile above
+              stays: it dedupes by raw_dob_id and renders an em dash,
+              not a zero, when the read fails.
+
+              The component file is kept, unreferenced. It comes back
+              when the writer keys on a stable permit identity and the
+              adapter stops nulling the fields.
+
+              See docs/audits/permit-expiry-claim-2026-08-27.md §7. */}
 
           {/* NFC Tags Section - Admin Only */}
           {isAdmin && (
@@ -1187,10 +1214,10 @@ export default function ProjectDetailScreen() {
               )}
             </>
           )}
-          
-          {/* Permit Renewal Alert */}
-          <RenewalAlertCard projectId={projectId} />
-          
+
+          {/* Permit Renewal Alert — REMOVED. Second of two identical
+              mounts; see the note at the first one above. */}
+
           {/* Dropbox Integration Section - Admin Only */}
           {isAdmin && (
             <>

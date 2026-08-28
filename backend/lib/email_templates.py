@@ -395,7 +395,6 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
     date = ctx.get("report_date") or "—"
     logs = int(ctx.get("logbook_count") or 0)
     workers = int(ctx.get("worker_count") or 0)
-    expiring = int(ctx.get("expiring_permits") or 0)
     attached = bool(ctx.get("attached"))
     link = ctx.get("action_link") or "#"
 
@@ -410,10 +409,24 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
         f"{_plural(logs, 'compliance log')} and "
         f"{_plural(workers, 'worker check-in')} recorded."
     )
-    expiring_line = (
-        f"{_plural(expiring, 'permit')} on this project "
-        f"{'expires' if expiring == 1 else 'expire'} within 30 days."
-    ) if expiring else ""
+    # NO PERMIT-EXPIRY LINE. This template used to carry "N permits on
+    # this project expire within 30 days", counted from permit_renewals
+    # rows — which are keyed on a dob_logs _id rather than a permit
+    # identity, so one permit produced many rows and the count
+    # multiplied with them. A customer's report asserted "3 permits
+    # expiring" off three rows for one permit, each carrying a null
+    # job_number.
+    #
+    # It is not replaced with a zero. Zero is also an assertion, and we
+    # cannot make it — we do not know how many permits are expiring,
+    # only that the number we were printing was not it.
+    #
+    # This renderer must not read `expiring_permits` from ctx at all, so
+    # a caller that still passes the key cannot resurrect the claim.
+    # test_daily_report_no_permit_claim pins the absence of the STRINGS,
+    # not the variable, so a re-add fails CI in any spelling.
+    #
+    # See docs/audits/permit-expiry-claim-2026-08-27.md.
 
     delivery_html = (
         "The full report is attached as a PDF."
@@ -428,7 +441,6 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
         + _detail_row("Date", date)
         + _detail_row("Compliance logs", str(logs))
         + _detail_row("Worker check-ins", str(workers))
-        + (_detail_row("Permits expiring (30d)", str(expiring)) if expiring else "")
         + _ROW_CLOSE
     )
 
@@ -437,11 +449,6 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
         + f'<p style="margin:0 0 16px;font-size:14px;color:#374151;line-height:1.5;">'
           f'Daily report for <b>{project}</b> on <b>{date}</b>. {summary}'
           f'</p>'
-        + (
-            f'<p style="margin:0 0 16px;font-size:14px;color:#b45309;line-height:1.5;">'
-            f'{expiring_line}'
-            f'</p>' if expiring_line else ""
-        )
         + details
         + f'<p style="margin:0;font-size:13px;color:#6b7280;line-height:1.5;">'
           f'{delivery_html}'
@@ -469,14 +476,12 @@ def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
         f"Hi {ctx.get('recipient_name') or 'there'},\n\n"
         f"Daily report for {project} on {date}.\n\n"
         f"{summary}\n"
-        + (f"{expiring_line}\n" if expiring_line else "")
         + f"\n"
         f"Project: {project}\n"
         f"Address: {ctx.get('project_address') or '—'}\n"
         f"Date: {date}\n"
         f"Compliance logs: {logs}\n"
         f"Worker check-ins: {workers}\n"
-        + (f"Permits expiring within 30 days: {expiring}\n" if expiring else "")
         + f"\n"
         f"{'The full report is attached as a PDF.' if attached else 'The full report is available in LeveLog.'}\n"
         f"— LeveLog Compliance"
