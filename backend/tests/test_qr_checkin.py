@@ -36,22 +36,53 @@ VERCEL = code_of("frontend/vercel.json")
 
 
 class TestTheQrRegistersNothing(unittest.TestCase):
-    """The CP creates no tag, and could not if it tried.
+    """SHOWING a code creates nothing, and needs no network.
 
-    POST /api/projects/{id}/nfc-tags is Depends(get_admin_user) — admin or
-    owner. A "virtual tag" design would put a call the CP's role cannot make
-    on the critical path of a man standing at a gate, and would need a network
-    round-trip on a site that usually has none. The QR encodes the row the
-    physical tag already has instead.
+    NARROWED, NOT WEAKENED. This class used to assert the modal made no API
+    call of any kind. That stopped being true when the CP gained the power to
+    MINT a gate on a project that has none — an explicit action behind its own
+    button, on the one screen where the alternative is a shift with no 3301.11
+    record at all.
+
+    What must not come back is the "virtual tag" design: a write on the path of
+    simply displaying a code. That would need a round-trip on a site with no
+    signal, to show a QR for a gate that already exists — and it would put a
+    call the CP's role cannot make (POST /nfc-tags is Depends(get_admin_user))
+    on the critical path of a man standing at a gate.
+
+    So the rule is now about WHICH call and WHERE, and the assertions say so.
     """
 
-    def test_the_modal_writes_nothing(self):
-        for forbidden in ("addNfcTag", "POST", "apiClient", "projectsAPI"):
-            self.assertNotIn(
-                forbidden, QR_MODAL,
-                f"CheckinQrModal must not call the API ({forbidden}): it renders "
-                "a URL from the already-cached project and registers nothing.",
-            )
+    def test_the_modal_never_calls_the_admin_tag_endpoint(self):
+        # The "virtual tag" design, by name. The CP's role cannot call it.
+        self.assertNotIn("addNfcTag(", QR_MODAL)
+        self.assertNotIn("/nfc-tags", QR_MODAL)
+
+    def test_the_only_write_is_the_explicit_bootstrap(self):
+        calls = set(re.findall(r"projectsAPI\.(\w+)", QR_MODAL))
+        self.assertEqual(
+            calls, {"bootstrapCheckinPoint"},
+            f"the QR screen may make exactly one API call, the one behind the "
+            f"create button; found {sorted(calls)}",
+        )
+
+    def test_rendering_a_code_does_not_touch_the_network(self):
+        # The bootstrap call must sit in its own handler, never in the render
+        # path or an effect — a QR for an EXISTING gate has to draw offline,
+        # from the cached project, with no request at all.
+        self.assertIn("const createPoint = async () =>", QR_MODAL)
+        self.assertNotIn("useEffect(", QR_MODAL,
+                         "no effect may fire a request when this sheet opens")
+
+    def test_the_caller_never_supplies_an_id(self):
+        # The server mints it. A screen that SENT one could collide with a
+        # hardware UID or with another project's tag. Reading tag_id back off
+        # the response is the opposite of that and is required — the minted
+        # gate has to render immediately, before any refetch.
+        self.assertIn("bootstrapCheckinPoint(projectId, {})", QR_MODAL,
+                      "the request body must be empty")
+        self.assertIn("res.tag_id", QR_MODAL,
+                      "the id must come back FROM the server")
 
     def test_the_tag_creation_endpoint_is_still_admin_only(self):
         # If this ever loosens, the "registers nothing" design above stops
