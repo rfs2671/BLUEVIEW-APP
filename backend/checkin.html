@@ -782,6 +782,7 @@ function applyTranslations() {
 
 // ==================== CONFIG ====================
 const API_BASE = window.location.origin + '/api';
+let checkinMethod = 'nfc';
 const LS_WORKER_ID = 'bv_worker_id';
 const LS_WORKER_PHONE = 'bv_worker_phone';
 const LS_WORKER_NAME = 'bv_worker_name';
@@ -941,6 +942,21 @@ function cropImage(dataUrl, box) {
     projectId = params.get('project_id') || projectId;
     tagId = params.get('tag_id') || tagId;
   }
+
+  // HOW HE GOT HERE — tapped the tag, or scanned the CP's QR.
+  //
+  // The two carry the SAME URL by design: one gate, one nfc_tags row, one
+  // record. `?m=qr` is the only thing that tells them apart, and it is read
+  // unconditionally — the path parse above always yields the tag, so the
+  // ?project_id/?tag_id fallback never runs on a QR and would not see it.
+  //
+  // ABSENT MEANS TAPPED, permanently. Every tag already written into the field
+  // carries no marker and NDEF writes are one-way, so "no marker" has to keep
+  // meaning NFC or the tags on the posts today would start reading as unknown.
+  // Anything other than the one value we issue is discarded rather than
+  // forwarded: this rides into a stored field on a public endpoint.
+  const _m = new URLSearchParams(window.location.search).get('m');
+  checkinMethod = _m === 'qr' ? 'qr' : 'nfc';
 
   if (!tagId) {
     showScreen('screenError');
@@ -1308,6 +1324,8 @@ async function quickCheckIn() {
       trade: returningWorker.trade,
       company: returningWorker.company,
       osha_number: returningWorker.osha_number,
+      // Tapped or scanned. See the parse in init().
+      checkin_method: checkinMethod,
       // OPTIONAL roster enhancement — false when untouched, never a gate.
       toolbox_talk_confirm: toolboxTalkConfirmed('tbtBoxRet'),
       // The affirmation, and the language it was SHOWN in. Both false/null when
@@ -1911,6 +1929,8 @@ async function submitRegistration() {
       // FEATURE 2.10: card-photo OCR telemetry for the check-in row.
       card_ocr_attempts: ocrAttempts,
       card_ocr_failure_reason: ocrLastFailureReason,
+      // Tapped or scanned. See the parse in init().
+      checkin_method: checkinMethod,
       safety_orientation: orientation,
       signature: signatureData,
       language_provided: currentLang,

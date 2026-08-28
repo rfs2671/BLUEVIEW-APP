@@ -11737,6 +11737,29 @@ async def register_and_checkin(data: dict, request: Request):
     # apart from "no card". None on the returning/no-photo path.
     card_ocr_attempts = data.get("card_ocr_attempts")
     card_ocr_failure_reason = data.get("card_ocr_failure_reason")
+    # HOW HE REACHED THE GATE — "nfc" (tapped the tag) or "qr" (scanned the
+    # code the CP holds up when his phone has no NFC radio).
+    #
+    # NOT DERIVED FROM THE TAG ROW, and it must not be. A QR carries the SAME
+    # nfc_tags row as the tag on the same post — one gate, one registration,
+    # one location_description — so the row cannot distinguish them and there
+    # is nothing on it to read. Only the client knows, via ?m=qr.
+    #
+    # FROZEN ONTO THE CHECK-IN, like sst_status and the OCR telemetry beside
+    # it, because nfc_tags rows are mutable and soft-deletable while a check-in
+    # is the durable artifact. Reading the method back later must not be able
+    # to give a different answer than the day it happened.
+    #
+    # UNKNOWN VALUES BECOME "nfc", not an error and not the raw string. This is
+    # a public, unauthenticated endpoint, so the field is closed to the two
+    # values that exist; and absent must mean "nfc" permanently, because every
+    # tag already programmed into the field sends no marker and an NDEF write
+    # cannot be taken back.
+    #
+    # It is EVIDENCE, never a gate. A QR can be photographed and used off-site
+    # where a tap cannot — this is what makes that queryable after the fact. It
+    # is not a reason to turn a man away at the gate.
+    checkin_method = "qr" if str(data.get("checkin_method") or "").strip().lower() == "qr" else "nfc"
     # TOOLBOX ROSTER (optional): the worker tapped "Confirm attending toolbox
     # talk" at the gate. This is a ROSTER ENHANCEMENT for GCs/insurers — it is
     # NOT a legal attestation and NOT a gate. Under NYC DOB §3301.12.3 / OSHA
@@ -12248,6 +12271,8 @@ async def register_and_checkin(data: dict, request: Request):
         "source_ip": client_ip,
         "user_agent": user_agent,
         "device_fingerprint": device_fp,
+        # Tapped or scanned. See the resolution above for why absent is "nfc".
+        "checkin_method": checkin_method,
     }
 
     result = await db.checkins.insert_one(checkin_record)

@@ -455,10 +455,7 @@ export default function ProjectDetailScreen() {
     setScanningNfc(true);
     toast.info('Ready to Scan', 'Hold your phone near the NFC tag...');
     try {
-      const result = await NfcHelper.registerNfcTag(
-        projectId,
-        'https://levelog.com'
-      );
+      const result = await NfcHelper.registerNfcTag(projectId);
       if (result.success) {
         toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
         
