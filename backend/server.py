@@ -532,14 +532,20 @@ QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
 QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "https://api.together.xyz/v1")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 
-# PR #48 — Gemini for weekly project-phase inference. google-genai SDK
-# (already pinned in requirements.txt). gemini-2.5-flash-lite chosen for
-# the structured-output task: low cost, low latency, JSON-schema enum
-# constraint. Read by lib/ai/phase_inference.py at module import; the
-# constant lives there, this mirror keeps the env contract documented
-# alongside the other LLM keys.
+# PR #48 — Gemini for weekly project-phase inference and the report's
+# per-subcontractor line. google-genai SDK (already pinned in
+# requirements.txt). Both modules read the environment themselves at import:
+# lib/ai/phase_inference.py and lib/ai/sub_summary.py.
+#
+# THE GEMINI_MODEL MIRROR THAT SAT HERE IS GONE. It was declared and read by
+# nothing in this file — a third copy of a constant, kept "to document the env
+# contract alongside the other LLM keys", which is a job a comment does without
+# pretending to be a value. When gemini-2.5-flash-lite was retired and every
+# call started returning 404, this line was one of three places the string
+# appeared and the only one that changing would have accomplished nothing.
+# Documentation that can go stale independently of the thing it documents is
+# worse than none: it reads as the source of truth and is not.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 SCREENSHOT_ENABLED = False
 

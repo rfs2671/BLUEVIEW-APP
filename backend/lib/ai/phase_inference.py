@@ -40,7 +40,12 @@ logger = logging.getLogger(__name__)
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+# gemini-3.5-flash-lite. gemini-2.5-flash-lite was RETIRED under this key and
+# every call returned 404 NOT_FOUND: "no longer available to new users. Please
+# update your code to use models/gemini-3.5-flash-lite". The env var is unset in
+# production (checked 2026-08-28), so this default IS the live value -- there is
+# no override to change and nothing else to update.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # Six locked lifecycle phases — must match the Literal[...] enum in
 # server.py:DailyLogCreate and the PHASE_TO_RATIO keys in
