@@ -233,7 +233,12 @@ def plain_facts(payload: Dict[str, object]) -> str:
 # second way is a second thing to learn at 6am.
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+# gemini-3.5-flash-lite. gemini-2.5-flash-lite was RETIRED under this key and
+# every call returned 404 NOT_FOUND: "no longer available to new users. Please
+# update your code to use models/gemini-3.5-flash-lite". The env var is unset in
+# production (checked 2026-08-28), so this default IS the live value -- there is
+# no override to change and nothing else to update.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # One string, nothing else. There is no `reasoning` field on purpose: this runs
 # once per activity row per report, and a field nothing reads is tokens spent
@@ -305,6 +310,37 @@ def _prompt_for(payload: Dict[str, object]) -> str:
     )
 
 
+def _error_trace(e: Exception) -> str:
+    """The exception CLASS, the HTTP status and the status NAME. Nothing else.
+
+    WHY NOT THE MESSAGE, still. google-genai builds
+    `str(e)` as "404 NOT_FOUND. {response_json}", and that trailing dict is the
+    server's own body — it can carry a request id, a URL or a fragment of what
+    was sent. This string is RENDERED, so the message stays out. That refusal
+    was right and is unchanged.
+
+    WHY THE STATUS IS DIFFERENT, and why withholding it cost a day. `.code` is
+    an int off the HTTP response and `.status` is a fixed enum token
+    (NOT_FOUND, PERMISSION_DENIED, RESOURCE_EXHAUSTED). Neither can carry an
+    identifier. "failed: ClientError" is true of a retired model, a revoked
+    key, a malformed request and an exhausted quota alike, and the operator
+    cannot reach the logs that separate them — which is the whole reason this
+    trace exists. It said the least useful true thing.
+
+    THE STATUS IS SHAPE-CHECKED rather than trusted: it is derived from the
+    response body, so a server returning prose there must not be able to put
+    prose on this page. Anything that is not an A-Z_ token is dropped.
+    """
+    parts = [type(e).__name__]
+    code = getattr(e, "code", None)
+    if isinstance(code, int):
+        parts.append(str(code))
+    status = getattr(e, "status", None)
+    if isinstance(status, str) and re.fullmatch(r"[A-Z_]{1,40}", status):
+        parts.append(status)
+    return " ".join(parts)
+
+
 def generate_sentence_traced(
     payload: Dict[str, object],
 ) -> Tuple[Optional[str], str]:
@@ -321,7 +357,7 @@ def generate_sentence_traced(
 
         "generated"
         "skipped: no key"
-        "failed: <ExceptionClass>"
+        "failed: <ExceptionClass> <code> <STATUS>"   e.g. failed: ClientError 404 NOT_FOUND
         "refused: UNTRACED_TERM worked"
 
     generate_sentence() below is the same code with the outcome dropped, so
@@ -353,9 +389,9 @@ def generate_sentence_traced(
             "Sub-summary generation failed for %r: %r",
             payload.get("company"), e,
         )
-        # The CLASS, not the message: an exception string can carry a request
-        # id, a URL or a fragment of the payload, and this string is rendered.
-        return None, f"failed: {type(e).__name__}"
+        # The class, the status code and the status NAME — see _error_trace
+        # for what is deliberately still withheld and why.
+        return None, f"failed: {_error_trace(e)}"
 
     # THE GATE. Nothing returns from this function unverified.
     ok, reason, offending = verify_sentence(sentence, payload)
