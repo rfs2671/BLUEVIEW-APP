@@ -497,6 +497,26 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     # the gate, and he writes what a man IS. Every worker-noun below was
     # unmapped and fell back to all 86 chips.
     "electrician": ["Electrical"],
+    # AND THE PLURAL, which is what a roster of five men is actually written
+    # in. "Framers - 5 workers" sat on a live crew card resolving to NOTHING
+    # and being offered site prep, excavation, shoring and underpinning off the
+    # project's prior day, while the plumber and electrician crews beside it
+    # were correct -- purely because someone had typed those two singular.
+    # normalize_roster_trade lowercases and collapses whitespace and does no
+    # morphology, and a single token that misses cannot be rescued by the split
+    # path, which needs two parts.
+    #
+    # THE RULE APPLIED HERE: a plural is added where the plural is a word a
+    # person writes on a roster -- every agent noun (the man), and the
+    # countable things. It is NOT added to the gerunds and mass nouns
+    # ("framing", "concrete", "roofing", "drywall"): nobody writes "framings",
+    # and a key that cannot be typed is noise in a map whose whole risk is a
+    # wrong entry looking exactly like a right one. Keys already plural
+    # ("piles", "ceilings", "site utilities", "windows and doors",
+    # "specialties", "general conditions") are left alone -- adding their
+    # singular is SINGULARISATION, which is a separate change with its own test
+    # asserting the fallback never alters an existing resolution.
+    "electricians": ["Electrical"],
     "low voltage": ["Low voltage"],
     "hvac": ["HVAC", "Mechanical piping"],
     # "hvac / mechanical" and "hvac/mechanical" USED TO BE HERE, as two literal
@@ -509,11 +529,15 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "mechanical": ["HVAC", "Mechanical piping"],
     "plumbing": ["Plumbing"],
     "plumber": ["Plumbing"],
+    "plumbers": ["Plumbing"],
     "fire protection": ["Fire protection"],
     "sprinkler": ["Fire protection"],
+    "sprinklers": ["Fire protection"],
     "elevator": ["Elevator"],
+    "elevators": ["Elevator"],
     "carpentry": ["Carpentry (rough)", "Carpentry (finish)"],
     "carpenter": ["Carpentry (rough)", "Carpentry (finish)"],
+    "carpenters": ["Carpentry (rough)", "Carpentry (finish)"],
     "rough carpentry": ["Carpentry (rough)"],
     "finish carpentry": ["Carpentry (finish)"],
     "demolition": ["Demolition"],
@@ -533,18 +557,31 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     # chips; over-mapping puts another trade's work in front of a crew on a
     # signed log. Not symmetric.
     "ironworker": ["Structural steel"],
+    # Structural only, for the reason given directly above: the plural inherits
+    # the ruling, it does not widen it.
+    "ironworkers": ["Structural steel"],
     "cfs": ["CFS (cold-formed steel)"],
     "cold-formed steel": ["CFS (cold-formed steel)"],
     "wood framing": ["Wood framing"],
     "framing": ["Interior framing", "Wood framing"],
+    # THE MAN WHO DOES IT, AND THERE WERE FIVE OF HIM. This is the string that
+    # was on the live crew card. Both loops, exactly as "framing" claims both:
+    # a crew written "Framers" has not said which, and the union is what the
+    # gerund already resolves to. Narrowing it here would make the two spellings
+    # of one trade resolve differently, which is the defect the split rule
+    # exists to prevent.
+    "framer": ["Interior framing", "Wood framing"],
+    "framers": ["Interior framing", "Wood framing"],
     "masonry": ["Masonry"],
     "mason": ["Masonry"],
+    "masons": ["Masonry"],
     "facade": ["Facade / cladding"],
     "cladding": ["Facade / cladding"],
     "windows and doors": ["Windows and doors"],
     "glazing": ["Windows and doors"],
     "roofing": ["Roofing"],
     "roofer": ["Roofing"],
+    "roofers": ["Roofing"],
     "sheet metal": ["Exterior sheet metal"],
     "interior framing": ["Interior framing"],
     "insulation": ["Insulation"],
@@ -555,6 +592,7 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "stone": ["Tile and stone"],
     "painting": ["Painting"],
     "painter": ["Painting"],
+    "painters": ["Painting"],
     "ceilings": ["Ceilings"],
     "cabinetry": ["Cabinetry and countertops"],
     "millwork": ["Carpentry (finish)", "Cabinetry and countertops"],
@@ -563,6 +601,7 @@ ROSTER_TRADE_MAP: Dict[str, List[str]] = {
     "hardscape": ["Landscaping / hardscape"],
     "site safety": ["Site safety"],
     "scaffold": ["Site safety"],
+    "scaffolds": ["Site safety"],
     # A live roster string. The two-word form was here and the bare noun a CP
     # actually types was not.
     "safety": ["Site safety"],
