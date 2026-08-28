@@ -110,7 +110,15 @@ class TestSchemaConstants(unittest.TestCase):
         self.assertEqual(logbook.STATUS_COMPLETE, "complete")
         self.assertEqual(logbook.STATUS_MISSING, "missing")
         self.assertEqual(logbook.STATUS_DEFICIENT, "deficient")
-        self.assertEqual(len(logbook.VALID_STATUSES), 3)
+        # A FOURTH, and the count moves with it deliberately. A day the
+        # detector flagged that nobody worked is neither complete (the log was
+        # not filed) nor missing (nothing was owed) -- 253 rows carried that
+        # shape, written against dead projects, duplicates, and one nobody had
+        # ever worked through the gate. The read endpoints filter on
+        # STATUS_MISSING, so a row moved here leaves the customer's view
+        # without leaving the database.
+        self.assertEqual(logbook.STATUS_NO_SITE_ACTIVITY, "no_site_activity")
+        self.assertEqual(len(logbook.VALID_STATUSES), 4)
 
     def test_sources_pinned(self):
         self.assertEqual(logbook.SOURCE_WHATSAPP, "whatsapp")

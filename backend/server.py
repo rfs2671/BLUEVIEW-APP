@@ -4109,15 +4109,12 @@ async def get_owner_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Owner access required")
     return current_user
 
-# A project that has been marked for deletion by an admin is invisible and
-# inert everywhere except the owner's pending-deletion review list: it must
-# not appear in listings, must not be readable by id, and must not be picked
-# up by any background scan (DOB sync, report mailer, prediction sweeps).
-# Spread this into a projects query alongside the is_deleted filter.
-ACTIVE_PROJECT_FILTER = {
-    "is_deleted": {"$ne": True},
-    "marked_for_deletion": {"$ne": True},
-}
+# MOVED TO lib/project_state.py, and imported rather than redefined. The
+# compliance detectors carried their own {"status": "active", "is_deleted": ...}
+# instead of this one and were still flagging a project an admin had marked for
+# deletion. A constant whose whole job is "every background scan agrees on this"
+# cannot live where a scan outside this file has to copy it.
+from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
 
 
 # ── Account activation gating ────────────────────────────────────────

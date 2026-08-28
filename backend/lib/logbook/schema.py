@@ -54,8 +54,17 @@ VALID_CATEGORIES = (
 STATUS_COMPLETE   = "complete"
 STATUS_MISSING    = "missing"
 STATUS_DEFICIENT  = "deficient"
+# A day the detector flagged that nobody worked. NOT "complete" -- the log was
+# not filed and saying it was is the same false claim in the other direction --
+# and not deleted, because the record of what the system asserted about a
+# customer's compliance is worth keeping. 253 rows carried this shape on
+# 2026-08-28: dead projects, duplicates, and a project nobody had ever worked
+# through the gate. The read endpoints filter on STATUS_MISSING, so a row moved
+# here leaves the customer's view without leaving the database.
+STATUS_NO_SITE_ACTIVITY = "no_site_activity"
 
-VALID_STATUSES = (STATUS_COMPLETE, STATUS_MISSING, STATUS_DEFICIENT)
+VALID_STATUSES = (STATUS_COMPLETE, STATUS_MISSING, STATUS_DEFICIENT,
+                  STATUS_NO_SITE_ACTIVITY)
 
 # ── Sources ───────────────────────────────────────────────────────
 
