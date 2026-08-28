@@ -32,6 +32,7 @@ GATE = code_of("checkin.html")
 NFC_HELPER = code_of("frontend/src/utils/nfcHelper.js")
 QR_MODAL = code_of("frontend/src/components/CheckinQrModal.jsx")
 CP_HOME = code_of("frontend/app/logbooks/index.jsx")
+CP_NAV = code_of("frontend/src/components/CpNav.js")
 VERCEL = code_of("frontend/vercel.json")
 
 
@@ -67,12 +68,20 @@ class TestTheQrRegistersNothing(unittest.TestCase):
         )
 
     def test_rendering_a_code_does_not_touch_the_network(self):
-        # The bootstrap call must sit in its own handler, never in the render
-        # path or an effect — a QR for an EXISTING gate has to draw offline,
-        # from the cached project, with no request at all.
+        # NARROWED. This used to ban useEffect outright, which was a proxy for
+        # "nothing fires on open". The modal now HAS an effect — it resolves
+        # its own project when opened from the nav — so the proxy is wrong and
+        # the real rule has to be stated: the effect may read the CACHE, and
+        # only the create button may reach the network. A QR for an existing
+        # gate still has to draw with no signal.
         self.assertIn("const createPoint = async () =>", QR_MODAL)
-        self.assertNotIn("useEffect(", QR_MODAL,
-                         "no effect may fire a request when this sheet opens")
+        effect = QR_MODAL[QR_MODAL.index("useEffect("):]
+        effect = effect[:effect.index("}, [visible, project, user]);")]
+        self.assertIn("readCachedProjectList()", effect)
+        self.assertNotIn(
+            "projectsAPI.", effect,
+            "the open effect may read the cache, never the network",
+        )
 
     def test_the_caller_never_supplies_an_id(self):
         # The server mints it. A screen that SENT one could collide with a
@@ -98,8 +107,21 @@ class TestTheQrRegistersNothing(unittest.TestCase):
     def test_the_modal_reads_the_tags_off_the_project(self):
         # nfc_tags rides on ProjectResponse and is cached to AsyncStorage by
         # projectCache.js, which is what lets the code render with no signal.
-        self.assertIn("project?.nfc_tags", QR_MODAL)
+        # Read off the RESOLVED project (a passed one, or the one this modal
+        # picked from the cache), not off the prop.
+        self.assertIn("activeProject?.nfc_tags", QR_MODAL)
         self.assertIn("nfc_tags: List[Dict] = []", SERVER)
+
+    def test_the_modal_resolves_its_own_project(self):
+        # It opens from CpNav, which is on every CP screen. /settings has no
+        # project state at all and /documents filters its list to
+        # Dropbox-enabled projects, so a host-supplied project would be absent
+        # on one screen and wrong on another.
+        self.assertIn("readCachedProjectList", QR_MODAL)
+        self.assertIn("assigned_projects", QR_MODAL,
+                      "a CP must not be shown a code for a site they are not on")
+        self.assertIn("const activeProject = project || pickedProject;", QR_MODAL,
+                      "a host may still pass a project; it just is not required")
 
 
 class TestOneHost(unittest.TestCase):
@@ -209,21 +231,74 @@ class TestTheMarkerIsEvidenceAndNotAGate(unittest.TestCase):
 
 
 class TestTheCpCanReachIt(unittest.TestCase):
-    """_layout.jsx routes role 'cp' to /logbooks, and the NFC tag section on
-    the admin project screen is behind `isAdmin`. So the CP's entry point has
-    to be on their own home screen or it does not exist for them at all.
+    """The entry point is the NAV, and only the nav.
+
+    It lived on the CP's home screen as a card in the log-book list, which put
+    a tool he reaches for AT A GATE inside a screen he reads at a desk. CpNav
+    is the one surface present on every CP screen, so that is where it belongs.
     """
 
-    def test_the_entry_point_is_on_the_cp_home_screen(self):
-        self.assertIn("CheckinQrModal", CP_HOME)
-        self.assertIn("setShowCheckinQr(true)", CP_HOME)
+    def test_the_entry_point_is_in_the_nav(self):
+        self.assertIn("CheckinQrModal", CP_NAV)
+        self.assertIn("setShowCheckinQr(true)", CP_NAV)
 
-    def test_it_is_not_gated_on_a_count(self):
+    def test_it_is_not_also_on_the_home_screen(self):
+        # TWO ENTRY POINTS TO ONE SHEET IS HOW THEY DRIFT. The home screen may
+        # still mention the move in a comment, so this reads code only.
+        # Anchored: a bare identifier would be satisfied or broken by anything
+        # containing it, which is what test_absence_literals_are_specific bans.
+        self.assertNotIn("components/CheckinQrModal", CP_HOME, "no import")
+        self.assertNotIn("<CheckinQrModal", CP_HOME, "no render")
+        self.assertNotIn("setShowCheckinQr(", CP_HOME, "no opener")
+
+    def test_it_is_unconditional(self):
         # The CP finds out the phone will not tap while the man is already at
         # the gate. A control that appears only once something is wrong is not
-        # available at the moment it is needed.
-        self.assertIn("{selectedProject && (", CP_HOME)
-        self.assertNotIn("flagged.count > 0 && showCheckinQr", CP_HOME)
+        # available at the moment it is needed — so the nav item carries no
+        # condition at all.
+        items = CP_NAV[CP_NAV.index("const CP_NAV_ITEMS = ["):]
+        items = items[:items.index("];")]
+        self.assertIn("CHECKIN_QR_ACTION", items)
+        self.assertNotIn("&&", items, "the nav item must not be conditional")
+
+    def test_it_opens_in_place_rather_than_navigating(self):
+        # A tool used for fifteen seconds at a gate must not take the CP off
+        # whatever he was doing and make him find his way back.
+        self.assertIn("const CHECKIN_QR_ACTION = '#checkin-qr';", CP_NAV)
+        self.assertIn("item.path === CHECKIN_QR_ACTION", CP_NAV)
+
+
+class TestTheNavHeightStaysDecoupled(unittest.TestCase):
+    """`numberOfLines={1}` on the nav label is load-bearing, not tidiness.
+
+    CpNav is `width: '100%'` with `navItem: flex: 1`, so items SHARE the width
+    and every added item leaves each label less room. Without numberOfLines a
+    squeezed label wraps, the item grows taller and the pill grows with it —
+    and three CP screens clear this nav with a HARDCODED paddingBottom (120 on
+    /logbooks and /documents, 140 on /settings) sized by hand against the pill
+    as it was. A taller pill eats that clearance and covers the last row.
+
+    Measured on the real component at three items:
+
+        375pt, "Check-In QR"                    pill 58
+        320pt, "Check-In QR"                    pill 70   <- wrapped
+        320pt, "Check-In QR" + numberOfLines    pill 58   <- ellipsis
+
+    The short label is not what makes it safe: at 320pt "Dashboard" — already
+    there before this change — has ONE POINT of headroom, so the nav is a
+    single font-scale step from growing whatever the new item is called.
+    """
+
+    def test_the_nav_label_is_single_line(self):
+        self.assertIn("numberOfLines={1}", CP_NAV,
+                      "removing this recouples the pill height to label length, "
+                      "and every CP screen's bottom clearance moves with it")
+
+    def test_the_reason_is_written_down(self):
+        # The DECISION alone reads as noise to whoever adds a fourth item.
+        raw = code_of("frontend/src/components/CpNav.js", raw=True)
+        self.assertIn("DECOUPLED FROM ITEM COUNT ON PURPOSE", raw)
+        self.assertIn("pill 70", raw, "the measurement, not just the claim")
 
 
 if __name__ == "__main__":
