@@ -4,6 +4,104 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## INFRA — 2026-08-28 — no Vercel preview deployment can log in, and none ever could
+
+**THE GENERAL FINDING FIRST, because it was found through one screen and is not
+about that screen.** Every login-requiring screen on every Vercel preview
+deployment fails at the login call, today and for as long as previews have
+existed. Nothing about the Dropbox redesign caused it; that work is only where
+it was noticed, when a preview was handed to the operator to test #279 and he
+got "network failed" at the login screen.
+
+### Why
+
+`server.py` builds an EXACT-MATCH CORS allowlist — no wildcard, no
+`allow_origin_regex`:
+
+    https://levelog.com
+    https://www.levelog.com
+    https://api.levelog.com
+    https://mozilla.github.io      (pdf.js in the native WebView)
+    http://localhost:8081
+    http://localhost:19006
+    http://localhost:3000
+
+applied with `allow_origins=ALLOWED_ORIGINS, allow_credentials=True`.
+
+A Vercel preview gets a per-branch domain — e.g.
+`blueview-git-<branch>-<team>.vercel.app` — which by construction can never
+appear in a list written ahead of time. Confirmed against the LIVE api, not
+just the source, by preflighting `POST /api/auth/login`:
+
+| Origin | Result |
+|---|---|
+| `blueview-git-dropbox-one-screen-…vercel.app` | 400, no `access-control-allow-origin` |
+| `https://levelog.com` | 200, `access-control-allow-origin: https://levelog.com` |
+| `https://blueview.vercel.app` | 400 |
+
+So the deployed `ALLOWED_ORIGINS` matches the code default, and the browser is
+reporting a refused preflight as a network failure.
+
+### The fix, and it is not a CORS exception
+
+`frontend/vercel.json` ALREADY carries a server-side rewrite:
+
+    /api/:path*  ->  https://api.levelog.com/api/:path*
+
+The app never uses it, because `src/utils/api.js` sets an ABSOLUTE base:
+
+    const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL
+      || process.env.NEXT_PUBLIC_API_URL
+      || 'https://api.levelog.com';
+
+so the browser goes cross-origin directly and hits CORS. Production works by
+being IN the allowlist, not by the rewrite.
+
+**Set `EXPO_PUBLIC_API_URL` to `/` on Vercel's PREVIEW environment only.**
+Requests become same-origin, Vercel proxies them server-side, and no preflight
+is ever issued. No backend change. No allowlist edit. Production untouched —
+its own environment keeps the absolute URL, and the env var is scoped per
+environment in Vercel.
+
+It is worth being clear about what this is NOT, because it was nearly rejected
+as one: it is not a CORS exception carved for a single PR. It is a settings
+change that makes every future preview deployment testable, permanently, and it
+touches no code the app ships.
+
+The rejected alternative, for the record: adding preview domains to
+`ALLOWED_ORIGINS`. The env var REPLACES the whole default list, so adding one
+origin means restating all seven correctly or breaking production CORS; preview
+domains are per-branch so exact-match can never cover them; covering them needs
+`allow_origin_regex`, a `server.py` change; and with `allow_credentials=True` a
+`*.vercel.app` pattern would let ANY Vercel deployment call the API with
+credentials.
+
+### Unverified, and why this is a follow-up rather than a fix
+
+Three things were not established, and two of them need someone with the
+Vercel dashboard:
+
+1. **Whether `expo export` inlines the variable at build time.** `EXPO_PUBLIC_*`
+   is documented as build-time-inlined and Vercel injects env vars at build, so
+   it should — but "should" is what the runtimeVersion fingerprint also did.
+2. **`api.js:1062` and `1077` build ABSOLUTE asset URLs from the same
+   constant** — `${API_BASE_URL}/api/reports/logbook-photo/...` and
+   `${API_BASE_URL}/api/signatures/...`. With the base set to `/` these become
+   relative. They should still resolve through the same rewrite, but they are a
+   second consumer of a constant being repurposed, and they were not tested.
+3. **The preview sits behind Vercel SSO.** `GET /api/health` on the preview
+   domain returns 302 to `vercel.com/sso-api`, so the proxy path cannot be
+   exercised from a terminal at all. A logged-in browser is required, which
+   means verifying this needs the operator rather than a script.
+
+### What happened instead
+
+#279 was merged on CI and tested on production. That was the right call under
+time pressure and is not what this entry is arguing against. This is the piece
+of work that stops the next branch facing the same choice.
+
+---
+
 ## PRACTICE — 2026-08-28 — two checks that ran, passed, and could not see the thing they were for
 
 Same family as the `.cjs` enumeration entry and the CRLF-anchor entry below.
