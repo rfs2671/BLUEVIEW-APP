@@ -509,7 +509,12 @@ export default function DocumentsScreen() {
                 fileGroups.map(([folderPath, groupFiles]) => (
                 <View key={folderPath} style={s.folderGroup}>
                   <View style={s.folderGroupHeader}>
-                    <Folder size={14} strokeWidth={1.5} color="#0061FF" />
+                    {/* A TOKEN, NOT THE DROPBOX BRAND HEX. This screen is one
+                        of the 17 under tokens.test.cjs's palette discipline, and
+                        the icon is a folder rather than a Dropbox mark -- the
+                        brand blue was borrowed from files.jsx, which is not in
+                        that scanned set. */}
+                    <Folder size={14} strokeWidth={1.5} color={colors.text.muted} />
                     <Text style={s.folderGroupName} numberOfLines={1}>
                       {folderLabel(folderPath)}
                     </Text>
