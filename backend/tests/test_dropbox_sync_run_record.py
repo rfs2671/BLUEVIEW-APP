@@ -253,10 +253,51 @@ class TheCollectionIsBounded(unittest.TestCase):
     writes a run record per project. Without a TTL this grows faster than
     anything else in the database."""
 
-    def test_a_ttl_index_is_declared(self):
-        i = SRC.index("dropbox_sync_runs_ttl")
-        window = SRC[max(0, i - 400):i]
-        self.assertIn("expireAfterSeconds", window)
+    def test_the_ttl_lives_where_it_cannot_be_skipped(self):
+        """DECLARED IS NOT CREATED, and the first version of this file only
+        checked declared.
+
+        These two create_index calls shipped inside
+        run_whatsapp_startup_migrations() -- one try covering four unrelated
+        migrations with a single except that logs and continues -- so any
+        earlier WhatsApp failure would have silently skipped them. The
+        assertion passed the whole time, because the index WAS declared; it was
+        just unreachable. The TTL is the only thing bounding a collection the
+        webhook writes to once per linked project per Dropbox edit.
+        """
+        owner = None
+        for node in ast.walk(TREE):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for inner in ast.walk(node):
+                if (isinstance(inner, ast.Call) and inner.keywords
+                        and any(isinstance(k.value, ast.Constant)
+                                and k.value.value == "dropbox_sync_runs_ttl"
+                                for k in inner.keywords if k.arg == "name")):
+                    # innermost enclosing function wins
+                    if owner is None or node.lineno > owner.lineno:
+                        owner = node
+        self.assertIsNotNone(owner, "the TTL index is not created anywhere")
+        self.assertEqual(
+            owner.name, "ensure_dropbox_sync_indexes",
+            "the TTL must not share a failure boundary with unrelated migrations",
+        )
+
+    def test_it_is_awaited_at_startup_on_its_own(self):
+        """Its own await. Called from inside another migration's body it would
+        inherit that migration's failure boundary again."""
+        called = [n for n in ast.walk(TREE)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                  and n.func.id == "ensure_dropbox_sync_indexes"]
+        self.assertTrue(called, "nothing calls ensure_dropbox_sync_indexes")
+
+        # and it carries its own except, so a failure logs rather than
+        # propagating into whatever startup step follows it
+        fn = _fn("ensure_dropbox_sync_indexes")
+        self.assertTrue(
+            [n for n in ast.walk(fn) if isinstance(n, ast.Try)],
+            "the index creation is unguarded",
+        )
 
     def test_the_ttl_is_on_created_at(self):
         for node in ast.walk(TREE):

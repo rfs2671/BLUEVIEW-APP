@@ -29583,6 +29583,41 @@ async def _whatsapp_send_log_try_mark(
         return False
 
 
+async def ensure_dropbox_sync_indexes():
+    """Indexes for the Dropbox sync run record. Idempotent; safe every boot.
+
+    ITS OWN FUNCTION AND ITS OWN try/except, and that is the whole point of the
+    change that moved it here. These two lines were inside
+    run_whatsapp_startup_migrations() -- one try covering four unrelated
+    migrations with a single except that logs and moves on -- so an unrelated
+    WhatsApp failure would have silently skipped them.
+
+    That is not a tidiness argument. The TTL is the only thing bounding this
+    collection: the Dropbox webhook fans out across EVERY project a company has
+    linked, so one person editing one file writes a run record per project, and
+    a company with forty projects writes forty rows for one save. Losing the
+    index loses the bound, silently, for a reason having nothing to do with
+    Dropbox.
+
+    14 days: long enough to answer "why was that CP missing drawings last week",
+    short enough that the fan-out cannot accumulate. What the CLIENT reads is
+    mirrored onto the project document and is NOT subject to this expiry, so a
+    run ageing out ends the diagnostic trail and never changes app behaviour.
+    """
+    try:
+        await db[DROPBOX_SYNC_RUNS].create_index(
+            "created_at",
+            expireAfterSeconds=60 * 60 * 24 * 14,
+            name="dropbox_sync_runs_ttl",
+        )
+        await db[DROPBOX_SYNC_RUNS].create_index(
+            [("project_id", 1), ("created_at", -1)],
+            name="dropbox_sync_runs_by_project",
+        )
+    except Exception as e:
+        logger.warning(f"ensure_dropbox_sync_indexes: {e}")
+
+
 async def run_whatsapp_startup_migrations():
     """Idempotent startup migrations for the WhatsApp feature set.
 
@@ -29617,28 +29652,6 @@ async def run_whatsapp_startup_migrations():
             name="whatsapp_send_log_ttl",
         )
 
-        # ── Dropbox sync runs ────────────────────────────────────────────────
-        # THIS COLLECTION GROWS FASTER THAN ANY OTHER IF LEFT ALONE. The Dropbox
-        # webhook fans out across EVERY project a company has linked, so one
-        # person editing one file writes a run record per project -- a company
-        # with forty linked projects writes forty rows for one save. A TTL is
-        # not housekeeping here, it is the thing that keeps the collection
-        # bounded at all.
-        #
-        # 14 days: long enough to answer "why was that CP missing drawings last
-        # week", short enough that the fan-out cannot accumulate. The state the
-        # CLIENT reads is mirrored onto the project document and is not subject
-        # to this expiry, so a run ageing out never changes app behaviour -- it
-        # only ends the diagnostic trail.
-        await db[DROPBOX_SYNC_RUNS].create_index(
-            "created_at",
-            expireAfterSeconds=60 * 60 * 24 * 14,
-            name="dropbox_sync_runs_ttl",
-        )
-        await db[DROPBOX_SYNC_RUNS].create_index(
-            [("project_id", 1), ("created_at", -1)],
-            name="dropbox_sync_runs_by_project",
-        )
 
         # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
         await db.whatsapp_checklists.create_index(
@@ -36399,6 +36412,8 @@ async def startup_event():
 
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL
     await run_whatsapp_startup_migrations()
+    # Separate await, so a failure in the WhatsApp migrations cannot skip it.
+    await ensure_dropbox_sync_indexes()
 
     # Account activation gating — backfill existing users to "approved" so the
     # new pending-by-default gate never locks out current accounts.
