@@ -92,6 +92,7 @@ const CATALOG = [
   { key: 'concrete_operations', label: 'Concrete Operations Log' },
   { key: 'crane_operations', label: 'Crane Operations Log' },
   { key: 'excavation_monitoring', label: 'Excavation Monitoring Log' },
+  { key: 'fall_protection', label: 'Fall Protection Equipment Log' },
 ];
 const keysOf = (rows) => rows.map((r) => r.key);
 

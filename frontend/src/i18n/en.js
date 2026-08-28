@@ -1252,6 +1252,7 @@ export default {
     tabSsc: 'SSC Daily Safety Log',
     tabOsha: 'OSHA / SST Log',
     tabOrientation: 'Subcontractor Orientation',
+    tabFallProtection: 'Fall Protection',
 
     // Shared field + column labels
     fLocation: 'Location',
@@ -1432,6 +1433,28 @@ export default {
     o_sign_in_out: 'Must sign in and out every day',
     o_authorized_areas: 'Only enter authorized work areas',
     o_housekeeping: 'Keep work area clean at all times',
+
+    // ── Fall protection equipment ─────────────────────────────────────────
+    // THE PDF'S COLUMN NAMES, not the editor's field labels. The editor asks
+    // questions ("Impact loaded since last use?"); the filed document has
+    // columns, and this screen shows the filed document. Word for word from
+    // server.py generate_single_logbook_html, so an inspector reading the
+    // tablet and an inspector reading the PDF read the same headings.
+    //
+    // The notice itself is NOT here — it is fallProtection.standardNotice,
+    // held equal to server.py's FALL_PROTECTION_NOTICE by
+    // fallProtectionModel.test.cjs. A copy here would be a fourth wording of
+    // a sentence whose whole purpose is that there is only one.
+    fpRegister: 'Equipment Inspections',
+    fpEquipment: 'Equipment',
+    fpEquipmentId: 'ID / Serial',
+    fpMfgDate: 'Mfg Date',
+    fpResult: 'Result',
+    fpImpact: 'Impact Loaded',
+    fpAnchor: 'Anchor',
+    fpFindings: 'Defects & Corrective Actions',
+    fpDefect: 'Defect',
+    fpAction: 'Action Taken',
   },
 
   // ── app/reports.jsx — the admin-only report preview panel ─────────────────
