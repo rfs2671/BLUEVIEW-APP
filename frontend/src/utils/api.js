@@ -351,6 +351,14 @@ export const projectsAPI = {
     return response.data;
   },
 
+  // Called ONLY after writeNfcTag has returned success. See the endpoint: the
+  // safe order is chip first, flag second, and flipping this optimistically
+  // produces the exact silent state the flag exists to prevent.
+  markCheckinPointProgrammed: async (projectId, tagId) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/checkin-points/${tagId}/programmed`);
+    return response.data;
+  },
+
   create: async (projectData) => {
     const response = await apiClient.post('/api/projects', projectData);
     return response.data;

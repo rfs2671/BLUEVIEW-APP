@@ -11265,6 +11265,98 @@ async def remove_cp_checkin_point(
     return {"message": "Check-in point removed"}
 
 
+@api_router.post(
+    "/projects/{project_id}/checkin-points/{tag_id}/programmed",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def mark_checkin_point_programmed(
+    project_id: str,
+    tag_id: str,
+    admin = Depends(get_admin_user),
+):
+    """A physical tag now carries this gate's id. Clear the provisional flag.
+
+    THIS IS THE ONLY THING THAT CLEARS IT, and that is the design.
+
+    A provisional gate was minted in the field by a CP because the project had
+    none. It is QR-only - no chip anywhere carries the id - and a printed QR is
+    permanently shareable (followups.md). The flag says "no chip exists", so
+    the only honest way to clear it is for a chip to start existing.
+
+    NOTHING IS RE-REGISTERED. writeNfcTag takes an EXPLICIT id, so the admin
+    programs a blank sticker with THIS gate's qr- id and the chip's own UID is
+    never read and never stored. Same row, same tag_id, same project - every
+    check-in already recorded against this gate stays attached to it, and no
+    second gate appears. That is why this is a flag flip and not a migration.
+
+    ORDERING, and only one direction is safe. The client writes the chip FIRST
+    and calls this only after the write returns success:
+
+      * write ok, this call fails  -> a programmed chip still marked
+        provisional. The banner stays, the admin retries, and re-writing the
+        same URL to the same chip is idempotent. Over-cautious, which is the
+        correct way for this flag to fail.
+      * this call first, write fails -> a gate marked "has a physical tag"
+        with no chip anywhere. That is precisely the silent state the flag
+        exists to prevent.
+
+    So do not "improve" the client by flipping the flag optimistically for a
+    snappier UI. The slow order is the safe one.
+
+    ADMIN ONLY, deliberately. The marker exists FOR admins; letting the CP who
+    minted the gate clear their own flag makes it self-certifying and it stops
+    being evidence of anything.
+
+    NO DISMISS ENDPOINT, and this is where one would naturally be added.
+    Declined on the grounds, not the preference: if dismissal is the easy path
+    it becomes the only path, and the flag stops meaning "no chip exists" and
+    starts meaning "nobody clicked X" - which is the same as having no flag at
+    all, with the added cost that everyone believes there is one. There is a
+    legitimate case (a site that has genuinely decided the printed code IS the
+    gate), so if this is ever revisited it must record WHO dismissed and WHEN,
+    and read as ACKNOWLEDGED rather than resolved. It must not reuse this
+    endpoint or this field.
+    """
+    tag = await db.nfc_tags.find_one({
+        "tag_id": tag_id, "project_id": project_id, "is_deleted": {"$ne": True},
+    })
+    if not tag:
+        raise HTTPException(status_code=404, detail="Check-in point not found")
+
+    # NOTHING TO CLEAR IS NOT SUCCESS. A silent 200 here would let a client bug
+    # - the wrong tag_id, a stale list - look exactly like a completed
+    # programming run, and the banner would vanish for a gate nobody touched.
+    if not tag.get("provisional"):
+        raise HTTPException(
+            status_code=409,
+            detail="This check-in point is not provisional.",
+        )
+
+    now = datetime.now(timezone.utc)
+    await db.nfc_tags.update_one(
+        {"tag_id": tag_id, "project_id": project_id},
+        {"$set": {
+            "provisional": False,
+            # KEPT, not deleted. "This gate was minted in the field and later
+            # given a chip" is worth being able to read a year from now, and
+            # dropping the fact to tidy the document destroys it.
+            "provisional_cleared_by": admin.get("id"),
+            "provisional_cleared_at": now,
+            "updated_at": now,
+        }},
+    )
+
+    logger.info(
+        "Check-in point %s on project %s marked programmed by %s",
+        tag_id, project_id, admin.get("id"),
+    )
+    return {
+        "message": "Check-in point marked as programmed",
+        "tag_id": tag_id,
+        "provisional": False,
+    }
+
+
 # ==================== NFC TAG INFO (PUBLIC) ====================
 
 @api_router.get("/nfc-tags/{tag_id}/info", response_model=NfcTagInfo)
