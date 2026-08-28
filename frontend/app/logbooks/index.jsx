@@ -927,6 +927,9 @@ export default function LogBooksScreen() {
           visible={showCheckinQr}
           onClose={() => setShowCheckinQr(false)}
           project={selectedProject}
+          // A gate minted at the gate has to survive closing this sheet: the
+          // project in state came from the cached list and does not carry it.
+          onChanged={() => fetchInitial()}
         />
 
         <CpNav />

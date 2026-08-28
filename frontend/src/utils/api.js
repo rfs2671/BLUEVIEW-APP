@@ -338,6 +338,19 @@ export const projectsAPI = {
     return response.data;
   },
 
+  // The CP emergency path. A SEPARATE sub-resource from /nfc-tags above, not a
+  // relaxed call to it: different caller, no id from the client (the server
+  // mints it), and a row that comes back flagged provisional.
+  bootstrapCheckinPoint: async (projectId, body = {}) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/checkin-points/bootstrap`, body);
+    return response.data;
+  },
+
+  removeCheckinPoint: async (projectId, tagId) => {
+    const response = await apiClient.delete(`/api/projects/${projectId}/checkin-points/${tagId}`);
+    return response.data;
+  },
+
   create: async (projectData) => {
     const response = await apiClient.post('/api/projects', projectData);
     return response.data;

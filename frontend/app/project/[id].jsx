@@ -1127,7 +1127,7 @@ export default function ProjectDetailScreen() {
                   {nfcTags.map((tag) => (
                     <GlassCard key={tag.tag_id} style={s.itemCard}>
                       <View style={s.itemHeader}>
-                        <Wifi size={20} strokeWidth={1.5} color={semantic.neutral} />
+                        <Wifi size={20} strokeWidth={1.5} color={tag.provisional ? semantic.attention : semantic.neutral} />
                         <View style={s.itemInfo}>
                           <Text style={s.itemId}>{tag.tag_id}</Text>
                           <Text style={s.itemLocation}>{tag.location || 'Check-In Point'}</Text>
@@ -1139,6 +1139,23 @@ export default function ProjectDetailScreen() {
                           <Trash2 size={16} color={colors.status.error} />
                         </Pressable>
                       </View>
+
+                      {/* PROVISIONAL — a gate a CP minted in the field because
+                          this project had none. There is no chip carrying this
+                          id, so it is QR-ONLY, and a printed QR is permanently
+                          shareable. Without this banner the emergency fix
+                          silently becomes the permanent state and the admin is
+                          never told. It names the id because programming a
+                          sticker with THAT id is the fix — it keeps the row,
+                          and every check-in already recorded against it. */}
+                      {tag.provisional && (
+                        <View style={s.warningBox}>
+                          <Text style={s.warningText}>
+                            Provisional — created on site, no physical tag. Program
+                            an NFC tag with ID {tag.tag_id} to make it tappable.
+                          </Text>
+                        </View>
+                      )}
                     </GlassCard>
                   ))}
                 </View>

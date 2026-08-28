@@ -10845,7 +10845,46 @@ async def get_project_nfc_tags(project_id: str, current_user = Depends(get_curre
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return project.get("nfc_tags", [])
+
+    rows = project.get("nfc_tags", []) or []
+
+    # PROVISIONAL IS READ FROM THE COLLECTION, NOT COPIED INTO THE ARRAY.
+    #
+    # The project's nfc_tags array is a denormalized {tag_id, location} list.
+    # Writing the flag into it too would make two copies of one fact, and this
+    # repo already carries two live bugs of exactly that shape (see followups
+    # "the re-assign path leaves the displayed names stale" and
+    # "checklist_title is frozen at creation") - in both, one copy got updated
+    # and the one the screen renders did not.
+    #
+    # So the array keeps saying WHICH tags, the collection keeps saying WHAT
+    # THEY ARE, and this join is the only place the two meet. A flag that
+    # changes - and this one is meant to, once an admin programs a chip with
+    # the id - must not be stored where a later write can miss it.
+    flags = {}
+    try:
+        async for t in db.nfc_tags.find(
+            {"project_id": project_id, "is_deleted": {"$ne": True}},
+            {"tag_id": 1, "provisional": 1, "created_by_role": 1},
+        ):
+            flags[t.get("tag_id")] = {
+                # Absent means False. Every tag that predates the CP bootstrap
+                # path was programmed onto a chip by an admin, so the default
+                # has to be "real", not "unknown".
+                "provisional": bool(t.get("provisional")),
+                "created_by_role": t.get("created_by_role") or "admin",
+            }
+    except Exception as e:
+        # The list is what the admin screen renders; a flag lookup failing must
+        # not blank it. Degrade to the array alone.
+        logger.warning("nfc-tags flag join failed for project %s: %r", project_id, e)
+        return rows
+
+    return [
+        {**row, **flags.get(row.get("tag_id"), {})}
+        if isinstance(row, dict) else row
+        for row in rows
+    ]
 
 @api_router.post("/projects/{project_id}/nfc-tags", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
@@ -11011,6 +11050,220 @@ async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depe
         }
     )
     return {"message": "NFC tag removed successfully"}
+
+
+# ==================== CP EMERGENCY CHECK-IN POINT ====================
+#
+# A SEPARATE SUB-RESOURCE, not a relaxed get_admin_user on /nfc-tags above.
+# The two paths differ in WHO may call them, WHERE the id comes from, and WHAT
+# the row means. Folding a second authorization model and a second id policy
+# into one handler is the shape that produced the silent-reassignment bug this
+# file just finished removing.
+#
+# THE FAILURE IT EXISTS FOR. A tag is destroyed mid-shift and no admin is
+# reachable. Today that is a site with no compliant check-in: /info 404s
+# without an ACTIVE row, so tap and scan both fail. The men still work -
+# nothing turns anyone away - but the 3301.11 orientation record for that
+# shift is simply missing, and it cannot be reconstructed afterwards. That is
+# a compliance loss, not an inconvenience, and the CP is the one person
+# standing there.
+
+# NFC hardware UIDs are HEX. "qr-" contains a letter and a separator that hex
+# cannot produce, so a minted id can never collide with a chip's UID no matter
+# how many bytes that chip reports. This is what lets the CP path skip
+# accepting an id from the caller entirely.
+CP_CHECKIN_POINT_PREFIX = "qr-"
+
+
+@api_router.post(
+    "/projects/{project_id}/checkin-points/bootstrap",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def bootstrap_checkin_point(
+    project_id: str,
+    data: dict = None,
+    current_user = Depends(get_current_user),
+):
+    """Mint a check-in point when a project has none. Admin OR CP.
+
+    THE CALLER NEVER SUPPLIES AN ID. The server mints it, which is stronger
+    than validating input: a CP who cannot type an id cannot typo one, cannot
+    squat one, and cannot reach the cross-project collision branch that
+    add_nfc_tag_to_project now refuses.
+    """
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    role = current_user.get("role")
+    if role not in ("admin", "owner", "cp"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # -- THE RULE IS "ZERO ACTIVE TAGS", NOT "NO EXISTING ROWS" -------------
+    #
+    # Those are different questions and the difference is load-bearing.
+    # nfc_tags rows outlive their usefulness in two states that are NOT
+    # active: is_deleted (an admin removed the tag) and status
+    # "project_closed" (the project was marked for deletion, which sweeps
+    # every one of its tags).
+    #
+    # A REOPENED SITE IS THE CASE. A project that was closed and restored
+    # still carries its old rows at status "project_closed" - a gate nobody
+    # can check in through, because /info and register_and_checkin both match
+    # status "active". Asking "no existing rows" would see those and refuse,
+    # leaving the CP exactly as stuck as if the rule did not exist, on a site
+    # that genuinely has no working gate. Asking "zero ACTIVE tags" correctly
+    # mints a new one and leaves the dead rows alone.
+    #
+    # The query is the gate's own, deliberately: if a tag would let a worker
+    # check in, it counts here.
+    active_existing = await db.nfc_tags.count_documents({
+        "project_id": project_id,
+        "status": "active",
+        "is_deleted": {"$ne": True},
+    })
+    if active_existing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This project already has a check-in point. Use the existing "
+                "one, or ask an admin to add another."
+            ),
+        )
+
+    location = str((data or {}).get("location_description") or "").strip()
+    if not location:
+        location = "Check-In Point"
+
+    now = datetime.now(timezone.utc)
+
+    # Retried rather than trusted: tag_id carries a unique index, and a silent
+    # duplicate-key error here would surface at a gate rather than at this call.
+    import secrets as _secrets
+
+    tag_id = None
+    for _ in range(5):
+        candidate = f"{CP_CHECKIN_POINT_PREFIX}{_secrets.token_hex(6)}"
+        if not await db.nfc_tags.find_one({"tag_id": candidate}):
+            tag_id = candidate
+            break
+    if not tag_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not allocate a check-in point ID. Try again.",
+        )
+
+    # PROVISIONAL, and the flag is the point. A minted gate is QR-ONLY: no chip
+    # in the field carries this id, so it can only be scanned off a screen or a
+    # printout. A printed code is permanently shareable (see followups.md), so
+    # without a marker the emergency fix silently becomes the permanent state
+    # and nobody is told. The flag is what an admin sees, and what tells them a
+    # physical tag still needs programming with THIS id.
+    await db.nfc_tags.insert_one({
+        "tag_id": tag_id,
+        "project_id": project_id,
+        "location_description": location,
+        "created_at": now,
+        "updated_at": now,
+        "admin_id": current_user.get("id"),
+        "created_by": current_user.get("id"),
+        "created_by_role": role,
+        "provisional": True,
+        "company_id": project.get("company_id"),
+        "status": "active",
+        "is_deleted": False,
+    })
+
+    await db.projects.update_one(
+        {"_id": to_query_id(project_id)},
+        {
+            "$push": {"nfc_tags": {"tag_id": tag_id, "location": location}},
+            "$set": {"updated_at": now},
+        },
+    )
+
+    logger.info(
+        "Provisional check-in point %s minted on project %s by %s (role=%s)",
+        tag_id, project_id, current_user.get("id"), role,
+    )
+    return {
+        "message": "Check-in point created",
+        "tag_id": tag_id,
+        "location_description": location,
+        "provisional": True,
+    }
+
+
+@api_router.delete(
+    "/projects/{project_id}/checkin-points/{tag_id}",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def remove_cp_checkin_point(
+    project_id: str,
+    tag_id: str,
+    current_user = Depends(get_current_user),
+):
+    """Let a CP remove a gate THEY created, while it is still only a mistake.
+
+    A rule that lets someone act in an emergency and then traps them with the
+    result is not a safety property. bootstrap refuses once a gate exists, so
+    without this a CP who mints one by accident cannot undo it and cannot try
+    again - the emergency power becomes a one-shot they have already spent.
+
+    TWO CONDITIONS, and the second is where it stops being theirs to undo.
+    """
+    tag = await db.nfc_tags.find_one({
+        "tag_id": tag_id, "project_id": project_id, "is_deleted": {"$ne": True},
+    })
+    if not tag:
+        raise HTTPException(status_code=404, detail="Check-in point not found")
+
+    role = current_user.get("role")
+    if role not in ("admin", "owner", "cp"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    if role == "cp":
+        # 1. IT MUST BE THEIRS. A CP undoing their own mistake is not the same
+        #    power as a CP removing the gate an admin programmed, and this
+        #    endpoint grants only the first.
+        if tag.get("created_by_role") != "cp":
+            raise HTTPException(
+                status_code=403,
+                detail="Only an admin can remove this check-in point.",
+            )
+        # 2. ONCE A MAN HAS TAPPED IN IT IS EVIDENCE. A check-in is a 3301.11
+        #    record and it names this tag_id; the gate has to keep existing for
+        #    that record to resolve. The same rule holds everywhere else a
+        #    signed artifact exists, and it is not relaxed because this row was
+        #    created under an emergency.
+        used = await db.checkins.count_documents({
+            "tag_id": tag_id, "project_id": project_id,
+        })
+        if used:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This check-in point has check-ins against it and can no "
+                    "longer be removed. Ask an admin."
+                ),
+            )
+
+    now = datetime.now(timezone.utc)
+    await db.nfc_tags.update_one(
+        {"tag_id": tag_id, "project_id": project_id},
+        {"$set": {"is_deleted": True, "deleted_at": now, "updated_at": now}},
+    )
+    await db.projects.update_one(
+        {"_id": to_query_id(project_id)},
+        {
+            "$pull": {"nfc_tags": {"tag_id": tag_id}},
+            "$set": {"updated_at": now},
+        },
+    )
+    return {"message": "Check-in point removed"}
+
 
 # ==================== NFC TAG INFO (PUBLIC) ====================
 

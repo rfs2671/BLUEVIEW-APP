@@ -1,19 +1,23 @@
 import React, { useMemo, useState } from 'react';
 import {
   View, Text, Modal, Pressable, ScrollView, useWindowDimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { StyleSheet } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
-import { X, ChevronLeft, Wifi } from 'lucide-react-native';
+import { X, ChevronLeft, Wifi, Plus } from 'lucide-react-native';
 import { buildCheckinUrl } from '../utils/nfcHelper';
+import { projectsAPI } from '../utils/api';
 import {
   spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow,
 } from '../styles/theme';
+// o50 is the app's existing disabled/busy dim, not a new value.
+import { opacity } from '../styles/tokens';
 
 /**
  * THE QR THE CP HOLDS UP WHEN A WORKER'S PHONE HAS NO NFC.
  *
- * WHY THIS CREATES NOTHING.
+ * WHY SHOWING A CODE CREATES NOTHING.
  *
  * The obvious build is a "virtual tag": generate an id, POST it as a new
  * nfc_tags row, encode that. It is wrong twice over. POST
@@ -26,7 +30,8 @@ import {
  * screen encodes THAT row's URL. Same tag_id, same project, same
  * location_description, and therefore the same check-in record — the only
  * difference is that the man scanned instead of tapped. Nothing is written
- * anywhere to show a code, and nothing needs an admin.
+ * anywhere to show a code, and nothing needs an admin. (Minting a gate where
+ * there is none is a different, explicit action - see further down.)
  *
  * It works offline because nfc_tags rides on ProjectResponse (server.py:2047)
  * and the CP's project list is already cached to AsyncStorage by
@@ -34,11 +39,18 @@ import {
  * gate. The WORKER still needs a connection to load the gate page — but that
  * was equally true of the tap, so a QR takes nothing away.
  *
- * WHAT IT CANNOT DO. A project with no registered tag has no URL to encode,
- * and there is nothing this screen can invent that the server would accept:
- * /checkin/{p}/{t}/info 404s "Invalid check-in link" without an ACTIVE row.
- * That case gets a plain empty state naming the fix, never a code that leads
- * a man to a dead end.
+ * THE EMPTY STATE IS NOT TERMINAL ANY MORE. A project with no registered tag
+ * still has no URL to encode - /checkin/{p}/{t}/info 404s "Invalid check-in
+ * link" without an ACTIVE row, and nothing this screen invents would change
+ * that. But the CP can now MINT one, because the alternative was a site with
+ * no compliant check-in and a 3301.11 record for the shift that cannot be
+ * reconstructed afterwards.
+ *
+ * The server mints the id; this screen never sends one. It comes back
+ * PROVISIONAL - QR-only, no chip in the field carries it - which is what the
+ * admin sees flagged on the project screen. This needs the network: it is a
+ * write, and the one case it exists for (no gate at all) is not the offline
+ * case (a gate exists and the QR renders from cache).
  *
  * PRESENCE. A tap requires the phone to be at the post. A photograph of this
  * code does not — see the header comment on CHECKIN_BASE_URL and the ?m=qr
@@ -59,9 +71,16 @@ const QR_LIGHT = '#ffffff';
 const QR_MAX = 320;
 const QR_MIN = 200;
 
-export default function CheckinQrModal({ visible, onClose, project }) {
+export default function CheckinQrModal({ visible, onClose, project, onChanged }) {
   const { width } = useWindowDimensions();
   const [selected, setSelected] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(null);
+  // The gate minted in THIS session. The parent's `project` comes from a
+  // cached list that will not carry it until the next refetch, so the code has
+  // to be renderable from what the create call returned or the CP mints a gate
+  // and is shown the same empty screen.
+  const [minted, setMinted] = useState(null);
 
   const projectId = project?.id || project?._id || null;
 
@@ -69,14 +88,43 @@ export default function CheckinQrModal({ visible, onClose, project }) {
   // a row missing tag_id would render a QR pointing at /checkin/{p}/undefined.
   const tags = useMemo(() => {
     const raw = Array.isArray(project?.nfc_tags) ? project.nfc_tags : [];
-    return raw.filter((t) => t && typeof t.tag_id === 'string' && t.tag_id.trim());
-  }, [project]);
+    const clean = raw.filter((t) => t && typeof t.tag_id === 'string' && t.tag_id.trim());
+    if (minted && !clean.some((t) => t.tag_id === minted.tag_id)) {
+      return [...clean, minted];
+    }
+    return clean;
+  }, [project, minted]);
 
   const qrSize = Math.max(QR_MIN, Math.min(QR_MAX, width - spacing.xl * 4));
 
   const close = () => {
     setSelected(null);
+    setCreateError(null);
     onClose?.();
+  };
+
+  const createPoint = async () => {
+    if (!projectId || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const res = await projectsAPI.bootstrapCheckinPoint(projectId, {});
+      const row = { tag_id: res.tag_id, location: res.location_description, provisional: true };
+      setMinted(row);
+      setSelected(row);
+      // Tell the parent to refetch, so the gate survives closing this sheet.
+      onChanged?.();
+    } catch (e) {
+      // NAMED, NEVER SILENT. This is the one screen standing between a man at
+      // a gate and no record of him being there; "nothing happened" is the
+      // worst thing it can say.
+      setCreateError(
+        e?.response?.data?.detail
+        || 'Could not create a check-in point. Check your connection and try again.',
+      );
+    } finally {
+      setCreating(false);
+    }
   };
 
   // One gate is the common case — a single entrance. Showing a picker with one
@@ -136,9 +184,31 @@ export default function CheckinQrModal({ visible, onClose, project }) {
                 <Wifi size={40} strokeWidth={1} color={outdoor.textDim} />
                 <Text style={s.emptyTitle}>No check-in point registered</Text>
                 <Text style={s.empty}>
-                  This project has no check-in point yet, so there is no code to
-                  show. Ask an admin to register one on the project.
+                  This project has no check-in point, so nobody can check in at
+                  all. Create one now and show its code — an admin can program a
+                  physical tag for it later.
                 </Text>
+
+                <Pressable
+                  onPress={createPoint}
+                  disabled={creating}
+                  style={[s.primaryBtn, creating && s.primaryBtnBusy]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Create a check-in point"
+                >
+                  {creating ? (
+                    <ActivityIndicator color={outdoor.textOnSelected} />
+                  ) : (
+                    <>
+                      <Plus size={20} strokeWidth={2} color={outdoor.textOnSelected} />
+                      <Text style={s.primaryBtnText}>Create check-in point</Text>
+                    </>
+                  )}
+                </Pressable>
+
+                {!!createError && (
+                  <Text style={s.errorText}>{createError}</Text>
+                )}
               </View>
             ) : !active ? (
               <>
@@ -259,6 +329,26 @@ const s = StyleSheet.create({
   },
   rowSub: { fontSize: typography.sizes.fine, color: outdoor.textDim },
   emptyBox: { alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xl },
+  primaryBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: spacing.sm,
+    alignSelf: 'stretch',
+    // The one action this screen is about, at the primary target size — a
+    // gloved thumb outdoors, not a fingertip on a clean screen indoors.
+    minHeight: touchTarget.primary,
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.lg,
+    backgroundColor: outdoor.surfaceSelected,
+    borderRadius: borderRadius.lg,
+  },
+  primaryBtnBusy: { opacity: opacity.o50 },
+  primaryBtnText: {
+    fontSize: typography.sizes.md, fontWeight: '700', color: outdoor.textOnSelected,
+  },
+  errorText: {
+    fontSize: typography.sizes.sm, color: outdoor.danger,
+    textAlign: 'center', marginTop: spacing.sm,
+  },
   emptyTitle: {
     fontSize: typography.sizes.md, fontWeight: '600', color: outdoor.text,
   },
