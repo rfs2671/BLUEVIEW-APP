@@ -16405,6 +16405,134 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
     
 
 
+# ==================== CHECKLIST READ SHAPE ====================
+#
+# EVERY CHECKLIST READ SERVES `checklist` NESTED. The four read endpoints below
+# hand back an assignment with a `checklist` object (title, description, items)
+# and a computed `completions` list. Nothing serves `checklist_title` or
+# `checklist_items` flat any more: no client ever read them, and
+# `app/checklists.jsx:101` was calling `details.checklist.items.forEach` on a
+# payload with no `checklist` key. That threw into the surrounding catch and
+# told the CP "Could not load checklist" — so a newly assigned checklist could
+# not be opened by the person it was assigned to, and only that person, and
+# only until a completion record existed to send the other branch.
+#
+# THE TITLE IS DERIVED ON EVERY READ, AND THAT IS THE POINT — DO NOT "RESTORE"
+# THE FLAT KEY. `assign_checklist` copies the title onto the assignment
+# document at creation and `update_checklist` never propagates a rename, so
+# `checklist_assignments.checklist_title` goes stale the first time a checklist
+# is renamed. Joining db.checklists on every read makes that stale copy
+# INVISIBLE WITHOUT A MIGRATION — the second copy still sits on the document,
+# nothing serves it, so nothing can print the old name. Serving the stored key
+# again (for a cheaper read, or because the field looks unused) brings the bug
+# back with it. Do not store a third copy either; derive it.
+#
+# `completions` IS COMPUTED, NOT STORED, and is not a rename of anything.
+# `complete_checklist` persists `item_completions` (a dict of
+# {checked, note, timestamp}) and `user_name`; there has never been a
+# `progress` object anywhere in checklist_completions.
+
+
+def _checklist_scale(checklist):
+    """(live item ids, item count) — computed once per checklist and reused for
+    every completion measured against it."""
+    items = (checklist or {}).get("items", []) or []
+    ids = {str(i["id"]) for i in items if isinstance(i, dict) and i.get("id")}
+    return ids, len(items)
+
+
+def _checklist_progress(completion, item_ids, total):
+    """{completed, total} for one completion, measured against LIVE items.
+
+    `total` is the number of items on the checklist now. `completed` counts
+    only checked keys that still name one of those items, so an item deleted
+    after someone ticked it cannot leave a stored completion reporting 5/4:
+    completed <= total always.
+    """
+    checked = 0
+    for item_id, state in ((completion or {}).get("item_completions", {}) or {}).items():
+        if str(item_id) not in item_ids:
+            continue
+        if isinstance(state, dict):
+            if state.get("checked"):
+                checked += 1
+        elif state:
+            checked += 1
+    return {"completed": checked, "total": total}
+
+
+def _completion_row(completion, item_ids, total):
+    """One row of the `completions` list both admin surfaces render:
+    [{user_id, user_name, progress: {completed, total}}]."""
+    return {
+        "user_id": completion.get("user_id"),
+        "user_name": completion.get("user_name", ""),
+        "progress": _checklist_progress(completion, item_ids, total),
+    }
+
+
+def _nested_checklist(checklist):
+    """The `checklist` object every client reads off an assignment."""
+    if not checklist:
+        return None
+    return {
+        "id": str(checklist.get("_id", checklist.get("id", ""))),
+        "title": checklist.get("title", ""),
+        "description": checklist.get("description"),
+        "items": checklist.get("items", []) or [],
+    }
+
+
+def _serialize_assignment(assignment):
+    """Serialize an assignment WITHOUT its frozen `checklist_title` copy — the
+    title is derived from db.checklists per request instead. See above."""
+    out = serialize_id(dict(assignment))
+    out.pop("checklist_title", None)
+    return out
+
+
+async def _checklists_by_id(checklist_ids):
+    """The checklists for a whole page of assignments in one $in, instead of a
+    find_one per assignment. Keyed by the id as a STRING, which is how
+    assignments store it."""
+    wanted = {str(cid) for cid in checklist_ids if cid}
+    if not wanted:
+        return {}
+    out = {}
+    async for doc in db.checklists.find({"_id": {"$in": [to_query_id(c) for c in wanted]}}):
+        out[str(doc["_id"])] = doc
+    return out
+
+
+async def _completions_by_assignment(assignment_ids, user_id=None):
+    """Completions for a whole page of assignments in one $in, grouped by
+    assignment id. `assignment_id` is a STRING on checklist_completions
+    (`complete_checklist` writes `str(_id)`), so these are not ObjectIds."""
+    wanted = [str(a) for a in assignment_ids if a]
+    if not wanted:
+        return {}
+    query = {"assignment_id": {"$in": wanted}}
+    if user_id:
+        query["user_id"] = user_id
+    out = {}
+    async for doc in db.checklist_completions.find(query):
+        out.setdefault(str(doc.get("assignment_id")), []).append(doc)
+    return out
+
+
+def _serialize_completion(completion, item_ids, total):
+    """The owner's own completion record, plus the `progress` object
+    `app/checklists.jsx:198` draws its bar from. The stored document has never
+    carried one, so that bar read 0/0 · 0% for every CP — including one who had
+    just ticked every item — until it was computed here."""
+    if not completion:
+        return None
+    out = serialize_id(dict(completion))
+    out.setdefault("user_name", "")
+    out["progress"] = _checklist_progress(completion, item_ids, total)
+    return out
+
+
 # ==================== PROJECT CHECKLISTS ====================
 
 @api_router.get("/projects/{project_id}/checklists")
@@ -16414,16 +16542,26 @@ async def get_project_checklists(project_id: str, current_user = Depends(get_cur
         "project_id": project_id,
         "is_deleted": {"$ne": True}
     }).to_list(200)
-    
+    if not assignments:
+        return []
+
+    checklists = await _checklists_by_id(a.get("checklist_id") for a in assignments)
+    completions = await _completions_by_assignment(str(a["_id"]) for a in assignments)
+
     result = []
     for assignment in assignments:
-        checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
-        if checklist:
-            item = serialize_id(dict(assignment))
-            item["checklist_title"] = checklist.get("title", "")
-            item["checklist_items"] = checklist.get("items", [])
-            result.append(item)
-    
+        checklist = checklists.get(str(assignment.get("checklist_id")))
+        if not checklist:
+            continue
+        item_ids, total = _checklist_scale(checklist)
+        item = _serialize_assignment(assignment)
+        item["checklist"] = _nested_checklist(checklist)
+        item["completions"] = [
+            _completion_row(c, item_ids, total)
+            for c in completions.get(str(assignment["_id"]), [])
+        ]
+        result.append(item)
+
     return result
 
 # ==================== ADMIN CHECKLISTS ====================
@@ -16555,6 +16693,17 @@ async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignme
     company_id = get_user_company_id(admin)
     created_assignments = []
     
+    # The [{id, name}] list the admin surfaces actually PRINT. It does not vary
+    # by project, so it is built once for the call and written on BOTH paths
+    # below. The re-assign path used to $set `assigned_user_ids` alone: that
+    # changed the list the server queries by and left the list the screen
+    # renders naming whoever was assigned before.
+    assigned_users = []
+    for user_id in assignment_data.user_ids:
+        user = await db.users.find_one({"_id": to_query_id(user_id)})
+        if user:
+            assigned_users.append({"id": user_id, "name": user.get("name", "")})
+
     for project_id in assignment_data.project_ids:
         # Check if assignment already exists
         existing = await db.checklist_assignments.find_one({
@@ -16563,23 +16712,20 @@ async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignme
             "is_deleted": {"$ne": True}
         })
         if existing:
-            # Update existing assignment's users
+            # Update existing assignment's users — both copies of them.
             await db.checklist_assignments.update_one(
                 {"_id": existing["_id"]},
-                {"$set": {"assigned_user_ids": assignment_data.user_ids, "updated_at": now}}
+                {"$set": {
+                    "assigned_user_ids": assignment_data.user_ids,
+                    "assigned_users": assigned_users,
+                    "updated_at": now,
+                }}
             )
             continue
         
         # Get project name
         project = await db.projects.find_one({"_id": to_query_id(project_id)})
         project_name = project.get("name", "") if project else ""
-        
-        # Get user details
-        assigned_users = []
-        for user_id in assignment_data.user_ids:
-            user = await db.users.find_one({"_id": to_query_id(user_id)})
-            if user:
-                assigned_users.append({"id": user_id, "name": user.get("name", "")})
         
         assignment_dict = {
             "checklist_id": checklist_id,
@@ -16609,22 +16755,37 @@ async def get_checklist_assignments(checklist_id: str, admin = Depends(get_admin
         "checklist_id": checklist_id,
         "is_deleted": {"$ne": True}
     }).to_list(200)
-    
+    if not assignments:
+        return []
+
+    # Every assignment on this page is an assignment OF this checklist, so the
+    # title/items join is one read for the whole page.
+    checklist = await db.checklists.find_one({"_id": to_query_id(checklist_id)})
+    nested = _nested_checklist(checklist)
+    item_ids, total = _checklist_scale(checklist)
+
+    completions = await _completions_by_assignment(str(a["_id"]) for a in assignments)
+
     result = []
     for assignment in assignments:
-        serialized = serialize_id(dict(assignment))
-        
-        # Get completion stats — use count instead of fetching all docs
-        completion_count = await db.checklist_completions.count_documents({
-            "assignment_id": str(assignment["_id"]) if "_id" in assignment else assignment.get("id")
-        })
-        
+        serialized = _serialize_assignment(assignment)
+        serialized["checklist"] = nested
+        rows = [
+            _completion_row(c, item_ids, total)
+            for c in completions.get(str(assignment["_id"]), [])
+        ]
+        serialized["completions"] = rows
+
+        # Unchanged meaning: `completed` is how many completion RECORDS exist,
+        # exactly what the per-assignment count_documents this replaced
+        # returned. Nothing reads it (see followups) — it is kept because
+        # removing a served key is its own decision, not a side effect.
         serialized["completion_stats"] = {
             "total_assigned": len(assignment.get("assigned_user_ids", [])),
-            "completed": completion_count
+            "completed": len(rows),
         }
         result.append(serialized)
-    
+
     return result
 
 # ==================== USER CHECKLISTS ====================
@@ -16633,32 +16794,38 @@ async def get_checklist_assignments(checklist_id: str, admin = Depends(get_admin
 async def get_assigned_checklists(current_user = Depends(get_current_user)):
     """Get checklists assigned to the current user"""
     user_id = current_user.get("id")
-    
+
     assignments = await db.checklist_assignments.find({
         "assigned_user_ids": user_id,
         "is_deleted": {"$ne": True}
     }).to_list(200)
-    
+    if not assignments:
+        return []
+
+    checklists = await _checklists_by_id(a.get("checklist_id") for a in assignments)
+    # This is the CP's list of their OWN work, not a roster — scope the one
+    # $in to them rather than reading everyone's completions and discarding.
+    completions = await _completions_by_assignment(
+        (str(a["_id"]) for a in assignments), user_id=user_id,
+    )
+
     result = []
     for assignment in assignments:
-        checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
+        checklist = checklists.get(str(assignment.get("checklist_id")))
         if not checklist:
             continue
-        
-        serialized = serialize_id(dict(assignment))
-        serialized["checklist_title"] = checklist.get("title", "")
-        serialized["checklist_items"] = checklist.get("items", [])
-        
-        # Check if user has completed this
-        completion = await db.checklist_completions.find_one({
-            "assignment_id": str(assignment["_id"]),
-            "user_id": user_id
-        })
+
+        item_ids, total = _checklist_scale(checklist)
+        serialized = _serialize_assignment(assignment)
+        serialized["checklist"] = _nested_checklist(checklist)
+
+        mine = completions.get(str(assignment["_id"]), [])
+        completion = mine[0] if mine else None
         serialized["is_completed"] = completion is not None
-        serialized["completion"] = serialize_id(dict(completion)) if completion else None
-        
+        serialized["completion"] = _serialize_completion(completion, item_ids, total)
+
         result.append(serialized)
-    
+
     return result
 
 @api_router.get("/checklists/assignments/{assignment_id}")
@@ -16670,22 +16837,28 @@ async def get_assignment_details(assignment_id: str, current_user = Depends(get_
     })
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
-    
+
     checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
-    
-    serialized = serialize_id(dict(assignment))
-    if checklist:
-        serialized["checklist_title"] = checklist.get("title", "")
-        serialized["checklist_items"] = checklist.get("items", [])
-    
+    if not checklist:
+        # There is no checklist to open. The list endpoints already skip an
+        # assignment whose checklist is gone, so this only answers a stale deep
+        # link, and 404 is the honest answer. Serving the assignment with
+        # `checklist: null` would put the client back where it started —
+        # dereferencing a key that is not there.
+        raise HTTPException(status_code=404, detail="Checklist not found")
+
+    item_ids, total = _checklist_scale(checklist)
+    serialized = _serialize_assignment(assignment)
+    serialized["checklist"] = _nested_checklist(checklist)
+
     # Get user's completion
     user_id = current_user.get("id")
     completion = await db.checklist_completions.find_one({
         "assignment_id": assignment_id,
         "user_id": user_id
     })
-    serialized["completion"] = serialize_id(dict(completion)) if completion else None
-    
+    serialized["completion"] = _serialize_completion(completion, item_ids, total)
+
     return serialized
 
 @api_router.put("/checklists/assignments/{assignment_id}/complete")

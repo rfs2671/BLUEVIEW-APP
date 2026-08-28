@@ -694,71 +694,128 @@ mandatory-removal.
 
 ## The checklist assignment feature serves flat and both clients read nested
 
-Found while wiring a route from the project screen to the assign UI (held —
-the route is built on `checklist-assign-hold` and must not merge until this is
-fixed). Recorded here in four parts; none of them are fixed.
+**Parts 1, 3 and 4 are FIXED** — the four read endpoints now serve `checklist`
+nested with a computed `completions` list, the title is derived per read, and
+the re-assign path writes both copies of the roster. Pinned by
+`backend/tests/test_checklist_read_shape.py` (29 cases; 24 of them fail against
+the pre-fix handlers, and the five that pass are deliberate do-not-regress
+pins). **Part 2 is OPEN by decision** — see below. `checklist-assign-hold` is
+unblocked.
 
-### 1. The break that holds the route
+### 1. The break that held the route — FIXED
 
-`app/checklists.jsx:101` calls `details.checklist.items.forEach(...)` on the
-payload from `/checklists/assignments/{id}`, which has **no `checklist` key** —
-it serves `checklist_title` and `checklist_items` flat (`server.py:16220`). That
-throws, the surrounding catch swallows it, and the CP sees "Could not load
-checklist". It only misses when a completion record already exists, because the
-other branch runs then. So **a newly assigned checklist can never be opened by
-the person it was assigned to** — and exposing an assign path from the project
-screen would ship exactly that to a CP.
+`app/checklists.jsx:101` called `details.checklist.items.forEach(...)` on the
+payload from `/checklists/assignments/{id}`, which had no `checklist` key. It
+threw, the surrounding catch swallowed it, and the CP saw "Could not load
+checklist" — only on FIRST open, because once a completion record exists the
+other branch runs. A newly assigned checklist could not be opened by the person
+it was assigned to.
 
-Same mismatch, cosmetic rather than fatal, on two more surfaces:
-`project/[id].jsx:1348` reads `assignment.checklist?.title` / `.description` /
-`.items` (renders "Checklist", nothing, and 0) and `assignment.completions`
-(never served, so Complete reads 0/N and the amber clock never clears);
-`admin/checklists/index.jsx:670` reads `assignment.completions` where
-`/admin/checklists/{id}/assignments` serves `completion_stats`, a count.
+The fix covers **four** endpoints, not the three first recorded here:
+`/projects/{id}/checklists`, `/checklists/assigned`,
+`/checklists/assignments/{id}` and — for `completions` —
+`/admin/checklists/{id}/assignments`, which serves `completion_stats` (a count)
+while `admin/checklists/index.jsx:670` reads `completions[]`. Fixing only the
+three would have left that screen blank next to every assignee.
 
-`assigned_users` is NOT part of this — it is persisted on the assignment doc at
-creation (`server.py:16130`) and does reach the client. Names render.
+Two things the original entry got wrong, both since verified against the code:
 
-**`completions` is not a rename, it does not exist.** `complete_checklist`
-stores only `item_completions` (a dict) on `checklist_completions`: no
-`progress` object, no `user_name`. The `[{user_id, progress:{completed,total}}]`
-shape both admin surfaces expect has to be COMPUTED — truthy `checked` flags
-over `len(checklist["items"])`.
+- **`user_name` DOES exist.** `complete_checklist` has always written it
+  (`server.py:16715`); only `progress` was missing. The computed rows carry the
+  stored name rather than re-deriving one.
+- **`/checklists/assigned` needed more than the nest.** `checklists.jsx:198`
+  reads `assignment.completion.progress` — *singular* `completion`, which was
+  served, as the raw document, with no `progress`. So every CP's card read
+  `0/0 items · 0%` and never turned green, including a CP who had just ticked
+  every item. That progress is now computed too.
 
-The fix is on three endpoints — `/projects/{id}/checklists`,
-`/checklists/assigned`, `/checklists/assignments/{id}` — nest `checklist`
-(title, description, items), derive `completions`, keep `assigned_users`.
-Nothing else consumes them: the only backend test touching them is
-`test_tenant_isolation_reads.py`, which asserts `require_project_access` on the
-project route and reads nothing from the body.
+`completions` is computed, never stored: truthy `checked` flags over the
+checklist's items. The count is **intersected with the live item ids**, so an
+item deleted after someone ticked it cannot leave a stored completion reporting
+5/4 — `completed <= total` always.
 
-### 2. Three response models that describe nothing
+`/checklists/assignments/{id}` now 404s when the assignment's checklist is
+gone. The list endpoints already skipped such an assignment, so this only
+answers a stale deep link; serving `checklist: null` would have put the client
+back on the same dereference.
+
+### 2. Three response models that describe nothing — OPEN, DELIBERATELY
 
 `ChecklistResponse`, `ChecklistAssignmentResponse` and
 `ChecklistCompletionResponse` (`server.py:3313-3345`) are declared and used
-nowhere — **no checklist endpoint carries a `response_model=`**. So nothing
-validates or strips today, which is why the shape drifted this far unnoticed.
-`ChecklistAssignmentResponse` in particular documents `checklist_title` +
-`completion_stats`: the flat shape, which no client reads and which the fix
-above would change. Move them with the endpoints or delete them; do not leave
-them describing a shape nothing serves.
+nowhere — no checklist endpoint carries a `response_model=`.
 
-### 3. `checklist_title` is frozen at creation
+**Deliberately not folded into the shape fix.** Wiring `response_model` onto
+these endpoints is how `ProjectResponse` silently stripped
+`dropbox_folder_path` and cost three investigations: a model that omits a key
+does not fail, it deletes. If these are ever wired up it is a change of its own
+with its own tests, not a side effect of something else.
+
+Two of the three are now actively misleading:
+`ChecklistAssignmentResponse` documents `checklist_title` + `completion_stats`
+— the flat shape, which nothing serves any more — and
+`ChecklistCompletionResponse` declares `last_updated` where the writer stores
+`updated_at`, so wiring it up as written would drop the timestamp.
+`ChecklistResponse` alone still matches what `/admin/checklists` serves.
+
+**Recommendation: delete all three.** They validate nothing, strip nothing and
+document a shape that no longer exists; the shape that does exist is pinned by
+tests and by the block comment above the handlers. A model kept "for later" is
+a description nobody is maintaining. Not done here — deleting declared symbols
+is its own commit.
+
+### 3. `checklist_title` was frozen at creation — FIXED BY DERIVATION
 
 The assign path copies `checklist.get("title")` onto the assignment document
-(`server.py:16128`) and `update_checklist` never propagates a rename back to
-`checklist_assignments`. Rename a checklist and every existing assignment keeps
-printing the old name. An argument for deriving the title in the read rather
-than storing a second copy of it.
+and `update_checklist` never propagated a rename, so every existing assignment
+kept printing the old name.
 
-### 4. The re-assign path leaves the displayed names stale
+**The stale copy is still on every document. Nothing serves it.** The reads
+join `db.checklists` for the title instead, and `_serialize_assignment` pops
+`checklist_title` off the payload — which is what makes the frozen copy
+invisible **without a backfill**. This is load-bearing, and the comment above
+the handlers says so: re-adding the flat key (for a cheaper read, or because
+the field looks unused) re-adds the bug. If the stored copy is ever wanted
+again it needs a propagating write in `update_checklist` first, not a
+restored read.
 
-`server.py:16110` — when an assignment already exists for a (checklist,
-project) pair, it `$set`s `assigned_user_ids` and returns. It does NOT update
-`assigned_users`, the denormalized `[{id, name}]` list both admin surfaces
-actually render. So changing WHO a checklist is assigned to updates the list
-the server queries by and not the list the screen prints. Same root cause as
-(3): two copies of one fact, one of them updated.
+### 4. The re-assign path left the displayed names stale — FIXED
+
+When an assignment already existed for a (checklist, project) pair, the assign
+path `$set` `assigned_user_ids` and returned — changing the list the server
+queries by and leaving `assigned_users`, the denormalized `[{id, name}]` list
+both admin surfaces actually print, naming whoever was assigned before. The
+roster is now built once per call (it does not vary by project) and written on
+both the create and the re-assign path.
+
+### Minor: keys served and read by nobody
+
+Swept while fixing the above. None of these break anything today; each is a
+place where the wire and the screen disagree and nothing says so.
+
+| key | served by | read by |
+|---|---|---|
+| `is_completed` | `/checklists/assigned` | nobody — `checklists.jsx` derives completeness from `progress` |
+| `completion_stats` | `/admin/checklists/{id}/assignments` | nobody — the screen reads `completions[]` |
+| `assignment_count` | **nobody** | `admin/checklists/index.jsx:411`, which therefore prints `0 assignments` on every card, always |
+| `last_updated` | nobody (the writer stores `updated_at`) | nobody — declared on `ChecklistCompletionResponse`, part 2 above |
+
+`assignment_count` is the one with a user-visible consequence: the admin
+checklist list states a fact about assignments that is never true. The other
+three are dead weight. Both served keys were KEPT by the shape fix —
+`completion_stats` still counts completion records, exactly as the
+`count_documents` it replaced did — because removing a served key is its own
+decision, not a side effect of changing a different one.
+
+### Not fixed, noticed in passing: `/checklists/assignments/{id}` has no assignment check
+
+`get_assignment_details` fetches any assignment by id for any authenticated
+user — it never checks that the caller is in `assigned_user_ids` (the
+completion it returns IS scoped to the caller, so this exposes the assignment
+and the checklist, not another person's answers). `/checklists/assigned` is
+correctly scoped. Left alone deliberately: adding a check is an authorization
+change that could refuse callers who legitimately reach an assignment some
+other way, and it wants its own tests either way.
 
 ## `checklist_items` means two unrelated things
 
@@ -776,6 +833,11 @@ renderer, which reads the daily jobsite dict to build its compliance line.
 `test_investor_page_one.py:133` and `test_report_six_defects.py:649-679` seed
 that dict and would be the ones to fail — but only if the tests are run, and
 the two are far enough apart in the file that the connection is easy to miss.
+
+The nested-shape fix has since landed **without a rename sweep**: it stopped
+serving the assignment key rather than renaming it, and never touched the
+logbook dict. Both tests above still pass. The warning stands for the next
+person who greps.
 
 ## Ten places state a logbook's display name
 

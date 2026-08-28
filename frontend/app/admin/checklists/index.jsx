@@ -668,7 +668,15 @@ export default function AdminChecklistsScreen() {
                       <View style={s.assignmentUsers}>
                         {assignment.assigned_users?.map((user) => {
                           const completion = assignment.completions?.find(c => c.user_id === user.id);
-                          const isComplete = completion?.progress?.completed === completion?.progress?.total;
+                          // `undefined === undefined` is true, so the old test put a green
+                          // tick against everyone who had NOT started — invisible only
+                          // because `completions` was never served at all. Now that it is,
+                          // require a real record and a non-empty checklist, the way the
+                          // project screen already does (project/[id].jsx:1485).
+                          const progress = completion?.progress;
+                          const isComplete = !!progress
+                            && progress.total > 0
+                            && progress.completed === progress.total;
 
                           return (
                             <View key={user.id} style={s.userRow}>
