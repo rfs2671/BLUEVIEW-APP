@@ -47,7 +47,7 @@ import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { settleFetch } from '../../../src/utils/offlineState';
 import { mayCacheList } from '../../../src/utils/dropboxSyncState';
 import {
-  listCachedDocs, cachedDocName, freeDiskBytes, cacheDocFile,
+  listCachedDocs, cachedDocName, freeDiskBytes, cacheDocFile, sweepDocCache,
 } from '../../../src/utils/docCache';
 import {
   readinessOf, saveQueue, megabytes, hasRoomFor,
@@ -249,7 +249,16 @@ export default function ConstructionPlansScreen() {
     const arr = Array.isArray(list) ? list : [];
     setFiles(arr);
     setFetchState('ok');
-    if (mayCache) cacheDocList(scopeKey, arr);
+    if (mayCache) {
+      cacheDocList(scopeKey, arr);
+      // HOUSEKEEPING, ONLY BEHIND A LIST WE JUST TRUSTED ENOUGH TO STORE.
+      // Removes superseded versions ({id}.1.pdf once {id}.2.pdf lands) and
+      // files no project's list mentions any more. Keyed on the union of ALL
+      // cached lists, because the cache directory is flat and shared -- see
+      // sweepDocCache. Fire-and-forget: a failed sweep must not disturb the
+      // screen, and it resolves every ambiguity toward keeping.
+      sweepDocCache().then(refreshCachedNames).catch(() => {});
+    }
     // Fire-and-forget byte warm — the plans land on disk while there is signal.
     // Then re-read the disk so the strip reflects what the warm achieved rather
     // than what it attempted.
