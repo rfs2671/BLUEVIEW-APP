@@ -2346,6 +2346,130 @@ CARD_NOT_SST_WORKER_WALLET = "NOT_SST_WORKER_WALLET"
 # gate must keep reading them; what changes is that a NEW read of one is flagged.
 SST_DEAD_CLASSES = {"SST_LIMITED"}
 
+# ── What the register prints for an SST class, and when it may name hours ────
+#
+# THE LABEL IS THE WORD THE CARD PRINTS. The 40-hour credential is printed
+# "Worker" and the register said plainly "SST"; the 62-hour one is printed
+# "Supervisor". A reader comparing the document to the card in a man's wallet
+# has to find the same word on both.
+#
+# HOURS ARE A PROPERTY OF THE CLASS, NEVER A READING OFF THE CARD. That
+# distinction is the whole of this rule. The OCR prompt already forbids
+# returning an hours value as a class -- "those are the training DURATION, NOT
+# the class" -- because a card printing "40 hours" and a card printing "Worker"
+# are the same class stated two ways, and the app must not treat the number as
+# something it read.
+#
+# So hours may be shown ONLY when the class was determined by COLOUR, which is
+# the signal that does not wash off:
+#
+#     BLUE   -> SST_FULL        40 hr   the common card, carries NO class text
+#     YELLOW -> SST_SUPERVISOR  62 hr
+#     RED    -> SST_TEMPORARY   10 hr   the OSHA course; SIX MONTHS, not five years
+#
+# SST_LIMITED is a dead scheme and SST_UNSPECIFIED is the absence of an answer;
+# neither takes hours, whatever produced it.
+SST_CLASS_HOURS = {
+    "SST_FULL": "40 hr",
+    "SST_SUPERVISOR": "62 hr",
+    "SST_TEMPORARY": "10 hr",
+}
+
+# A SPACE, NOT AN EM DASH, and the ruling asked for a dash. AbsentKeyIsStated
+# forbids &mdash; in a rendered document outside the sanctioned "&mdash; Not
+# recorded", and it is right on the substance rather than merely on the rule:
+# four columns of this same table print &mdash; to mean ABSENT, so a dash
+# inside a Cert Type label sits beside dashes meaning "no cert type recorded"
+# and reads as one. The ruling's substance is the WORD the card prints --
+# "Worker" for the 40-hour card, which the register used to call plainly "SST"
+# -- and that survives the punctuation exactly.
+SST_CLASS_LABEL = {
+    "SST_FULL": "SST Worker",
+    "SST_SUPERVISOR": "SST Supervisor",
+    "SST_TEMPORARY": "SST Temporary",
+    "SST_LIMITED": "SST Limited",
+    # KEEPS SAYING UNSPECIFIED, in words a reader can use. It used to fall
+    # through certLabel's map and print the raw constant SST_UNSPECIFIED on a
+    # document that goes to lenders -- "ugly and true", as the comment there
+    # says. This is the same claim, legibly: an SST card is present and its
+    # class could not be read.
+    "SST_UNSPECIFIED": "SST Unspecified",
+}
+
+# THE TWO SOURCES THAT EARN HOURS. `color_and_text` is the one confirmed state;
+# `color_only` is the 40-hour card, which has no class text to corroborate with
+# and is the normal case rather than a defect. `text_only` does NOT earn them:
+# that class came from an OCR'd word on a card that may not carry one, which is
+# exactly the reading this rule refuses. `conflict` produces no class at all,
+# and a row with no class_source predates colour entirely.
+SST_COLOUR_DERIVED_SOURCES = frozenset({"color_and_text", "color_only"})
+
+# The register stores the LABEL STRING, not the class -- `certLabel` in
+# oshaLogModel.js resolves the class to a word before the row is filed. So a
+# stored row has to be resolved BACK to a class, and both the pre-ruling
+# spellings and the new ones have to land, because filed registers are not
+# rewritten.
+_STORED_LABEL_TO_SST_CLASS = {
+    "sst": "SST_FULL",
+    "sst worker": "SST_FULL",
+    "sst full": "SST_FULL",
+    "sst supervisor": "SST_SUPERVISOR",
+    "sst temporary": "SST_TEMPORARY",
+    "sst limited": "SST_LIMITED",
+    "sst unspecified": "SST_UNSPECIFIED",
+    "sst_full": "SST_FULL",
+    "sst_supervisor": "SST_SUPERVISOR",
+    "sst_temporary": "SST_TEMPORARY",
+    "sst_limited": "SST_LIMITED",
+    "sst_unspecified": "SST_UNSPECIFIED",
+}
+
+
+def _sst_label_key(text) -> str:
+    """A stored label reduced to a lookup key.
+
+    Dashes of every kind become spaces, so "SST - Worker", "SST &mdash; Worker"
+    and "SST Worker" are one key. A filed register cannot be rewritten, so the
+    reader has to absorb the spellings rather than the writer being tidied.
+    """
+    t = str(text or "").strip().lower()
+    t = t.replace("&mdash;", " ").replace("&ndash;", " ")
+    t = t.replace("\u2014", " ").replace("\u2013", " ").replace("-", " ").replace("_", " ")
+    return " ".join(t.split())
+
+
+def sst_class_label(stored_label, live_type=None, class_source=None) -> str:
+    """What the Cert Type column prints for one row.
+
+    NON-SST ROWS ARE RETURNED UNTOUCHED. "OSHA 30", "Forklift", "Scaffold" and
+    anything else the CP picked are not this rule's business and are not
+    reworded.
+
+    HOURS ARE APPENDED ONLY WHEN ALL THREE HOLD:
+      * the live cert this row joins to was classified from COLOUR;
+      * that live cert's class MATCHES the class the row was filed under -- a
+        row filed as Supervisor must never be given the Worker card's hours
+        because the worker's record changed after filing;
+      * the class is one that has hours at all.
+
+    NOTHING OTHERWISE, AND NO MARKER. A reader who sees "(62 hr)" on one row and
+    not the next reads it as a difference between two WORKERS, not between two
+    photographs; making the distinction visible would put our OCR confidence on
+    a compliance record, which is not what that document is for. Absent is the
+    honest form: the label says what is known and stops.
+    """
+    raw = str(stored_label or "").strip()
+    cls = _STORED_LABEL_TO_SST_CLASS.get(_sst_label_key(raw))
+    if not cls:
+        return raw
+    label = SST_CLASS_LABEL.get(cls, raw)
+    hours = SST_CLASS_HOURS.get(cls)
+    if (hours
+            and class_source in SST_COLOUR_DERIVED_SOURCES
+            and str(live_type or "") == cls):
+        return f"{label} ({hours})"
+    return label
+
 # A temporary card lives SIX MONTHS from issue. The plausibility gate below uses
 # this instead of the 7-year ceiling once the class is known, because a misread
 # date four years out clears a 7-year ceiling silently and would read as valid
@@ -16526,6 +16650,36 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         # stored document — the snapshot is rendered as stored, with no
         # invented review state.
         type_title = "OSHA / SST Certification Log"
+        # THE SAME JOIN THE COMBINED REPORT MAKES, so one register does not
+        # print two different class names depending on which document you ask
+        # for. This function already reads the database twice -- the project,
+        # and preshift_affirmations -- so the note above about rendering "one
+        # stored document" with no DB read describes the Review column's
+        # deliberate absence, not this function's capability.
+        #
+        # THIS DOES NOT ADD THE REVIEW COLUMN. That remains a scope decision
+        # recorded in followups; the label is a different question and creating
+        # a SECOND divergence to avoid touching the first one would be the
+        # worse trade.
+        _osha_entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)]
+        # A FAILED READ IS NOT A REFUSAL, the posture preshift_affirmations
+        # already takes in this same function: an empty index leaves every row
+        # with its filed label and no hours, which is exactly the behaviour
+        # before this change. A register must not fail to render because a
+        # lookup did.
+        _class_by_key = {}
+        _wids = {str(e.get("worker_id")) for e in _osha_entries if e.get("worker_id")}
+        if _wids:
+            try:
+                _qids = [q for q in (to_query_id(w) for w in _wids) if q is not None]
+                _wdocs = await db.workers.find(
+                    {"_id": {"$in": _qids}}, {"certifications": 1}
+                ).to_list(500)
+                _class_by_key = osha_review_index(_wdocs)[3]
+            except Exception as _e:  # pragma: no cover
+                logger.warning(f"[osha] class lookup failed: {_e!r}")
+                _class_by_key = {}
+
         osha_rows = ""
         for e in (data.get("entries") or []):
             if not isinstance(e, dict):
@@ -16545,7 +16699,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 "<tr>"
                 + cell(_capitalize_first(e.get("worker_name", "")))
                 + cell(_capitalize_first(e.get("company", "")))
-                + cell(e.get("certification_type"))
+                + cell(_osha_type_cell(e, _class_by_key))
                 + cell(e.get("card_number"))
                 + cell(e.get("expiration"))
                 + cell("&#10003;" if e.get("signed") else "")
@@ -22265,13 +22419,20 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
     could not tell apart -- the cert is present and clean, or THE CERT IS NOT
     THERE AT ALL -- and both rendered an em dash.
 
-    Returns (review_by_key, known_cards, known_workers):
+    Returns (review_by_key, known_cards, known_workers, class_by_key):
       review_by_key   (wid, card) -> review_reason, FLAGGED certs only
       known_cards     (wid, card) for EVERY live cert that has a card number
       known_workers   the wids the lookup actually returned, so a deleted
                       worker is distinguishable from a clean one
+      class_by_key    (wid, card) -> (type, class_source), so the Cert Type
+                      column can say the hours the CLASS carries when COLOUR
+                      determined the class, and say nothing when it did not.
+                      Built here rather than in a second pass over the same
+                      documents, so the two cannot disagree about which row
+                      they are describing.
     """
     review_by_key: Dict = {}
+    class_by_key: Dict = {}
     known_cards, known_workers = set(), set()
     for wdoc in worker_docs or []:
         wid = str(wdoc.get("_id"))
@@ -22280,10 +22441,12 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
             cn = str(cert.get("card_number") or "")
             if cn:
                 known_cards.add((wid, cn))
+                class_by_key[(wid, cn)] = (
+                    str(cert.get("type") or ""), cert.get("class_source"))
             if not cert.get("needs_review"):
                 continue
             review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
-    return review_by_key, known_cards, known_workers
+    return review_by_key, known_cards, known_workers, class_by_key
 
 
 def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
@@ -22326,6 +22489,27 @@ def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
     # card number to key on, no worker id, a worker document the lookup did not
     # return, or a card number that matches nothing in the live record.
     return '<span style="color:#64748b;">Not checked</span>'
+
+
+def _osha_type_cell(entry, class_by_key) -> str:
+    """The Cert Type column for one row, resolved against the live cert.
+
+    THE LABEL comes from the STORED row, reworded to the class name the card
+    actually prints. THE HOURS come from the live cert, and only when COLOUR
+    determined its class. A row that joins to nothing keeps its filed label and
+    gains nothing -- the same failure the Review column reports as "Not
+    checked", and for the same reason: nothing was looked up.
+    """
+    stored = entry.get("certification_type", "") if isinstance(entry, dict) else ""
+    wid = str((entry or {}).get("worker_id") or "")
+    cn = str((entry or {}).get("card_number") or "")
+    live_type, class_source = (class_by_key or {}).get((wid, cn), (None, None))
+    # NO PLACEHOLDER HERE. The combined report prints "&mdash;" for an empty
+    # cell and the per-logbook PDF prints nothing; each applies its own at the
+    # call site, and a helper that picked one would have quietly given the
+    # per-logbook document a dash it has never used -- which is what
+    # AbsentKeyIsStatedTest caught.
+    return sst_class_label(stored, live_type, class_source)
 
 
 async def preshift_affirmations(db_, project_id: str, day: str) -> Dict[str, Dict]:
@@ -23597,6 +23781,7 @@ async def generate_combined_report(
         # rather than through a copy, which is the only way a control run can
         # prove the renderer moved rather than a duplicate of it.
         review_by_key = {}
+        class_by_key = {}
         known_cards, known_workers = set(), set()
         worker_ids = {str(e.get("worker_id")) for e in osha_entries if e.get("worker_id")}
         if worker_ids:
@@ -23604,7 +23789,8 @@ async def generate_combined_report(
             worker_docs = await db.workers.find(
                 {"_id": {"$in": qids}}, {"certifications": 1}
             ).to_list(500)
-            review_by_key, known_cards, known_workers = osha_review_index(worker_docs)
+            (review_by_key, known_cards, known_workers,
+             class_by_key) = osha_review_index(worker_docs)
 
         # THE SAME ROW RULE THE PER-LOGBOOK PDF APPLIES: a row that does not
         # name a worker is not printed.
@@ -23641,7 +23827,7 @@ async def generate_combined_report(
             osha_rows += (
                 f'<tr><td {TD}>{_capitalize_first(e.get("worker_name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(e.get("company", ""))}</td>'
-                f'<td {TD}>{e.get("certification_type", "") or "&mdash;"}</td>'
+                f'<td {TD}>{_osha_type_cell(e, class_by_key) or "&mdash;"}</td>'
                 f'<td {TD}>{e.get("card_number", "") or "&mdash;"}</td>'
                 f'<td {TD}>{e.get("expiration", "") or "&mdash;"}</td>'
                 f'<td {TD}>{"&#10003;" if e.get("signed") else "&mdash;"}</td>'
