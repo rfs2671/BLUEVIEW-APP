@@ -237,9 +237,15 @@ const built2 = OSHA.buildEntriesFromCheckins([{
 ok(built2.certification_type === 'SST', 'a legacy `name` is still read');
 ok(built2.expiration === '2029-01-15', 'and a legacy `expiry` is still read');
 
-// NO CLASS IS INFERRED — that is Part 3A, deliberately not touched here.
-ok(OSHA.certLabel({ type: 'SST_UNSPECIFIED' }) === 'SST_UNSPECIFIED',
-  'an unreadable class is NOT dressed up as a class — it prints verbatim');
+// NO CLASS IS INFERRED. Part 3A is now decided, and the rule it settled is the
+// one this assertion was protecting: the unreadable case must never be dressed
+// up as one of the four classes. It says "SST Unspecified" instead of the raw
+// constant — the same claim, legibly, on a document that goes to lenders.
+ok(OSHA.certLabel({ type: 'SST_UNSPECIFIED' }) === 'SST Unspecified',
+  'an unreadable class names itself as unreadable');
+ok(!/^SST (Worker|Supervisor|Temporary|Limited)$/
+  .test(OSHA.certLabel({ type: 'SST_UNSPECIFIED' })),
+'and is STILL not dressed up as a class — the original claim, unchanged');
 ok(OSHA.certLabel({ type: 'SOMETHING_NEW' }) === 'SOMETHING_NEW',
   'and an unknown code passes through rather than being guessed at');
 ok(OSHA.certLabel({}) === '' && OSHA.certExpiration({}) === '',

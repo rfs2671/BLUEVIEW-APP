@@ -82,7 +82,10 @@ console.log('\n-- the row reads the keys the backend writes --');
 console.log('\n-- the accessors resolve the real shapes --');
 {
   ok(certLabel(OSHA) === 'OSHA 10', 'a stored OSHA_10 reads as "OSHA 10"');
-  ok(certLabel(SST) === 'SST', 'SST_FULL reads as "SST"');
+  ok(certLabel(SST) === 'SST Worker',
+    'SST_FULL reads as "SST Worker" — THE WORD THE CARD PRINTS. It read plainly '
+    + '"SST", and a reader comparing this row to the card in a worker\'s wallet '
+    + 'has to find the same word on both');
   ok(certLabel({ type: 'SST_TEMPORARY' }) === 'SST Temporary',
     'and a temporary card names itself — the class the LL196 attestation used '
     + 'to drop entirely');
@@ -131,9 +134,14 @@ console.log('\n-- render, never filter --');
   ok(displayName(NOTHING) === 'Certification (no type recorded)',
     'and one with neither says so in a sentence he can act on, rather than '
     + 'rendering empty');
-  ok(displayName(UNREADABLE) === 'SST_UNSPECIFIED',
-    'an unreadable CLASS passes through verbatim — ugly and true. It must not '
-    + 'print as a class the OCR could not read');
+  ok(displayName(UNREADABLE) === 'SST Unspecified',
+    'an unreadable CLASS says so in words. It printed the raw constant '
+    + 'SST_UNSPECIFIED — "ugly and true", with this note leaving Part 3A to '
+    + 'decide what it should say. Part 3A decided: the same claim, legibly');
+  ok(!/^SST (Worker|Supervisor|Temporary|Limited)$/.test(displayName(UNREADABLE)),
+    'AND THE ORIGINAL CONCERN IS UNCHANGED: it must still never print as a '
+    + 'class the OCR could not read. "Unspecified" is the absence of an answer, '
+    + 'not one of the four classes');
 }
 
 console.log('\n-- the screen no longer contradicts itself --');
