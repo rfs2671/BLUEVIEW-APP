@@ -2430,6 +2430,38 @@ SST_COLOUR_DERIVED_SOURCES = frozenset({"color_and_text", "color_only"})
 _CARD_NUMBER_RE = re.compile(r"^[A-Z0-9]{10}$")
 
 
+def card_number_finding(cert) -> Optional[str]:
+    """"CARD_NUMBER_FORMAT" when this row's number does not match the shape.
+
+    THE ONE EVALUATION, and it has two readers on purpose. The register renders
+    it in the Review column; the CP's certification screen renders it in his
+    review queue. Written once here because two copies of a rule are two rules,
+    and this one already had to be scoped to SST types after the first version
+    would have flagged every OSHA card on every register.
+
+    IT IS NEVER STORED. Nothing writes the result of this back onto a worker
+    document: a stored flag keyed to a card number is orphaned by any later
+    correction to that number, which is the hazard the Review column's
+    "Not checked" state exists to report. Evaluating at each read reaches every
+    row the instant the rule ships and leaves no residue if the rule changes.
+
+    A STORED FLAG OUTRANKS IT. A claim about the CREDENTIAL -- the class could
+    not be verified, the expiry is implausible -- outranks a claim about DATA
+    ENTRY, so a row carrying both keeps the credential's and this returns None.
+    That is the whole reason a row with two problems shows one, and it is
+    recorded in followups rather than papered over here.
+    """
+    if not isinstance(cert, dict):
+        return None
+    if cert.get("needs_review"):
+        return None
+    if str(cert.get("type") or "") not in RECOGNIZED_SST_TYPES:
+        return None
+    if _card_number_shape(cert.get("card_number")) == "unexpected":
+        return "CARD_NUMBER_FORMAT"
+    return None
+
+
 def _card_number_shape(value) -> str:
     """"ok" | "missing" | "unexpected". Pure, so it is unit-testable.
 
@@ -13797,7 +13829,34 @@ async def get_worker_certifications(worker_id: str, worker = Depends(require_wor
     osha-card already used: same company, the provisioned site device, or a
     company this worker has actually checked in for.
     """
-    certs = worker.get("certifications", [])
+    # THE OTHER READ, and the gap that made read-time evaluation incomplete.
+    #
+    # The register renders card_number_finding in its Review column, so
+    # Cristian's row shows "Unexpected card format" to an investor. This
+    # endpoint feeds the CP'S OWN certification screen, and it returned the
+    # stored document verbatim -- so the finding appeared on the document he
+    # cannot edit and not on the screen where he could fix it. A flag the CP
+    # cannot see is a flag he cannot act on.
+    #
+    # OVERLAID, NEVER WRITTEN. Each row is COPIED before the finding is set, so
+    # nothing here can mutate the document this request just read, and nothing
+    # is persisted. Same posture as the pre-shift affirmation overlay: the
+    # stored record is the stored record, and a read may describe it without
+    # amending it.
+    #
+    # THE SHAPE IS THE STORED SHAPE ON PURPOSE. needs_review and review_reason
+    # are the keys every existing reader already understands -- the screen's
+    # own row renderer keys on `needs_review || c.review_reason` -- so an
+    # evaluated finding reaches the CP through the path a stored one takes,
+    # rather than through a second field every reader would have to learn.
+    certs = []
+    for _c in (worker.get("certifications", []) or []):
+        _finding = card_number_finding(_c)
+        if _finding and isinstance(_c, dict):
+            _c = dict(_c)
+            _c["needs_review"] = True
+            _c["review_reason"] = _finding
+        certs.append(_c)
     validation = validate_worker_certifications(worker)
     return {"worker_id": worker_id, "worker_name": worker.get("name"), "certifications": certs, "validation": validation}
 
@@ -22525,8 +22584,7 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
                     str(cert.get("type") or ""), cert.get("class_source"))
             if cert.get("needs_review"):
                 review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
-            elif (str(cert.get("type") or "") in RECOGNIZED_SST_TYPES
-                    and _card_number_shape(cn) == "unexpected"):
+            elif card_number_finding(cert):
                 # OBSERVED AT READ TIME, AND NOTHING IS WRITTEN. A backfill
                 # would write onto a worker record to describe a defect in it,
                 # and would re-create the hazard the Review column just closed:
@@ -22536,17 +22594,10 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
                 # the rule proves too tight there is no backfill AND no
                 # un-backfill to run.
                 #
-                # SST ROWS ONLY. The shape is an SST card's shape; an OSHA 10
-                # or 30 card carries a completely different number, and running
-                # this rule over them would flag EVERY OSHA row on EVERY
-                # register. The full suite caught exactly that -- a fixture
-                # holding "OSHA30-111" -- which is the ratchet-crying-wolf
-                # failure arriving one commit after it was written down.
-                #
-                # THE `elif` IS THE PRECEDENCE RULE. A stored flag is a claim
-                # about the CREDENTIAL -- the class could not be verified, the
-                # expiry is implausible -- and it outranks a claim about DATA
-                # ENTRY. A row carrying both shows the credential's.
+                # THE SAME EVALUATION THE CP'S SCREEN MAKES. Both reads go
+                # through card_number_finding, which owns the SST scoping and
+                # the precedence rule, so the document and the queue cannot
+                # disagree about whether a row has a finding.
                 review_by_key[(wid, cn)] = "CARD_NUMBER_FORMAT"
     return review_by_key, known_cards, known_workers, class_by_key
 
