@@ -2404,6 +2404,47 @@ SST_CLASS_LABEL = {
 # and a row with no class_source predates colour entirely.
 SST_COLOUR_DERIVED_SOURCES = frozenset({"color_and_text", "color_only"})
 
+# ── The shape of an SST card number ─────────────────────────────────────────
+#
+# THE RULE IS DRAWN FROM TWO PRODUCTION SAMPLES, and that is stated here rather
+# than buried, because it decides how the rule is allowed to behave:
+#
+#     JH447TBBXG    len 10, alphanumeric, upper case, contains digits
+#     4YU1RY8KKM    len 10, alphanumeric, upper case, contains digits
+#
+# AN ALL-LETTER SST NUMBER HAS NOT BEEN PROVEN IMPOSSIBLE, only unobserved.
+# Ten uppercase letters with no digit would fail this rule and might be a real
+# card. That single uncertainty is the whole reason for the split below.
+#
+# THE TRAP, and it defeated the first rule proposed for this:
+#
+#     "Supervisor"  len 10, alphanumeric  <- passes a plain "10 alphanumeric"
+#                                            test, and IS the defect this rule
+#                                            exists to catch. A CP typed the
+#                                            card CLASS into the card NUMBER
+#                                            field and it is exactly ten
+#                                            alphanumeric characters long.
+#
+# What separates it from the real ones is case and digits, so the rule needs
+# both: [A-Z0-9]{10} AND at least one digit.
+_CARD_NUMBER_RE = re.compile(r"^[A-Z0-9]{10}$")
+
+
+def _card_number_shape(value) -> str:
+    """"ok" | "missing" | "unexpected". Pure, so it is unit-testable.
+
+    THREE STATES, because there are three, and the middle one is not a fault.
+    A row nobody filled is a GAP in the record; a row holding "Supervisor" is a
+    value that LOOKS like data and is not. Only the second deceives a reader,
+    and only the second is surfaced.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "missing"
+    if _CARD_NUMBER_RE.match(text) and any(c.isdigit() for c in text):
+        return "ok"
+    return "unexpected"
+
 # The register stores the LABEL STRING, not the class -- `certLabel` in
 # oshaLogModel.js resolves the class to a word before the row is filed. So a
 # stored row has to be resolved BACK to a class, and both the pre-ruling
@@ -13775,6 +13816,38 @@ async def add_worker_certification(
     try:
         now = datetime.now(timezone.utc)
         cert_dict = cert.model_dump()
+
+        # BEFORE THE $push, WHICH IS THE WHOLE POINT. Validation already ran on
+        # this endpoint -- after the write, on the row it had just created --
+        # and its result was returned to the caller and never acted on. A row
+        # that fails a check is still in the database; the caller is merely
+        # told about it. Checking first is the difference between a validator
+        # and a report.
+        #
+        # IT REFUSES HERE AND ONLY OBSERVES AT READ TIME, and the asymmetry is
+        # deliberate. The rule rests on two production samples and an
+        # all-letter SST number has not been proven impossible, only
+        # unobserved. At WRITE time the person who typed it is present and can
+        # look at the card in their hand, so a refusal costs one correction. At
+        # READ time the row is historical, nobody is there to ask, and a rule
+        # this young must not overwrite the record -- so it states what it sees
+        # and leaves the row alone.
+        #
+        # A MISSING NUMBER IS NOT REFUSED. A certification with no card number
+        # is a gap in the record, not a false value, and the register already
+        # says so twice: an em dash in the Card # column and "Not checked" in
+        # Review, because with no number the credential join cannot happen.
+        # SST ROWS ONLY, for the same reason the read-time check is scoped:
+        # an OSHA 10 or 30 card number has a different shape entirely, and
+        # refusing one would block a legitimate entry the rule says nothing
+        # about.
+        if (str(cert_dict.get("type") or "") in RECOGNIZED_SST_TYPES
+                and _card_number_shape(cert_dict.get("card_number")) == "unexpected"):
+            # The server names the condition; the client owns the wording.
+            raise HTTPException(
+                status_code=400, detail={"code": "CARD_NUMBER_FORMAT"},
+            )
+
         cert_dict["added_by"] = str(admin.get("id") or admin.get("_id") or "")
         cert_dict["added_at"] = now
         await db.workers.update_one(
@@ -22407,6 +22480,13 @@ OSHA_REVIEW_LABELS = {
     "EXPIRY_UNPARSEABLE": "Expiry unreadable",
     "EXPIRY_CONFLICT": "Expiry conflict",
     "DUPLICATE_SST": "Duplicate SST",
+    # AN OBSERVATION, NEVER A JUDGEMENT. "Incorrect card number" and "Invalid
+    # card number" both say the CP got it wrong; this register cannot make a
+    # claim about what he meant. It states the system's expectation and that
+    # this value differs from it, and says nothing about which is right --
+    # which matters, because the rule rests on two samples. "Not recognised"
+    # was rejected too: it implies a registry was checked, and none was.
+    "CARD_NUMBER_FORMAT": "Unexpected card format",
     "NEEDS_REVIEW": "Needs review",
 }
 
@@ -22443,9 +22523,31 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
                 known_cards.add((wid, cn))
                 class_by_key[(wid, cn)] = (
                     str(cert.get("type") or ""), cert.get("class_source"))
-            if not cert.get("needs_review"):
-                continue
-            review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
+            if cert.get("needs_review"):
+                review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
+            elif (str(cert.get("type") or "") in RECOGNIZED_SST_TYPES
+                    and _card_number_shape(cn) == "unexpected"):
+                # OBSERVED AT READ TIME, AND NOTHING IS WRITTEN. A backfill
+                # would write onto a worker record to describe a defect in it,
+                # and would re-create the hazard the Review column just closed:
+                # a stored flag keyed to a card number, orphaned by any later
+                # correction. Evaluating here applies to every row the instant
+                # it ships, including rows filed long before the rule, and if
+                # the rule proves too tight there is no backfill AND no
+                # un-backfill to run.
+                #
+                # SST ROWS ONLY. The shape is an SST card's shape; an OSHA 10
+                # or 30 card carries a completely different number, and running
+                # this rule over them would flag EVERY OSHA row on EVERY
+                # register. The full suite caught exactly that -- a fixture
+                # holding "OSHA30-111" -- which is the ratchet-crying-wolf
+                # failure arriving one commit after it was written down.
+                #
+                # THE `elif` IS THE PRECEDENCE RULE. A stored flag is a claim
+                # about the CREDENTIAL -- the class could not be verified, the
+                # expiry is implausible -- and it outranks a claim about DATA
+                # ENTRY. A row carrying both shows the credential's.
+                review_by_key[(wid, cn)] = "CARD_NUMBER_FORMAT"
     return review_by_key, known_cards, known_workers, class_by_key
 
 
