@@ -381,6 +381,23 @@ export default function WorkerDetailScreen() {
       toast.success('Added', 'Certification added and validated');
     } catch (error) {
       console.error('Failed to add cert:', error);
+      // THE SERVER NAMES THE CONDITION, THE CLIENT OWNS THE WORDING. A code
+      // shipped without copy shows the generic line below to a CP who then has
+      // no idea what to change — the failure #285 shipped and #286 had to come
+      // back for. This branch lands in the SAME change as the refusal.
+      //
+      // IT SAYS WHAT THE APP EXPECTED, NOT THAT HE IS WRONG. The rule rests on
+      // two production samples, so the honest message shows him the shape and
+      // lets him compare it to the card in his hand.
+      const code = error?.response?.data?.detail?.code;
+      if (code === 'CARD_NUMBER_FORMAT') {
+        toast.error(
+          'Check the card number',
+          'An SST card number is 10 letters and numbers, like JH447TBBXG. '
+          + 'This entry does not match that, so it has not been saved.',
+        );
+        return;
+      }
       toast.error('Error', 'Could not save certification');
     }
   };
