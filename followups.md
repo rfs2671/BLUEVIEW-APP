@@ -872,6 +872,89 @@ local mongod is standard, `pytest backend/tests -q --ignore` of those three
 files is the honest local run; anything wider reports 13 failures that mean
 nothing about the change under test.
 
+## The Review column on the per-logbook PDF: a flagged cert is invisible there
+
+**NOT BUILT. Scope decision, recorded so it is not carried in someone's head.**
+
+`generate_combined_report` renders the OSHA register with seven columns
+including `Review`, joined against the worker's LIVE certifications.
+`generate_single_logbook_html` renders **six** — no Review — with a deliberate
+comment:
+
+> that renderer adds a Review column by joining each row back to the worker's
+> LIVE certifications. That is a database read, not a payload key, and this
+> function renders one stored document.
+
+**Consequence:** a cert flagged `CLASS_UNVERIFIED` shows ⚠ on the emailed
+investor report and is **invisible on the PDF an inspector asks for by name.**
+
+The reasoning was honest when written, and #296 has since settled the principle
+the other way: live state may be overlaid on a filed document **when the
+document says it is doing so**, resolved against the document's own date, with
+the resolution visible on its face (the pre-shift sheet prints "Affirmed 11:13"
+for exactly this reason).
+
+Applying that here means the per-logbook PDF gains the Review column and the
+`OSHA_LOG_ATTESTATION` gains a clause naming the overlay. Not done in the
+three-state PR because it changes which columns a filed document has, which is
+a bigger decision than fixing what one column says.
+
+## Provenance on the OSHA register
+
+**NOT BUILT. Recorded as its own item.**
+
+`ENTRY_KEYS` is `worker_id, worker_name, company, certification_type,
+card_number, expiration, signed, date`. **There is no provenance field**, so a
+certification captured at the gate and one the CP typed by hand are
+byte-identical on the filed register.
+
+`toolbox_talk` solves exactly this with `added_from`, and its own comment
+explains why it is worth the field:
+
+> a signed attendance record that renders the two identically is the stronger
+> one lending its authority to the weaker
+
+The same argument applies with more force here, because the weaker claim is a
+CP typing a card number from memory and the stronger is a card read at the gate.
+
+`OSHA_LOG_ATTESTATION` currently states the gap on the document's face — "this
+document does not distinguish which" — which is honest but is a workaround.
+The fix is one field on the entry, one write at each of the two creation paths,
+and a column; and, like `added_from`, **rows filed before the field existed must
+read as unknown rather than being assigned a provenance nobody recorded.**
+
+## generate_combined_report still reads db.daily_logs
+
+**NOT BUILT. Found while working the Review column; recorded rather than
+folded in.**
+
+#299 fixed `get_report_preview`. The **emailed report** still opens with:
+
+```python
+daily_log = await db.daily_logs.find_one({...})
+```
+
+and the entire `Site Superintendent Log` section hangs off it — weather,
+subcontractor activity, safety checklist, corrective actions, incident log,
+work performed, and TWO signatures (superintendent and competent person).
+`daily_log` is always `None`, so **that section never renders at all.**
+
+**Lower severity than the preview panel, and the difference matters.** The
+preview PRINTED `0` as a fact. Here nothing prints: the report simply has no
+Site Superintendent Log section, and no false statement is made. It is an
+unreachable branch, not a lie.
+
+Two things to decide before touching it, and neither is obvious:
+
+  1. **Does that section duplicate `Daily Jobsite Log (NYC DOB 3301-02)`,**
+     which the same report already renders from the CP's filed logbook? If it
+     does, the fix is to delete the dead section, not to feed it.
+  2. **The two signatures have no source in the logbook world.**
+     `superintendent_signature` and `competent_person_signature` are
+     daily_logs-only fields; `as_daily_log_row` does not project them and could
+     not. Pointing the section at daily_jobsite would render a signature block
+     with nothing in it, which is worse than the section being absent.
+
 ## When a filed sheet needs a purpose line, and which kind
 
 **THE TEST.** A filed sheet is self-describing when it prints the QUESTION next
