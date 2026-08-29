@@ -159,10 +159,16 @@ class ItClaimsNothingTheCodeDoesNotEnforce(unittest.TestCase):
     def test_it_cites_no_authority(self):
         """THE CITATION IS NOT SETTLED. The registry already records that
         section 3301 does not name this record; the sentence must not quietly
-        supply an authority the code cannot produce."""
+        supply an authority the code cannot produce.
+
+        Every literal here is word-anchored. A first draft wrote the section
+        number as a bare `assertNotIn("3301", t)`, which
+        test_absence_literals_are_specific caught in CI: a bare substring ban
+        is satisfied -- or broken -- by anything that happens to contain it.
+        """
         t = server.PRESHIFT_ATTESTATION
-        self.assertNotIn("3301", t)
-        self.assertIsNone(re.search(r"§|1926|\bDOB\b|OSHA requires", t))
+        self.assertIsNone(
+            re.search(r"§|\b1926\b|\b3301\b|\bDOB\b|OSHA requires", t))
 
     def test_the_timing_class_is_untouched(self):
         """The content settles what the sheet IS. It does not settle the

@@ -808,6 +808,70 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## The 14 local failures: 13 need a mongod, 1 was mine
+
+Reported on 2026-08-28 as "14 pre-existing local failures, green in CI, so
+environment-dependent". **That was half right, and the wrong half mattered.**
+
+### 13 of 14 — no mongod on localhost:27017
+
+`test_start_renewal_clicked.py`, `test_dob_confirmation_endpoint.py` and
+`test_filing_jobs_admin.py` drive the real app through Starlette's `TestClient`
+and reach the real Motor/PyMongo driver. With no mongod listening they fail
+with:
+
+```
+pymongo.errors.ServerSelectionTimeoutError: localhost:27017:
+  [WinError 10061] No connection could be made ... Timeout: 30s
+```
+
+CI supplies a Mongo service container, so they pass there. Genuinely
+environment-dependent, fully explained, and fixed by running a local mongod
+(or a container) rather than by changing anything in the repo. The 30s
+server-selection timeout on each is also why a local full-suite run takes ~4
+minutes.
+
+### 1 of 14 — `test_absence_literals_are_specific` was NOT environmental
+
+**It was a new test file added in the same working tree, and it failed in CI
+too.** The ratchet flagged `assertNotIn("3301", t)` in
+`test_preshift_purpose_line.py`: a bare substring ban is satisfied -- or broken
+-- by anything that happens to contain it. Correct catch. Fixed by folding the
+section number into the already-anchored regex as `\b3301\b`.
+
+Run against `main` with that one file moved aside, the ratchet is **6 passed**.
+It runs green locally and always did.
+
+### THE ACTUAL DEFECT WAS THE CONTROL METHOD
+
+The claim "byte-identical with changes reverted, therefore not mine" came from
+`git stash push backend/server.py` -- **which reverts only server.py**. The new
+test file was untracked-then-committed and stayed present in BOTH runs. The
+ratchet scans test files. So it flagged the same new file before and after,
+produced identical output, and the identity was read as proof of innocence when
+it was proof of nothing.
+
+**A control run must revert EVERY file the change touches, not the one the fix
+lives in.** For a change that adds a file, "stash the edited module" is not a
+baseline -- check out the merge-base into a worktree, or move the added files
+aside, and confirm the baseline is the count you expect rather than merely
+unchanged. An unchanged number across a control is only meaningful if the
+control actually changed something.
+
+This is the same shape as the three text-search assertions that matched their
+own prose: a check that cannot distinguish the thing being tested from the
+tester. Here it was the control rather than the assertion.
+
+### Why it is worth keeping the 13 runnable locally
+
+A ratchet that only runs green in CI cannot be used to check your own work
+before pushing, which is exactly when it is worth the most -- and this entry
+exists because a ratchet's local result was misread rather than because it was
+unavailable. The ratchet itself is fine locally. The 13 are not, and until a
+local mongod is standard, `pytest backend/tests -q --ignore` of those three
+files is the honest local run; anything wider reports 13 failures that mean
+nothing about the change under test.
+
 ## When a filed sheet needs a purpose line, and which kind
 
 **THE TEST.** A filed sheet is self-describing when it prints the QUESTION next
