@@ -586,24 +586,30 @@ QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 # release PR touches both lines in the same diff; and
 # src/utils/clientVersion.test.cjs asserts the floor is never ABOVE the shipped
 # version, which is the shape a stale floor eventually takes.
-def _read_client_minimum_supported() -> Optional[str]:
-    override = os.environ.get("CLIENT_MINIMUM_SUPPORTED", "").strip()
-    if override:
-        return override
-    try:
-        app_json = Path(__file__).resolve().parent.parent / "frontend" / "app.json"
-        with open(app_json, encoding="utf-8") as fh:
-            declared = (
-                ((json.load(fh) or {}).get("expo") or {}).get("extra") or {}
-            ).get("minimumSupportedVersion")
-        value = str(declared or "").strip()
-        return value or None
-    except Exception as e:  # pragma: no cover — never block boot on a config read
-        logger.warning(f"client minimum-supported read failed: {e!r}")
-        return None
-
-
-CLIENT_MINIMUM_SUPPORTED = _read_client_minimum_supported()
+# ── DISABLED. This block took production down on 2026-08-29. ────────────────
+#
+# TWO FAILURES STACKED, and the second is why the process EXITED rather than
+# degrading:
+#
+#   1. It read frontend/app.json across the DEPLOY BOUNDARY. The Railway image
+#      contains /app/backend only, so the open() raised FileNotFoundError on
+#      every boot. The `except Exception` was written precisely for that -- the
+#      comment on it read "never block boot on a config read".
+#
+#   2. THE HANDLER ITSELF RAISED. It called `logger`, which is not defined
+#      until line ~884, roughly 280 lines BELOW this module-scope code. So the
+#      fallback that existed to keep the process alive threw NameError instead,
+#      and uvicorn died at import. A crash-loop, 502 on every path.
+#
+# The value is None, which every reader already handles as "unknown": a missing
+# floor means NOT BEHIND on both surfaces, and clientVersion.test.cjs asserts
+# exactly that for "an older server that does not report a floor". The feature
+# is off; nothing else changes shape.
+#
+# DO NOT REINSTATE BY MOVING THE `logger` LINE. That fixes the crash and leaves
+# the real defect: a backend that cannot boot without a file it does not ship.
+# The floor has to be built without reading across the boundary at all.
+CLIENT_MINIMUM_SUPPORTED = None
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")

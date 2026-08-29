@@ -37,63 +37,90 @@ os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
 
+SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
+
 APP_JSON = BACKEND.parent / "frontend" / "app.json"
 
 
-class TheFloorIsDerivedNotDuplicated(unittest.TestCase):
-    def setUp(self):
-        self.expo = json.loads(APP_JSON.read_text(encoding="utf-8"))["expo"]
+class TheFloorIsOffAndTheBackendBootsWithoutTheFrontend(unittest.TestCase):
+    """THIS CLASS REPLACES TheFloorIsDerivedNotDuplicated, which asserted a
+    feature that took production down on 2026-08-29.
 
-    def test_it_matches_what_app_json_declares(self):
-        self.assertEqual(
-            server.CLIENT_MINIMUM_SUPPORTED,
-            self.expo["extra"]["minimumSupportedVersion"],
-            "the server carries its own copy instead of reading the declaration",
-        )
+    The floor was read out of frontend/app.json at MODULE SCOPE. The Railway
+    image contains /app/backend only, so open() raised FileNotFoundError on
+    every boot -- and the `except Exception` written to keep boot alive called
+    `logger`, which is not defined until ~280 lines further down the file. The
+    handler raised NameError, uvicorn died at import, and every path 502'd.
 
-    def test_the_floor_is_not_above_the_shipped_version(self):
-        """A floor above the version being shipped marks EVERY install as out
-        of date, including the newest one. That is the shape a wrongly-bumped
-        floor takes, and it is the one that destroys the signal."""
-        def parts(v):
-            return [int(p) for p in str(v).split("-")[0].split(".")]
-        self.assertLessEqual(
-            parts(server.CLIENT_MINIMUM_SUPPORTED), parts(self.expo["version"]),
-            f"floor {server.CLIENT_MINIMUM_SUPPORTED} > shipped {self.expo['version']}",
-        )
+    The env override existed FOR EXACTLY THIS CASE -- its own test was named
+    "an env override wins for a deploy that cannot see the file" -- and it was
+    unset in production, so the code fell straight through to the read it was
+    meant to avoid. An escape hatch nobody set is not a fallback.
 
-    def test_an_env_override_wins_for_a_deploy_that_cannot_see_the_file(self):
-        os.environ["CLIENT_MINIMUM_SUPPORTED"] = "9.9.9"
-        try:
-            self.assertEqual(server._read_client_minimum_supported(), "9.9.9")
-        finally:
-            del os.environ["CLIENT_MINIMUM_SUPPORTED"]
+    The floor is None until it is rebuilt without reading across the deploy
+    boundary. Every reader already treats that as "unknown", which means NOT
+    BEHIND on both surfaces.
+    """
 
-    def test_an_unreadable_declaration_is_None_not_a_guess(self):
-        """Null reaches the client as "do not judge". A guessed floor would
-        accuse installs nobody has assessed."""
-        import builtins
-        real_open = builtins.open
+    def test_the_floor_is_disabled(self):
+        self.assertIsNone(server.CLIENT_MINIMUM_SUPPORTED)
 
-        def _boom(*a, **k):
-            if "app.json" in str(a[0]):
-                raise OSError("no such file")
-            return real_open(*a, **k)
+    def test_the_reader_is_gone_not_merely_wrapped(self):
+        """Moving the `logger` line would fix the crash and leave the real
+        defect: a backend that cannot boot without a file it does not ship."""
+        self.assertNotIn("_read_client_minimum_supported", SRC)
 
-        builtins.open = _boom
-        try:
-            self.assertIsNone(server._read_client_minimum_supported())
-        finally:
-            builtins.open = real_open
+    def test_NOTHING_IN_THE_BACKEND_READS_THE_FRONTEND_TREE(self):
+        """THE GUARD THAT WOULD HAVE CAUGHT THIS, and the one import-check
+        could not: that job runs from a git checkout where frontend/ exists, so
+        the read succeeded there and failed only in the deploy image.
 
-    def test_the_bump_rule_is_written_down_where_the_value_is_read(self):
-        """app.json is JSON and cannot carry a comment, so the rule lives here.
-        A floor nobody knows when to bump is a floor that goes stale."""
-        src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        block = src[src.index("THE BUMP RULE"):src.index("def _read_client_minimum_supported")]
-        for required in ("WHO:", "WHEN:", "TO WHAT:", "WHY NOT:"):
-            self.assertIn(required, block)
-        self.assertIn("native", block.lower())
+        CHECKED OVER STRING LITERALS, NOT SOURCE TEXT. A first draft grepped
+        the file and matched the COMMENT above the disabled block explaining
+        the outage -- the fifth assertion this session to match its own prose.
+        ast.walk sees only what runs.
+        """
+        import ast as _ast
+        # PATH-SHAPED LITERALS ONLY. Prose that happens to say "frontend" -- a
+        # docstring explaining where a payload key is written -- is not a read.
+        # The crash used `/ "frontend" /`, a BARE segment, which is what this
+        # catches along with any explicit path spelling.
+        for node in _ast.walk(_ast.parse(SRC)):
+            if not (isinstance(node, _ast.Constant)
+                    and isinstance(node.value, str)):
+                continue
+            # A BARE SEGMENT, which is how a path is built: `Path(..) /
+            # "frontend" / "app.json"`. A docstring CITING a frontend file --
+            # "frontend/app/logbooks/preshift_signin.jsx:555" -- is
+            # documentation, not a read, and this codebase is full of those on
+            # purpose.
+            v = node.value.strip().lower().rstrip("/\\")
+            if v == "frontend" or v.endswith("/frontend") or v == "frontend/app.json":
+                self.fail(
+                    f"server.py names the frontend tree as a PATH "
+                    f"({node.value[:60]!r}, line {node.lineno}); the deploy "
+                    f"image contains backend/ only")
+
+    def test_no_module_scope_code_opens_a_file_at_import(self):
+        """The crash was at IMPORT, which is what made it fatal rather than a
+        degraded endpoint: a module-scope failure leaves no process to serve a
+        request, so there is nothing to fall back to.
+
+        MODULE SCOPE ONLY. Function bodies are skipped -- an open() inside a
+        request handler is ordinary and recoverable; the same call at import is
+        not. A first draft walked into every nested def and flagged a template
+        read that has always been fine.
+        """
+        import ast as _ast
+        for node in _ast.parse(SRC).body:
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                                 _ast.ClassDef)):
+                continue
+            for sub in _ast.walk(node):
+                if (isinstance(sub, _ast.Call)
+                        and isinstance(sub.func, _ast.Name)
+                        and sub.func.id == "open"):
+                    self.fail(f"open() runs at import, line {sub.lineno}")
 
 
 class TheEndpointReportsIt(unittest.TestCase):
