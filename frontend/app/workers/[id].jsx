@@ -191,6 +191,15 @@ export default function WorkerDetailScreen() {
     EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
     EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
     DUPLICATE_SST: 'Duplicate SST records — resolve to one',
+    // AN OBSERVATION, NOT A JUDGEMENT, and the same words the register uses.
+    // "Incorrect" and "invalid" say the CP got it wrong; the app cannot claim
+    // what he meant. This states what was expected and leaves him to compare
+    // it with the card.
+    //
+    // THIS ONE IS EVALUATED AT READ TIME, not stored. The server overlays it
+    // onto the certification it returns, so it arrives through the same keys
+    // as a stored flag and needs no new branch here.
+    CARD_NUMBER_FORMAT: 'Card number does not match the expected format — check the card and re-enter',
   };
   /**
    * What this certification is called, on the screen the CP checks it on.

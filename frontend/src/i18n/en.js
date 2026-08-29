@@ -58,6 +58,7 @@ export default {
     reason_EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
     reason_EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
     reason_DUPLICATE_SST: 'Duplicate SST records — resolve to one',
+    reason_CARD_NUMBER_FORMAT: 'Card number does not match the expected format — check the card and re-enter',
   },
 
   // ── src/components/LogbookLockBar.jsx — the finalize completeness gate ─────

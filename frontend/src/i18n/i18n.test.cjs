@@ -212,9 +212,15 @@ for (const ns of EN_ONLY_NAMESPACES) {
     `${ns}: every key still resolves to English under the es locale${bad.length ? ` — ${JSON.stringify(bad.slice(0, 5))}` : ''}`);
 }
 
-// The two migrated maps must not have shrunk.
-ok(Object.keys(I.CATALOGUES.en.review).length === 47,
-  `review namespace still carries all 47 migrated keys (got ${Object.keys(I.CATALOGUES.en.review).length})`);
+// The two migrated maps must not have SHRUNK. `>=`, not `===`: the claim is
+// that nothing was lost in the migration, and a hardcoded total additionally
+// asserts that nothing may ever be ADDED -- which is not a claim anyone meant
+// to make, and which failed the first time a reason code was added (48).
+// Same brittleness the CI workflow already warns about in its own comment:
+// "the count is deliberately not written here -- it was '26 of the 28' and was
+// wrong within a day of being typed".
+ok(Object.keys(I.CATALOGUES.en.review).length >= 47,
+  `review namespace still carries its 47 migrated keys (got ${Object.keys(I.CATALOGUES.en.review).length})`);
 ok(Object.keys(I.CATALOGUES.en.signature).length === 5,
   `signature namespace still carries all 5 migrated keys (got ${Object.keys(I.CATALOGUES.en.signature).length})`);
 
@@ -256,8 +262,15 @@ for (const [ns, used] of [['review', reviewUsed], ['signature', padUsed]]) {
 ok(/t\(`reason_\$\{/.test(reviewSrc),
   'review.jsx still builds cert-review reason keys dynamically');
 const REASON_CODES = Object.keys(I.CATALOGUES.en.review).filter((k) => k.startsWith('reason_'));
-ok(REASON_CODES.length === 5,
-  `5 cert-review reason codes are mapped (got ${REASON_CODES.length}: ${REASON_CODES.join(', ')})`);
+// EVERY BACKEND CODE MUST HAVE COPY -- the claim worth making, and stronger
+// than a total. A code shipped without wording renders as its raw key, which
+// is what the loop below catches; this asserts the five that predate
+// CARD_NUMBER_FORMAT are all still here rather than freezing the count.
+for (const required of ['reason_CLASS_UNVERIFIED', 'reason_EXPIRY_IMPLAUSIBLE',
+  'reason_EXPIRY_UNPARSEABLE', 'reason_EXPIRY_CONFLICT', 'reason_DUPLICATE_SST',
+  'reason_CARD_NUMBER_FORMAT']) {
+  ok(REASON_CODES.includes(required), `${required} is mapped`);
+}
 for (const loc of I.LOCALES) {
   // Same flip as above: `review` is EN-only, so a dynamically built reason key
   // must resolve to the ENGLISH string under every locale. Still a real guard —
