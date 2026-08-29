@@ -3661,6 +3661,119 @@ FALL_PROTECTION_NOTICE = (
     "OSHA filing."
 )
 
+# SCOPE vs ATTESTATION -- the two kinds of purpose line, and the next person
+# adding one needs to know which they are writing.
+#
+#   FALL_PROTECTION_NOTICE states SCOPE: what the log is NOT. It belongs in the
+#   footer, BELOW the signature, because it qualifies a document the reader has
+#   already read.
+#
+#   This states ATTESTATION: what the signature CLAIMS. It belongs ABOVE the
+#   signature, because a signer must see the claim before making it and a reader
+#   must know it before weighing the name underneath.
+#
+# THE PRE-SHIFT SHEET IS THE ONLY ONE IN THE TWELVE THAT PRINTS AN ANSWER
+# WITHOUT ITS QUESTION. The columns read "Injury" and "PPE" -- two bare nouns
+# over Yes/No -- while the questions actually asked live in
+# preshift_signin.jsx and have never reached the paper:
+#
+#     "Injury / Incident last time?"   ->  had_injury
+#     "Inspected PPE today?"           ->  inspected_ppe
+#
+# So "Injury: No" on a filed sheet supports at least three readings: no injury
+# exists, none occurred today, none occurred last shift. On a document that
+# goes to investors, lenders and inspectors, a reader who cannot find the claim
+# supplies one.
+#
+# WHAT BACKS EACH CLAUSE, and where. The roster is auto-filled from gate
+# check-ins with the identity fields locked (preshift_signin.jsx buildWorkerList,
+# auto_filled: true); the Signature column is the worker's own image plus the
+# affirmation taken at the gate (checkin.html, resolved by
+# preshift_affirmations); the CP signature is required to submit.
+#
+# THE TWO ANSWERS ARE ENFORCED ON THE CLIENT ONLY. `answeredBoth` and
+# `rowNeedsAnswers` (preshift_signin.jsx:555) block the submit button until
+# had_injury and inspected_ppe are both non-null for every named worker. The
+# SERVER checks neither -- create_logbook validates content and trade detail
+# and nothing else -- so a sheet filed by any other caller can carry nulls.
+#
+# THAT IS WHY THIS SENTENCE NAMES THE QUESTIONS AND NOT THE ANSWERS, and says
+# the answers "appear in" those columns rather than that they exist. An
+# unanswered row renders an em-dash, which reads as no answer, and the sentence
+# stays true of it. A sentence asserting both answers were given would be a
+# claim the server does not enforce, printed over a table that can show
+# otherwise.
+#
+# IT NAMES THE QUESTIONS, NOT THE ANSWERS. An earlier draft read "confirmed
+# they inspected their PPE", which is false on any row answered No. A document
+# must not assert a compliance fact its own table contradicts.
+PRESHIFT_ATTESTATION = (
+    "Each worker named below was present at the start of shift on this date and "
+    "was asked, before starting work, whether there was an injury or incident on "
+    "their last shift and whether they inspected their PPE for today. Those "
+    "answers appear in the Injury and PPE columns. Each signature in the "
+    "Signature column is that worker&#39;s own. The CP&#39;s signature below "
+    "attests that this roster and these answers were taken as recorded."
+)
+
+# ONE constant, printed by BOTH renderers, so the app cannot say two different
+# things about what a worker signed. The same rule FALL_PROTECTION_NOTICE is
+# under; the pre-shift sheet has two renderers for the identical reason.
+# THE SECOND SHEET OF TWELVE THAT CANNOT BE READ WITHOUT ONE. A register of
+# OTHER PEOPLE'S CREDENTIALS carrying a CP signature and no statement of what
+# that signature covers -- whether the CP sighted each card, took the worker's
+# word, or copied a prior record are three materially different claims under
+# one name.
+#
+# WHAT THE CODE ACTUALLY SUPPORTS, and it is less than a reader would assume:
+#
+#   buildEntriesFromCheckins builds the register from the day's check-ins and
+#   the workers' STORED certifications. The CP then edits, adds and deletes
+#   rows. Nothing in that flow inspects a physical card.
+#
+#   ENTRY_KEYS is worker_id, worker_name, company, certification_type,
+#   card_number, expiration, signed, date -- THERE IS NO PROVENANCE FIELD. A
+#   gate-captured certification and one the CP typed by hand are byte-identical
+#   on the filed register. toolbox_talk solves exactly this with `added_from`
+#   (Gate / CP -- this week / CP -- added); this register has no equivalent, so
+#   the sentence says the document does not distinguish them rather than
+#   implying it does.
+#
+#   THE "Signed" COLUMN DOES NOT MEAN THE WORKER SIGNED. The toggle's own copy
+#   is "Signature on file" (i18n/en.js:635) -- the CP's mark that a signature
+#   exists ELSEWHERE. The printed header says "Signed" over a tick, which reads
+#   as an attestation the row does not carry.
+#
+# So the final clause is the load-bearing one, and it is the opposite of what a
+# reader assumes from a signed certification register.
+OSHA_LOG_ATTESTATION = (
+    "This register lists the certifications recorded in this system for the "
+    "workers who checked in on this date. Certifications are captured at the "
+    "gate or entered by the CP, and this document does not distinguish which. "
+    "A tick in the Signed column is the CP&#39;s mark that a signature for that "
+    "worker is on file elsewhere; it is not a signature given here. The "
+    "CP&#39;s signature below attests that this register is a true copy of what "
+    "the system held on this date. It does not attest that the physical cards "
+    "were inspected."
+)
+# NO &mdash; IN THIS SENTENCE, deliberately. AbsentKeyIsStatedTest scans the
+# rendered document for that entity and allows only the sanctioned
+# "&mdash; Not recorded" placeholder. An em dash used as prose punctuation is
+# indistinguishable from one used as a missing-value marker once it is HTML,
+# and the ratchet is right not to guess. Two sentences say it more plainly.
+
+OSHA_LOG_ATTESTATION_HTML = (
+    '<p style="color:#334155;font-size:12px;line-height:1.6;margin:14px 0 4px;'
+    'padding:9px 11px;background:#f8fafc;border-left:3px solid #06b6d4;">'
+    + OSHA_LOG_ATTESTATION + '</p>'
+)
+
+PRESHIFT_ATTESTATION_HTML = (
+    '<p style="color:#334155;font-size:12px;line-height:1.6;margin:14px 0 4px;'
+    'padding:9px 11px;background:#f8fafc;border-left:3px solid #4ade80;">'
+    + PRESHIFT_ATTESTATION + '</p>'
+)
+
 # HOW OFTEN EACH LOG IS DUE, read off the registry rather than restated.
 #
 # "Which types are due DAILY" was being decided in four places, and only one of
@@ -4109,15 +4222,17 @@ async def get_owner_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Owner access required")
     return current_user
 
-# A project that has been marked for deletion by an admin is invisible and
-# inert everywhere except the owner's pending-deletion review list: it must
-# not appear in listings, must not be readable by id, and must not be picked
-# up by any background scan (DOB sync, report mailer, prediction sweeps).
-# Spread this into a projects query alongside the is_deleted filter.
-ACTIVE_PROJECT_FILTER = {
-    "is_deleted": {"$ne": True},
-    "marked_for_deletion": {"$ne": True},
-}
+# MOVED TO lib/project_state.py, and imported rather than redefined. The
+# compliance detectors carried their own {"status": "active", "is_deleted": ...}
+# instead of this one and were still flagging a project an admin had marked for
+# deletion. A constant whose whole job is "every background scan agrees on this"
+# cannot live where a scan outside this file has to copy it.
+from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
+# The ONE definition of the filed daily record. Imported here so the report
+# preview panel and the compliance detectors read the same document (#291).
+from lib.logbook.daily_jobsite_source import (  # noqa: E402
+    daily_jobsite_filter, as_daily_log_row,
+)
 
 
 # ── Account activation gating ────────────────────────────────────────
@@ -15898,7 +16013,12 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     elif log_type == "preshift_signin":
         type_title = "Pre-Shift Sign-In"
         workers = data.get("workers", [])
-        
+        # THE SAME OVERLAY AS THE COMBINED REPORT. Two renderers print this
+        # sheet, and a document that says AFFIRMED in one and NOT AFFIRMED in
+        # the other is worse than one that is wrong in both.
+        _affirm = await preshift_affirmations(
+            db, logbook.get("project_id"), logbook.get("date"))
+
         w_rows = ""
         for w in workers:
             if w.get("name", "").strip():
@@ -15909,7 +16029,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w, _affirm)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -15927,6 +16047,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or f'<tr><td colspan="6" {TD}>—</td></tr>')
             + '</table>'
+            # ABOVE the signature: the claim, then the name that makes it.
+            + PRESHIFT_ATTESTATION_HTML
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + ps_sig
         )
@@ -16432,6 +16554,12 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         body_html = (
             (rows_table(["Worker", "Company", "Cert Type", "Card #", "Expiration", "Signed"],
                         osha_rows) if osha_rows else "")
+            # ABOVE the signature, on BOTH renderers. This is the document an
+            # inspector asks for by name; it carries the same CP signature over
+            # the same register, so it must make the same claim. The Review
+            # column is deliberately absent here (see the note above) and the
+            # sentence says nothing about it.
+            + OSHA_LOG_ATTESTATION_HTML
             + cp_name_line + cp_sig_block
         )
 
@@ -22119,7 +22247,144 @@ def _inspection_label(key: str) -> str:
     return str(key or "").replace("_", " ").title()
 
 
-def _preshift_signature_cell(w) -> str:
+OSHA_REVIEW_LABELS = {
+    "CLASS_UNVERIFIED": "Class unverified",
+    "EXPIRY_IMPLAUSIBLE": "Expiry implausible",
+    "EXPIRY_UNPARSEABLE": "Expiry unreadable",
+    "EXPIRY_CONFLICT": "Expiry conflict",
+    "DUPLICATE_SST": "Duplicate SST",
+    "NEEDS_REVIEW": "Needs review",
+}
+
+
+def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
+    """Three indexes over the LIVE certifications, built in one pass.
+
+    EVERY CERT IS INDEXED, NOT ONLY THE FLAGGED ONES, and that is the whole
+    change. Indexing flagged certs alone left a miss with two causes the code
+    could not tell apart -- the cert is present and clean, or THE CERT IS NOT
+    THERE AT ALL -- and both rendered an em dash.
+
+    Returns (review_by_key, known_cards, known_workers):
+      review_by_key   (wid, card) -> review_reason, FLAGGED certs only
+      known_cards     (wid, card) for EVERY live cert that has a card number
+      known_workers   the wids the lookup actually returned, so a deleted
+                      worker is distinguishable from a clean one
+    """
+    review_by_key: Dict = {}
+    known_cards, known_workers = set(), set()
+    for wdoc in worker_docs or []:
+        wid = str(wdoc.get("_id"))
+        known_workers.add(wid)
+        for cert in (wdoc.get("certifications") or []):
+            cn = str(cert.get("card_number") or "")
+            if cn:
+                known_cards.add((wid, cn))
+            if not cert.get("needs_review"):
+                continue
+            review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
+    return review_by_key, known_cards, known_workers
+
+
+def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
+    """What the Review column says about one row. THREE STATES, because there
+    are three.
+
+    This column printed an em dash for a clean row. Everywhere else in this
+    file an em dash means "we do not know" -- _attendee_source_label says so in
+    those words -- and the same table uses it in four other columns for
+    genuinely absent data. One row could print an em dash five times meaning
+    four different things, and the fifth was the only one that meant "verified".
+
+    THE JOIN KEY IS UNSTABLE BY CONSTRUCTION. review_by_key is keyed on
+    (worker_id, card_number) where the card number comes from the LIVE worker
+    document and this row's comes from the FILED snapshot. Correct a stored
+    card number and the flag orphans from its row, and the row printed CLEAN --
+    the dangerous direction. The card_number validation pass rewrites malformed
+    numbers on live worker documents, so it manufactures this case deliberately.
+    A row whose card number matches NO live cert was not checked, whatever it
+    says, and this now says so.
+
+    A PER-WORKER FALLBACK WAS REJECTED. A man holding a clean OSHA 30 and a
+    flagged SST must not have his correct OSHA 30 row marked uncertain because
+    a flag exists somewhere on his record. The row's own card number against
+    the full live set has no such failure mode.
+    """
+    wid = str((entry or {}).get("worker_id") or "")
+    cn = str((entry or {}).get("card_number") or "")
+    reason = review_by_key.get((wid, cn)) if cn else None
+    if reason is not None:
+        label = OSHA_REVIEW_LABELS.get(reason, "Needs review")
+        return f'<span style="color:#b45309;font-weight:600;">&#9888; {label}</span>'
+    if wid and cn and wid in known_workers and (wid, cn) in known_cards:
+        # "No findings" rather than "None": a check ran and returned nothing.
+        # "None" reads equally as "no review was done", which is the state below.
+        return '<span style="color:#15803d;">No findings</span>'
+    # NOT AN EM DASH. Every other dash in that table means a field was left
+    # empty; this means a check did not run -- a different fact, and the one a
+    # reader must not mistake for a clean result. Four ways to land here: no
+    # card number to key on, no worker id, a worker document the lookup did not
+    # return, or a card number that matches nothing in the live record.
+    return '<span style="color:#64748b;">Not checked</span>'
+
+
+async def preshift_affirmations(db_, project_id: str, day: str) -> Dict[str, Dict]:
+    """Who affirmed their signature for THIS SHEET'S DATE, and when.
+
+    THE FILED SHEET DOES NOT CARRY THIS, AND NEVER HAS. preshift_signin.jsx
+    builds each worker row from the gate roster with name, company,
+    osha_number, signin_id, worker_signature, had_injury, inspected_ppe --
+    and no affirmation field at any point. `signature_affirmed` appears
+    nowhere in that screen. So the signature column read a key that was
+    absent from every row of every filed sheet and printed NOT AFFIRMED for
+    every worker, always, whatever he did at the gate.
+
+    On 2026-08-28 six men affirmed between 10:36 and 11:57 and the sheet said
+    NOT AFFIRMED for all sixteen. It was not stale; the field was never there.
+
+    RESOLVED AGAINST THE SHEET'S DATE, not the moment of filing. The
+    affirmation's own words are "I confirm this is my signature and authorize
+    its use on TODAY'S Pre-Shift Sign-In Log for this jobsite" -- a consent
+    about the sheet, granted at some point in that day. A document that prints
+    NOT AFFIRMED for a man who granted it is contradicting a record, not
+    preserving one.
+
+    Keyed on worker_id, which the stored row carries (`worker_id: c.worker_id`
+    in buildWorkerList) and which is the checkins row's own id. Nothing is
+    matched by name.
+    """
+    out: Dict[str, Dict] = {}
+    if db_ is None or not project_id or not day:
+        return out
+    try:
+        start, end = get_day_range_est(day)
+        cursor = db_.checkins.find(
+            {
+                "project_id": str(project_id),
+                "check_in_time": {"$gte": start, "$lt": end},
+                "is_deleted": {"$ne": True},
+                "signature_affirmed": True,
+            },
+            {"worker_id": 1, "signature_affirmed": 1, "signature_affirmed_at": 1},
+        )
+        async for row in cursor:
+            wid = str(row.get("worker_id") or "")
+            if wid:
+                out[wid] = {
+                    "affirmed": True,
+                    "at": row.get("signature_affirmed_at"),
+                }
+    except Exception as e:  # pragma: no cover
+        # A FAILED READ IS NOT A REFUSAL. An empty overlay leaves every row
+        # exactly as the stored document has it, which is the behaviour that
+        # existed before this function. It must never turn a read failure into
+        # a finding against a worker.
+        logger.warning(f"[preshift] affirmation overlay failed for {project_id} {day}: {e!r}")
+        return {}
+    return out
+
+
+def _preshift_signature_cell(w, affirmations: Optional[Dict[str, Dict]] = None) -> str:
     """The signature column on a filed pre-shift sheet. THREE STATES, never blank.
 
     Blank cannot be told apart from a column nobody filled, and this document has
@@ -22142,12 +22407,31 @@ def _preshift_signature_cell(w) -> str:
     _sig = str(w.get("worker_signature") or w.get("signature") or "").strip()
     if not _sig:
         return '<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>'
-    if not w.get("signature_affirmed"):
+
+    # THE OVERLAY, AND THE ONLY FIELD IT MAY TOUCH. `affirmations` is resolved
+    # from today's check-ins at render time; the stored row supplies everything
+    # else on this sheet and cannot be changed by it. See preshift_affirmations.
+    _hit = (affirmations or {}).get(str(w.get("worker_id") or ""))
+    _affirmed = bool(_hit and _hit.get("affirmed")) or bool(w.get("signature_affirmed"))
+    if not _affirmed:
         return '<span style="color:#b45309;">NOT AFFIRMED</span>'
+
+    # THE RENDERED DOCUMENT DIFFERS FROM THE STORED ONE, SO IT SAYS WHY ON ITS
+    # FACE. A PDF that quietly regenerates with a different answer tomorrow is
+    # the shape this repo has been bitten by; naming the time turns a silent
+    # change into a stated fact the reader can check against the gate log.
+    _when = _hit.get("at") if _hit else None
+    _stamp = ""
+    if isinstance(_when, datetime):
+        from zoneinfo import ZoneInfo
+        _local = _when if _when.tzinfo else _when.replace(tzinfo=timezone.utc)
+        _stamp = _local.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
     _src = _sig if _sig.startswith("data:") else f"data:image/png;base64,{_sig}"
+    _label = f"Affirmed {_stamp}" if _stamp else "Affirmed"
     return (
         f'<img src="{_src}" alt="Signature" '
         'style="max-height:34px;max-width:150px;display:block;" />'
+        f'<span style="font-size:10px;color:#475569;">{_label}</span>'
     )
 
 
@@ -23142,6 +23426,8 @@ async def generate_combined_report(
     preshift_html = ""
     if preshift:
         pd = preshift.get("data", {})
+        # Affirmation only. Every other cell below reads `w`, the stored row.
+        _affirm = await preshift_affirmations(db, project_id, date)
         w_rows = ""
         for w in pd.get("workers", []):
             if w.get("name", "").strip():
@@ -23152,7 +23438,7 @@ async def generate_combined_report(
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w, _affirm)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
@@ -23165,6 +23451,8 @@ async def generate_combined_report(
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or EMPTY_6)
             + '</table>'
+            # ABOVE the signature: the claim, then the name that makes it.
+            + PRESHIFT_ATTESTATION_HTML
             + bold_para("CP", _capitalize_first(preshift.get("cp_name", "N/A")))
             + ps_sig
         )
@@ -23304,30 +23592,19 @@ async def generate_combined_report(
     if osha_lb:
         osha_entries = (osha_lb.get("data") or {}).get("entries") or []
 
-        # (worker_id_str, card_number_str) -> review_reason, for FLAGGED certs only.
+        # ONE DEFINITION, in osha_review_index / osha_review_cell beside
+        # _preshift_signature_cell. The rule is exercised directly by its tests
+        # rather than through a copy, which is the only way a control run can
+        # prove the renderer moved rather than a duplicate of it.
         review_by_key = {}
+        known_cards, known_workers = set(), set()
         worker_ids = {str(e.get("worker_id")) for e in osha_entries if e.get("worker_id")}
         if worker_ids:
             qids = [q for q in (to_query_id(w) for w in worker_ids) if q is not None]
             worker_docs = await db.workers.find(
                 {"_id": {"$in": qids}}, {"certifications": 1}
             ).to_list(500)
-            for wdoc in worker_docs:
-                wid = str(wdoc.get("_id"))
-                for cert in (wdoc.get("certifications") or []):
-                    if not cert.get("needs_review"):
-                        continue
-                    cn = str(cert.get("card_number") or "")
-                    review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
-
-        REVIEW_LABELS = {
-            "CLASS_UNVERIFIED": "Class unverified",
-            "EXPIRY_IMPLAUSIBLE": "Expiry implausible",
-            "EXPIRY_UNPARSEABLE": "Expiry unreadable",
-            "EXPIRY_CONFLICT": "Expiry conflict",
-            "DUPLICATE_SST": "Duplicate SST",
-            "NEEDS_REVIEW": "Needs review",
-        }
+            review_by_key, known_cards, known_workers = osha_review_index(worker_docs)
 
         # THE SAME ROW RULE THE PER-LOGBOOK PDF APPLIES: a row that does not
         # name a worker is not printed.
@@ -23357,14 +23634,8 @@ async def generate_combined_report(
                 continue
             if not any(_row_has(e, _k) for _k in _osha_content_fields):
                 continue      # names nobody — including the untouched seed
-            wid = str(e.get("worker_id") or "")
-            cn = str(e.get("card_number") or "")
-            reason = review_by_key.get((wid, cn)) if cn else None
-            if reason is not None:
-                label = REVIEW_LABELS.get(reason, "Needs review")
-                review_cell = f'<span style="color:#b45309;font-weight:600;">&#9888; {label}</span>'
-            else:
-                review_cell = "&mdash;"
+            review_cell = osha_review_cell(
+                e, review_by_key, known_cards, known_workers)
             # name/company are short-entry; card_number/expiration are identifiers
             # (rendered raw, no capitalization).
             osha_rows += (
@@ -23387,6 +23658,8 @@ async def generate_combined_report(
               f'<th {TH}>Review</th></tr>'
             + (osha_rows or f'<tr><td colspan="7" {TD}>No certifications recorded</td></tr>')
             + '</table>'
+            # ABOVE the signature: the claim, then the name that makes it.
+            + OSHA_LOG_ATTESTATION_HTML
             + osha_sig
         )
 
@@ -24196,18 +24469,57 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         "is_deleted": {"$ne": True},
     }).to_list(100)
 
-    daily_log = await db.daily_logs.find_one({
-        "project_id": project_id,
-        "date": date,
-        "is_deleted": {"$ne": True},
-    })
+    # THE DAILY RECORD IS THE CP'S FILED daily_jobsite LOGBOOK, not db.daily_logs.
+    #
+    # This panel read `daily_logs` -- 92 rows, all written in April 2026 by the
+    # operator's own kiosk testing, nothing since. `find_one` returned None every
+    # time, so FIVE fields on this panel were constants: subcontractor_count 0,
+    # daily_log_worker_count 0, has_daily_log false, and both daily_log_status
+    # and daily_log_weather null. The panel reported "Subs 0" on a day with 16
+    # men from 5 companies on site.
+    #
+    # Same collection, same mistake and the same fix as the 285 false compliance
+    # flags (#295). daily_jobsite_filter is the ONE definition of the filed daily
+    # record, so this panel and the detectors cannot drift apart again.
+    _dj = await db.logbooks.find_one(
+        daily_jobsite_filter(project_id, start=date, end=date))
+    daily_log = as_daily_log_row(_dj) if _dj else None
 
     day_start, day_end = get_day_range_est(date)
-    checkin_count = await db.checkins.count_documents({
+    _day_checkins = {
         "project_id": project_id,
         "check_in_time": {"$gte": day_start, "$lt": day_end},
         "is_deleted": {"$ne": True},
-    })
+    }
+    checkin_count = await db.checkins.count_documents(_day_checkins)
+
+    # COMPANIES ON SITE, FROM THE SAME ROWS THE HEADCOUNT COMES FROM, so the two
+    # numbers on this panel cannot disagree about who was here.
+    #
+    # NOT "subcontractors". The gate records no GC flag -- nothing on a check-in
+    # row distinguishes a general contractor's own crew from a sub's -- so the
+    # number the data can honestly produce is distinct companies. Calling it
+    # subcontractors would put the GC's own men in a subcontractor headcount,
+    # which is a different kind of wrong from a miscount.
+    #
+    # Case and whitespace are not identity: `_norm_key`'s comment records that a
+    # doubled space already printed the same man twice on a production pre-shift
+    # sheet. A row naming no company is dropped rather than counted as one --
+    # an unnamed company is a gap, and counting it makes the gap look like a fact.
+    #
+    # to_list(None) rather than a number: the scope is ONE project on ONE day
+    # with a single field projected, so there is nothing here a cap would
+    # protect against -- and a cap that silently truncated the roster would
+    # under-report companies, which is the failure this whole change is about.
+    _company_rows = await db.checkins.find(
+        _day_checkins, {"worker_company": 1, "company": 1}).to_list(None)
+    _companies = set()
+    for _c in _company_rows:
+        _name = _worker_company(_c.get("worker_company"), _c.get("company"))
+        _key = " ".join(_name.lower().split())
+        if _key:
+            _companies.add(_key)
+    companies_on_site = len(_companies)
 
     # Build summary of what sections are filled
     logbook_summary = []
@@ -24270,10 +24582,25 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         # show without walking the list.
         "failed_photo_count": total_failed_photos,
         "has_daily_log": bool(daily_log),
-        "daily_log_status": daily_log.get("status") if daily_log else None,
+        # The filed logbook's own status, not the adapter's -- as_daily_log_row
+        # projects content, and only a SUBMITTED log matches the filter above.
+        "daily_log_status": _dj.get("status") if _dj else None,
         "daily_log_weather": daily_log.get("weather") if daily_log else None,
+        # THE CP'S REPORTED CREW TOTAL, deliberately not the gate's count. This
+        # number is rendered on the daily-log row, beside that log's status, so
+        # it must be what that log CLAIMS. as_daily_log_row's own docstring makes
+        # the same call for the same reason: the question is whether the CP
+        # reported manpower, not whether the gate agreed with him. Showing the
+        # gate's number under a daily-log heading would be a fresh contradiction
+        # of exactly the kind this pass exists to remove.
         "daily_log_worker_count": daily_log.get("worker_count", 0) if daily_log else 0,
-        "subcontractor_count": len(daily_log.get("subcontractor_cards", []) or []) if daily_log else 0,
+        "companies_on_site": companies_on_site,
+        # COMPATIBILITY ALIAS, and it is scheduled rather than permanent. An
+        # install older than this deploy reads `subcontractor_count` and would
+        # render a blank card if the key vanished -- the stranded-device problem
+        # #294 exists to measure. Drop this once CLIENT_MINIMUM_SUPPORTED passes
+        # the version that reads `companies_on_site`.
+        "subcontractor_count": companies_on_site,
         "report_already_sent": bool(already_sent),
         "report_sent_at": already_sent.get("sent_at").isoformat() if already_sent and isinstance(already_sent.get("sent_at"), datetime) else None,
         "report_send_time": project.get("report_send_time", "18:00"),

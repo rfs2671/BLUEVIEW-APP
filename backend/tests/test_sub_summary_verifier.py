@@ -60,8 +60,15 @@ class ASentenceThatTracesIsAccepted(unittest.TestCase):
     def test_the_company_and_trade_may_be_named(self):
         self.assertTrue(ok_("Kestrel Electric continuing branch rough-in."))
 
-    def test_the_counts_may_be_named(self):
-        self.assertTrue(ok_("4 workers continuing pull wire on the 3rd floor."))
+    def test_the_counts_may_NOT_be_named(self):
+        """INVERTED DELIBERATELY. This asserted a count could be named, and it
+        was the hole: membership cannot tell WHICH fact a number states, so on
+        a payload with worker_count 4 and photo_count 6 the sentence "6 workers"
+        verified too. Both counts are out of the vocabulary; the crew table
+        prints the headcount from the record."""
+        self.assertFalse(ok_("4 workers continuing pull wire on the 3rd floor."))
+        self.assertFalse(ok_("6 workers continuing pull wire on the 3rd floor."))
+        self.assertTrue(ok_("Crew continuing pull wire on the 3rd floor."))
 
     def test_a_plural_of_a_tapped_label(self):
         """"branch rough-in" -> "rough-ins". The last token is three letters,
@@ -176,8 +183,14 @@ class TheVocabularyIsClosed(unittest.TestCase):
     def test_it_contains_the_tapped_terms(self):
         vocab = allowed_vocabulary(KESTREL)
         for word in ("kestrel", "electric", "electrical", "branch", "rough",
-                     "wire", "pull", "3rd", "floor", "4", "6"):
+                     "wire", "pull", "3rd", "floor"):
             self.assertIn(word, vocab, word)
+        # "3rd" stays: it is part of a LOCATION the CP tapped. The counts do
+        # not, and that is the narrowing -- not every digit, only the numbers
+        # nothing can tie to the fact they came from.
+        for count in ("4", "6"):
+            self.assertNotIn(count, vocab,
+                             f"{count} is a payload count and must not be nameable")
 
     def test_and_nothing_from_a_neighbouring_trade(self):
         vocab = allowed_vocabulary(KESTREL)
@@ -209,11 +222,23 @@ class TheFallbackIsNeverNothing(unittest.TestCase):
     def test_it_survives_an_empty_row(self):
         self.assertTrue(plain_facts({}).strip())
 
-    def test_its_own_output_would_PASS_the_checker(self):
-        """The fallback must not be something the checker would itself refuse
-        — that would be an incoherent system."""
+    def test_the_fallback_traces_entirely_EXCEPT_for_the_number_it_writes(self):
+        """THE INVARIANT CHANGED, and the asymmetry is the point.
+
+        This asserted the fallback would itself pass the checker. It no longer
+        does, because it states the headcount and the model may not. That is
+        not incoherence: the fallback is written BY CODE, from the payload, on
+        a fixed line, and cannot transpose two numbers because it never chooses
+        between them. The model's numbers were unverifiable; this one is
+        guaranteed by construction.
+
+        So the check is narrower and stronger: the fallback may be refused for
+        a NUMBER and for nothing else.
+        """
         ok, reason, bad = verify_sentence(plain_facts(KESTREL), KESTREL)
-        self.assertTrue(ok, f"{reason} {bad}")
+        self.assertFalse(ok, "the fallback stopped stating the headcount")
+        self.assertEqual(reason, "UNTRACED_TERM")
+        self.assertEqual(bad, ["4"], f"the fallback is untraceable beyond the count: {bad}")
 
 
 class ItIsNotWiredToAnyLogbook(unittest.TestCase):

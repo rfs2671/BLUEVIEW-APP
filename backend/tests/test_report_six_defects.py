@@ -471,8 +471,13 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
         """A hand-typed field list here is how it drifts a third time."""
         # ONLY THE GUARD, not the row builder below it — that legitimately
         # names these fields in order to PRINT them.
+        # The end anchor moved when the Review decision was extracted into
+        # osha_review_cell: the guard is now followed by the call, not by the
+        # inline `wid = ...` that used to open the branch. The CLAIM is
+        # unchanged -- this region must reference the shared rule, never retype
+        # its field list.
         guard = _REPORT[_REPORT.index("_osha_content_fields ="):]
-        guard = guard[:guard.index('wid = str(e.get("worker_id")')]
+        guard = guard[:guard.index("review_cell = osha_review_cell(")]
         for f in ("worker_name", "certification_type", "card_number", "expiration"):
             self.assertNotIn(f'"{f}"', guard,
                              "the field list is re-typed instead of referenced")

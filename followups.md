@@ -808,6 +808,312 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## The 14 local failures: 13 need a mongod, 1 was mine
+
+Reported on 2026-08-28 as "14 pre-existing local failures, green in CI, so
+environment-dependent". **That was half right, and the wrong half mattered.**
+
+### 13 of 14 — no mongod on localhost:27017
+
+`test_start_renewal_clicked.py`, `test_dob_confirmation_endpoint.py` and
+`test_filing_jobs_admin.py` drive the real app through Starlette's `TestClient`
+and reach the real Motor/PyMongo driver. With no mongod listening they fail
+with:
+
+```
+pymongo.errors.ServerSelectionTimeoutError: localhost:27017:
+  [WinError 10061] No connection could be made ... Timeout: 30s
+```
+
+CI supplies a Mongo service container, so they pass there. Genuinely
+environment-dependent, fully explained, and fixed by running a local mongod
+(or a container) rather than by changing anything in the repo. The 30s
+server-selection timeout on each is also why a local full-suite run takes ~4
+minutes.
+
+### 1 of 14 — `test_absence_literals_are_specific` was NOT environmental
+
+**It was a new test file added in the same working tree, and it failed in CI
+too.** The ratchet flagged `assertNotIn("3301", t)` in
+`test_preshift_purpose_line.py`: a bare substring ban is satisfied -- or broken
+-- by anything that happens to contain it. Correct catch. Fixed by folding the
+section number into the already-anchored regex as `\b3301\b`.
+
+Run against `main` with that one file moved aside, the ratchet is **6 passed**.
+It runs green locally and always did.
+
+### THE ACTUAL DEFECT WAS THE CONTROL METHOD
+
+The claim "byte-identical with changes reverted, therefore not mine" came from
+`git stash push backend/server.py` -- **which reverts only server.py**. The new
+test file was untracked-then-committed and stayed present in BOTH runs. The
+ratchet scans test files. So it flagged the same new file before and after,
+produced identical output, and the identity was read as proof of innocence when
+it was proof of nothing.
+
+**A control run must revert EVERY file the change touches, not the one the fix
+lives in.** For a change that adds a file, "stash the edited module" is not a
+baseline -- check out the merge-base into a worktree, or move the added files
+aside, and confirm the baseline is the count you expect rather than merely
+unchanged. An unchanged number across a control is only meaningful if the
+control actually changed something.
+
+This is the same shape as the three text-search assertions that matched their
+own prose: a check that cannot distinguish the thing being tested from the
+tester. Here it was the control rather than the assertion.
+
+### Why it is worth keeping the 13 runnable locally
+
+A ratchet that only runs green in CI cannot be used to check your own work
+before pushing, which is exactly when it is worth the most -- and this entry
+exists because a ratchet's local result was misread rather than because it was
+unavailable. The ratchet itself is fine locally. The 13 are not, and until a
+local mongod is standard, `pytest backend/tests -q --ignore` of those three
+files is the honest local run; anything wider reports 13 failures that mean
+nothing about the change under test.
+
+## Template insertion, if a count ever has to be IN the AI sentence
+
+**NOT BUILT. Written down so nobody reaches for vocabulary again.**
+
+Numbers were removed from `allowed_vocabulary` because the check is **token
+membership** and membership cannot say which fact a number states. With
+`worker_count` 6 and `photo_count` 4 both admitted, this verified:
+
+    "4 workers continuing formwork and rebar on the 3rd floor"
+
+Wrong headcount, on a report read by a lender, passed by the checker.
+
+**Do not solve this by adding numbers back, in digits or in words.** Every
+version of that idea widens the same hole:
+
+  * admitting `str(worker_count)` is what produced the transposition;
+  * admitting number-WORDS ("six" beside "6") doubles the surface rather than
+    closing it, because both spellings of both counts become legal tokens;
+  * admitting only the ONE count that appears is still membership — a sentence
+    can use a legal token to state the wrong fact, and a verifier that checks
+    presence cannot check reference.
+
+**THE RIGHT SHAPE IS TEMPLATE INSERTION.** The code writes the number; the
+model writes the rest.
+
+    line = f"{worker_count} workers " + model_clause
+
+The count is then guaranteed BY CONSTRUCTION rather than checked by membership,
+and the verifier's job stays what it is good at — refusing untraceable nouns in
+the clause the model actually wrote.
+
+**IT ALREADY WORKS, on the one line that needed it.** `plain_facts` is exactly
+this: written by code, from the payload, on a fixed order, and it cannot
+transpose two numbers because it never chooses between them. That is why the
+fallback may still state the headcount when the model may not, and why
+`test_the_fallback_traces_entirely_EXCEPT_for_the_number_it_writes` asserts the
+fallback is refused for a number and for nothing else.
+
+**And it is not needed today.** The crew table already prints the headcount in
+its own column, from the record. A sentence that restates it adds nothing and
+risks contradicting the column beside it — which is the shape of half the
+defects in this file.
+
+## The Review column on the per-logbook PDF: a flagged cert is invisible there
+
+**NOT BUILT. Scope decision, recorded so it is not carried in someone's head.**
+
+`generate_combined_report` renders the OSHA register with seven columns
+including `Review`, joined against the worker's LIVE certifications.
+`generate_single_logbook_html` renders **six** — no Review — with a deliberate
+comment:
+
+> that renderer adds a Review column by joining each row back to the worker's
+> LIVE certifications. That is a database read, not a payload key, and this
+> function renders one stored document.
+
+**Consequence:** a cert flagged `CLASS_UNVERIFIED` shows ⚠ on the emailed
+investor report and is **invisible on the PDF an inspector asks for by name.**
+
+The reasoning was honest when written, and #296 has since settled the principle
+the other way: live state may be overlaid on a filed document **when the
+document says it is doing so**, resolved against the document's own date, with
+the resolution visible on its face (the pre-shift sheet prints "Affirmed 11:13"
+for exactly this reason).
+
+Applying that here means the per-logbook PDF gains the Review column and the
+`OSHA_LOG_ATTESTATION` gains a clause naming the overlay. Not done in the
+three-state PR because it changes which columns a filed document has, which is
+a bigger decision than fixing what one column says.
+
+## Provenance on the OSHA register
+
+**NOT BUILT. Recorded as its own item.**
+
+`ENTRY_KEYS` is `worker_id, worker_name, company, certification_type,
+card_number, expiration, signed, date`. **There is no provenance field**, so a
+certification captured at the gate and one the CP typed by hand are
+byte-identical on the filed register.
+
+`toolbox_talk` solves exactly this with `added_from`, and its own comment
+explains why it is worth the field:
+
+> a signed attendance record that renders the two identically is the stronger
+> one lending its authority to the weaker
+
+The same argument applies with more force here, because the weaker claim is a
+CP typing a card number from memory and the stronger is a card read at the gate.
+
+`OSHA_LOG_ATTESTATION` currently states the gap on the document's face — "this
+document does not distinguish which" — which is honest but is a workaround.
+The fix is one field on the entry, one write at each of the two creation paths,
+and a column; and, like `added_from`, **rows filed before the field existed must
+read as unknown rather than being assigned a provenance nobody recorded.**
+
+## generate_combined_report still reads db.daily_logs
+
+**NOT BUILT. Found while working the Review column; recorded rather than
+folded in.**
+
+#299 fixed `get_report_preview`. The **emailed report** still opens with:
+
+```python
+daily_log = await db.daily_logs.find_one({...})
+```
+
+and the entire `Site Superintendent Log` section hangs off it — weather,
+subcontractor activity, safety checklist, corrective actions, incident log,
+work performed, and TWO signatures (superintendent and competent person).
+`daily_log` is always `None`, so **that section never renders at all.**
+
+**Lower severity than the preview panel, and the difference matters.** The
+preview PRINTED `0` as a fact. Here nothing prints: the report simply has no
+Site Superintendent Log section, and no false statement is made. It is an
+unreachable branch, not a lie.
+
+Two things to decide before touching it, and neither is obvious:
+
+  1. **Does that section duplicate `Daily Jobsite Log (NYC DOB 3301-02)`,**
+     which the same report already renders from the CP's filed logbook? If it
+     does, the fix is to delete the dead section, not to feed it.
+  2. **The two signatures have no source in the logbook world.**
+     `superintendent_signature` and `competent_person_signature` are
+     daily_logs-only fields; `as_daily_log_row` does not project them and could
+     not. Pointing the section at daily_jobsite would render a signature block
+     with nothing in it, which is worse than the section being absent.
+
+## When a filed sheet needs a purpose line, and which kind
+
+**THE TEST.** A filed sheet is self-describing when it prints the QUESTION next
+to the ANSWER, or prose under a heading that names it. A reader who was not
+there can then work out what the signature attests from the document alone.
+
+All twelve types were surveyed against it on 2026-08-28. **Nine pass**, and for
+one structural reason: they are checklists or narratives, so the check is on
+the page.
+
+| sheet | what carries the claim |
+|---|---|
+| `daily_jobsite` | narrative under named headings; §3301.2 in the title |
+| `toolbox_talk` | `Topics:`; columns state who marked what (`Present` = CP, `Confirmed` = worker, `Added by`) |
+| `subcontractor_orientation` | `Conducted By (CP)` + `Orientation Date` + `Worker Signature` |
+| `hot_work` | "Permit"; `Precaution \| Confirmed`, precautions printed |
+| `crane_operations` | `Item \| Confirmed`, items printed; `Lift Log` |
+| `concrete_operations` | `Time \| Slump \| Result`; `Item \| Confirmed` |
+| `excavation_monitoring` | `Baseline \| Current \| Movement (Δ)` — a stated comparison |
+| `scaffold_maintenance` | `Question \| Answer`, questions printed |
+| `ssc_daily_safety_log` | `Item \| Status` + named narrative headings |
+
+`fall_protection` is the tenth: self-describing per row AND already carrying an
+explicit line.
+
+**TWO FAIL.**
+
+  * **`preshift_signin`** — the only sheet in the twelve that prints an ANSWER
+    WITHOUT ITS QUESTION. `Injury` and `PPE` are bare nouns over Yes/No; the
+    questions actually asked ("Injury / Incident last time?", "Inspected PPE
+    today?") live in `preshift_signin.jsx` and never reached the paper. Fixed:
+    `PRESHIFT_ATTESTATION`.
+  * **`osha_log`** — a signature over OTHER PEOPLE'S CREDENTIALS with no
+    statement of what it covers. Whether the CP sighted each card, took the
+    worker's word, or copied a prior record are three materially different
+    claims under one signature. Lands with finding 4, in the PR that decides
+    the `Review` column's wording, so that sheet gets one coherent pass.
+
+## SCOPE vs ATTESTATION — the next person adding one needs to know which
+
+Same mechanism, different sentence, **different placement**, and the placement
+is not decoration.
+
+  * **SCOPE** says what the log is NOT. `FALL_PROTECTION_NOTICE` — *"...is not
+    a DOB or OSHA filing."* It goes **BELOW** the signature, as a footer
+    qualifying a document the reader has already read.
+  * **ATTESTATION** says what the signature CLAIMS. `PRESHIFT_ATTESTATION`. It
+    goes **ABOVE** the signature, because a signer must see the claim before
+    making it and a reader must know it before weighing the name underneath.
+
+Both placements are asserted in both directions in
+`test_preshift_purpose_line.py`, so neither drifts into the other's position.
+
+**AN ATTESTATION MAY NAME ONLY QUESTIONS, NEVER ANSWERS**, unless the server
+enforces the answer. The pre-shift draft first read "confirmed they inspected
+their PPE", which is false on any row answered No — and `inspected_ppe` is a
+three-state field whose whole point is that No is a legitimate answer. Worse,
+the comment justifying that draft cited a server constant,
+`SUBMIT_INCOMPLETE_WORKER_ANSWERS`, **that does not exist anywhere in the
+repo**. The two-answer requirement is enforced by `answeredBoth` in
+`preshift_signin.jsx` and by nothing on the server; `create_logbook` gates an
+immediate submit on a CP signature, content and trade detail, and never reads
+either answer field. A sheet filed by any other caller can carry nulls and
+renders an em-dash. So the sentence says the answers *"appear in"* those
+columns — true of a row that shows none — rather than that they were given.
+
+Write the claim the code enforces, at the level the code enforces it, and check
+which end enforces it before naming one.
+
+## What the read-without-writer sweep does NOT see
+
+#290 is a ratchet over **Mongo query filters**: it walks `db.<collection>.find`
+and friends, pulls the literal keys out of the filter argument, and reports
+fields read on a collection and never written to it.
+
+**Five instances of read-a-field-nobody-writes surfaced on 2026-08-28. The
+sweep would have caught two.**
+
+| instance | seen? | why |
+|---|---|---|
+| `daily_logs.phase` (4 engines) | **yes** | a filter key: `{"phase": {"$nin": [None, ""]}}` |
+| `dropbox_enabled` | **yes** | a filter key |
+| `checklist_title` | no | it IS written — once, at creation, then goes stale. A different defect |
+| `daily_logs` itself | no | the collection is written; the writer is simply idle since April |
+| `signature_affirmed` on a filed pre-shift sheet | **no** | a `.get()` on a stored sub-document, not a query filter |
+
+The last one is the sharpest miss and the reason this entry exists. The
+pre-shift sheet's signature column read `w.get("signature_affirmed")` off a
+worker row inside `logbooks.data.workers[]`, and `preshift_signin.jsx` has
+never written that key. Every filed sheet printed NOT AFFIRMED against every
+worker, for as long as the column has existed. Nothing about that read is a
+query, so nothing about it is visible to a pass that scans queries.
+
+**DO NOT WIDEN THE SWEEP TO CHASE IT.** A pass that tried to resolve
+`.get("x")` calls against the shapes stored in a schemaless collection would
+have to model what each document *should* contain, which is the thing Mongo
+declines to know. It would report a large number of `.get()`s on optional keys
+that are absent for good reasons, and a ratchet that cries wolf gets its
+baseline padded until it means nothing — the failure the Resend boot check
+already demonstrates elsewhere in this file.
+
+What would actually catch the sub-document class is a different check with a
+different shape, and it is worth naming rather than pretending the existing one
+can grow into it:
+
+  * **a stored-shape contract.** For the document types that are rendered onto
+    a compliance record, assert that every key the renderer reads is a key the
+    writer writes. That is per-document-type, needs both ends named, and is
+    only worth building where the document is customer-facing.
+  * **a render-time absence counter.** Cheaper and blunter: when a renderer
+    falls to its "missing" branch for EVERY row of a document, say so. A
+    column that is unanimous is usually a field, not a finding.
+
+Neither is written. The sweep's limits are recorded here so the next person
+reading its 33-row baseline knows what its silence does and does not mean.
+
 ## A stale bundle looked exactly like a server fault for a day
 
 RESOLVED 2026-08-28 by clearing app data on the operator's phone. The log now

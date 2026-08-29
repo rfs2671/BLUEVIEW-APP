@@ -490,8 +490,16 @@ export default function ReportsScreen() {
                         </GlassCard>
                         <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <Building2 size={18} strokeWidth={1.5} color={semantic.neutral} />
-                          <Text style={s.summaryValue}>{preview.subcontractor_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={2}>Subs</Text>
+                          {/* Distinct companies at the gate, the same rows the
+                              Workers count above comes from. Not "Subs": the
+                              gate records no GC flag, so nothing here can tell a
+                              general contractor's own crew from a sub's.
+                              subcontractor_count is the pre-rename alias an
+                              older install still sends. */}
+                          <Text style={s.summaryValue}>
+                            {preview.companies_on_site ?? preview.subcontractor_count ?? 0}
+                          </Text>
+                          <Text style={s.summaryLabel} numberOfLines={2}>Companies on site</Text>
                         </GlassCard>
                       </View>
 
