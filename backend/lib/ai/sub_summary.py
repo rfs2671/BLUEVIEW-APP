@@ -50,14 +50,38 @@ logger = logging.getLogger(__name__)
 # Deliberately SMALL. Every word here is a word the model may introduce without
 # tracing to a tap, so it is grammar and progress language only — never
 # anything that could name work, a place, a material or a quantity.
-_CONNECTIVES = frozenset("""
+# GRAMMAR: structure only. Nothing here names a thing, a place or a quantity,
+# so none of it needs declaring to the model word by word -- "ordinary grammar
+# words" covers it in the prompt.
+_GRAMMAR = frozenset("""
 a an and the of to at on in for with by from into onto over under near
 is are was were be been being has have had
+""".split())
+
+# PERMITTED CONTENT: words that DO carry meaning and are allowed anyway,
+# because each asserts that work HAPPENED without asserting what it produced or
+# that it finished.
+#
+# THE PROMPT IS GENERATED FROM THIS SET (_PERMITTED_CONTENT_LINE below), and
+# that is the load-bearing part of this change. The four verbs on the last line
+# were added to the verifier to fix a real refusal -- a live payload produced
+# "...worked on site clean-up and material delivery" and came back
+# UNTRACED_TERM ['worked'] -- and the PROMPT WAS NEVER UPDATED. The model went
+# on being told not to write the sentences the verifier had just learned to
+# accept. Fourteen words were undeclared by the time this was noticed. Deriving
+# the declaration removes the possibility rather than fixing the wording.
+_PERMITTED_CONTENT = frozenset("""
 crew crews worker workers man men
 continuing continued continues ongoing underway progress progressing
 work working works today day
 worked performed performing carried out
 """.split())
+
+_CONNECTIVES = _GRAMMAR | _PERMITTED_CONTENT
+
+# What the prompt tells the model it may use, in the prompt's own voice.
+# Sorted so the string is stable across runs and reviewable in a diff.
+_PERMITTED_CONTENT_LINE = ", ".join(sorted(_PERMITTED_CONTENT))
 
 # WHY THOSE FIVE, and no more.
 #
@@ -137,9 +161,28 @@ def allowed_vocabulary(payload: Dict[str, object]) -> frozenset:
     """Every token the sentence is permitted to contain.
 
     THE CLOSED INPUT SET and nothing else: the company, the trade, the
-    activities the CP tapped, the locations he tapped, and the numbers already
-    in the payload. Photo count is an input but contributes no noun — it is a
-    number, not a thing on site.
+    activities the CP tapped, and the locations he tapped.
+
+    NO NUMBERS, and that is a narrowing rather than an oversight. This admitted
+    str(worker_count) and str(photo_count), which was a hole rather than a
+    convenience: the check is TOKEN MEMBERSHIP, so it can say a number appears
+    somewhere in the payload but NOT that it is being used to state the fact it
+    came from. On a payload with worker_count 6 and photo_count 4,
+
+        "4 workers continuing formwork and rebar on the 3rd floor"
+
+    PASSED -- a verified sentence carrying the wrong headcount to a lender. The
+    two counts were interchangeable and the verifier could not tell.
+
+    Both are gone from here and from the prompt, and the model is told to state
+    no quantities at all. The question of whether to also allow number-WORDS
+    ("six" alongside "6") disappears with them; allowing spellings would have
+    doubled this surface rather than closing it.
+
+    Nothing is lost from the report: the crew table prints the headcount in its
+    own column, from the record rather than from a sentence. If a count ever
+    has to appear IN the sentence, the answer is not vocabulary -- it is
+    template insertion, and there is a followups entry saying so.
     """
     words: List[str] = []
     for key in ("company", "trade"):
@@ -148,10 +191,6 @@ def allowed_vocabulary(payload: Dict[str, object]) -> frozenset:
         words += _tokens(str(act))
     for loc in (payload.get("locations") or []):       # type: ignore[union-attr]
         words += _tokens(str(loc))
-    for count_key in ("worker_count", "photo_count"):
-        value = payload.get(count_key)
-        if value is not None:
-            words.append(str(value))
     return frozenset(_singular(w) for w in words) | _CONNECTIVES
 
 
@@ -214,9 +253,15 @@ def plain_facts(payload: Dict[str, object]) -> str:
     if trade:
         line += f" ({trade})"
     if count is not None:
-        # "workers", not "on site": `site` is not in the closed
-        # vocabulary, and widening the allow-list to fit the fallback
-        # would hand the model a free noun. The fallback bends instead.
+        # THE FALLBACK MAY STATE THE COUNT because the fallback is not model
+        # output. This line is written by code, from the payload, and cannot be
+        # transposed with another number -- which is exactly the guarantee the
+        # closed vocabulary could not give the model and the reason numbers
+        # were removed from it. It is the template-insertion shape, already
+        # working, on the one line that needed it.
+        #
+        # "workers", not "on site": `site` is still not in the vocabulary, and
+        # the prompt no longer suggests it either.
         line += f" — {count} workers"
     if acts:
         line += ": " + ", ".join(acts)
@@ -260,24 +305,24 @@ SENTENCE_RESPONSE_SCHEMA: Dict[str, Any] = {
 # the fallback and the page would read like a spreadsheet.
 _PROMPT_TEMPLATE = """You are writing ONE sentence for a construction progress report read by an investor or a bank.
 
-The facts below are the COMPLETE record of what the site supervisor logged for this crew today. There is nothing else. You were not there.
+The facts below are the COMPLETE record for this crew today. There is nothing else. You were not there.
 
 Company: {company}
 Trade: {trade}
-Workers on site (counted at the gate): {worker_count}
-Activities the supervisor tapped: {activities}
-Locations the supervisor tapped: {locations}
-Photographs taken: {photo_count}
+Activities recorded: {activities}
+Locations recorded: {locations}
 
 Write one sentence, at most 20 words, describing what this crew did today.
 
-TWO ABSOLUTE RULES:
+THREE ABSOLUTE RULES:
 
-1. NO NEW NOUNS. Every activity, location, material, quantity or thing you name must appear in the facts above. Do not infer what the work was "for" or what comes next. If the supervisor tapped "rebar" and "formwork", you may write about rebar and formwork; you may NOT write about a pour, a slab, a deck, or a schedule, because nobody recorded those.
+1. NO NEW NOUNS. Every activity, location, material, quantity or thing you name must appear in the facts above. Do not infer what the work was "for" or what comes next. If the facts name "rebar" and "formwork", you may write about rebar and formwork; you may NOT write about a pour, a slab, a deck, or a schedule, because nobody recorded those.
 
 2. NO COMPLETION CLAIMS. Never say or imply that anything is complete, finished, done, wrapped up, ready, installed, poured, delivered, or closed out. Progress language only: "continuing", "underway", "in progress", "ongoing". Whether work finished is not something a tap can tell you, and stating it to a lender is a false statement.
 
-You may use ordinary grammar words, and the words: crew, crews, worker, workers, work, working, today, day, continuing, ongoing, underway, progress.
+3. NO QUANTITIES. Do not state any number, in digits or in words -- not a headcount, not a count of anything. The report prints the crew size in its own column, from the record. A number in this sentence cannot be traced to the fact it came from, so there are none.
+
+You may use ordinary grammar words, and these words: {permitted}.
 
 Return JSON: {{"sentence": <the sentence>}}
 """
@@ -303,10 +348,11 @@ def _prompt_for(payload: Dict[str, object]) -> str:
     return _PROMPT_TEMPLATE.format(
         company=_scalar("company"),
         trade=_scalar("trade"),
-        worker_count=_scalar("worker_count"),
         activities=_listing("activities"),
         locations=_listing("locations"),
-        photo_count=_scalar("photo_count"),
+        # DERIVED, never typed. The prompt and the verifier now say the same
+        # thing because only one of them is written down.
+        permitted=_PERMITTED_CONTENT_LINE,
     )
 
 

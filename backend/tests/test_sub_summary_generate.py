@@ -166,9 +166,14 @@ class ThePromptCarriesTheClosedInputSetAndNothingElse(unittest.TestCase):
 
     def test_every_input_appears(self):
         prompt = self._prompt_for()
-        for fragment in ("Kestrel Electric", "Electrical", "4",
-                         "branch rough-in", "pull wire", "3rd floor", "6"):
+        for fragment in ("Kestrel Electric", "Electrical",
+                         "branch rough-in", "pull wire", "3rd floor"):
             self.assertIn(fragment, prompt)
+        # THE COUNTS ARE DELIBERATELY WITHHELD. Showing the model a number it
+        # has no traceable way to use produced refusals for years; showing it
+        # two interchangeable numbers produced a verified wrong headcount.
+        self.assertNotIn("{worker_count}", SS._PROMPT_TEMPLATE)
+        self.assertNotIn("{photo_count}", SS._PROMPT_TEMPLATE)
 
     def test_the_two_rules_are_stated(self):
         prompt = self._prompt_for()
@@ -225,8 +230,11 @@ class TestActivityVerbsTraceWithoutClaimingCompletion(unittest.TestCase):
     def test_the_tokenizer_was_never_the_defect(self):
         from lib.ai.sub_summary import allowed_vocabulary, verify_sentence
         self.assertIn("mep", allowed_vocabulary(self.PAYLOAD))
+        # The sentence lost its headcount, not its point: "MEP" is what this
+        # test is about, and a count is no longer nameable by the model. "1
+        # floor" survives because it is a LOCATION the CP tapped.
         ok, reason, _ = verify_sentence(
-            "Air Star Mechanical had 3 workers on MEP rough-in on 1 floor.",
+            "Air Star Mechanical crew working on MEP rough-in on 1 floor.",
             self.PAYLOAD)
         self.assertTrue(ok, reason)
 

@@ -872,6 +872,49 @@ local mongod is standard, `pytest backend/tests -q --ignore` of those three
 files is the honest local run; anything wider reports 13 failures that mean
 nothing about the change under test.
 
+## Template insertion, if a count ever has to be IN the AI sentence
+
+**NOT BUILT. Written down so nobody reaches for vocabulary again.**
+
+Numbers were removed from `allowed_vocabulary` because the check is **token
+membership** and membership cannot say which fact a number states. With
+`worker_count` 6 and `photo_count` 4 both admitted, this verified:
+
+    "4 workers continuing formwork and rebar on the 3rd floor"
+
+Wrong headcount, on a report read by a lender, passed by the checker.
+
+**Do not solve this by adding numbers back, in digits or in words.** Every
+version of that idea widens the same hole:
+
+  * admitting `str(worker_count)` is what produced the transposition;
+  * admitting number-WORDS ("six" beside "6") doubles the surface rather than
+    closing it, because both spellings of both counts become legal tokens;
+  * admitting only the ONE count that appears is still membership — a sentence
+    can use a legal token to state the wrong fact, and a verifier that checks
+    presence cannot check reference.
+
+**THE RIGHT SHAPE IS TEMPLATE INSERTION.** The code writes the number; the
+model writes the rest.
+
+    line = f"{worker_count} workers " + model_clause
+
+The count is then guaranteed BY CONSTRUCTION rather than checked by membership,
+and the verifier's job stays what it is good at — refusing untraceable nouns in
+the clause the model actually wrote.
+
+**IT ALREADY WORKS, on the one line that needed it.** `plain_facts` is exactly
+this: written by code, from the payload, on a fixed order, and it cannot
+transpose two numbers because it never chooses between them. That is why the
+fallback may still state the headcount when the model may not, and why
+`test_the_fallback_traces_entirely_EXCEPT_for_the_number_it_writes` asserts the
+fallback is refused for a number and for nothing else.
+
+**And it is not needed today.** The crew table already prints the headcount in
+its own column, from the record. A sentence that restates it adds nothing and
+risks contradicting the column beside it — which is the shape of half the
+defects in this file.
+
 ## The Review column on the per-logbook PDF: a flagged cert is invisible there
 
 **NOT BUILT. Scope decision, recorded so it is not carried in someone's head.**
