@@ -872,6 +872,65 @@ local mongod is standard, `pytest backend/tests -q --ignore` of those three
 files is the honest local run; anything wider reports 13 failures that mean
 nothing about the change under test.
 
+## One review slot, and a row can hold two findings
+
+**NOT BUILT. Held pending a production count; recorded now so it survives the
+session that found it.**
+
+A certification carries ONE `review_reason`. A row with two problems shows one.
+
+**THE COLLISION PREDATES `CARD_NUMBER_FORMAT`.** `EXPIRY_IMPLAUSIBLE` and
+`DUPLICATE_SST` have always raced: `build_worker_certifications` assigns
+`review_reason` as a scalar in several branches, and whichever is computed last
+wins. This is not new. It is newly *visible*, because `CARD_NUMBER_FORMAT` is
+the first finding that is EVALUATED rather than stored, and so visibly loses a
+race it never entered.
+
+**THE LOSER LEAVES NO TRACE, AND NO QUERY CAN PROVE IT HAPPENED.** Only the
+surviving reason is stored. A tally of `review_reason` shows what won, never
+what it beat. Anyone who reports "we checked and it has not happened" has
+misread what the data can say.
+
+What the data CAN show is EXPOSURE, and that is what the pending count is for:
+
+  * `needs_review` true far more often than `review_reason` is non-empty means
+    rows were flagged with the reason lost entirely.
+  * two reasons appearing in comparable volume means collisions are likely
+    rather than merely possible.
+
+**THE DECISION RULE, agreed before the numbers came back so the numbers cannot
+be read to suit a preference:** if the proportion is small, this is a real
+defect with almost no live surface and it stays in this file. If it is not, it
+becomes a PR.
+
+### The shape, if it is built — ADDITIVE, NOT A MIGRATION
+
+Return `findings: [...]` **alongside** the existing scalar `review_reason`,
+which keeps its current meaning: the highest-ranked finding. Both
+`get_worker_certifications` and `osha_review_index` gain the list.
+
+  * Nothing STORED changes shape.
+  * Every existing reader keeps working untouched, because the scalar is still
+    there and still means what it meant.
+  * New readers get the list. The register's Review cell can then show
+    `⚠ Class unverified · Unexpected card format` instead of silently dropping
+    one.
+  * Precedence still decides the SCALAR, so `card_number_finding`'s rule --
+    a claim about the CREDENTIAL outranks a claim about DATA ENTRY -- is
+    unchanged and still the thing that picks what a one-slot reader sees.
+
+**DO NOT MAKE `review_reason` A LIST.** Every reader assumes a scalar today:
+the register's `OSHA_REVIEW_LABELS` lookup, the CP screen's
+`CERT_REVIEW_REASON` map, the i18n `reason_*` keys, and
+`build_worker_certifications`'s own comparisons. That is a migration across
+stored documents and four readers, not a fix, and the additive shape gets the
+whole benefit without it.
+
+The cost of the additive shape, stated so it is not discovered later: two
+representations coexist and someone eventually has to retire the scalar. That
+is a smaller debt than a migration, and it can be paid when there is a reason
+to.
+
 ## Template insertion, if a count ever has to be IN the AI sentence
 
 **NOT BUILT. Written down so nobody reaches for vocabulary again.**
