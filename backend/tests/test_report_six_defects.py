@@ -509,6 +509,9 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
                                            "date": "2026-08-12",
                                            "data": {"entries": [real]}}})
         self.assertIn("4YU1RY8KKM", html)
+        # Reworded by finding 5: the register prints the class name the card
+        # prints. No hours here -- this row joins to no live cert, so nothing
+        # says colour determined the class.
         self.assertIn("SST Supervisor", html)
 
 

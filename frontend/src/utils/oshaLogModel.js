@@ -77,15 +77,27 @@ const CERT_TYPE_LABELS = Object.freeze({
   OSHA_10: 'OSHA 10',
   OSHA_30: 'OSHA 30',
   OSHA_UNSPECIFIED: 'OSHA',
-  SST_FULL: 'SST',
+  // THE LABEL IS THE WORD THE CARD PRINTS. SST_FULL read plainly 'SST'; the
+  // 40-hour credential is printed "Worker", and a reader comparing this
+  // register to the card in a man's wallet has to find the same word on both.
+  SST_FULL: 'SST Worker',
   SST_LIMITED: 'SST Limited',
   SST_SUPERVISOR: 'SST Supervisor',
   SST_TEMPORARY: 'SST Temporary',
-  // SST_UNSPECIFIED is deliberately absent: "an SST card is present but its
-  // class could not be read" must not print as a class. It falls through to
-  // the verbatim branch below and reads SST_UNSPECIFIED, which is ugly and
-  // true. Part 3A decides what it should say.
+  // KEEPS SAYING UNSPECIFIED, and now in words. This was deliberately absent
+  // so the class "could not be read" would not print as a class -- correct,
+  // but it fell through to the verbatim branch and printed the raw constant
+  // SST_UNSPECIFIED on a document that goes to lenders ("ugly and true", as
+  // the note here said, with Part 3A left to decide). Part 3A is decided: the
+  // same claim, legibly.
+  SST_UNSPECIFIED: 'SST Unspecified',
 });
+
+// HOURS ARE NOT ADDED HERE, and that is deliberate. They are a property of the
+// CLASS and may be shown only when COLOUR determined the class -- which is
+// `class_source` on the LIVE worker certification, not something this screen
+// has when it builds a row. The printed register resolves it at render time
+// (sst_class_label in server.py). This screen says the class and stops.
 
 export function certLabel(cert) {
   if (!cert || typeof cert !== 'object') return '';

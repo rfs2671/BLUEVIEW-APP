@@ -373,6 +373,10 @@ class EightTypesRenderTest(unittest.TestCase):
     def test_osha_log(self):
         html = render(doc("osha_log", OSHA_FULL))
         assert_not_the_blank_fallback(self, html, "osha_log")
+        # THE LABEL IS THE WORD THE CARD PRINTS. "SST Supervisor" became
+        # "SST &mdash; Supervisor"; no hours, because this fixture's row joins
+        # to no live cert and hours are shown only when COLOUR determined the
+        # class. See test_sst_class_label.py.
         for expect in ("Juan perez", "Aaz concrete", "SST Supervisor",
                        "SST-88213", "2027-03-01"):
             self.assertIn(expect, html, f"osha lost {expect!r}")
