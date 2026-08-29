@@ -32,6 +32,10 @@ import { semantic, withAlpha } from '../src/styles/semanticColors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { checkinsAPI } from '../src/utils/api';
 import { settleFetch } from '../src/utils/offlineState';
+import {
+  checkinCompany, checkinProject, checkinWorker,
+  distinctCompanies, distinctProjects,
+} from '../src/utils/checkinFields';
 
 /**
  * OFFLINE SIGN-IN LOG.
@@ -173,14 +177,23 @@ export default function WorkersScreen() {
     }
   }, [isAuthenticated, selectedDate]);
 
-  const uniqueProjects = new Set(todayCheckIns.map((c) => c.projectName || c.projectId)).size;
-  const uniqueCompanies = new Set(todayCheckIns.map((c) => c.workerCompany)).size;
+  // BOTH OF THESE COUNTED ONE `undefined`. They read `c.projectName` and
+  // `c.workerCompany` -- camelCase -- against an API that returns snake_case
+  // (`project_name`, `worker_company`). Every row mapped to undefined, so
+  // `new Set([undefined, ...]).size` was 1 for ANY non-empty roster, however
+  // many companies were on site. Four lines below, getWorkerInfo read the
+  // same fields correctly, so the ROWS named the right companies while the
+  // COUNTER above them said 1.
+  const uniqueProjects = distinctProjects(todayCheckIns);
+  const uniqueCompanies = distinctCompanies(todayCheckIns);
 
+  // The row renderer and the counters now read through ONE helper, so the
+  // two cannot disagree about which field carries the company again.
   const getWorkerInfo = (checkin) => ({
-    name: checkin.worker_name || checkin.workerName || checkin.name || 'Unknown Worker',
+    name: checkinWorker(checkin) || 'Unknown Worker',
     trade: checkin.worker_trade || checkin.workerTrade || checkin.trade || 'General',
-    company: checkin.worker_company || checkin.workerCompany || checkin.company || 'Unknown Company',
-    project: checkin.project_name || checkin.projectName || 'Unknown Project',
+    company: checkinCompany(checkin) || 'Unknown Company',
+    project: checkinProject(checkin) || 'Unknown Project',
     checkInTime: checkin.check_in_time || checkin.checkInTime || checkin.checkin_time,
     checkOutTime: checkin.check_out_time || checkin.checkOutTime || checkin.checkout_time,
   });
@@ -188,7 +201,10 @@ export default function WorkersScreen() {
   const statItems = [
     { icon: Users, value: todayCheckIns.length, label: 'Workers' },
     { icon: Building2, value: uniqueProjects, label: 'Projects' },
-    { icon: Briefcase, value: uniqueCompanies, label: 'Companies' },
+    // "Companies on site", not "Subcontractors": the gate records no GC flag,
+    // so the data cannot tell a general contractor's own crew from a sub's.
+    // The number this can honestly produce is distinct companies at the gate.
+    { icon: Briefcase, value: uniqueCompanies, label: 'Companies on site' },
   ];
 
   // FIX 1 — roll the per-row reasons up into one soft banner. It states what
