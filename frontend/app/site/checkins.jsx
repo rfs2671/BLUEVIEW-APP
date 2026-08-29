@@ -25,6 +25,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
 import { settleFetch, isOfflineError, failureDetail } from '../../src/utils/offlineState';
+import { checkinCompany, checkinProject, checkinWorker } from '../../src/utils/checkinFields';
 import {
   queueCheckInReview,
   getQueuedCheckInReviews,
@@ -308,11 +309,13 @@ export default function SiteCheckInsScreen() {
     });
   };
 
+  // The third retyping of the same or-chain, now reading through the one
+  // helper. See checkinFields.js for what the spread cost on workers.jsx.
   const getWorkerInfo = (checkin) => ({
-    name: checkin.worker_name || checkin.workerName || checkin.name || 'Unknown Worker',
+    name: checkinWorker(checkin) || 'Unknown Worker',
     trade: checkin.worker_trade || checkin.workerTrade || checkin.trade || 'General',
-    company: checkin.worker_company || checkin.workerCompany || checkin.company || 'Unknown Company',
-    project: checkin.project_name || checkin.projectName || 'Unknown Project',
+    company: checkinCompany(checkin) || 'Unknown Company',
+    project: checkinProject(checkin) || 'Unknown Project',
     checkInTime: checkin.check_in_time || checkin.checkInTime || checkin.checkin_time,
     checkOutTime: checkin.check_out_time || checkin.checkOutTime || checkin.checkout_time,
   });

@@ -4179,6 +4179,11 @@ async def get_owner_user(current_user = Depends(get_current_user)):
 # deletion. A constant whose whole job is "every background scan agrees on this"
 # cannot live where a scan outside this file has to copy it.
 from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
+# The ONE definition of the filed daily record. Imported here so the report
+# preview panel and the compliance detectors read the same document (#291).
+from lib.logbook.daily_jobsite_source import (  # noqa: E402
+    daily_jobsite_filter, as_daily_log_row,
+)
 
 
 # ── Account activation gating ────────────────────────────────────────
@@ -24343,18 +24348,57 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         "is_deleted": {"$ne": True},
     }).to_list(100)
 
-    daily_log = await db.daily_logs.find_one({
-        "project_id": project_id,
-        "date": date,
-        "is_deleted": {"$ne": True},
-    })
+    # THE DAILY RECORD IS THE CP'S FILED daily_jobsite LOGBOOK, not db.daily_logs.
+    #
+    # This panel read `daily_logs` -- 92 rows, all written in April 2026 by the
+    # operator's own kiosk testing, nothing since. `find_one` returned None every
+    # time, so FIVE fields on this panel were constants: subcontractor_count 0,
+    # daily_log_worker_count 0, has_daily_log false, and both daily_log_status
+    # and daily_log_weather null. The panel reported "Subs 0" on a day with 16
+    # men from 5 companies on site.
+    #
+    # Same collection, same mistake and the same fix as the 285 false compliance
+    # flags (#295). daily_jobsite_filter is the ONE definition of the filed daily
+    # record, so this panel and the detectors cannot drift apart again.
+    _dj = await db.logbooks.find_one(
+        daily_jobsite_filter(project_id, start=date, end=date))
+    daily_log = as_daily_log_row(_dj) if _dj else None
 
     day_start, day_end = get_day_range_est(date)
-    checkin_count = await db.checkins.count_documents({
+    _day_checkins = {
         "project_id": project_id,
         "check_in_time": {"$gte": day_start, "$lt": day_end},
         "is_deleted": {"$ne": True},
-    })
+    }
+    checkin_count = await db.checkins.count_documents(_day_checkins)
+
+    # COMPANIES ON SITE, FROM THE SAME ROWS THE HEADCOUNT COMES FROM, so the two
+    # numbers on this panel cannot disagree about who was here.
+    #
+    # NOT "subcontractors". The gate records no GC flag -- nothing on a check-in
+    # row distinguishes a general contractor's own crew from a sub's -- so the
+    # number the data can honestly produce is distinct companies. Calling it
+    # subcontractors would put the GC's own men in a subcontractor headcount,
+    # which is a different kind of wrong from a miscount.
+    #
+    # Case and whitespace are not identity: `_norm_key`'s comment records that a
+    # doubled space already printed the same man twice on a production pre-shift
+    # sheet. A row naming no company is dropped rather than counted as one --
+    # an unnamed company is a gap, and counting it makes the gap look like a fact.
+    #
+    # to_list(None) rather than a number: the scope is ONE project on ONE day
+    # with a single field projected, so there is nothing here a cap would
+    # protect against -- and a cap that silently truncated the roster would
+    # under-report companies, which is the failure this whole change is about.
+    _company_rows = await db.checkins.find(
+        _day_checkins, {"worker_company": 1, "company": 1}).to_list(None)
+    _companies = set()
+    for _c in _company_rows:
+        _name = _worker_company(_c.get("worker_company"), _c.get("company"))
+        _key = " ".join(_name.lower().split())
+        if _key:
+            _companies.add(_key)
+    companies_on_site = len(_companies)
 
     # Build summary of what sections are filled
     logbook_summary = []
@@ -24417,10 +24461,25 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         # show without walking the list.
         "failed_photo_count": total_failed_photos,
         "has_daily_log": bool(daily_log),
-        "daily_log_status": daily_log.get("status") if daily_log else None,
+        # The filed logbook's own status, not the adapter's -- as_daily_log_row
+        # projects content, and only a SUBMITTED log matches the filter above.
+        "daily_log_status": _dj.get("status") if _dj else None,
         "daily_log_weather": daily_log.get("weather") if daily_log else None,
+        # THE CP'S REPORTED CREW TOTAL, deliberately not the gate's count. This
+        # number is rendered on the daily-log row, beside that log's status, so
+        # it must be what that log CLAIMS. as_daily_log_row's own docstring makes
+        # the same call for the same reason: the question is whether the CP
+        # reported manpower, not whether the gate agreed with him. Showing the
+        # gate's number under a daily-log heading would be a fresh contradiction
+        # of exactly the kind this pass exists to remove.
         "daily_log_worker_count": daily_log.get("worker_count", 0) if daily_log else 0,
-        "subcontractor_count": len(daily_log.get("subcontractor_cards", []) or []) if daily_log else 0,
+        "companies_on_site": companies_on_site,
+        # COMPATIBILITY ALIAS, and it is scheduled rather than permanent. An
+        # install older than this deploy reads `subcontractor_count` and would
+        # render a blank card if the key vanished -- the stranded-device problem
+        # #294 exists to measure. Drop this once CLIENT_MINIMUM_SUPPORTED passes
+        # the version that reads `companies_on_site`.
+        "subcontractor_count": companies_on_site,
         "report_already_sent": bool(already_sent),
         "report_sent_at": already_sent.get("sent_at").isoformat() if already_sent and isinstance(already_sent.get("sent_at"), datetime) else None,
         "report_send_time": project.get("report_send_time", "18:00"),
