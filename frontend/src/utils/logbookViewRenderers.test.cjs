@@ -141,6 +141,15 @@ new Function('exports', 'module', 'require', babel.transformSync(
   },
 ).code)(_model, { exports: _model }, require);
 
+// The superintendent-log item model, loaded for real. See the note on NAMES.
+const _csSrc = fs.readFileSync(
+  path.join(__dirname, 'superintendentLogModel.js'), 'utf8')
+  .replace(/^export default[\s\S]*$/m, '')
+  .replace(/^export /gm, '');
+// eslint-disable-next-line no-new-func
+const _csModel = new Function(
+  `${_csSrc}; return { csLogItems, csItemState, csItemSummary };`)();
+
 // ── Stubs for everything the block closes over ──────────────────────────────
 const styleProxy = new Proxy({}, { get: () => ({}) });
 const Icon = function IconStub() { return null; };
@@ -148,7 +157,11 @@ const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'sem
   'spacing', 'withAlpha', 'rosterClock', 'logbookPhotoUri',
   'ShieldCheck', 'AlertTriangle', 'Truck', 'MapPin', 'ClipboardList', 'FileText',
   'Users', 'CheckCircle', 'BookOpen', 'Pen', 'CloudSun', 'Clock', 'Eye', 'Wrench',
-  'headcountDisplay'];
+  'headcountDisplay',
+  // BC 3301.13.13 items. REAL, not stubbed: the branch's whole job is to
+  // render three kinds of empty differently, and a stub would make the test
+  // pass without exercising the distinction it exists to defend.
+  'csLogItems', 'csItemState', 'csItemSummary'];
 const VALUES = {
   View: 'View', Text: 'Text', Image: 'Image', React,
   s: styleProxy, t, tFp,
@@ -159,6 +172,9 @@ const VALUES = {
   rosterClock: (v) => (v ? String(v) : '—'),
   logbookPhotoUri: () => null,
   headcountDisplay: _model.headcountDisplay,
+  csLogItems: _csModel.csLogItems,
+  csItemState: _csModel.csItemState,
+  csItemSummary: _csModel.csItemSummary,
 };
 for (const n of NAMES) if (!(n in VALUES)) VALUES[n] = Icon;
 
@@ -216,8 +232,13 @@ const REGISTRY = [...SERVER_SRC
 // omission: bump the number here only in the same change that gives the new
 // type its tab, its label and its render branch. Bumping it on its own to get
 // a red suite green is the bug this file exists to catch.
-ok(REGISTRY.length === 12,
-  `server.py registers 12 logbook types (got ${REGISTRY.length}: ${REGISTRY.join(', ') || 'NOTHING — the registry regex matched nothing'})`);
+// THIRTEEN since site_superintendent_log (BC 3301.13.13). Re-stated rather
+// than relaxed: this count is what makes the assertions below -- every
+// registered type has a TAB and a RENDERER -- fail loudly when a type is added
+// without one, instead of that type quietly showing an inspector
+// "No data available".
+ok(REGISTRY.length === 13,
+  `server.py registers 13 logbook types (got ${REGISTRY.length}: ${REGISTRY.join(', ') || 'NOTHING — the registry regex matched nothing'})`);
 
 const tabKeys = [...src.matchAll(/\{ key: '([a-z_]+)', labelKey:/g)].map((m) => m[1]);
 const noTab = REGISTRY.filter((k) => !tabKeys.includes(k));

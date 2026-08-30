@@ -241,11 +241,15 @@ const SUBMIT_CODES = [...new Set(
 // meant to stay writable through the day — a CP adding an afternoon photo to a
 // log he signed at noon is finishing it, not correcting it — so there was no
 // row left for the code to fire on. A code with no trigger is worse than none.
-ok(SUBMIT_CODES.length === 4
+// FIVE since SUBMIT_UNATTESTED_ITEMS, the superintendent log's attestation
+// gate. This assertion is what caught that code shipping with NO CLIENT COPY --
+// the exact defect #285 shipped and #286 had to come back for.
+ok(SUBMIT_CODES.length === 5
   && SUBMIT_CODES.includes('SUBMIT_EMPTY_LOG')
   && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE')
   && SUBMIT_CODES.includes('SUBMIT_MISSING_TRADE')
-  && SUBMIT_CODES.includes('SUBMIT_NO_CONTENT'),
+  && SUBMIT_CODES.includes('SUBMIT_NO_CONTENT')
+  && SUBMIT_CODES.includes('SUBMIT_UNATTESTED_ITEMS'),
   `server.py returns exactly the 4 submit codes (${SUBMIT_CODES.join(', ')})`);
 for (const c of SUBMIT_CODES) {
   ok(en.includes(`code_${c}:`),

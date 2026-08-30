@@ -111,6 +111,13 @@ export default {
     // is the fallback for anywhere else the code surfaces (the reconnect drain
     // has no screen and no row to point at).
     code_SUBMIT_MISSING_TRADE: 'This worker has no trade assigned. Assign one before submitting the orientation.',
+    // Items 4 to 7 of the superintendent log are empty most days, and "none to
+    // report" on a compliance record is worth something ONLY because a named
+    // person put their name to it. A blank carries no such statement, so the
+    // log cannot be signed while one of them is merely untouched. The server
+    // sends which items; the screen points at them, and this sentence is the
+    // fallback for anywhere without a row to point at.
+    code_SUBMIT_UNATTESTED_ITEMS: 'Some items have not been answered. Mark each one either with what you observed or as nothing to report, then sign.',
     // Raised for the two records that ARE a list of rows — the certification
     // register and the sign-in sheet — when every row is one the PDF renderer
     // would refuse to print. The document would come out blank. Not a
@@ -1269,6 +1276,14 @@ export default {
     tabExcavation: 'Excavation Monitoring',
     tabConcrete: 'Concrete Operations',
     tabScaffold: 'Scaffold Maintenance',
+    tabSuperintendent: 'Superintendent Log',
+    fSuperintendent: 'Superintendent',
+    fOnSite: 'On site',
+    // AN ATTESTATION, and the screen names who made it. An unattributed
+    // "none" asserts nothing.
+    csNoneToReport: 'None to report — attested by',
+    // A SCOPE STATEMENT, not an attestation and not a gap.
+    csNotCollected: 'This log does not record this item.',
     tabSsc: 'SSC Daily Safety Log',
     tabOsha: 'OSHA / SST Log',
     tabOrientation: 'Subcontractor Orientation',
