@@ -4359,6 +4359,19 @@ class CSRegistrationCreate(BaseModel):
     nyc_id_email: Optional[str] = None  # NYC.ID email used for DOB filings
     sst_number: Optional[str] = None    # SST card number if different
     phone: Optional[str] = None
+    # THE ACCOUNT THAT SIGNS, when there is one.
+    #
+    # OPTIONAL BY DESIGN. A registration is created by an ADMIN for DOB
+    # purposes and may exist long before the superintendent has an account --
+    # or when he never gets one, as with another company's super on a joint
+    # site. Requiring it would either block the registration or leave a null
+    # nobody revisits.
+    #
+    # When it IS set it is the STRONG link: an id, not two humans typing the
+    # same licence number. attribute_signer reports which of the two it used,
+    # because "bound to this account" and "the numbers agree" are different
+    # strengths of evidence.
+    user_id: Optional[str] = None
  
 class CSRegistrationUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -4366,6 +4379,9 @@ class CSRegistrationUpdate(BaseModel):
     nyc_id_email: Optional[str] = None
     sst_number: Optional[str] = None
     phone: Optional[str] = None
+    # Settable after the fact: the commonest real sequence is a registration
+    # typed for DOB first and the account created later.
+    user_id: Optional[str] = None
     is_active: Optional[bool] = None
  
 class CSRegistrationResponse(BaseModel):
@@ -4548,8 +4564,15 @@ from lib.logbook.daily_jobsite_source import (  # noqa: E402
     daily_jobsite_filter, as_daily_log_row,
 )
 # The agreement to sign electronically, and the wording of every version of it.
+from lib.logbook.cs_attribution import (  # noqa: E402
+    attribute_signer, attribution_sentence, normalise_licence,
+    MATCHED_ACCOUNT, MATCHED_LICENCE, NOT_REGISTERED_CS, NO_REGISTRATION,
+    REGISTERED_LATER, UNDETERMINED,
+)
 from lib.logbook.superintendent_log import (  # noqa: E402
     ITEMS as CS_LOG_ITEMS, ATTESTABLE_KEYS as CS_ATTESTABLE_KEYS,
+    item_provenance as cs_item_provenance,
+    PROVENANCE_ADOPTED, PROVENANCE_OWN, PROVENANCE_UNMARKED,
     COMPETENT_PERSON_SUNSET, applicable_items as cs_applicable_items,
     item_state as cs_item_state, unanswered_attestable,
     ATTESTED_NONE, NOT_REACHED, NOT_COLLECTED, PRESENT,
@@ -16040,6 +16063,7 @@ async def register_construction_superintendent(
         "nyc_id_email": (data.nyc_id_email or "").strip().lower() or None,
         "sst_number": (data.sst_number or "").strip() or None,
         "phone": (data.phone or "").strip() or None,
+        "user_id": (str(data.user_id).strip() or None) if data.user_id else None,
         "is_active": True,
         "company_id": company_id,
         "created_by": admin.get("id"),
@@ -17088,7 +17112,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         # pre-shift sheet each drifted between these two renderers and each had
         # to be pulled back into one definition; this one never forks.
         type_title = "Construction Superintendent Log (BC 3301.13.13)"
-        body_html = _superintendent_log_html(logbook)
+        _cs_attr = await cs_attribution_for(
+            db, logbook.get("project_id"), logbook.get("date"),
+            (data or {}).get("presence") or {})
+        body_html = _superintendent_log_html(logbook, attribution=_cs_attr)
 
     elif log_type == "osha_log":
         # frontend/app/logbooks/osha_log.jsx:200  data: { entries };
@@ -23468,7 +23495,31 @@ def _cs_item_body(item, block, cs_name):
     return "<br />".join(rows)
 
 
-def _superintendent_log_html(logbook, weekly_status=None):
+async def cs_attribution_for(db_, project_id, log_date, signer):
+    """Was the signer the registered CS for this project on the log's date?
+
+    READ TIME, AND IT WRITES NOTHING. Nothing about a superintendent's log may
+    mutate the registration that describes him -- the same posture as the
+    card-number finding and the pre-shift affirmation overlay.
+
+    A FAILED READ REPORTS "no registration", NEVER a mismatch. The one thing
+    this must not do is turn an outage into a finding against a named person on
+    a statutory record.
+    """
+    if db_ is None or not project_id:
+        return attribute_signer(signer, None, log_date)
+    try:
+        reg = await db_.cs_registrations.find_one({
+            "project_id": str(project_id),
+            "is_deleted": {"$ne": True},
+        })
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[cs-log] registration read failed for {project_id}: {e!r}")
+        reg = None
+    return attribute_signer(signer, reg, log_date)
+
+
+def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
     """The whole section, built ONCE for both renderers.
 
     ONE BUILDER, TWO CALLERS. The OSHA register and the pre-shift sheet each
@@ -23504,6 +23555,19 @@ def _superintendent_log_html(logbook, weekly_status=None):
         else:
             body = _cs_item_body(
                 item, block if isinstance(block, dict) else {}, cs_name)
+        # ITEM 2 SAYS WHERE IT CAME FROM. Adopted from the CP's log unedited,
+        # or his own once he changed it. Unmarked on a log filed before the
+        # flag existed -- NOT "adopted", because a record that predates the
+        # question has not answered it.
+        if item.get("provenance") and body and body != NOT_RECORDED:
+            _prov = cs_item_provenance(data)
+            _prov_text = {
+                PROVENANCE_ADOPTED: "adopted from the daily jobsite log",
+                PROVENANCE_OWN: "the superintendent&#39;s own account",
+            }.get(_prov)
+            if _prov_text:
+                body += ('<br /><span style="font-size:11px;color:#64748b;">'
+                         + _prov_text + '</span>')
         cite = item.get("citation") or ""
         rows += (
             f'<tr><td {_CS_TD} valign="top" width="34%">'
@@ -23529,6 +23593,13 @@ def _superintendent_log_html(logbook, weekly_status=None):
         + '</table>'
         # ABOVE the signature: the claim, then the name that makes it.
         + CS_LOG_ATTESTATION_HTML
+        # WHAT THE SYSTEM KNOWS ABOUT WHO SIGNED, stated as a fact and never as
+        # an accusation. There are legitimate reasons a signer is not the
+        # registered CS, and from 2027-01-01 the alternate licensed
+        # superintendent is one of them.
+        + (('<p style="color:#475569;font-size:12px;line-height:1.6;'
+            'margin:6px 0 4px;">' + attribution_sentence(attribution) + '</p>')
+           if attribution else "")
         + _cs_bold_para("Construction Superintendent", _capitalize_first(cs_name) or "N/A")
         + render_signature_html(
             presence.get("signature") or (logbook or {}).get("cp_signature"),
@@ -24435,10 +24506,13 @@ async def generate_combined_report(
     cs_html = ""
     cs_lb = _filed_log(logbooks, "site_superintendent_log")
     if cs_lb:
+        _cs_attr = await cs_attribution_for(
+            db, project_id, cs_lb.get("date"),
+            (cs_lb.get("data") or {}).get("presence") or {})
         cs_html = (
             section_title("Construction Superintendent Log (BC 3301.13.13)")
             # ONE BUILDER, BOTH RENDERERS. See _superintendent_log_html.
-            + _superintendent_log_html(cs_lb)
+            + _superintendent_log_html(cs_lb, attribution=_cs_attr)
         )
 
     # ==========================================================
