@@ -242,6 +242,20 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     # longer identifier containing "toolbox" is that same finding, not a false
     # alarm, which is what makes the word the right unit here.
     ("test_fix1_checkins_today_flags.py", "toolbox"),
+
+    # ── A SYMBOL REMOVED IN AN OUTAGE, BANNED FROM RETURNING ────────────────
+    # _read_client_minimum_supported read frontend/app.json at module scope in
+    # an image that ships backend/ only, and its except handler called `logger`
+    # ~280 lines before logger exists. NameError at import, crash loop, 502 on
+    # every path.
+    #
+    # The word IS the unit here: a call site, a rename that keeps the stem, or
+    # a helper wrapping it are all the same violation, not false alarms. That
+    # is what makes this bare by design rather than anchorable.
+    #
+    # IT WAS CAUGHT LATE because the fix was pushed straight to main during the
+    # outage, which skipped CI. CI would have flagged it on the way in.
+    ("test_client_version_floor.py", "_read_client_minimum_supported"),
 }
 
 

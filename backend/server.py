@@ -4436,6 +4436,30 @@ from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
 from lib.logbook.daily_jobsite_source import (  # noqa: E402
     daily_jobsite_filter, as_daily_log_row,
 )
+# The agreement to sign electronically, and the wording of every version of it.
+from lib.esra_consent import (  # noqa: E402
+    ESRA_CONSENT_TEXT, ESRA_CONSENT_VERSION,
+    consent_is_current, verify_stored_consent,
+)
+
+# ── The construction superintendent ─────────────────────────────────────────
+#
+# "superintendent", NOT "super". The string already existed in this file before
+# the role did -- the people-directory search at :33318 lists users whose role
+# is "superintendent" -- so the role it was waiting for is the one being
+# created here. A second spelling would be the fifth name for a thing this
+# codebase already has four names for elsewhere, and `acting_capacity` on a
+# signature event says "Construction Superintendent" too.
+ROLE_SUPERINTENDENT = "superintendent"
+
+# The roles that hard-require a company. A user in one of these without a
+# company_id 403s on every company-gated endpoint and their session merely
+# looks broken, so creation is refused up front instead.
+ROLES_REQUIRING_COMPANY = ("cp", ROLE_SUPERINTENDENT)
+
+
+def is_superintendent(user) -> bool:
+    return str((user or {}).get("role") or "").strip().lower() == ROLE_SUPERINTENDENT
 
 
 # ── Account activation gating ────────────────────────────────────────
@@ -7319,10 +7343,10 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     # up front so the admin sees a clear, actionable error.
     _role = user_dict.get("role") or getattr(user_data, "role", None)
     _cid = user_dict.get("company_id") or getattr(user_data, "company_id", None)
-    if (_role == "cp") and not _cid:
+    if (str(_role or "").strip().lower() in ROLES_REQUIRING_COMPANY) and not _cid:
         raise HTTPException(
             status_code=422,
-            detail="company_id is required when creating a CP user. "
+            detail=f"company_id is required when creating a {_role} user. "
                    "Assign them to a company first.",
         )
 
@@ -13824,6 +13848,170 @@ async def get_workers(
 #
 # Worker self-registration at the gate is POST /checkin/register-and-checkin,
 # which is public BY DESIGN and derives company_id from the project.
+
+# ==================== ELECTRONIC SIGNATURE CONSENT (ESRA) ====================
+#
+# Buildings Bulletin 2024-007 sec V.5 requires that "all involved parties must
+# clearly intend to sign electronically and agree to conduct transactions
+# electronically". Nothing recorded such an agreement, so this does.
+#
+# ONE-TIME, AT ACCOUNT SETUP. Not a per-entry confirmation: a signer learns to
+# click through anything they see every day, and a consent clicked through is
+# not evidence of intent.
+#
+# THE TEXT IS COPIED ONTO THE ROW. A version pointer alone would resolve, years
+# later, to whatever this file says THEN -- text the person never saw. The row
+# carries the wording verbatim and lib/esra_consent.py keeps every version, so
+# the two can be checked against each other.
+#
+# APPEND-ONLY. A new row per agreement; nothing is updated in place. Re-agreeing
+# to a new wording adds a row and leaves the old one standing, because what a
+# person agreed to in the past does not stop being true when the wording
+# changes.
+
+
+async def latest_esra_consent(db_, user_id: str) -> Optional[dict]:
+    """The most recent consent this user gave, or None.
+
+    A FAILED READ RETURNS None, NOT AN EXCEPTION, and the caller must treat
+    None as "no consent on record" rather than "assume consented". Failing open
+    on a consent check is the one direction that cannot be undone: an entry
+    signed without consent cannot be retroactively consented to.
+    """
+    if db_ is None or not user_id:
+        return None
+    try:
+        rows = await db_.esra_consents.find(
+            {"user_id": str(user_id), "is_deleted": {"$ne": True}},
+        ).sort("agreed_at", -1).to_list(1)
+        return rows[0] if rows else None
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[esra] consent read failed for {user_id}: {e!r}")
+        return None
+
+
+async def has_current_esra_consent(db_, user_id: str) -> bool:
+    """Has this user agreed to the wording IN FORCE NOW?
+
+    A separate function from `latest_esra_consent` on purpose, so a caller
+    cannot get a truthy row back and forget to ask which version it was. The
+    superintendent log's signing path is the intended caller.
+    """
+    row = await latest_esra_consent(db_, user_id)
+    return bool(row) and consent_is_current(row.get("consent_version"))
+
+
+class EsraConsentAgree(BaseModel):
+    """What the client sends. DELIBERATELY ALMOST EMPTY.
+
+    The version is echoed back so a client showing stale cached wording is
+    caught, rather than silently recording agreement to text the user never
+    saw. Everything else -- who, when, from where, and the wording itself -- is
+    taken from the server, never from the caller. A consent whose subject the
+    client could choose would not be evidence of anything.
+    """
+    consent_version: str
+
+
+@api_router.get("/esra-consent")
+async def get_esra_consent(current_user = Depends(get_current_user)):
+    """What this user has agreed to, and what is currently being asked.
+
+    Returns the CURRENT WORDING whether or not they have agreed, so the client
+    has something to show without a second round trip.
+    """
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    row = await latest_esra_consent(db, uid)
+    check = verify_stored_consent(row)
+    _agreed_at = (row or {}).get("agreed_at")
+    return {
+        "current_version": ESRA_CONSENT_VERSION,
+        "current_text": ESRA_CONSENT_TEXT,
+        "has_consented": bool(row),
+        "is_current": bool(row) and consent_is_current(row.get("consent_version")),
+        "agreed_version": (row or {}).get("consent_version"),
+        "agreed_at": (
+            _agreed_at.isoformat() if isinstance(_agreed_at, datetime) else None
+        ),
+        # Whether the STORED wording still matches this build's registry. A
+        # machine code, never prose; the client decides what a human reads.
+        # UNKNOWN_VERSION means this build cannot check the row, which is not
+        # the same fact as the row being wrong -- the distinction the OSHA
+        # register draws between "No findings" and "Not checked".
+        "verification": check["reason"],
+    }
+
+
+@api_router.post("/esra-consent")
+async def agree_esra_consent(
+    body: EsraConsentAgree,
+    request: Request,
+    current_user = Depends(get_current_user),
+):
+    """Record that this user agrees to sign electronically.
+
+    THE VERSION IS CHECKED, NOT TRUSTED. A client holding an older wording is
+    refused rather than having its agreement recorded against text the user was
+    never shown.
+    """
+    if str(body.consent_version or "") != ESRA_CONSENT_VERSION:
+        # The server names the condition; the client owns the wording and is
+        # expected to re-fetch and re-present the current text.
+        raise HTTPException(
+            status_code=409, detail={"code": "ESRA_CONSENT_VERSION_STALE"},
+        )
+
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    if not uid:
+        raise HTTPException(
+            status_code=400, detail={"code": "ESRA_CONSENT_NO_SUBJECT"},
+        )
+
+    existing = await latest_esra_consent(db, uid)
+    if existing and consent_is_current(existing.get("consent_version")):
+        # ALREADY AGREED TO THIS WORDING. Not an error and not a second row:
+        # re-tapping must not multiply the record, and the ORIGINAL agreement's
+        # timestamp is the one that matters.
+        _prev = existing.get("agreed_at")
+        return {
+            "recorded": False,
+            "already": True,
+            "consent_version": existing.get("consent_version"),
+            "agreed_at": (
+                _prev.isoformat() if isinstance(_prev, datetime) else None
+            ),
+        }
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "user_id": uid,
+        # DENORMALISED ON PURPOSE. The consent must stay readable when the user
+        # row has been renamed, soft-deleted, or moved to another company. Who
+        # agreed is part of what is being recorded, not a lookup.
+        "user_email": current_user.get("email"),
+        "user_name": current_user.get("name") or current_user.get("full_name"),
+        "role_at_time": current_user.get("role"),
+        "company_id": current_user.get("company_id"),
+        "consent_version": ESRA_CONSENT_VERSION,
+        # THE WORDING ITSELF. See lib/esra_consent.py: a consent whose text
+        # cannot be reconstructed is not evidence.
+        "consent_text": ESRA_CONSENT_TEXT,
+        "agreed_at": now,
+        "ip_address": (request.client.host if request and request.client else None),
+        "user_agent": (request.headers.get("user-agent") if request else None),
+        "is_deleted": False,
+    }
+    await db.esra_consents.insert_one(doc)
+    await audit_log("esra_consent_agree", uid, "user", uid, {
+        "consent_version": ESRA_CONSENT_VERSION,
+    })
+    return {
+        "recorded": True,
+        "already": False,
+        "consent_version": ESRA_CONSENT_VERSION,
+        "agreed_at": now.isoformat(),
+    }
+
 
 # ==================== WORKER CERTIFICATION MANAGEMENT ====================
 
@@ -37596,6 +37784,10 @@ async def startup_event():
         "signature_events", "audit_logs", "compliance_alerts", "dob_logs",
         "certificates_of_insurance", "safety_staff_registrations",
         "cs_registrations", "workers", "users", "subcontractors",
+        # A consent is evidence about a signature, and outlives the signature
+        # it authorises. It is never purged for the same reason signature_events
+        # is not.
+        "esra_consents",
     }
 
     async def _soft_delete_purge_tick():
