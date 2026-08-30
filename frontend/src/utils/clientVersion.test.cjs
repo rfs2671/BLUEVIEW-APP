@@ -79,11 +79,23 @@ ok(compareVersions(declared, appJson.expo.version) <= 0,
   + 'install, including the newest one, as out of date');
 
 const server = fs.readFileSync(path.join(REPO, 'backend', 'server.py'), 'utf8');
-ok(/minimumSupportedVersion/.test(server),
-  'the server derives the floor from app.json rather than carrying a second '
-  + 'copy somebody has to remember to bump');
+// INVERTED BY THE OUTAGE OF 2026-08-29. This asserted the server derives the
+// floor from app.json. It did -- by reading frontend/app.json at MODULE SCOPE,
+// in a Railway image that contains backend/ only. FileNotFoundError on every
+// boot, and the except handler called `logger` ~280 lines before logger exists,
+// so the fallback raised NameError and uvicorn died at import. 502 on every
+// path until the read was removed.
+//
+// app.json STILL DECLARES minimumSupportedVersion (asserted above) and the
+// value is still the right one to ship from. What must never come back is the
+// backend reaching across the deploy boundary to read it. Baking it in at image
+// build time is the open option; see the outage commit.
+ok(!/minimumSupportedVersion/.test(server),
+  'THE SERVER DOES NOT READ frontend/app.json -- it cannot, the deploy image '
+  + 'contains backend/ only, and doing so crash-looped production');
 ok(/"client_minimum_supported": CLIENT_MINIMUM_SUPPORTED/.test(server),
-  'and /api/version reports it');
+  'and /api/version still reports the field -- now null, which every reader '
+  + 'already treats as UNKNOWN, i.e. NOT BEHIND on both surfaces');
 
 console.log('\n-- the two surfaces --');
 
