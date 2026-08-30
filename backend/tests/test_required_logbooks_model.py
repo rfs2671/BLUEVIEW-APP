@@ -60,6 +60,17 @@ TOGGLED = {
     # scaffold. A foundation crew at grade has no fall exposure, and a daily
     # fall-protection log on that day is a record of nothing.
     "fall_protection": "fall_protection_active",
+    # THE CS LOG TOGGLES TOO, and by an ADMIN rather than the CP -- assigning a
+    # construction superintendent is an administrative act, not a site
+    # condition the CP observes.
+    #
+    # It is toggled rather than always-required because registering the type
+    # made it required on EVERY project the moment it existed, and the investor
+    # report began counting a twelfth required log with no editor to file it.
+    # Every project would have carried a permanent "not filed" deficiency for a
+    # document nobody could produce -- the 285 false flags again. A project with
+    # no superintendent is not in breach for having no superintendent log.
+    "site_superintendent_log": "superintendent_log_active",
 }
 NON_MAJOR_CLASSES = ("regular",)
 MAJOR_CLASSES = ("major_a", "major_b")
@@ -100,6 +111,10 @@ class TheModelIsTheRegistry(unittest.TestCase):
             "excavation_monitoring": "cp",
             "fall_protection": "cp",
             "hot_work": "admin",
+            # ADMIN, like hot work and for the same kind of reason: assigning a
+            # construction superintendent to a project is an administrative
+            # act, not a site condition the CP can observe and toggle.
+            "site_superintendent_log": "admin",
         })
 
     def test_only_conditional_types_declare_an_owner(self):

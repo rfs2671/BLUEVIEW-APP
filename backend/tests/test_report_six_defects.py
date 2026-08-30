@@ -778,7 +778,11 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         # fewer place to drift.
         # TWELVE: the fall-protection section joined, and it resolves its
         # document through the same one resolver as every other section.
-        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 12)
+        # THIRTEEN since the superintendent log (BC 3301.13.13) gained its
+        # own section. The count is the claim: EVERY section resolves its
+        # document through _filed_log, so none can quietly reach past the
+        # amendment resolver and render a superseded original.
+        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 13)
         self.assertNotIn('next((l for l in logbooks', _REPORT)
 
 

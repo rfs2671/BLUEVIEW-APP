@@ -20,6 +20,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { csLogItems, csItemState, csItemSummary } from '../../src/utils/superintendentLogModel';
 import {
   cacheDocList, readCachedDocList, ensureCachedDocFile, warmDocCache,
 } from '../../src/utils/docCache';
@@ -64,6 +65,10 @@ const LOG_TABS = [
   { key: 'osha_log', labelKey: 'tabOsha', icon: FileText, color: '#3b82f6' },
   { key: 'subcontractor_orientation', labelKey: 'tabOrientation', icon: Users, color: '#8b5cf6' },
   { key: 'fall_protection', labelKey: 'tabFallProtection', icon: ShieldCheck, color: semantic.neutral },
+  // BC 3301.13.13 -- the construction superintendent's own record. Without a
+  // tab the type is registered and UNREACHABLE: this filter is the only way
+  // into a log on the site device, which is the device he signs from.
+  { key: 'site_superintendent_log', labelKey: 'tabSuperintendent', icon: ClipboardList, color: '#f59e0b' },
 ];
 
 // How many days of submitted records we keep on the device. AsyncStorage is
@@ -1434,6 +1439,68 @@ export default function SiteLogbooksViewer() {
     );
   };
 
+  // ── BC 3301.13.13 — the construction superintendent's own record ──────────
+  //
+  // THREE KINDS OF EMPTY, RENDERED THREE WAYS, matching what both PDF
+  // renderers print for the same stored log. Items 4 to 7 are empty on most
+  // days, and the difference between them is the whole value of the document:
+  //
+  //   "None to report"  the CS considered the item and had nothing. AN
+  //                     ATTESTATION, and it names who made it — an
+  //                     unattributed "none" asserts nothing.
+  //   Not recorded      nobody answered. A gap, and it must never read as the
+  //                     line above.
+  //   scope line        this app does not capture the item at all. Not an
+  //                     attestation and not a gap: a statement about the
+  //                     document's scope.
+  //
+  // The OSHA register printed one glyph five times in a row meaning four
+  // different things. This screen prints what the paper prints.
+  const renderSuperintendentLog = (log) => {
+    const data = log.data || {};
+    const presence = data.presence || {};
+    const csName = presence.printed_name || log.cp_name || '';
+
+    // The eleven items, and which apply to THIS log's date. The competent
+    // person allowance (item 8) lapses on 2027-01-01 and item 9 takes its
+    // place; a log filed before then keeps showing item 8 forever, because a
+    // rule change must not alter what a filed document says. Resolved against
+    // the RECORD'S date, never today's.
+    const items = csLogItems(log.date);
+
+    return (
+      <>
+        <Text style={s.logField}>
+          <Text style={s.logLabel}>{t('fSuperintendent') || 'Superintendent'}: </Text>
+          {csName || t('fNotRecorded')}
+        </Text>
+        <Text style={s.logField}>
+          <Text style={s.logLabel}>{t('fOnSite') || 'On site'}: </Text>
+          {(presence.arrived_at || t('fNotRecorded'))} — {(presence.departed_at || t('fNotRecorded'))}
+        </Text>
+        {items.map((item) => {
+          const state = csItemState(item.key, data, log.date);
+          let body;
+          if (state === 'not_collected') {
+            body = t('csNotCollected') || 'This log does not record this item.';
+          } else if (state === 'attested_none') {
+            body = `${t('csNoneToReport') || 'None to report'} · ${csName}`;
+          } else if (state !== 'present') {
+            body = t('fNotRecorded');
+          } else {
+            body = csItemSummary(item, data[item.key]);
+          }
+          return (
+            <Text key={item.key} style={s.logField}>
+              <Text style={s.logLabel}>{item.number}. {item.label}: </Text>
+              {body}
+            </Text>
+          );
+        })}
+      </>
+    );
+  };
+
   const renderLogContent = (log) => {
     if (log.log_type === 'daily_jobsite') return renderDailyJobsite(log);
     if (log.log_type === 'toolbox_talk') return renderToolboxTalk(log);
@@ -1447,6 +1514,7 @@ export default function SiteLogbooksViewer() {
     if (log.log_type === 'osha_log') return renderOshaLog(log);
     if (log.log_type === 'subcontractor_orientation') return renderSubcontractorOrientation(log);
     if (log.log_type === 'fall_protection') return renderFallProtection(log);
+    if (log.log_type === 'site_superintendent_log') return renderSuperintendentLog(log);
     // NOT A GENERIC FALLTHROUGH, ON PURPOSE. A registered type with no branch
     // must fail at the tab that cannot show it, not open and tell an inspector
     // the record is blank — which is what a generic renderer would do for a
