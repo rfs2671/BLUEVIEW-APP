@@ -41,21 +41,35 @@ on the weaker basis.
 Same rule as item_applies and the pre-shift affirmation overlay: a filed
 document must not change what it says because the world moved on.
 
-AND AN HONEST LIMIT, stated rather than papered over. A registration has
-`is_active` -- a CURRENT-STATE BOOLEAN -- plus created_at, updated_at, and
-deleted_at on soft-delete. It has NO validity period. So of the four historical
-questions, three are answerable and one is not:
+EVERY PATH THAT SWITCHES A REGISTRATION OFF STAMPS A TIME, and all three are
+read here:
 
-    registered AFTER the log date      answerable -- created_at is later
-    registered before, still active    answerable
-    registered before, since DELETED   answerable -- deleted_at bounds it
-    registered before, since merely
-      DEACTIVATED (is_active False)    NOT ANSWERABLE. Only the delete path
-                                       stamps a timestamp; switching a
-                                       registration off erases when it was on.
+    superseded by a new CS    is_active False + deactivated_at   (:16014)
+    switched off by an admin  is_active False + deactivated_at   (:16165)
+    soft-deleted              is_deleted True  + deleted_at      (:16179)
 
-The unanswerable case reports that it could not be determined rather than
-guessing. Adding `deactivated_at` would close it and is recorded as not built.
+So the historical question is answerable in every case a live build can
+produce:
+
+    registered AFTER the log date        created_at is later
+    deactivated BEFORE the log date      it was not active then
+    deactivated AFTER the log date       it WAS active then -- the log is
+                                         attributed normally
+    deleted before / after               same, via deleted_at
+    still active                         answerable
+
+UNDETERMINED SURVIVES FOR ONE CASE ONLY: a row switched off before those two
+stampers existed, which therefore carries `is_active: False` and no
+`deactivated_at`. That set cannot be repaired -- the time it was switched off
+was never written down -- so it reports that it cannot be determined rather
+than guessing. It does not grow.
+
+AN EARLIER VERSION OF THIS MODULE CLAIMED ONLY THE DELETE PATH STAMPED A TIME.
+That was wrong, and wrong in a specific way worth recording: the writers were
+INFERRED from the model and the delete endpoint rather than ENUMERATED by
+grepping the field. Two of the three stampers were missed, and a permanent
+"cannot be determined" was documented on a compliance record for a question the
+data could already answer.
 """
 
 from __future__ import annotations
@@ -130,11 +144,31 @@ def attribute_signer(signer, registration, log_date=None) -> Dict:
                 "registered_licence": None, "signer_name": signer_name,
                 "checked_on": day}
 
-    # A registration switched off without being deleted carries no timestamp,
-    # so on a PAST date it cannot be said whether it was active. Today's logs
-    # are unaffected: is_active is current and the date is now.
+    # ── Switched off, and WHEN ─────────────────────────────────────────────
+    #
+    # Both off-switches stamp `deactivated_at`: supersession by a new CS, and
+    # an admin setting is_active False. So the question is answerable rather
+    # than merely honest about being unanswerable.
+    deactivated = _as_date(registration.get("deactivated_at"))
+    if day and deactivated:
+        if deactivated < day:
+            # Not the registered CS on that date. Same answer as a deletion
+            # that predates the log: nobody was registered, so nothing is
+            # claimed about the signer.
+            return {"state": NO_REGISTRATION, "registered_name": None,
+                    "registered_licence": None, "signer_name": signer_name,
+                    "checked_on": day}
+        # Deactivated on or AFTER the log's date, so it WAS active then and the
+        # signature is attributed normally. A registration retired last month
+        # does not un-describe a log signed while it stood.
+
+    # THE ONE CASE THAT REMAINS UNANSWERABLE, and it cannot grow: a row
+    # switched off BEFORE either stamper existed carries is_active False and no
+    # deactivated_at. The moment it was switched off was never written down, so
+    # nothing can recover it and the check says so rather than guessing.
     if (not registration.get("is_active")
             and not registration.get("deleted_at")
+            and not registration.get("deactivated_at")
             and day and created and created < day):
         return {"state": UNDETERMINED, "registered_name": reg_name,
                 "registered_licence": reg_lic, "signer_name": signer_name,

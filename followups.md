@@ -808,6 +808,60 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## A search narrower than the claim it supported — third instance
+
+**CORRECTED. `cs_registrations` already stamped `deactivated_at`, and a report
+said it did not.**
+
+The claim was: *"is_active is a current-state boolean and only the delete path
+stamps a timestamp, so switching a registration off erases when it was on."*
+On that basis a permanent `UNDETERMINED` was documented on a compliance record,
+written into `cs_attribution.py`'s docstring, entered in this file as a gap, and
+a field was proposed that already existed.
+
+**THE MECHANISM, WHICH IS THE PART WORTH KEEPING.** The writers were INFERRED
+from two things that happened to be open — the Pydantic model and the delete
+endpoint — rather than ENUMERATED by grepping the field. `grep -n '"is_active"'`
+returns matches across the whole file, most of them `site_devices` and WhatsApp
+config, so the answer looked thin and the inference filled the gap. Enumerating
+the COLLECTION's writers instead —
+
+    grep -n "db.cs_registrations.update_one\|...update_many\|...insert_one"
+
+— returns exactly four lines and settles it in one read. **Two of the three
+off-switches stamp `deactivated_at`:** supersession by a new CS (`:16014`) and
+an admin setting `is_active` false (`:16165`). The third soft-deletes and
+stamps `deleted_at` (`:16179`).
+
+**SAME FAMILY AS TWO EARLIER MISSES:**
+
+  * the `.cjs` sweep — one test file was run, the suite is a glob over every
+    `*.test.cjs` under `src` and `app`, and CI caught two label assertions the
+    single-file run could not see;
+  * the `--include` allow-list — a grep restricted to `*.py` and `*.jsx` used to
+    support a claim about the whole repository.
+
+**THE RULE: enumerate the writers of the THING, not the occurrences of the WORD.**
+A collection has a countable set of writers and they can be listed. A field name
+appears wherever anyone typed it, and a search over it is wide in the wrong
+dimension — noisy enough to look exhaustive, narrow enough to miss the two lines
+that mattered.
+
+### Where it stands now
+
+`attribute_signer` reads `deactivated_at`, so the historical question is
+answerable in every case a live build can produce: deactivated before the log's
+date means it was not active then; deactivated on or after it means it was, and
+the log is attributed normally.
+
+`UNDETERMINED` survives for ONE case: a row switched off before either stamper
+existed, carrying `is_active: false` and no `deactivated_at`. The moment was
+never written down and cannot be recovered. **That set cannot grow** — every
+live path stamps.
+
+`backend/scripts/audit_cs_registration_history.js` counts it, and lists the rows
+rather than reporting only a number, so the set is known rather than estimated.
+
 ## TWO DIFFERENT JANUARIES, and they will be conflated
 
 **Write this down once so nobody has to work it out twice.**
@@ -870,7 +924,7 @@ obviously right; whether the superintendent log should say anything is the same
 question as the attribution sentence and should be answered the same way -- state
 the fact, never block the filing.
 
-## `cs_registrations` cannot answer "was this active on a past date"
+## ~~`cs_registrations` cannot answer "was this active on a past date"~~ — WRONG, see the correction above
 
 `is_active` is a **current-state boolean**. `created_at`, `updated_at` and
 `deleted_at` (on soft-delete) are the only timestamps. So of the four
