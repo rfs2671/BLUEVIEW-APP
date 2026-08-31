@@ -21065,10 +21065,46 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     the CP is done, finalized in its own right.
     """
     reason = (data or {}).get("reason") or (data or {}).get("amendment_reason")
-    if not reason or not str(reason).strip():
-        raise HTTPException(status_code=400, detail="Reason for Amendment is required.")
+    # THE SERVER NAMES THE CONDITION; THE CLIENT OWNS THE WORDING. gateCopy's
+    # rule, and it applies here because -- unlike the public signature endpoint
+    # -- there IS a CP and there IS a screen. The code and the floor are what
+    # the client needs to render a sentence that teaches; a refusal that does
+    # not teach produces "11" on the next attempt.
+    _reason_problem = amendment_reason_problem(reason)
+    if _reason_problem:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": _reason_problem,
+                    "min_chars": AMENDMENT_REASON_MIN_CHARS},
+        )
     now = datetime.now(timezone.utc)
     original = await _authorize_logbook_write(logbook_id, current_user)
+
+    # ONE OPEN CORRECTION PER RECORD, AND THE REFUSAL OFFERS IT.
+    #
+    # Five amendments in eight minutes on one orientation, the last two forking
+    # into competing unsigned children. Nothing asked whether one was already
+    # open, so every tap made another.
+    #
+    # THE OPEN ONE IS RETURNED, not just refused. Dead-ending the CP is what
+    # produced the five: he had a correction to make, the app kept accepting
+    # new ones, and none of them told him the previous was still unsigned.
+    _children = await db.logbooks.find({
+        "parent_logbook_id": str(original["_id"]),
+        "is_deleted": {"$ne": True},
+    }).to_list(200)
+    _open_head = open_amendment_head(_children)
+    if _open_head is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AMENDMENT_ALREADY_OPEN",
+                "logbook_id": str(_open_head.get("_id")),
+                "created_at": (_open_head.get("created_at").isoformat()
+                               if isinstance(_open_head.get("created_at"), datetime)
+                               else None),
+            },
+        )
     if current_user.get("role") == "cp":
         assigned = current_user.get("assigned_projects", []) or []
         if original.get("project_id") not in assigned:
@@ -23012,6 +23048,83 @@ def _headcount_cell(act, blank=""):
 AMENDMENT_PRESENT = "present"
 AMENDMENT_NO_REASON = "no_reason_recorded"
 AMENDMENT_NONE = "not_amended"
+
+
+AMENDMENT_REASON_REQUIRED = "AMENDMENT_REASON_REQUIRED"
+AMENDMENT_REASON_NOT_A_SENTENCE = "AMENDMENT_REASON_NOT_A_SENTENCE"
+AMENDMENT_REASON_MIN_CHARS = 6
+
+
+def amendment_reason_problem(reason):
+    """None if the reason is readable, else the code naming what is wrong.
+
+    WHY A RULE AT ALL. On 2026-08-31 a CP filed five amendments to one
+    orientation with the reasons "1", "1", "1", "1" and "0". Nothing wrote
+    those digits -- both gates asked only whether the field was non-empty
+    (`if (!reason.trim())` on the client, `if not str(reason).strip()` here),
+    so "1" was the shortest thing that passed and the button enabled on the
+    first keystroke. A check on PRESENCE standing in for a check on CONTENT,
+    on the field whose entire purpose is explaining a change to a signed
+    compliance record to a human reader.
+
+    WHY SIX CHARACTERS AND A WORD, defended rather than picked.
+
+    A length alone is defeated by "11111111". A rule banning numerals would
+    refuse "corrected count to 4", which is a better reason than most. So the
+    test is BOTH: at least six characters after trimming, and at least one run
+    of three letters -- a word.
+
+    Six clears every short reason a CP would really give: "wrong trade" (11),
+    "bad trade" (9), "no OSHA" (7). Lower would admit "ok"; higher would begin
+    refusing legitimate ones. The WORD requirement does the actual work -- it
+    is what "1", "0", "11", "12345678" and "1 2 3 4 5 6" fail, and the rule
+    never mentions digits to do it.
+
+    IT IS NOT PROOF AGAINST A DETERMINED BYPASS. "aaaaaa" passes. It is not
+    meant to be: it stops the accidental digit, which is what happened, and a
+    CP who wants to defeat it can already write "asdfgh". The remedy for that
+    is a person reading the record, not a longer regex.
+    """
+    text = str(reason or "").strip()
+    if not text:
+        return AMENDMENT_REASON_REQUIRED
+    if len(text) < AMENDMENT_REASON_MIN_CHARS:
+        return AMENDMENT_REASON_NOT_A_SENTENCE
+    if not re.search(r"[A-Za-z]{3}", text):
+        return AMENDMENT_REASON_NOT_A_SENTENCE
+    return None
+
+
+def open_amendment_head(children):
+    """The ONE unsigned child of a parent, chosen deterministically.
+
+    An unsigned amendment is an intention, not a correction. Two of them on one
+    parent are two competing intentions and neither is the record -- the record
+    is the deepest SIGNED link. 588 Thomas has exactly that fork today: two
+    unsigned orientation children of one parent, 49 seconds apart.
+
+    DETERMINISTIC, BY THE SAME (created_at, _id) ORDER _filed_log USES. With
+    two open children a raw find_one returns whichever Mongo hands back first,
+    so the refusal would name a different draft on each attempt and the CP
+    would be offered a different correction every time he tapped.
+
+    A SIGNED child does not block: a correction that landed is part of the
+    chain, and the next amendment amends it.
+    """
+    def _open(c):
+        if not isinstance(c, dict):
+            return False
+        return not (c.get("is_locked") or c.get("status") == "submitted"
+                    or c.get("cp_signature"))
+
+    def _order(c):
+        created = c.get("created_at")
+        return (created if isinstance(created, datetime)
+                else datetime.min.replace(tzinfo=timezone.utc),
+                str(c.get("_id", "")))
+
+    openc = [c for c in (children or []) if _open(c)]
+    return max(openc, key=_order) if openc else None
 
 
 def amendment_state(log) -> dict:
