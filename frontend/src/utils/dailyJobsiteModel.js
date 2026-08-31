@@ -475,7 +475,18 @@ export function reconcileCrewsWithRoster(stored, fresh) {
   const out = [];
   for (const row of storedRows) {
     if (isUnassignedWorkerRow(row)) continue;      // replaced below
-    if (!row.gate_sourced) { out.push(row); continue; }   // the CP's, untouched
+    // EVERY row reaches the matcher, whatever its origin. This is where a
+    // hand-added row used to be short-circuited out with "the CP's,
+    // untouched" -- so it could never match a gate crew, `matched` never
+    // gained that crew's key, and the append tail below added the gate's men
+    // as a SECOND row for a company already on the log. On 2026-08-31 that
+    // filed eight crews where four worked. It fires every morning a CP starts
+    // his log before the men badge in.
+    //
+    // A gate crew confirming a company the CP already typed is CONFIRMATION,
+    // not a second crew. The short-circuit still exists -- it MOVED to the
+    // no-match case below, where it is the difference between leaving a crew
+    // the gate never saw alone and emptying it.
     let f = freshCrews.get(keyOf(row));
     if (!f && !rosterKey(row.trade)) {
       const candidates = (freshByCompany.get(rosterKey(row.company)) || [])
@@ -495,9 +506,24 @@ export function reconcileCrewsWithRoster(stored, fresh) {
       // the filed record has to be able to say 4 (CP) alongside what the
       // turnstile actually counted, and that is only possible if the gate's
       // number keeps tracking the gate while the printed one does not.
-      const _overridden = isHeadcountOverridden(row);
+      //
+      // WHICH NUMBER SURVIVES A MERGE. isHeadcountOverridden requires
+      // gate_sourced, so it answers false for a hand-added row no matter what
+      // the CP typed -- reading it alone would let the gate silently overwrite
+      // a count he asserted, which is #244's own objection pointed the other
+      // way. A hand row that carries a number carries the CP's number; a blank
+      // one carries nobody's, so the gate's stands. Either way the gate's
+      // count is recorded in gate_num_workers and the source is named, which
+      // is what #244 wanted and what it built a second row to get.
+      const _wasGate = row.gate_sourced === true;
+      const _cpTyped = String(row.num_workers ?? '').trim() !== '';
+      const _overridden = _wasGate ? isHeadcountOverridden(row) : _cpTyped;
       out.push({
         ...row,
+        // CONFIRMED BY THE GATE, and it must say so: the flag is what makes
+        // isHeadcountOverridden work on the next load, so a CP correction on
+        // this row survives every later reconcile.
+        gate_sourced: true,
         // The roster's trade wins when this row had none — that is the whole
         // point of the company-only match above. A row that already had one
         // keeps it (keyOf matched, so they are equal anyway).
@@ -515,6 +541,18 @@ export function reconcileCrewsWithRoster(stored, fresh) {
         // Only fill a missing binding; never replace one the row already has.
         subcontractor_id: row.subcontractor_id || f.subcontractor_id || null,
       });
+    } else if (!row.gate_sourced) {
+      // NO MATCH, AND THIS ROW NEVER CAME FROM THE GATE. Untouched -- the CP
+      // typed a crew the turnstile has not seen, which is not evidence that
+      // nobody is there.
+      //
+      // THIS IS THE HALF THAT LOOKS DELETABLE AND IS NOT. Drop it and an
+      // unmatched hand row falls into the branch below, which writes
+      // num_workers '0' and empties worker_ids/worker_names -- because
+      // isHeadcountOverridden returns false for a row with no gate_sourced.
+      // That would erase a headcount the CP asserted, on a record he signs.
+      // crewReconcileMerge.test.cjs asserts this case by name.
+      out.push(row);
     } else {
       // Absent from today's roster. The gate's count for this crew is now zero
       // and is recorded as such; a CP override still stands over it, because

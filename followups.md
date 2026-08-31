@@ -661,6 +661,57 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## Rows on 2026-08-31's log have no `activity_id`, and nothing explains it
+
+**OPEN, NOT URGENT, AND EXPLICITLY NOT THE 2026-08-31 CREW-DUPLICATE BUG.** That
+one was `reconcileCrewsWithRoster` short-circuiting hand-added rows before its
+matcher, and it is fixed. The reconcile keys on `gate_sourced`, never on
+`activity_id`, so this played no part in it.
+
+**WHAT THE DOCUMENT SHOWS.** C1-C4, created 13:12, carry `crew_id`, `company`,
+`num_workers`, a work description and photos -- and **no `activity_id`**.
+C5-C8, appended by the gate, carry `act_1788191515625_1..4`.
+
+**WHY THAT SHOULD BE IMPOSSIBLE.** `activity_id` has exactly ONE writer:
+`EMPTY_ACTIVITY()` in `dailyJobsiteModel.js`, since `f49ddb5` (2026-08-10). All
+three creation paths spread it -- `addActivity`, `commitAddCrew`,
+`buildCrewsFromRoster` (both branches). Every transform preserves it:
+`reconcileCrewsWithRoster` spreads `...row` in both merge branches and
+`{...f}` in the append tail; `payloadActivities` spreads `...act`; `draftBody`
+passes activities through; `create_logbook` stores `data.data` verbatim and
+`_remember_other_activities` only reads. **Nothing backfills, and nothing
+strips.**
+
+**WHAT NARROWS IT.** `commitAddCrew` sets `gate_sourced: false` EXPLICITLY,
+while `addActivity` spreads `EMPTY_ACTIVITY()`, which never mentions the field.
+C1-C4 have the field ABSENT rather than false, which points at the Add-Crew
+button rather than the modal. That path spreads `EMPTY_ACTIVITY()` too, so it
+should still mint an id. **It does not resolve the contradiction.**
+
+**THE HYPOTHESIS, LABELLED AS ONE.** The draft these rows came from was written
+to AsyncStorage by a build older than 2026-08-10 and has sat there since;
+updating the app does not rewrite existing drafts, and nothing backfills. That
+would produce id-less rows on current JS with no stale bundle anywhere, which
+matches the operator confirming every device is on the latest build. **It is
+unverified.** Four earlier explanations for this were each contradicted by the
+next query, so treat it as a lead and not an answer.
+
+**WHAT IT COSTS TODAY.** Only the R2 key shape. A row with no `activity_id`
+uploads its photos under `logbook-photos/{project}/{photo_id}/...` through the
+`activityId || photoId` fallback in `logbookDrafts.js` -- addressable, resolves
+forever, but the activity grouping is lost and one document ends up carrying
+two key shapes. That is the documented coexistence (server.py:158), not
+corruption.
+
+**DO NOT "FIX" THE FALLBACK.** It is what keeps those eleven photos
+addressable. The defect is upstream, in whatever produces a row without an id.
+
+**AND NOTE THE BACKFILL HIDES IT.** `withActivityIds` in
+`app/logbooks/daily_jobsite.jsx` mints an id for any loaded row lacking one, so
+once that bundle is on the phones these rows stop being distinguishable from
+normal ones. Anyone returning to this needs a document filed BEFORE that
+shipped, or a device that has not updated.
+
 ## `serialize_id` MUTATES ITS ARGUMENT, and reads like a pure function
 
 **This is the hazard. The 2026-08-31 outage was one instance of it.**
