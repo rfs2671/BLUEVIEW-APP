@@ -730,6 +730,21 @@ argument.
 **The answer decides everything else**, so it should be settled first and by
 the operator, not inferred from whatever is easiest to build.
 
+**THE OPERATOR'S LEANING, 2026-08-31 -- A LEANING, NOT A RULING.** Attested.
+The reasoning, in his words: this app already distinguishes an intention from a
+correction, and a withdrawal is a decision about a compliance record. It also
+answers "who may withdraw" for free -- only somebody who can sign -- which is
+the part with no obvious answer otherwise.
+
+Recorded so whoever builds this starts from it rather than from scratch, and
+recorded as a LEANING because it was reached without the cost being known.
+What would argue against it: attested withdrawal makes cleaning up a mis-tap as
+heavy as filing the correction was, and the 2026-08-31 fork was a mis-tap --
+five amendments in eight minutes from a man who could not tell he already had
+one open. If the common case turns out to be fumbles rather than judgements,
+the weight lands in the wrong place. That is worth measuring before building,
+not arguing about now.
+
 **AND IT IS NOT URGENT.** One orphan on one worker is a smaller cost than a
 lifecycle designed at midnight. Recorded so the next person meets a known
 state rather than a mystery.
