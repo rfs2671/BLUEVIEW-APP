@@ -661,6 +661,97 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## `serialize_id` MUTATES ITS ARGUMENT, and reads like a pure function
+
+**This is the hazard. The 2026-08-31 outage was one instance of it.**
+
+```python
+def serialize_id(obj):
+    if obj and '_id' in obj:
+        obj['id'] = str(obj['_id'])
+        del obj['_id']          # <-- the caller's dict
+    ...
+    return obj                  # <-- the SAME object
+```
+
+It takes a document, deletes a key from it, and returns it. At the call site,
+`user_data = serialize_id(user)` looks like a conversion producing a new value.
+It is not. `user_data is user`, and **`user["_id"]` raises KeyError from that
+line onward.**
+
+**WHAT IT COST.** `get_current_user` read `user["_id"]` eleven lines after
+calling it. Every authenticated request returned 500 for any install sending
+`X-Client-Version` -- the whole product, not one endpoint -- and it ran for a
+day behind three green signals.
+
+**THE REPAIR THAT WOULD HAVE BEEN WORSE, and the one that was made.** Swapping
+in `user_data["id"]` -- the string the helper just produced -- stops the crash
+and then silently never writes, because `_record_client_version` filters
+`{"_id": user_id}` with no `to_query_id` and a string never matches an
+ObjectId. The fix captures the ObjectId BEFORE the call
+(`user_oid = user.get("_id")`) and `test_client_version_stamp.py` asserts the
+TYPE for exactly that reason.
+
+**THE MEASURED BLAST RADIUS**, by AST over `backend/` -- 49 `serialize_id(<name>)`
+call sites:
+
+  * **1 CRITICAL, NOW FIXED:** `list_cs_registrations()` --
+    `serialize_id(reg)`, then `"_id": {"$ne": reg["_id"]}` eleven lines later.
+    Guaranteed KeyError, gated behind `if reg.get("is_active")`, so it worked
+    until the first active registration existed and then 500'd
+    `GET /api/admin/cs-registrations` for the whole company. **It was live in
+    production the entire time** and predates the client-version outage that
+    surfaced the pattern. Fixed alongside it because two deploys for one defect
+    class is worse than one wider PR. The audit above now reports 0 critical.
+  * **19 SUSPECT reads across 8 call sites** -- `get_current_user` (device
+    branch), `get_site_devices`, `get_site_device`, `get_flagged_project_checkins`,
+    `get_checklists`, `get_checklist`, `finalize_logbook`,
+    `list_cs_registrations`. All read keys `serialize_id` does not delete
+    (`project_id`, `created_by`, `log_type`), so they work today. They are
+    reading a document a previous line silently rewrote.
+
+**THE SECOND-ORDER HAZARD NOBODY HAS HIT YET.** `serialize_id` also rewrites
+every naive datetime to tz-aware in place. A value read from the document
+*after* the call is aware; the same value read *before* is naive. Comparing one
+to the other raises `TypeError: can't subtract offset-naive and offset-aware
+datetimes`. `finalize_logbook` reads `.get("date")` after the call.
+
+**WHAT TO DO.** Do not rename or "fix" the helper in place -- 49 call sites
+depend on the mutation, and several read `id` off the object they passed in. The
+safe shape is a non-mutating sibling (`serialised(obj)` returning a copy) and
+migration site by site. Until then: **capture anything you need off a document
+BEFORE handing it to `serialize_id`.**
+
+## NO TEST SENDS `X-Client-Version`, so the suite is blind to that branch
+
+**The CI gap that let the above run for a day.**
+
+`get_current_user` stamps which client build is calling, guarded by
+
+```python
+reported = (request.headers.get("x-client-version") or "").strip()[:32]
+if reported and _client_version_needs_stamp(user, reported):
+```
+
+Send the header and the branch runs. Omit it and nothing does. **Every test in
+the suite omitted it**, so 4658 tests passed green while the branch they never
+entered raised KeyError on every authenticated request in production.
+
+`frontend/src/utils/api.js:92` sets the header on EVERY request, from
+`Constants.expoConfig?.version` (`api.js:8`). So the split is per-install, not
+per-account: a build that reports a version 500s on everything, a build that
+does not works fine. That is why two accounts behaved differently on one
+backend, and why Atlas showed nothing wrong with either.
+
+**`test_client_version_stamp.py` now asserts BOTH halves** -- header present and
+header absent -- because a test covering only one of them is what already
+existed and it proved nothing.
+
+**THE GENERAL RULE.** A request header that gates a code path is an input like
+any other. If a branch is reachable only with a header set, a test must set it.
+Grep for `request.headers.get(` before trusting a green suite: each one is a
+branch the default test client does not take.
+
 ## E4 — lookup-worker enumeration: OPEN, waiting on device provisioning
 
 `POST /api/checkin/lookup-worker` (`server.py:11045`) is **public, unauthenticated

@@ -4477,6 +4477,22 @@ async def get_current_user(
             logger.error(f"❌ AUTH FAIL: User not found - {user_id}")
             raise HTTPException(status_code=401, detail="User not found")
 
+        # CAPTURED BEFORE serialize_id, WHICH MUTATES ITS ARGUMENT. That
+        # helper does obj["id"] = str(obj["_id"]); del obj["_id"] on the dict it
+        # was handed and returns the same object, so every read of user["_id"]
+        # below this line raises KeyError. It did: this is the bug that made
+        # every authenticated request 500 for any install sending
+        # X-Client-Version (#295).
+        #
+        # AND IT MUST STAY THE ObjectId, not user_data["id"]. The obvious repair
+        # -- swap in the string id that serialize_id just produced -- stops the
+        # crash and then silently never writes, because _record_client_version
+        # filters on {"_id": user_id} with no to_query_id, and a string never
+        # matches an ObjectId _id. That trade is strictly worse: a loud failure
+        # becomes a stamp that quietly does nothing, on the field the admin
+        # surface reads to answer "whose phone is stranded".
+        user_oid = user.get("_id")
+
         user_data = serialize_id(user)
         user_data["site_mode"] = False
 
@@ -4485,10 +4501,10 @@ async def get_current_user(
         # stale install is not the person holding the phone. Fire-and-forget so
         # it can never add latency to a read, and throttled so it is not a
         # write per request.
-        if request is not None:
+        if request is not None and user_oid is not None:
             reported = (request.headers.get("x-client-version") or "").strip()[:32]
             if reported and _client_version_needs_stamp(user, reported):
-                asyncio.create_task(_record_client_version(user["_id"], reported))
+                asyncio.create_task(_record_client_version(user_oid, reported))
         logger.info(f"✅ AUTH SUCCESS: User {user_id}, role={user_data.get('role')}")
         # Phase C1: tag the Sentry scope with user_id + company_id +
         # role for every authenticated request.
@@ -16211,6 +16227,22 @@ async def list_cs_registrations(
     
     result = []
     for reg in regs:
+        # CAPTURED BEFORE serialize_id, WHICH MUTATES ITS ARGUMENT: it does
+        # reg["id"] = str(reg["_id"]); del reg["_id"] on this dict and returns
+        # the same object, so every read of reg["_id"] below raises KeyError.
+        # It did -- behind `if reg.get("is_active")`, so this endpoint worked
+        # until the first active registration existed and then 500'd for the
+        # whole company. Same helper and same defect as the client-version
+        # stamp in get_current_user; see followups, "serialize_id MUTATES ITS
+        # ARGUMENT".
+        #
+        # AND IT MUST STAY THE ObjectId. The exclusion is what makes the
+        # conflict count mean "some OTHER active registration holds this
+        # licence". A string id matches no document, $ne would exclude nothing,
+        # and every active registration would report a conflict with itself --
+        # a wrong answer on the one question this endpoint exists to answer.
+        reg_oid = reg.get("_id")
+
         reg_data = serialize_id(reg)
         # Add project name
         project = await db.projects.find_one({"_id": to_query_id(reg["project_id"])})
@@ -16222,7 +16254,7 @@ async def list_cs_registrations(
                 "license_number_normalized": reg.get("license_number_normalized"),
                 "is_active": True,
                 "is_deleted": {"$ne": True},
-                "_id": {"$ne": reg["_id"]},
+                "_id": {"$ne": reg_oid},
             })
             reg_data["has_conflict"] = conflicts > 0
         else:

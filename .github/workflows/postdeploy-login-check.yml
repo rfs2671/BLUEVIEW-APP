@@ -1,0 +1,86 @@
+# Nothing reaches production without a real account signing in on the SHA that
+# is actually deployed.
+#
+# On 2026-08-31 every authenticated request returned 500 for any install
+# sending X-Client-Version, and it ran all day behind three green signals: the
+# backend suite passed (no test sent the header), /api/version was 200 (the
+# process was up), and POST /api/auth/login returned 200 (the failure was the
+# SECOND call the app makes). This job is the signal that would have been red.
+#
+# It waits for Railway to actually serve the new SHA before asserting anything,
+# because a healthy old build answering /api/version is exactly the state that
+# hid a 33-commit deployment gap for three days.
+
+name: post-deploy login check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: "API base URL"
+        required: false
+        default: "https://api.levelog.com"
+      expect_sha:
+        description: "SHA that must be deployed (blank = whatever is live)"
+        required: false
+        default: ""
+
+jobs:
+  login-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Require the credentials this gate cannot run without
+        env:
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+        run: |
+          if [ -z "$SMOKE_EMAIL" ] || [ -z "$SMOKE_PASSWORD" ]; then
+            echo "::error::SMOKE_EMAIL / SMOKE_PASSWORD are not set."
+            echo "Add them under Settings -> Secrets and variables -> Actions."
+            echo "Use a REAL low-privilege account. This gate cannot be"
+            echo "satisfied by a mock: the outage it exists to catch was"
+            echo "invisible to every mock in the suite."
+            exit 1
+          fi
+
+      - name: Wait for the deployed SHA to appear
+        id: wait
+        env:
+          API_BASE: ${{ github.event.inputs.api_base || 'https://api.levelog.com' }}
+          WANT: ${{ github.event.inputs.expect_sha || github.sha }}
+        run: |
+          echo "waiting for $WANT at $API_BASE"
+          for i in $(seq 1 40); do
+            LIVE=$(curl -s --max-time 10 "$API_BASE/api/version" \
+                   | python3 -c "import sys,json;print(json.load(sys.stdin).get('commit',''))" 2>/dev/null || echo "")
+            echo "  attempt $i: ${LIVE:0:12}"
+            case "$WANT" in
+              "$LIVE"*) echo "deployed=$LIVE" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            esac
+            case "$LIVE" in
+              "$WANT"*) echo "deployed=$LIVE" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            esac
+            sleep 15
+          done
+          echo "::error::$API_BASE never reported $WANT. The deploy did not"
+          echo "land, or Railway is serving an older build. Do NOT treat a"
+          echo "healthy /api/version as a healthy deploy -- that is what hid"
+          echo "a 33-commit gap on 2026-08-28."
+          exit 1
+
+      - name: Sign in on the deployed SHA, then load the user
+        env:
+          API_BASE: ${{ github.event.inputs.api_base || 'https://api.levelog.com' }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+          EXPECT_SHA: ${{ steps.wait.outputs.deployed }}
+        run: python backend/scripts/postdeploy_login_check.py
