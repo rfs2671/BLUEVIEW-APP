@@ -661,6 +661,94 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## A LOSING FORK HAS NO WAY OUT, AND ONE IS LIVE ON 588 THOMAS
+
+**KNOWN PERMANENT STATE ON A PRODUCTION RECORD. One worker, one document, no
+exit.**
+
+Angel Lopez's orientation on 588 Thomas has two unsigned amendment children of
+the same parent (`6a95b43e8392cee9e0c217f9`), filed 49 seconds apart on
+2026-08-31 at 17:09:58 and 17:10:47. Michael signs the NEWER one -- `_filed_log`
+takes the newest FILED row, so signing the older would leave the newer able to
+supersede it the moment anyone signed that instead.
+
+**WHAT HAPPENS TO THE LOSER, precisely:**
+
+  * it stays `status: "draft"`, `is_locked: false`, `cp_signature: null`,
+    **forever**. There is no state that means "this correction was abandoned";
+  * `_filed_log` ignores it -- correctly, an unsigned amendment is an
+    intention, not a correction -- so it never reaches a filed report;
+  * the **stale-unsigned card lists it as "correction to sign" indefinitely**,
+    nagging the CP about a correction he deliberately abandoned;
+  * and after #333 it **blocks every future amendment of that orientation**: it
+    is an open head, so `AMENDMENT_ALREADY_OPEN` refuses the next one and
+    offers him the draft he has no intention of finishing.
+
+**THE LAST POINT IS THE SHARP ONE.** #333's refusal is right and it turns a
+stall into a dead end wherever a fork already exists. Refusing a second
+amendment while the first can only be signed or abandoned leaves no move. The
+refusal and the withdraw path are ONE change; only the refusal shipped, and
+this entry is the debt.
+
+**WHAT A WITHDRAW PATH NEEDS -- OPEN, NOT DESIGNED.**
+
+**1. Who may withdraw.** The filer is not always the signer: on 2026-08-31 the
+owner filed an amendment only the CP could sign. Candidates, none obviously
+right -- the person who FILED it (they know it was a mistake, but cannot sign
+so cannot be said to have judged the record), the person who would SIGN it
+(they bear the attestation, but did not create the thing being withdrawn), or
+either. The one clear rule: **not a background process.** Nothing that touches
+a compliance record may withdraw an intention to correct it.
+
+**2. What the withdrawn row says on a filed record.** It must remain a
+document -- deleting it would erase evidence that somebody thought the record
+was wrong, which is exactly the fact a later reader needs. So it needs a state
+(`withdrawn_at`, `withdrawn_by`, and a REASON, subject to the same readability
+rule as `amendment_reason` -- see "IS THERE A NUMBER"), and every reader has to
+learn it: `_filed_log` (ignore, as now), the stale-unsigned card (stop
+listing), `open_amendment_head` (stop blocking), and the chain display
+(`amendmentChain.js` -- a withdrawn link is part of the history and must not
+count toward "Corrected N times" as though it landed).
+
+**3. IS WITHDRAWING ITSELF AN ATTESTED ACT? This is the question that decides
+the shape, and it is not a detail.**
+
+If withdrawing is attested -- signed, in the `signature_events` ledger, with an
+`acting_capacity` -- then it is a statement on the record: *"I considered this
+correction and decided the record did not need it."* That is meaningful to an
+inspector, it is defensible at an OATH hearing, and it makes withdrawal a
+deliberate act nobody performs by accident. It also means only somebody who can
+SIGN may withdraw, which answers question 1 -- and it makes cleaning up a
+mis-tap as heavy as filing the correction was.
+
+If it is NOT attested -- a soft state, like discarding a draft -- then it is
+cheap and fixes the mis-tap case, and it lets an unsigned intention vanish from
+the record with nobody accountable for that decision. On a document that
+already distinguishes an intention from a correction, that asymmetry needs an
+argument.
+
+**The answer decides everything else**, so it should be settled first and by
+the operator, not inferred from whatever is easiest to build.
+
+**THE OPERATOR'S LEANING, 2026-08-31 -- A LEANING, NOT A RULING.** Attested.
+The reasoning, in his words: this app already distinguishes an intention from a
+correction, and a withdrawal is a decision about a compliance record. It also
+answers "who may withdraw" for free -- only somebody who can sign -- which is
+the part with no obvious answer otherwise.
+
+Recorded so whoever builds this starts from it rather than from scratch, and
+recorded as a LEANING because it was reached without the cost being known.
+What would argue against it: attested withdrawal makes cleaning up a mis-tap as
+heavy as filing the correction was, and the 2026-08-31 fork was a mis-tap --
+five amendments in eight minutes from a man who could not tell he already had
+one open. If the common case turns out to be fumbles rather than judgements,
+the weight lands in the wrong place. That is worth measuring before building,
+not arguing about now.
+
+**AND IT IS NOT URGENT.** One orphan on one worker is a smaller cost than a
+lifecycle designed at midnight. Recorded so the next person meets a known
+state rather than a mystery.
+
 ## AN AMENDMENT FILED AND NEVER SIGNED IS A CORRECTION THAT DID NOT HAPPEN
 
 **Three of them had been sitting on 588 Thomas since 2026-08-14, and nothing in
