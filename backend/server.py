@@ -25317,9 +25317,22 @@ async def generate_combined_report(
     # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
+    # EVERY TYPE WITH A DEDICATED SECTION ABOVE MUST BE LISTED HERE, or it
+    # prints twice: once under its own heading and again below as an
+    # "Additional Logbook". fall_protection and site_superintendent_log had
+    # both fallen through -- the second is the BC 3301.13.13 log, so the
+    # duplicate landed on a statutory record a CP signs.
+    #
+    # Nothing about a duplicated section looks like an error: no crash, no
+    # warning, just a report that mentions something twice. That is why
+    # test_report_no_double_render.py compares this set against the
+    # _filed_log(...) lookups by parsing BOTH, rather than pinning the two
+    # types that happened to be wrong. Add a section, and that test tells you
+    # to add it here.
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
                      "subcontractor_orientation", "osha_log", "hot_work", "crane_operations",
-                     "excavation_monitoring", "ssc_daily_safety_log", "concrete_operations"}
+                     "excavation_monitoring", "ssc_daily_safety_log", "concrete_operations",
+                     "fall_protection", "site_superintendent_log"}
     additional_logbooks_html = ""
     for logbook in logbooks:
         lt = logbook.get("log_type", "")
