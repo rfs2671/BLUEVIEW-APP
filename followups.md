@@ -661,6 +661,34 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## THERE IS NO HOLD. MERGING IS SHIPPING, ON BOTH HALVES.
+
+**Standing fact, established twice in one day (2026-08-31).**
+
+  * **Any merge touching `frontend/**` publishes an OTA immediately.**
+    `.github/workflows/ota-update.yml` triggers on `push` to `main` for
+    `frontend/app/**`, `frontend/src/**`, `frontend/App.js`, `frontend/app.json`,
+    `frontend/app.config.js`, `frontend/package.json`. It lands on the
+    `production` EAS branch, which is the one every store install listens on.
+  * **Any merge at all deploys the backend.** Railway auto-deploys from `main`.
+    A docs-only commit redeploys the API.
+
+**IF A HOLD IS EVER NEEDED, THE BRANCH DOES NOT GET MERGED.** There is no
+step between merge and release to intervene at. Not the OTA workflow, not
+Railway, not CI.
+
+**HOW IT WAS LEARNED, both times the same shape.** #294's client-version floor
+was merged and deployed straight into a boot crash-loop. Later the same day,
+#322's photo fix was merged while its OTA was explicitly held for evidence
+reasons -- the merge published it at 20:10:15 and the hold was announced
+afterwards, twice, by an agent that had not checked whether a hold was
+available. No damage: the record was `submitted`, so
+`FILED_LOG_DATA_IMMUTABLE` refused the write the backfill would have needed,
+and the evidence was read from Mongo rather than the app. That was luck.
+
+**WHAT TO SAY INSTEAD OF "I WILL HOLD THE OTA".** "This stays unmerged until
+X." Anything else is a claim about a control that does not exist.
+
 ## Rows on 2026-08-31's log have no `activity_id`, and nothing explains it
 
 **OPEN, NOT URGENT, AND EXPLICITLY NOT THE 2026-08-31 CREW-DUPLICATE BUG.** That
