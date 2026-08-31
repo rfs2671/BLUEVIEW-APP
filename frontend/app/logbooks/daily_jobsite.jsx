@@ -652,6 +652,15 @@ export default function DailyJobsiteLog() {
         hydrate(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
+        // `is_amendment !== true` is not an amendment. A truthy-but-not-true
+        // value is a shape nobody wrote deliberately and must not be read as a
+        // correction on a compliance record.
+        setAmendment(existing.is_amendment === true ? {
+          reason: (existing.amendment_reason || '').trim() || null,
+          by: (existing.created_by_name || '').trim() || null,
+          at: String(existing.created_at || '').slice(0, 10) || null,
+          has_reason: !!(existing.amendment_reason || '').trim(),
+        } : null);
         // THE SAME TRAP, ONE LAYER OUT. Crews were built only in the `else` —
         // so a SERVER log saved with an empty roster never rebuilt either, and
         // a draft pushed before anyone checked in is exactly that log. A filed
@@ -1326,6 +1335,16 @@ export default function DailyJobsiteLog() {
   // rather than a commitment: the `||` chain cannot detect a failed LOAD, only
   // a falsy value, which is the whole reason this defect existed.
   const [tileRetry, setTileRetry] = useState({});
+
+  // WHY THIS LOG IS A DIFFERENT SHAPE THAN HE LEFT IT.
+  //
+  // The load kept `id`, `data`, `cp_signature` and `cp_name` and DISCARDED
+  // is_amendment / amendment_reason / created_by_name / created_at -- so the
+  // editor held a corrected document and had no idea it was one. Retained
+  // here and handed to the stepper, which renders the banner above the form.
+  //
+  // Off the RECORD, so it reads the same in December as on the morning after.
+  const [amendment, setAmendment] = useState(null);
 
   // `retried` IS A PARAMETER, NOT CLOSURE STATE, and the body is a single
   // expression. Both are load-bearing: photoPurgeConsumers.test.cjs and
@@ -2631,6 +2650,7 @@ export default function DailyJobsiteLog() {
       nextHint={crewGaps.length > 0 ? crewGapSentence(crewGaps) : ''}
       onExit={() => router.push('/logbooks')}
       locked={locked}
+      amendment={amendment}
       incompleteSteps={stepsLeftIncomplete}
       a11yProgressLabel={
         stepsLeftIncomplete.length

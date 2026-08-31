@@ -501,8 +501,31 @@ export default function LogBooksScreen() {
   // read above so an older SERVER (which does not send the merged list) keeps
   // rendering something rather than nothing.
   const gaps = notifications?.attestation_gaps || [];
+  // AN UNSIGNED AMENDMENT IS NOT AN UNFINISHED DAY.
+  //
+  // "never signed - still open and still yours to finish" is the sentence this
+  // card sends for `unsigned`, and it is FALSE for an amendment: the CP signed
+  // that log. A correction somebody else filed cleared the signature, and the
+  // app was about to tell a man he failed to do a thing he did.
+  //
+  // Three states now, and the third names who corrected it and why -- he did
+  // not create this and cannot act on it until he knows that.
   const gapsUnsigned = gaps.filter((g) => g.state === 'unsigned');
   const gapsUnaffirmed = gaps.filter((g) => g.state === 'unaffirmed');
+  const gapsAmended = gaps.filter((g) => g.state === 'amendment_unsigned');
+
+  // Reads the RECORD. Every part comes off the amendment document, so this
+  // says the same thing in December as it does the morning after.
+  const amendmentLine = (g) => {
+    const a = g && g.amendment;
+    if (!a) return 'A correction was filed on this log. Review it and sign.';
+    const who = a.by ? ` by ${a.by}` : '';
+    const when = a.at ? ` on ${a.at}` : '';
+    const lead = `A correction was filed${who}${when}.`;
+    return a.has_reason && a.reason
+      ? `${lead} ${a.reason} Review it and sign.`
+      : `${lead} No reason was recorded for it. Review it and sign.`;
+  };
   // OLDEST FIRST. The server sorts newest-first for the count; the CP reads a
   // worklist, and the day most likely to be asked about — and the one the sweep
   // has had longest to not fix — belongs at the top of it.
@@ -739,7 +762,9 @@ export default function LogBooksScreen() {
               <View style={styles.notifHeader}>
                 <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
                 <Text style={styles.notifTitle}>
-                  {gaps.length} filed log{gaps.length > 1 ? 's' : ''} with no valid signature
+                  {gaps.length} filed log{gaps.length > 1 ? 's' : ''}{' '}
+                  {gapsAmended.length === gaps.length
+                    ? 'with a correction to sign' : 'needing your attention'}
                 </Text>
               </View>
               {gapsUnsigned.length > 0 && (
@@ -755,6 +780,15 @@ export default function LogBooksScreen() {
                   signature to affirm it. You do not need to sign again.
                 </Text>
               )}
+              {/* NOT "you never signed this". He did. One line per amendment,
+                  because each carries its own reason and its own author, and a
+                  count would tell him a correction exists without telling him
+                  what it was or who made it. */}
+              {gapsAmended.map((g) => (
+                <Text style={styles.notifWorker} key={`amd:${g.log_type}:${g.date}`}>
+                  {gapDate(g.date)} — {amendmentLine(g)}
+                </Text>
+              ))}
               {gapsOldestFirst.map((g) => (
                 <Pressable
                   key={`${g.log_type}:${g.date}`}
@@ -766,7 +800,8 @@ export default function LogBooksScreen() {
                     {gapLabel(g.log_type)}
                   </Text>
                   <Text style={styles.gapRowState}>
-                    {g.state === 'unsigned' ? 'never signed' : 'not affirmed'}
+                    {g.state === 'amendment_unsigned' ? 'correction to sign'
+                      : (g.state === 'unsigned' ? 'never signed' : 'not affirmed')}
                   </Text>
                   <ChevronRight size={14} strokeWidth={1.5} color={colors.text.muted} />
                 </Pressable>
