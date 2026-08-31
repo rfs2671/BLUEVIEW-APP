@@ -33,6 +33,7 @@ sys.modules[_spec.name] = _mod
 _spec.loader.exec_module(_mod)
 
 merge_rows = _mod.merge_rows
+pick_project = _mod.pick_project
 
 
 def _photos(n, prefix):
@@ -171,6 +172,51 @@ class ItRefusesToGuess(unittest.TestCase):
     def test_an_empty_log_is_fine(self):
         self.assertEqual(merge_rows([])[0], [])
         self.assertEqual(merge_rows(None)[0], [])
+
+
+class ResolvingTheProjectByName(unittest.TestCase):
+    """It must never guess which project a compliance amendment belongs to."""
+
+    ROWS = [
+        {"_id": "p1", "name": "588 Thomas St", "address": "588 Thomas St, Bronx"},
+        {"_id": "p2", "name": "857 Prescott", "address": "857 Prescott Ave"},
+        {"_id": "p3", "name": "8 Walworth", "address": "8 Walworth St"},
+    ]
+
+    def test_a_partial_name_resolves(self):
+        hit, _ = pick_project(self.ROWS, "588 Thomas")
+        self.assertEqual(hit["_id"], "p1")
+
+    def test_case_and_spacing_do_not_matter(self):
+        hit, _ = pick_project(self.ROWS, "  588   THOMAS  ")
+        self.assertEqual(hit["_id"], "p1")
+
+    def test_it_matches_on_address_too(self):
+        hit, _ = pick_project(self.ROWS, "Prescott Ave")
+        self.assertEqual(hit["_id"], "p2")
+
+    def test_an_exact_name_wins_over_a_substring_collision(self):
+        rows = self.ROWS + [{"_id": "p4", "name": "588 Thomas St Annex",
+                             "address": "588 Thomas St"}]
+        hit, cands = pick_project(rows, "588 Thomas St")
+        self.assertEqual(hit["_id"], "p1")
+        self.assertGreater(len(cands), 1)
+
+    def test_TWO_MATCHES_REFUSE(self):
+        rows = [{"_id": "a", "name": "Thomas North", "address": ""},
+                {"_id": "b", "name": "Thomas South", "address": ""}]
+        hit, cands = pick_project(rows, "Thomas")
+        self.assertIsNone(hit)
+        self.assertEqual(len(cands), 2)
+
+    def test_no_match_refuses(self):
+        hit, cands = pick_project(self.ROWS, "Nowhere Rd")
+        self.assertIsNone(hit)
+        self.assertEqual(cands, [])
+
+    def test_an_empty_needle_refuses(self):
+        self.assertIsNone(pick_project(self.ROWS, "")[0])
+        self.assertIsNone(pick_project(self.ROWS, None)[0])
 
 
 class TheScriptWritesNothing(unittest.TestCase):

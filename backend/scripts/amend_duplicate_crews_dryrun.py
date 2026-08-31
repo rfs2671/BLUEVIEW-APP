@@ -38,7 +38,13 @@ is. This script merges; it never deletes a crew that stands alone.
 
 USAGE
   MONGO_URL=... DB_NAME=... python backend/scripts/amend_duplicate_crews_dryrun.py \\
-      --project <project_id> --date 2026-08-31 [--json]
+      --project-name "588 Thomas" --date 2026-08-31 [--json]
+
+  --project-name matches on the project's name OR address, case- and
+  spacing-insensitively, and REFUSES to run on anything but a single match --
+  it prints the candidates instead. Guessing which project a compliance
+  amendment belongs to is not a thing this should do. --project <id> is still
+  accepted when the id is known.
 """
 from __future__ import annotations
 
@@ -65,6 +71,29 @@ def _key(value) -> str:
 
 def _count(row) -> str:
     return str(row.get("num_workers") or "").strip()
+
+
+def pick_project(projects, needle):
+    """(project_or_None, candidates). Never guesses between two matches.
+
+    Matches name or address on a normalised substring, so "588 Thomas" finds
+    "588 Thomas St" and "588  thomas street" alike without the caller having to
+    reproduce the stored punctuation.
+    """
+    want = _key(needle)
+    if not want:
+        return None, []
+    hits = []
+    for p in projects or []:
+        hay = f"{_key(p.get('name'))} {_key(p.get('address'))}"
+        if want in hay:
+            hits.append(p)
+    exact = [p for p in hits if _key(p.get("name")) == want]
+    if len(exact) == 1:
+        return exact[0], hits
+    if len(hits) == 1:
+        return hits[0], hits
+    return None, hits
 
 
 def merge_rows(activities):
@@ -143,18 +172,39 @@ def merge_rows(activities):
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--project", required=True)
+    ap.add_argument("--project", help="project id, when it is already known")
+    ap.add_argument("--project-name",
+                    help='name or address, e.g. "588 Thomas"')
     ap.add_argument("--date", required=True)
     ap.add_argument("--log-type", default="daily_jobsite")
     ap.add_argument("--json", action="store_true",
                     help="print the merged activities array as JSON")
     args = ap.parse_args()
 
+    if not args.project and not args.project_name:
+        print("one of --project or --project-name is required", file=sys.stderr)
+        return 1
+
     client = AsyncIOMotorClient(os.environ["MONGO_URL"])
     db = client[os.environ["DB_NAME"]]
 
+    project_id = args.project
+    if not project_id:
+        rows = await db.projects.find(
+            {"is_deleted": {"$ne": True}}, {"name": 1, "address": 1}).to_list(None)
+        hit, candidates = pick_project(rows, args.project_name)
+        if not hit:
+            print(f"{len(candidates)} projects match {args.project_name!r}; "
+                  f"re-run with --project <id>", file=sys.stderr)
+            for c in candidates[:10]:
+                print(f"  {c.get('_id')}  {c.get('name')!r}  "
+                      f"{c.get('address')!r}", file=sys.stderr)
+            return 1
+        project_id = str(hit["_id"])
+        print(f"project   {hit.get('name')!r}  ({project_id})")
+
     doc = await db.logbooks.find_one({
-        "project_id": args.project,
+        "project_id": project_id,
         "log_type": args.log_type,
         "date": args.date,
         "is_deleted": {"$ne": True},
