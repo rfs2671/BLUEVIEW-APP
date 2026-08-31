@@ -515,21 +515,54 @@ export function reconcileCrewsWithRoster(stored, fresh) {
       // one carries nobody's, so the gate's stands. Either way the gate's
       // count is recorded in gate_num_workers and the source is named, which
       // is what #244 wanted and what it built a second row to get.
+      // WHO SAYS SO. "A number exists" is not "somebody asserted it", and
+      // reading the first as the second is how the app ends up speaking for
+      // the CP on a document he signs.
+      //
+      // The predicate here was `String(row.num_workers).trim() !== ''`, which
+      // stamped num_workers_source 'cp' onto ANY row carrying a count. Rows
+      // seeded from the gate before 2026-08-10 carry the TURNSTILE's number
+      // and no gate_sourced flag (the flag did not exist yet), and
+      // num_workers_source did not exist either until 2026-08-27 -- so the
+      // rule relabelled the gate's own count as the CP's assertion. On
+      // 2026-08-31 that would have printed "(CP)" against three crews whose
+      // numbers he never typed.
+      //
+      // THREE STATES:
+      //   cp     an explicit prior assertion -- kept, and labelled his
+      //   unset  a number with NO recorded author -- kept, labelled NEITHER.
+      //          _headcount_cell prints it bare, which is the honest reading:
+      //          the number stands, nobody is credited with it.
+      //   gate   adopted from the crew just matched -- we know its origin
       const _wasGate = row.gate_sourced === true;
-      const _cpTyped = String(row.num_workers ?? '').trim() !== '';
-      const _overridden = _wasGate ? isHeadcountOverridden(row) : _cpTyped;
+      const _asserted = row.num_workers_source === CP_SOURCE;
+      const _hasNumber = String(row.num_workers ?? '').trim() !== '';
+      const _keepHis = _asserted || (!_wasGate && _hasNumber);
+      const _unattributed = _keepHis && !_asserted;
       out.push({
         ...row,
         // CONFIRMED BY THE GATE, and it must say so: the flag is what makes
         // isHeadcountOverridden work on the next load, so a CP correction on
         // this row survives every later reconcile.
-        gate_sourced: true,
+        //
+        // WITHHELD FOR AN UNATTRIBUTED NUMBER, deliberately. Setting it would
+        // make this row indistinguishable from a pre-2026-08-27 GATE row --
+        // both flagged, both sourceless -- and the next reconcile would then
+        // adopt the gate's count over a number we chose to preserve precisely
+        // because we do not know whose it is. Leaving the flag off keeps the
+        // two apart and makes the state stable across every later pass.
+        gate_sourced: _unattributed ? row.gate_sourced : true,
         // The roster's trade wins when this row had none — that is the whole
         // point of the company-only match above. A row that already had one
         // keeps it (keyOf matched, so they are equal anyway).
         trade: row.trade || f.trade,
-        num_workers: _overridden ? row.num_workers : f.num_workers,
-        num_workers_source: _overridden ? CP_SOURCE : GATE_SOURCE,
+        num_workers: _keepHis ? row.num_workers : f.num_workers,
+        // undefined, not a sentinel: the key is simply absent, which is what
+        // commitAddCrew already writes for an untyped count and what
+        // _headcount_cell already reads as "no attribution".
+        num_workers_source: _asserted
+          ? CP_SOURCE
+          : (_unattributed ? undefined : GATE_SOURCE),
         gate_num_workers: f.num_workers,
         // WORKER IDENTITIES ARE GATE FACTS AND ARE NEVER OVERRIDDEN. The CP
         // corrects a COUNT; he does not add or remove named men, and PR 2's

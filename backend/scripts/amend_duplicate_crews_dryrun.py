@@ -73,6 +73,18 @@ def _count(row) -> str:
     return str(row.get("num_workers") or "").strip()
 
 
+def _source_label(row) -> str:
+    """How the after-table names the author of a count. THREE states, and the
+    third must not look like either of the others -- the whole defect was a
+    tool printing '(cp)' for numbers nobody claimed."""
+    src = row.get("num_workers_source")
+    if src == CP_SOURCE:
+        return "cp — the CP asserted this"
+    if src == GATE_SOURCE:
+        return "gate"
+    return "NO RECORDED AUTHOR — prints unattributed"
+
+
 def pick_project(projects, needle):
     """(project_or_None, candidates). Never guesses between two matches.
 
@@ -135,9 +147,30 @@ def merge_rows(activities):
         merged["gate_sourced"] = True
         merged["trade"] = h.get("trade") or g.get("trade") or ""
 
-        cp_typed = _count(h) != ""
-        merged["num_workers"] = _count(h) if cp_typed else _count(g)
-        merged["num_workers_source"] = CP_SOURCE if cp_typed else GATE_SOURCE
+        # WHO SAYS SO. "A number exists" is not "somebody asserted it". This
+        # read `_count(h) != ""` and stamped 'cp' on every row carrying a
+        # count -- so on 2026-08-31 it printed "(cp)" for C1, C2 and C3, whose
+        # numbers came from the gate seeding and which no CP ever typed. Only
+        # C4 was a real assertion (5 against the gate's 4). Three of the four
+        # were invented by the tool written to repair the record.
+        #
+        #   cp     an explicit prior assertion -- kept and labelled his
+        #   UNSET  a number with no recorded author -- kept, labelled NEITHER
+        #   gate   adopted from the crew just matched -- origin known
+        asserted = h.get("num_workers_source") == CP_SOURCE
+        has_number = _count(h) != ""
+        keep_his = asserted or has_number
+        merged["num_workers"] = _count(h) if keep_his else _count(g)
+        if asserted:
+            merged["num_workers_source"] = CP_SOURCE
+        elif keep_his:
+            # The key is REMOVED, not set to a sentinel. _headcount_cell reads
+            # an absent source as no attribution and prints the number bare,
+            # which is the honest rendering of a count nobody is recorded as
+            # having made.
+            merged.pop("num_workers_source", None)
+        else:
+            merged["num_workers_source"] = GATE_SOURCE
         merged["gate_num_workers"] = _count(g)
 
         for field in ("worker_ids", "worker_names", "check_in_time"):
@@ -155,7 +188,7 @@ def merge_rows(activities):
             f"{h.get('company')!r}: photos {len(h_photos)}+{len(g_photos)}"
             f"={len(merged['photos'])}, num_workers "
             f"{_count(h) or '(blank)'}->{merged['num_workers']} "
-            f"({merged['num_workers_source']}), gate_num_workers "
+            f"[{_source_label(merged)}], gate_num_workers "
             f"{merged['gate_num_workers']}")
         out.append(merged)
 
@@ -229,7 +262,8 @@ async def main() -> int:
               f"gate_sourced={bool(a.get('gate_sourced'))!s:<5} "
               f"activity_id={a.get('activity_id') or '(none)'!s:<24} "
               f"photos={len(a.get('photos') or [])} "
-              f"num_workers={a.get('num_workers')!r}")
+              f"num_workers={a.get('num_workers')!r} "
+              f"[{_source_label(a)}]")
 
     print("\nRULE APPLIED")
     for n in notes:
@@ -240,7 +274,7 @@ async def main() -> int:
         print(f"  {a.get('crew_id'):<4} {str(a.get('company'))[:24]:<24} "
               f"photos={len(a.get('photos') or [])} "
               f"num_workers={a.get('num_workers')!r} "
-              f"({a.get('num_workers_source')}) "
+              f"[{_source_label(a)}] "
               f"gate_num_workers={a.get('gate_num_workers')!r}")
 
     lost = photo_total(acts) - photo_total(merged)
