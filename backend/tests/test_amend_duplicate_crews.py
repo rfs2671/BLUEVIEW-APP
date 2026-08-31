@@ -151,9 +151,33 @@ class TodaysLog(unittest.TestCase):
         self.assertEqual(aaz["worker_ids"], ["w1"])
         self.assertEqual(aaz["worker_names"], ["A"])
 
-    def test_every_row_is_marked_confirmed(self):
-        for row in self.out:
-            self.assertIs(row["gate_sourced"], True)
+    def test_gate_sourced_IS_WITHHELD_WHEN_NOBODY_IS_RECORDED(self):
+        """THE AMENDMENT IS AN EDITABLE DRAFT, NOT A CLOSED RECORD.
+        amend_logbook creates a child with status "draft", is_locked false and
+        the signature cleared, so the CP opens it to sign and
+        reconcileCrewsWithRoster runs on these rows. A row carrying
+        gate_sourced with no num_workers_source is indistinguishable from a
+        pre-2026-08-27 gate row, and the next pass would adopt the gate's count
+        over the number preserved precisely because nobody is recorded as
+        having asserted it."""
+        for company in ("AAZ", "Arkon Builders", "Power Direct"):
+            row = next(r for r in self.out if r["company"] == company)
+            self.assertNotIn("num_workers_source", row)
+            self.assertIsNot(row.get("gate_sourced"), True,
+                             f"{company}: an unattributed number was flagged "
+                             f"as gate-confirmed and would be overwritten")
+
+    def test_a_KNOWN_origin_IS_marked_confirmed(self):
+        """C4's count is his, explicitly. That row has a known origin and is
+        flagged, which is what lets isHeadcountOverridden protect it."""
+        qp = next(r for r in self.out if r["company"] == "Quality Plumbing")
+        self.assertIs(qp["gate_sourced"], True)
+
+    def test_an_adopted_gate_count_is_also_marked(self):
+        out, _ = merge_rows([_hand("C1", "AAZ", 0, num_workers=""),
+                             _gate("C2", "AAZ")])
+        self.assertIs(out[0]["gate_sourced"], True)
+        self.assertEqual(out[0]["num_workers_source"], "gate")
 
     def test_the_four_companies_appear_once_each(self):
         names = sorted(r["company"] for r in self.out)

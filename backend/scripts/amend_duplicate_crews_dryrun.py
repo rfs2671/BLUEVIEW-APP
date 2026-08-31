@@ -144,7 +144,6 @@ def merge_rows(activities):
         consumed.add(gi)
 
         merged = dict(h)
-        merged["gate_sourced"] = True
         merged["trade"] = h.get("trade") or g.get("trade") or ""
 
         # WHO SAYS SO. "A number exists" is not "somebody asserted it". This
@@ -160,6 +159,7 @@ def merge_rows(activities):
         asserted = h.get("num_workers_source") == CP_SOURCE
         has_number = _count(h) != ""
         keep_his = asserted or has_number
+        unattributed = keep_his and not asserted
         merged["num_workers"] = _count(h) if keep_his else _count(g)
         if asserted:
             merged["num_workers_source"] = CP_SOURCE
@@ -172,6 +172,22 @@ def merge_rows(activities):
         else:
             merged["num_workers_source"] = GATE_SOURCE
         merged["gate_num_workers"] = _count(g)
+
+        # gate_sourced IS WITHHELD WHEN THE NUMBER HAS NO RECORDED AUTHOR,
+        # matching reconcileCrewsWithRoster. This script set it unconditionally
+        # because it was written in #323, before #326 established the rule.
+        #
+        # IT IS NOT ACADEMIC HERE. amend_logbook creates a new EDITABLE child --
+        # status "draft", is_locked false, signature cleared for re-signing --
+        # so the CP opens the amendment to sign it and the reconcile runs on
+        # these rows. A row carrying gate_sourced with no num_workers_source is
+        # indistinguishable from a pre-2026-08-27 gate row, and the next pass
+        # would adopt the gate's count over the very number we preserved by
+        # refusing to attribute it. The flag is set only when the count has a
+        # known origin: the CP asserted it, or it came from the crew just
+        # matched.
+        if not unattributed:
+            merged["gate_sourced"] = True
 
         for field in ("worker_ids", "worker_names", "check_in_time"):
             if g.get(field) is not None:
