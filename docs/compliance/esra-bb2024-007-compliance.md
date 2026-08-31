@@ -226,25 +226,48 @@ cannot be orphaned by object-store deletion.
 > "All involved parties must clearly intend to sign electronically and agree to
 > conduct transactions electronically."
 
-**NOT BUILT.** There is no record anywhere in the system of any person agreeing to
-conduct business electronically or intending their electronic mark to be their
-signature. A search for a consent artefact returns only comments describing the
-worker-facing gate affirmation, which is a different thing: it is a per-document
-authorisation to use a captured signature on that day's pre-shift sheet, not a
-general consent to electronic signing.
+**BUILT.** Implemented in `backend/lib/esra_consent.py` and two endpoints, and
+in production since `ad4625b` (2026-08-30).
 
-A design has been specified — a one-time agreement at account setup recording the
-signer, the timestamp, the exact text agreed, and the version of that text, so
-that the wording can be reconstructed years later — but **no code implements it as
-of `448410f`.**
+> **CORRECTION, AND THE REASON IT IS FLAGGED HERE.** The first issue of this
+> document said consent was NOT BUILT. That was true when the text was written
+> and **false by the time it was published**: this file and the consent code
+> landed in the *same commit*, `ad4625b`, and the text was not revised. A
+> reviewer reading the first issue was told the system had no consent record
+> while the commit that delivered the document also delivered one. The error is
+> recorded rather than quietly overwritten, because a compliance document whose
+> corrections are invisible is worth less than one that shows them.
 
-**A related exposure the reviewer should weigh.** The planned superintendent log
-includes a per-project password path on the shared site device, which signs as the
-superintendent named on the project record. It is intended as a convenience door
-into the superintendent's own log rather than an anonymous kiosk entry. Its
-interaction with V.5 and V.7 — whether a shared secret entered on a shared device
-constitutes a verified signer clearly intending to sign — has been identified as a
-risk and is not resolved.
+What is stored, per agreement (`esra_consents`, one row per agreement,
+append-only, nothing updated in place):
+
+| field | why |
+|---|---|
+| `user_id`, `user_email`, `user_name`, `role_at_time`, `company_id` | denormalised so the consent stays readable when the user row is renamed, soft-deleted, or moved between companies |
+| `consent_version` | dated, e.g. `2026-08-30.1` |
+| **`consent_text`** | **the wording verbatim.** A version pointer alone resolves, years later, to whatever the registry says *then* — text the person never saw |
+| `agreed_at`, `ip_address`, `user_agent` | when, and from where |
+
+`lib/esra_consent.py` keeps an **append-only registry of every version ever
+shown**, so a stored row can be checked against what it claims to have said.
+`verify_stored_consent` distinguishes four outcomes and reports
+`UNKNOWN_VERSION` as *"this build cannot check the row"* rather than *"the row
+is wrong"* — a distinction that matters if a row is examined by a later build.
+
+It is **one-time at account setup**, not a per-entry confirmation: a signer
+learns to click through anything seen daily, and a consent clicked through is
+poor evidence of intent. `esra_consents` is in `SOFT_DELETE_NEVER_PURGE` —
+a consent is evidence *about* a signature and outlives the signature it
+authorises.
+
+It **fails closed**: a read error, a missing database, a missing user id, or a
+superseded version all report "no current consent". Failing open on a consent
+check is the one direction that cannot be undone, because an entry signed
+without consent cannot be consented to afterwards.
+
+**What is still not addressed under V.5:** the consent covers the account
+holder signing on their own account. It does not, and cannot, speak for a
+signature applied by anyone else.
 
 ### V.6 — Signature integrity
 
@@ -276,12 +299,21 @@ not hold is visible in the record.
 1. **No multi-factor authentication.** Password only.
 2. **No email or phone verification of the signer at signing time.**
 3. **No digital certificates.**
-4. **The planned per-project password path** would authenticate a *device
-   session*, then attribute the signature to the *named superintendent* on the
-   project record. The two are not the same person by construction, and the
-   record would not distinguish a superintendent who signed on his own account
-   from one signed for on a shared device unless the design records that
-   difference. **This is identified and unresolved.**
+4. **The per-project password path has been ABANDONED.** It would have
+   authenticated a *device session* on a shared tablet and then attributed the
+   signature to the *named superintendent* on the project record — two
+   different things by construction. Nothing in the record would distinguish a
+   superintendent who signed on his own account from one signed for by whoever
+   held the tablet.
+
+   **Withdrawn from the roadmap entirely on 2026-08-31, not deferred**, after
+   two independent readings reached the same conclusion: attribution to a named
+   superintendent regardless of who typed a shared password does not satisfy
+   V.7's requirement that individuals who sign be *verified*, and the log in
+   question is signed under a **DOB licence**. It will not be built.
+
+   The superintendent signs on his own account (`role: "superintendent"`,
+   shipped `ad4625b`), on the site device or his own phone.
 
 Accounts are additionally gated on approval before they can incur cost
 (`require_approved`), which is an authorisation control rather than an identity
@@ -333,12 +365,12 @@ Listed without mitigation, so that nothing is obscured.
 
 | # | requirement | status |
 |---|---|---|
-| V.5 | Intent and consent | **Not built.** No consent record exists. |
+| V.5 | Intent and consent | **BUILT** — `ad4625b`. See the correction in V.5. |
 | V.4 | Retention — 7 years post-completion | **Not computable.** No job-completion date exists. |
 | V.4 | Object-store retention | Hard-delete removes photographs by prefix (server.py:11151). |
 | V.4 | Accessibility after the relationship ends | Not addressed. |
 | V.7 | Multi-factor / verified signer at signing | Not built. |
-| V.7 | Shared-device password path attribution | Designed, unresolved. |
+| V.7 | Shared-device password path attribution | **Abandoned 2026-08-31.** Will not be built. |
 | V.3 | Cryptographic signing by the signer | Not built. Server-computed hash only. |
 | V.2 | Hash chaining across events | Not built. |
 | V.2 | External timestamp anchoring | Not built. |
@@ -352,3 +384,4 @@ Listed without mitigation, so that nothing is obscured.
 | date | commit | change |
 |---|---|---|
 | 2026-08-30 | `448410f` | First issue. Assessed against Bulletin 2024-007 for the BC 3301.13.13 log only. |
+| 2026-08-31 | — | **V.5 corrected from NOT BUILT to BUILT.** The first issue was published in the same commit (`ad4625b`) that delivered the consent record and was not revised; a reviewer was told no consent existed while it did. V.7's password path moved from "designed, unresolved" to **abandoned**. |
