@@ -92,6 +92,24 @@ ITEMS: List[Dict] = [
         "citation": "BC 3301.13.13",
         "attestable": False,
         "collected": True,
+        # THE ONE ITEM THAT OVERLAPS WITH THE CP'S DAILY JOBSITE LOG, and the
+        # only one whose PROVENANCE has to be recorded.
+        #
+        # Today the CP fills the day and the superintendent visits, so item 2
+        # is fairly summarised from the CP's record. FROM 2027-01-01 the CS
+        # must be present during all active work, and he is then the WITNESS
+        # rather than the summariser -- the derivation inverts.
+        #
+        # So the document says which it was: `source` is "adopted" when the
+        # autofill from the CP's log was left as it arrived, and "own" the
+        # moment he edits it. An unmarked item 2 cannot tell a reader whether
+        # they are reading his observation or a copy of somebody else's, and
+        # once the two logs can disagree -- which is exactly what January makes
+        # possible -- that difference is the whole finding.
+        #
+        # RETROFITTING PROVENANCE ONTO FILED RECORDS IS IMPOSSIBLE, which is
+        # why the flag ships before the divergence check that will read it.
+        "provenance": True,
         "fields": ["summary"],
     },
     {
@@ -249,6 +267,35 @@ def applicable_items(log_date: Optional[str]) -> List[Dict]:
 
 
 # ── The three empty states ──────────────────────────────────────────────────
+
+# ── Where item 2's text came from ───────────────────────────────────────────
+#
+# ADOPTED   the autofill from the CP's daily jobsite log, unedited
+# OWN       he changed it, so it is his own account of the day
+# UNMARKED  a log filed before this flag existed. NOT "adopted": a row that
+#           predates the question has not answered it, and guessing would put
+#           a provenance on a record nobody recorded one for.
+PROVENANCE_ADOPTED = "adopted"
+PROVENANCE_OWN = "own"
+PROVENANCE_UNMARKED = "unmarked"
+
+
+def item_provenance(data) -> str:
+    """Where item 2's summary came from, as stored.
+
+    Reads only what was RECORDED. It does not compare the text against the
+    CP's log to decide -- that would make a filed document's provenance depend
+    on a record that can change afterwards, and the whole point of the flag is
+    that it was true at the moment of filing.
+    """
+    block = ((data or {}).get("progress") or {}) if isinstance(data, dict) else {}
+    if not isinstance(block, dict):
+        return PROVENANCE_UNMARKED
+    source = str(block.get("source") or "").strip().lower()
+    if source in (PROVENANCE_ADOPTED, PROVENANCE_OWN):
+        return source
+    return PROVENANCE_UNMARKED
+
 
 ATTESTED_NONE = "attested_none"
 NOT_REACHED = "not_reached"
