@@ -69,8 +69,14 @@ const {
   reconcileCrewsWithRoster, isHeadcountOverridden, gateHeadcount, CP_SOURCE,
 } = mod;
 
+// A CREW THE CP ADDED AND TYPED A COUNT INTO. num_workers_source is part of
+// that shape -- commitAddCrew writes CP_SOURCE exactly when a number is typed
+// and leaves it undefined when the field is blank. The fixture omitted it and
+// still expected 'cp' out, which quietly asserted that a bare number is an
+// assertion. It is not, and section 9 is the row that proves it.
 const hand = (over = {}) => ({
   crew_id: 'C1', company: 'AAZ', trade: '', num_workers: '4',
+  num_workers_source: 'cp',
   gate_sourced: false, worker_ids: [], worker_names: [],
   work_description: 'Set forms, north bay', work_locations: 'cellar',
   photos: [{ id: 'cap_1' }, { id: 'cap_2' }],
@@ -202,6 +208,49 @@ console.log('\n8. WHAT MUST NOT CHANGE');
     'an empty stored list still returns the fresh rows');
   ok(reconcileCrewsWithRoster([hand()], []).length === 1,
     'an empty roster leaves the CP row alone');
+}
+
+console.log('\n9. WHO SAYS SO — THE THIRD STATE');
+{
+  // A pre-2026-08-10 gate-seeded row: the gate's count, the gate's men, and NO
+  // gate_sourced flag, because the flag did not exist when it was written.
+  // num_workers_source did not exist either (added 2026-08-27), so the number
+  // has no recorded author. It is NOT the CP's.
+  const legacy = {
+    crew_id: 'C1', company: 'AAZ', trade: 'concrete', num_workers: '4',
+    work_description: '', work_locations: '', photos: [],
+    worker_ids: ['w1', 'w2', 'w3', 'w4'], worker_names: ['A', 'B', 'C', 'D'],
+    check_in_time: '2026-08-31T11:00:00Z', subcontractor_id: 'srv_aaz',
+  };
+  const out = reconcileCrewsWithRoster([legacy], [gate({ num_workers: '6' })]);
+  const r = out[0];
+  ok(r.num_workers === '4', 'the number is kept — not invented, not discarded');
+  ok(r.num_workers_source !== CP_SOURCE,
+    'IT IS NOT ATTRIBUTED TO THE CP. He did not type it, and a signed 3301.2 '
+    + 'record must not say he did');
+  ok(!r.num_workers_source,
+    'nor to the gate: with no recorded author the field stays UNSET, which '
+    + '_headcount_cell prints as a bare number with no label');
+  ok(r.gate_num_workers === '6', "the gate's live count is recorded beside it");
+
+  const second = reconcileCrewsWithRoster(out, [gate({ num_workers: '6' })]);
+  ok(second[0].num_workers === '4' && !second[0].num_workers_source,
+    'and it STAYS unset on the next reconcile — no pass may invent an author');
+
+  // The real C4: the CP typed 5 where the gate recorded 4. That disagreement
+  // is the record, and it survives.
+  const asserted = reconcileCrewsWithRoster(
+    [{ ...legacy, company: 'Quality Plumbing', num_workers: '5', num_workers_source: CP_SOURCE }],
+    [gate({ company: 'Quality Plumbing', num_workers: '4' })],
+  );
+  ok(asserted[0].num_workers === '5' && asserted[0].num_workers_source === CP_SOURCE,
+    'AN EXPLICIT CP ASSERTION STANDS — 5 against the gate 4, and it says so');
+  ok(asserted[0].gate_num_workers === '4', 'with the gate number it stands over');
+
+  const gateRow = reconcileCrewsWithRoster(
+    [gate({ num_workers: '2', gate_num_workers: '2' })], [gate({ num_workers: '6' })]);
+  ok(gateRow[0].num_workers === '6' && gateRow[0].num_workers_source === 'gate',
+    'a real gate row still tracks the gate and still says gate');
 }
 
 console.log(`\n  ${passed} passed, ${failed} failed`);

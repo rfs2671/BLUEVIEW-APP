@@ -41,10 +41,19 @@ def _photos(n, prefix):
             for i in range(n)]
 
 
-def _hand(crew, company, n_photos, num_workers="4"):
-    return {"crew_id": crew, "company": company, "trade": "",
-            "num_workers": num_workers, "photos": _photos(n_photos, f"cap{crew}"),
-            "work_description": f"work by {company}", "work_locations": "cellar"}
+def _hand(crew, company, n_photos, num_workers="4", source=None):
+    """A row with NO gate_sourced flag. On 2026-08-31 these were NOT hand-typed
+    -- they were gate-seeded by pre-2026-08-10 code, which set neither
+    gate_sourced nor activity_id because neither field existed. `source` is
+    left None to match: the number has no recorded author."""
+    row = {"crew_id": crew, "company": company, "trade": "",
+           "num_workers": num_workers, "photos": _photos(n_photos, f"cap{crew}"),
+           "work_description": f"work by {company}", "work_locations": "cellar",
+           "worker_ids": ["w9"], "worker_names": ["Z"],
+           "check_in_time": "2026-08-31T11:00:00Z"}
+    if source:
+        row["num_workers_source"] = source
+    return row
 
 
 def _gate(crew, company, n_photos=0, num_workers="6"):
@@ -61,7 +70,8 @@ TODAY = [
     _hand("C1", "AAZ", 2),
     _hand("C2", "Arkon Builders", 3),
     _hand("C3", "Power Direct", 2),
-    _hand("C4", "Quality Plumbing", 4),
+    # THE ONE REAL ASSERTION: he typed 5 where the gate recorded 4.
+    _hand("C4", "Quality Plumbing", 4, num_workers="5", source="cp"),
     _gate("C5", "AAZ", n_photos=2),
     _gate("C6", "Arkon Builders"),
     _gate("C7", "Power Direct"),
@@ -104,11 +114,37 @@ class TodaysLog(unittest.TestCase):
             self.assertTrue(row["work_description"].startswith("work by"))
             self.assertEqual(row["work_locations"], "cellar")
 
-    def test_his_count_stands_and_the_gates_is_recorded_beside_it(self):
-        aaz = next(r for r in self.out if r["company"] == "AAZ")
-        self.assertEqual(aaz["num_workers"], "4")
-        self.assertEqual(aaz["num_workers_source"], "cp")
-        self.assertEqual(aaz["gate_num_workers"], "6")
+    def test_AN_UNATTRIBUTED_NUMBER_IS_NOT_MADE_THE_CPs(self):
+        """THE ASSERTION THIS FILE EXISTS FOR NOW. C1-C3 carry counts with no
+        recorded author. The tool printed "(cp)" for all of them and was one
+        approval away from filing a fabricated author onto a signed 3301.2."""
+        for company in ("AAZ", "Arkon Builders", "Power Direct"):
+            row = next(r for r in self.out if r["company"] == company)
+            self.assertNotIn("num_workers_source", row,
+                             f"{company}: an author was invented")
+            self.assertEqual(row["num_workers"], "4",
+                             f"{company}: the number itself must be kept")
+            self.assertEqual(row["gate_num_workers"], "6")
+
+    def test_THE_ONE_REAL_ASSERTION_SURVIVES(self):
+        """C4 is genuine: he typed 5 where the gate recorded 4. That
+        disagreement is the record and must not be flattened."""
+        qp = next(r for r in self.out if r["company"] == "Quality Plumbing")
+        self.assertEqual(qp["num_workers"], "5")
+        self.assertEqual(qp["num_workers_source"], "cp")
+        self.assertEqual(qp["gate_num_workers"], "6")
+
+    def test_the_unset_state_is_printed_DIFFERENTLY(self):
+        """It must not read as either party in the output a human reviews."""
+        unset = _mod._source_label({})
+        cp = _mod._source_label({"num_workers_source": "cp"})
+        gate = _mod._source_label({"num_workers_source": "gate"})
+        self.assertIn("NO RECORDED AUTHOR", unset)
+        self.assertTrue(cp.startswith("cp"))
+        self.assertEqual(gate, "gate")
+        # Three labels, three distinct strings. The reviewer must not be able
+        # to mistake the unset state for either party at a glance.
+        self.assertEqual(len({unset, cp, gate}), 3)
 
     def test_the_gates_named_men_are_carried_across(self):
         aaz = next(r for r in self.out if r["company"] == "AAZ")
@@ -134,6 +170,12 @@ class ItRefusesToGuess(unittest.TestCase):
                              _gate("C2", "AAZ")])
         self.assertEqual(out[0]["num_workers"], "6")
         self.assertEqual(out[0]["num_workers_source"], "gate")
+
+    def test_a_number_with_no_author_keeps_the_number_and_no_label(self):
+        out, _ = merge_rows([_hand("C1", "AAZ", 0, num_workers="3"),
+                             _gate("C2", "AAZ")])
+        self.assertEqual(out[0]["num_workers"], "3")
+        self.assertNotIn("num_workers_source", out[0])
 
     def test_two_gate_rows_for_one_company_are_LEFT_ALONE(self):
         """Ambiguous. Merging into one of them would file the CP's description
