@@ -53,6 +53,23 @@ import asyncio
 import json
 import os
 import sys
+import urllib.error
+import urllib.request
+
+try:
+    from bson import ObjectId as _ObjectId
+except ImportError:  # pragma: no cover
+    _ObjectId = None
+
+
+def to_oid(value):
+    """Mirrors server.to_query_id: an ObjectId when it parses, else the raw."""
+    if _ObjectId is None:
+        return value
+    try:
+        return _ObjectId(str(value))
+    except Exception:
+        return value
 
 try:
     from motor.motor_asyncio import AsyncIOMotorClient
@@ -62,6 +79,21 @@ except ImportError:  # pragma: no cover
 
 CP_SOURCE = "cp"
 GATE_SOURCE = "gate"
+
+# THE REASON THE CP READS, in his language. It goes onto the amendment as a
+# required field and is the first thing he sees, so it says what was corrected
+# and what was preserved -- not what the code did.
+#
+# It does NOT say he entered the counts. Three of the four have no recorded
+# author, and a reason line is not the place to quietly settle that.
+AMENDMENT_REASON = (
+    "This log listed every subcontractor twice - once for the crews on the log "
+    "and again when the men checked in at the gate. The duplicate rows have "
+    "been combined so each company appears once. No photo was lost: all 13 are "
+    "still here, and the 2 that were on the second AAZ row are now on the AAZ "
+    "row with the others. The worker numbers are unchanged from what the log "
+    "recorded, and each crew now shows the gate's own count beside it."
+)
 
 
 def _key(value) -> str:
@@ -228,6 +260,11 @@ async def main() -> int:
     ap.add_argument("--log-type", default="daily_jobsite")
     ap.add_argument("--json", action="store_true",
                     help="print the merged activities array as JSON")
+    ap.add_argument("--file", action="store_true",
+                    help="FILE THE AMENDMENT. Without this the script only "
+                         "prints. Posts to /api/logbooks/{id}/amend using "
+                         "LEVELOG_TOKEN; never writes to Mongo directly, so "
+                         "the API's own guards still apply.")
     args = ap.parse_args()
 
     if not args.project and not args.project_name:
@@ -304,9 +341,61 @@ async def main() -> int:
         print("\n--- activities payload ---")
         print(json.dumps(merged, indent=2, default=str))
 
-    print("\nDRY RUN — nothing was written. File via "
-          "POST /api/logbooks/{id}/amend after review.")
-    return 0
+    print("\nREASON THE CP WILL READ:")
+    print(f"  {AMENDMENT_REASON}")
+
+    if not args.file:
+        print("\nDRY RUN - nothing was written. Re-run with --file to file it.")
+        return 0
+
+    # ── FILING ──────────────────────────────────────────────────────────────
+    # Through the API, never a direct Mongo write. amend_logbook leaves the
+    # parent locked and intact and creates an editable child; going round it
+    # would bypass the guard that makes the parent trustworthy.
+    token = os.environ.get("LEVELOG_TOKEN")
+    if not token:
+        print("LEVELOG_TOKEN required to file", file=sys.stderr)
+        return 1
+    base = os.environ.get("API_BASE", "https://api.levelog.com").rstrip("/")
+
+    body = {"reason": AMENDMENT_REASON,
+            "data": {**(doc.get("data") or {}), "activities": merged}}
+    req = urllib.request.Request(
+        f"{base}/api/logbooks/{doc['_id']}/amend",
+        data=json.dumps(body, default=str).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            created = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        print(f"AMEND REFUSED {e.code}: {e.read()[:400]!r}", file=sys.stderr)
+        return 1
+
+    child_id = created.get("id") or created.get("_id")
+    print(f"\nAMENDMENT FILED   {child_id}")
+
+    # Read both back and SAY what they are, rather than assuming the write did
+    # what it claimed.
+    parent = await db.logbooks.find_one({"_id": doc["_id"]})
+    child = await db.logbooks.find_one({"_id": to_oid(child_id)})
+
+    p_acts = ((parent or {}).get("data") or {}).get("activities") or []
+    c_acts = ((child or {}).get("data") or {}).get("activities") or []
+    print(f"  PARENT  {doc['_id']}  status={parent.get('status')} "
+          f"is_locked={parent.get('is_locked')} crews={len(p_acts)} "
+          f"photos={photo_total(p_acts)}")
+    print(f"  CHILD   {child_id}  status={(child or {}).get('status')} "
+          f"is_locked={(child or {}).get('is_locked')} crews={len(c_acts)} "
+          f"photos={photo_total(c_acts)} "
+          f"signature={'present' if (child or {}).get('cp_signature') else 'NONE - awaiting'}")
+
+    ok = (len(p_acts) == len(acts) and photo_total(p_acts) == photo_total(acts)
+          and len(c_acts) == len(merged)
+          and photo_total(c_acts) == photo_total(merged))
+    print("  PARENT UNCHANGED, CHILD FILED" if ok
+          else "  !! STATE DOES NOT MATCH WHAT WAS SENT - INVESTIGATE")
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":
