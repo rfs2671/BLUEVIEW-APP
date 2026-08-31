@@ -180,7 +180,16 @@ class BothRenderersPrintIt(unittest.TestCase):
     def test_the_sentence_is_written_once(self):
         """One constant, so the app cannot say two different things about what
         a worker signed. The rule FALL_PROTECTION_NOTICE is already under."""
-        self.assertEqual(SRC.count("Each worker named below was present"), 1)
+        # THE CLAIM IS UNCHANGED AND ITS SCOPE MOVED. The sentence now lives
+        # in lib/logbook/attestations.py, which also carries its version and
+        # every wording ever printed, and server.py imports it -- so a stored
+        # audit snapshot can be checked against what it claims to have said.
+        # ZERO copies here, exactly one there.
+        from lib.logbook import attestations as _A
+        self.assertEqual(SRC.count("Each worker named below was present"), 0)
+        self.assertEqual(
+            sum(1 for t in _A.HISTORY.values()
+                if "Each worker named below was present" in t), 1)
 
     def test_both_renderers_emit_it(self):
         self.assertEqual(SRC.count("+ PRESHIFT_ATTESTATION_HTML"), 2)
