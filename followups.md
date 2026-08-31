@@ -661,6 +661,71 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## "IS THERE A NUMBER" IS NOT "WHO PUT IT THERE"
+
+**The week's recurring defect, which recurred inside its own fix and was caught
+by a person, not a test.**
+
+Two writers were added on 2026-08-31 to merge a gate crew into the CP's row.
+Both decided authorship like this:
+
+```js
+const _cpTyped = String(row.num_workers ?? '').trim() !== '';   // reconcile
+```
+```python
+cp_typed = _count(h) != ""                                      # dry-run script
+```
+
+Neither consulted `num_workers_source`. Both stamped `'cp'` on any row carrying
+a count. The dry run printed "(cp)" for C1, C2, C3 and C4 alike; three of those
+numbers came from gate seeding and **no CP ever typed them**. Only C4 was real
+-- he typed 5 where the gate recorded 4. It was one approval from filing a
+fabricated author onto a signed 3301.2 record, and it was caught only because
+the operator said the CP had typed nothing all day.
+
+**THE GENERAL RULE.** *A question about the data is not a question about
+provenance.* "Is there a number here" is answerable from the row alone. "Who
+put it there" is not: it needs a field recording an ACT, and when that field is
+absent the honest answer is **unknown**, never a default.
+
+**DEFAULTING IS THE FAILURE.** A two-state answer must invent the third. Every
+instance of this family resolved the same way, by refusing to guess:
+
+  * the manufactured `"0"` on a crew whose count was never typed;
+  * the OSHA register's em dash printing one glyph for four meanings;
+  * `PREDATES_CAPTURE`, which labels an unknowable rather than backfilling it;
+  * and now `num_workers_source`, which is `cp`, `gate`, or ABSENT.
+
+**AND THE RULE ABOUT READING AN INSTRUCTION.** *A rule stated in terms of a
+human act must be implemented against the artifact of that act.* The operator
+said "the CP typed a count". That was implemented as "a count exists" -- the
+cheapest available proxy -- when the artifact of the typing already existed:
+`num_workers_source`, written by `commitAddCrew` and `applyHeadcountEdit`
+exactly when a number is entered, three commits old (#250, 2026-08-27).
+
+When an instruction names something a person DID, find the field that records
+them doing it. If there is none, say so before implementing -- do not
+substitute a correlate and do not let the absence resolve silently.
+
+**THE READER HAD ALREADY GOT THIS RIGHT AND BOTH WRITERS OVERRODE IT.**
+`_headcount_cell` in server.py has carried this since it was written:
+
+> ABSENCE MEANS GATE. Drafts written before num_workers_source existed carry no
+> marker and hold numbers that came from the roster; labelling those "(CP)"
+> would put a false attribution on records that are already filed.
+
+Neither writer looked at it. **Before adding a writer for a field, read the
+reader** -- it is where the semantics were decided, and a renderer that already
+refuses to guess is a decision, not a detail.
+
+**WHY THE ROWS HAD NO MARKER.** `gate_sourced` and `activity_id` were both
+introduced 2026-08-10 (U1 stepper rebuild); `num_workers_source` arrived
+2026-08-27 (#250). A row seeded from the roster before then carries the
+turnstile's count, the turnstile's men, and none of the three fields. It is
+gate data wearing no label -- and "no label" was being read as "the CP". That
+also retires the separately-logged `activity_id` mystery: one old row shape,
+missing two fields introduced the same day, for one reason.
+
 ## THERE IS NO HOLD. MERGING IS SHIPPING, ON BOTH HALVES.
 
 **Standing fact, established twice in one day (2026-08-31).**
@@ -689,9 +754,17 @@ and the evidence was read from Mongo rather than the app. That was luck.
 **WHAT TO SAY INSTEAD OF "I WILL HOLD THE OTA".** "This stays unmerged until
 X." Anything else is a claim about a control that does not exist.
 
-## Rows on 2026-08-31's log have no `activity_id`, and nothing explains it
+## RESOLVED — rows with no `activity_id` were a pre-2026-08-10 row shape
 
-**OPEN, NOT URGENT, AND EXPLICITLY NOT THE 2026-08-31 CREW-DUPLICATE BUG.** That
+**RESOLVED 2026-08-31.** `gate_sourced` and `activity_id` were BOTH
+introduced on 2026-08-10 in the U1 stepper rebuild. A row seeded from the
+roster before that date has neither, which is exactly what C1-C4 showed --
+one old row shape, not two separate losses, and not hand-typed rows at all.
+The CP was right that he typed nothing. See "IS THERE A NUMBER" above for
+what that misreading nearly cost. The AsyncStorage-draft hypothesis below
+remains the likely carrier and is still unconfirmed.
+
+**ORIGINAL ENTRY, KEPT BECAUSE FOUR EXPLANATIONS WERE WRONG BEFORE THIS ONE.** That
 one was `reconcileCrewsWithRoster` short-circuiting hand-added rows before its
 matcher, and it is fixed. The reconcile keys on `gate_sourced`, never on
 `activity_id`, so this played no part in it.
