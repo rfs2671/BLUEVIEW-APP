@@ -6,6 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react-native';
 import AnimatedBackground from '../AnimatedBackground';
+import AmendmentBanner from '../AmendmentBanner';
 import LogbookLockBar from '../LogbookLockBar';
 import { outdoor } from '../../styles/theme';
 
@@ -41,6 +42,10 @@ export default function LogbookStepper({
   onStepChange,
   onExit,
   locked = false,
+  // The loaded document's amendment facts, or null. Shape:
+  // { reason, by, at, has_reason }. Read off the RECORD by the editor, never
+  // derived here and never relative to today.
+  amendment = null,
   // Pip state. Numbers, 1-indexed, of steps the CP has LEFT incomplete —
   // never the one he is standing on, which is work in progress.
   incompleteSteps = [],
@@ -260,6 +265,16 @@ export default function LogbookStepper({
           {/* A finalized log renders read-only. pointerEvents 'none' makes
               EVERY control below non-interactive — no per-field flags to miss.
               Scrolling still works; the LockBar stays interactive. */}
+          {/* ABOVE THE FORM, DELIBERATELY. LogbookLockBar sits BELOW the step
+              content — right for finalize/amend, wrong for a banner whose whole
+              job is to answer "why is this different and why am I signing
+              again" before he touches anything.
+
+              OUTSIDE the pointerEvents wrapper: a locked log makes everything
+              inside non-interactive, and an explanation the CP cannot select or
+              scroll to is not an explanation. */}
+          <AmendmentBanner amendment={amendment} />
+
           <View pointerEvents={locked ? 'none' : 'auto'}>
             {current && current.render()}
           </View>

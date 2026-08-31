@@ -285,7 +285,65 @@ class ResolvingTheProjectByName(unittest.TestCase):
         self.assertIsNone(pick_project(self.ROWS, None)[0])
 
 
-class TheScriptWritesNothing(unittest.TestCase):
+class FilingGoesThroughTheAPI(unittest.TestCase):
+    """The script can now FILE, and how it files is the point.
+
+    It posts to /api/logbooks/{id}/amend rather than writing Mongo, so
+    amend_logbook's own contract applies: the parent stays locked and intact
+    and the correction becomes an editable child. Going round that would
+    bypass the guard that makes the filed record trustworthy — on the one
+    document being corrected for having been wrong.
+    """
+
+    SRC = (BACKEND / "scripts" / "amend_duplicate_crews_dryrun.py").read_text(
+        encoding="utf-8")
+
+    def test_it_posts_to_the_amend_endpoint(self):
+        self.assertIn("/amend", self.SRC)
+        self.assertIn('method="POST"', self.SRC)
+
+    def test_filing_is_gated_behind_an_explicit_flag(self):
+        """Printing is the default; writing must be asked for."""
+        self.assertIn("if not args.file:", self.SRC)
+        i = self.SRC.index("if not args.file:")
+        j = self.SRC.index("urllib.request.Request")
+        self.assertLess(i, j, "the POST must sit AFTER the dry-run return")
+
+    def test_it_refuses_without_a_token(self):
+        self.assertIn("LEVELOG_TOKEN required to file", self.SRC)
+
+    def test_it_reads_BOTH_documents_back_afterwards(self):
+        """It states what the parent and child are rather than assuming the
+        write did what it claimed."""
+        self.assertIn("PARENT UNCHANGED, CHILD FILED", self.SRC)
+        self.assertIn("STATE DOES NOT MATCH WHAT WAS SENT", self.SRC)
+
+
+class TheReasonIsInTheCPsLanguage(unittest.TestCase):
+    REASON = _mod.AMENDMENT_REASON
+
+    def test_it_says_what_was_wrong(self):
+        self.assertIn("twice", self.REASON)
+
+    def test_it_says_what_was_preserved(self):
+        self.assertIn("No photo was lost", self.REASON)
+        self.assertIn("13", self.REASON)
+
+    def test_it_does_NOT_claim_he_entered_the_counts(self):
+        """Three of the four counts have no recorded author. A reason line is
+        not the place to quietly settle that."""
+        low = self.REASON.lower()
+        self.assertNotIn("you entered", low)
+        self.assertNotIn("you recorded", low)
+        self.assertIn("unchanged from what the log", low)
+
+    def test_it_names_no_code(self):
+        for jargon in ("gate_sourced", "num_workers", "reconcile", "activity_id",
+                       "merge_rows", "null", "None"):
+            self.assertNotIn(jargon, self.REASON)
+
+
+class TheScriptMakesNoDirectMongoWrite(unittest.TestCase):
     def test_no_write_call_anywhere_in_it(self):
         src = (BACKEND / "scripts" / "amend_duplicate_crews_dryrun.py").read_text(
             encoding="utf-8")
