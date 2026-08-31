@@ -836,6 +836,55 @@ Recorded here as well as in docs/compliance/esra-bb2024-007-compliance.md,
 because a roadmap item removed for a legal reason will otherwise come back as a
 usability suggestion.
 
+## The CS log's editor MUST send `superintendent_sign`
+
+**NOTHING EMITS IT TODAY. This note has to survive until the editor is built.**
+
+`deriveActingCapacity` (frontend/src/utils/signatureAudit.js) keys on the EVENT
+TYPE first and the role only as a fallback:
+
+```js
+if (eventType === 'superintendent_sign') return 'Construction Superintendent';
+if (eventType === 'cp_sign')             return 'Competent Person';
+if (signerRole === 'superintendent')     return 'Construction Superintendent';
+```
+
+That design is what lets ONE ACCOUNT sign two statutory records in two
+capacities -- the daily jobsite log as Competent Person, the BC 3301.13.13 log as
+Construction Superintendent -- with one `user_id` and a ledger that says which
+was which. It is better evidence than two accounts, which would put two ids on
+one man with nothing saying they are the same person.
+
+**THE TRAP.** `preshift_signin.jsx` and `osha_log.jsx` both send
+`eventType: 'cp_sign'`. The CS log's editor does not exist yet, and whoever
+builds it will start from one of those screens, because that is what every other
+logbook editor did. **If it inherits `cp_sign`, the ledger records the
+superintendent log as signed by a Competent Person.**
+
+The `acting_capacity` field exists specifically so that BC 3301.13.13's "signed
+as Superintendent" is provable -- server.py's own comment on it says so. Inherit
+the wrong event type and the field built to prove it asserts the opposite, on
+the one document where the capacity is the point.
+
+**IT FAILS SILENTLY.** Nothing errors. The signature is recorded, the hash is
+computed, the document renders. Only the capacity is wrong, and it is wrong in a
+field nobody reads until somebody needs it.
+
+**WHAT TO DO WHEN THE EDITOR IS BUILT:**
+
+  * send `eventType: 'superintendent_sign'`;
+  * assert it in that editor's test, by name, against the string -- not by
+    "a signature event is recorded";
+  * and consider asserting the pairing centrally: a signature event whose
+    `document_type` resolves to `site_superintendent_log` must not carry
+    `acting_capacity: "Competent Person"`. That check does not exist and would
+    catch the mistake wherever it is made.
+
+**AND THE GATE, WHILE THIS IS OPEN.** The CS log's access check must ask "is
+this user the registered CS for this project" -- `lib/logbook/cs_attribution.py`
+answers it -- and never `role == "superintendent"`, which would lock out the
+dual-capacity user this product's first customer actually is.
+
 ## `POST /signature-events/public` gets no attestation injection
 
 **NOT A DEFECT TODAY. Recorded because that is exactly the state in which it

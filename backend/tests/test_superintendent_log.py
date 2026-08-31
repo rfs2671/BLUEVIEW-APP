@@ -1,7 +1,26 @@
 """The construction superintendent's own log — BC 3301.13.13.
 
 NOT A SECTION OF THE DAILY JOBSITE LOG. It is the CS's statutory record, signed
-by him under his own DOB licence, and he is a different person from the CP.
+under his own DOB licence, and only item 2 overlaps with what the CP files.
+
+TWO CAPACITIES, ORDINARILY TWO PEOPLE, AND ONE LICENSED PERSON MAY HOLD BOTH.
+An earlier draft of this note said the superintendent "is a different person
+from the CP". That is the usual case and it is not a rule: a licensed CS may act
+as the competent person for general site operations, and on this product's first
+customer he does. What must stay separate is the DOCUMENTS -- two statutory
+records, two signatures, two capacities -- never the ACCOUNTS.
+
+ONE ACCOUNT IS BETTER EVIDENCE THAN TWO. `acting_capacity` on a signature event
+is derived from the EVENT TYPE, so one user signing the daily jobsite log as
+`cp_sign` and this log as `superintendent_sign` produces "Competent Person" and
+"Construction Superintendent" from one user_id. Two accounts would put two ids
+on one man with nothing in the data saying they are the same person.
+
+SO THE ACCESS GATE KEYS ON THE CS REGISTRATION, NEVER ON `role`. `role ==
+"superintendent"` would lock out exactly the dual-capacity user this product
+has. `lib/logbook/cs_attribution.py` already answers "is this user the registered
+CS for this project" -- by user_id on the registration, or by licence number --
+and that is the question to ask.
 
 THREE THINGS THIS FILE DEFENDS, in the order they matter:
 
