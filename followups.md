@@ -808,6 +808,34 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## The shared-device password path is CLOSED, not deferred
+
+**WITHDRAWN FROM THE ROADMAP 2026-08-31. It will not be built.**
+
+The idea was a per-project password on the shared site device, signing AS the
+superintendent named on the project record -- a convenience door into his own
+log rather than an anonymous kiosk entry.
+
+**Two independent readings rejected it**, and the reason is not a preference:
+
+  * it authenticates a DEVICE SESSION and then attributes the signature to a
+    NAMED PERSON. Those are two different things by construction, and nothing
+    in the record would distinguish a superintendent who signed on his own
+    account from one signed for by whoever was holding the tablet;
+  * Bulletin 2024-007 sec V.7 requires that "individuals who sign electronic
+    records must be verified";
+  * and the document is signed under a **DOB licence**. A signature that cannot
+    be tied to the licensee is the one thing this log cannot afford.
+
+**DO NOT REVIVE IT AS A "CONVENIENCE MODE".** The convenience it buys is not
+having to log in on a tablet; the cost is a licensed signature nobody can
+attribute. The superintendent signs on his own account -- `role:
+"superintendent"`, shipped `ad4625b` -- on the site device or his own phone.
+
+Recorded here as well as in docs/compliance/esra-bb2024-007-compliance.md,
+because a roadmap item removed for a legal reason will otherwise come back as a
+usability suggestion.
+
 ## TWO DIFFERENT JANUARIES, and they will be conflated
 
 **Write this down once so nobody has to work it out twice.**
