@@ -301,7 +301,16 @@ class TheRegisterSaysWhatTheSignatureClaims(unittest.TestCase):
         self.assertEqual(SRC.count("+ OSHA_LOG_ATTESTATION_HTML"), 2)
 
     def test_the_sentence_is_written_once(self):
-        self.assertEqual(SRC.count("This register lists the certifications"), 1)
+        # THE CLAIM IS UNCHANGED AND ITS SCOPE MOVED. The sentence now lives
+        # in lib/logbook/attestations.py, which also carries its version and
+        # every wording ever printed, and server.py imports it -- so a stored
+        # audit snapshot can be checked against what it claims to have said.
+        # ZERO copies here, exactly one there.
+        from lib.logbook import attestations as _A
+        self.assertEqual(SRC.count("This register lists the certifications"), 0)
+        self.assertEqual(
+            sum(1 for t in _A.HISTORY.values()
+                if "This register lists the certifications" in t), 1)
 
 
 class PlacementIsStillTheDistinction(unittest.TestCase):

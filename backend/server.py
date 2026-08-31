@@ -35,6 +35,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # any sibling/subpackage import can resolve. (Step 4 regression,
 # fixed: f5cb4eb. CI smoke test enforces this going forward.)
 from lib.server_http import ServerHttpClient
+# The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
+# this module imports it: two copies of a sentence are two sentences the moment
+# one is edited, and this one is both printed on a compliance document and
+# stored in an audit ledger.
+from lib.logbook.attestations import (  # noqa: E402
+    ATTESTATIONS as _ATTESTATIONS, attach_attestation, attestation_of,
+    attestation_snapshot, attestation_sentence,
+    PRESENT as ATTESTATION_PRESENT,
+    NONE_ON_DOCUMENT as ATTESTATION_NONE_ON_DOCUMENT,
+    PREDATES_CAPTURE as ATTESTATION_PREDATES_CAPTURE,
+)
 import re
 import hashlib
 from urllib.parse import quote_plus
@@ -3841,60 +3852,12 @@ FALL_PROTECTION_NOTICE = (
 # IT NAMES THE QUESTIONS, NOT THE ANSWERS. An earlier draft read "confirmed
 # they inspected their PPE", which is false on any row answered No. A document
 # must not assert a compliance fact its own table contradicts.
-PRESHIFT_ATTESTATION = (
-    "Each worker named below was present at the start of shift on this date and "
-    "was asked, before starting work, whether there was an injury or incident on "
-    "their last shift and whether they inspected their PPE for today. Those "
-    "answers appear in the Injury and PPE columns. Each signature in the "
-    "Signature column is that worker&#39;s own. The CP&#39;s signature below "
-    "attests that this roster and these answers were taken as recorded."
-)
+# ONE DEFINITION, in lib/logbook/attestations.py, which also carries its
+# version and every wording ever printed. A snapshot storing today's text would
+# be unverifiable the moment a constant here was edited.
+PRESHIFT_ATTESTATION = _ATTESTATIONS["preshift_signin"]["text"]
 
-# ONE constant, printed by BOTH renderers, so the app cannot say two different
-# things about what a worker signed. The same rule FALL_PROTECTION_NOTICE is
-# under; the pre-shift sheet has two renderers for the identical reason.
-# THE SECOND SHEET OF TWELVE THAT CANNOT BE READ WITHOUT ONE. A register of
-# OTHER PEOPLE'S CREDENTIALS carrying a CP signature and no statement of what
-# that signature covers -- whether the CP sighted each card, took the worker's
-# word, or copied a prior record are three materially different claims under
-# one name.
-#
-# WHAT THE CODE ACTUALLY SUPPORTS, and it is less than a reader would assume:
-#
-#   buildEntriesFromCheckins builds the register from the day's check-ins and
-#   the workers' STORED certifications. The CP then edits, adds and deletes
-#   rows. Nothing in that flow inspects a physical card.
-#
-#   ENTRY_KEYS is worker_id, worker_name, company, certification_type,
-#   card_number, expiration, signed, date -- THERE IS NO PROVENANCE FIELD. A
-#   gate-captured certification and one the CP typed by hand are byte-identical
-#   on the filed register. toolbox_talk solves exactly this with `added_from`
-#   (Gate / CP -- this week / CP -- added); this register has no equivalent, so
-#   the sentence says the document does not distinguish them rather than
-#   implying it does.
-#
-#   THE "Signed" COLUMN DOES NOT MEAN THE WORKER SIGNED. The toggle's own copy
-#   is "Signature on file" (i18n/en.js:635) -- the CP's mark that a signature
-#   exists ELSEWHERE. The printed header says "Signed" over a tick, which reads
-#   as an attestation the row does not carry.
-#
-# So the final clause is the load-bearing one, and it is the opposite of what a
-# reader assumes from a signed certification register.
-OSHA_LOG_ATTESTATION = (
-    "This register lists the certifications recorded in this system for the "
-    "workers who checked in on this date. Certifications are captured at the "
-    "gate or entered by the CP, and this document does not distinguish which. "
-    "A tick in the Signed column is the CP&#39;s mark that a signature for that "
-    "worker is on file elsewhere; it is not a signature given here. The "
-    "CP&#39;s signature below attests that this register is a true copy of what "
-    "the system held on this date. It does not attest that the physical cards "
-    "were inspected."
-)
-# NO &mdash; IN THIS SENTENCE, deliberately. AbsentKeyIsStatedTest scans the
-# rendered document for that entity and allows only the sanctioned
-# "&mdash; Not recorded" placeholder. An em dash used as prose punctuation is
-# indistinguishable from one used as a missing-value marker once it is HTML,
-# and the ratchet is right not to guess. Two sentences say it more plainly.
+OSHA_LOG_ATTESTATION = _ATTESTATIONS["osha_log"]["text"]
 
 OSHA_LOG_ATTESTATION_HTML = (
     '<p style="color:#334155;font-size:12px;line-height:1.6;margin:14px 0 4px;'
@@ -15847,7 +15810,29 @@ async def record_signature_event(
     
     user_id = current_user.get("id")
     ip_address = request.client.host if request.client else None
-    
+
+    # ── WHAT WAS PRINTED ABOVE THE SIGNATURE, CAPTURED AT SIGNING ───────────
+    #
+    # THE CLIENT SENDS THE SNAPSHOT AND IS NOT TRUSTED WITH THIS. The wording
+    # is what the signer was SHOWN, and a snapshot whose attestation the client
+    # could choose is evidence of nothing -- the same reason the gate's
+    # affirmation text comes from the server and the ESRA consent stores its
+    # own copy. The log type is resolved from the document, not from the body.
+    #
+    # NINE OF TWELVE TYPES PRINT NO SENTENCE, and the snapshot records that
+    # explicitly rather than omitting the key: an absent key cannot be told
+    # apart from an event nobody captured one for, which is the permanent and
+    # unrepairable state of every event written before this existed.
+    _log_type = None
+    if str(data.document_type or "") == "logbook" and data.document_id:
+        try:
+            _doc = await db.logbooks.find_one(
+                {"_id": to_query_id(data.document_id)}, {"log_type": 1})
+            _log_type = (_doc or {}).get("log_type")
+        except Exception as _e:  # pragma: no cover
+            logger.warning(f"[signature] log type lookup failed: {_e!r}")
+    _snapshot = attach_attestation(data.content_snapshot, _log_type)
+
     event_id = await create_signature_event(
         document_type=data.document_type,
         document_id=data.document_id,
@@ -15856,7 +15841,7 @@ async def record_signature_event(
         signer_role=data.signer_role,
         signer_user_id=user_id,
         signature_data=data.signature_data,
-        content_snapshot=data.content_snapshot,
+        content_snapshot=_snapshot,
         device_info=data.device_info,
         ip_address=ip_address,
         acting_capacity=data.acting_capacity,
@@ -23429,15 +23414,7 @@ def _cs_bold_para(label, value):
             f'<strong style="color:#0A1929;">{label}:</strong> {value}</p>')
 
 
-CS_LOG_ATTESTATION = (
-    "This is the construction superintendent&#39;s own record for this date, "
-    "made under BC 3301.13.13 and signed by the superintendent named below. "
-    "An item marked &#34;none to report&#34; is his statement that he "
-    "considered that item and had nothing to record; it is not an absence of "
-    "information. An item marked Not recorded was not answered. Arrival and "
-    "departure times are his own, prefilled from sign-in and from completion "
-    "of this log and editable by him; they are not observed by this system."
-)
+CS_LOG_ATTESTATION = _ATTESTATIONS["site_superintendent_log"]["text"]
 
 CS_LOG_ATTESTATION_HTML = (
     '<p style="color:#334155;font-size:12px;line-height:1.6;margin:14px 0 4px;'
