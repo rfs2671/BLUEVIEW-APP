@@ -32,6 +32,7 @@ import LogbookLockBar from '../../src/components/LogbookLockBar';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { collapseChains } from '../../src/utils/amendmentChain';
 import { logbooksAPI } from '../../src/utils/api';
 import { finalizeErrorCode, recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
@@ -182,59 +183,6 @@ async function writeDraftPointer(projectId, ptr) {
  *     (otherwise a signature captured in a dead zone visibly disappears the
  *     moment the phone finds signal)
  */
-/**
- * ONE ROW PER WORKER — the head of that worker's amendment chain.
- *
- * THE OPERATOR'S ORIGINAL REPORT. Angel Lopez showed SIX rows: one orientation
- * and five amendments of it, rendered as siblings with nothing saying which was
- * current. The list endpoint does not filter `is_amendment` and this screen had
- * no reference to it, so every link in the chain drew its own card.
- *
- * THE HEAD IS THE DEEPEST SIGNED LINK, which is the same rule _filed_log
- * applies on the server: the newest FILED row wins, and an unsigned amendment
- * is an intention, not a correction. Reproduced here rather than imported
- * because the client holds pending local rows the server has never seen.
- *
- * AN UNSIGNED HEAD IS SHOWN AS THE HEAD BUT MUST NOT READ AS THE RECORD. When
- * the newest link is unsigned, the row carries the last SIGNED link's content
- * and is flagged `_open_correction` — the screen says a correction is open and
- * unsigned, because saying "signed" would be false and dropping it would hide
- * work the CP has to finish.
- */
-function chainHead(rows) {
-  const filed = rows.filter((r) => r?.is_locked || r?.status === 'submitted');
-  const openC = rows.filter((r) => !(r?.is_locked || r?.status === 'submitted'));
-  const byNewest = (a, b) => {
-    const ta = Date.parse(a?.created_at || '') || 0;
-    const tb = Date.parse(b?.created_at || '') || 0;
-    if (ta !== tb) return tb - ta;
-    return String(recordIdOf(b) || '').localeCompare(String(recordIdOf(a) || ''));
-  };
-  const record = filed.slice().sort(byNewest)[0] || null;
-  const open = openC.slice().sort(byNewest)[0] || null;
-  // No filed link at all: the original is still a draft, which is the ordinary
-  // pre-signature state and not an open correction.
-  if (!record) return open ? { ...open, _open_correction: false } : null;
-  return { ...record, _open_correction: !!open, _open_correction_id: open ? recordIdOf(open) : null };
-}
-
-function collapseChains(list) {
-  const byWorker = new Map();
-  (list || []).forEach((row) => {
-    const w = workerIdOf(row);
-    if (!w) return;
-    byWorker.set(w, (byWorker.get(w) || []).concat(row));
-  });
-  const out = [];
-  byWorker.forEach((rows) => {
-    const head = chainHead(rows);
-    if (head) out.push(rows.length > 1 ? { ...head, _chain_length: rows.length } : head);
-  });
-  // A row with no worker id cannot be chained and must not vanish.
-  (list || []).forEach((row) => { if (!workerIdOf(row)) out.push(row); });
-  return out;
-}
-
 function mergeWithPending(serverList, localList) {
   const pendingByWorker = new Map();
   localList.forEach((o) => {
@@ -344,7 +292,10 @@ export default function SubcontractorOrientation() {
       // Cache-first: paint the locally cached roster before touching the network,
       // so the gate screen is usable immediately and stays truthful offline.
       const cached = await readCachedList(projectId);
-      if (cached.length > 0) setOrientations(cached);
+      // COLLAPSED HERE TOO. The offline path set the cached list raw, so a
+      // CP with no signal saw the six uncollapsed rows and a header counting
+      // documents — the exact bug, reachable by losing signal.
+      if (cached.length > 0) setOrientations(collapseChains(cached));
 
       // Resume a manual entry that was interrupted (app quit / phone locked).
       if (!resumedRef.current) {
@@ -1027,15 +978,39 @@ export default function SubcontractorOrientation() {
                               })
                             : orient.date}
                         </Text>
-                        {/* AN OPEN CORRECTION IS NOT THE RECORD YET, and the
-                            row must not imply it is. The card shows the last
-                            SIGNED link's content — that is what stands — and
-                            says plainly that an unsigned correction is waiting,
-                            because dropping it would hide work he has to
-                            finish and showing it as the record would be false. */}
-                        {orient._open_correction && (
+                        {/* THE DOCUMENT HAS A HISTORY, AND THE HEAD LOOKS LIKE
+                            AN ORIGINAL WITHOUT THIS. A reader cannot tell an
+                            amended record from a first draft, which is how six
+                            rows read as six duplicates. The count is documents
+                            in the chain, so a record corrected four times is
+                            five links. */}
+                        {orient._chain_length > 1 && (
+                          <Text style={styles.orientDate}>
+                            {`Corrected ${orient._chain_length - 1} time`}
+                            {orient._chain_length - 1 === 1 ? '' : 's'}
+                          </Text>
+                        )}
+                        {/* AN OPEN CORRECTION IS NOT THE RECORD YET, and the row
+                            must not imply it is. The card shows the last SIGNED
+                            link — that is what stands — and says plainly that
+                            something unsigned is waiting. */}
+                        {(orient._open_corrections || []).length === 1 && (
                           <Text style={styles.orientDate}>
                             Correction open — not signed yet
+                          </Text>
+                        )}
+                        {/* THE FORK, SHOWN AS A FORK. Two unsigned children of
+                            one parent are two competing claims about what the
+                            record should say, and neither is the record while
+                            both are unsigned. Picking one to display would be
+                            choosing a winner silently — so both are counted and
+                            the consequence of signing is stated, because
+                            "supersedes the other" is the part he cannot work
+                            out from the screen. */}
+                        {(orient._open_corrections || []).length > 1 && (
+                          <Text style={styles.orientDate}>
+                            {`${orient._open_corrections.length} competing corrections open — `}
+                            signing either supersedes the other
                           </Text>
                         )}
                         {orient._pending && (
