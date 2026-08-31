@@ -89,8 +89,17 @@ const oshaBranch = SERVER.slice(
   SERVER.indexOf('elif log_type == "subcontractor_orientation":'),
 );
 ok(oshaBranch.length > 0, 'located the osha_log branch of the PDF renderer');
+// PLUS THE CELL HELPER. `certification_type` moved out of the branch and into
+// _osha_type_cell when the Cert Type column stopped composing the class label
+// at print time -- it is still read, just one call deeper. Scanning only the
+// branch would report the key as dropped when it was relocated.
+const typeCell = SERVER.slice(
+  SERVER.indexOf('def _osha_type_cell('),
+  SERVER.indexOf('async def preshift_affirmation_count('),
+);
 const rendererKeys = [...new Set(
-  [...oshaBranch.matchAll(/e\.get\("([a-z_]+)"/g)].map((m) => m[1]),
+  [...(oshaBranch + typeCell).matchAll(/(?:e|entry)\.get\("([a-z_]+)"/g)]
+    .map((m) => m[1]),
 )].sort();
 ok(rendererKeys.length >= 6,
   `the renderer reads ${rendererKeys.length} entry keys: ${rendererKeys.join(', ')}`);
