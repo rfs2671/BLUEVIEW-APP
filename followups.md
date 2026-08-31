@@ -661,6 +661,70 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## AN AMENDMENT FILED AND NEVER SIGNED IS A CORRECTION THAT DID NOT HAPPEN
+
+**Three of them had been sitting on 588 Thomas since 2026-08-14, and nothing in
+the product said so until the card shipped on 2026-08-31.**
+
+`amend_logbook` leaves the parent locked and creates an unsigned editable
+child. `_filed_log` then prints the PARENT until the amendment is signed --
+deliberately, and the reasoning is sound: "AN UNSIGNED AMENDMENT IS NOT A
+CORRECTION, it is an intention to correct", and replacing a signed record with
+an unattested one on a document that reaches lenders would assert a change
+nobody made.
+
+**THE CONSEQUENCE NOBODY CLOSED.** If the CP never signs, that intention never
+becomes anything. The parent stands as the record, the correction has no
+effect, and **no surface anywhere reported the gap**: not the logbooks list
+(scoped to today), not the report (prints the parent, correctly), not the
+admin. Somebody decided a filed record was wrong, said why, and the record
+stayed wrong. Three times, over a week, on a live project.
+
+**THE FIRST ACT OF THE NEW CARD WAS TO FIND REAL WORK.** The
+`amendment_unsigned` state shipped the same evening and immediately surfaced
+Aug 7, Aug 10 and Aug 14. It was read as a false alarm -- three rows for one
+amendment filed that night -- and it was not: the 08-31 amendment is correctly
+ABSENT (`date: {"$lt": eastern_date()}` excludes today), and the three it found
+were genuine. **The instinct that a new detector firing immediately must be
+broken is worth resisting for one query.**
+
+**A LATENT DEFECT IN THAT STATE, SEPARATE AND STILL OPEN.** `_amend_meta` is
+built from `stale_unsigned_docs` RAW, while the pre-existing path filters the
+same list through `not _is_affirmed_signature(d.get("cp_signature"))`. The
+amendment loop skips that filter and then ASSIGNS into `_gaps`
+unconditionally, so it can ADD a row that was never a gap: **an amendment that
+has been signed but not finalized will be listed as "correction to sign"
+forever.** It did not fire here because these three are genuinely unsigned. One
+line fixes it -- apply the same signature filter -- and it should be fixed
+before anyone trusts the count.
+
+**WHAT SHOULD CHASE AN UNSIGNED AMENDMENT -- OPEN QUESTION, NOT DECIDED.** The
+card is necessary and is not sufficient: it reaches the CP only, only when he
+opens that project, and it is the same surface that stayed silent for a week
+before it existed. The options, with what each costs:
+
+  * **A deficiency.** Strongest, and probably wrong: a deficiency asserts a
+    site condition, and an unfinished correction is a paperwork state. It would
+    put an administrative gap into a compliance channel that inspectors read.
+  * **The nightly sweep.** `sweep_stale_end_of_day_logs` already walks unlocked
+    end-of-day logs and declines to freeze the ones a person must finish. An
+    amendment is exactly that shape and the sweep already sees it. Cheapest
+    correct home for a count.
+  * **The admin.** The person who FILED the amendment is not the person who can
+    sign it, and today nothing tells the filer their correction stalled. Roy
+    filed one tonight and would learn nothing if it sat until December. This is
+    the real gap.
+  * **Email.** Only if the above are exhausted -- another daily digest line is
+    the easiest thing to stop reading.
+  * **Nothing beyond the card.** Defensible ONLY if the card is made to reach
+    the filer as well as the signer.
+
+**AND THE HARD PART, WHICH IS NOT A NOTIFICATION.** An amendment nobody signs
+should eventually be resolved, not accumulate: either signed, or withdrawn with
+a reason, on the record. There is no withdraw path today, so the only ways out
+are signing it or leaving it forever. That is the design question underneath
+the alerting one and it should be answered first.
+
 ## "IS THERE A NUMBER" IS NOT "WHO PUT IT THERE"
 
 **The week's recurring defect, which recurred inside its own fix and was caught
