@@ -174,7 +174,51 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
       toast.success('Amendment created', 'Editable copy opened; the original stays locked.');
       onAmended?.();
     } catch (e) {
-      toast.error('Could not amend', e?.response?.data?.detail || e?.message || 'Please try again');
+      // THE SERVER NAMES THE CONDITION; THIS OWNS THE WORDING. gateCopy's rule
+      // — the CP must never read the server's English — so every branch below
+      // turns a code into a sentence written for him.
+      const detail = e?.response?.data?.detail;
+      const code = detail && typeof detail === 'object' ? detail.code : null;
+
+      // A REFUSAL THAT DOES NOT TEACH PRODUCES "11" ON THE NEXT ATTEMPT.
+      // He typed "1" five times because nothing ever told him what the field
+      // was for. So this says what a reason IS, and shows one.
+      if (code === 'AMENDMENT_REASON_NOT_A_SENTENCE'
+          || code === 'AMENDMENT_REASON_REQUIRED') {
+        toast.error(
+          'Say what you are correcting',
+          'This goes on the record for anyone reading it later, so it needs a '
+          + 'few words about what changed — for example "wrong trade" or '
+          + '"corrected count to 4".',
+        );
+        setBusy(false);
+        return;   // the modal STAYS OPEN with his text in it, ready to extend
+      }
+
+      // NEVER A DEAD END. He already has an unsigned correction on this record
+      // and it is the one he should be finishing — offering it is the whole
+      // point of the refusal. Dead-ending him is what produced five
+      // amendments in eight minutes.
+      if (code === 'AMENDMENT_ALREADY_OPEN') {
+        setAmendOpen(false);
+        setReason('');
+        toast.warning(
+          'You already have a correction open',
+          'This record has an unsigned correction waiting. Finish and sign '
+          + 'that one — a second correction would leave two, and neither '
+          + 'would be the record.',
+        );
+        // The editor's own load prefers the unlocked child, so sending it back
+        // through the same path it uses after a successful amend puts him ON
+        // the open correction rather than merely telling him it exists.
+        if (draftKey) await discardFinalizedDraft(draftKey);
+        onAmended?.();
+        setBusy(false);
+        return;
+      }
+
+      toast.error('Could not amend',
+        (typeof detail === 'string' ? detail : null) || e?.message || 'Please try again');
     } finally {
       setBusy(false);
     }

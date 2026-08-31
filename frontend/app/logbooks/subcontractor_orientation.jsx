@@ -182,6 +182,59 @@ async function writeDraftPointer(projectId, ptr) {
  *     (otherwise a signature captured in a dead zone visibly disappears the
  *     moment the phone finds signal)
  */
+/**
+ * ONE ROW PER WORKER — the head of that worker's amendment chain.
+ *
+ * THE OPERATOR'S ORIGINAL REPORT. Angel Lopez showed SIX rows: one orientation
+ * and five amendments of it, rendered as siblings with nothing saying which was
+ * current. The list endpoint does not filter `is_amendment` and this screen had
+ * no reference to it, so every link in the chain drew its own card.
+ *
+ * THE HEAD IS THE DEEPEST SIGNED LINK, which is the same rule _filed_log
+ * applies on the server: the newest FILED row wins, and an unsigned amendment
+ * is an intention, not a correction. Reproduced here rather than imported
+ * because the client holds pending local rows the server has never seen.
+ *
+ * AN UNSIGNED HEAD IS SHOWN AS THE HEAD BUT MUST NOT READ AS THE RECORD. When
+ * the newest link is unsigned, the row carries the last SIGNED link's content
+ * and is flagged `_open_correction` — the screen says a correction is open and
+ * unsigned, because saying "signed" would be false and dropping it would hide
+ * work the CP has to finish.
+ */
+function chainHead(rows) {
+  const filed = rows.filter((r) => r?.is_locked || r?.status === 'submitted');
+  const openC = rows.filter((r) => !(r?.is_locked || r?.status === 'submitted'));
+  const byNewest = (a, b) => {
+    const ta = Date.parse(a?.created_at || '') || 0;
+    const tb = Date.parse(b?.created_at || '') || 0;
+    if (ta !== tb) return tb - ta;
+    return String(recordIdOf(b) || '').localeCompare(String(recordIdOf(a) || ''));
+  };
+  const record = filed.slice().sort(byNewest)[0] || null;
+  const open = openC.slice().sort(byNewest)[0] || null;
+  // No filed link at all: the original is still a draft, which is the ordinary
+  // pre-signature state and not an open correction.
+  if (!record) return open ? { ...open, _open_correction: false } : null;
+  return { ...record, _open_correction: !!open, _open_correction_id: open ? recordIdOf(open) : null };
+}
+
+function collapseChains(list) {
+  const byWorker = new Map();
+  (list || []).forEach((row) => {
+    const w = workerIdOf(row);
+    if (!w) return;
+    byWorker.set(w, (byWorker.get(w) || []).concat(row));
+  });
+  const out = [];
+  byWorker.forEach((rows) => {
+    const head = chainHead(rows);
+    if (head) out.push(rows.length > 1 ? { ...head, _chain_length: rows.length } : head);
+  });
+  // A row with no worker id cannot be chained and must not vanish.
+  (list || []).forEach((row) => { if (!workerIdOf(row)) out.push(row); });
+  return out;
+}
+
 function mergeWithPending(serverList, localList) {
   const pendingByWorker = new Map();
   localList.forEach((o) => {
@@ -324,7 +377,9 @@ export default function SubcontractorOrientation() {
       const r = await settleFetch(() => logbooksAPI.getByProject(projectId, LOG_TYPE));
       setFetchState(r.status);
       if (r.status === 'ok') {
-        const merged = mergeWithPending(Array.isArray(r.data) ? r.data : [], cached);
+        const merged = collapseChains(
+          mergeWithPending(Array.isArray(r.data) ? r.data : [], cached),
+        );
         setOrientations(merged);
         await writeCachedList(projectId, merged);
       }
@@ -972,6 +1027,17 @@ export default function SubcontractorOrientation() {
                               })
                             : orient.date}
                         </Text>
+                        {/* AN OPEN CORRECTION IS NOT THE RECORD YET, and the
+                            row must not imply it is. The card shows the last
+                            SIGNED link's content — that is what stands — and
+                            says plainly that an unsigned correction is waiting,
+                            because dropping it would hide work he has to
+                            finish and showing it as the record would be false. */}
+                        {orient._open_correction && (
+                          <Text style={styles.orientDate}>
+                            Correction open — not signed yet
+                          </Text>
+                        )}
                         {orient._pending && (
                           <View style={styles.pendingRow}>
                             <CloudOff size={11} strokeWidth={1.8} color={semantic.attention} />
