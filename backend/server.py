@@ -2352,63 +2352,25 @@ CARD_NOT_SST_WORKER_WALLET = "NOT_SST_WORKER_WALLET"
 # gate must keep reading them; what changes is that a NEW read of one is flagged.
 SST_DEAD_CLASSES = {"SST_LIMITED"}
 
-# ── What the register prints for an SST class, and when it may name hours ────
-#
-# THE LABEL IS THE WORD THE CARD PRINTS. The 40-hour credential is printed
-# "Worker" and the register said plainly "SST"; the 62-hour one is printed
-# "Supervisor". A reader comparing the document to the card in a man's wallet
-# has to find the same word on both.
-#
-# HOURS ARE A PROPERTY OF THE CLASS, NEVER A READING OFF THE CARD. That
-# distinction is the whole of this rule. The OCR prompt already forbids
-# returning an hours value as a class -- "those are the training DURATION, NOT
-# the class" -- because a card printing "40 hours" and a card printing "Worker"
-# are the same class stated two ways, and the app must not treat the number as
-# something it read.
-#
-# So hours may be shown ONLY when the class was determined by COLOUR, which is
-# the signal that does not wash off:
+# THE HOURS EACH COLOUR'S CLASS CARRIES, kept as documentation rather than as a
+# renderer's lookup:
 #
 #     BLUE   -> SST_FULL        40 hr   the common card, carries NO class text
 #     YELLOW -> SST_SUPERVISOR  62 hr
 #     RED    -> SST_TEMPORARY   10 hr   the OSHA course; SIX MONTHS, not five years
 #
-# SST_LIMITED is a dead scheme and SST_UNSPECIFIED is the absence of an answer;
-# neither takes hours, whatever produced it.
-SST_CLASS_HOURS = {
-    "SST_FULL": "40 hr",
-    "SST_SUPERVISOR": "62 hr",
-    "SST_TEMPORARY": "10 hr",
-}
-
-# A SPACE, NOT AN EM DASH, and the ruling asked for a dash. AbsentKeyIsStated
-# forbids &mdash; in a rendered document outside the sanctioned "&mdash; Not
-# recorded", and it is right on the substance rather than merely on the rule:
-# four columns of this same table print &mdash; to mean ABSENT, so a dash
-# inside a Cert Type label sits beside dashes meaning "no cert type recorded"
-# and reads as one. The ruling's substance is the WORD the card prints --
-# "Worker" for the 40-hour card, which the register used to call plainly "SST"
-# -- and that survives the punctuation exactly.
-SST_CLASS_LABEL = {
-    "SST_FULL": "SST Worker",
-    "SST_SUPERVISOR": "SST Supervisor",
-    "SST_TEMPORARY": "SST Temporary",
-    "SST_LIMITED": "SST Limited",
-    # KEEPS SAYING UNSPECIFIED, in words a reader can use. It used to fall
-    # through certLabel's map and print the raw constant SST_UNSPECIFIED on a
-    # document that goes to lenders -- "ugly and true", as the comment there
-    # says. This is the same claim, legibly: an SST card is present and its
-    # class could not be read.
-    "SST_UNSPECIFIED": "SST Unspecified",
-}
-
-# THE TWO SOURCES THAT EARN HOURS. `color_and_text` is the one confirmed state;
-# `color_only` is the 40-hour card, which has no class text to corroborate with
-# and is the normal case rather than a defect. `text_only` does NOT earn them:
-# that class came from an OCR'd word on a card that may not carry one, which is
-# exactly the reading this rule refuses. `conflict` produces no class at all,
-# and a row with no class_source predates colour entirely.
-SST_COLOUR_DERIVED_SOURCES = frozenset({"color_and_text", "color_only"})
+# HOURS ARE A PROPERTY OF THE CLASS, NEVER A READING OFF THE CARD -- the OCR
+# prompt already refuses to return an hours value as a class, because "40 hours"
+# and "Worker" are one class stated two ways.
+#
+# A RENDERER USED TO COMPOSE THEM ONTO THE FILED REGISTER, resolving the class
+# from live worker certifications at print time and appending the hours when
+# COLOUR had determined the class. That was removed: if render-time composition
+# is wrong for an attestation about a named man (see _preshift_signature_cell),
+# it is wrong for a classification the card did not state. The filed register
+# prints the label it was filed with; the class and its hours live on the
+# worker's certification, where they are provable and where the Review column
+# already reports whether they were checked.
 
 # ── The shape of an SST card number ─────────────────────────────────────────
 #
@@ -2488,71 +2450,6 @@ def _card_number_shape(value) -> str:
 # stored row has to be resolved BACK to a class, and both the pre-ruling
 # spellings and the new ones have to land, because filed registers are not
 # rewritten.
-_STORED_LABEL_TO_SST_CLASS = {
-    "sst": "SST_FULL",
-    "sst worker": "SST_FULL",
-    "sst full": "SST_FULL",
-    "sst supervisor": "SST_SUPERVISOR",
-    "sst temporary": "SST_TEMPORARY",
-    "sst limited": "SST_LIMITED",
-    "sst unspecified": "SST_UNSPECIFIED",
-    "sst_full": "SST_FULL",
-    "sst_supervisor": "SST_SUPERVISOR",
-    "sst_temporary": "SST_TEMPORARY",
-    "sst_limited": "SST_LIMITED",
-    "sst_unspecified": "SST_UNSPECIFIED",
-}
-
-
-def _sst_label_key(text) -> str:
-    """A stored label reduced to a lookup key.
-
-    Dashes of every kind become spaces, so "SST - Worker", "SST &mdash; Worker"
-    and "SST Worker" are one key. A filed register cannot be rewritten, so the
-    reader has to absorb the spellings rather than the writer being tidied.
-    """
-    t = str(text or "").strip().lower()
-    t = t.replace("&mdash;", " ").replace("&ndash;", " ")
-    t = t.replace("\u2014", " ").replace("\u2013", " ").replace("-", " ").replace("_", " ")
-    return " ".join(t.split())
-
-
-def sst_class_label(stored_label, live_type=None, class_source=None) -> str:
-    """What the Cert Type column prints for one row.
-
-    NON-SST ROWS ARE RETURNED UNTOUCHED. "OSHA 30", "Forklift", "Scaffold" and
-    anything else the CP picked are not this rule's business and are not
-    reworded.
-
-    HOURS ARE APPENDED ONLY WHEN ALL THREE HOLD:
-      * the live cert this row joins to was classified from COLOUR;
-      * that live cert's class MATCHES the class the row was filed under -- a
-        row filed as Supervisor must never be given the Worker card's hours
-        because the worker's record changed after filing;
-      * the class is one that has hours at all.
-
-    NOTHING OTHERWISE, AND NO MARKER. A reader who sees "(62 hr)" on one row and
-    not the next reads it as a difference between two WORKERS, not between two
-    photographs; making the distinction visible would put our OCR confidence on
-    a compliance record, which is not what that document is for. Absent is the
-    honest form: the label says what is known and stops.
-    """
-    raw = str(stored_label or "").strip()
-    cls = _STORED_LABEL_TO_SST_CLASS.get(_sst_label_key(raw))
-    if not cls:
-        return raw
-    label = SST_CLASS_LABEL.get(cls, raw)
-    hours = SST_CLASS_HOURS.get(cls)
-    if (hours
-            and class_source in SST_COLOUR_DERIVED_SOURCES
-            and str(live_type or "") == cls):
-        return f"{label} ({hours})"
-    return label
-
-# A temporary card lives SIX MONTHS from issue. The plausibility gate below uses
-# this instead of the 7-year ceiling once the class is known, because a misread
-# date four years out clears a 7-year ceiling silently and would read as valid
-# for years past the card's life.
 SST_TEMPORARY_VALID_MONTHS = 6
 
 
@@ -3926,7 +3823,7 @@ FALL_PROTECTION_NOTICE = (
 # check-ins with the identity fields locked (preshift_signin.jsx buildWorkerList,
 # auto_filled: true); the Signature column is the worker's own image plus the
 # affirmation taken at the gate (checkin.html, resolved by
-# preshift_affirmations); the CP signature is required to submit.
+# preshift_affirmation_count); the CP signature is required to submit.
 #
 # THE TWO ANSWERS ARE ENFORCED ON THE CLIENT ONLY. `answeredBoth` and
 # `rowNeedsAnswers` (preshift_signin.jsx:555) block the submit button until
@@ -4088,6 +3985,61 @@ LOGBOOK_TIMING_CLASS = {
     # of document, and it is one document with one rule.
     "site_superintendent_log": "visit",
 }
+
+
+# ── The affirmation's own document identity ─────────────────────────────────
+#
+# KEYED ON (project_id, date), NOT ON THE LOGBOOK'S ID, and the reason is an
+# ordering fact rather than a preference: a worker affirms at the gate at 06:40
+# and the CP files the pre-shift sheet at 08:00. THE SHEET DOES NOT EXIST YET
+# when the affirmation happens, so binding the event to a logbook id would mean
+# either delaying the event until a document appears -- recording it after the
+# act, which is the one thing a contemporaneous record must not do -- or
+# inventing an id.
+#
+# (project_id, date) is the sheet's NATURAL identity and is what create_logbook
+# already dedupes on, so the event and the document it concerns agree about
+# which day they belong to without either waiting for the other.
+PRESHIFT_AFFIRMATION_DOC_TYPE = "preshift_signature_affirmation"
+
+# ── The wording the worker actually read, per language ──────────────────────
+#
+# THE SERVER HAD NO COPY OF THIS. The text lives in checkin.html's TRANSLATIONS
+# map, rendered client-side, so a snapshot of "what he agreed to" had nowhere to
+# come from. Taking it from the request body would be worse than useless: a
+# consent whose text the client chooses is evidence of nothing.
+#
+# So the server keeps its own canonical copy, keyed by the language the gate
+# already records (`signature_affirmed_lang`, frozen at the moment of
+# affirmation). Same shape as lib/esra_consent.py, and for the same reason: a
+# record whose wording cannot be reconstructed is not evidence.
+#
+# PARITY WITH checkin.html IS ASSERTED BY A TEST, not by hoping. Two copies of a
+# sentence are two sentences the moment one is edited.
+PRESHIFT_AFFIRMATION_VERSION = "2026-08-31.1"
+
+PRESHIFT_AFFIRMATION_TEXTS = {
+    "en": ("By tapping Affirm, I confirm this is my signature and authorize its "
+           "use on today's Pre-Shift Sign-In Log for this jobsite."),
+    "es": ("Al tocar Afirmar, confirmo que esta es mi firma y autorizo su uso en "
+           "la Hoja de Registro de Entrada Previa al Turno de hoy para esta obra."),
+}
+
+
+def preshift_affirmation_text(lang) -> str:
+    """The wording for a language, falling back to English.
+
+    An UNRECOGNISED language falls back rather than storing nothing: the worker
+    read something, and English is what the gate shows when it has no better
+    answer. The language actually recorded is stored beside the text, so a
+    reader can see which case this was.
+    """
+    return PRESHIFT_AFFIRMATION_TEXTS.get(
+        str(lang or "").strip().lower(), PRESHIFT_AFFIRMATION_TEXTS["en"])
+
+
+def preshift_affirmation_document_id(project_id, day) -> str:
+    return f"{str(project_id or '')}:{str(day or '')}"
 
 
 def logbook_timing_class(log_type: str) -> str:
@@ -13364,6 +13316,65 @@ async def register_and_checkin(data: dict, request: Request):
 
     result = await db.checkins.insert_one(checkin_record)
 
+    # ── THE AFFIRMATION IS ITS OWN SIGNED RECORD, WRITTEN HERE ──────────────
+    #
+    # THIS IS THE ONLY CONTEMPORANEOUS MOMENT. The worker taps Affirm and this
+    # request is the act; anything written later is a record ABOUT the act
+    # rather than the act itself. Everything the ledger needs is already in
+    # hand -- who, when, from where, on what device, and in which language he
+    # read it -- so nothing has to be reconstructed.
+    #
+    # THE SNAPSHOT HOLDS THE EXACT WORDING HE READ, in the language he read it.
+    # checkin.html freezes the language at the moment of affirmation and the
+    # gate already stores it, so the record can say WHAT HE AGREED TO and not
+    # merely that he agreed. That is the strongest part of this change: a
+    # signature event that carries its own text needs no external document to
+    # be understood years later.
+    #
+    # FAIL-SOFT, DELIBERATELY. A ledger write must never cost a man his
+    # check-in: the turnstile is not a compliance gate and an affirmation that
+    # failed to record is a gap on a sheet, not a locked door. The check-in row
+    # still carries `signature_affirmed`, so nothing is lost if this fails.
+    if _sig_affirmed:
+        try:
+            await create_signature_event(
+                document_type=PRESHIFT_AFFIRMATION_DOC_TYPE,
+                document_id=preshift_affirmation_document_id(
+                    project_id, eastern_date(now)),
+                event_type="worker_sign",
+                signer_name=str(worker.get("name") or ""),
+                signer_role="worker",
+                signer_user_id=str(worker["_id"]),
+                signature_data={
+                    # A REFERENCE, NOT A SECOND COPY. The stroke lives on the
+                    # worker document; duplicating it here would create two
+                    # artefacts that can disagree about one signature.
+                    "affirmed_signature_of": str(worker["_id"]),
+                    "affirmed_at": now,
+                },
+                content_snapshot={
+                    # THE EXACT WORDING, from the server's own copy, in the
+                    # language the gate recorded. Not taken from the request:
+                    # a consent whose text the client chooses is evidence of
+                    # nothing.
+                    "affirmation_text": preshift_affirmation_text(_sig_lang),
+                    "affirmation_version": PRESHIFT_AFFIRMATION_VERSION,
+                    "language": _sig_lang or None,
+                    "project_id": str(project_id),
+                    "date": eastern_date(now),
+                    "worker_name": worker.get("name"),
+                },
+                device_info={"device_fingerprint": device_fp,
+                             "user_agent": user_agent},
+                ip_address=client_ip,
+                acting_capacity="Worker - signature affirmation",
+                authenticated_role="worker",
+            )
+        except Exception as _e:  # pragma: no cover
+            logger.warning(
+                f"[gate] affirmation signature event failed for "
+                f"{worker.get('name')!r}: {_e!r}")
+
     # FIRST check-in on this project with a resolved trade — store the pairing
     # so every later visit HERE reads it instead of re-prompting. Skipped when
     # one already exists (nothing changed) and when the trade is still pending
@@ -16607,7 +16618,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         # THE SAME OVERLAY AS THE COMBINED REPORT. Two renderers print this
         # sheet, and a document that says AFFIRMED in one and NOT AFFIRMED in
         # the other is worse than one that is wrong in both.
-        _affirm = await preshift_affirmations(
+        # A COUNT FOR THE FOOTER, not an overlay onto a man's row.
+        _affirm_n = await preshift_affirmation_count(
             db, logbook.get("project_id"), logbook.get("date"))
 
         w_rows = ""
@@ -16620,7 +16632,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w, _affirm)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -16638,6 +16650,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or f'<tr><td colspan="6" {TD}>—</td></tr>')
             + '</table>'
+            + preshift_affirmation_footer(_affirm_n)
             # ABOVE the signature: the claim, then the name that makes it.
             + PRESHIFT_ATTESTATION_HTML
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
@@ -17127,36 +17140,6 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         # stored document — the snapshot is rendered as stored, with no
         # invented review state.
         type_title = "OSHA / SST Certification Log"
-        # THE SAME JOIN THE COMBINED REPORT MAKES, so one register does not
-        # print two different class names depending on which document you ask
-        # for. This function already reads the database twice -- the project,
-        # and preshift_affirmations -- so the note above about rendering "one
-        # stored document" with no DB read describes the Review column's
-        # deliberate absence, not this function's capability.
-        #
-        # THIS DOES NOT ADD THE REVIEW COLUMN. That remains a scope decision
-        # recorded in followups; the label is a different question and creating
-        # a SECOND divergence to avoid touching the first one would be the
-        # worse trade.
-        _osha_entries = [e for e in (data.get("entries") or []) if isinstance(e, dict)]
-        # A FAILED READ IS NOT A REFUSAL, the posture preshift_affirmations
-        # already takes in this same function: an empty index leaves every row
-        # with its filed label and no hours, which is exactly the behaviour
-        # before this change. A register must not fail to render because a
-        # lookup did.
-        _class_by_key = {}
-        _wids = {str(e.get("worker_id")) for e in _osha_entries if e.get("worker_id")}
-        if _wids:
-            try:
-                _qids = [q for q in (to_query_id(w) for w in _wids) if q is not None]
-                _wdocs = await db.workers.find(
-                    {"_id": {"$in": _qids}}, {"certifications": 1}
-                ).to_list(500)
-                _class_by_key = osha_review_index(_wdocs)[3]
-            except Exception as _e:  # pragma: no cover
-                logger.warning(f"[osha] class lookup failed: {_e!r}")
-                _class_by_key = {}
-
         osha_rows = ""
         for e in (data.get("entries") or []):
             if not isinstance(e, dict):
@@ -17176,7 +17159,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 "<tr>"
                 + cell(_capitalize_first(e.get("worker_name", "")))
                 + cell(_capitalize_first(e.get("company", "")))
-                + cell(_osha_type_cell(e, _class_by_key))
+                + cell(_osha_type_cell(e))
                 + cell(e.get("card_number"))
                 + cell(e.get("expiration"))
                 + cell("&#10003;" if e.get("signed") else "")
@@ -22925,20 +22908,17 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
     could not tell apart -- the cert is present and clean, or THE CERT IS NOT
     THERE AT ALL -- and both rendered an em dash.
 
-    Returns (review_by_key, known_cards, known_workers, class_by_key):
+    Returns (review_by_key, known_cards, known_workers):
       review_by_key   (wid, card) -> review_reason, FLAGGED certs only
       known_cards     (wid, card) for EVERY live cert that has a card number
       known_workers   the wids the lookup actually returned, so a deleted
                       worker is distinguishable from a clean one
-      class_by_key    (wid, card) -> (type, class_source), so the Cert Type
-                      column can say the hours the CLASS carries when COLOUR
-                      determined the class, and say nothing when it did not.
-                      Built here rather than in a second pass over the same
-                      documents, so the two cannot disagree about which row
-                      they are describing.
+    A FOURTH ELEMENT, class_by_key, WAS REMOVED. It fed a Cert Type column
+    that composed the class label and its hours from live certifications at
+    print time; that composition is gone, and an index nobody reads is the same
+    defect as a field nobody writes.
     """
     review_by_key: Dict = {}
-    class_by_key: Dict = {}
     known_cards, known_workers = set(), set()
     for wdoc in worker_docs or []:
         wid = str(wdoc.get("_id"))
@@ -22947,8 +22927,6 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
             cn = str(cert.get("card_number") or "")
             if cn:
                 known_cards.add((wid, cn))
-                class_by_key[(wid, cn)] = (
-                    str(cert.get("type") or ""), cert.get("class_source"))
             if cert.get("needs_review"):
                 review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
             elif card_number_finding(cert):
@@ -22966,7 +22944,7 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
                 # the precedence rule, so the document and the queue cannot
                 # disagree about whether a row has a finding.
                 review_by_key[(wid, cn)] = "CARD_NUMBER_FORMAT"
-    return review_by_key, known_cards, known_workers, class_by_key
+    return review_by_key, known_cards, known_workers
 
 
 def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
@@ -23011,7 +22989,7 @@ def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
     return '<span style="color:#64748b;">Not checked</span>'
 
 
-def _osha_type_cell(entry, class_by_key) -> str:
+def _osha_type_cell(entry) -> str:
     """The Cert Type column for one row, resolved against the live cert.
 
     THE LABEL comes from the STORED row, reworded to the class name the card
@@ -23023,119 +23001,153 @@ def _osha_type_cell(entry, class_by_key) -> str:
     stored = entry.get("certification_type", "") if isinstance(entry, dict) else ""
     wid = str((entry or {}).get("worker_id") or "")
     cn = str((entry or {}).get("card_number") or "")
-    live_type, class_source = (class_by_key or {}).get((wid, cn), (None, None))
+    # THE STORED LABEL, AND NOTHING ELSE. This used to reword the filed value
+    # through sst_class_label and append the hours the CLASS carries when
+    # COLOUR had determined it -- a classification the filed row does not state,
+    # resolved from live worker certifications at render time.
+    #
+    # SAME SHAPE AS THE PRE-SHIFT AFFIRMATION OVERLAY AND OUT FOR THE SAME
+    # REASON. If composition is wrong for an attestation about a named man, it
+    # is wrong for a classification the card did not state: Bulletin 2024-007
+    # sec V.6 asks that a signature's integrity be maintained with "any changes
+    # detectable after signing", and a register whose Cert Type column reads
+    # differently on two renderings of one stored document cannot be validated
+    # against a single moment.
+    #
+    # THE REGISTER WILL SHOW TWO SPELLINGS FOR A WHILE, AND THAT IS CORRECT.
+    # certLabel wrote "SST" for SST_FULL until ca71e5f and "SST Worker" after
+    # it, so rows filed before that date print "SST" and rows filed after print
+    # "SST Worker". A FILED DOCUMENT SHOWS WHAT WAS FILED. Do not "fix" the old
+    # rows: rewriting them would be the very thing this change removes, and the
+    # ruling that the label is the word the card prints is kept by every row
+    # filed since.
+    #
+    # The class and its hours are not lost. They live on the worker's
+    # certification, where they are provable, and the Review column already
+    # reports whether that record was checked.
     # NO PLACEHOLDER HERE. The combined report prints "&mdash;" for an empty
     # cell and the per-logbook PDF prints nothing; each applies its own at the
     # call site, and a helper that picked one would have quietly given the
     # per-logbook document a dash it has never used -- which is what
     # AbsentKeyIsStatedTest caught.
-    return sst_class_label(stored, live_type, class_source)
+    # STRINGIFIED: a stored None would otherwise print the word "None" on a
+    # compliance register. Empty stays empty -- the call sites own what an empty
+    # cell shows, and the two renderers do not agree about it.
+    return str(stored or "")
 
 
-async def preshift_affirmations(db_, project_id: str, day: str) -> Dict[str, Dict]:
-    """Who affirmed their signature for THIS SHEET'S DATE, and when.
+async def preshift_affirmation_count(db_, project_id: str, day: str) -> int:
+    """How many workers affirmed for this project on this date.
 
-    THE FILED SHEET DOES NOT CARRY THIS, AND NEVER HAS. preshift_signin.jsx
-    builds each worker row from the gate roster with name, company,
-    osha_number, signin_id, worker_signature, had_injury, inspected_ppe --
-    and no affirmation field at any point. `signature_affirmed` appears
-    nowhere in that screen. So the signature column read a key that was
-    absent from every row of every filed sheet and printed NOT AFFIRMED for
-    every worker, always, whatever he did at the gate.
+    A COUNT, FOR THE FOOTER, AND NOT A PER-ROW CLAIM. The sheet states a fact
+    about a different record -- how many affirmations are on file -- and never
+    puts an affirmation beside a named man's row, because the stored sheet does
+    not carry one.
 
-    On 2026-08-28 six men affirmed between 10:36 and 11:57 and the sheet said
-    NOT AFFIRMED for all sixteen. It was not stale; the field was never there.
+    DATE-AGNOSTIC ACROSS THE CUTOVER, and this is what makes a legacy path
+    unnecessary. Before signature events existed, an affirmation was a boolean
+    on a check-in row; after, it is also a signature event. Counting DISTINCT
+    WORKERS across both sources is correct in all three eras and double-counts
+    in none of them:
 
-    RESOLVED AGAINST THE SHEET'S DATE, not the moment of filing. The
-    affirmation's own words are "I confirm this is my signature and authorize
-    its use on TODAY'S Pre-Shift Sign-In Log for this jobsite" -- a consent
-    about the sheet, granted at some point in that day. A document that prints
-    NOT AFFIRMED for a man who granted it is contradicting a record, not
-    preserving one.
+        before   check-in rows only
+        after    both, naming the same workers
+        later    events only, if the check-in field is ever retired
 
-    Keyed on worker_id, which the stored row carries (`worker_id: c.worker_id`
-    in buildWorkerList) and which is the checkins row's own id. Nothing is
-    matched by name.
+    NOTHING IS MIGRATED. Writing a signature event for an affirmation that
+    happened before the ledger existed would mean inventing a content hash over
+    a snapshot nobody hashed and a timestamp the ledger did not witness -- a
+    forged audit entry indistinguishable from a real one, which is worse than
+    the gap it would close. The six affirmations recorded on 2026-08-28 stay
+    exactly where they are and are counted from there.
+
+    A FAILED READ RETURNS 0, and the footer then says nothing rather than
+    guessing. It must never turn a read failure into a claim.
     """
-    out: Dict[str, Dict] = {}
     if db_ is None or not project_id or not day:
-        return out
+        return 0
+    workers = set()
     try:
         start, end = get_day_range_est(day)
-        cursor = db_.checkins.find(
+        async for row in db_.checkins.find(
             {
                 "project_id": str(project_id),
                 "check_in_time": {"$gte": start, "$lt": end},
                 "is_deleted": {"$ne": True},
                 "signature_affirmed": True,
             },
-            {"worker_id": 1, "signature_affirmed": 1, "signature_affirmed_at": 1},
-        )
-        async for row in cursor:
+            {"worker_id": 1},
+        ):
             wid = str(row.get("worker_id") or "")
             if wid:
-                out[wid] = {
-                    "affirmed": True,
-                    "at": row.get("signature_affirmed_at"),
-                }
+                workers.add(wid)
     except Exception as e:  # pragma: no cover
-        # A FAILED READ IS NOT A REFUSAL. An empty overlay leaves every row
-        # exactly as the stored document has it, which is the behaviour that
-        # existed before this function. It must never turn a read failure into
-        # a finding against a worker.
-        logger.warning(f"[preshift] affirmation overlay failed for {project_id} {day}: {e!r}")
-        return {}
-    return out
+        logger.warning(f"[preshift] affirmation count (checkins) failed: {e!r}")
+    try:
+        async for evt in db_.signature_events.find(
+            {
+                "document_type": PRESHIFT_AFFIRMATION_DOC_TYPE,
+                "document_id": preshift_affirmation_document_id(project_id, day),
+                "is_deleted": {"$ne": True},
+            },
+            {"signer": 1},
+        ):
+            wid = str(((evt.get("signer") or {}).get("user_id")) or "")
+            if wid:
+                workers.add(wid)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[preshift] affirmation count (events) failed: {e!r}")
+    return len(workers)
 
 
-def _preshift_signature_cell(w, affirmations: Optional[Dict[str, Dict]] = None) -> str:
-    """The signature column on a filed pre-shift sheet. THREE STATES, never blank.
+def preshift_affirmation_footer(count: int) -> str:
+    """The line beneath the table. States what is held ELSEWHERE.
 
-    Blank cannot be told apart from a column nobody filled, and this document has
-    never claimed a worker signed before — so every row has to say which of three
-    things is true:
+    A COUNT IS SAFE WHERE A PER-ROW MARK IS NOT: it is a fact about a separate
+    record rather than an assertion about any named worker on this sheet.
+    """
+    if not count:
+        return ""
+    plural = "affirmation is" if count == 1 else "affirmations are"
+    return (
+        '<p style="color:#64748b;font-size:11px;line-height:1.6;margin:8px 0 0;">'
+        "Affirmation records for this date are held separately and are not part "
+        f"of this sheet. {count} {plural} on record.</p>"
+    )
 
-      AFFIRMED           he affirmed his stored signature at the gate today, so
-                         the signature prints. The affirmation is what makes a
-                         stroke captured at orientation usable on today's sheet.
-      NOT AFFIRMED       a signature is on file and he did not affirm it today.
-                         A gap on a sheet, never a locked turnstile — the gate
-                         does not stop a man working.
-      NO SIGNATURE       nothing on file at all. A DIFFERENT fact from not
-      ON FILE            affirming, and the document says which.
 
-    The image is inlined only in the affirmed case. It arrives already inline on
-    the roster row (worker.signature, base64), so there is no fetch here and
-    nothing is added to a sheet that did not earn it.
+def _preshift_signature_cell(w) -> str:
+    """The Signature column. TWO STATES, AND NEITHER MENTIONS AFFIRMATION.
+
+    THIS COLUMN USED TO ASSERT A CLAIM IT DID NOT OWN. It printed NOT AFFIRMED
+    from `signature_affirmed`, a key `preshift_signin.jsx` has never written, so
+    every filed sheet accused every worker. The fix was a render-time overlay
+    that resolved the affirmation from the day's check-ins -- which corrected
+    the falsehood but left the printed document saying something the stored
+    document did not, and Bulletin 2024-007 sec V.6 asks that a signature's
+    integrity be maintained with "any changes detectable after signing".
+
+    SO THE COLUMN GIVES UP THE CLAIM. The affirmation is now its own signature
+    event, written at the gate at the moment it happens, and the sheet points at
+    those records in its footer rather than absorbing them into a man's row.
+    What remains here is the only thing the stored row actually knows:
+
+        signature on file    the image, and that it is on file
+        none on file         NO SIGNATURE ON FILE -- unchanged, and still the
+                             strongest statement this column makes
+
+    IT MUST NOT PRINT "NOT AFFIRMED" AGAIN, in any form: that was a finding
+    against a named man from a field nobody wrote. It must not print "Affirmed"
+    either. Both are claims about a record kept somewhere else.
     """
     _sig = str(w.get("worker_signature") or w.get("signature") or "").strip()
     if not _sig:
         return '<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>'
-
-    # THE OVERLAY, AND THE ONLY FIELD IT MAY TOUCH. `affirmations` is resolved
-    # from today's check-ins at render time; the stored row supplies everything
-    # else on this sheet and cannot be changed by it. See preshift_affirmations.
-    _hit = (affirmations or {}).get(str(w.get("worker_id") or ""))
-    _affirmed = bool(_hit and _hit.get("affirmed")) or bool(w.get("signature_affirmed"))
-    if not _affirmed:
-        return '<span style="color:#b45309;">NOT AFFIRMED</span>'
-
-    # THE RENDERED DOCUMENT DIFFERS FROM THE STORED ONE, SO IT SAYS WHY ON ITS
-    # FACE. A PDF that quietly regenerates with a different answer tomorrow is
-    # the shape this repo has been bitten by; naming the time turns a silent
-    # change into a stated fact the reader can check against the gate log.
-    _when = _hit.get("at") if _hit else None
-    _stamp = ""
-    if isinstance(_when, datetime):
-        from zoneinfo import ZoneInfo
-        _local = _when if _when.tzinfo else _when.replace(tzinfo=timezone.utc)
-        _stamp = _local.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M")
     _src = _sig if _sig.startswith("data:") else f"data:image/png;base64,{_sig}"
-    _label = f"Affirmed {_stamp}" if _stamp else "Affirmed"
     return (
         f'<img src="{_src}" alt="Signature" '
         'style="max-height:34px;max-width:150px;display:block;" />'
-        f'<span style="font-size:10px;color:#475569;">{_label}</span>'
+        '<span style="font-size:10px;color:#475569;">Signature on file</span>'
     )
 
 
@@ -24348,7 +24360,8 @@ async def generate_combined_report(
     if preshift:
         pd = preshift.get("data", {})
         # Affirmation only. Every other cell below reads `w`, the stored row.
-        _affirm = await preshift_affirmations(db, project_id, date)
+        # A COUNT FOR THE FOOTER, not an overlay onto a man's row.
+        _affirm_n = await preshift_affirmation_count(db, project_id, date)
         w_rows = ""
         for w in pd.get("workers", []):
             if w.get("name", "").strip():
@@ -24359,7 +24372,7 @@ async def generate_combined_report(
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w, _affirm)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
@@ -24372,6 +24385,7 @@ async def generate_combined_report(
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or EMPTY_6)
             + '</table>'
+            + preshift_affirmation_footer(_affirm_n)
             # ABOVE the signature: the claim, then the name that makes it.
             + PRESHIFT_ATTESTATION_HTML
             + bold_para("CP", _capitalize_first(preshift.get("cp_name", "N/A")))
@@ -24533,7 +24547,6 @@ async def generate_combined_report(
         # rather than through a copy, which is the only way a control run can
         # prove the renderer moved rather than a duplicate of it.
         review_by_key = {}
-        class_by_key = {}
         known_cards, known_workers = set(), set()
         worker_ids = {str(e.get("worker_id")) for e in osha_entries if e.get("worker_id")}
         if worker_ids:
@@ -24541,8 +24554,8 @@ async def generate_combined_report(
             worker_docs = await db.workers.find(
                 {"_id": {"$in": qids}}, {"certifications": 1}
             ).to_list(500)
-            (review_by_key, known_cards, known_workers,
-             class_by_key) = osha_review_index(worker_docs)
+            review_by_key, known_cards, known_workers = osha_review_index(
+                worker_docs)
 
         # THE SAME ROW RULE THE PER-LOGBOOK PDF APPLIES: a row that does not
         # name a worker is not printed.
@@ -24579,7 +24592,7 @@ async def generate_combined_report(
             osha_rows += (
                 f'<tr><td {TD}>{_capitalize_first(e.get("worker_name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(e.get("company", ""))}</td>'
-                f'<td {TD}>{_osha_type_cell(e, class_by_key) or "&mdash;"}</td>'
+                f'<td {TD}>{_osha_type_cell(e) or "&mdash;"}</td>'
                 f'<td {TD}>{e.get("card_number", "") or "&mdash;"}</td>'
                 f'<td {TD}>{e.get("expiration", "") or "&mdash;"}</td>'
                 f'<td {TD}>{"&#10003;" if e.get("signed") else "&mdash;"}</td>'

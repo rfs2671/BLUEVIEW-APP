@@ -175,13 +175,13 @@ class TheReadObservesAndWritesNothing(unittest.TestCase):
         return server.osha_review_index([{"_id": WORKER, "certifications": certs}])
 
     def test_a_malformed_row_is_surfaced(self):
-        review, _cards, _workers, _cls = self._index(
+        review, _cards, _workers = self._index(
             [{"type": "SST_FULL", "card_number": "Supervisor",
               "needs_review": False}])
         self.assertEqual(review[(WORKER, "Supervisor")], "CARD_NUMBER_FORMAT")
 
     def test_a_good_row_is_not(self):
-        review, _c, _w, _cl = self._index(
+        review, _c, _w = self._index(
             [{"type": "SST_FULL", "card_number": "JH447TBBXG",
               "needs_review": False}])
         self.assertEqual(review, {})
@@ -195,14 +195,14 @@ class TheReadObservesAndWritesNothing(unittest.TestCase):
 
         An existing fixture holding "OSHA30-111" is what failed."""
         for osha in ("OSHA30-111", "OSHA-10-2291", "12345"):
-            review, _c, _w, _cl = self._index(
+            review, _c, _w = self._index(
                 [{"type": "OSHA_30", "card_number": osha,
                   "needs_review": False}])
             self.assertEqual(review, {}, osha)
 
     def test_nor_is_any_other_certification_type(self):
         for other in ("Forklift", "Scaffold", "Flagman"):
-            review, _c, _w, _cl = self._index(
+            review, _c, _w = self._index(
                 [{"type": other, "card_number": "not-a-card",
                   "needs_review": False}])
             self.assertEqual(review, {}, other)
@@ -212,7 +212,7 @@ class TheReadObservesAndWritesNothing(unittest.TestCase):
         and "Not checked" in Review, because the credential join cannot happen
         without a number. A third statement of one fact adds nothing, and
         flagging every blank floods a queue whose value is being scarce."""
-        review, _c, _w, _cl = self._index(
+        review, _c, _w = self._index(
             [{"type": "SST_FULL", "card_number": "", "needs_review": False}])
         self.assertEqual(review, {})
 
@@ -221,7 +221,7 @@ class ThePrecedenceRule(unittest.TestCase):
     """A claim about the CREDENTIAL outranks a claim about DATA ENTRY."""
 
     def _cell(self, certs, entry):
-        review, cards, workers, _cls = server.osha_review_index(
+        review, cards, workers = server.osha_review_index(
             [{"_id": WORKER, "certifications": certs}])
         return server.osha_review_cell(entry, review, cards, workers)
 

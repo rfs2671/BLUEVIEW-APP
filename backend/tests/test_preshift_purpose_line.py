@@ -238,8 +238,13 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
                      'w.get("company", "")'):
             self.assertIn(cell, SRC, f"{cell} no longer comes from the stored row")
 
-    def test_the_affirmation_overlay_still_runs_in_both_renderers(self):
-        self.assertEqual(SRC.count("_preshift_signature_cell(w, _affirm)"), 2)
+    def test_the_affirmation_FOOTER_runs_in_both_renderers(self):
+        """The overlay is gone: the Signature column no longer asserts
+        affirmation in either direction, and the sheet points at the separate
+        records in a footer instead. See test_preshift_affirmation_record.py."""
+        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"), 2)
+        self.assertEqual(
+            SRC.count("{_preshift_signature_cell(w)}</td></tr>"), 2)
 
     def test_the_column_headers_are_unchanged(self):
         self.assertEqual(

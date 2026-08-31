@@ -67,11 +67,11 @@ def _code_only(fn) -> str:
 # which assertions the change is actually load-bearing for. A control run whose
 # output is "1 error" cannot tell you what it proved.
 def cell(entry, worker_docs):
-    # osha_review_index returns FOUR things since finding 5 added class_by_key;
-    # the Review cell takes the first three. Unpacked explicitly rather than
-    # splatted, so growing the index again cannot silently pass a fourth
-    # positional argument into this function.
-    review_by_key, known_cards, known_workers, _class =         server.osha_review_index(worker_docs)
+    # THREE since the Cert Type composer went and class_by_key with it.
+    # Unpacked explicitly rather than splatted, so growing the index again
+    # cannot silently pass an extra positional argument into this function.
+    review_by_key, known_cards, known_workers = server.osha_review_index(
+        worker_docs)
     return server.osha_review_cell(
         entry, review_by_key, known_cards, known_workers)
 
@@ -221,9 +221,9 @@ class TheRendererActuallyCallsIt(unittest.TestCase):
                       "known_cards, known_workers)", self.CODE)
 
     def test_the_report_builds_its_indexes_through_the_helper(self):
-        self.assertIn("review_by_key, known_cards, known_workers, "
-                      "class_by_key = osha_review_index(worker_docs)",
-                      self.CODE)
+        # THREE now: class_by_key was removed with the Cert Type composer.
+        self.assertIn("review_by_key, known_cards, known_workers = "
+                      "osha_review_index(worker_docs)", self.CODE)
 
     def test_the_report_keeps_no_copy_of_the_branch(self):
         """If the decision reappears inline, the two can disagree and only one
@@ -261,7 +261,7 @@ class TheRendererActuallyCallsIt(unittest.TestCase):
         # prints, so the helper must not choose for them.
         for col in ('e.get("card_number", "") or "&mdash;"',
                     'e.get("expiration", "") or "&mdash;"',
-                    '_osha_type_cell(e, class_by_key) or "&mdash;"'):
+                    '_osha_type_cell(e) or "&mdash;"'):
             self.assertIn(col, SRC)
 
 

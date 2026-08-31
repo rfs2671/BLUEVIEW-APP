@@ -103,7 +103,7 @@ class BothReadsUseIt(unittest.TestCase):
     def test_the_two_reads_agree_on_the_same_row(self):
         """The document and the queue must not disagree about whether a row
         has a finding."""
-        review, _cards, _workers, _cls = server.osha_review_index(
+        review, _cards, _workers = server.osha_review_index(
             [{"_id": WORKER, "certifications": [BAD]}])
         on_register = review.get((WORKER, "Supervisor"))
         on_screen = _read([BAD])["certifications"][0].get("review_reason")
