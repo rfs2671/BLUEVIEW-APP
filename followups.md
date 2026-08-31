@@ -836,6 +836,56 @@ Recorded here as well as in docs/compliance/esra-bb2024-007-compliance.md,
 because a roadmap item removed for a legal reason will otherwise come back as a
 usability suggestion.
 
+## `POST /signature-events/public` gets no attestation injection
+
+**NOT A DEFECT TODAY. Recorded because that is exactly the state in which it
+becomes one.**
+
+`POST /signature-events` (authenticated) resolves the log type off the document
+and injects the attestation server-side, so a CP's signature records the
+sentence printed above it. **The public endpoint does none of that.** It takes
+`content_snapshot` from the request body and stores it verbatim.
+
+**That is correct for what uses it now.** Its callers are the NFC gate paths,
+and the affirmation writes its own event with its own server-held wording
+(`PRESHIFT_AFFIRMATION_TEXTS`). No attested document routes through it.
+
+**WHAT WOULD REOPEN IT** — any one of these, and none is far-fetched:
+
+  * **A worker signs a document that carries an attestation.** The pre-shift
+    sheet's Signature column is the worker's own signature, and if a future
+    change has him sign the SHEET rather than affirming a stored stroke, that
+    signature is a public-endpoint event on an attested document.
+  * **The site device signs anything.** It authenticates as a device, and if a
+    site-device flow is ever routed through the public endpoint for
+    convenience, every logbook signature it makes loses its attestation.
+  * **A fourth log type gains an attestation** and is signed anywhere other
+    than the CP's phone. Three of twelve carry one today; the number is
+    recorded in test_attestation_capture.py precisely so a fourth is noticed.
+  * **The superintendent log's alternate-signer work.** Item 8's competent
+    person and item 9's incoming CS both need a signature from someone who is
+    not the document's author, and the obvious cheap route is the endpoint
+    that needs no auth.
+
+**THE FAILURE MODE IS SILENCE.** Nothing errors. The event is written, the hash
+is computed, the ledger looks complete -- and the snapshot simply has no
+attestation key, which reads as `PREDATES_CAPTURE`: the state reserved for
+events written before capture existed. A 2027 signature would be
+indistinguishable from a 2026 one, and the marker that was built to be honest
+about old records would be quietly lying about new ones.
+
+**THE FIX, IF IT IS EVER NEEDED,** is the same three lines the authenticated
+endpoint uses: resolve the log type from the document, call
+`attach_attestation`, pass the result instead of the body's snapshot. It is not
+built now because building it would mean a public, unauthenticated endpoint
+reading `db.logbooks` on every gate check-in to answer a question nothing asks.
+
+**THE CHEAP GUARD, ALSO NOT BUILT:** the public endpoint could REFUSE a
+`document_type` of `"logbook"` outright. Nothing legitimate sends one today, so
+the refusal would cost nothing and would turn all four scenarios above from a
+silent gap into a loud one. That is probably the right shape when someone
+returns to this.
+
 ## TWO DIFFERENT JANUARIES, and they will be conflated
 
 **Write this down once so nobody has to work it out twice.**
