@@ -950,6 +950,70 @@ local mongod is standard, `pytest backend/tests -q --ignore` of those three
 files is the honest local run; anything wider reports 13 failures that mean
 nothing about the change under test.
 
+## After any direct push to main, run CI against main
+
+**THE RULE: a direct push to `main` skips CI. Run it against `main` afterwards.
+Three minutes.**
+
+On 2026-08-29 production was 502ing on every path and the fix was pushed
+straight to `main` to restore service. **That push was correct.** Opening a PR
+and waiting for eight checks while the product is down is the wrong trade.
+
+The blind spot is what came next: **nothing ran CI against `main` afterwards,
+and `main` stayed red for a day with nobody knowing.** Two tests were broken by
+that push and both would have been caught on the way in:
+
+  * `test_absence_literals_are_specific` — the outage fix added
+    `assertNotIn("_read_client_minimum_supported", SRC)`, a bare literal the
+    ratchet forbids. It is a genuine whole-symbol ban, so it is now
+    `_BARE_BY_DESIGN`; the point is that nothing told anyone for a day.
+  * `clientVersion.test.cjs` — asserted "the server derives the floor from
+    app.json", which is precisely the behaviour that crash-looped production.
+    Inverted.
+
+Both surfaced only because an unrelated PR ran the full suites two days later.
+
+**The emergency push is not the thing to fix.** Restoring service first is
+right, and a process that made that slower would be worse than the gap it
+closed. What is missing is the three minutes afterwards:
+
+    gh workflow run tests.yml --ref main     # or push an empty commit / re-run
+
+Anything that makes CI evaluate `main` as it now stands. A red `main` that
+nobody has looked at is worse than a red PR, because a PR is looked at by
+definition and `main` is assumed.
+
+## `git checkout -b` from wherever you are standing
+
+**TWICE IN TWO DAYS, and the first one cost real time during an outage.**
+
+A branch cut from the current branch rather than from `main` carries that
+branch's commits. When it merges, its PR delivers the OTHER PR's content too,
+and the other PR's squash commit is then **empty**.
+
+  * **#294** (`client-version-floor`) merged as `e801846`, **zero files**. Its
+    content had already arrived inside `b5aabe9` (#295), which was branched on
+    top of it. So during the outage `git revert e801846` did nothing, and
+    reverting #295 would have taken out the detector-scope fix and the 285
+    correction pass. The revert had to be done by hand under time pressure —
+    **which is the cost of this mistake, and it is not small.**
+  * **#306** and **#307** were both absorbed by **#308** the same way. Caught
+    before merging this time; both closed after verifying with
+    `git hash-object` that `main` carried the files byte-identically.
+
+**THE RULE: always branch from an updated `main`.**
+
+    git checkout main && git pull && git checkout -b <name>
+
+Never `git checkout -b` from a feature branch unless the dependency is
+deliberate and stated in the PR body.
+
+**And the tell, which is cheap to check before opening a PR:**
+
+    git log --oneline main..HEAD
+
+If that lists commits belonging to another PR, this branch will swallow it.
+
 ## One review slot, and a row can hold two findings
 
 **NOT BUILT. Held pending a production count; recorded now so it survives the
