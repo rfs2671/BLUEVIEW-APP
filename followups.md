@@ -714,9 +714,56 @@ substitute a correlate and do not let the absence resolve silently.
 > marker and hold numbers that came from the roster; labelling those "(CP)"
 > would put a false attribution on records that are already filed.
 
-Neither writer looked at it. **Before adding a writer for a field, read the
-reader** -- it is where the semantics were decided, and a renderer that already
-refuses to guess is a decision, not a detail.
+Neither writer looked at it.
+
+**THE RULE, AND IT IS NOT ABOUT READERS.** *Before adding a writer for a field,
+read the reader AND EVERY OTHER WRITER.* The point is that the field already
+has a governing decision somewhere, and a new writer's job is to FIND it -- not
+to re-derive it from the field's name and hope the two agree.
+
+**IT HAPPENED THREE TIMES IN ONE DAY, on the same field:**
+
+  * `_headcount_cell` (the reader) had the rule and said so in its docstring.
+  * #326 (the reconcile) rediscovered it the hard way and encoded it.
+  * The dry-run script did neither, because its `gate_sourced = True` line was
+    written in #323 -- before #326 existed -- and #326 never went back for it.
+
+The third one is the instructive one: the script was not written by someone who
+ignored the rule, it was written before the rule and then *left behind* by it.
+So the sweep is both directions -- when a rule is established, find every
+writer that predates it, and when a writer is added, find every rule that
+precedes it. Neither half is optional and the first is the one that gets
+skipped.
+
+**WHAT IT WOULD HAVE COST.** The amendment written to REMOVE a fabricated
+attribution would have flagged three unattributed rows as gate-confirmed, and
+the next reconcile would have overwritten the very numbers it preserved:
+4 -> 6, 8 -> 6, 3 -> 2, on the CP's screen, before he signed the correction.
+Caught by the operator reading the dry-run output, not by any test.
+
+## AN AMENDMENT IS A NEW EDITABLE CHILD, NOT A CLOSED DOCUMENT
+
+**Assume the opposite and you will reason yourself into the dangerous
+direction.** `POST /api/logbooks/{id}/amend` leaves the original locked and
+intact and creates a CHILD carrying:
+
+```python
+"cp_signature": None,      # an amendment must be re-signed
+"status": "draft",
+"is_locked": False,
+"is_amendment": True,
+```
+
+**So it gets edited, and it gets RECONCILED.** The CP opens the amendment to
+sign it, `hydrate` runs, and `reconcileCrewsWithRoster` runs over its rows like
+any other draft. Anything written into an amendment payload is an input to the
+next reconcile, not a final value -- which is exactly how a corrected row can
+be un-corrected between filing the amendment and signing it.
+
+The original is the immutable half. `FILED_LOG_DATA_IMMUTABLE` (409) refuses a
+data write to a `submitted` log in both `create_logbook` and `update_logbook`,
+and that is the guard that makes an amendment necessary in the first place.
+None of that immutability extends to the child.
 
 **WHY THE ROWS HAD NO MARKER.** `gate_sourced` and `activity_id` were both
 introduced 2026-08-10 (U1 stepper rebuild); `num_workers_source` arrived
