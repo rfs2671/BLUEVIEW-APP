@@ -4332,14 +4332,63 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
+def _jwt_claim(value):
+    """Make a claim JSON-safe WITHOUT turning None into the string "None".
+
+    jwt.encode serialises the payload as JSON, and the values reaching it come
+    straight off a Mongo document: login passes user.get("company_id") with no
+    conversion, while `sub` is stringified by every caller. A BSON ObjectId in
+    any id-shaped claim therefore raises
+
+        TypeError: Object of type ObjectId is not JSON serializable
+
+    which nothing catches, so POST /api/auth/login returns 500. company_id has
+    been in this payload since 2026-02-06; this is not a regression but a
+    landmine that arms itself the moment one user's company_id stops being a
+    string. No application writer does that -- every one stores
+    str(inserted_id) -- so it takes a script or a console edit to arm, and it
+    then fires only for the users it was armed on.
+
+    IT FIRES ONLY ON A CORRECT PASSWORD, WHICH IS THE SHARPER HALF OF IT.
+    verify_password runs first and returns a clean False for a wrong password,
+    so the request 401s long before this code. That leaves a public,
+    unauthenticated endpoint answering:
+
+        wrong password, or no such account  ->  401
+        CORRECT password                    ->  500
+
+    an ACCOUNT ENUMERATION AND CREDENTIAL ORACLE. A 500 positively confirms
+    both that the account exists and that the password just tried was right,
+    and an attacker spraying credentials reads the status code, not the body.
+    That disclosure is closed by making token creation not throw -- NOT by
+    catching exceptions in login and calling them 401, which would bury genuine
+    server faults as authentication failures.
+
+    str(ObjectId) yields the same 24-hex string every other document already
+    stores, so coercing here keeps the token matching downstream company_id
+    comparisons rather than changing what they mean.
+
+    None IS PRESERVED DELIBERATELY, and test_token_payload_json_safe.py pins it
+    on every nullable claim. str(None) is "None": a plausible-looking id that
+    matches no company and no project and would fail silently in every consumer
+    instead of loudly in one place. Workers legitimately carry a null
+    company_id. A blanket str() over this payload would be a worse bug than the
+    one it fixed.
+
+    site_mode is deliberately not routed through here -- it is read as a
+    boolean, and the string "False" is truthy.
+    """
+    return None if value is None else str(value)
+
+
 def create_token(user_id: str, email: str, role: str, site_mode: bool = False, project_id: str = None, company_id: str = None) -> str:
     payload = {
-        "sub": user_id,
-        "email": email,
-        "role": role,
-        "site_mode": site_mode,
-        "project_id": project_id,
-        "company_id": company_id,
+        "sub": _jwt_claim(user_id),
+        "email": _jwt_claim(email),
+        "role": _jwt_claim(role),
+        "site_mode": bool(site_mode),
+        "project_id": _jwt_claim(project_id),
+        "company_id": _jwt_claim(company_id),
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
         "iat": datetime.now(timezone.utc)
     }
