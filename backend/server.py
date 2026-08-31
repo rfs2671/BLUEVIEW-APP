@@ -21512,7 +21512,8 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
             "is_locked": {"$ne": True},
             "is_deleted": {"$ne": True},
         },
-        {"log_type": 1, "date": 1, "cp_signature": 1},
+        {"log_type": 1, "date": 1, "cp_signature": 1, "is_amendment": 1,
+         "amendment_reason": 1, "created_by_name": 1, "created_at": 1},
     ).sort("date", -1).to_list(200)
     # THE SWEEP'S OWN PREDICATE, not a re-derivation. A log this list shows as
     # needing a signature must be exactly a log the sweep declined to freeze,
@@ -21587,6 +21588,20 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     # THE OLD FIELDS STAY. Bundles in the field read them, and this whole
     # incident exists because a two-week-old phone cannot take an OTA. Removing
     # them would blank the only exception cards those devices have.
+    # AN UNSIGNED AMENDMENT IS NOT AN UNFINISHED DAY, and the difference is the
+    # whole reason this state exists. "never signed - still open and still
+    # yours to finish" is the app telling a CP he failed to do something he
+    # DID: he signed that log, and a correction he did not make cleared the
+    # signature. Sending him that sentence about his own filed work is the
+    # defect, not the wording.
+    _amend_meta = {}
+    for _doc in stale_unsigned_docs:
+        if _doc.get("is_amendment") is not True:
+            continue
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if _lt and _dt:
+            _amend_meta[(_lt, _dt)] = amendment_state(_doc)
+
     _gaps = {}
     for _ref in stale_unsigned_refs:
         _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
@@ -21604,8 +21619,28 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         # A present-but-unaffirmed signature is the more specific state, so it
         # wins over the generic "unsigned" the stale pass assigned.
         _gaps[(_lt, _dt)] = "unaffirmed"
+    # MORE SPECIFIC STILL, and applied last for that reason. An amendment child
+    # is created unsigned (cp_signature None), so it carries no ink and can
+    # never be `unaffirmed` -- the two never collide in practice, and the
+    # ordering says which would win if they ever did.
+    for _key in _amend_meta:
+        _gaps[_key] = "amendment_unsigned"
+    def _gap_row(k, v):
+        row = {"log_type": k[0], "date": k[1], "state": v}
+        meta = _amend_meta.get(k)
+        if meta:
+            # Off the RECORD. A bundle rendering this in December must read the
+            # same sentence it would have read in September.
+            row["amendment"] = {
+                "reason": meta.get("reason"),
+                "by": meta.get("by"),
+                "at": _amendment_day(meta.get("at")) or None,
+                "has_reason": meta.get("state") == AMENDMENT_PRESENT,
+            }
+        return row
+
     attestation_gaps = sorted(
-        ({"log_type": k[0], "date": k[1], "state": v} for k, v in _gaps.items()),
+        (_gap_row(k, v) for k, v in _gaps.items()),
         key=lambda g: g["date"], reverse=True,
     )
 
@@ -22974,6 +23009,75 @@ def _headcount_cell(act, blank=""):
     return f"{text} (CP) - gate recorded {gate_text}"
 
 
+AMENDMENT_PRESENT = "present"
+AMENDMENT_NO_REASON = "no_reason_recorded"
+AMENDMENT_NONE = "not_amended"
+
+
+def amendment_state(log) -> dict:
+    """Was this record amended, and is the reason on it? THREE states.
+
+    `amendment_reason` was WRITE-ONLY: amend_logbook stored it on the child and
+    nothing read it back, so the sentence justifying a change to a signed
+    3301.2 record existed only in Mongo.
+
+    THE MIDDLE STATE IS NOT DECORATIVE. amend_logbook refuses a reasonless
+    amendment (400), so nothing through that endpoint lands there -- but a
+    script, a migration or a direct write can, and this codebase spent
+    2026-08-31 on exactly that class of row. Collapsing "amended, reason
+    unknown" into "not amended" hides a correction; collapsing it into "amended
+    and explained" prints an empty quotation as though somebody wrote it.
+
+    IT READS THE RECORD, NEVER THE CLOCK. Every value comes off the document,
+    so an amendment filed in September for an August log says the same thing in
+    December.
+    """
+    if not isinstance(log, dict) or log.get("is_amendment") is not True:
+        return {"state": AMENDMENT_NONE, "reason": None, "by": None, "at": None}
+    reason = str(log.get("amendment_reason") or "").strip()
+    by = str(log.get("created_by_name") or "").strip()
+    return {
+        "state": AMENDMENT_PRESENT if reason else AMENDMENT_NO_REASON,
+        "reason": reason or None,
+        "by": by or None,
+        "at": log.get("created_at"),
+    }
+
+
+def _amendment_day(value) -> str:
+    """The calendar day off the record. A datetime or an ISO string, both of
+    which reach here depending on whether the doc has been serialized. Never a
+    guess, and never relative to now."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 and text[4] == "-" else ""
+
+
+def amendment_sentence(state) -> str:
+    """One line for a document header. Empty when the record is not amended.
+
+    Says WHO and WHEN as well as why: the CP did not create this and did not
+    ask for it, and "filed by <name> on <date>" is the fact that turns a record
+    that changed shape into one somebody changed. Absent parts are omitted, not
+    filled in.
+    """
+    st = (state or {}).get("state")
+    if st not in (AMENDMENT_PRESENT, AMENDMENT_NO_REASON):
+        return ""
+    who = (state or {}).get("by")
+    day = _amendment_day((state or {}).get("at"))
+    lead = "This record was amended"
+    if who:
+        lead += f" by {who}"
+    if day:
+        lead += f" on {day}"
+    if st == AMENDMENT_PRESENT:
+        return f"{lead}. Reason given: {state.get('reason')}"
+    return (f"{lead}. NO REASON WAS RECORDED for this amendment - the "
+            f"correction is on the record but its explanation is not.")
+
+
 def _display_sub_company(name):
     """Render a subcontractor/company for a report or headcount. The
     'UNASSIGNED' sentinel — a worker whose sub was not on the project roster at
@@ -23947,6 +24051,29 @@ async def generate_combined_report(
     # and is worse than nothing in front of a lender; and anything about cost
     # or draw status, which this app does not hold and must not imply.
     _pg1_date = _report_date_long(date)
+    # AMENDED? A FACT ABOUT THE RECORD, not about one log section, so it sits
+    # in the document header beside the date and the address.
+    #
+    # Read off the log this report PRINTS. _filed_log already supersedes a
+    # signed parent with its signed amendment ("an unsigned amendment is not a
+    # correction"), so by the time a child is printing, the reader is looking at
+    # a corrected document with nothing on it saying so. That was the gap: the
+    # report silently changed shape between two printings.
+    # Escaped locally: the reason is operator-supplied text on its way into
+    # an HTML document. `import html as _html` lower in this function is AFTER
+    # this point, so it cannot be borrowed.
+    import html as _amend_esc
+    _amend = amendment_state(daily_jobsite)
+    _amend_line = amendment_sentence(_amend)
+    _amendment_html = (
+        f'<div style="margin-top:16px;padding:12px 14px;background-color:#fffbeb;'
+        f'border-left:3px solid #b45309;">'
+        f'<span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;'
+        f'color:#b45309;font-weight:600;">AMENDED RECORD</span><br />'
+        f'<span style="font-size:13px;color:#0A1929;">{_amend_esc.escape(_amend_line)}</span>'
+        f'</div>'
+    ) if _amend_line else ""
+
     _subs, _sub_total = _headcount_by_sub(checkins)
 
     _dj = ((daily_jobsite or {}).get("data") or {}) if daily_jobsite else {}
@@ -25448,6 +25575,7 @@ async def generate_combined_report(
           </td>
         </tr>
       </table>
+      {_amendment_html}
     </td>
   </tr>
 
