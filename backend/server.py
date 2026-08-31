@@ -3705,6 +3705,40 @@ LOGBOOK_TYPE_REGISTRY = [
         "applicable_classes": ["regular", "major_a", "major_b"],
     },
     {
+        "key": "site_superintendent_log",
+        # THE CS'S OWN STATUTORY RECORD, not a section of the CP's daily log.
+        # He signs it under his own DOB licence and he is a different person
+        # from the CP; only item 2 overlaps with what the CP files.
+        #
+        # Buildings Bulletin 2024-007 names this log among the site safety
+        # documents that may be kept electronically, and requires the electronic
+        # system to be the POINT OF CREATION rather than a scan of paper. See
+        # docs/compliance/esra-bb2024-007-compliance.md, which states what is
+        # built and what is not, and certifies nothing.
+        "label": "Construction Superintendent Log",
+        "subtitle": "BC 3301.13.13 — the superintendent's own record",
+        "frequency": "daily",
+        "icon": "ClipboardCheck",
+        "color": "#f59e0b",
+        "dob_reference": "§3301.13.13",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+        # OFF UNTIL A SUPERINTENDENT CAN ACTUALLY FILE ONE.
+        #
+        # The full backend suite caught this: registering the type made it
+        # required on EVERY project immediately, and the investor report's
+        # compliance line started counting a twelfth required log that has no
+        # editor yet. Every project would have carried a permanent "not filed"
+        # deficiency for a document nobody could file -- which is precisely the
+        # 285 false flags this session opened by removing.
+        #
+        # So it uses the mechanism the conditional four already use: a project
+        # field that must be TRUE, set by an admin when a construction
+        # superintendent is actually assigned. A project with no CS is not in
+        # breach for having no CS log.
+        "conditional": "superintendent_log_active",
+        "activated_by": "admin",
+    },
+    {
         "key": "toolbox_talk",
         "label": "Tool Box Talk",
         "subtitle": "OSHA — Weekly per company",
@@ -4039,6 +4073,20 @@ LOGBOOK_TIMING_CLASS = {
     # ── DAILY NARRATIVE — open all day, frozen by the EOD Submit and Sign ──
     "daily_jobsite": "end_of_day",
     "ssc_daily_safety_log": "end_of_day",
+    # ── THE VISIT — opens at sign-in, frozen when the CS signs on departure ──
+    #
+    # A THIRD CLASS, and it is genuinely a third rather than a rename of one of
+    # the other two. IMMEDIATE freezes the instant a signature lands, which is
+    # wrong for a record the CS adds to across a visit. END_OF_DAY stays open
+    # until an overnight sweep, which is wrong for a record whose author has
+    # left the site and cannot be asked about it.
+    #
+    # ONE CLASS, A PROJECT-DEPENDENT TRIGGER. On a MAJOR BUILDING the deadline
+    # is end of day rather than departure, so the freeze point is resolved per
+    # project by superintendent_log_deadline() rather than being a second entry
+    # in this table. A second entry would make it look like two different kinds
+    # of document, and it is one document with one rule.
+    "site_superintendent_log": "visit",
 }
 
 
@@ -4049,6 +4097,39 @@ def logbook_timing_class(log_type: str) -> str:
 END_OF_DAY_LOG_TYPES = tuple(
     k for k, v in LOGBOOK_TIMING_CLASS.items() if v == "end_of_day"
 )
+
+# The visit-scoped types. NOT swept by sweep_stale_end_of_day_logs: a visit log
+# is frozen when its author signs on departure, and an overnight sweep would
+# freeze one he had not finished. Kept as its own tuple so a reader of
+# END_OF_DAY_LOG_TYPES cannot silently acquire these by a widened comparison.
+VISIT_LOG_TYPES = tuple(
+    k for k, v in LOGBOOK_TIMING_CLASS.items() if v == "visit"
+)
+
+
+def superintendent_log_deadline(project) -> str:
+    """When the CS log must be signed: "departure" or "end_of_day".
+
+    ON A MAJOR BUILDING the deadline is end of day; otherwise it is the CS's
+    departure. §3310's classification already answers "is this a major
+    building" -- classify_project's own docstring says "Major Building = 10+
+    stories OR 125+ ft OR 100,000+ sqft footprint" -- so nothing new is stored
+    and nothing is inferred.
+
+    AN UNASSESSED PROJECT FAILS CLOSED to end_of_day. classify_project returns
+    None when nothing was ever measured, precisely so that NEVER ASSESSED and
+    MEASURED-AND-FOUND-NON-MAJOR stay different answers, and
+    get_required_logbooks already fails closed on that same None by keeping the
+    major-building logs. This follows it. End of day is the STRICTER deadline
+    and signing early is never a violation, so the failure costs nothing when
+    the project turns out to be ordinary and protects the record when it does
+    not.
+    """
+    if not classification_assessed(project):
+        return "end_of_day"
+    return ("end_of_day"
+            if str((project or {}).get("project_class") or "") in ("major_a", "major_b")
+            else "departure")
 
 
 async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
@@ -4191,6 +4272,25 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
         logger.error(f"[eod-freeze] could not flag {doc.get('_id')}: {e!r}")
 
 
+def superintendent_unanswered(data, log_date=None):
+    """Attestable items with neither content nor a nothing-to-report.
+
+    Thin wrapper so the submit gate reads one name and the rule lives in
+    lib/logbook/superintendent_log.py with the items it belongs to.
+    """
+    try:
+        return unanswered_attestable(data, log_date)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[cs-log] attestation check failed: {e!r}")
+        # FAILS CLOSED IS WRONG HERE and open is wrong too, so it does neither:
+        # an exception means the check could not run, and blocking a signature
+        # on a bug would strand a CS on site with an unsignable log. The
+        # renderer still states each item's real state, so an unattested item
+        # remains visible on the document rather than silently passing as
+        # "none".
+        return []
+
+
 def is_immediate_preshift(log_type: str) -> bool:
     """True for sign-and-freeze-now logs: frozen on signature, EXCLUDED from the
     end-of-day batch, and re-filed as a NEW discrete log rather than reopened."""
@@ -4200,12 +4300,23 @@ def is_immediate_preshift(log_type: str) -> bool:
 def logbook_timing_meta(log_type: str) -> dict:
     """The per-type freeze contract, surfaced to clients so the UI cannot invent
     its own rule (sign-freezes vs finalize-freezes is a legal distinction)."""
-    immediate = is_immediate_preshift(log_type)
+    cls = logbook_timing_class(log_type)
+    immediate = cls == "immediate"
+    visit = cls == "visit"
     return {
-        "timing_class": "immediate" if immediate else "end_of_day",
-        "is_batchable": not immediate,
+        # THE REAL CLASS, not a two-way collapse of it. This reported
+        # "end_of_day" for anything that was not immediate, which would have
+        # told the client a visit log is swept overnight -- it is not.
+        "timing_class": cls,
+        "is_batchable": not immediate and not visit,
         "freeze_on_sign": immediate,
+        # A VISIT LOG FREEZES WHEN ITS AUTHOR SIGNS ON DEPARTURE. That is a
+        # finalize, not a sign-and-freeze, but the deadline is his departure
+        # rather than the end of the day -- except on a major building. The
+        # per-project answer is superintendent_log_deadline(project); this
+        # per-type meta cannot know the project.
         "freeze_on_finalize": not immediate,
+        "deadline_is_project_scoped": visit,
     }
 
 # ==================== SIGNATURE AUDIT TRAIL MODELS ====================
@@ -4248,6 +4359,19 @@ class CSRegistrationCreate(BaseModel):
     nyc_id_email: Optional[str] = None  # NYC.ID email used for DOB filings
     sst_number: Optional[str] = None    # SST card number if different
     phone: Optional[str] = None
+    # THE ACCOUNT THAT SIGNS, when there is one.
+    #
+    # OPTIONAL BY DESIGN. A registration is created by an ADMIN for DOB
+    # purposes and may exist long before the superintendent has an account --
+    # or when he never gets one, as with another company's super on a joint
+    # site. Requiring it would either block the registration or leave a null
+    # nobody revisits.
+    #
+    # When it IS set it is the STRONG link: an id, not two humans typing the
+    # same licence number. attribute_signer reports which of the two it used,
+    # because "bound to this account" and "the numbers agree" are different
+    # strengths of evidence.
+    user_id: Optional[str] = None
  
 class CSRegistrationUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -4255,6 +4379,9 @@ class CSRegistrationUpdate(BaseModel):
     nyc_id_email: Optional[str] = None
     sst_number: Optional[str] = None
     phone: Optional[str] = None
+    # Settable after the fact: the commonest real sequence is a registration
+    # typed for DOB first and the account created later.
+    user_id: Optional[str] = None
     is_active: Optional[bool] = None
  
 class CSRegistrationResponse(BaseModel):
@@ -4437,6 +4564,19 @@ from lib.logbook.daily_jobsite_source import (  # noqa: E402
     daily_jobsite_filter, as_daily_log_row,
 )
 # The agreement to sign electronically, and the wording of every version of it.
+from lib.logbook.cs_attribution import (  # noqa: E402
+    attribute_signer, attribution_sentence, normalise_licence,
+    MATCHED_ACCOUNT, MATCHED_LICENCE, NOT_REGISTERED_CS, NO_REGISTRATION,
+    REGISTERED_LATER, UNDETERMINED,
+)
+from lib.logbook.superintendent_log import (  # noqa: E402
+    ITEMS as CS_LOG_ITEMS, ATTESTABLE_KEYS as CS_ATTESTABLE_KEYS,
+    item_provenance as cs_item_provenance,
+    PROVENANCE_ADOPTED, PROVENANCE_OWN, PROVENANCE_UNMARKED,
+    COMPETENT_PERSON_SUNSET, applicable_items as cs_applicable_items,
+    item_state as cs_item_state, unanswered_attestable,
+    ATTESTED_NONE, NOT_REACHED, NOT_COLLECTED, PRESENT,
+)
 from lib.esra_consent import (  # noqa: E402
     ESRA_CONSENT_TEXT, ESRA_CONSENT_VERSION,
     consent_is_current, verify_stored_consent,
@@ -15923,6 +16063,7 @@ async def register_construction_superintendent(
         "nyc_id_email": (data.nyc_id_email or "").strip().lower() or None,
         "sst_number": (data.sst_number or "").strip() or None,
         "phone": (data.phone or "").strip() or None,
+        "user_id": (str(data.user_id).strip() or None) if data.user_id else None,
         "is_active": True,
         "company_id": company_id,
         "created_by": admin.get("id"),
@@ -16965,6 +17106,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
               'margin:18px 0 0;border-top:1px solid #e2e8f0;padding-top:10px;">'
             + FALL_PROTECTION_NOTICE + '</p>'
         )
+
+    elif log_type == "site_superintendent_log":
+        # THE SAME BUILDER THE COMBINED REPORT USES. The OSHA register and the
+        # pre-shift sheet each drifted between these two renderers and each had
+        # to be pulled back into one definition; this one never forks.
+        type_title = "Construction Superintendent Log (BC 3301.13.13)"
+        _cs_attr = await cs_attribution_for(
+            db, logbook.get("project_id"), logbook.get("date"),
+            (data or {}).get("presence") or {})
+        body_html = _superintendent_log_html(logbook, attribution=_cs_attr)
 
     elif log_type == "osha_log":
         # frontend/app/logbooks/osha_log.jsx:200  data: { entries };
@@ -20168,6 +20319,28 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         if _no_trade:
             raise HTTPException(status_code=400, detail=_no_trade)
 
+        # AN ATTESTABLE ITEM MUST BE ANSWERED ONE WAY OR THE OTHER.
+        #
+        # Items 4 to 7 of the superintendent log are empty on most days, and
+        # "no unsafe conditions observed" is worth something on a compliance
+        # record ONLY because a named person put their name to it. A blank
+        # carries no such assertion, and rendering the two the same way turns a
+        # gap in the record into an attestation nobody made -- the defect the
+        # OSHA register's em dash had, where one row printed the same glyph five
+        # times meaning four different things.
+        #
+        # Same shape as the pre-shift sheet refusing to submit until every
+        # worker has both answers. The server names the condition; the client
+        # owns the wording and can point at the specific items.
+        if data.log_type == "site_superintendent_log":
+            _unanswered = superintendent_unanswered(data.data, data.date)
+            if _unanswered:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "SUBMIT_UNATTESTED_ITEMS",
+                            "items": _unanswered},
+                )
+
     # Check for existing entry same type+date (upsert logic).
     #
     # subcontractor_orientation is the ONE exception: it is PER-WORKER, not a
@@ -23217,6 +23390,223 @@ def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140, max_he
     )
 
 
+# ── This section styles ITSELF ──────────────────────────────────────────────
+#
+# info_box, bold_para, TH and TD are defined INSIDE generate_combined_report, so
+# a builder shared with the per-logbook renderer cannot borrow them. Carrying
+# its own styling is what lets ONE function produce the body for both -- and one
+# body is the point: the OSHA register and the pre-shift sheet each drifted
+# between the two renderers and each had to be pulled back.
+_CS_TH = ('style="background-color:#1e293b;color:#ffffff;padding:10px 12px;'
+          'text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;'
+          'letter-spacing:0.5px;" bgcolor="#1e293b"')
+_CS_TD = ('style="padding:10px 12px;border-bottom:1px solid #e2e8f0;'
+          'color:#334155;"')
+
+
+def _cs_info_box(inner):
+    return ('<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="margin:12px 0;" bgcolor="#f1f5f9"><tr><td '
+            'style="background-color:#f1f5f9;padding:14px 18px;'
+            'border-left:4px solid #f59e0b;font-size:15px;line-height:1.7;'
+            f'color:#475569;">{inner}</td></tr></table>')
+
+
+def _cs_bold_para(label, value):
+    return ('<p style="color:#475569;line-height:1.6;margin:8px 0;">'
+            f'<strong style="color:#0A1929;">{label}:</strong> {value}</p>')
+
+
+CS_LOG_ATTESTATION = (
+    "This is the construction superintendent&#39;s own record for this date, "
+    "made under BC 3301.13.13 and signed by the superintendent named below. "
+    "An item marked &#34;none to report&#34; is his statement that he "
+    "considered that item and had nothing to record; it is not an absence of "
+    "information. An item marked Not recorded was not answered. Arrival and "
+    "departure times are his own, prefilled from sign-in and from completion "
+    "of this log and editable by him; they are not observed by this system."
+)
+
+CS_LOG_ATTESTATION_HTML = (
+    '<p style="color:#334155;font-size:12px;line-height:1.6;margin:14px 0 4px;'
+    'padding:9px 11px;background:#f8fafc;border-left:3px solid #f59e0b;">'
+    + CS_LOG_ATTESTATION + '</p>'
+)
+
+
+def _cs_item_body(item, block, cs_name):
+    """One item's content, or the honest statement of why there is none.
+
+    FOUR STATES, RENDERED FOUR WAYS, because they are four different facts and
+    the OSHA register already demonstrated what happens when they are not.
+
+        PRESENT         what he wrote
+        ATTESTED_NONE   "None to report" WITH HIS NAME on it -- the assertion
+                        is the value, and an unattributed "none" asserts
+                        nothing
+        NOT_REACHED     the sanctioned "&mdash; Not recorded" placeholder, the
+                        one string this codebase allows for "the app has no
+                        value for this"
+        NOT_COLLECTED   a SCOPE statement: this system does not capture the
+                        item. Not an attestation, and it must not read as one.
+    """
+    key = item["key"]
+    fields = item.get("fields") or []
+
+    if not item.get("collected"):
+        # A SCOPE LINE, in the shape FALL_PROTECTION_NOTICE established: it says
+        # what the document does NOT cover, so a reader does not take an empty
+        # item for "nothing happened". Superintendent changes are rare and real;
+        # silence about them would be read as their absence.
+        return ('<span style="color:#64748b;">This log does not record this '
+                'item. It is kept elsewhere.</span>')
+
+    state = cs_item_state(key, {key: block}, None) if block is not None else NOT_REACHED
+
+    if state == ATTESTED_NONE:
+        who = _capitalize_first(str(cs_name or "").strip()) or "the superintendent"
+        return (f'<span style="color:#15803d;">None to report</span>'
+                f'<span style="color:#64748b;font-size:12px;"> &#183; attested by '
+                f'{who}</span>')
+
+    if state != PRESENT:
+        return NOT_RECORDED
+
+    # ── content ─────────────────────────────────────────────────────────────
+    rows = []
+    for field in fields:
+        value = block.get(field)
+        if isinstance(value, (list, tuple)):
+            for entry in value:
+                if isinstance(entry, dict):
+                    parts = [f'<strong>{_capitalize_first(str(k).replace("_", " "))}:</strong> '
+                             f'{_sentence_case(str(v))}'
+                             for k, v in entry.items() if str(v or "").strip()]
+                    if parts:
+                        rows.append(" &#183; ".join(parts))
+                elif str(entry or "").strip():
+                    rows.append(_sentence_case(str(entry)))
+        elif isinstance(value, str) and value.strip():
+            rows.append(_sentence_case(value))
+        elif value not in (None, "", False, []):
+            rows.append(str(value))
+    if not rows:
+        return NOT_RECORDED
+    return "<br />".join(rows)
+
+
+async def cs_attribution_for(db_, project_id, log_date, signer):
+    """Was the signer the registered CS for this project on the log's date?
+
+    READ TIME, AND IT WRITES NOTHING. Nothing about a superintendent's log may
+    mutate the registration that describes him -- the same posture as the
+    card-number finding and the pre-shift affirmation overlay.
+
+    A FAILED READ REPORTS "no registration", NEVER a mismatch. The one thing
+    this must not do is turn an outage into a finding against a named person on
+    a statutory record.
+    """
+    if db_ is None or not project_id:
+        return attribute_signer(signer, None, log_date)
+    try:
+        reg = await db_.cs_registrations.find_one({
+            "project_id": str(project_id),
+            "is_deleted": {"$ne": True},
+        })
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[cs-log] registration read failed for {project_id}: {e!r}")
+        reg = None
+    return attribute_signer(signer, reg, log_date)
+
+
+def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
+    """The whole section, built ONCE for both renderers.
+
+    ONE BUILDER, TWO CALLERS. The OSHA register and the pre-shift sheet each
+    drifted between the per-logbook PDF and the combined report -- the same
+    stored document printing different things depending on which one you asked
+    for -- and each had to be pulled back. This one starts that way.
+    """
+    data = (logbook or {}).get("data") or {}
+    log_date = (logbook or {}).get("date")
+    presence = data.get("presence") or {}
+    cs_name = presence.get("printed_name") or (logbook or {}).get("cp_name") or ""
+
+    rows = ""
+    for item in cs_applicable_items(log_date):
+        block = data.get(item["key"])
+        if item["key"] == "weekly_meeting":
+            # ITEM 10 IS A STATUS, NOT A FIELD, and it belongs in its own row
+            # rather than as a paragraph below the table -- an item of the
+            # eleven that is missing from the list of eleven reads as an
+            # omission. The obligation is WEEKLY: a daily field blank six days
+            # in seven teaches the reader that blank is normal here, and
+            # teaches the superintendent the same, which then bleeds into items
+            # 4 to 7 where a blank IS a finding.
+            # NOT COLLECTED IN THIS RELEASE, so it says so rather than
+            # rendering a blank a reader would take for "no meeting was due".
+            # `weekly_status` is the parameter the meeting record will supply:
+            # whether a BC 3301.13.19 meeting was recorded in the last seven
+            # days OF ACTIVE WORK, with days carrying no gate check-ins not
+            # counted, so a shutdown week cannot manufacture a violation.
+            body = (weekly_status
+                    or '<span style="color:#64748b;">This log does not record '
+                       'the weekly meeting. It is kept elsewhere.</span>')
+        else:
+            body = _cs_item_body(
+                item, block if isinstance(block, dict) else {}, cs_name)
+        # ITEM 2 SAYS WHERE IT CAME FROM. Adopted from the CP's log unedited,
+        # or his own once he changed it. Unmarked on a log filed before the
+        # flag existed -- NOT "adopted", because a record that predates the
+        # question has not answered it.
+        if item.get("provenance") and body and body != NOT_RECORDED:
+            _prov = cs_item_provenance(data)
+            _prov_text = {
+                PROVENANCE_ADOPTED: "adopted from the daily jobsite log",
+                PROVENANCE_OWN: "the superintendent&#39;s own account",
+            }.get(_prov)
+            if _prov_text:
+                body += ('<br /><span style="font-size:11px;color:#64748b;">'
+                         + _prov_text + '</span>')
+        cite = item.get("citation") or ""
+        rows += (
+            f'<tr><td {_CS_TD} valign="top" width="34%">'
+            f'<strong>{item["number"]}. {item["label"]}</strong>'
+            + (f'<br /><span style="font-size:11px;color:#64748b;">{cite}</span>'
+               if cite else "")
+            + f'</td><td {_CS_TD} valign="top">{body}</td></tr>'
+        )
+
+    _arrived = presence.get("arrived_at") or NOT_RECORDED
+    _departed = presence.get("departed_at") or NOT_RECORDED
+    return (
+        _cs_info_box(
+            f'<strong style="color:#0A1929;">Superintendent:</strong> '
+            f'{_capitalize_first(cs_name) or NOT_RECORDED}<br />'
+            f'<strong style="color:#0A1929;">On site:</strong> {_arrived} '
+            f'to {_departed}'
+        )
+        + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+          'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+        + f'<tr><th {_CS_TH}>Item</th><th {_CS_TH}>Record</th></tr>'
+        + rows
+        + '</table>'
+        # ABOVE the signature: the claim, then the name that makes it.
+        + CS_LOG_ATTESTATION_HTML
+        # WHAT THE SYSTEM KNOWS ABOUT WHO SIGNED, stated as a fact and never as
+        # an accusation. There are legitimate reasons a signer is not the
+        # registered CS, and from 2027-01-01 the alternate licensed
+        # superintendent is one of them.
+        + (('<p style="color:#475569;font-size:12px;line-height:1.6;'
+            'margin:6px 0 4px;">' + attribution_sentence(attribution) + '</p>')
+           if attribution else "")
+        + _cs_bold_para("Construction Superintendent", _capitalize_first(cs_name) or "N/A")
+        + render_signature_html(
+            presence.get("signature") or (logbook or {}).get("cp_signature"),
+            "Superintendent Signature")
+    )
+
+
 def render_signature_html(sig, label="CP Signature"):
     """Render a signature as email-safe HTML with its AFFIRMED / UNAFFIRMED
     banner. Handles both shapes: a base64 PNG string / {data: base64}, and the
@@ -24111,6 +24501,21 @@ async def generate_combined_report(
         )
 
     # ==========================================================
+    #  CONSTRUCTION SUPERINTENDENT LOG  (BC 3301.13.13)
+    # ==========================================================
+    cs_html = ""
+    cs_lb = _filed_log(logbooks, "site_superintendent_log")
+    if cs_lb:
+        _cs_attr = await cs_attribution_for(
+            db, project_id, cs_lb.get("date"),
+            (cs_lb.get("data") or {}).get("presence") or {})
+        cs_html = (
+            section_title("Construction Superintendent Log (BC 3301.13.13)")
+            # ONE BUILDER, BOTH RENDERERS. See _superintendent_log_html.
+            + _superintendent_log_html(cs_lb, attribution=_cs_attr)
+        )
+
+    # ==========================================================
     #  OSHA / SST CERTIFICATION LOG
     # ==========================================================
     # Rendered as a real table, and — critically — each row is joined back to the
@@ -24906,6 +25311,7 @@ async def generate_combined_report(
     <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
       {progress_html}
       {jobsite_html}
+      {cs_html}
       {toolbox_html}
       {preshift_html}
       {site_html}

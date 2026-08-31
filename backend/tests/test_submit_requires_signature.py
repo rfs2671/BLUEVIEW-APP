@@ -485,25 +485,39 @@ class TheBlankContentHoleIsStillOpen(unittest.TestCase):
                 self.assertEqual(resp.status_code, 400, resp.text)
                 self.assertEqual(resp.json()["detail"]["code"], code)
 
-    def test_the_hole_is_still_open_for_nine_of_the_twelve_types(self):
+    # Types whose submit gate is neither the row rule nor nothing.
+    _OWN_GATE = {"site_superintendent_log"}
+
+    def test_the_hole_is_still_open_for_nine_of_the_thirteen_types(self):
         """The count is the point. Measured against LOGBOOK_TIMING_CLASS — the
         real list of types on this submit path — not against the fixture above.
         If a later change narrows or widens the boundary, this fails and it
         gets re-stated rather than drifting.
 
-        TWELVE now: fall_protection joined, and it joined the COVERED side, so
-        the open set is unchanged at nine. A new log type that is a list of
-        rows arrives with the row rule rather than widening the hole."""
+        THIRTEEN now: site_superintendent_log joined. It is NOT in the open set
+        and NOT in the row-rule set either, because it has a DIFFERENT gate of
+        its own -- SUBMIT_UNATTESTED_ITEMS refuses a signature while any of its
+        four attestable items is neither answered nor explicitly marked
+        "nothing to report". That is a stronger content rule than the row rule,
+        not an absence of one, and counting it as an open hole would misreport
+        the boundary this test exists to state.
+
+        The open set is therefore unchanged at nine."""
         import server as _S
         all_types = set(_S.LOGBOOK_TIMING_CLASS)
-        self.assertEqual(len(all_types), 12)
-        still_open = all_types - set(self._HAS_CONTENT_RULE)
+        self.assertEqual(len(all_types), 13)
+        still_open = all_types - set(self._HAS_CONTENT_RULE) - self._OWN_GATE
         self.assertEqual(len(still_open), 9, sorted(still_open))
-        # And the three that are covered really are the three named above.
+        # And the three covered by the ROW rule really are the three named.
         self.assertEqual(
-            all_types - still_open,
+            all_types - still_open - self._OWN_GATE,
             {"subcontractor_orientation", "osha_log", "fall_protection"},
         )
+        # The one with its own gate has one, asserted rather than assumed.
+        import ast as _ast, inspect as _inspect, textwrap as _tw
+        _code = _ast.unparse(_ast.parse(_tw.dedent(
+            _inspect.getsource(_S.create_logbook))))
+        self.assertIn("SUBMIT_UNATTESTED_ITEMS", _code)
         # preshift is in the open set BY DECISION, not by omission.
         self.assertIn("preshift_signin", still_open)
         self.assertIn("preshift_signin", _S._SUBMIT_ROW_CONTENT_RULES_DEFERRED)

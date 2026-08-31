@@ -808,6 +808,84 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## TWO DIFFERENT JANUARIES, and they will be conflated
+
+**Write this down once so nobody has to work it out twice.**
+
+| | rule | status |
+|---|---|---|
+| **the one-job rule** | a CS may hold **one active job** | **already in effect.** `register_construction_superintendent` warns on a second active registration for the same licence and writes a `cs_one_job_conflict` alert at `severity: high`. Its comment says "eff. Jan 2026". |
+| **the competent-person sunset** | **2027-01-01** — the competent person role ceases to exist to be designated | **not yet.** `COMPETENT_PERSON_SUNSET` in `lib/logbook/superintendent_log.py`; item 8 stops applying and item 9 becomes the live item. |
+
+They are unrelated rules about different things, four months apart, and both
+are "the January change" in conversation. The one-job rule constrains WHERE a
+superintendent may be registered. The sunset changes WHO may be designated as
+competent person -- after it, nobody, because the CS must be present during all
+active work and absence is covered by an **alternate licensed superintendent**.
+
+**The trap:** a reader in December who finds `cs_one_job_conflict` will
+reasonably assume it implements "the January rule" and that the sunset is
+handled. It does not and it is not.
+
+### What the sunset needs and does not have
+
+**THE ALTERNATE LICENSED SUPERINTENDENT IS NOT A PRODUCT CONCEPT YET.** From
+2027-01-01 the CS must be on site during all active work, and cover is provided
+by an alternate -- another licensed superintendent, not a competent person.
+
+  * `cs_registrations` CAN hold two rows for one project; nothing forbids it.
+  * But **the one-job conflict check would fire on the alternate**, because it
+    matches on licence across projects and knows nothing about a project having
+    a primary and a deputy.
+  * And **the signing path has no notion of who is on duty.** `cs_attribution`
+    reads ONE registration per project (`find_one`) and would report the
+    alternate as `NOT_REGISTERED_CS` on the days he actually covered.
+
+So on 2027-01-01 the honest state of the product is: the sunset is handled for
+ITEM RENDERING (items 8 and 9 swap, date-driven) and NOT handled for STAFFING.
+
+### And the same-person case
+
+A licensed CS may act as competent person for general site operations provided
+he holds the specific OSHA certification for any specialised hazard; 3301.13.12
+does not prohibit it. So item 8 naming the superintendent himself is a
+legitimate project state.
+
+**Do not build that as a permanent toggle.** It is live for four months and
+then describes a role that no longer exists. If it is built at all it gates on
+`item_applies("competent_person", log_date)` so it disappears with the item it
+belongs to.
+
+## CS licence expiry is not stored
+
+`CSRegistrationCreate` carries `license_number`, `nyc_id_email`, `sst_number`
+and `phone`. **There is no expiry.** A superintendent whose DOB licence lapses
+mid-job is invisible: nothing warns, nothing flags, and the 3301.13.13 logs he
+signs afterwards carry a licence number that has stopped meaning what it says.
+
+Adding it is small -- one field, one input, and the expiry-plausibility shape
+`build_worker_certifications` already applies to SST cards. What it needs first
+is a decision about what a lapse DOES: a warning on the admin screen is
+obviously right; whether the superintendent log should say anything is the same
+question as the attribution sentence and should be answered the same way -- state
+the fact, never block the filing.
+
+## `cs_registrations` cannot answer "was this active on a past date"
+
+`is_active` is a **current-state boolean**. `created_at`, `updated_at` and
+`deleted_at` (on soft-delete) are the only timestamps. So of the four
+historical questions `attribute_signer` faces:
+
+    registered AFTER the log date        answerable (created_at)
+    registered before, still active      answerable
+    registered before, since DELETED     answerable (deleted_at)
+    registered before, since merely
+      DEACTIVATED                        NOT ANSWERABLE
+
+Only the delete path stamps a time; switching `is_active` to False erases when
+it was True. The fourth case reports `UNDETERMINED` rather than guessing, which
+is honest but is a gap a `deactivated_at` field would close outright.
+
 ## The 14 local failures: 13 need a mongod, 1 was mine
 
 Reported on 2026-08-28 as "14 pre-existing local failures, green in CI, so
