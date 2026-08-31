@@ -15864,6 +15864,67 @@ async def record_public_signature_event(data: dict, request: Request):
     for field in required:
         if field not in data:
             raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+    # ── A LOGBOOK MAY NOT BE SIGNED THROUGH THIS ENDPOINT ───────────────────
+    #
+    # THE AUTHENTICATED ENDPOINT INJECTS THE ATTESTATION; THIS ONE CANNOT.
+    # POST /signature-events resolves the log type off the document and stores
+    # the sentence printed above the signature, so a signer's record says what
+    # they were shown. This endpoint takes `content_snapshot` from the request
+    # body and stores it verbatim -- correct for its callers today, which are
+    # the NFC gate paths, where the affirmation writes its own event with its
+    # own server-held wording.
+    #
+    # THE FAILURE MODE IS SILENCE, WHICH IS WHY THIS REFUSES RATHER THAN WARNS.
+    # A logbook signed here would write cleanly: no error, a computed hash, a
+    # ledger that looks complete -- and a snapshot with no attestation key,
+    # which attestation_of reads as PREDATES_CAPTURE. That state is reserved
+    # for events written BEFORE capture existed. A 2027 signature would be
+    # indistinguishable from a 2026 one, and the marker built to be honest
+    # about old records would be quietly lying about new ones.
+    #
+    # FOUR THINGS WOULD OTHERWISE ROUTE A LOGBOOK HERE, and none is far-fetched:
+    #
+    #   1. a worker signing the pre-shift SHEET rather than affirming a stored
+    #      stroke;
+    #   2. a site-device flow pointed at this endpoint for convenience, because
+    #      it needs no auth;
+    #   3. a fourth log type gaining an attestation -- three of twelve carry one
+    #      today, and test_attestation_capture.py asserts that count so a fourth
+    #      is noticed;
+    #   4. the superintendent log's alternate-signer work, where item 8's
+    #      competent person and item 9's incoming CS each need a signature from
+    #      someone who is not the document's author.
+    #
+    # THE FULL FIX IS DELIBERATELY NOT BUILT. Injecting here would mean a
+    # public, unauthenticated endpoint reading db.logbooks on every gate
+    # check-in to answer a question nothing currently asks. This costs nothing,
+    # because nothing legitimate sends a logbook here.
+    #
+    # THE DETAIL CARRIES PROSE, WHICH IS A DEPARTURE FROM THE gateCopy RULE AND
+    # DELIBERATE. That rule exists because a CP must not read the server's
+    # English; this refusal has no CP and no screen. Its reader is whoever is
+    # building scenario 1 to 4 in a year's time, and they should land on the
+    # reason rather than on a bare 400.
+    if str(data.get("document_type") or "").strip().lower() == "logbook":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "LOGBOOK_SIGNATURE_REQUIRES_AUTH",
+                "reason": (
+                    "A logbook signature must go through the authenticated "
+                    "endpoint POST /api/signature-events, which resolves the "
+                    "log type from the document and stores the attestation "
+                    "printed above the signature. This endpoint stores the "
+                    "snapshot the caller sends, so a logbook signed here would "
+                    "record no attestation and would be indistinguishable from "
+                    "an event written before attestation capture existed. See "
+                    "lib/logbook/attestations.py and the followups entry "
+                    "'POST /signature-events/public gets no attestation "
+                    "injection'."
+                ),
+            },
+        )
     
     event_id = await create_signature_event(
         document_type=data["document_type"],
