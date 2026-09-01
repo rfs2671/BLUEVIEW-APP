@@ -344,5 +344,148 @@ class ItemTwoSaysWhereItCameFrom(unittest.TestCase):
         self.assertEqual(flagged, ["progress"])
 
 
+class TheSameQuestionAskedAtMENU_Time(unittest.IsolatedAsyncioTestCase):
+    """`is_registered_cs` / `superintendent_projects_for` — the CP nav's gate.
+
+    ONE PREDICATE, TWO CALLERS, and that is the whole design. The nav decides
+    whether to offer the superintendent's log by asking `attribute_signer` --
+    the same function, the same states -- so the menu and the filed document
+    cannot disagree about who the superintendent is.
+
+    WHY NOT THE ROLE. The superintendent on 588 Thomas holds a `cp` account. A
+    role test hides his own statutory log from him AND offers it to every CP
+    who is not a superintendent: wrong in both directions, and silent, because
+    a missing nav item looks like a nav without that feature.
+
+    AND IT ONLY EVER HIDES A SHORTCUT. The log is required on every project
+    class, so the dashboard lists it and routes to it regardless. If this
+    predicate is ever used to REFUSE a filing, the module's first rule -- IT
+    NEVER BLOCKS -- is broken, and the reasoning that makes this safe with it.
+    """
+
+    def test_the_two_matched_states_are_the_capability(self):
+        for state in (CA.MATCHED_ACCOUNT, CA.MATCHED_LICENCE):
+            self.assertTrue(CA.is_registered_cs({"state": state}), state)
+
+    def test_and_NO_REGISTRATION_IS_NOT(self):
+        """Different from the read-time rule, deliberately.
+
+        At read time an absent registration means NOTHING WAS CHECKED and must
+        never print as a finding. At menu time the question is "should this be
+        his primary action", and "nobody is registered" is not a yes.
+        """
+        for state in (CA.NO_REGISTRATION, CA.NOT_REGISTERED_CS,
+                      CA.REGISTERED_LATER, CA.UNDETERMINED):
+            self.assertFalse(CA.is_registered_cs({"state": state}), state)
+
+    def test_junk_is_not_a_capability(self):
+        for junk in (None, {}, {"state": None}, "matched_account", 1):
+            self.assertFalse(CA.is_registered_cs(junk), repr(junk))
+
+    # ── the I/O half ────────────────────────────────────────────────────────
+    class _Cursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def sort(self, *_a, **_kw):
+            # NOT `return self` WITHOUT SORTING. A double whose sort() did
+            # nothing once passed a determinism assertion on this project --
+            # the assertion tested the fake, not the code. This one really
+            # orders, so a caller relying on the order is actually exercised.
+            self._rows = sorted(
+                self._rows,
+                key=lambda r: (str(r.get("created_at")), str(r.get("_id"))),
+                reverse=True)
+            return self
+
+        async def to_list(self, _n):
+            return list(self._rows)
+
+    class _Regs:
+        def __init__(self, rows, boom=False):
+            self.rows, self.boom, self.query = rows, boom, None
+
+        def find(self, query):
+            if self.boom:
+                raise RuntimeError("mongo down")
+            self.query = query
+            ors = query.get("$or") or [{}]
+            keep = [r for r in self.rows
+                    if any(all(r.get(k) == v for k, v in o.items()) for o in ors)
+                    and r.get("is_active") and not r.get("is_deleted")]
+            return TheSameQuestionAskedAtMENU_Time._Cursor(keep)
+
+    class _DB:
+        def __init__(self, regs):
+            self.cs_registrations = regs
+
+    async def test_the_account_link_names_his_project(self):
+        db = self._DB(self._Regs([dict(REG, project_id="p1")]))
+        self.assertEqual(
+            await server.superintendent_projects_for(db, SIGNER), ["p1"])
+
+    async def test_a_licence_match_counts_too(self):
+        db = self._DB(self._Regs([dict(REG, project_id="p1", user_id=None)]))
+        got = await server.superintendent_projects_for(
+            db, {"id": "u9", "cs_license_number": "123-45 67"})
+        self.assertEqual(got, ["p1"], "formatting is not identity")
+
+    async def test_somebody_elses_registration_is_not_his_capability(self):
+        db = self._DB(self._Regs([dict(REG, project_id="p1")]))
+        self.assertEqual(
+            await server.superintendent_projects_for(db, {"id": "u9"}), [])
+
+    async def test_a_deactivated_registration_does_not_confer_it(self):
+        db = self._DB(self._Regs([
+            dict(REG, project_id="p1", is_active=False,
+                 deactivated_at=datetime(2026, 2, 1, tzinfo=timezone.utc)),
+        ]))
+        self.assertEqual(
+            await server.superintendent_projects_for(db, SIGNER), [])
+
+    async def test_a_registration_created_AFTER_today_does_not_either(self):
+        db = self._DB(self._Regs([
+            dict(REG, project_id="p1",
+                 created_at=datetime(2099, 1, 1, tzinfo=timezone.utc)),
+        ]))
+        self.assertEqual(
+            await server.superintendent_projects_for(db, SIGNER), [])
+
+    async def test_an_outage_returns_NO_capability_rather_than_raising(self):
+        """This runs on the session-start path. A registration lookup falling
+        over must cost a menu shortcut, never a login."""
+        db = self._DB(self._Regs([], boom=True))
+        self.assertEqual(
+            await server.superintendent_projects_for(db, SIGNER), [])
+
+    async def test_a_principal_with_no_id_and_no_licence_queries_nothing(self):
+        regs = self._Regs([dict(REG, project_id="p1")])
+        self.assertEqual(
+            await server.superintendent_projects_for(self._DB(regs), {}), [])
+        self.assertIsNone(regs.query, "it must not query on an empty $or")
+
+    async def test_the_query_asks_only_for_live_rows(self):
+        regs = self._Regs([dict(REG, project_id="p1")])
+        await server.superintendent_projects_for(self._DB(regs), SIGNER)
+        self.assertEqual(regs.query.get("is_active"), True)
+        self.assertEqual(regs.query.get("is_deleted"), {"$ne": True})
+
+    async def test_two_projects_are_both_reported(self):
+        """The DOB one-job rule makes this an anomaly, not an impossibility --
+        and the nav must be TOLD about it rather than shown one at random, so
+        it can send him to the picker instead of guessing which site he is on.
+        """
+        db = self._DB(self._Regs([
+            dict(REG, project_id="p1", _id="a"),
+            dict(REG, project_id="p2", _id="b"),
+        ]))
+        got = await server.superintendent_projects_for(db, SIGNER)
+        self.assertEqual(sorted(got), ["p1", "p2"])
+
+    async def test_no_db_is_no_capability(self):
+        self.assertEqual(
+            await server.superintendent_projects_for(None, SIGNER), [])
+
+
 if __name__ == "__main__":
     unittest.main()

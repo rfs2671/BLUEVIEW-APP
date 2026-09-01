@@ -62,8 +62,8 @@ import {
   csLogItems, csItemState, csUnanswered, CS_LOG_ITEMS,
 } from '../../src/utils/superintendentLogModel';
 import {
-  emptyFinding, findingIsEmpty, findingGaps,
-  deriveConditionAndOrderBlocks,
+  emptyFinding, findingIsEmpty, findingGaps, deriveConditionAndOrderBlocks,
+  CORRECTED, NOT_CORRECTED, NOT_YET, isCorrectionState,
 } from '../../src/utils/csFindings';
 
 const LOG_TYPE = 'site_superintendent_log';
@@ -212,7 +212,13 @@ export default function SiteSuperintendentLog() {
         condition: c.condition || '',
         order_given: (orders[i] && orders[i].order) || '',
         order_to: (orders[i] && orders[i].given_to) || '',
-        corrected: typeof c.corrected === 'boolean' ? c.corrected : null,
+        // A STORED BOOLEAN IS A PRE-TRI-STATE ROW. Map it rather than
+        // dropping it: `false` meant "not corrected", which is still one of
+        // the three answers, and discarding it would blank a statement he
+        // already made on a filed document.
+        corrected: (isCorrectionState(c.corrected) ? c.corrected
+          : (c.corrected === true ? CORRECTED
+            : (c.corrected === false ? NOT_CORRECTED : null))),
       })));
     }
     setDobEntries((g('dob_actions').entries || []).map((e, i) => ({
@@ -314,26 +320,30 @@ export default function SiteSuperintendentLog() {
       }
 
       // ── THE FREEZE, AND WHY IT IS AN EXPLICIT CALL ─────────────────────
-      // 3301.13.13: "complete such log prior to departing the job site." The
-      // signature IS the freeze, as with the nine immediate logs.
+      // 3301.13.13: "complete such log prior to departing the job site."
       //
-      // BUT THE SERVER DOES NOT DO IT ON SUBMIT FOR THIS TYPE. create/update
-      // set is_locked from `is_immediate_preshift(log_type)`, which is
-      // `timing_class == "immediate"`. This log is class `visit` — a class
-      // that today means exactly one thing, "excluded from the end-of-day
-      // sweep", and is named by no freeze predicate on either side. So a
-      // submitted superintendent log comes back status=submitted,
-      // is_locked=False: signed and still editable.
+      // THIS CALL IS THE MECHANISM, NOT A WORKAROUND. The server's own
+      // published contract (logbook_timing_meta) says, for class `visit`:
       //
-      // /finalize locks any log explicitly and requires both `data` and
-      // `cp_signature`, which the payload above carries. Calling it is what
-      // makes the freeze real rather than a client-side claim — without it
-      // `setLocked(true)` below would be a lie the next load corrects, since
-      // the load prefers `is_locked !== true`.
+      //     freeze_on_sign      false
+      //     freeze_on_finalize  TRUE
+      //     is_batchable        false
       //
-      // THIS IS A STOPGAP AND IT IS THE CLIENT'S. The freeze belongs in the
-      // server's lock predicate so it holds for every caller; that is a
-      // backend change and it is not in this PR.
+      // with the note "A VISIT LOG FREEZES WHEN ITS AUTHOR SIGNS ON
+      // DEPARTURE. That is a finalize, not a sign-and-freeze." So create and
+      // update correctly leave it unlocked — `is_immediate_preshift` is meant
+      // to be false here — and the author's finalize is what closes it.
+      //
+      // IT IS ALSO WHY NOTHING ELSE WILL. sweep_stale_end_of_day_logs
+      // deliberately excludes VISIT_LOG_TYPES, because an overnight sweep
+      // would freeze a visit its author had not finished. There is no second
+      // actor: if this screen does not finalize, the document stays editable
+      // indefinitely while showing as signed.
+      //
+      // ON A MAJOR BUILDING the DEADLINE is end of day rather than departure
+      // (superintendent_log_deadline). That governs how late he may sign, not
+      // what signing does — signing early is never a violation — so the
+      // freeze is the same act on every project.
       if (savedId) await logbooksAPI.finalize(savedId);
 
       setLocked(true);
@@ -363,19 +373,41 @@ export default function SiteSuperintendentLog() {
     </View>
   );
 
-  const Tri = ({ label, note, value, onChange }) => (
+  /**
+   * WAS IT CORRECTED — THREE POSITIVE ANSWERS, AND NO WAY BACK TO BLANK.
+   *
+   * This was a two-chip yes/no that returned to `null` when you tapped the
+   * selected chip again. Two things were wrong with it, and the second is the
+   * one that matters on a licensed record:
+   *
+   *   TWO ANSWERS ARE NOT ENOUGH. "Not corrected" and "not corrected YET" are
+   *   different statements about the same site — one says he found something
+   *   and left it standing, the other says the work is under way. With only
+   *   yes/no he has to assert whichever is less wrong.
+   *
+   *   AN UNTOGGLE PRODUCES A BLANK THAT LOOKS LIKE A NO. `null` renders as
+   *   three unselected chips, which is indistinguishable from "not corrected"
+   *   to anyone reading the filed document. That is the recurring defect here:
+   *   absence read as a claim.
+   *
+   * So the three states are declared in csFindings.js, every chip SETS one,
+   * none clears, and findingGaps refuses a row that has none of them.
+   */
+  const CorrectionChoice = ({ label, note, value, onChange }) => (
     <View style={{ marginBottom: spacing.md }}>
       <Text style={s.reviewLabel}>{label}</Text>
-      {/* THREE STATES, NOT A CHECKBOX. An unticked box is ambiguous between
-          "no" and "not looked at", and item_state draws exactly that line:
-          ATTESTED_NONE is a person's statement that there was nothing to
-          report; NOT_REACHED is the absence of any statement. */}
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        {[['yes', true], ['no', false]].map(([lbl, v]) => (
+      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+        {[
+          [t('correctedYes'), CORRECTED],
+          [t('correctedNo'), NOT_CORRECTED],
+          [t('correctedNotYet'), NOT_YET],
+        ].map(([lbl, v]) => (
           <Pressable
-            key={lbl}
+            key={v}
             disabled={locked}
-            onPress={() => onChange(value === v ? null : v)}
+            // SETS, NEVER CLEARS. Tapping the chosen chip again is a no-op
+            // rather than a way back to unanswered.
+            onPress={() => onChange(v)}
             style={[s.chip, value === v && s.chipSelected]}
           >
             {value === v ? <Check size={13} strokeWidth={2} /> : null}
@@ -442,7 +474,7 @@ export default function SiteSuperintendentLog() {
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, order_given: v } : x)))} />
           <Field label={t('findingOrderTo')} value={f.order_to}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, order_to: v } : x)))} />
-          <Tri label={t('findingCorrected')} value={f.corrected}
+          <CorrectionChoice label={t('findingCorrected')} value={f.corrected}
             onChange={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, corrected: v } : x)))} />
           {findingGaps(f).length > 0 && !findingIsEmpty(f) ? (
             <Text style={s.errorText}>{findingGaps(f).join(', ')}</Text>

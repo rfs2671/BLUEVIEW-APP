@@ -157,7 +157,7 @@ const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 // Every assertion below is vacuously true against an empty measurement, so a
 // regex that silently stops matching would turn this file green while
 // measuring nothing.
-// EIGHTEEN with app/logbooks/site_superintendent.jsx. The number is a guard on
+// EIGHTEEN with app/logbooks/site_superintendent_log.jsx. The number is a guard on
 // the SCANNER, not a budget on the app: every assertion below is vacuously
 // true against an empty measurement, so a regex that stopped matching would
 // turn this file green while measuring nothing.

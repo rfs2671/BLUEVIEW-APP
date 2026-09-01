@@ -4568,6 +4568,7 @@ from lib.logbook.daily_jobsite_source import (  # noqa: E402
 # The agreement to sign electronically, and the wording of every version of it.
 from lib.logbook.cs_attribution import (  # noqa: E402
     attribute_signer, attribution_sentence, normalise_licence,
+    is_registered_cs,
     MATCHED_ACCOUNT, MATCHED_LICENCE, NOT_REGISTERED_CS, NO_REGISTRATION,
     REGISTERED_LATER, UNDETERMINED,
 )
@@ -5894,10 +5895,29 @@ async def get_me(current_user = Depends(get_current_user)):
     -- without inventing a contract two different document shapes cannot both
     satisfy.
     """
-    return {
+    out = {
         k: v for k, v in dict(current_user).items()
         if k not in _PRINCIPAL_PRIVATE_FIELDS
     }
+
+    # ── A CAPABILITY, NOT A STORED FIELD ────────────────────────────────────
+    #
+    # The projects where this principal is the registered construction
+    # superintendent. COMPUTED, so it cannot go stale the way a flag on the
+    # user doc would the moment an admin re-registers somebody.
+    #
+    # WHY HERE. The CP nav needs it, and the nav renders on every CP screen —
+    # so it cannot be a per-render fetch. AuthContext already calls this
+    # endpoint once at session start and branches on what it returns; this
+    # rides along rather than adding a second round trip.
+    #
+    # NOT FOR A SITE DEVICE. A gate tablet is not a person and has no licence;
+    # skipping it also keeps the boot path this endpoint's docstring is about
+    # to exactly the queries it already made.
+    if not current_user.get("site_mode"):
+        out["superintendent_projects"] = await superintendent_projects_for(
+            db, current_user)
+    return out
 
 
 # ── Phase B3: customer onboarding state ────────────────────────────
@@ -23982,6 +24002,68 @@ async def cs_attribution_for(db_, project_id, log_date, signer):
         logger.warning(f"[cs-log] registration read failed for {project_id}: {e!r}")
         reg = None
     return attribute_signer(signer, reg, log_date)
+
+
+async def superintendent_projects_for(db_, user) -> list:
+    """The projects where THIS user is the registered construction superintendent.
+
+    WHY THIS EXISTS. The CP nav has three slots and a superintendent needs the
+    3301.13.13 log in one of them. Keying that on ROLE would be wrong in the
+    only case that matters: the superintendent on 588 Thomas holds a `cp`
+    account, so a role test hides the log from the one man who has to file it,
+    and shows it to every CP who does not.
+
+    So the menu asks the same question the filed document answers about its own
+    signer -- attribute_signer, via is_registered_cs. One predicate; a nav that
+    decided this its own way would drift from the sentence the record prints.
+
+    A FAILED READ RETURNS AN EMPTY LIST, never a raised error. This runs on the
+    session-start path, and an outage in a registration lookup must not stop a
+    CP logging in. The cost of the empty answer is one missing menu shortcut on
+    a log that is still reachable from the dashboard.
+
+    RESOLVED AGAINST TODAY, deliberately, unlike the read-time path which
+    resolves against the LOG's date. The question here is present-tense -- "is
+    he the superintendent now" -- not "was he when this was signed".
+    """
+    if db_ is None or not isinstance(user, dict):
+        return []
+    uid = str(user.get("id") or user.get("_id") or "")
+    lic = normalise_licence(
+        user.get("cs_license_number") or user.get("license_number"))
+    if not uid and not lic:
+        return []
+
+    # ONLY the rows that could possibly match, rather than every active
+    # registration in the database. The account link is the primary key here;
+    # the licence is the corroborating one, and is only queried when the user
+    # actually carries a licence number.
+    ors = []
+    if uid:
+        ors.append({"user_id": uid})
+    if lic:
+        ors.append({"license_number_normalized": lic})
+    try:
+        regs = await db_.cs_registrations.find({
+            "is_active": True,
+            "is_deleted": {"$ne": True},
+            "$or": ors,
+        }).sort([("created_at", -1), ("_id", -1)]).to_list(50)
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[cs-capability] registration read failed for {uid}: {e!r}")
+        return []
+
+    today = eastern_date()
+    out = []
+    for reg in regs:
+        # The SAME function the document uses, not a reimplementation of its
+        # rule. It also re-checks created_at/deactivated_at against the date,
+        # which the query above does not.
+        if is_registered_cs(attribute_signer(user, reg, today)):
+            pid = str(reg.get("project_id") or "")
+            if pid and pid not in out:
+                out.append(pid)
+    return out
 
 
 def _superintendent_log_html(logbook, weekly_status=None, attribution=None):

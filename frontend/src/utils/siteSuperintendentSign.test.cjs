@@ -25,7 +25,7 @@ const FRONTEND = path.join(__dirname, '..', '..');
 const read = (...p) => fs.readFileSync(path.join(FRONTEND, ...p), 'utf8')
   .split('\r\n').join('\n');
 
-const SCREEN = read('app', 'logbooks', 'site_superintendent.jsx');
+const SCREEN = read('app', 'logbooks', 'site_superintendent_log.jsx');
 const AUDIT = read('src', 'utils', 'signatureAudit.js');
 const FINDINGS = read('src', 'utils', 'csFindings.js');
 
@@ -76,13 +76,21 @@ console.log('\n2. THE FREEZE IS AT DEPARTURE');
   ok(/departedAt\.trim\(\) \|\| nowHHMM\(\)/.test(CODE(SCREEN)),
     'and the stamp is a FALLBACK — a time he typed wins over the app clock');
 
-  // THE FREEZE IS AN EXPLICIT CALL, and it has to be, because the server does
-  // not freeze this type on submit: create/update set is_locked from
-  // `is_immediate_preshift`, which is `timing_class == "immediate"`, and this
-  // log is class `visit`. Drop the finalize and the document comes back
-  // signed and STILL EDITABLE, while the screen shows it locked — the client
-  // claim and the server state disagree, and the next load believes the
-  // server. Asserted together so the pair cannot drift apart.
+  // THE FREEZE IS AN EXPLICIT FINALIZE, AND THAT IS THE CONTRACT.
+  //
+  // An earlier version of this comment called it a client-side stopgap and
+  // said the freeze belonged in the server's lock predicate. That was WRONG,
+  // and wrong by not reading far enough: logbook_timing_meta already
+  // publishes, for class `visit`, freeze_on_sign=false and
+  // freeze_on_finalize=TRUE, with the note "A VISIT LOG FREEZES WHEN ITS
+  // AUTHOR SIGNS ON DEPARTURE. That is a finalize, not a sign-and-freeze."
+  // create/update leaving it unlocked is the design, not a gap.
+  //
+  // WHAT MAKES IT LOAD-BEARING is that nothing else will ever do it:
+  // sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES on purpose, because
+  // an overnight sweep would freeze a visit its author had not finished. Drop
+  // this call and the document stays editable indefinitely while showing as
+  // signed. Asserted with the ordering so the pair cannot drift apart.
   ok(/logbooksAPI\.finalize\(savedId\)/.test(CODE(SCREEN)),
     'the log is FINALIZED after the submit — signing freezes it, per '
     + '3301.13.13 "prior to departing the job site"');
@@ -95,11 +103,18 @@ console.log('\n2. THE FREEZE IS AT DEPARTURE');
   'and the freeze happens BEFORE the screen claims to be locked, so the '
     + 'claim is never made about a document the server refused');
 
+  // THE MIRROR NOW MODELS THE CLASS, and this assertion is the reason the
+  // wording above changed. It was written the other way round — "the mirror
+  // still has no visit class... the reminder to delete the stopgap" — and it
+  // FAILED the moment VISIT_LOG_TYPES landed, which is what sent me back to
+  // logbook_timing_meta and showed the finalize was the contract all along.
+  // Kept, inverted: the client must agree with the server about this class.
   const timing = read('src', 'utils', 'logbookTiming.js');
-  ok(!/site_superintendent_log/.test(timing),
-    'ANCHOR: the client timing mirror still has no visit class. When it gains '
-    + 'one, the freeze moves off this screen and this assertion is the '
-    + 'reminder to delete the stopgap rather than leave two freezes');
+  ok(/VISIT_LOG_TYPES/.test(timing) && /site_superintendent_log/.test(timing),
+    'the client timing mirror models the visit class');
+  ok(/!isImmediateLog\(logType\) && !isVisitLog\(logType\)/.test(CODE(timing)),
+    'and a visit log is NOT batchable — the two-way predicate is what made '
+    + 'the client claim it was, contradicting the server contract');
 }
 
 console.log('\n3. ARRIVAL AND DEPARTURE ARE HIS STATEMENT, NOT AN OBSERVATION');
@@ -127,7 +142,10 @@ console.log('\n3. ARRIVAL AND DEPARTURE ARE HIS STATEMENT, NOT AN OBSERVATION');
  */
 console.log('\n4. ITEMS 4 AND 5 ARE ONE ENTRY, TWO STATUTORY ITEMS');
 {
-  const { deriveConditionAndOrderBlocks, findingIsEmpty, findingGaps } = loadEsm('src/utils/csFindings.js');
+  const {
+    deriveConditionAndOrderBlocks, findingIsEmpty, findingGaps,
+    CORRECTED, NOT_CORRECTED, NOT_YET, CORRECTION_STATES, isCorrectionState,
+  } = loadEsm('src/utils/csFindings.js');
   const finding = (f) => ({
     location: '', observed_at: '', condition: '', order_given: '', order_to: '',
     corrected: null, ...f,
@@ -184,7 +202,7 @@ console.log('\n4. ITEMS 4 AND 5 ARE ONE ENTRY, TWO STATUTORY ITEMS');
 
   {
     ok(findingIsEmpty(finding({})) === true, 'a blank row is not a finding');
-    ok(findingIsEmpty(finding({ corrected: true })) === false,
+    ok(findingIsEmpty(finding({ corrected: CORRECTED })) === false,
       'but a row he touched at all is, so it cannot be dropped silently');
     ok(deriveConditionAndOrderBlocks([finding({}), finding({})], false)
       .unsafe_conditions.entries === undefined,
@@ -192,6 +210,45 @@ console.log('\n4. ITEMS 4 AND 5 ARE ONE ENTRY, TWO STATUTORY ITEMS');
     ok(findingGaps(finding({ condition: 'Open riser' })).includes('where'),
       'a finding with no location is refused — 1 RCNY 3301-04(f) needs a '
       + 'reader to be able to return to it');
+  }
+
+  // ── "WAS IT CORRECTED" HAS THREE ANSWERS AND NO BLANK ─────────────────
+  //
+  // This was a yes/no toggle that returned to `null` on a second tap. Two
+  // defects: "not corrected" and "not corrected YET" are different statements
+  // about the site, and `null` renders identically to "no" on the filed
+  // document — absence read as a claim, the family this project keeps hitting.
+  {
+    ok(CORRECTION_STATES.length === 3
+       && CORRECTION_STATES.includes(CORRECTED)
+       && CORRECTION_STATES.includes(NOT_CORRECTED)
+       && CORRECTION_STATES.includes(NOT_YET),
+    'three declared answers: corrected, not corrected, not yet');
+    ok(!isCorrectionState(null) && !isCorrectionState(undefined)
+       && !isCorrectionState('') && !isCorrectionState(false),
+    'and NONE of null, undefined, empty or false is one of them — a blank '
+    + 'can never be mistaken for an answer');
+    ok(isCorrectionState(NOT_YET) === true,
+      '"not yet" is a POSITIVE answer he chooses, not a softer no');
+
+    const g = findingGaps(finding({ condition: 'Open riser', location: '4th fl' }));
+    ok(g.includes('whether it was corrected'),
+      'a row that answers everything EXCEPT this is refused — never filed '
+      + 'with the one field a reader is actually asking about left open');
+    ok(findingGaps(finding({
+      condition: 'Open riser', location: '4th fl', corrected: NOT_YET,
+    })).length === 0, 'and answering it clears the gate');
+
+    const r = deriveConditionAndOrderBlocks([finding({
+      condition: 'Open riser', location: '4th fl', corrected: NOT_YET,
+    })], false);
+    ok(r.unsafe_conditions.entries?.[0]?.corrected === NOT_YET,
+      'the answer reaches the document as itself, not coerced to a boolean');
+
+    ok(!/onChange\(value === v \? null : v\)/.test(CODE(SCREEN)),
+      'and the control cannot untoggle back to unanswered');
+    ok(/onPress=\{\(\) => onChange\(v\)\}/.test(CODE(SCREEN)),
+      'every chip SETS a state; none clears one');
   }
 }
 

@@ -117,7 +117,7 @@ console.log('\n-- and the eleven pinned editors still route through the stepper 
     'subcontractor_orientation.jsx']);
   const pinned = fs.readdirSync(dir)
     .filter((f) => f.endsWith('.jsx') && !LIVE.has(f));
-  // TEN BECAME ELEVEN: site_superintendent.jsx, the BC 3301.13.13 log.
+  // TEN BECAME ELEVEN: site_superintendent_log.jsx, the BC 3301.13.13 log.
   //
   // THE ANCHOR EARNED ITS KEEP HERE. That screen was written reaching for
   // useTheme() and mounting an unpinned pad, and it was the CENSUS — not a
@@ -207,7 +207,7 @@ console.log('\n-- every render site is accounted for, pinned or live --');
   // without someone deciding which half it belongs to - which is exactly
   // the decision that was never made for the canvas.
   //
-  // The fifteenth is site_superintendent.jsx and it is PINNED. It arrived
+  // The fifteenth is site_superintendent_log.jsx and it is PINNED. It arrived
   // unpinned and this assertion is what said so.
   const walk = (d, out = []) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {

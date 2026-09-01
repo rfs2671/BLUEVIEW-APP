@@ -1251,7 +1251,7 @@ export default {
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)
   // is still hardcoded English in the component and is NOT moved here — that
   // would be a copy change, not a wiring change.
-  // app/logbooks/site_superintendent.jsx — the BC 3301.13.13 construction
+  // app/logbooks/site_superintendent_log.jsx — the BC 3301.13.13 construction
   // superintendent log. CP/superintendent-facing and read by a DOB inspector;
   // no worker sees it, so it is EN-only like every other logbook editor.
   siteSuperintendent: {
@@ -1291,7 +1291,14 @@ export default {
     findingCondition: 'WHAT YOU SAW',
     findingOrder: 'WHAT YOU ORDERED',
     findingOrderTo: 'GIVEN TO',
-    findingCorrected: 'Corrected before you left?',
+    findingCorrected: 'Was it corrected?',
+    // THREE ANSWERS, ALL POSITIVE. "Not yet" is not a softer "no" — it says
+    // the work is under way, which is a different statement about the site
+    // from one left standing. There is deliberately no fourth option meaning
+    // "did not say": the gate refuses the row instead.
+    correctedYes: 'Corrected',
+    correctedNo: 'Not corrected',
+    correctedNotYet: 'Not yet — in progress',
     findingRemove: 'Remove',
     noneBoth: 'No unsafe conditions observed and no orders given',
     noneBothNote: 'This is one statement covering BOTH item 4 and item 5. It is your attestation, not a blank.',

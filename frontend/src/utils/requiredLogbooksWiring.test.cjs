@@ -353,6 +353,44 @@ console.log('\n-- the day he never signed reaches the CP --');
 ok(SCREEN.includes('stale_unsigned_logbooks: 0, stale_unsigned_logbook_refs: [], attestation_gaps: []'),
   'the offline default carries the new keys, so a failed fetch reads 0/[] not undefined');
 
+{
+  // ── AND THE TILE IT RENDERS GOES SOMEWHERE ──────────────────────────────
+  //
+  // The chain this file guards has one more link than it was checking. The
+  // required set reaches the screen; the screen renders a tile; the tile
+  // routes BY CONVENTION —
+  //
+  //     router.push(`/logbooks/${log_type}?projectId=...`)
+  //
+  // so the registry key IS the route, and the route IS the filename under
+  // app/logbooks/. Nothing enforced that. site_superintendent_log shipped as
+  // site_superintendent_log.jsx, and the tile for a log the server marks required
+  // on EVERY project class routed to a screen that does not exist.
+  //
+  // It fails the way this file's original defect failed: nothing crashes at
+  // build, no gate mentions it, and the screen looks complete from every angle
+  // except tapping the tile. Read from the SERVER's registry rather than a
+  // hand-copied list, so a fourteenth type cannot ship half-wired.
+  const SERVER = fs.readFileSync(
+    path.join(FRONTEND, '..', 'backend', 'server.py'), 'utf8');
+  const reg = SERVER.slice(SERVER.indexOf('LOGBOOK_TYPE_REGISTRY = ['));
+  const keys = [...reg.slice(0, reg.indexOf('\n]')).matchAll(/^\s*"key": "([a-z_]+)"/gm)]
+    .map((m) => m[1]);
+  ok(keys.length === 13, `ANCHOR: 13 registry keys read from server.py (${keys.length})`);
+
+  const screens = new Set(fs.readdirSync(path.join(FRONTEND, 'app', 'logbooks'))
+    .filter((f) => f.endsWith('.jsx'))
+    .map((f) => f.replace(/\.jsx$/, '')));
+  const unreachable = keys.filter((k) => !screens.has(k));
+  ok(unreachable.length === 0,
+    'every required log type has a screen at its own name, so the dashboard tile '
+    + `reaches an editor rather than an unmatched route. Missing: ${JSON.stringify(unreachable)}`);
+
+  ok(/router\.push\(`\/logbooks\/\$\{log_type\}\?projectId=/.test(SCREEN),
+    'ANCHOR: the tile still routes by log_type — if that changes, the rule above '
+    + 'is no longer the rule and this check must be rewritten, not deleted');
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');

@@ -111,7 +111,7 @@ const EN_ONLY_NAMESPACES = [
   // signs it; the certification NAMES are card identifiers and stay in
   // oshaLogModel, not here.
   'oshaLog',
-  // app/logbooks/site_superintendent.jsx — the BC 3301.13.13 construction
+  // app/logbooks/site_superintendent_log.jsx — the BC 3301.13.13 construction
   // superintendent log. Signed by the superintendent and read by a DOB
   // inspector; no worker sees it.
   'siteSuperintendent',
