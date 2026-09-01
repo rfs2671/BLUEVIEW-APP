@@ -4,6 +4,55 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-01 — `railway logs --json` is the FIRST move on a server-side failure, not the last
+
+    railway logs --json | grep "api/workers"
+
+The Railway CLI is authenticated in the working environment. One command,
+filtered on the path, returned the status line AND the full traceback:
+
+    GET /api/workers HTTP/1.1" 500 Internal Server Error
+    pymongo.errors.OperationFailure: Executor error during find command:
+    blueview.workers :: caused by :: Sort exceeded memory limit of 33554432
+    bytes, but did not opt in to external sorting.
+    code 292, QueryExceededMemoryLimitNoDiskUseAllowed
+
+**THE TRACEBACK IS IN THE DEPLOYMENT LOGS EVEN WHEN THE CLIENT SHOWS ONLY A
+BANNER.** The screen said "some of today's data could not be read". The server
+had written the collection, the operation, the byte limit and the error code.
+
+### What it cost not to run it first
+
+One evening, four proposed causes for one failure. Three were reasoning off the
+CLIENT's symptom and all three were wrong:
+
+  1. the rate limiter — plausible (a 429 does surface oddly, see the CORS entry
+     below), and killed by the banner not clearing on refresh
+  2. a missing `/api/dob/portfolio-dashboard` endpoint — an endpoint that has
+     never existed in this repository and that nothing calls
+  3. the account with no `company_id` — ruled out by construction: that path
+     returns an empty list with 200, never an error
+  4. an unindexed sort over documents carrying base64 card images — correct,
+     and stated by the server in plain text the whole time
+
+Each wrong theory was reasonable FROM THE CLIENT. None survived contact with
+the log. The one that was right was not deduced at all — it was read.
+
+### The rule
+
+On any failure where the server answered — a 4xx or 5xx, as opposed to a dead
+zone — go to the deployment log BEFORE forming a hypothesis. Filter on the
+path. The cost is one command and it either names the failure outright or
+proves the server never saw the request, and both of those are worth more than
+the best available guess.
+
+Corollary, from the same evening: a client-side symptom tells you WHICH call
+failed and nothing about WHY. Getting the dashboard banner to name its failing
+source (#343) was worth doing for exactly that reason — it turns "some data
+failed" into a path, and a path is what this command takes as its argument.
+
+---
+
 ## PRACTICE — 2026-08-28 — a correctly configured control that could not reach the responses that needed it
 
 Fixed in #341 (`da74996`). Recorded because the SHAPE is the point, and because
