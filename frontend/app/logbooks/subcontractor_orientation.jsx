@@ -46,6 +46,7 @@ import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { easternToday } from '../../src/utils/dates';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { useT } from '../../src/i18n';
+import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 
 const LANGUAGE_LABELS = {
   en: 'English',
@@ -209,6 +210,7 @@ export default function SubcontractorOrientation() {
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const router = useRouter();
+  const consent = useEsraConsent();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
@@ -412,6 +414,16 @@ export default function SubcontractorOrientation() {
       );
       return;
     }
+    // ── THE AGREEMENT TO SIGN ELECTRONICALLY ─────────────────────────────
+    // BB 2024-007 sec V.5. One consent per person, keyed on his account and
+    // not on this log — if he agreed on any other screen, this never asks.
+    //
+    // AFTER the trade pre-flight, so he is not asked about consent on a submit
+    // the server was about to refuse anyway, and BEFORE the local write below,
+    // which is the point the signature becomes durable. handleSign delegates
+    // here, so both signing entry points are covered by this one line.
+    if (!(await consent.ensure())) return;
+
     const id = recordIdOf(orientation);
     const key = draftKey({
       projectId,

@@ -51,6 +51,8 @@ import { ArrowLeft, ShieldCheck, AlertTriangle, RefreshCw, FileText } from 'luci
 
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { esraConsentAPI } from '../src/utils/api';
+import { useAuth } from '../src/context/AuthContext';
+import { rememberConsent } from '../src/utils/consentCache';
 import {
   consentState, consentCopyKey, versionToAgree, isAskable, consentGateCopy,
   READY, DECLINED, UNKNOWN,
@@ -64,6 +66,7 @@ import { opacity } from '../src/styles/tokens';
 export default function ConsentScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const t = useT('esraConsent');
 
   const [state, setState] = useState(null);   // null = first read not back yet
@@ -103,6 +106,12 @@ export default function ConsentScreen() {
       if (!version) { if (alive.current) setBusy(false); return; }
       await esraConsentAPI.agree(version);
       const after = await read();
+      // REMEMBER IT HERE TOO, not only in the gate. A man who agrees and then
+      // walks into a basement would otherwise be asked again by the very next
+      // signature, having just agreed thirty seconds earlier.
+      if (consentState(after) === READY) {
+        await rememberConsent(user?.id || user?._id, versionToAgree(after));
+      }
       if (!alive.current) return;
       setBusy(false);
       // BACK TO WHAT HE WAS DOING, with his entry intact. He then taps Sign

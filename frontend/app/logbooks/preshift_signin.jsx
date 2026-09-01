@@ -37,6 +37,7 @@ import { useT } from '../../src/i18n';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
+import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -63,6 +64,7 @@ export default function PreShiftSignIn() {
   const { colors, isDark } = useTheme();
   const styles = buildStyles(colors, isDark);
   const router = useRouter();
+  const consent = useEsraConsent();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
@@ -557,6 +559,20 @@ export default function PreShiftSignIn() {
   const unansweredCount = workers.filter(rowNeedsAnswers).length;
 
   const handleSave = async (submitStatus = 'draft') => {
+    // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────────
+    // BB 2024-007 sec V.5. One consent per person, keyed on his account and
+    // not on this log — if he agreed on any other screen, this never asks.
+    //
+    // ON THE SUBMIT ONLY. This handler serves both buttons, and a DRAFT is not
+    // a signature: gating it would stop a CP saving his work for a reason that
+    // has nothing to do with drafts. Refusing the submit therefore costs him
+    // nothing — Save Draft is still there, beside the button he just pressed.
+    //
+    // Placed before setSaving so a refusal does not leave the sheet spinning,
+    // and before the local write below, which is where the signature becomes
+    // durable on the device.
+    if (submitStatus === 'submitted' && !(await consent.ensure())) return;
+
     setSaving(true);
     try {
       // Phase A2 — write the LOCAL draft first (works offline), then best-effort push.
