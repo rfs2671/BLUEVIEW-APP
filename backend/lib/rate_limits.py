@@ -435,6 +435,15 @@ def evaluate(
     """
     if is_disabled():
         return None
+    # A PREFLIGHT IS NOT A REQUEST TO THE RESOURCE. The browser sends OPTIONS
+    # before the real call and never sees the body, so counting it means every
+    # cross-origin caller spends TWO of its allowance where the native app
+    # spends one -- and the one that gets refused is the preflight, which the
+    # browser reports as a CORS failure rather than as a rate limit. The
+    # request that follows is still counted; this exempts the asking, not the
+    # doing.
+    if str(method or "").upper() == "OPTIONS":
+        return None
     if is_excluded_path(path):
         return None
 
