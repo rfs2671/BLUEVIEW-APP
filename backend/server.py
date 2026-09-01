@@ -839,15 +839,6 @@ ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ
     "http://localhost:3000",
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
-    expose_headers=["Content-Disposition"],
-)
-
 # ── Phase C2: rate limiting + abuse protection ────────────────────
 #
 # In-memory fixed-window limiter wrapping every /api/* request.
@@ -886,6 +877,37 @@ except Exception as _rl_err:
         f"[rate_limits] middleware NOT installed: {_rl_err!r}; "
         f"all endpoints currently unrestricted",
     )
+
+# ── CORS — REGISTERED LAST, WHICH MAKES IT THE OUTERMOST LAYER ────────────
+#
+# Starlette's add_middleware PREPENDS, so the LAST registration wraps every
+# earlier one. This block used to sit ABOVE the rate limiter, which put the
+# limiter outside CORS -- and a limiter that short-circuits returns its own
+# response WITHOUT PASSING BACK THROUGH CORS. So a 429 carried no
+# Access-Control-Allow-Origin at all.
+#
+# The browser does not report that as a rate limit. It reports:
+#
+#     Response to preflight request doesn't pass access control check:
+#     It does not have HTTP ok status.
+#
+# which reads as a CORS misconfiguration and sends you to inspect this list --
+# where every origin is present and correct, and the preflight passes when you
+# try it by hand, because one cold request is never rate limited. The list was
+# never the problem; it could not be reached.
+#
+# ORDER IS THE FIX, NOT THE LIST. Nothing here is widened: the same seven
+# origins, exact-match, no wildcard and no allow_origin_regex. What changes is
+# that EVERY response now leaves through this middleware, including the ones
+# an inner layer generates by refusing.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=["Content-Disposition"],
+)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
