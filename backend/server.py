@@ -14038,7 +14038,55 @@ async def get_workers(
     elif not is_platform_operator(current_user):
         query["_id"] = None
 
-    result = await paginated_query(db.workers, query, sort_field="name", sort_dir=1, limit=limit, skip=skip)
+    # ── THE LIST DOES NOT CARRY THE CARD IMAGES ───────────────────────────
+    #
+    # This endpoint returned 500 for every admin on a company whose roster had
+    # grown past ~32MB:
+    #
+    #   pymongo.errors.OperationFailure: Executor error during find command:
+    #   blueview.workers :: caused by :: Sort exceeded memory limit of 33554432
+    #   bytes, but did not opt in to external sorting.
+    #
+    # Three things compounded. The sort is on `name`, which had no index, so it
+    # is a BLOCKING in-memory sort. There was no projection, so whole documents
+    # were loaded. And a worker document carries `osha_card_image` as base64 --
+    # a photograph per worker, added by every gate registration. `.limit(50)`
+    # does not help: Mongo must sort the whole matched set before it can take
+    # the first fifty.
+    #
+    # That made it DATA-DEPENDENT, not request-dependent: it began the moment
+    # that company crossed the limit and then failed on every load, for every
+    # admin on that company, on every device. The sibling call in the same
+    # batch (/api/checkins) succeeded throughout, because check-in rows carry
+    # no images -- which is what ruled out auth, connectivity and the limiter.
+    #
+    # DERIVED FROM THE CONSUMERS, not guessed. Everything the three callers of
+    # workersAPI.getAll() read off a row:
+    #   app/index.jsx          workers.length
+    #   app/checkin/index.jsx  name, _id/id
+    #   useWorkers.searchWorkers  name, company, trade
+    # `trade` and `company` are structurally empty on this document -- nothing
+    # writes them here, they belong to the {worker, project} pair -- but
+    # searchWorkers still filters on them, so they stay rather than changing
+    # search behaviour inside a hotfix.
+    #
+    # THE DETAIL SCREEN IS UNAFFECTED. workers/[id].jsx fetches through
+    # workersAPI.getById and getOshaCard, both their own endpoints, so nothing
+    # excluded here can blank a field on a page.
+    #
+    # What is excluded and why: osha_card_image, signature, osha_data,
+    # certifications[] and safety_orientations[] are each served to the one
+    # screen that needs them by an endpoint of their own. None is read from a
+    # list row.
+    WORKER_LIST_FIELDS = {
+        "name": 1, "phone": 1, "company": 1, "trade": 1,
+        "company_id": 1, "status": 1, "is_deleted": 1,
+        "created_at": 1, "updated_at": 1,
+    }
+    result = await paginated_query(
+        db.workers, query, sort_field="name", sort_dir=1,
+        limit=limit, skip=skip, projection=WORKER_LIST_FIELDS,
+    )
     return result
 
 # POST /workers/register IS DELETED. It was public, unauthenticated, and had no
@@ -38077,6 +38125,29 @@ async def startup_event():
         [("company_id", 1), ("status", 1)],
         partialFilterExpression={"is_deleted": {"$eq": False}},
         name="workers_active_by_company"
+    )
+    # GET /workers sorts by `name` inside a company. Without an index that is a
+    # blocking in-memory sort, which is half of why the endpoint began
+    # returning 500 (the other half was loading base64 card images it never
+    # needed -- see the projection there).
+    #
+    # (company_id, name) IN THAT ORDER, by ESR: `company_id` is the equality
+    # prefix, `name` satisfies the sort. The query's third clause,
+    # `is_deleted: {"$ne": True}`, is deliberately NOT in the key -- a $ne is
+    # not selective and placing it before `name` would break the ordering the
+    # sort depends on. It is applied to the documents the index scan returns.
+    #
+    # The existing (company_id, status) and (company_id, updated_at) indexes
+    # cannot serve a `name` sort, so this is a new key rather than a duplicate.
+    #
+    # NOT A COMPLETE FIX ON ITS OWN. The platform-operator path queries with no
+    # company_id at all, so this index cannot serve that sort either. What
+    # rescues that path is the projection -- with the images gone the sort fits
+    # in memory regardless of whether an index is used.
+    await _ensure_index_resilient(
+        db.workers,
+        keys=[("company_id", 1), ("name", 1)],
+        name="workers_by_company_name",
     )
     await db.checkins.create_index(
         [("project_id", 1), ("status", 1)],
