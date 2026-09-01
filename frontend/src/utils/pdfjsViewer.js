@@ -3,13 +3,16 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
 
 /**
- * OFFLINE PDF VIEWER — a locally staged pdf.js, for Android.
+ * THE ANDROID PDF VIEWER — a locally staged pdf.js.
  *
  * WHY THIS EXISTS
- *   PDFViewer.native.jsx renders Android PDFs through the REMOTE
- *   mozilla.github.io/pdf.js viewer. That is fine online and useless in a dead
- *   zone: docCache can have the bytes on disk and Android still draws nothing.
- *   iOS needs none of this — WKWebView hands a `file://` PDF to PDFKit.
+ *   Android's WebView cannot render a PDF, so one has to be supplied. This used
+ *   to be a REMOTE viewer hosted by a third party, which was both useless in a
+ *   dead zone AND a token leak: the authenticated document url was url-encoded
+ *   into that third party's page, JWT and all (see utils/pdfSrc.js). Staging
+ *   pdf.js on the device answers both — nothing leaves the device to draw a
+ *   document, online or off. It is now the ONLY Android path, not the offline
+ *   one. iOS needs none of this — WKWebView hands a PDF to PDFKit.
  *
  * WHY STAGE FILES INSTEAD OF POINTING THE WEBVIEW AT THE BUNDLED ASSETS
  *   expo-asset materialises a bundled asset at a CONTENT-HASHED path
@@ -76,11 +79,6 @@ const VIEWER_VERSION = '2';
 const MIN_REAL_ASSET_BYTES = 40000;
 
 const canUseFs = () => Platform.OS !== 'web' && !!FileSystem.documentDirectory;
-
-/** True for the `file://` uris docCache hands back. */
-export function isLocalFileUri(uri) {
-  return typeof uri === 'string' && uri.startsWith('file://');
-}
 
 // ── The viewer page ────────────────────────────────────────────────────────
 // Written to disk at stage time. Kept as a plain string (no template
@@ -485,8 +483,8 @@ export function ensurePdfJsViewer() {
  *
  *  #pagemode=none closes pdf.js's thumbnail sidebar -- the library's default,
  *  which eats half a phone screen and persists across documents once opened.
- *  The offline path needs it for the same reason the hosted one does; a cellar
- *  is exactly where the screen is smallest and the drawing matters most. */
+ *  A cellar is exactly where the screen is smallest and the drawing matters
+ *  most, and this is now every Android open. */
 export function localViewerUrlFor(viewerUri, pdfFileUri) {
   if (!viewerUri || !pdfFileUri) return null;
   return `${viewerUri}?file=${encodeURIComponent(pdfFileUri)}#pagemode=none`;

@@ -1,23 +1,27 @@
 /**
  * THE PAGES SIDEBAR IS pdf.js's, AND IT MUST START CLOSED.
  *
- * On Android every PDF goes through Mozilla's viewer.html -- the hosted copy
- * while online, a staged local copy offline. Its thumbnail sidebar is the
- * library's default; we ship no sidebar code at all. On a 6" phone it takes
- * half the screen, and pdf.js PERSISTS sidebar state in its ViewHistory, so
- * once it is open it reopens for every later document. That is why it read as
- * undismissable.
+ * On Android every PDF goes through a pdf.js viewer.html -- and now always the
+ * copy STAGED ON THE DEVICE. There used to be a second builder pointing at
+ * Mozilla's hosted viewer for the online case; it was removed because it
+ * url-encoded a token-bearing document url into a third party's page (see
+ * pdfTokenOrigin.test.cjs). One builder, one place the hash can be dropped.
  *
- * `#pagemode=none` in the URL hash is the whole fix. Both builders need it:
- * the offline one especially, because a cellar is where the screen is smallest
- * and the drawing matters most.
+ * pdf.js's thumbnail sidebar is the library's default; we ship no sidebar code
+ * at all. On a 6" phone it takes half the screen, and pdf.js PERSISTS sidebar
+ * state in its ViewHistory, so once it is open it reopens for every later
+ * document. That is why it read as undismissable.
  *
- * iOS never reaches either builder -- WKWebView/PDFKit renders the PDF
- * directly and has no sidebar.
+ * `#pagemode=none` in the URL hash is the whole fix, and it now matters on
+ * every Android open rather than only the offline ones: a cellar is where the
+ * screen is smallest and the drawing matters most.
  *
- * READ AS CODE. Both files now carry comments explaining #pagemode=none, so a
- * substring search of the file would match the explanation rather than the URL.
- * These assertions read the template literal that is actually returned.
+ * iOS never reaches the builder -- WKWebView/PDFKit renders the PDF directly
+ * and has no sidebar.
+ *
+ * READ AS CODE. The files carry comments explaining #pagemode=none, so a
+ * substring search would match the explanation rather than the URL. These
+ * assertions read the template literal that is actually returned.
  *
  * Run:  node src/utils/pdfjsSidebar.test.cjs
  */
@@ -78,48 +82,51 @@ function returnedTemplates(fnNode) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 1. The hosted viewer -- Android, online.
-// ═══════════════════════════════════════════════════════════════════════════
-const viewerTree = ast('src/components/PDFViewer.native.jsx');
-const hosted = returnedTemplates(findFn(viewerTree, 'pdfJsViewerUrl'));
-
-ok(hosted.length === 1, 'pdfJsViewerUrl returns exactly one template literal');
-ok(hosted.every((t) => t.endsWith('#pagemode=none')),
-  'hosted viewer URL ends with #pagemode=none');
-ok(hosted.every((t) => t.includes('viewer.html')),
-  'hosted viewer URL still points at viewer.html');
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 2. The staged viewer -- Android, offline. Same hash, same reason.
+// 1. The staged viewer -- the only Android path there is.
 // ═══════════════════════════════════════════════════════════════════════════
 const stagedTree = ast('src/utils/pdfjsViewer.js');
 const staged = returnedTemplates(findFn(stagedTree, 'localViewerUrlFor'));
 
 ok(staged.length === 1, 'localViewerUrlFor returns exactly one template literal');
 ok(staged.every((t) => t.endsWith('#pagemode=none')),
-  'staged offline viewer URL ends with #pagemode=none');
+  'staged viewer URL ends with #pagemode=none');
+ok(staged.every((t) => t.includes('?file=')),
+  'staged viewer URL still hands the document over as ?file=');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. THE CLASS: the hash must be LAST. A later `?`/`&` appended after the hash
+// 2. THE CLASS: the hash must be LAST. A later `?`/`&` appended after the hash
 //    would land inside the fragment and pdf.js would stop parsing pagemode.
 // ═══════════════════════════════════════════════════════════════════════════
-for (const [name, tpls] of [['hosted', hosted], ['staged', staged]]) {
-  ok(tpls.every((t) => t.indexOf('#') === t.lastIndexOf('#')),
-    `${name}: exactly one '#' in the URL`);
-  ok(tpls.every((t) => !t.slice(t.indexOf('#')).includes('?')),
-    `${name}: no query appended after the fragment`);
-}
+ok(staged.every((t) => t.indexOf('#') === t.lastIndexOf('#')),
+  "staged: exactly one '#' in the URL");
+ok(staged.every((t) => !t.slice(t.indexOf('#')).includes('?')),
+  'staged: no query appended after the fragment');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 4. iOS is untouched -- it must NOT be routed through pdf.js.
+// 3. The staged builder is the one the viewer actually calls, and it is the
+//    ONLY viewer builder in the component.
 // ═══════════════════════════════════════════════════════════════════════════
-let iosGuarded = false;
+const viewerTree = ast('src/components/PDFViewer.native.jsx');
+let callsStaged = false;
 walk(viewerTree, (n) => {
   if (n.type !== 'CallExpression') return;
-  if (!(n.callee.type === 'Identifier' && n.callee.name === 'pdfJsViewerUrl')) return;
-  iosGuarded = true;
+  if (n.callee.type === 'Identifier' && n.callee.name === 'localViewerUrlFor') callsStaged = true;
 });
-ok(iosGuarded, 'pdfJsViewerUrl is still called (the Android path survives)');
+ok(callsStaged, 'the component builds its Android source with localViewerUrlFor');
+
+// A second builder would be a second place to forget the hash -- and, as the
+// hosted one proved, a second place for a url to go somewhere it should not.
+let otherBuilder = null;
+walk(viewerTree, (n) => {
+  if (otherBuilder) return;
+  const named = (n.type === 'FunctionDeclaration' && n.id && n.id.name)
+    || (n.type === 'VariableDeclarator' && n.id && n.id.type === 'Identifier' && n.id.name);
+  if (!named || named === 'localViewerUrlFor') return;
+  for (const t of returnedTemplates(n)) {
+    if (t.includes('viewer.html')) { otherBuilder = named; return; }
+  }
+});
+ok(!otherBuilder, `no second viewer-url builder in the component (found: ${otherBuilder || 'none'})`);
 
 console.log(`\n  ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
