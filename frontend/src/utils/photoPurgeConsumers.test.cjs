@@ -110,8 +110,23 @@ const unsaved = editor(API_STUB, null);
 const { thumb_base64, base64_purged_at, enhance_status, enhanced_r2_key, thumb_r2_key } = PURGED;
 const PURGED_NO_URI = { thumb_base64, base64_purged_at, enhance_status, enhanced_r2_key, thumb_r2_key };
 
+// STILL TRUE, BUT NO LONGER UNCONDITIONAL — AND THAT REVERSAL IS DELIBERATE.
+// "A local capture wins the tile (nothing to fetch)" now holds only for a
+// photo with NO original_r2_key, which is what PURGED is: it carries
+// enhanced_r2_key and thumb_r2_key but no original, so it takes the
+// local-first branch and this assertion is unchanged.
+//
+// An UPLOADED photo now prefers the served copy. The old ordering saved a
+// fetch on the capturing phone and cost every other device the photo
+// entirely: `uri` is a file:///... path on one handset, and because a dead
+// path is truthy the `||` chain stopped there and never reached a copy that
+// worked. Thirteen photos on one filed log were invisible everywhere.
+//
+// The re-fetch on the capturing phone is a real cost and was accepted as one.
+// `onError` on the tile flips it back to the local file when the fetch fails,
+// so the offline CP is not stranded either. See photoSource.test.cjs.
 ok(saved.photoTileUri(PURGED, 0, 0) === PURGED.uri,
-  'editor: a local capture still wins the tile (nothing to fetch)');
+  'editor: a local capture still wins the tile for an UN-uploaded photo');
 ok(saved.photoTileUri(PURGED_NO_URI, 0, 0) === 'data:image/jpeg;base64,VEhVTUI=',
   'editor: a purged photo off another device renders from the retained thumbnail');
 ok(saved.photoTileUri({ enhance_status: 'done', thumb_r2_key: 'k' }, 1, 2)
@@ -121,7 +136,12 @@ ok(saved.photoTileUri({ base64: 'RlVMTA==' }, 0, 0) === 'data:image/jpeg;base64,
   'editor: an unpurged photo still renders from its full-size copy');
 ok(unsaved.photoTileUri({}, 0, 0) === undefined,
   'editor: nothing to show yields undefined, which <Image> accepts');
-ok(/uri: photoTileUri\(photo, i, pi\)/.test(editorSrc),
+// The trailing `)` is deliberately NOT matched: the tile now passes a fourth
+// argument, the per-tile retry flag that lets onError swap the preferred copy
+// when the first one fails to LOAD (a `||` chain only advances on a falsy
+// value, never on a failed load). The assertion's point is unchanged — the
+// grid <Image> really calls this, with this photo and this position.
+ok(/uri: photoTileUri\(photo, i, pi/.test(editorSrc),
   'editor: the grid <Image> actually calls it (not dead code)');
 
 // ── the save path must not undo the purge ───────────────────────────────────

@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""DRY RUN: fold gate-appended duplicate crews back into the CP's rows.
+
+POSTS NOTHING. WRITES NOTHING. It reads one logbook, applies the merge rule,
+and prints the resulting activities array for a human to read before any
+amendment is filed.
+
+WHY THE LOG NEEDS ONE. reconcileCrewsWithRoster short-circuited hand-added rows
+before its matcher, so a gate crew for a company the CP had already typed was
+appended as a SECOND row instead of merging. 2026-08-31's daily jobsite log was
+submitted with eight crews where four worked, and the report's crew table
+printed all eight on a compliance document.
+
+WHY THIS IS AN AMENDMENT AND NOT AN EDIT. The log is `submitted`, and both
+create_logbook and update_logbook refuse a data write on a filed record with
+409 FILED_LOG_DATA_IMMUTABLE. That guard is correct and must not be bypassed
+with a direct Mongo write -- the whole point of the record is that it cannot be
+quietly rewritten after filing. The correction goes through
+POST /api/logbooks/{id}/amend, which records it as its own act.
+
+THE RULE, applied per company:
+
+  * the CP's row is kept -- his work description and his photos are the
+    evidence and they stay where he put them;
+  * the gate row's PHOTOS are moved onto it. On 2026-08-31 C5 carries two of
+    the thirteen, and dropping C5 without moving them would lose them. Their
+    R2 keys travel unchanged: a key is stored per photo and read back verbatim
+    (server.py _logbook_photo_sources), never recomputed from the row;
+  * the gate row's COUNT is carried across as gate_num_workers, so the
+    turnstile's evidence survives the merge rather than being deleted with the
+    row -- which was #244's objection to merging at all;
+  * the CP's own count stands in num_workers with num_workers_source 'cp' when
+    he typed one; the gate's is adopted when he did not;
+  * the gate row is then dropped.
+
+A gate row whose company has NO hand-typed counterpart is left exactly as it
+is. This script merges; it never deletes a crew that stands alone.
+
+USAGE
+  MONGO_URL=... DB_NAME=... python backend/scripts/amend_duplicate_crews_dryrun.py \\
+      --project-name "588 Thomas" --date 2026-08-31 [--json]
+
+  --project-name matches on the project's name OR address, case- and
+  spacing-insensitively, and REFUSES to run on anything but a single match --
+  it prints the candidates instead. Guessing which project a compliance
+  amendment belongs to is not a thing this should do. --project <id> is still
+  accepted when the id is known.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+try:
+    from bson import ObjectId as _ObjectId
+except ImportError:  # pragma: no cover
+    _ObjectId = None
+
+
+def to_oid(value):
+    """Mirrors server.to_query_id: an ObjectId when it parses, else the raw."""
+    if _ObjectId is None:
+        return value
+    try:
+        return _ObjectId(str(value))
+    except Exception:
+        return value
+
+try:
+    from motor.motor_asyncio import AsyncIOMotorClient
+except ImportError:  # pragma: no cover
+    print("motor is required: pip install motor", file=sys.stderr)
+    raise
+
+CP_SOURCE = "cp"
+GATE_SOURCE = "gate"
+
+# THE REASON THE CP READS, in his language. It goes onto the amendment as a
+# required field and is the first thing he sees, so it says what was corrected
+# and what was preserved -- not what the code did.
+#
+# It does NOT say he entered the counts. Three of the four have no recorded
+# author, and a reason line is not the place to quietly settle that.
+AMENDMENT_REASON = (
+    "This log listed every subcontractor twice - once for the crews on the log "
+    "and again when the men checked in at the gate. The duplicate rows have "
+    "been combined so each company appears once. No photo was lost: all 13 are "
+    "still here, and the 2 that were on the second AAZ row are now on the AAZ "
+    "row with the others. The worker numbers are unchanged from what the log "
+    "recorded, and each crew now shows the gate's own count beside it."
+)
+
+
+def _key(value) -> str:
+    """Company/trade comparison key. Mirrors rosterKey on the client."""
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _count(row) -> str:
+    return str(row.get("num_workers") or "").strip()
+
+
+def _source_label(row) -> str:
+    """How the after-table names the author of a count. THREE states, and the
+    third must not look like either of the others -- the whole defect was a
+    tool printing '(cp)' for numbers nobody claimed."""
+    src = row.get("num_workers_source")
+    if src == CP_SOURCE:
+        return "cp — the CP asserted this"
+    if src == GATE_SOURCE:
+        return "gate"
+    return "NO RECORDED AUTHOR — prints unattributed"
+
+
+def pick_project(projects, needle):
+    """(project_or_None, candidates). Never guesses between two matches.
+
+    Matches name or address on a normalised substring, so "588 Thomas" finds
+    "588 Thomas St" and "588  thomas street" alike without the caller having to
+    reproduce the stored punctuation.
+    """
+    want = _key(needle)
+    if not want:
+        return None, []
+    hits = []
+    for p in projects or []:
+        hay = f"{_key(p.get('name'))} {_key(p.get('address'))}"
+        if want in hay:
+            hits.append(p)
+    exact = [p for p in hits if _key(p.get("name")) == want]
+    if len(exact) == 1:
+        return exact[0], hits
+    if len(hits) == 1:
+        return hits[0], hits
+    return None, hits
+
+
+def merge_rows(activities):
+    """Return (merged_activities, report_lines). Pure — no I/O, no mutation."""
+    rows = [dict(a) for a in (activities or []) if isinstance(a, dict)]
+    notes = []
+
+    hand = [r for r in rows if not r.get("gate_sourced")]
+    gate = [r for r in rows if r.get("gate_sourced")]
+
+    by_company = {}
+    for h in hand:
+        by_company.setdefault(_key(h.get("company")), []).append(h)
+
+    out = []
+    consumed = set()
+
+    for h in hand:
+        c = _key(h.get("company"))
+        # Only an UNAMBIGUOUS pairing is merged: one hand row and one gate row
+        # for that company. Anything else is left alone and reported, because
+        # guessing which crew a row meant is how work gets filed against the
+        # wrong trade.
+        mates = [i for i, g in enumerate(gate)
+                 if _key(g.get("company")) == c and i not in consumed]
+        if len(by_company.get(c, [])) != 1 or len(mates) != 1:
+            notes.append(
+                f"  LEFT ALONE  {h.get('crew_id')} {h.get('company')!r}: "
+                f"{len(by_company.get(c, []))} hand row(s), {len(mates)} gate row(s) "
+                f"-- not an unambiguous pair")
+            out.append(h)
+            continue
+
+        gi = mates[0]
+        g = gate[gi]
+        consumed.add(gi)
+
+        merged = dict(h)
+        merged["trade"] = h.get("trade") or g.get("trade") or ""
+
+        # WHO SAYS SO. "A number exists" is not "somebody asserted it". This
+        # read `_count(h) != ""` and stamped 'cp' on every row carrying a
+        # count -- so on 2026-08-31 it printed "(cp)" for C1, C2 and C3, whose
+        # numbers came from the gate seeding and which no CP ever typed. Only
+        # C4 was a real assertion (5 against the gate's 4). Three of the four
+        # were invented by the tool written to repair the record.
+        #
+        #   cp     an explicit prior assertion -- kept and labelled his
+        #   UNSET  a number with no recorded author -- kept, labelled NEITHER
+        #   gate   adopted from the crew just matched -- origin known
+        asserted = h.get("num_workers_source") == CP_SOURCE
+        has_number = _count(h) != ""
+        keep_his = asserted or has_number
+        unattributed = keep_his and not asserted
+        merged["num_workers"] = _count(h) if keep_his else _count(g)
+        if asserted:
+            merged["num_workers_source"] = CP_SOURCE
+        elif keep_his:
+            # The key is REMOVED, not set to a sentinel. _headcount_cell reads
+            # an absent source as no attribution and prints the number bare,
+            # which is the honest rendering of a count nobody is recorded as
+            # having made.
+            merged.pop("num_workers_source", None)
+        else:
+            merged["num_workers_source"] = GATE_SOURCE
+        merged["gate_num_workers"] = _count(g)
+
+        # gate_sourced IS WITHHELD WHEN THE NUMBER HAS NO RECORDED AUTHOR,
+        # matching reconcileCrewsWithRoster. This script set it unconditionally
+        # because it was written in #323, before #326 established the rule.
+        #
+        # IT IS NOT ACADEMIC HERE. amend_logbook creates a new EDITABLE child --
+        # status "draft", is_locked false, signature cleared for re-signing --
+        # so the CP opens the amendment to sign it and the reconcile runs on
+        # these rows. A row carrying gate_sourced with no num_workers_source is
+        # indistinguishable from a pre-2026-08-27 gate row, and the next pass
+        # would adopt the gate's count over the very number we preserved by
+        # refusing to attribute it. The flag is set only when the count has a
+        # known origin: the CP asserted it, or it came from the crew just
+        # matched.
+        if not unattributed:
+            merged["gate_sourced"] = True
+
+        for field in ("worker_ids", "worker_names", "check_in_time"):
+            if g.get(field) is not None:
+                merged[field] = g.get(field)
+        if not merged.get("subcontractor_id"):
+            merged["subcontractor_id"] = g.get("subcontractor_id")
+
+        h_photos = list(h.get("photos") or [])
+        g_photos = list(g.get("photos") or [])
+        merged["photos"] = h_photos + g_photos
+
+        notes.append(
+            f"  MERGED      {h.get('crew_id')} + {g.get('crew_id')} "
+            f"{h.get('company')!r}: photos {len(h_photos)}+{len(g_photos)}"
+            f"={len(merged['photos'])}, num_workers "
+            f"{_count(h) or '(blank)'}->{merged['num_workers']} "
+            f"[{_source_label(merged)}], gate_num_workers "
+            f"{merged['gate_num_workers']}")
+        out.append(merged)
+
+    for i, g in enumerate(gate):
+        if i in consumed:
+            continue
+        notes.append(
+            f"  KEPT        {g.get('crew_id')} {g.get('company')!r}: gate crew "
+            f"with no hand-typed counterpart")
+        out.append(g)
+
+    return out, notes
+
+
+async def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--project", help="project id, when it is already known")
+    ap.add_argument("--project-name",
+                    help='name or address, e.g. "588 Thomas"')
+    ap.add_argument("--date", required=True)
+    ap.add_argument("--log-type", default="daily_jobsite")
+    ap.add_argument("--json", action="store_true",
+                    help="print the merged activities array as JSON")
+    ap.add_argument("--file", action="store_true",
+                    help="FILE THE AMENDMENT. Without this the script only "
+                         "prints. Posts to /api/logbooks/{id}/amend using "
+                         "LEVELOG_TOKEN; never writes to Mongo directly, so "
+                         "the API's own guards still apply.")
+    args = ap.parse_args()
+
+    if not args.project and not args.project_name:
+        print("one of --project or --project-name is required", file=sys.stderr)
+        return 1
+
+    client = AsyncIOMotorClient(os.environ["MONGO_URL"])
+    db = client[os.environ["DB_NAME"]]
+
+    project_id = args.project
+    if not project_id:
+        rows = await db.projects.find(
+            {"is_deleted": {"$ne": True}}, {"name": 1, "address": 1}).to_list(None)
+        hit, candidates = pick_project(rows, args.project_name)
+        if not hit:
+            print(f"{len(candidates)} projects match {args.project_name!r}; "
+                  f"re-run with --project <id>", file=sys.stderr)
+            for c in candidates[:10]:
+                print(f"  {c.get('_id')}  {c.get('name')!r}  "
+                      f"{c.get('address')!r}", file=sys.stderr)
+            return 1
+        project_id = str(hit["_id"])
+        print(f"project   {hit.get('name')!r}  ({project_id})")
+
+    doc = await db.logbooks.find_one({
+        "project_id": project_id,
+        "log_type": args.log_type,
+        "date": args.date,
+        "is_deleted": {"$ne": True},
+    })
+    if not doc:
+        print("no such logbook", file=sys.stderr)
+        return 1
+
+    acts = ((doc.get("data") or {}).get("activities")) or []
+    merged, notes = merge_rows(acts)
+
+    def photo_total(rows):
+        return sum(len(r.get("photos") or []) for r in rows)
+
+    print(f"\nlogbook   {doc.get('_id')}")
+    print(f"status    {doc.get('status')}   is_locked={doc.get('is_locked')}")
+    print(f"created   {doc.get('created_at')}")
+    print(f"updated   {doc.get('updated_at')}")
+    print(f"\nBEFORE    {len(acts)} crews, {photo_total(acts)} photos")
+    for a in acts:
+        print(f"  {a.get('crew_id'):<4} {str(a.get('company'))[:24]:<24} "
+              f"gate_sourced={bool(a.get('gate_sourced'))!s:<5} "
+              f"activity_id={a.get('activity_id') or '(none)'!s:<24} "
+              f"photos={len(a.get('photos') or [])} "
+              f"num_workers={a.get('num_workers')!r} "
+              f"[{_source_label(a)}]")
+
+    print("\nRULE APPLIED")
+    for n in notes:
+        print(n)
+
+    print(f"\nAFTER     {len(merged)} crews, {photo_total(merged)} photos")
+    for a in merged:
+        print(f"  {a.get('crew_id'):<4} {str(a.get('company'))[:24]:<24} "
+              f"photos={len(a.get('photos') or [])} "
+              f"num_workers={a.get('num_workers')!r} "
+              f"[{_source_label(a)}] "
+              f"gate_num_workers={a.get('gate_num_workers')!r}")
+
+    lost = photo_total(acts) - photo_total(merged)
+    print(f"\nPHOTOS {'PRESERVED' if lost == 0 else f'LOST: {lost} !!!'} "
+          f"({photo_total(acts)} -> {photo_total(merged)})")
+    if lost:
+        print("REFUSING TO RECOMMEND THIS PAYLOAD", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print("\n--- activities payload ---")
+        print(json.dumps(merged, indent=2, default=str))
+
+    print("\nREASON THE CP WILL READ:")
+    print(f"  {AMENDMENT_REASON}")
+
+    if not args.file:
+        print("\nDRY RUN - nothing was written. Re-run with --file to file it.")
+        return 0
+
+    # ── FILING ──────────────────────────────────────────────────────────────
+    # Through the API, never a direct Mongo write. amend_logbook leaves the
+    # parent locked and intact and creates an editable child; going round it
+    # would bypass the guard that makes the parent trustworthy.
+    token = os.environ.get("LEVELOG_TOKEN")
+    if not token:
+        print("LEVELOG_TOKEN required to file", file=sys.stderr)
+        return 1
+    base = os.environ.get("API_BASE", "https://api.levelog.com").rstrip("/")
+
+    body = {"reason": AMENDMENT_REASON,
+            "data": {**(doc.get("data") or {}), "activities": merged}}
+    req = urllib.request.Request(
+        f"{base}/api/logbooks/{doc['_id']}/amend",
+        data=json.dumps(body, default=str).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            created = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        print(f"AMEND REFUSED {e.code}: {e.read()[:400]!r}", file=sys.stderr)
+        return 1
+
+    child_id = created.get("id") or created.get("_id")
+    print(f"\nAMENDMENT FILED   {child_id}")
+
+    # Read both back and SAY what they are, rather than assuming the write did
+    # what it claimed.
+    parent = await db.logbooks.find_one({"_id": doc["_id"]})
+    child = await db.logbooks.find_one({"_id": to_oid(child_id)})
+
+    p_acts = ((parent or {}).get("data") or {}).get("activities") or []
+    c_acts = ((child or {}).get("data") or {}).get("activities") or []
+    print(f"  PARENT  {doc['_id']}  status={parent.get('status')} "
+          f"is_locked={parent.get('is_locked')} crews={len(p_acts)} "
+          f"photos={photo_total(p_acts)}")
+    print(f"  CHILD   {child_id}  status={(child or {}).get('status')} "
+          f"is_locked={(child or {}).get('is_locked')} crews={len(c_acts)} "
+          f"photos={photo_total(c_acts)} "
+          f"signature={'present' if (child or {}).get('cp_signature') else 'NONE - awaiting'}")
+
+    ok = (len(p_acts) == len(acts) and photo_total(p_acts) == photo_total(acts)
+          and len(c_acts) == len(merged)
+          and photo_total(c_acts) == photo_total(merged))
+    print("  PARENT UNCHANGED, CHILD FILED" if ok
+          else "  !! STATE DOES NOT MATCH WHAT WAS SENT - INVESTIGATE")
+    return 0 if ok else 2
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

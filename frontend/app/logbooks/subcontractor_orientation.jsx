@@ -32,6 +32,7 @@ import LogbookLockBar from '../../src/components/LogbookLockBar';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { collapseChains } from '../../src/utils/amendmentChain';
 import { logbooksAPI } from '../../src/utils/api';
 import { finalizeErrorCode, recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
@@ -291,7 +292,10 @@ export default function SubcontractorOrientation() {
       // Cache-first: paint the locally cached roster before touching the network,
       // so the gate screen is usable immediately and stays truthful offline.
       const cached = await readCachedList(projectId);
-      if (cached.length > 0) setOrientations(cached);
+      // COLLAPSED HERE TOO. The offline path set the cached list raw, so a
+      // CP with no signal saw the six uncollapsed rows and a header counting
+      // documents — the exact bug, reachable by losing signal.
+      if (cached.length > 0) setOrientations(collapseChains(cached));
 
       // Resume a manual entry that was interrupted (app quit / phone locked).
       if (!resumedRef.current) {
@@ -324,7 +328,9 @@ export default function SubcontractorOrientation() {
       const r = await settleFetch(() => logbooksAPI.getByProject(projectId, LOG_TYPE));
       setFetchState(r.status);
       if (r.status === 'ok') {
-        const merged = mergeWithPending(Array.isArray(r.data) ? r.data : [], cached);
+        const merged = collapseChains(
+          mergeWithPending(Array.isArray(r.data) ? r.data : [], cached),
+        );
         setOrientations(merged);
         await writeCachedList(projectId, merged);
       }
@@ -972,6 +978,41 @@ export default function SubcontractorOrientation() {
                               })
                             : orient.date}
                         </Text>
+                        {/* THE DOCUMENT HAS A HISTORY, AND THE HEAD LOOKS LIKE
+                            AN ORIGINAL WITHOUT THIS. A reader cannot tell an
+                            amended record from a first draft, which is how six
+                            rows read as six duplicates. The count is documents
+                            in the chain, so a record corrected four times is
+                            five links. */}
+                        {orient._chain_length > 1 && (
+                          <Text style={styles.orientDate}>
+                            {`Corrected ${orient._chain_length - 1} time`}
+                            {orient._chain_length - 1 === 1 ? '' : 's'}
+                          </Text>
+                        )}
+                        {/* AN OPEN CORRECTION IS NOT THE RECORD YET, and the row
+                            must not imply it is. The card shows the last SIGNED
+                            link — that is what stands — and says plainly that
+                            something unsigned is waiting. */}
+                        {(orient._open_corrections || []).length === 1 && (
+                          <Text style={styles.orientDate}>
+                            Correction open — not signed yet
+                          </Text>
+                        )}
+                        {/* THE FORK, SHOWN AS A FORK. Two unsigned children of
+                            one parent are two competing claims about what the
+                            record should say, and neither is the record while
+                            both are unsigned. Picking one to display would be
+                            choosing a winner silently — so both are counted and
+                            the consequence of signing is stated, because
+                            "supersedes the other" is the part he cannot work
+                            out from the screen. */}
+                        {(orient._open_corrections || []).length > 1 && (
+                          <Text style={styles.orientDate}>
+                            {`${orient._open_corrections.length} competing corrections open — `}
+                            signing either supersedes the other
+                          </Text>
+                        )}
                         {orient._pending && (
                           <View style={styles.pendingRow}>
                             <CloudOff size={11} strokeWidth={1.8} color={semantic.attention} />

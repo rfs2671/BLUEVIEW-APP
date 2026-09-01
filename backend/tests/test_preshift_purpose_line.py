@@ -180,7 +180,16 @@ class BothRenderersPrintIt(unittest.TestCase):
     def test_the_sentence_is_written_once(self):
         """One constant, so the app cannot say two different things about what
         a worker signed. The rule FALL_PROTECTION_NOTICE is already under."""
-        self.assertEqual(SRC.count("Each worker named below was present"), 1)
+        # THE CLAIM IS UNCHANGED AND ITS SCOPE MOVED. The sentence now lives
+        # in lib/logbook/attestations.py, which also carries its version and
+        # every wording ever printed, and server.py imports it -- so a stored
+        # audit snapshot can be checked against what it claims to have said.
+        # ZERO copies here, exactly one there.
+        from lib.logbook import attestations as _A
+        self.assertEqual(SRC.count("Each worker named below was present"), 0)
+        self.assertEqual(
+            sum(1 for t in _A.HISTORY.values()
+                if "Each worker named below was present" in t), 1)
 
     def test_both_renderers_emit_it(self):
         self.assertEqual(SRC.count("+ PRESHIFT_ATTESTATION_HTML"), 2)
@@ -238,8 +247,13 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
                      'w.get("company", "")'):
             self.assertIn(cell, SRC, f"{cell} no longer comes from the stored row")
 
-    def test_the_affirmation_overlay_still_runs_in_both_renderers(self):
-        self.assertEqual(SRC.count("_preshift_signature_cell(w, _affirm)"), 2)
+    def test_the_affirmation_FOOTER_runs_in_both_renderers(self):
+        """The overlay is gone: the Signature column no longer asserts
+        affirmation in either direction, and the sheet points at the separate
+        records in a footer instead. See test_preshift_affirmation_record.py."""
+        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"), 2)
+        self.assertEqual(
+            SRC.count("{_preshift_signature_cell(w)}</td></tr>"), 2)
 
     def test_the_column_headers_are_unchanged(self):
         self.assertEqual(

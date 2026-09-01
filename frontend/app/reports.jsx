@@ -74,6 +74,13 @@ const TABS = [
 // The fallback is a HUMANISED key rather than the bare key: if the registry
 // fetch fails, an unknown type reads "Subcontractor Orientation", never
 // "subcontractor_orientation". It is a degraded label, not a leaked one.
+// SAME DEFECT, SAME RULE, ONE IMPLEMENTATION. This tab maps preview.logbooks
+// straight to rows, and the endpoint does not filter is_amendment — so an
+// amended orientation drew a row per link here exactly as it did on the CP's
+// editor. The admin reads this screen, so it showed six Angel Lopez rows to
+// the person least able to tell they were one record.
+import { collapseChains } from '../src/utils/amendmentChain';
+
 const humanizeLogType = (key) => String(key || '')
   .split('_')
   .filter(Boolean)
@@ -546,7 +553,7 @@ export default function ReportsScreen() {
                       <GlassCard style={s.logbooksCard}>
                         <Text style={s.sectionTitle}>Logbook Status</Text>
                         {preview.logbooks && preview.logbooks.length > 0 ? (
-                          preview.logbooks.map((lb, i) => (
+                          collapseChains(preview.logbooks).map((lb, i) => (
                             <View key={i} style={s.logbookRow}>
                               <View style={s.logbookInfo}>
                                 <Text style={s.logbookType}>

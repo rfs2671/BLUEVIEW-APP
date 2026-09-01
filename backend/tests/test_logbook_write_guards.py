@@ -92,6 +92,21 @@ class _Coll:
     async def count_documents(self, query):
         return sum(1 for d in self.docs if _match(d, query))
 
+    def find(self, query, projection=None):
+        """amend_logbook looks for open children on the parent before creating
+        another — one open correction per record. The double has to model the
+        call or a guard test fails on the fake rather than on the guard."""
+        matched = [copy.deepcopy(d) for d in self.docs if _match(d, query)]
+
+        class _Cursor:
+            def sort(self, *a, **k):
+                return self
+
+            async def to_list(self, *a, **k):
+                return matched
+
+        return _Cursor()
+
     async def insert_one(self, doc):
         self._n += 1
         doc = dict(doc)

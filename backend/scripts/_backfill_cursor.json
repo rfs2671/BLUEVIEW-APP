@@ -1,0 +1,13 @@
+{
+  "dataset_id": "eabe-havv",
+  "started_at": "2026-05-20T13:27:45.570278+00:00",
+  "last_update_at": "2026-05-20T13:35:41.948585+00:00",
+  "total_inserted": 15141,
+  "total_failed": 0,
+  "total_seen": 15141,
+  "bin_chunk_index": 0,
+  "last_offset": 0,
+  "window_start": "2026-05-05T13:27:45.571023+00:00",
+  "window_end": "2026-05-20T13:27:45.571023+00:00",
+  "done": true
+}

@@ -661,6 +661,448 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## A LOSING FORK HAS NO WAY OUT, AND ONE IS LIVE ON 588 THOMAS
+
+**KNOWN PERMANENT STATE ON A PRODUCTION RECORD. One worker, one document, no
+exit.**
+
+Angel Lopez's orientation on 588 Thomas has two unsigned amendment children of
+the same parent (`6a95b43e8392cee9e0c217f9`), filed 49 seconds apart on
+2026-08-31 at 17:09:58 and 17:10:47. Michael signs the NEWER one -- `_filed_log`
+takes the newest FILED row, so signing the older would leave the newer able to
+supersede it the moment anyone signed that instead.
+
+**WHAT HAPPENS TO THE LOSER, precisely:**
+
+  * it stays `status: "draft"`, `is_locked: false`, `cp_signature: null`,
+    **forever**. There is no state that means "this correction was abandoned";
+  * `_filed_log` ignores it -- correctly, an unsigned amendment is an
+    intention, not a correction -- so it never reaches a filed report;
+  * the **stale-unsigned card lists it as "correction to sign" indefinitely**,
+    nagging the CP about a correction he deliberately abandoned;
+  * and after #333 it **blocks every future amendment of that orientation**: it
+    is an open head, so `AMENDMENT_ALREADY_OPEN` refuses the next one and
+    offers him the draft he has no intention of finishing.
+
+**THE LAST POINT IS THE SHARP ONE.** #333's refusal is right and it turns a
+stall into a dead end wherever a fork already exists. Refusing a second
+amendment while the first can only be signed or abandoned leaves no move. The
+refusal and the withdraw path are ONE change; only the refusal shipped, and
+this entry is the debt.
+
+**WHAT A WITHDRAW PATH NEEDS -- OPEN, NOT DESIGNED.**
+
+**1. Who may withdraw.** The filer is not always the signer: on 2026-08-31 the
+owner filed an amendment only the CP could sign. Candidates, none obviously
+right -- the person who FILED it (they know it was a mistake, but cannot sign
+so cannot be said to have judged the record), the person who would SIGN it
+(they bear the attestation, but did not create the thing being withdrawn), or
+either. The one clear rule: **not a background process.** Nothing that touches
+a compliance record may withdraw an intention to correct it.
+
+**2. What the withdrawn row says on a filed record.** It must remain a
+document -- deleting it would erase evidence that somebody thought the record
+was wrong, which is exactly the fact a later reader needs. So it needs a state
+(`withdrawn_at`, `withdrawn_by`, and a REASON, subject to the same readability
+rule as `amendment_reason` -- see "IS THERE A NUMBER"), and every reader has to
+learn it: `_filed_log` (ignore, as now), the stale-unsigned card (stop
+listing), `open_amendment_head` (stop blocking), and the chain display
+(`amendmentChain.js` -- a withdrawn link is part of the history and must not
+count toward "Corrected N times" as though it landed).
+
+**3. IS WITHDRAWING ITSELF AN ATTESTED ACT? This is the question that decides
+the shape, and it is not a detail.**
+
+If withdrawing is attested -- signed, in the `signature_events` ledger, with an
+`acting_capacity` -- then it is a statement on the record: *"I considered this
+correction and decided the record did not need it."* That is meaningful to an
+inspector, it is defensible at an OATH hearing, and it makes withdrawal a
+deliberate act nobody performs by accident. It also means only somebody who can
+SIGN may withdraw, which answers question 1 -- and it makes cleaning up a
+mis-tap as heavy as filing the correction was.
+
+If it is NOT attested -- a soft state, like discarding a draft -- then it is
+cheap and fixes the mis-tap case, and it lets an unsigned intention vanish from
+the record with nobody accountable for that decision. On a document that
+already distinguishes an intention from a correction, that asymmetry needs an
+argument.
+
+**The answer decides everything else**, so it should be settled first and by
+the operator, not inferred from whatever is easiest to build.
+
+**THE OPERATOR'S LEANING, 2026-08-31 -- A LEANING, NOT A RULING.** Attested.
+The reasoning, in his words: this app already distinguishes an intention from a
+correction, and a withdrawal is a decision about a compliance record. It also
+answers "who may withdraw" for free -- only somebody who can sign -- which is
+the part with no obvious answer otherwise.
+
+Recorded so whoever builds this starts from it rather than from scratch, and
+recorded as a LEANING because it was reached without the cost being known.
+What would argue against it: attested withdrawal makes cleaning up a mis-tap as
+heavy as filing the correction was, and the 2026-08-31 fork was a mis-tap --
+five amendments in eight minutes from a man who could not tell he already had
+one open. If the common case turns out to be fumbles rather than judgements,
+the weight lands in the wrong place. That is worth measuring before building,
+not arguing about now.
+
+**AND IT IS NOT URGENT.** One orphan on one worker is a smaller cost than a
+lifecycle designed at midnight. Recorded so the next person meets a known
+state rather than a mystery.
+
+## AN AMENDMENT FILED AND NEVER SIGNED IS A CORRECTION THAT DID NOT HAPPEN
+
+**Three of them had been sitting on 588 Thomas since 2026-08-14, and nothing in
+the product said so until the card shipped on 2026-08-31.**
+
+`amend_logbook` leaves the parent locked and creates an unsigned editable
+child. `_filed_log` then prints the PARENT until the amendment is signed --
+deliberately, and the reasoning is sound: "AN UNSIGNED AMENDMENT IS NOT A
+CORRECTION, it is an intention to correct", and replacing a signed record with
+an unattested one on a document that reaches lenders would assert a change
+nobody made.
+
+**THE CONSEQUENCE NOBODY CLOSED.** If the CP never signs, that intention never
+becomes anything. The parent stands as the record, the correction has no
+effect, and **no surface anywhere reported the gap**: not the logbooks list
+(scoped to today), not the report (prints the parent, correctly), not the
+admin. Somebody decided a filed record was wrong, said why, and the record
+stayed wrong. Three times, over a week, on a live project.
+
+**THE FIRST ACT OF THE NEW CARD WAS TO FIND REAL WORK.** The
+`amendment_unsigned` state shipped the same evening and immediately surfaced
+Aug 7, Aug 10 and Aug 14. It was read as a false alarm -- three rows for one
+amendment filed that night -- and it was not: the 08-31 amendment is correctly
+ABSENT (`date: {"$lt": eastern_date()}` excludes today), and the three it found
+were genuine. **The instinct that a new detector firing immediately must be
+broken is worth resisting for one query.**
+
+**A LATENT DEFECT IN THAT STATE, SEPARATE AND STILL OPEN.** `_amend_meta` is
+built from `stale_unsigned_docs` RAW, while the pre-existing path filters the
+same list through `not _is_affirmed_signature(d.get("cp_signature"))`. The
+amendment loop skips that filter and then ASSIGNS into `_gaps`
+unconditionally, so it can ADD a row that was never a gap: **an amendment that
+has been signed but not finalized will be listed as "correction to sign"
+forever.** It did not fire here because these three are genuinely unsigned. One
+line fixes it -- apply the same signature filter -- and it should be fixed
+before anyone trusts the count.
+
+**WHAT SHOULD CHASE AN UNSIGNED AMENDMENT -- OPEN QUESTION, NOT DECIDED.** The
+card is necessary and is not sufficient: it reaches the CP only, only when he
+opens that project, and it is the same surface that stayed silent for a week
+before it existed. The options, with what each costs:
+
+  * **A deficiency.** Strongest, and probably wrong: a deficiency asserts a
+    site condition, and an unfinished correction is a paperwork state. It would
+    put an administrative gap into a compliance channel that inspectors read.
+  * **The nightly sweep.** `sweep_stale_end_of_day_logs` already walks unlocked
+    end-of-day logs and declines to freeze the ones a person must finish. An
+    amendment is exactly that shape and the sweep already sees it. Cheapest
+    correct home for a count.
+  * **The admin.** The person who FILED the amendment is not the person who can
+    sign it, and today nothing tells the filer their correction stalled. Roy
+    filed one tonight and would learn nothing if it sat until December. This is
+    the real gap.
+  * **Email.** Only if the above are exhausted -- another daily digest line is
+    the easiest thing to stop reading.
+  * **Nothing beyond the card.** Defensible ONLY if the card is made to reach
+    the filer as well as the signer.
+
+**AND THE HARD PART, WHICH IS NOT A NOTIFICATION.** An amendment nobody signs
+should eventually be resolved, not accumulate: either signed, or withdrawn with
+a reason, on the record. There is no withdraw path today, so the only ways out
+are signing it or leaving it forever. That is the design question underneath
+the alerting one and it should be answered first.
+
+## "IS THERE A NUMBER" IS NOT "WHO PUT IT THERE"
+
+**The week's recurring defect, which recurred inside its own fix and was caught
+by a person, not a test.**
+
+Two writers were added on 2026-08-31 to merge a gate crew into the CP's row.
+Both decided authorship like this:
+
+```js
+const _cpTyped = String(row.num_workers ?? '').trim() !== '';   // reconcile
+```
+```python
+cp_typed = _count(h) != ""                                      # dry-run script
+```
+
+Neither consulted `num_workers_source`. Both stamped `'cp'` on any row carrying
+a count. The dry run printed "(cp)" for C1, C2, C3 and C4 alike; three of those
+numbers came from gate seeding and **no CP ever typed them**. Only C4 was real
+-- he typed 5 where the gate recorded 4. It was one approval from filing a
+fabricated author onto a signed 3301.2 record, and it was caught only because
+the operator said the CP had typed nothing all day.
+
+**THE GENERAL RULE.** *A question about the data is not a question about
+provenance.* "Is there a number here" is answerable from the row alone. "Who
+put it there" is not: it needs a field recording an ACT, and when that field is
+absent the honest answer is **unknown**, never a default.
+
+**DEFAULTING IS THE FAILURE.** A two-state answer must invent the third. Every
+instance of this family resolved the same way, by refusing to guess:
+
+  * the manufactured `"0"` on a crew whose count was never typed;
+  * the OSHA register's em dash printing one glyph for four meanings;
+  * `PREDATES_CAPTURE`, which labels an unknowable rather than backfilling it;
+  * and now `num_workers_source`, which is `cp`, `gate`, or ABSENT.
+
+**AND THE RULE ABOUT READING AN INSTRUCTION.** *A rule stated in terms of a
+human act must be implemented against the artifact of that act.* The operator
+said "the CP typed a count". That was implemented as "a count exists" -- the
+cheapest available proxy -- when the artifact of the typing already existed:
+`num_workers_source`, written by `commitAddCrew` and `applyHeadcountEdit`
+exactly when a number is entered, three commits old (#250, 2026-08-27).
+
+When an instruction names something a person DID, find the field that records
+them doing it. If there is none, say so before implementing -- do not
+substitute a correlate and do not let the absence resolve silently.
+
+**THE READER HAD ALREADY GOT THIS RIGHT AND BOTH WRITERS OVERRODE IT.**
+`_headcount_cell` in server.py has carried this since it was written:
+
+> ABSENCE MEANS GATE. Drafts written before num_workers_source existed carry no
+> marker and hold numbers that came from the roster; labelling those "(CP)"
+> would put a false attribution on records that are already filed.
+
+Neither writer looked at it.
+
+**THE RULE, AND IT IS NOT ABOUT READERS.** *Before adding a writer for a field,
+read the reader AND EVERY OTHER WRITER.* The point is that the field already
+has a governing decision somewhere, and a new writer's job is to FIND it -- not
+to re-derive it from the field's name and hope the two agree.
+
+**IT HAPPENED THREE TIMES IN ONE DAY, on the same field:**
+
+  * `_headcount_cell` (the reader) had the rule and said so in its docstring.
+  * #326 (the reconcile) rediscovered it the hard way and encoded it.
+  * The dry-run script did neither, because its `gate_sourced = True` line was
+    written in #323 -- before #326 existed -- and #326 never went back for it.
+
+The third one is the instructive one: the script was not written by someone who
+ignored the rule, it was written before the rule and then *left behind* by it.
+So the sweep is both directions -- when a rule is established, find every
+writer that predates it, and when a writer is added, find every rule that
+precedes it. Neither half is optional and the first is the one that gets
+skipped.
+
+**WHAT IT WOULD HAVE COST.** The amendment written to REMOVE a fabricated
+attribution would have flagged three unattributed rows as gate-confirmed, and
+the next reconcile would have overwritten the very numbers it preserved:
+4 -> 6, 8 -> 6, 3 -> 2, on the CP's screen, before he signed the correction.
+Caught by the operator reading the dry-run output, not by any test.
+
+## AN AMENDMENT IS A NEW EDITABLE CHILD, NOT A CLOSED DOCUMENT
+
+**Assume the opposite and you will reason yourself into the dangerous
+direction.** `POST /api/logbooks/{id}/amend` leaves the original locked and
+intact and creates a CHILD carrying:
+
+```python
+"cp_signature": None,      # an amendment must be re-signed
+"status": "draft",
+"is_locked": False,
+"is_amendment": True,
+```
+
+**So it gets edited, and it gets RECONCILED.** The CP opens the amendment to
+sign it, `hydrate` runs, and `reconcileCrewsWithRoster` runs over its rows like
+any other draft. Anything written into an amendment payload is an input to the
+next reconcile, not a final value -- which is exactly how a corrected row can
+be un-corrected between filing the amendment and signing it.
+
+The original is the immutable half. `FILED_LOG_DATA_IMMUTABLE` (409) refuses a
+data write to a `submitted` log in both `create_logbook` and `update_logbook`,
+and that is the guard that makes an amendment necessary in the first place.
+None of that immutability extends to the child.
+
+**WHY THE ROWS HAD NO MARKER.** `gate_sourced` and `activity_id` were both
+introduced 2026-08-10 (U1 stepper rebuild); `num_workers_source` arrived
+2026-08-27 (#250). A row seeded from the roster before then carries the
+turnstile's count, the turnstile's men, and none of the three fields. It is
+gate data wearing no label -- and "no label" was being read as "the CP". That
+also retires the separately-logged `activity_id` mystery: one old row shape,
+missing two fields introduced the same day, for one reason.
+
+## THERE IS NO HOLD. MERGING IS SHIPPING, ON BOTH HALVES.
+
+**Standing fact, established twice in one day (2026-08-31).**
+
+  * **Any merge touching `frontend/**` publishes an OTA immediately.**
+    `.github/workflows/ota-update.yml` triggers on `push` to `main` for
+    `frontend/app/**`, `frontend/src/**`, `frontend/App.js`, `frontend/app.json`,
+    `frontend/app.config.js`, `frontend/package.json`. It lands on the
+    `production` EAS branch, which is the one every store install listens on.
+  * **Any merge at all deploys the backend.** Railway auto-deploys from `main`.
+    A docs-only commit redeploys the API.
+
+**IF A HOLD IS EVER NEEDED, THE BRANCH DOES NOT GET MERGED.** There is no
+step between merge and release to intervene at. Not the OTA workflow, not
+Railway, not CI.
+
+**HOW IT WAS LEARNED, both times the same shape.** #294's client-version floor
+was merged and deployed straight into a boot crash-loop. Later the same day,
+#322's photo fix was merged while its OTA was explicitly held for evidence
+reasons -- the merge published it at 20:10:15 and the hold was announced
+afterwards, twice, by an agent that had not checked whether a hold was
+available. No damage: the record was `submitted`, so
+`FILED_LOG_DATA_IMMUTABLE` refused the write the backfill would have needed,
+and the evidence was read from Mongo rather than the app. That was luck.
+
+**WHAT TO SAY INSTEAD OF "I WILL HOLD THE OTA".** "This stays unmerged until
+X." Anything else is a claim about a control that does not exist.
+
+## RESOLVED — rows with no `activity_id` were a pre-2026-08-10 row shape
+
+**RESOLVED 2026-08-31.** `gate_sourced` and `activity_id` were BOTH
+introduced on 2026-08-10 in the U1 stepper rebuild. A row seeded from the
+roster before that date has neither, which is exactly what C1-C4 showed --
+one old row shape, not two separate losses, and not hand-typed rows at all.
+The CP was right that he typed nothing. See "IS THERE A NUMBER" above for
+what that misreading nearly cost. The AsyncStorage-draft hypothesis below
+remains the likely carrier and is still unconfirmed.
+
+**ORIGINAL ENTRY, KEPT BECAUSE FOUR EXPLANATIONS WERE WRONG BEFORE THIS ONE.** That
+one was `reconcileCrewsWithRoster` short-circuiting hand-added rows before its
+matcher, and it is fixed. The reconcile keys on `gate_sourced`, never on
+`activity_id`, so this played no part in it.
+
+**WHAT THE DOCUMENT SHOWS.** C1-C4, created 13:12, carry `crew_id`, `company`,
+`num_workers`, a work description and photos -- and **no `activity_id`**.
+C5-C8, appended by the gate, carry `act_1788191515625_1..4`.
+
+**WHY THAT SHOULD BE IMPOSSIBLE.** `activity_id` has exactly ONE writer:
+`EMPTY_ACTIVITY()` in `dailyJobsiteModel.js`, since `f49ddb5` (2026-08-10). All
+three creation paths spread it -- `addActivity`, `commitAddCrew`,
+`buildCrewsFromRoster` (both branches). Every transform preserves it:
+`reconcileCrewsWithRoster` spreads `...row` in both merge branches and
+`{...f}` in the append tail; `payloadActivities` spreads `...act`; `draftBody`
+passes activities through; `create_logbook` stores `data.data` verbatim and
+`_remember_other_activities` only reads. **Nothing backfills, and nothing
+strips.**
+
+**WHAT NARROWS IT.** `commitAddCrew` sets `gate_sourced: false` EXPLICITLY,
+while `addActivity` spreads `EMPTY_ACTIVITY()`, which never mentions the field.
+C1-C4 have the field ABSENT rather than false, which points at the Add-Crew
+button rather than the modal. That path spreads `EMPTY_ACTIVITY()` too, so it
+should still mint an id. **It does not resolve the contradiction.**
+
+**THE HYPOTHESIS, LABELLED AS ONE.** The draft these rows came from was written
+to AsyncStorage by a build older than 2026-08-10 and has sat there since;
+updating the app does not rewrite existing drafts, and nothing backfills. That
+would produce id-less rows on current JS with no stale bundle anywhere, which
+matches the operator confirming every device is on the latest build. **It is
+unverified.** Four earlier explanations for this were each contradicted by the
+next query, so treat it as a lead and not an answer.
+
+**WHAT IT COSTS TODAY.** Only the R2 key shape. A row with no `activity_id`
+uploads its photos under `logbook-photos/{project}/{photo_id}/...` through the
+`activityId || photoId` fallback in `logbookDrafts.js` -- addressable, resolves
+forever, but the activity grouping is lost and one document ends up carrying
+two key shapes. That is the documented coexistence (server.py:158), not
+corruption.
+
+**DO NOT "FIX" THE FALLBACK.** It is what keeps those eleven photos
+addressable. The defect is upstream, in whatever produces a row without an id.
+
+**AND NOTE THE BACKFILL HIDES IT.** `withActivityIds` in
+`app/logbooks/daily_jobsite.jsx` mints an id for any loaded row lacking one, so
+once that bundle is on the phones these rows stop being distinguishable from
+normal ones. Anyone returning to this needs a document filed BEFORE that
+shipped, or a device that has not updated.
+
+## `serialize_id` MUTATES ITS ARGUMENT, and reads like a pure function
+
+**This is the hazard. The 2026-08-31 outage was one instance of it.**
+
+```python
+def serialize_id(obj):
+    if obj and '_id' in obj:
+        obj['id'] = str(obj['_id'])
+        del obj['_id']          # <-- the caller's dict
+    ...
+    return obj                  # <-- the SAME object
+```
+
+It takes a document, deletes a key from it, and returns it. At the call site,
+`user_data = serialize_id(user)` looks like a conversion producing a new value.
+It is not. `user_data is user`, and **`user["_id"]` raises KeyError from that
+line onward.**
+
+**WHAT IT COST.** `get_current_user` read `user["_id"]` eleven lines after
+calling it. Every authenticated request returned 500 for any install sending
+`X-Client-Version` -- the whole product, not one endpoint -- and it ran for a
+day behind three green signals.
+
+**THE REPAIR THAT WOULD HAVE BEEN WORSE, and the one that was made.** Swapping
+in `user_data["id"]` -- the string the helper just produced -- stops the crash
+and then silently never writes, because `_record_client_version` filters
+`{"_id": user_id}` with no `to_query_id` and a string never matches an
+ObjectId. The fix captures the ObjectId BEFORE the call
+(`user_oid = user.get("_id")`) and `test_client_version_stamp.py` asserts the
+TYPE for exactly that reason.
+
+**THE MEASURED BLAST RADIUS**, by AST over `backend/` -- 49 `serialize_id(<name>)`
+call sites:
+
+  * **1 CRITICAL, NOW FIXED:** `list_cs_registrations()` --
+    `serialize_id(reg)`, then `"_id": {"$ne": reg["_id"]}` eleven lines later.
+    Guaranteed KeyError, gated behind `if reg.get("is_active")`, so it worked
+    until the first active registration existed and then 500'd
+    `GET /api/admin/cs-registrations` for the whole company. **It was live in
+    production the entire time** and predates the client-version outage that
+    surfaced the pattern. Fixed alongside it because two deploys for one defect
+    class is worse than one wider PR. The audit above now reports 0 critical.
+  * **19 SUSPECT reads across 8 call sites** -- `get_current_user` (device
+    branch), `get_site_devices`, `get_site_device`, `get_flagged_project_checkins`,
+    `get_checklists`, `get_checklist`, `finalize_logbook`,
+    `list_cs_registrations`. All read keys `serialize_id` does not delete
+    (`project_id`, `created_by`, `log_type`), so they work today. They are
+    reading a document a previous line silently rewrote.
+
+**THE SECOND-ORDER HAZARD NOBODY HAS HIT YET.** `serialize_id` also rewrites
+every naive datetime to tz-aware in place. A value read from the document
+*after* the call is aware; the same value read *before* is naive. Comparing one
+to the other raises `TypeError: can't subtract offset-naive and offset-aware
+datetimes`. `finalize_logbook` reads `.get("date")` after the call.
+
+**WHAT TO DO.** Do not rename or "fix" the helper in place -- 49 call sites
+depend on the mutation, and several read `id` off the object they passed in. The
+safe shape is a non-mutating sibling (`serialised(obj)` returning a copy) and
+migration site by site. Until then: **capture anything you need off a document
+BEFORE handing it to `serialize_id`.**
+
+## NO TEST SENDS `X-Client-Version`, so the suite is blind to that branch
+
+**The CI gap that let the above run for a day.**
+
+`get_current_user` stamps which client build is calling, guarded by
+
+```python
+reported = (request.headers.get("x-client-version") or "").strip()[:32]
+if reported and _client_version_needs_stamp(user, reported):
+```
+
+Send the header and the branch runs. Omit it and nothing does. **Every test in
+the suite omitted it**, so 4658 tests passed green while the branch they never
+entered raised KeyError on every authenticated request in production.
+
+`frontend/src/utils/api.js:92` sets the header on EVERY request, from
+`Constants.expoConfig?.version` (`api.js:8`). So the split is per-install, not
+per-account: a build that reports a version 500s on everything, a build that
+does not works fine. That is why two accounts behaved differently on one
+backend, and why Atlas showed nothing wrong with either.
+
+**`test_client_version_stamp.py` now asserts BOTH halves** -- header present and
+header absent -- because a test covering only one of them is what already
+existed and it proved nothing.
+
+**THE GENERAL RULE.** A request header that gates a code path is an input like
+any other. If a branch is reachable only with a header set, a test must set it.
+Grep for `request.headers.get(` before trusting a green suite: each one is a
+branch the default test client does not take.
+
 ## E4 — lookup-worker enumeration: OPEN, waiting on device provisioning
 
 `POST /api/checkin/lookup-worker` (`server.py:11045`) is **public, unauthenticated
@@ -808,6 +1250,133 @@ than this screen's ✓/✕, because everywhere else a ✓ is the good answer and
 `true` means the equipment *was* impact-loaded, which 1926.502(d)(19) makes
 mandatory-removal.
 
+## The shared-device password path is CLOSED, not deferred
+
+**WITHDRAWN FROM THE ROADMAP 2026-08-31. It will not be built.**
+
+The idea was a per-project password on the shared site device, signing AS the
+superintendent named on the project record -- a convenience door into his own
+log rather than an anonymous kiosk entry.
+
+**Two independent readings rejected it**, and the reason is not a preference:
+
+  * it authenticates a DEVICE SESSION and then attributes the signature to a
+    NAMED PERSON. Those are two different things by construction, and nothing
+    in the record would distinguish a superintendent who signed on his own
+    account from one signed for by whoever was holding the tablet;
+  * Bulletin 2024-007 sec V.7 requires that "individuals who sign electronic
+    records must be verified";
+  * and the document is signed under a **DOB licence**. A signature that cannot
+    be tied to the licensee is the one thing this log cannot afford.
+
+**DO NOT REVIVE IT AS A "CONVENIENCE MODE".** The convenience it buys is not
+having to log in on a tablet; the cost is a licensed signature nobody can
+attribute. The superintendent signs on his own account -- `role:
+"superintendent"`, shipped `ad4625b` -- on the site device or his own phone.
+
+Recorded here as well as in docs/compliance/esra-bb2024-007-compliance.md,
+because a roadmap item removed for a legal reason will otherwise come back as a
+usability suggestion.
+
+## The CS log's editor MUST send `superintendent_sign`
+
+**NOTHING EMITS IT TODAY. This note has to survive until the editor is built.**
+
+`deriveActingCapacity` (frontend/src/utils/signatureAudit.js) keys on the EVENT
+TYPE first and the role only as a fallback:
+
+```js
+if (eventType === 'superintendent_sign') return 'Construction Superintendent';
+if (eventType === 'cp_sign')             return 'Competent Person';
+if (signerRole === 'superintendent')     return 'Construction Superintendent';
+```
+
+That design is what lets ONE ACCOUNT sign two statutory records in two
+capacities -- the daily jobsite log as Competent Person, the BC 3301.13.13 log as
+Construction Superintendent -- with one `user_id` and a ledger that says which
+was which. It is better evidence than two accounts, which would put two ids on
+one man with nothing saying they are the same person.
+
+**THE TRAP.** `preshift_signin.jsx` and `osha_log.jsx` both send
+`eventType: 'cp_sign'`. The CS log's editor does not exist yet, and whoever
+builds it will start from one of those screens, because that is what every other
+logbook editor did. **If it inherits `cp_sign`, the ledger records the
+superintendent log as signed by a Competent Person.**
+
+The `acting_capacity` field exists specifically so that BC 3301.13.13's "signed
+as Superintendent" is provable -- server.py's own comment on it says so. Inherit
+the wrong event type and the field built to prove it asserts the opposite, on
+the one document where the capacity is the point.
+
+**IT FAILS SILENTLY.** Nothing errors. The signature is recorded, the hash is
+computed, the document renders. Only the capacity is wrong, and it is wrong in a
+field nobody reads until somebody needs it.
+
+**WHAT TO DO WHEN THE EDITOR IS BUILT:**
+
+  * send `eventType: 'superintendent_sign'`;
+  * assert it in that editor's test, by name, against the string -- not by
+    "a signature event is recorded";
+  * and consider asserting the pairing centrally: a signature event whose
+    `document_type` resolves to `site_superintendent_log` must not carry
+    `acting_capacity: "Competent Person"`. That check does not exist and would
+    catch the mistake wherever it is made.
+
+**AND THE GATE, WHILE THIS IS OPEN.** The CS log's access check must ask "is
+this user the registered CS for this project" -- `lib/logbook/cs_attribution.py`
+answers it -- and never `role == "superintendent"`, which would lock out the
+dual-capacity user this product's first customer actually is.
+
+## `POST /signature-events/public` gets no attestation injection
+
+**NOT A DEFECT TODAY. Recorded because that is exactly the state in which it
+becomes one.**
+
+`POST /signature-events` (authenticated) resolves the log type off the document
+and injects the attestation server-side, so a CP's signature records the
+sentence printed above it. **The public endpoint does none of that.** It takes
+`content_snapshot` from the request body and stores it verbatim.
+
+**That is correct for what uses it now.** Its callers are the NFC gate paths,
+and the affirmation writes its own event with its own server-held wording
+(`PRESHIFT_AFFIRMATION_TEXTS`). No attested document routes through it.
+
+**WHAT WOULD REOPEN IT** — any one of these, and none is far-fetched:
+
+  * **A worker signs a document that carries an attestation.** The pre-shift
+    sheet's Signature column is the worker's own signature, and if a future
+    change has him sign the SHEET rather than affirming a stored stroke, that
+    signature is a public-endpoint event on an attested document.
+  * **The site device signs anything.** It authenticates as a device, and if a
+    site-device flow is ever routed through the public endpoint for
+    convenience, every logbook signature it makes loses its attestation.
+  * **A fourth log type gains an attestation** and is signed anywhere other
+    than the CP's phone. Three of twelve carry one today; the number is
+    recorded in test_attestation_capture.py precisely so a fourth is noticed.
+  * **The superintendent log's alternate-signer work.** Item 8's competent
+    person and item 9's incoming CS both need a signature from someone who is
+    not the document's author, and the obvious cheap route is the endpoint
+    that needs no auth.
+
+**THE FAILURE MODE IS SILENCE.** Nothing errors. The event is written, the hash
+is computed, the ledger looks complete -- and the snapshot simply has no
+attestation key, which reads as `PREDATES_CAPTURE`: the state reserved for
+events written before capture existed. A 2027 signature would be
+indistinguishable from a 2026 one, and the marker that was built to be honest
+about old records would be quietly lying about new ones.
+
+**THE FIX, IF IT IS EVER NEEDED,** is the same three lines the authenticated
+endpoint uses: resolve the log type from the document, call
+`attach_attestation`, pass the result instead of the body's snapshot. It is not
+built now because building it would mean a public, unauthenticated endpoint
+reading `db.logbooks` on every gate check-in to answer a question nothing asks.
+
+**THE CHEAP GUARD, ALSO NOT BUILT:** the public endpoint could REFUSE a
+`document_type` of `"logbook"` outright. Nothing legitimate sends one today, so
+the refusal would cost nothing and would turn all four scenarios above from a
+silent gap into a loud one. That is probably the right shape when someone
+returns to this.
+
 ## A search narrower than the claim it supported — third instance
 
 **CORRECTED. `cs_registrations` already stamped `deactivated_at`, and a report
@@ -861,6 +1430,7 @@ live path stamps.
 
 `backend/scripts/audit_cs_registration_history.js` counts it, and lists the rows
 rather than reporting only a number, so the set is known rather than estimated.
+
 
 ## TWO DIFFERENT JANUARIES, and they will be conflated
 

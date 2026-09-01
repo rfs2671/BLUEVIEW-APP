@@ -47,11 +47,19 @@ class TestTheSheetSaysWhichOfThreeThingsIsTrue(unittest.TestCase):
              "signature_affirmed": True})
         self.assertEqual(cell.count("data:image/png;base64,"), 1)
 
-    def test_on_file_but_not_affirmed_says_so_and_prints_nothing(self):
+    def test_the_column_no_longer_judges_affirmation_in_EITHER_direction(self):
+        """INVERTED. This asserted NOT AFFIRMED, which was the original defect:
+        a finding against a named man from a field preshift_signin.jsx has never
+        written. The affirmation is now its OWN signature event, written at the
+        gate, and the sheet points at those records in a footer rather than
+        absorbing them into a worker's row -- so this column asserts nothing
+        about affirmation either way. See test_preshift_affirmation_record.py."""
         cell = server._preshift_signature_cell(
             {"worker_signature": "iVBORw0KG", "signature_affirmed": False})
-        self.assertIn("NOT AFFIRMED", cell)
-        self.assertNotIn("<img", cell)
+        self.assertNotIn("NOT AFFIRMED", cell)
+        self.assertNotIn("Affirmed", cell)
+        self.assertIn("<img", cell)
+        self.assertIn("Signature on file", cell)
 
     def test_nothing_on_file_is_a_DIFFERENT_fact(self):
         cell = server._preshift_signature_cell({"signature_affirmed": True})
@@ -178,10 +186,28 @@ class TestTheRecordIsAFactAboutToday(unittest.TestCase):
     def test_nothing_blocks_a_worker_for_not_affirming(self):
         """The standing rule: the gate does not stop a man working. An
         unaffirmed signature is a gap on a sheet, not a locked turnstile."""
+        # THE CLAIM IS ABOUT REFUSAL, NOT ABOUT THE TOKEN. `if _sig_affirmed:`
+        # now guards the SIGNATURE EVENT WRITE -- a record, not a gate -- so a
+        # bare "does this identifier appear in a condition" test reports a
+        # false positive on entirely correct code. What must never happen is a
+        # REFUSAL conditioned on affirmation, and that is what is asserted.
         fn = _fn("async def register_and_checkin")
-        for line in fn.splitlines():
+        lines = fn.splitlines()
+        for i, line in enumerate(lines):
             stripped = line.strip()
-            if "_sig_affirmed" in stripped and stripped.startswith(("if ", "raise")):
+            if not (stripped.startswith("if ") and "_sig_affirmed" in stripped):
+                continue
+            # The body of that branch must contain no refusal.
+            body = chr(10).join(lines[i + 1:i + 40])
+            for refusal in ("raise HTTPException", "return JSONResponse",
+                            "status_code=4"):
+                self.assertNotIn(
+                    refusal, body,
+                    f"affirmation is gating the check-in at: {stripped}")
+        # And no raise anywhere mentions it.
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("raise") and "_sig_affirmed" in stripped:
                 self.fail(f"affirmation is gating the check-in: {stripped}")
 
 

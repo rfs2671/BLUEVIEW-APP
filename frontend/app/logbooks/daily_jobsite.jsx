@@ -88,7 +88,8 @@ import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import * as ImagePicker from 'expo-image-picker';
 import {
   composeChipBands,
-  EMPTY_ACTIVITY, EMPTY_OBSERVATION, buildCrewsFromRoster, rosterIdIndex,
+  EMPTY_ACTIVITY, EMPTY_OBSERVATION, newActivityId, buildCrewsFromRoster,
+  rosterIdIndex,
   composeSelection, cameraReady, resolveRosterId, isUnboundCrew,
   isUnassignedWorkerRow, workRows, crewsWithoutWork, tradeLabel,
   hasNoWorkersOnSite, reconcileCrewsWithRoster,
@@ -178,6 +179,33 @@ const patchPhoto = (rows, photoId, patch) => (rows || []).map((a) => (
     : a
 ));
 
+// A ROW THAT ARRIVES WITHOUT AN activity_id NEVER GETS ONE OTHERWISE.
+// EMPTY_ACTIVITY (dailyJobsiteModel.js) is the only writer of that field and
+// nothing backfills it, so a row saved by a build older than 2026-08-10 stays
+// id-less for the life of the log. Its photos then upload under
+// logbook-photos/{project}/{photo_id}/... through the `activityId || photoId`
+// fallback in logbookDrafts.js -- addressable, but the activity grouping is
+// gone and one document ends up carrying two key shapes.
+//
+// BACKFILLING CANNOT MOVE AN EXISTING PHOTO. `original_r2_key` is stored per
+// photo and read back verbatim (server.py _logbook_photo_sources reads the
+// field; it never recomputes), and the ONLY place a capture key is built is
+// the upload endpoint, at upload time. Photos already on the row keep their
+// cap_ keys and keep resolving; only photos taken AFTER this runs use the
+// row's new id. A row may therefore hold both shapes, which is the documented
+// state -- server.py:158, "BOTH SCHEMES COEXIST, AND NOTHING IS MIGRATED".
+const withActivityIds = (rows) => (rows || []).map(
+  (a) => ((a && typeof a === 'object' && !a.activity_id)
+    ? { ...a, activity_id: newActivityId() } : a),
+);
+
+// Stable identity for one photo tile across re-renders. A saved photo has no
+// `id` -- photoForPayload strips it before the row is written -- so the R2 key
+// leads, and the position is the last resort for a photo that has neither.
+const tileKey = (photo, ai, pi) => String(
+  photo?.original_r2_key || photo?.id || `${ai}-${pi}`,
+);
+
 const dropPhoto = (rows, photoId) => (rows || []).map((a) => (
   ((a.photos || []).some((p) => p.id === photoId))
     ? { ...a, photos: a.photos.filter((p) => p.id !== photoId) }
@@ -198,7 +226,22 @@ const photoForPayload = (photo) => {
   if (!photo || typeof photo !== 'object') return photo;
   const { pending, id, persist_failed, ...stored } = photo; // eslint-disable-line no-unused-vars
   if (stored.original_r2_key) {
-    const { upload_pending, upload_rejected, ...done } = stored; // eslint-disable-line no-unused-vars
+    // `uri` IS DROPPED HERE, AND ONLY HERE. A file:///data/user/0/... path is
+    // a claim about ONE phone's storage, and writing it into a filed
+    // compliance record is what made these photos unviewable on every other
+    // device: photoTileUri preferred it, the file did not exist, and a dead
+    // path is truthy so the fallback chain never advanced past it.
+    //
+    // ONLY ONCE THE KEY EXISTS. Before upload, `uri` is the only handle on the
+    // image -- photoNeedsUpload and the offline drain find the file through
+    // it, and persistPhoto THROWS on a failed copy precisely to guarantee it
+    // survives. Stripping it from an un-uploaded photo would lose the photo.
+    //
+    // THE LOCAL DRAFT KEEPS IT. draftBody passes activities through untouched;
+    // this function feeds only the server payload (see payloadActivities). So
+    // the capturing phone keeps a fast, offline-readable copy while the record
+    // itself stops asserting anything about that phone's filesystem.
+    const { upload_pending, upload_rejected, uri, ...done } = stored; // eslint-disable-line no-unused-vars
     return done;
   }
   if (stored.base64 || isPurgedPhoto(stored)) return stored;
@@ -520,7 +563,7 @@ export default function DailyJobsiteLog() {
           rosterIdsRef.current = rosterIdIndex(_headcount);
           const _fresh = buildCrewsFromRoster(_roster.workers || [], _headcount);
           _resolved = reconcileCrewsWithRoster(_storedCrews, _fresh);
-          if (_resolved.length > 0) setActivities(_resolved);
+          if (_resolved.length > 0) setActivities(withActivityIds(_resolved));
         }
         loadChips(_resolved);
         loadProjectShell();
@@ -609,6 +652,15 @@ export default function DailyJobsiteLog() {
         hydrate(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
+        // `is_amendment !== true` is not an amendment. A truthy-but-not-true
+        // value is a shape nobody wrote deliberately and must not be read as a
+        // correction on a compliance record.
+        setAmendment(existing.is_amendment === true ? {
+          reason: (existing.amendment_reason || '').trim() || null,
+          by: (existing.created_by_name || '').trim() || null,
+          at: String(existing.created_at || '').slice(0, 10) || null,
+          has_reason: !!(existing.amendment_reason || '').trim(),
+        } : null);
         // THE SAME TRAP, ONE LAYER OUT. Crews were built only in the `else` —
         // so a SERVER log saved with an empty roster never rebuilt either, and
         // a draft pushed before anyone checked in is exactly that log. A filed
@@ -629,7 +681,7 @@ export default function DailyJobsiteLog() {
           builtCrews = roster
             ? reconcileCrewsWithRoster(_stored, _fresh)
             : _stored;
-          if (builtCrews.length > 0) setActivities(builtCrews);
+          if (builtCrews.length > 0) setActivities(withActivityIds(builtCrews));
         }
       } else {
         builtCrews = buildCrewsFromRoster(roster?.workers || [], headcount);
@@ -742,7 +794,7 @@ export default function DailyJobsiteLog() {
     if (d.weather_wind) setWeatherWind(d.weather_wind);
     if (d.weather_fetch_state) setWeatherFetchState(d.weather_fetch_state);
     if (d.general_description) setGeneralDescription(d.general_description);
-    if (d.activities?.length) setActivities(d.activities);
+    if (d.activities?.length) setActivities(withActivityIds(d.activities));
     if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
     if (d.checklist_items) setChecklistItems(d.checklist_items);
     if (d.observations) setObservations(d.observations);
@@ -1265,14 +1317,67 @@ export default function DailyJobsiteLog() {
       ? { ...a, photos: (a.photos || []).filter((_, pi) => pi !== photoIndex) } : a)));
   };
 
-  const photoTileUri = (photo, ai, pi) => (
-    photo?.uri
-    || inlinePhotoData(photo?.base64)
-    || inlinePhotoData(photo?.thumb_base64)
-    || (existingLogId
-      ? logbooksAPI.getLogbookPhotoUrl(existingLogId, ai, pi, 'thumb', photo?.enhance_status || '')
-      : null)
-    || undefined
+  // WHICH COPY TO SHOW, DECIDED BY WHETHER THE PHOTO IS UPLOADED.
+  //
+  // The old chain was unconditional and put the device-local `uri` first. For
+  // a photo taken on ANOTHER phone -- or on this one before the app's data was
+  // cleared -- that path is dead, and because a dead path is still a non-empty
+  // string the `||` chain never advanced to a copy that would have worked. The
+  // served URL sat last and was never reached. Meanwhile `base64` is never
+  // written for an uploaded photo (it would blow the 16MB document ceiling)
+  // and `thumb_base64` is only written by the finalize purge, so on an
+  // unfinalized log the served URL is the ONLY copy any other device can read.
+  //
+  // REORDERING UNCONDITIONALLY WOULD JUST MOVE THE FAULT. A CP offline with an
+  // already-uploaded photo would then get a URL that cannot load, in front of
+  // a file sitting on his own phone -- same bug, different victim. So the
+  // preference is conditional, and `onError` below makes it a PREFERENCE
+  // rather than a commitment: the `||` chain cannot detect a failed LOAD, only
+  // a falsy value, which is the whole reason this defect existed.
+  const [tileRetry, setTileRetry] = useState({});
+
+  // WHY THIS LOG IS A DIFFERENT SHAPE THAN HE LEFT IT.
+  //
+  // The load kept `id`, `data`, `cp_signature` and `cp_name` and DISCARDED
+  // is_amendment / amendment_reason / created_by_name / created_at -- so the
+  // editor held a corrected document and had no idea it was one. Retained
+  // here and handed to the stepper, which renders the banner above the form.
+  //
+  // Off the RECORD, so it reads the same in December as on the morning after.
+  const [amendment, setAmendment] = useState(null);
+
+  // `retried` IS A PARAMETER, NOT CLOSURE STATE, and the body is a single
+  // expression. Both are load-bearing: photoPurgeConsumers.test.cjs and
+  // logbookPhotoR2.test.cjs slice this declaration out of the file with the
+  // terminator "\n  );\n" and eval it with only (logbooksAPI, existingLogId)
+  // in scope, then call it. A block body or a reference to component state
+  // makes this function untestable by the two suites that own its behaviour.
+  //
+  // THE CONDITION READS: prefer the served copy when the photo is uploaded,
+  // prefer the local copy when it is not, and swap that preference once a
+  // tile has reported a failed load.
+  //
+  //   uploaded + first try  -> served first   (the local path is meaningless
+  //                                            on any device but the capturer)
+  //   uploaded + retried    -> local first    (offline, with the file to hand)
+  //   pending  + first try  -> local first    (mid-capture; nothing uploaded)
+  //   pending  + retried    -> served first
+  const photoTileUri = (photo, ai, pi, retried) => (
+    (photo?.original_r2_key ? !retried : !!retried)
+      ? ((existingLogId
+        ? logbooksAPI.getLogbookPhotoUrl(existingLogId, ai, pi, 'thumb', photo?.enhance_status || '')
+        : null)
+        || photo?.uri
+        || inlinePhotoData(photo?.base64)
+        || inlinePhotoData(photo?.thumb_base64)
+        || undefined)
+      : (photo?.uri
+        || inlinePhotoData(photo?.base64)
+        || inlinePhotoData(photo?.thumb_base64)
+        || (existingLogId
+          ? logbooksAPI.getLogbookPhotoUrl(existingLogId, ai, pi, 'thumb', photo?.enhance_status || '')
+          : null)
+        || undefined)
   );
 
   const openPhotoLightbox = (photo, ai, pi) => {
@@ -2146,7 +2251,19 @@ export default function DailyJobsiteLog() {
                           </View>
                         ) : (
                           <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
-                            <Image source={{ uri: photoTileUri(photo, i, pi) }} style={s.photoImage} />
+                            <Image
+                              source={{ uri: photoTileUri(photo, i, pi, tileRetry[tileKey(photo, i, pi)]) }}
+                              // The preferred copy did not load. Flip THIS tile
+                              // to the other one rather than showing a blank
+                              // square: offline with an uploaded photo falls
+                              // back to the local file, and a missing local
+                              // file falls forward to the served URL.
+                              onError={() => setTileRetry((prev) => {
+                                const k = tileKey(photo, i, pi);
+                                return prev[k] ? prev : { ...prev, [k]: true };
+                              })}
+                              style={s.photoImage}
+                            />
                           </Pressable>
                         )}
                         <Pressable
@@ -2533,6 +2650,7 @@ export default function DailyJobsiteLog() {
       nextHint={crewGaps.length > 0 ? crewGapSentence(crewGaps) : ''}
       onExit={() => router.push('/logbooks')}
       locked={locked}
+      amendment={amendment}
       incompleteSteps={stepsLeftIncomplete}
       a11yProgressLabel={
         stepsLeftIncomplete.length

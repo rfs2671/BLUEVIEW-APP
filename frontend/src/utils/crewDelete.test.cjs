@@ -114,10 +114,26 @@ ok(crewWorkerIdentities(GATE) === 4, 'identities counts ids and names');
 ok(crewWorkerIdentities({}) === 0, 'a row with neither counts zero');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. THE DUPLICATE #244 CREATES — produced by the REAL reconcile.
+// 2. THE DUPLICATE — NO LONGER CREATED, STILL FOUND ON FILED LOGS.
+//
+// This section used to build `dup` by calling the real reconcile, because the
+// reconcile appended a second row for a company the CP had already typed. It
+// no longer does: a gate crew confirming a typed company MERGES, and
+// crewReconcileMerge.test.cjs owns that behaviour.
+//
+// THE DELETE RULE IS NOT DEAD CODE. Every log filed before that change carries
+// the duplicate — 2026-08-31's had eight crews where four worked — and the
+// ambiguous case still produces extra rows on purpose, when one company fields
+// two crews in different trades and an untraded hand row cannot be assigned to
+// either. So the state is constructed literally here rather than generated,
+// and everything below it is unchanged.
 // ═══════════════════════════════════════════════════════════════════════════
-const dup = reconcileCrewsWithRoster([HAND], [GATE]);
-ok(dup.length === 2, 'the reconcile still appends a second row for one sub');
+ok(reconcileCrewsWithRoster([HAND], [GATE]).length === 1,
+  'THE RECONCILE NO LONGER CREATES ONE: a gate crew confirming a typed '
+  + 'company merges into it');
+
+const dup = [HAND, GATE];
+ok(dup.length === 2, 'the historical duplicate state: two rows for one sub');
 ok(dup.filter((r) => !r.gate_sourced).length === 1
    && dup.filter((r) => r.gate_sourced).length === 1,
   'one hand row holding the description, one gate row holding the men');
