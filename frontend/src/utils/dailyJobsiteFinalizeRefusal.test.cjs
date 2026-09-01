@@ -253,6 +253,17 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
   const env = {
     saving: false,
     signing: false,
+    // THE ESRA CONSENT GATE, satisfied. This harness EXECUTES the real
+    // handleSubmitAndSign, so a dependency added to that handler has to be
+    // supplied here or the lift throws — which is exactly what happened when
+    // the gate landed, and is the harness doing its job.
+    //
+    // Stubbed to a plain yes on purpose: these cases are about what the screen
+    // does with a FINALIZE REFUSAL, and a consent check that could refuse would
+    // put a second reason for the same observable in every one of them.
+    // consentGateCensus.test.cjs is what proves the gate is present and
+    // correctly placed; this file proves the refusal path behind it.
+    consent: { ensure: async () => true },
     // AFFIRMED, not merely present — round 6 finding 15. The screen used to ask
     // `!cpSignature` and production held `cp_signature: {}`: truthy, so it
     // passed, and every section of the filed report printed UNAFFIRMED. The

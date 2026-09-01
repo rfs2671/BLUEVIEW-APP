@@ -1757,3 +1757,56 @@ SignaturePad now take - but it is more awkward here, because a toast is raised
 through a CONTEXT from anywhere, not mounted by the screen, so the screen has
 no natural place to declare the pin. That is a real design question and not a
 colour swap, which is the other reason it is not in #210.
+
+---
+
+### A `$match` on a field that does not exist matches EVERY document
+
+Asked production how many signature events predated the consent gate. The query
+filtered on `signed_at`. It returned **245 rows with `first: null, last: null`**
+and looked like an answer — a plausible count, and two nulls that read as "the
+dates are missing from these records".
+
+Nothing was missing. **`signed_at` is not a field on `signature_events`.** The
+field is `timestamp`; `signed_at` exists only INSIDE `logbooks.cp_signature`,
+as a string, on a different collection entirely.
+
+**And the absent field is what produced the 245.** In BSON comparison order a
+missing field reads as `null`, and `Null` sorts before `Date` — so
+`{signed_at: {$lt: ISODate(...)}}` is TRUE for every document in the
+collection. The filter did not narrow anything. It matched the lot, and
+`$min`/`$max` of a field that is not there is `null`.
+
+So the two halves of the output agreed with each other and both were wrong: the
+count was the whole collection and the nulls were the reason.
+
+**Same family as the double whose `sort()` did nothing and still satisfied a
+determinism assertion, the `--include=*.js` sweep blind to 96 `.cjs` files, and
+the local glob that ran 85 of CI's 93.** It ran, it returned, it was shaped like
+an answer — and it could not have been right. What failed was not the logic but
+its REACH, and a plausible-looking result is exactly what hides that.
+
+**The tell, and it is cheap.** A filter that removes nothing is worth one
+glance: if a `$match` on a date range returns the same count as the unfiltered
+collection, the field name is the first thing to doubt, not the data. Better
+still, take the range with no filter at all — which is what the corrected query
+does, since the range was the question.
+
+**Two related shapes found in the same session, both in queries written for an
+attorney's document:**
+
+- A `$lookup` joining `logbooks._id` (ObjectId) to `signature_events.document_id`
+  (declared `str`) matches NOTHING, so a query for "signed documents with no
+  ledger row" would have returned every signed document and reported the entire
+  corpus as unledgered. Fixed with `$toString` — and paired with a CONTROL
+  query whose only job is to fail if the join is broken, because the broken
+  output is alarming rather than obviously wrong.
+- A count of `signature_events` is not a count of logbook signatures: the
+  collection spans `logbook`, `daily_log` and `worker_registration`. Subtracting
+  it from a logbook count is apples from oranges, and the difference looked
+  meaningful.
+
+**The rule.** A query is a control like any other, and the same question applies
+to it: could this have failed? If a filter, a join or a grouping cannot be shown
+to have EXCLUDED something it should have excluded, it has not been tested — it
+has only been run.

@@ -42,6 +42,7 @@ import { useT } from '../../src/i18n';
 import { spacing, outdoor } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
+import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 
 /**
  * HOT WORK PERMIT — on the shared stepper.
@@ -78,6 +79,7 @@ const TOTAL_STEPS = 4;
 
 export default function HotWorkPermitLog() {
   const router = useRouter();
+  const consent = useEsraConsent();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
@@ -412,6 +414,13 @@ export default function HotWorkPermitLog() {
       toast.warning(t('signatureRequiredTitle'), t('signatureRequiredBody'));
       return;
     }
+    // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────
+    // BB 2024-007 sec V.5. One consent per person, keyed on his account and
+    // not on this log — if he agreed on any other screen, this never asks.
+    // Offline with a remembered yes, it never asks either; see
+    // consentCache.js for why an older version still counts there.
+    if (!(await consent.ensure())) return;
+
     setSigning(true);
     try {
       const savedId = await persistAndPush('submitted');

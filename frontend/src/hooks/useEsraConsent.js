@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { esraConsentAPI } from '../utils/api';
-import { consentState, canSign, UNKNOWN } from '../utils/esraConsentState';
+import { useAuth } from '../context/AuthContext';
+import { rememberConsent, readConsent } from '../utils/consentCache';
+import { consentState, canSign, READY, UNKNOWN } from '../utils/esraConsentState';
 
 /**
  * The consent gate, for a screen that is about to apply a signature.
@@ -37,23 +39,35 @@ import { consentState, canSign, UNKNOWN } from '../utils/esraConsentState';
  */
 export function useEsraConsent() {
   const router = useRouter();
+  const { user } = useAuth();
+  const userId = user?.id || user?._id || null;
   const [state, setState] = useState(UNKNOWN);
   const [busy, setBusy] = useState(false);
 
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
 
-  /** Ask the server. Never throws; a failure IS the UNKNOWN state. */
+  /**
+   * Ask the server. Never throws; a failure IS the UNKNOWN state.
+   *
+   * A confirmed yes is REMEMBERED on the way past. That write is what lets the
+   * same person sign later with no signal, and it happens here rather than at
+   * the call site so no caller can forget it.
+   */
   const read = useCallback(async () => {
     try {
-      const next = consentState(await esraConsentAPI.get());
+      const payload = await esraConsentAPI.get();
+      const next = consentState(payload);
+      if (next === READY) {
+        await rememberConsent(userId, payload?.agreed_version || payload?.current_version);
+      }
       if (alive.current) setState(next);
       return next;
     } catch (_e) {
       if (alive.current) setState(UNKNOWN);
       return UNKNOWN;
     }
-  }, []);
+  }, [userId]);
 
   /**
    * May a signature be applied right now?
@@ -67,12 +81,43 @@ export function useEsraConsent() {
   const ensure = useCallback(async () => {
     setBusy(true);
     const next = await read();
+    if (canSign(next)) {
+      if (alive.current) setBusy(false);
+      return true;
+    }
+
+    // ── THE SERVER COULD NOT BE ASKED ──────────────────────────────────────
+    //
+    // ONLY on UNKNOWN. A server answer of not-agreed, superseded or declined is
+    // AUTHORITATIVE and the cache is never consulted against it — the cache
+    // holds only a yes, so consulting it there could only ever overturn a real
+    // no with a stale one.
+    //
+    // A REMEMBERED YES IS HONOURED WHATEVER VERSION IT NAMES. A version
+    // mismatch seen offline is not evidence he withdrew; it is evidence the
+    // wording changed while he had no signal, which is a fact about the
+    // publisher and not about him. He agreed, in terms naming no document and
+    // no date, and nothing he did has changed. Refusing a signature at the
+    // bottom of a shaft because a revision landed that morning is the wrong
+    // failure direction, and nothing is lost by allowing it: the server
+    // re-checks the version on the next signature made with a connection, and
+    // catches a genuinely stale consent there — online, where he can actually
+    // read the new wording.
+    //
+    // DO NOT TIGHTEN THIS TO A VERSION COMPARISON. See consentCache.js.
+    if (next === UNKNOWN) {
+      const remembered = await readConsent(userId);
+      if (remembered) {
+        if (alive.current) setBusy(false);
+        return true;
+      }
+    }
+
     if (!alive.current) return false;
     setBusy(false);
-    if (canSign(next)) return true;
     router.push('/consent');
     return false;
-  }, [read, router]);
+  }, [read, router, userId]);
 
   return { state, busy, ensure };
 }

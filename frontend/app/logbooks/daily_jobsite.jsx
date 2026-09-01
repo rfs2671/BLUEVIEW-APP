@@ -86,6 +86,7 @@ import { chooseEditableLog } from '../../src/utils/logbookEditable';
 import { isOfflineError, settleFetch, failureDetail } from '../../src/utils/offlineState';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import * as ImagePicker from 'expo-image-picker';
+import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import {
   composeChipBands,
   EMPTY_ACTIVITY, EMPTY_OBSERVATION, newActivityId, buildCrewsFromRoster,
@@ -300,6 +301,7 @@ const OTHER_ACTIVITY_ID = 'other';
 
 export default function DailyJobsiteLog() {
   const router = useRouter();
+  const consent = useEsraConsent();
   const params = useLocalSearchParams();
   const projectId = params.projectId;
   // A date derived for a query or a record uses the Eastern helper. On the UTC
@@ -1724,6 +1726,13 @@ export default function DailyJobsiteLog() {
       toast.warning(t('crewWorkMissingTitle'), crewGapSentence(bareCrews));
       return;
     }
+    // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────
+    // BB 2024-007 sec V.5. One consent per person, keyed on his account and
+    // not on this log — if he agreed on any other screen, this never asks.
+    // Offline with a remembered yes, it never asks either; see
+    // consentCache.js for why an older version still counts there.
+    if (!(await consent.ensure())) return;
+
     setSigning(true);
     try {
       const savedId = await persistAndPush('submitted');
