@@ -145,29 +145,44 @@ validator, minimum length or pattern. It is also **persisted to the signer's
 profile and pre-filled into every later log**, so one person typing `2` once
 produced that label on 25 records.
 
-### 4b. `created_by` is absent on 13 signed documents
+### 4b. `created_by` is absent on 50 signed documents, and still is
 
-Resolving the 25 `"2"` documents to accounts returned **two** groups:
+An earlier count of 13 was **only those that also carried `cp_name: "2"`**. The
+true figure across all signed documents is **50**, and every one is a
+`subcontractor_orientation` — 50 of the 79 orientations in the corpus. The other
+29 orientations do carry it.
 
-| `created_by` | documents |
+| month | documents |
 |---|---|
-| `6a78c6232db2115006e36811` | 12 |
-| **absent** | **13** |
+| 2026-07 | 6 |
+| 2026-08 | 42 |
+| 2026-09 | 2 |
 
-**What wrote them.** `subcontractor_orientation` documents are created **at the
-gate, by the worker's own check-in** (`backend/server.py:13153`), in a request
-that has no CP in it. That insert writes `log_type`, `project_id`, the worker's
-details and `cp_signature: None` — and **no `created_by` at all**. A CP later
-opens the record and signs it; that update writes `cp_signature` and `cp_name`
-and **does not backfill `created_by`**.
+**It is ongoing.** The two September documents were created after the consent
+gate shipped. Nothing about this has been fixed.
 
-So this is **structural, not a data error**: for any gate-created orientation,
-the document carries no authenticated identity for the person who signed it. The
-only name on it is the one he typed.
+**Why the field is empty, and why it is not an oversight.** Orientations have
+two creation paths, and only one of them has anybody to record:
 
-It follows that the count is not limited to the `"2"` group — it is a property
-of the log type. Query **H** measures it across all 248, and
-`subcontractor_orientation` is the largest type at 79 documents.
+1. **At the gate** — `POST /api/checkin/register-and-checkin`
+   (`backend/server.py:12838`). This is a **public, unauthenticated endpoint**:
+   the worker taps an NFC tag and registers himself. Its handler signature takes
+   no `current_user` and there is no principal in the request at all. The
+   orientation document it inserts (`server.py:13153`) therefore has no
+   authenticated identity available to write. This is the path that produced all
+   50.
+2. **By a CP in the app** — `POST /api/logbooks`, authenticated, which sets
+   `created_by` from the session. This produced the other 29.
+
+**The identity does exist at the moment of signing, and is discarded.** A CP
+signs a gate-created orientation through `PUT /api/logbooks/{id}` — an
+authenticated request that knows exactly who he is. That handler writes
+`cp_signature` and the typed `cp_name` and **nothing else about the signer**.
+There is no `signed_by` field on the collection.
+
+So the document records *who typed a name* and not *who was authenticated when
+the signature was applied*, on the log type with the most records, and the
+information needed to record it was in hand each time.
 
 *(A second, unrelated inconsistency found while tracing this: `create_logbook`
 writes `str(current_user.get("id"))` while `amend_logbook` writes
@@ -181,9 +196,10 @@ A missing `created_by` is only fatal to attribution if **no audit row exists
 either**. Where a `signature_events` row exists it carries `signer.user_id`,
 server-set from the authenticated session, and the signer is recoverable.
 
-**The number that matters is documents with neither.** Query **I** counts the
-signed compliance documents for which the signer is not recoverable from the
-record by any means the system provides.
+**The intersection is the number that matters** — documents with neither — and
+it is **not yet established**. It cannot be derived from the figures above: the
+50 without `created_by` and the 57 without a ledger row are different sets that
+overlap by an unknown amount. Query **K** measures it.
 
 ---
 
@@ -216,18 +232,57 @@ one that is working.
 Why it wrote nothing for those four months is **not established** and cannot be
 determined from the source.
 
-### 5b. Two different absences inside the 57
+### 5b. Two different absences inside the 57, and only one is a defect
 
-- **Structural** — signed before 2026-07-29, when there was no ledger to write
-  to. Nothing was lost; nothing was ever attempted.
-- **Loss** — signed after 2026-07-29, with the ledger live. Each is a row the
-  system attempted and dropped, most plausibly on a failed write with no signal:
-  eleven of the twelve signing screens are local-first, and the reconnect drain
-  re-sends the document and re-applies the freeze but **does not re-send the
-  signature event**.
+| | documents |
+|---|---|
+| Signed **before** 2026-07-29 — structural, no ledger existed | **16** |
+| Signed **after** 2026-07-29 — the ledger was live and no row exists | **41** |
 
-**The second group is the number that matters** and this document cannot yet
-state it. Query **G** separates them.
+The first 16 are not a loss: nothing was attempted, because there was nothing to
+attempt it against.
+
+**The 41 are.** By log type and project:
+
+| log type | project | documents |
+|---|---|---|
+| toolbox_talk | 588 Thomas | 17 |
+| daily_jobsite | **857 Prescott (test)** | 8 |
+| subcontractor_orientation | 588 Thomas | 7 |
+| osha_log | 588 Thomas | 6 |
+| daily_jobsite | 588 Thomas | 2 |
+| preshift_signin | 588 Thomas | 1 |
+| **total** | | **41** |
+
+**33 of those are on the live customer project.** Thirty-three signatures were
+applied to customer compliance records after the audit ledger existed, and no
+audit row was written for any of them.
+
+### 5c. How a row is lost, exactly
+
+There are two mechanisms and both are in the same six lines of every signing
+editor. Taken from `toolbox_talk.jsx`, which accounts for 17 of the 41:
+
+    const docId = existingLogId || created?.id || created?._id;
+    if (docId) {
+      recordSignatureEvent({ ... })
+        .catch((e) => console.warn('Signature audit failed (non-blocking):', ...));
+    }
+
+- **`if (docId)`** — when the push to the server failed, there is no server id,
+  so the ledger write is **never attempted**. The signature is still applied and
+  the log is still saved locally.
+- **`.catch(...)`** — when an id does exist but the ledger POST itself fails, the
+  failure is swallowed to a console warning. There is no queue and no retry.
+
+Eleven of the twelve signing screens are local-first by design: a CP signs with
+no signal and the reconnect drain later pushes the document and re-applies the
+freeze. **The drain does not re-send the signature event.** So a signature
+applied without a connection loses its ledger row by the first mechanism, and
+one applied on a failing connection loses it by the second, and in neither case
+does anything report that it happened.
+
+This is not a design gap in the ledger. It is loss, and the mechanism is known.
 
 ### 5c. `daily_logs` holds no signatures
 
@@ -265,19 +320,21 @@ can support and would be indistinguishable from a real one thereafter.
 
 ---
 
-## 8. Queries outstanding
+## 8. The one query outstanding
 
-Read-only. **Not run by the author.**
+Read-only. **Not run by the author.** G, H, I and J are answered above; **K** is
+the remaining one, and it is the one that decides how many documents have no
+recoverable signer at all.
 
-db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null}}},{$addFields:{idStr:{$toString:"$_id"}}},{$lookup:{from:"signature_events",localField:"idStr",foreignField:"document_id",as:"ev"}},{$match:{ev:{$size:0}}},{$group:{_id:{before_ledger:{$lt:["$created_at",ISODate("2026-07-29T00:00:00Z")]},log_type:"$log_type"},n:{$sum:1},first:{$min:"$created_at"},last:{$max:"$created_at"}}},{$sort:{n:-1}}])  // G - splits the 57 into structural vs genuine loss
+db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null},created_by:null}},{$addFields:{idStr:{$toString:"$_id"}}},{$lookup:{from:"signature_events",localField:"idStr",foreignField:"document_id",as:"ev"}},{$match:{ev:{$size:0}}},{$group:{_id:{log_type:"$log_type",project:"$project_name"},unattributable:{$sum:1},names:{$addToSet:"$cp_name"},first:{$min:"$created_at"},last:{$max:"$created_at"}}}])  // K - no created_by AND no ledger row
 
-db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null}}},{$group:{_id:{log_type:"$log_type",has_creator:{$cond:[{$ifNull:["$created_by",false]},true,false]}},n:{$sum:1}}},{$sort:{n:-1}}])  // H - how many of the 248 carry no created_by, by log type
+**Note on K.** `created_by: null` matches both an explicit null and a missing
+field, which is what is wanted: §4b's 50 are missing rather than null.
 
-db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null},created_by:null}},{$addFields:{idStr:{$toString:"$_id"}}},{$lookup:{from:"signature_events",localField:"idStr",foreignField:"document_id",as:"ev"}},{$match:{ev:{$size:0}}},{$group:{_id:"$log_type",unattributable:{$sum:1},names:{$addToSet:"$cp_name"},first:{$min:"$created_at"},last:{$max:"$created_at"}}}])  // I - THE NUMBER THAT MATTERS: no created_by AND no ledger row
-
-**Note on I.** `created_by: null` in Mongo matches both an explicit null and a
-missing field, which is what is wanted here — §4b's 13 are missing rather than
-null.
+K returns the documents for which **the signer is not recoverable from the
+record by any means the system provides** — no authenticated identity on the
+document, and no audit row carrying one. It cannot be derived from the numbers
+above: the 50 and the 57 are different sets whose overlap is unknown.
 
 ---
 
