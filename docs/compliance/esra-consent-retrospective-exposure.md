@@ -1,19 +1,19 @@
 # Electronic signatures applied before consent was recorded
 
 **For legal review.** Companion to `docs/compliance/esra-bb2024-007-compliance.md`.
-Written against `main` at `4f68b46`. Figures from production, 2026-09-01.
+Written against `main` at `b1f1ec5`. Figures from production, 2026-09-01.
 
 ---
 
 ## 1. The question the client is asking
 
 Between 2026-03-10 and 2026-09-01, users of this application applied **248
-electronic signatures** to construction site safety records. During that period
-the application never asked anyone to agree to sign electronically, and **no
-such agreement is on file for any user**.
+electronic signatures** to construction site safety records — **240 of them on
+customer projects**. During that period the application never asked anyone to
+agree to sign electronically, and **no such agreement is on file for any user**.
 
 From 2026-09-01 the application asks, and records the agreement before it
-permits a signature on the construction superintendent log.
+permits a signature.
 
 **The client's position, for assessment — not argued here:**
 
@@ -24,10 +24,14 @@ permits a signature on the construction superintendent log.
 > on signatures that person applied earlier.
 
 **The client is not asking to have consent backdated, and has instructed that
-it must not be.** See §6.
+it must not be.** See §7.
 
-This document supplies the facts that question turns on. It reaches no legal
-conclusion and none should be inferred from it.
+There is a second question the facts raise on their own, and the client asserts
+no position on it: **for some of these documents the signer cannot be identified
+from the record at all.** See §4.
+
+This document supplies facts. It reaches no legal conclusion and none should be
+inferred from it.
 
 ---
 
@@ -52,25 +56,21 @@ has ever existed:
 
 Three properties of this text are facts about the record, not interpretation:
 
-- It **names no document, log type, capacity or date.** Every subject is
-  generic: "the signature I draw or apply in this application", "the records I
-  sign here", "anything I have signed".
-- It is stored **verbatim on each consent row**, not as a pointer to a version,
-  so a stored consent can be reconstructed exactly as the person read it.
-- It is **keyed on the person**, not on anything he signs. The row carries
-  `user_id`, email, name, role at the time, company and timestamp; it carries
-  no log type and no document reference. One row per person covers everything
-  that person signs.
+- It **names no document, log type, capacity or date.**
+- It is stored **verbatim on each consent row**, not as a version pointer, so a
+  stored consent can be reconstructed as the person read it.
+- It is **keyed on the person**, not on anything he signs. One row per person
+  covers everything that person signs.
 
 ---
 
-## 3. The facts
-
-### 3a. Scope
+## 3. Scope
 
 | | |
 |---|---|
 | Signed documents with no recorded consent | **248** |
+| — of which on a **test** project (§6) | **8** |
+| — **on customer projects** | **240** |
 | Consents on file | **0** — the collection is empty |
 | Declines on file | **0** |
 | First signature | **2026-03-10 22:31:19 UTC** |
@@ -78,11 +78,11 @@ Three properties of this text are facts about the record, not interpretation:
 | Distinct log types | **6** |
 
 **The set is closed at 248.** The last signature (17:19:15 UTC) predates the
-deployment of the consent gate that same day (merged 18:47:27 UTC). No
-signature has yet been applied under the gate, and none has been applied by a
-consenting user, because nobody has consented.
+deployment of the consent gate that same day (18:47:27 UTC). No signature has
+been applied under the gate, and none by a consenting user, because nobody has
+consented.
 
-### 3b. By log type
+### 3a. By log type
 
 | log type | documents |
 |---|---|
@@ -95,12 +95,20 @@ consenting user, because nobody has consented.
 | **total** | **248** |
 
 The BC 3301.13.13 **construction superintendent log does not appear**: it has
-never been filed. It is the one log type now gated.
+never been filed. It is the log the consent gate was built for.
+
+### 3b. By month
+
+| month | documents |
+|---|---|
+| 2026-03 | 15 |
+| 2026-07 | 15 |
+| 2026-08 | 209 |
+| 2026-09 | 9 |
 
 ### 3c. By signer
 
-Grouped on `cp_name`, the printed name **typed by the signer**. See §3e — this
-is a self-entered label, not the authenticated account identity.
+Grouped on `cp_name`, the printed name **typed by the signer**.
 
 | cp_name | original | amendment | total |
 |---|---|---|---|
@@ -110,200 +118,180 @@ is a self-entered label, not the authenticated account identity.
 | Test CP | 8 | — | 8 |
 | **total** | **197** | **51** | **248** |
 
-**51 of the 248 are amendments.** A correction is a new child document signed
-in its own right while the original stays signed, so 248 counts *signatures
-applied*, not *distinct matters recorded*. The number of matters is 197.
+**51 of the 248 are amendments.** A correction is a new child document signed in
+its own right while the original stays signed. So 248 counts *signatures
+applied*; **197** is the number of distinct matters recorded.
 
-### 3d. By month
+---
 
-| month | documents |
-|---|---|
-| 2026-03 | 15 |
-| 2026-07 | 15 |
-| 2026-08 | 209 |
-| 2026-09 | 9 |
+## 4. Can the signer be identified?
 
-84% of all signatures fall in the final month.
+This section replaces an earlier draft that was **wrong**. That draft said
+`created_by` is server-set and authenticated and therefore resolves any typed
+name to an account. That holds where the field is present. **It is absent on
+some of these documents**, which the earlier draft did not check.
 
-### 3e. Two data-quality findings, reported rather than averaged into the tables
+### 4a. Three fields, and what each is worth
 
-Neither changes the legal question. Both change what the tables mean.
-
-**(i) `cp_name` is `"2"` on 25 signed documents.**
-
-`cp_name` is **free text typed by the signer** on the signature pad
-(`onNameChange`), then **persisted to that user's profile and pre-filled into
-every subsequent log**. There is no validation on either side: the client
-requires only that the field be non-blank (`signerName?.trim()`), and the
-server declares `cp_name: Optional[str] = None` with no validator, no minimum
-length and no pattern.
-
-So one person typing `2` once produced that label on 25 records, across
-however many log types, without anything objecting.
-
-**This does not mean 25 records have an unknown signer.** The account identity
-is recorded separately and is server-set, not typed:
-
-| field | source | trustworthy as identity |
+| field | source | identifies the signer? |
 |---|---|---|
-| `cp_name` | typed by the signer | **no** — a self-entered label |
-| `created_by` | authenticated user id, server-set | **yes** |
-| `created_by_name` | account name, server-set | yes |
+| `cp_name` | typed by the signer, free text | **no** — a self-entered label |
+| `created_by` | server-set from the authenticated session | yes, **when present** |
+| `signature_events.signer.user_id` | server-set on the audit row | yes, **when a row exists** |
 
-Query A below resolves the 25 to an authenticated user id. Until it is run, who
-signed them is *recorded but not yet read* — which is different from unknown,
-and different again from unattributable.
+`cp_name` has no validation on either side: the client requires only a non-blank
+string, and the server declares `cp_name: Optional[str] = None` with no
+validator, minimum length or pattern. It is also **persisted to the signer's
+profile and pre-filled into every later log**, so one person typing `2` once
+produced that label on 25 records.
 
-The same caveat applies to every row of table 3c, including "michael": that is
-a typed label too, and the authoritative identity is `created_by`.
+### 4b. `created_by` is absent on 13 signed documents
 
-**(ii) `"Test CP"` on 8 signed documents.**
+Resolving the 25 `"2"` documents to accounts returned **two** groups:
 
-Test data in the same collection as live compliance records. Whether those 8
-sit on a real project cannot be determined from the source; query B answers it.
-They are included in the 248 above and **should be excluded from any figure
-presented as production activity** if query B shows they are not on a real
-project. No row has been removed from this document on an assumption.
+| `created_by` | documents |
+|---|---|
+| `6a78c6232db2115006e36811` | 12 |
+| **absent** | **13** |
 
----
+**What wrote them.** `subcontractor_orientation` documents are created **at the
+gate, by the worker's own check-in** (`backend/server.py:13153`), in a request
+that has no CP in it. That insert writes `log_type`, `project_id`, the worker's
+details and `cp_signature: None` — and **no `created_by` at all**. A CP later
+opens the record and signs it; that update writes `cp_signature` and `cp_name`
+and **does not backfill `created_by`**.
 
-## 4. What the records do and do not contain
+So this is **structural, not a data error**: for any gate-created orientation,
+the document carries no authenticated identity for the person who signed it. The
+only name on it is the one he typed.
 
-**They are not bare marks.** Each carries, on the document, the drawn signature
-and the typed printed name. Where an audit row exists it adds the authenticated
-user id, the verified role, the acting capacity, a device fingerprint, an IP
-address, a hash of the content signed, and a timestamp.
+It follows that the count is not limited to the `"2"` group — it is a property
+of the log type. Query **H** measures it across all 248, and
+`subcontractor_orientation` is the largest type at 79 documents.
 
-**The audit ledger is incomplete, for two independent reasons:**
+*(A second, unrelated inconsistency found while tracing this: `create_logbook`
+writes `str(current_user.get("id"))` while `amend_logbook` writes
+`current_user.get("id")` raw — the first would store the string `"None"` where
+the second stores a null. Neither is the cause here and neither is a live
+defect, but they are not the same field on the same collection.)*
 
-1. **It did not exist until 2026-03-26**, sixteen days after the first
-   signature. The 15 documents signed in March 2026 straddle that date.
-2. **It drops rows on a failed write, by design and to this day.**
-   `recordSignatureEvent` catches every failure, returns null, and neither
-   queues nor retries; its own comment states the audit entry will be missing
-   and the app will not break. Eleven of the twelve signing screens are
-   local-first, so a signature applied with no signal persists on the document
-   and loses its ledger row permanently.
+### 4c. Where the ledger can still answer
 
-**The ledger holds 245 rows, and that number must not be subtracted from 248.**
-The ledger spans **all** document types — `logbook`, `daily_log` and
-`worker_registration` — so 245 is not a count of logbook signatures. The
-shortfall is genuinely unknown; query C measures it, and query D checks that
-query C is working before its output is believed.
+A missing `created_by` is only fatal to attribution if **no audit row exists
+either**. Where a `signature_events` row exists it carries `signer.user_id`,
+server-set from the authenticated session, and the signer is recoverable.
 
-**Count documents, not ledger rows.** The 248 is authoritative.
-
-**Not in scope: the worker gate affirmation.** Its text authorises "use on
-today's Pre-Shift Sign-In Log for this jobsite" — one signature, one day, one
-named document. It is not a general agreement to conduct business
-electronically and has never been presented as one. Whether § V.5 reaches it is
-a separate question this document does not prejudge.
+**The number that matters is documents with neither.** Query **I** counts the
+signed compliance documents for which the signer is not recoverable from the
+record by any means the system provides.
 
 ---
 
-## 5. Queries still outstanding
+## 5. The audit ledger — smaller and later than expected
 
-Read-only.
+| document_type | rows | first | last |
+|---|---|---|---|
+| `logbook` | 233 | 2026-07-29 | 2026-09-01 |
+| `preshift_signature_affirmation` | 12 | 2026-08-31 | 2026-09-01 |
 
-```js
-// A. WHO the 25 "2" documents belong to. Resolves a typed label to an
-//    authenticated account.
-db.logbooks.aggregate([
-  { $match: { cp_name: "2", cp_signature: { $exists: true, $ne: null } } },
-  { $group: { _id: "$created_by", n: { $sum: 1 },
-              account_name: { $addToSet: "$created_by_name" },
-              log_types: { $addToSet: "$log_type" },
-              projects: { $addToSet: "$project_id" },
-              first: { $min: "$created_at" }, last: { $max: "$created_at" } } },
-])
+233 rows cover **191** of the 248 signed documents. A document may carry more
+than one event, so 233 rows over 191 documents is consistent and not a
+discrepancy.
 
-// B. Are the 8 "Test CP" documents on a real project?
-db.logbooks.aggregate([
-  { $match: { cp_name: "Test CP", cp_signature: { $exists: true, $ne: null } } },
-  { $group: { _id: "$project_id", n: { $sum: 1 },
-              project_name: { $addToSet: "$project_name" },
-              company: { $addToSet: "$company_id" } } },
-])
-// then, for each project_id returned:
-db.projects.find({ _id: ObjectId("<id>") }, { name: 1, address: 1, company_id: 1, status: 1 })
+**57 signed documents have no ledger row.**
 
-// D. RUN THIS BEFORE C. If it returns 0, C's join is broken and C's output is
-//    meaningless rather than alarming.
-db.logbooks.aggregate([
-  { $match: { cp_signature: { $exists: true, $ne: null } } },
-  { $addFields: { idStr: { $toString: "$_id" } } },
-  { $lookup: { from: "signature_events", localField: "idStr",
-               foreignField: "document_id", as: "ev" } },
-  { $match: { "ev.0": { $exists: true } } },
-  { $count: "documents_with_a_ledger_row" },
-])
+### 5a. The ledger began 2026-07-29, not when it was built
 
-// C. THE SHORTFALL — signed documents with no ledger row.
-//    signature_events.document_id is a STRING (server.py:4264) and
-//    logbooks._id is an ObjectId. Joining them directly matches nothing.
-db.logbooks.aggregate([
-  { $match: { cp_signature: { $exists: true, $ne: null } } },
-  { $addFields: { idStr: { $toString: "$_id" } } },
-  { $lookup: { from: "signature_events", localField: "idStr",
-               foreignField: "document_id", as: "ev" } },
-  { $match: { ev: { $size: 0 } } },
-  { $group: { _id: "$log_type", unledgered: { $sum: 1 },
-              first: { $min: "$created_at" }, last: { $max: "$created_at" } } },
-])
+The recorder shipped on **2026-03-26** — the frontend call sites and the backend
+endpoint landed the same day. **The earliest row is 2026-07-29**, four months
+later, and signatures were applied throughout: 15 documents in March, 15 in
+July.
 
-// E. THE LEDGER'S OWN DATE RANGE. The field is `timestamp`. There is no
-//    top-level `signed_at` on this collection — `signed_at` exists only INSIDE
-//    logbooks.cp_signature, as a string.
-//
-//    A MATCH ON A FIELD THAT DOES NOT EXIST SILENTLY MATCHES EVERYTHING: a
-//    missing field reads as null, and null sorts before Date in BSON, so
-//    `{signed_at: {$lt: ISODate(...)}}` is true for every row. That is why an
-//    earlier run returned 245 rows with null first/last — the filter matched
-//    all of them and the min/max of an absent field is null. There is no date
-//    filter here at all; the range is what is being asked for.
-db.signature_events.aggregate([
-  { $group: { _id: { type: "$document_type", event: "$event_type" },
-              rows: { $sum: 1 },
-              first: { $min: "$timestamp" }, last: { $max: "$timestamp" } } },
-  { $sort: { rows: -1 } },
-])
+**Nothing reported the gap.** `recordSignatureEvent` catches every failure, logs
+to the console and returns null; its own comment states the audit entry will be
+missing and the app will not break. A recorder that is live and writing nothing
+is indistinguishable, at every observation point available to an operator, from
+one that is working.
 
-// F. LEGACY. Whether daily_logs holds signatures could not be established from
-//    the source; no signature field is written to it anywhere in server.py.
-db.daily_logs.findOne()
-db.daily_logs.countDocuments({ cp_signature: { $exists: true, $ne: null } })
-```
+Why it wrote nothing for those four months is **not established** and cannot be
+determined from the source.
+
+### 5b. Two different absences inside the 57
+
+- **Structural** — signed before 2026-07-29, when there was no ledger to write
+  to. Nothing was lost; nothing was ever attempted.
+- **Loss** — signed after 2026-07-29, with the ledger live. Each is a row the
+  system attempted and dropped, most plausibly on a failed write with no signal:
+  eleven of the twelve signing screens are local-first, and the reconnect drain
+  re-sends the document and re-applies the freeze but **does not re-send the
+  signature event**.
+
+**The second group is the number that matters** and this document cannot yet
+state it. Query **G** separates them.
+
+### 5c. `daily_logs` holds no signatures
+
+Confirmed zero. That legacy collection is not part of this exposure.
 
 ---
 
-## 6. Constraint the client has imposed
+## 6. The 8 test documents
+
+All 8 `Test CP` documents are on project `6a7a145e9271db492b9a46ce` — **857
+Prescott Pl**, a throwaway test project seeded by
+`backend/scripts/seed_857_prescott.py`.
+
+**They are not customer records** and should be excluded from any figure
+presented as production activity. They are retained inside the 248 so the total
+reconciles with the raw queries; **240** is the customer figure.
+
+---
+
+## 7. Constraints the client has imposed
 
 **No consent may be backfilled.** A consent row written now, dated now,
 describing an agreement nobody made, attached to a signature applied in March,
-would be a fabricated record in a compliance system — and undetectable
-afterwards, because the schema cannot distinguish a backfilled row from a real
-one.
+would be a fabricated record — and undetectable afterwards, because the schema
+cannot distinguish a backfilled row from a real one.
 
 If a person is asked today and agrees today, that is a consent dated today. It
-says nothing about a signature from March, and this document does not suggest
-otherwise. Whether it nonetheless bears on that signature is the question in
-§1.
+says nothing about a signature from March. Whether it nonetheless bears on that
+signature is the question in §1.
+
+**The same applies to `created_by`.** It must not be inferred and written onto
+the documents that lack it. An identity reconstructed after the fact, stored in
+the field reserved for an authenticated one, is a stronger claim than the record
+can support and would be indistinguishable from a real one thereafter.
 
 ---
 
-## 7. Open, and relevant to the assessment
+## 8. Queries outstanding
 
-- **Queries A–F above are unrun.** §3e's two findings and the ledger's date
-  range and shortfall are not yet resolved.
-- **Eleven of the twelve signing paths are not yet gated.** Only the
-  superintendent log checks for consent today. Signatures applied on the other
-  eleven after 2026-09-01 will carry no recorded consent until the gate is
-  extended, which is scheduled.
-- `docs/compliance/esra-bb2024-007-compliance.md` is **stale**: dated
-  2026-08-30 and still states the superintendent log is "NOT YET BUILT". It
-  shipped 2026-09-01. It should be brought current before both documents go out
-  together.
-- The ledger's silent row-dropping (§4.2) is a live defect in the audit trail,
-  independent of consent, and is not yet scheduled.
-- **`cp_name` accepts any non-blank string** (§3e). Unfixed. It is the field a
-  reader would take for the signer's name on a filed compliance record.
+Read-only. **Not run by the author.**
+
+db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null}}},{$addFields:{idStr:{$toString:"$_id"}}},{$lookup:{from:"signature_events",localField:"idStr",foreignField:"document_id",as:"ev"}},{$match:{ev:{$size:0}}},{$group:{_id:{before_ledger:{$lt:["$created_at",ISODate("2026-07-29T00:00:00Z")]},log_type:"$log_type"},n:{$sum:1},first:{$min:"$created_at"},last:{$max:"$created_at"}}},{$sort:{n:-1}}])  // G - splits the 57 into structural vs genuine loss
+
+db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null}}},{$group:{_id:{log_type:"$log_type",has_creator:{$cond:[{$ifNull:["$created_by",false]},true,false]}},n:{$sum:1}}},{$sort:{n:-1}}])  // H - how many of the 248 carry no created_by, by log type
+
+db.logbooks.aggregate([{$match:{cp_signature:{$exists:true,$ne:null},created_by:null}},{$addFields:{idStr:{$toString:"$_id"}}},{$lookup:{from:"signature_events",localField:"idStr",foreignField:"document_id",as:"ev"}},{$match:{ev:{$size:0}}},{$group:{_id:"$log_type",unattributable:{$sum:1},names:{$addToSet:"$cp_name"},first:{$min:"$created_at"},last:{$max:"$created_at"}}}])  // I - THE NUMBER THAT MATTERS: no created_by AND no ledger row
+
+**Note on I.** `created_by: null` in Mongo matches both an explicit null and a
+missing field, which is what is wanted here — §4b's 13 are missing rather than
+null.
+
+---
+
+## 9. Open
+
+- **Queries G, H and I are unrun.** §4b's extent, §5b's split and the
+  unattributable count are not yet stated.
+- **Why the ledger wrote nothing between 2026-03-26 and 2026-07-29** is not
+  established.
+- `docs/compliance/esra-bb2024-007-compliance.md` is **stale**: dated 2026-08-30
+  and still states the superintendent log is "NOT YET BUILT". It shipped
+  2026-09-01. It should be brought current before both documents go out.
+- **All thirteen signing screens carry the consent gate** as of `b1f1ec5`. The
+  exposure is closed going forward.
+- Three defects surfaced by this exercise are live and unscheduled: the ledger
+  drops rows silently on a failed write; `cp_name` accepts any non-blank string;
+  gate-created orientations never receive a `created_by`.
