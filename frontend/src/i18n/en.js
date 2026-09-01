@@ -1254,6 +1254,66 @@ export default {
   // app/logbooks/site_superintendent_log.jsx — the BC 3301.13.13 construction
   // superintendent log. CP/superintendent-facing and read by a DOB inspector;
   // no worker sees it, so it is EN-only like every other logbook editor.
+  // THE AGREEMENT TO SIGN ELECTRONICALLY — BB 2024-007 § V.5.
+  //
+  // EN-ONLY, AND THAT IS A SCOPE STATEMENT RATHER THAN A DECISION THAT SPANISH
+  // DOES NOT MATTER. The wording of the consent ITSELF comes from the server
+  // and is English-only there too (lib/esra_consent.py carries one text). A
+  // Spanish frame around an English agreement would be worse than an English
+  // frame: it would imply the agreement had been translated when it has not,
+  // and the thing being agreed to is the part that must be understood. If the
+  // consent text is ever translated, this namespace comes off the allowlist
+  // WITH it, not before.
+  esraConsent: {
+    close: 'Close',
+    agree: 'I agree',
+    retry: 'Try again',
+    // NOT "Cancel" — the log is not cancelled, it is left unsigned.
+    notNow: 'Not now — leave this unsigned',
+
+    consentNeeded: 'Before you sign',
+    consentNeededBody:
+      'New York City requires that anyone signing a record electronically has '
+      + 'agreed to do so. You only have to do this once. Read the agreement '
+      + 'below, then tap I agree.',
+
+    // A DIFFERENT SENTENCE, NOT A REPHRASING. Telling a man who agreed last
+    // year that he has never agreed is false, and he will notice.
+    consentChanged: 'The agreement has changed',
+    consentChangedBody:
+      'You agreed to an earlier version of this. The wording below is what is '
+      + 'in force now, so we have to ask once more before you sign.',
+
+    consentUnavailable: 'Cannot check your agreement',
+    // NAMES WHAT IS MISSING AND WHAT HAPPENS NEXT. It does not say "try again
+    // later" and stop: the log is still there, unsigned, and he needs to know
+    // that before he decides whether to wait.
+    consentUnavailableBody:
+      'We could not reach the server to check whether you have agreed to sign '
+      + 'electronically, so this cannot be signed yet. Everything you have '
+      + 'entered is kept. Check your signal and try again.',
+
+    // Shown on the sign step itself, not in the modal — so the reason is
+    // visible without him having to open anything.
+    blockedHint: 'You need to agree to sign electronically before signing.',
+    blockedAction: 'Read the agreement',
+    agreedToast: 'Agreement recorded',
+
+    // THE SERVER NAMES THE CONDITION, THIS OWNS THE WORDING — the same rule
+    // LogbookLockBar's gateCopy follows. POST /api/esra-consent refuses with a
+    // machine code and no prose, and the server's English `detail` is never
+    // rendered. An unmapped code falls back to `genericError`, which is how a
+    // new code is noticed rather than leaked to screen as a raw key.
+    genericError:
+      'That could not be recorded just now. Your entry is kept — try again.',
+    code_ESRA_CONSENT_VERSION_STALE:
+      'The wording changed while this was open. Close and tap Sign again to '
+      + 'read the current version.',
+    code_ESRA_CONSENT_NO_SUBJECT:
+      'This account could not be identified. Sign out and back in, then try '
+      + 'again.',
+  },
+
   siteSuperintendent: {
     screenTitle: 'Site Superintendent Log',
     screenSub: 'BC 3301.13.13 — complete before leaving the site',

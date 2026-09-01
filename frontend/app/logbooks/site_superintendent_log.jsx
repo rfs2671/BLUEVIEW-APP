@@ -48,7 +48,10 @@ import { outdoor, spacing } from '../../src/styles/theme';
 import { useToast } from '../../src/components/Toast';
 import { useT } from '../../src/i18n';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
+import { useEsraConsent } from '../../src/hooks/useEsraConsent';
+import EsraConsentModal from '../../src/components/EsraConsentModal';
 import { logbooksAPI, dobAPI } from '../../src/utils/api';
+import { consentGateCopy } from '../../src/utils/esraConsentState';
 // TWO MODULES, AND THEY ARE NOT INTERCHANGEABLE. `signatureAudit` is the
 // LEDGER (recordSignatureEvent, device fingerprint, integrity); the predicate
 // that says whether a signature was affirmed lives in `signatureAffirmed`.
@@ -89,11 +92,13 @@ export default function SiteSuperintendentLog() {
   const router = useRouter();
   const toast = useToast();
   const t = useT('siteSuperintendent');
+  const tConsent = useT('esraConsent');
   const { user } = useAuth();
   const { projectId, date } = useLocalSearchParams();
   const logDate = String(date || todayISO());
 
   const { cpName, cpSignature, setCpSignature, setCpName, profileLoaded } = useCpProfile();
+  const consent = useEsraConsent();
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -279,6 +284,26 @@ export default function SiteSuperintendentLog() {
     if (!departedAt.trim()) setDepartedAt(departure);
     if (!isAffirmedSignature(cpSignature)) return;
     if (unanswered.length > 0) return;
+
+    // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────────
+    //
+    // BB 2024-007 § V.5. The backend has recorded this since #308 and nothing
+    // ever asked for it, so every signature applied before this line existed
+    // was applied without recorded consent — and no later migration can fix
+    // that, because a consent recorded in October does not describe a
+    // signature applied in September.
+    //
+    // ASKED HERE, AT THE SIGNATURE, AND NOT AT SCREEN OPEN. Consent is about
+    // the act of signing, so the act is what it gates. He fills the whole log
+    // either way; nothing he typed is at risk, and a man who has already
+    // consented — which is everyone after the first time — never sees it.
+    //
+    // ANYTHING OTHER THAN A RECORDED CURRENT CONSENT STOPS HERE and opens the
+    // sheet in place. `ensure()` returns false for not-agreed, for superseded
+    // wording, AND for "could not ask" — the last one deliberately, because a
+    // signature applied while we cannot tell whether consent exists is the
+    // defect this whole path removes. The sheet names which case it is.
+    if (!(await consent.ensure())) return;
 
     setSigning(true);
     try {
@@ -614,6 +639,7 @@ export default function SiteSuperintendentLog() {
     .join(', ');
 
   return (
+    <>
     <LogbookStepper
       s={s}
       loading={loading}
@@ -644,5 +670,31 @@ export default function SiteSuperintendentLog() {
       }
       onSubmit={handleSubmit}
     />
+
+    {/* IN PLACE, OVER THE EDITOR. Never a route: he has just filled five
+        steps of an unsaved statutory log, and navigating away to answer a
+        legal question is how work gets lost. Closing it leaves the log
+        exactly as he left it, unsigned — which is why the dismiss reads
+        "leave this unsigned" rather than "cancel". */}
+    <EsraConsentModal
+      visible={consent.open}
+      state={consent.state}
+      text={consent.text}
+      busy={consent.busy}
+      /* gateCopy, exactly as LogbookLockBar does it: `useT` returns the KEY on
+         a miss, which is how an unmapped code is detected. Without this a new
+         server code would render as `code_SOMETHING_NEW` on screen. */
+      error={consentGateCopy(tConsent, consent.error)}
+      onAgree={async () => {
+        // AGREEING DOES NOT SIGN FOR HIM. It records the agreement and closes;
+        // he taps Sign again. Chaining straight into the submit would apply a
+        // signature from a tap on a DIFFERENT button, which is the one thing
+        // an intent-to-sign control must not do.
+        if (await consent.agree()) toast.success(tConsent('agreedToast'));
+      }}
+      onRetry={consent.retry}
+      onClose={consent.close}
+    />
+    </>
   );
 }

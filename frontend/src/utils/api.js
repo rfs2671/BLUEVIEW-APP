@@ -1378,6 +1378,35 @@ export const usersAPI = {
 };
 
 /**
+ * THE AGREEMENT TO SIGN ELECTRONICALLY — Buildings Bulletin 2024-007 § V.5.
+ *
+ * THE WORDING COMES FROM THE SERVER AND IS NEVER WRITTEN HERE. lib/
+ * esra_consent.py says it plainly: a consent whose text the client chooses is
+ * evidence of nothing. `get()` returns `current_text` precisely so the screen
+ * has something to show without inventing it, and `agree()` sends back only
+ * the VERSION — which the server checks rather than trusts, refusing a stale
+ * one with ESRA_CONSENT_VERSION_STALE rather than recording an agreement
+ * against text the person never saw.
+ *
+ * NEITHER CALL IS SWALLOWED. A failed read is not "has not consented", and a
+ * failed write is not "recorded" — both throw, and the caller decides. That
+ * distinction is the whole point of the gate: absence of an answer and an
+ * answer of no are different facts.
+ */
+export const esraConsentAPI = {
+  get: async () => {
+    const response = await apiClient.get('/api/esra-consent');
+    return response.data;
+  },
+  agree: async (consentVersion) => {
+    const response = await apiClient.post('/api/esra-consent', {
+      consent_version: consentVersion,
+    });
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {
