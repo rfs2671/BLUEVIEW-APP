@@ -287,14 +287,28 @@ console.log('\n7. THE DECLARED ITEMS ARE THE SOURCE OF TRUTH');
 
 console.log('\n8. THE NAV');
 {
+  // NOT FROM THE NAV. A slot was built there and removed: the QR is reached at
+  // a gate with a worker in front of him, Settings is where he signs out, and a
+  // once-a-day log read from a list outranks neither on a bar with three items
+  // and one point of headroom.
   const nav = read('src', 'components', 'CpNav.js');
-  ok(/site_superintendent/.test(CODE(nav)), 'the log is reachable from the CP nav');
-  ok(/numberOfLines=\{1\}/.test(CODE(nav)),
-    'and the prop that keeps the pill height true is still there — a fourth '
-    + 'item narrows each label, and without this one would wrap');
+  ok(!/site_superintendent/.test(CODE(nav)), 'the log is NOT a nav item');
+  ok(/WHY THERE IS NO SUPERINTENDENT SLOT/.test(nav),
+    'and the nav records why, so the slot is not proposed again');
+
+  // FROM THE LOGBOOKS LIST, which is now the only path and therefore has to
+  // work. The tile routes by log type, so the registry key IS the filename.
+  // requiredLogbooksWiring.test.cjs executes that resolution against the
+  // server's registry, toggle on and toggle off; this asserts the half that
+  // lives in what this screen is called.
+  const screens = fs.readdirSync(path.join(FRONTEND, 'app', 'logbooks'))
+    .filter((f) => f.endsWith('.jsx')).map((f) => f.replace(/\.jsx$/, ''));
+  ok(screens.includes('site_superintendent_log'),
+    'the screen is named for its registry key, so the list tile resolves');
+
+  ok(/numberOfLines=\{1\}/.test(CODE(nav)), 'the nav label is still single-line');
   ok(/CP_NAV_PILL_HEIGHT =\n?\s*spacing\.sm \* 2/.test(nav),
-    'the height is still composed from padding and icon only, so it carries '
-    + 'no item count and a fourth item cannot move it');
+    'and the pill height is still composed from padding and icon only');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}\n`);
