@@ -1,242 +1,251 @@
-# Electronic signatures applied before consent was recorded — retrospective exposure
+# Electronic signatures applied before consent was recorded
 
-**Prepared for legal review**, as a companion to
-`docs/compliance/esra-bb2024-007-compliance.md`. Written against `main` at
-`7af62b8` (2026-09-01).
-
-## What this document is, and is not
-
-This is an engineering statement of **what happened and over what period**,
-written so that a reviewing attorney can decide what, if anything, follows from
-it. It names the records affected, the dates that bound the exposure, and the
-queries that will quantify it against production.
-
-**It does not certify compliance and contains no legal conclusion.** Whether an
-electronic signature applied without a separately recorded agreement to sign
-electronically is valid, invalid, curable, or immaterial is a legal judgment
-that has not been made here and is not made anywhere in this codebase.
-
-**No numbers in this document are asserted.** The author has no access to the
-production database. Section 5 gives the exact queries; the counts they return
-are the facts, and this document deliberately contains none of them rather than
-estimating.
-
-**Nothing has been remediated, and nothing should be.** See section 6.
+**For legal review.** Companion to `docs/compliance/esra-bb2024-007-compliance.md`.
+Written against `main` at `7af62b8`, 2026-09-01.
 
 ---
 
-## 1. What the requirement is
+## 1. The question the client is asking
 
-Buildings Bulletin 2024-007 § V.5 requires that all involved parties "clearly
-intend to sign electronically and agree to conduct transactions
-electronically". That is a general agreement about the *medium*, made once, and
-it is distinct from the act of signing any particular document.
+Between 2026-02-26 and 2026-09-01, users of this application applied electronic
+signatures to construction site safety records. During that period the
+application never asked them to agree to sign electronically, and no such
+agreement was recorded for anyone.
 
-The bulletin does not distinguish the BC 3301.13.13 construction superintendent
-log from the other site safety documents it names. Whatever § V.5 requires of
-one, it requires of all of them.
+From 2026-09-01 the application asks, and records the agreement before it
+permits a signature.
 
-## 2. What the software did
+**The client's position, for assessment — not argued here:**
 
-**It recorded signatures. It never asked for the agreement.**
+> The person who signed those records is the same person who is now being asked
+> to consent. What he agrees to is a statement about **his own electronic
+> signature generally** — it names no document, no log type and no date. The
+> client asks whether an agreement in those terms, given now, has any bearing
+> on signatures that person applied earlier.
 
-The consent machinery — `backend/lib/esra_consent.py`, `GET`/`POST
-/api/esra-consent`, the `esra_consents` collection — landed on **2026-08-30**
-in #308. It was complete and correct: it stores the wording verbatim against a
-dated version, denormalises who agreed, and keeps every historical version so a
-stored row can be checked against what it claims to have said.
+**The client is not asking to have consent backdated, and has instructed that
+it must not be.** See §6.
 
-**Nothing ever called it.** `has_current_esra_consent` had no callers outside
-its own unit tests, and no screen in the shipped bundle mentioned consent. The
-agreement existed as a facility and was never put in front of a person.
+This document supplies the facts that question turns on. It reaches no legal
+conclusion and none should be inferred from it.
 
-That was closed on **2026-09-01** by #347, which gates the superintendent log's
-signature on a recorded current consent. **The eleven other signing paths are
-not yet gated** — see section 4.
+---
 
-## 3. What was signed, and where it lives
+## 2. What the person agrees to
 
-Two independent stores, and both matter:
+The full wording, verbatim, as version `2026-08-30.1` — the only version that
+has ever existed:
 
-| store | what it holds | since |
+> I agree to do business electronically with LeveLog and with the company that
+> gave me this account.
+>
+> I agree that the signature I draw or apply in this application is my
+> signature, and I intend it to have the same effect as a signature I write by
+> hand on paper.
+>
+> I understand that the records I sign here are kept as the record of the work
+> they describe, that I cannot edit a record after I have signed it, and that I
+> can be given a copy of anything I have signed.
+>
+> I can withdraw this agreement at any time by telling my company
+> administrator. If I withdraw it, I will be asked to sign on paper instead.
+
+Three properties of this text are facts about the record, not interpretation:
+
+- It **names no document, log type, capacity or date.** Every subject is
+  generic: "the signature I draw or apply in this application", "the records I
+  sign here", "anything I have signed".
+- It is stored **verbatim on each consent row**, not as a pointer to a version.
+  A stored consent can be reconstructed exactly as the person read it, and
+  checked against the registry of every version ever shown.
+- It is **keyed on the person**, not on anything he signs. The stored row
+  carries `user_id`, email, name, role at the time, company and timestamp. It
+  carries no log type and no document reference. One row per person covers
+  everything that person signs.
+
+---
+
+## 3. The facts, with numbers
+
+**The counts below are produced by the queries in §5, run against production.
+They are not filled in here: the author has no database access and has not
+estimated them.**
+
+### 3a. Documents signed with no recorded consent, by log type
+
+| log type | documents signed | first | last | distinct signers |
+|---|---|---|---|---|
+| _(query 2)_ | | | | |
+
+### 3b. Who signed
+
+| user id | name | company | documents | log types | first | last |
+|---|---|---|---|---|---|---|
+| _(query 4)_ | | | | | | |
+
+**Two precision notes on this table, so it is not read as more than it says:**
+
+- **`created_by` is who created the document; `cp_name` is the printed name of
+  who signed it.** In practice these are the same person — the CP opens the log
+  and signs it — but the schema does not enforce that, so query 4 returns both
+  and any row where they diverge should be looked at rather than assumed.
+- **An amended log counts twice.** A correction is a new child document
+  (`is_amendment: true`) that is signed in its own right; the original stays
+  signed and intact. So "documents signed" is a count of *signatures applied*,
+  not of *distinct matters recorded*. Query 4 splits by `is_amendment` so both
+  numbers are visible.
+
+### 3c. Consents on file before 2026-09-01
+
+Expected: **none.** The endpoint existed from 2026-08-30 and nothing called it.
+Query 5 confirms or refutes.
+
+| user id | version | agreed at |
 |---|---|---|
-| `logbooks.cp_signature` | the signature itself, on the document | **2026-02-26** (`fb9cdce`) |
-| `signature_events` | the audit ledger: signer, capacity, device, content hash, timestamp | **2026-03-26** (`15e2ca8`) |
+| _(query 5)_ | | |
 
-The one-month gap is material: **signatures applied between 2026-02-26 and
-2026-03-26 exist on the documents but have no ledger entry at all.** A query
-that counts only `signature_events` will understate the exposure, and any
-characterisation drawn from the ledger alone will be wrong about that first
-month.
+### 3d. The date range
 
-### The ledger understates for a second, ONGOING reason
+- **Earliest possible signature: 2026-02-26** — the first commit storing
+  `cp_signature` on a logbook (`fb9cdce`). The actual earliest is query 2's
+  `first`.
+- **Consent first askable: 2026-09-01** — deployed at `7af62b8`.
+- **Superintendent log:** gated from 2026-09-01.
+- **Ten CP log types and the SSC log:** not yet gated. Signatures applied on
+  those paths after 2026-09-01 also carry no recorded consent, until the gate
+  is extended.
 
-`recordSignatureEvent` (`frontend/src/utils/signatureAudit.js:119`) catches
-every failure, logs to the console, and returns `null`. Its own comment says
-so: *"Non-blocking — the signature still saves on the document. The audit trail
-entry will be missing, but the app doesn't break."* **There is no queue and no
-retry.**
+---
 
-Eleven of the twelve signing editors are local-first: they write a draft
-locally and push when a connection returns. So a CP who signs with no signal —
-the case that support exists for — gets `cp_signature` persisted on the
-document and **the ledger row is dropped permanently.** The offline drain
-(`draftSync`) re-sends the document and re-applies the freeze; it does not
-re-send the signature event.
+## 4. What the records do and do not contain
 
-This is not a consequence of the consent gap and is not fixed by anything in
-#347. It is stated here because it bears directly on what any count of
-`signature_events` means: **the ledger is a partial record of signing, by
-design, and the size of the shortfall is unknown.** Query 3 measures it.
+**They are not bare marks.** Each signature carries, on the document itself, the
+drawn signature and the signer's printed name. Where an audit row exists it
+additionally carries the authenticated user id, the role the server verified,
+the acting capacity, a device fingerprint, an IP address, a hash of the content
+signed, and a timestamp.
 
-There is a third, older collection, `daily_logs`, which predates `logbooks`.
-**Whether it carries signatures could not be established from the source** — no
-signature field is written to it anywhere in `server.py` that the author could
-find. It is listed in query 6 so the question is answered from the data rather
-than left to an assumption in either direction.
+**The audit ledger is incomplete, for two independent reasons, and the size of
+the shortfall is unknown:**
 
-### Log types with a CP or SSC signing path
+1. **It did not exist until 2026-03-26.** Signatures applied between 2026-02-26
+   and 2026-03-26 are on the documents with no ledger row at all.
+2. **It drops rows on a failed write, by design and to this day.**
+   `recordSignatureEvent` catches every failure, returns null, and neither
+   queues nor retries; its own comment states the audit entry will be missing
+   and the app will not break. Eleven of the twelve signing screens are
+   local-first, so a signature applied with no signal persists on the document
+   and loses its ledger row permanently.
 
-All thirteen registry types except those never signed by a CP. As of `7af62b8`
-the app sends three signature event types:
+**Therefore: count documents, not ledger rows.** Query 2 is the authoritative
+count and query 1 is not. Query 3 measures the gap between them.
 
-- `cp_sign` — eleven call sites across ten logbook editors
-- `ssc_sign` — one, the SSC/SSM daily safety log
-- `superintendent_sign` — the BC 3301.13.13 log (**now gated**)
+**Not in scope: the worker gate affirmation.** Its text authorises "use on
+today's Pre-Shift Sign-In Log for this jobsite" — one signature, one day, one
+named document. It is not a general agreement to conduct business
+electronically and has never been presented as one. Whether § V.5 reaches it is
+a separate question this document does not prejudge.
 
-## 4. The exposure, stated plainly
+---
 
-**Every electronic signature applied in this product before 2026-09-01 was
-applied without a recorded agreement to sign electronically.** That is the
-whole of the claim, and it is not qualified by log type, project, or company.
+## 5. The queries
 
-**And it continues, narrowly, after 2026-09-01.** #347 gates one document. Until
-the CP and SSC paths are gated, every `cp_sign` and `ssc_sign` signature applied
-carries the same absence. This is scheduled and not yet built.
-
-### What is NOT part of this exposure
-
-**The worker gate affirmation is a different thing and should not be swept in.**
-Its text authorises "use on today's Pre-Shift Sign-In Log for this jobsite" —
-one signature, one day, one named document. It is not a general agreement to
-conduct business electronically and was never presented as one. Whether § V.5
-reaches it is a legal question; this document does not assume it does, and the
-product has not treated it as consent.
-
-### What the records DO carry
-
-The absence is of the *general* agreement. The signatures themselves are not
-bare marks. Each `signature_events` row carries the signer's authenticated user
-id, the role the server verified, the acting capacity, a device fingerprint, an
-IP address, a content hash of what was signed, and a timestamp. From 2026-08-31
-the CP-facing editors also record a per-document attestation with its wording
-stored verbatim.
-
-Whether any of that bears on what § V.5 requires is for the attorney. It is set
-out here because a characterisation of "signed with nothing recorded" would be
-inaccurate, and so would "signed with consent recorded".
-
-## 5. How to quantify it
-
-Run against production. **These have not been run by the author.**
+Read-only. **Not run by the author.**
 
 ```js
-// 1. THE LEDGER. Signatures with an audit row, by type, before the gate.
-db.signature_events.aggregate([
-  { $match: { timestamp: { $lt: ISODate("2026-09-01T00:00:00Z") } } },
-  { $group: { _id: "$event_type", n: { $sum: 1 },
-              first: { $min: "$timestamp" }, last: { $max: "$timestamp" },
-              signers: { $addToSet: "$signer.user_id" } } },
-])
-
-// 2. THE DOCUMENTS. Signed logbooks, by log type — INCLUDING the month before
-//    the ledger existed, which query 1 cannot see.
+// 2. AUTHORITATIVE — documents signed, by log type. Fills table 3a.
 db.logbooks.aggregate([
   { $match: { cp_signature: { $exists: true, $ne: null },
               created_at: { $lt: ISODate("2026-09-01T00:00:00Z") } } },
-  { $group: { _id: "$log_type", n: { $sum: 1 },
-              first: { $min: "$created_at" }, last: { $max: "$created_at" } } },
+  { $group: { _id: "$log_type", documents: { $sum: 1 },
+              first: { $min: "$created_at" }, last: { $max: "$created_at" },
+              signers: { $addToSet: "$created_by" } } },
+  { $project: { documents: 1, first: 1, last: 1,
+                distinct_signers: { $size: "$signers" } } },
+  { $sort: { documents: -1 } },
 ])
 
-// 3. THE GAP. Signed documents with NO ledger row — the Feb–Mar window.
-//
-//    THE $toString IS LOAD-BEARING, NOT TIDINESS. `signature_events.document_id`
-//    is declared `str` (server.py:4264) while `logbooks._id` is an ObjectId, so
-//    a lookup joining them directly matches NOTHING and reports every signed
-//    logbook as unledgered. That would overstate this exposure by the entire
-//    corpus. Verify the join returns a non-empty `ev` for at least one recent
-//    logbook before trusting the zero-match set.
+// 4. WHO. Fills table 3b. Splits amendments out — a corrected log is a second
+//    signed document, so the totals are signatures applied, not matters
+//    recorded. Returns cp_name alongside created_by: normally the same person,
+//    not guaranteed by the schema.
+db.logbooks.aggregate([
+  { $match: { cp_signature: { $exists: true, $ne: null },
+              created_at: { $lt: ISODate("2026-09-01T00:00:00Z") } } },
+  { $group: { _id: { user: "$created_by", amendment: { $eq: ["$is_amendment", true] } },
+              documents: { $sum: 1 },
+              signer_names: { $addToSet: "$cp_name" },
+              creator_names: { $addToSet: "$created_by_name" },
+              companies: { $addToSet: "$company_id" },
+              log_types: { $addToSet: "$log_type" },
+              first: { $min: "$created_at" }, last: { $max: "$created_at" } } },
+  { $sort: { documents: -1 } },
+])
+
+// 5. CONSENTS ON FILE. Fills table 3c. Expected empty before 2026-09-01.
+db.esra_consents.find({}, { user_id: 1, consent_version: 1, agreed_at: 1 })
+db.esra_consent_declines.find({}, { user_id: 1, consent_version: 1, declined_at: 1 })
+
+// 1. THE LEDGER, for comparison only. NOT the count for table 3a — see §4.
+db.signature_events.aggregate([
+  { $match: { timestamp: { $lt: ISODate("2026-09-01T00:00:00Z") } } },
+  { $group: { _id: "$event_type", rows: { $sum: 1 },
+              first: { $min: "$timestamp" }, last: { $max: "$timestamp" } } },
+])
+
+// 3. THE SHORTFALL — signed documents with no ledger row.
+//    THE $toString IS LOAD-BEARING: signature_events.document_id is a string
+//    (server.py:4264) and logbooks._id is an ObjectId. Joining them directly
+//    matches nothing and reports every signed document as unledgered.
 db.logbooks.aggregate([
   { $match: { cp_signature: { $exists: true, $ne: null } } },
   { $addFields: { idStr: { $toString: "$_id" } } },
   { $lookup: { from: "signature_events", localField: "idStr",
                foreignField: "document_id", as: "ev" } },
   { $match: { ev: { $size: 0 } } },
-  { $group: { _id: "$log_type", n: { $sum: 1 },
+  { $group: { _id: "$log_type", unledgered: { $sum: 1 },
               first: { $min: "$created_at" } } },
 ])
 
-// 3b. THE CONTROL ON QUERY 3. If this returns 0, query 3's join is broken and
-//     its output is meaningless rather than alarming.
+// 3b. CONTROL ON QUERY 3. If this returns 0, query 3's join is broken and its
+//     output is meaningless rather than alarming. Run it first.
 db.logbooks.aggregate([
   { $match: { cp_signature: { $exists: true, $ne: null } } },
   { $addFields: { idStr: { $toString: "$_id" } } },
   { $lookup: { from: "signature_events", localField: "idStr",
                foreignField: "document_id", as: "ev" } },
   { $match: { "ev.0": { $exists: true } } },
-  { $count: "logbooks_with_a_ledger_row" },
+  { $count: "documents_with_a_ledger_row" },
 ])
 
-// 4. WHO. Distinct signers, for the population the answer concerns.
-db.signature_events.distinct("signer.user_id",
-  { timestamp: { $lt: ISODate("2026-09-01T00:00:00Z") } })
-
-// 5. CONSENTS ACTUALLY ON FILE. Expected to be empty or near-empty before
-//    2026-09-01: the endpoint existed from 2026-08-30 and nothing called it.
-db.esra_consents.find({}, { user_id: 1, consent_version: 1, agreed_at: 1 })
-
-// 6. LEGACY SURFACE. Does daily_logs hold signatures at all? The source does
-//    not say it does. Answer it from the data rather than assuming either way.
-db.daily_logs.findOne()   // inspect the shape first
+// 6. LEGACY. Whether daily_logs holds signatures could not be established from
+//    the source; no signature field is written to it anywhere in server.py.
+db.daily_logs.findOne()
 db.daily_logs.countDocuments({ cp_signature: { $exists: true, $ne: null } })
-db.daily_logs.countDocuments({ worker_signature: { $exists: true, $ne: null } })
 ```
 
-Query 3 is the one most likely to be forgotten and is the one that establishes
-the true start date.
+---
 
-## 6. What must NOT be done
+## 6. Constraint the client has imposed
 
-**Do not backfill consent.** A consent row written now, dated now, describing an
-agreement nobody made, attached to a signature applied in March, would be a
-fabricated record in a compliance system. It would also be undetectable later:
-the schema cannot distinguish a backfilled row from a real one.
+**No consent may be backfilled.** A consent row written now, dated now,
+describing an agreement nobody made, attached to a signature applied in March,
+would be a fabricated record in a compliance system — and undetectable
+afterwards, because the schema cannot distinguish a backfilled row from a real
+one.
 
-A consent recorded after the fact is not consent. The exposure is a fact about
-the past and the past is not editable — which is the same principle the product
-enforces on every filed logbook, where a correction is an amendment and never an
-edit.
+If a person is asked today and agrees today, that is a consent dated today. It
+says nothing about a signature from March, and this document does not suggest
+otherwise. Whether it nonetheless bears on that signature is the question in
+§1.
 
-**Do not date a consent to anything but the moment it was given.** If a person
-is asked today and agrees today, that is a consent from today, and it says
-nothing about a signature from March.
+---
 
-**Do not treat the gate as retrospective.** #347 changes what happens next. It
-makes no statement about what happened before, and no report should imply that
-it does.
+## 7. Open, and relevant to the assessment
 
-## 7. Related and outstanding
-
-- `docs/compliance/esra-bb2024-007-compliance.md` is **stale**. It is dated
-  2026-08-30 against `448410f` and states "Status of the log itself: NOT YET
-  BUILT". The log shipped in #339 and the consent gate in #347. It should be
-  updated before it goes to the attorney alongside this document.
-- The CP and SSC signing paths are not gated. Scheduled; shape to be reported
-  before it is built.
-- The superintendent log's editor is online-only, which is what makes the
-  gate's fail-closed behaviour safe. If the log becomes local-first, the gate
-  needs a cached consent state and that decision must be re-taken.
-- **`signature_events` drops rows on a failed write, silently and by design**
-  (section 3). This is a defect in the audit trail independent of consent, it
-  is live today, and it is not scheduled. It should be, and it is raised here
-  because it was found while establishing what the ledger can be asked.
+- `docs/compliance/esra-bb2024-007-compliance.md` is **stale**: dated
+  2026-08-30 and still states the superintendent log is "NOT YET BUILT". It
+  shipped 2026-09-01. It should be brought current before both documents go
+  out together.
+- The ledger's silent row-dropping (§4.2) is a live defect in the audit trail,
+  independent of consent, and is not yet scheduled.
