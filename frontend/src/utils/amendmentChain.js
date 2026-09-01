@@ -111,4 +111,60 @@ export function collapseChains(list) {
   return [...out, ...unkeyed];
 }
 
+/**
+ * The sentence the CP reads about an open correction.
+ *
+ * THE DEFECT THIS REPLACES, from his dashboard on 2026-09-01:
+ *
+ *   "A correction was filed by Michael Cespedes on 2026-08-14. Photo Review it
+ *    and sign."
+ *
+ * "Photo" is the ENTIRE stored amendment_reason on that child, not a
+ * truncation. The card interpolated it raw — `${lead} ${a.reason} Review it
+ * and sign.` — so any reason without ending punctuation ran into the next
+ * clause. Every amendment filed before the readability rule can be a fragment
+ * like that, and the four "1" reasons on 588 Thomas are the extreme case.
+ *
+ * IT IS QUOTED, NOT PUNCTUATED. Appending a full stop to "Photo" would present
+ * a fragment as prose somebody wrote. Quoting reports it as the text that was
+ * recorded — which is what it is — and makes it structurally impossible to run
+ * into the following clause whatever it contains.
+ *
+ * Everything comes off the record: no clock, nothing relative.
+ */
+export function amendmentSentence(a) {
+  const tail = 'Review it and sign.';
+  if (!a) return `A correction was filed on this log. ${tail}`;
+  const who = a.by ? ` by ${a.by}` : '';
+  const when = a.at ? ` on ${a.at}` : '';
+  const lead = `A correction was filed${who}${when}.`;
+  const reason = a.has_reason && a.reason ? String(a.reason).trim() : '';
+  if (!reason) return `${lead} No reason was recorded for it. ${tail}`;
+  return `${lead} Reason given: "${reason}". ${tail}`;
+}
+
+/**
+ * The status pill for one log TYPE on one day.
+ *
+ * THE DEFECT THIS REPLACES: the screen built `logMap[log.log_type] = log`, so
+ * 34 orientation documents collapsed to whichever the array happened to end
+ * with. When that was an unsigned Angel Lopez amendment the type read "Draft"
+ * over 33 signed workers — and since the endpoint sorts by `date`, the winner
+ * within one date was unspecified and could differ between loads.
+ *
+ * IT IS NOT "ANY DRAFT EXISTS", AND MUST NOT BECOME THAT. An unsigned
+ * amendment is an open CORRECTION on a filed record, not unfinished work: the
+ * record is filed, and the stale-unsigned card is what surfaces the
+ * correction. Reading "Draft" would tell a CP his signed day is unfinished.
+ *
+ * So the question is: is every worker's CURRENT record filed? Chain heads —
+ * the same rule the list uses, so the pill and the rows cannot disagree.
+ */
+export function logTypeStatus(rows) {
+  const heads = collapseChains(rows);
+  if (heads.length === 0) return 'pending';
+  const filed = (h) => !!(h && (h.is_locked || h.status === 'submitted'));
+  return heads.every(filed) ? 'submitted' : 'draft';
+}
+
 export default collapseChains;

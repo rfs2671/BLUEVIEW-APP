@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
+import { logTypeStatus, amendmentSentence } from '../../src/utils/amendmentChain';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -277,8 +278,16 @@ export default function LogBooksScreen() {
         logbookTypesAPI.getAll().catch(() => null),
       ]);
 
+      // EVERY DOCUMENT PER TYPE, not the last one. This was
+      // `logMap[log.log_type] = log`, so subcontractor orientation — which
+      // files ONE DOCUMENT PER WORKER — collapsed 34 documents to whichever
+      // the array happened to end with. When that was an unsigned amendment
+      // the type read "Draft" over 33 signed workers, and since the endpoint
+      // sorts by `date` the winner within one date was unspecified.
       const logMap = {};
-      (Array.isArray(logs) ? logs : []).forEach(log => { logMap[log.log_type] = log; });
+      (Array.isArray(logs) ? logs : []).forEach((log) => {
+        (logMap[log.log_type] = logMap[log.log_type] || []).push(log);
+      });
       setTodayLogs(logMap);
       setNotifications(notifs);
 
@@ -299,7 +308,11 @@ export default function LogBooksScreen() {
         || (scaffoldInfo?.scaffold_erector && scaffoldInfo?.scaffold_erected !== false)
         || false;
       setScaffoldActive(isScaffoldUp);
-      setToolboxDoneThisWeek(logMap['toolbox_talk']?.status === 'submitted');
+      // THROUGH THE SAME RULE. logMap now holds a LIST per type, so reading a
+      // status field straight off it would read that field off an ARRAY and be
+      // silently always false — the banner would have said the talk was never
+      // done. A reader of a shape that changed, which is the thing to look for.
+      setToolboxDoneThisWeek(logTypeStatus(logMap['toolbox_talk']) === 'submitted');
     } catch (error) {
       console.error('Failed to fetch project logbooks:', error);
     }
@@ -387,12 +400,11 @@ export default function LogBooksScreen() {
     router.push(`/logbooks/${log_type}?projectId=${projectId}&date=${date}`);
   };
 
-  const getLogStatus = (logTypeKey) => {
-    const log = todayLogs[logTypeKey];
-    if (!log) return 'pending';
-    if (log.status === 'submitted') return 'submitted';
-    return 'draft';
-  };
+  // ASKS THE SHARED RULE, so the pill and the rows cannot disagree about what
+  // is filed. An open correction does NOT drag a signed day back to Draft —
+  // the record is filed and the stale-unsigned card is what surfaces the
+  // correction; see logTypeStatus.
+  const getLogStatus = (logTypeKey) => logTypeStatus(todayLogs[logTypeKey]);
 
   /**
    * Switch one conditional logbook on or off.
@@ -514,18 +526,10 @@ export default function LogBooksScreen() {
   const gapsUnaffirmed = gaps.filter((g) => g.state === 'unaffirmed');
   const gapsAmended = gaps.filter((g) => g.state === 'amendment_unsigned');
 
-  // Reads the RECORD. Every part comes off the amendment document, so this
-  // says the same thing in December as it does the morning after.
-  const amendmentLine = (g) => {
-    const a = g && g.amendment;
-    if (!a) return 'A correction was filed on this log. Review it and sign.';
-    const who = a.by ? ` by ${a.by}` : '';
-    const when = a.at ? ` on ${a.at}` : '';
-    const lead = `A correction was filed${who}${when}.`;
-    return a.has_reason && a.reason
-      ? `${lead} ${a.reason} Review it and sign.`
-      : `${lead} No reason was recorded for it. Review it and sign.`;
-  };
+  // ONE RENDERER, in the shared module. This template interpolated the reason
+  // raw and produced "…on 2026-08-14. Photo Review it and sign." — "Photo"
+  // being the entire stored reason, glued to the next clause.
+  const amendmentLine = (g) => amendmentSentence(g && g.amendment);
   // OLDEST FIRST. The server sorts newest-first for the count; the CP reads a
   // worklist, and the day most likely to be asked about — and the one the sweep
   // has had longest to not fix — belongs at the top of it.
