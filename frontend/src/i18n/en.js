@@ -1251,6 +1251,84 @@ export default {
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)
   // is still hardcoded English in the component and is NOT moved here — that
   // would be a copy change, not a wiring change.
+  // app/logbooks/site_superintendent_log.jsx — the BC 3301.13.13 construction
+  // superintendent log. CP/superintendent-facing and read by a DOB inspector;
+  // no worker sees it, so it is EN-only like every other logbook editor.
+  siteSuperintendent: {
+    screenTitle: 'Site Superintendent Log',
+    screenSub: 'BC 3301.13.13 — complete before leaving the site',
+    stepPresence: 'Presence',
+    stepWork: 'Work & inspection',
+    stepFindings: 'Findings & orders',
+    stepDob: 'DOB & incidents',
+    stepSign: 'Scope & sign',
+
+    presenceHeading: 'Your presence on site',
+    presenceNote: 'These times are YOUR statement of when you arrived and left, not a measurement the app made. Change them if they are wrong.',
+    arrivedAt: 'ARRIVED',
+    departedAt: 'DEPARTED',
+    printedName: 'PRINTED NAME',
+
+    progressLabel: 'GENERAL PROGRESS OF WORK',
+    progressPlaceholder: 'What the job advanced today',
+    activitiesLabel: 'WHAT YOU DID, AND WHERE',
+    activitiesPlaceholder: 'Areas and floors you inspected',
+    locationsLabel: 'AREAS AND FLOORS',
+    locationsPlaceholder: 'e.g. cellar, 2nd floor, north facade',
+
+    inspectionHeading: 'Daily inspection',
+    inspectionNote: '1 RCNY 3301-04(f) needs three things on the record: when, where, and what you found.',
+    inspectedOn: 'DATE INSPECTED',
+    inspectionLocation: 'LOCATION INSPECTED',
+    inspectionResult: 'RESULT',
+    inspectionResultPlaceholder: 'What the inspection found',
+
+    findingsHeading: 'Unsafe conditions and the orders you gave',
+    findingsNote: 'One entry per thing you saw. Items 4 and 5 of the log are two statutory items but one thing that happens — you saw something and you did something about it.',
+    findingAdd: 'Add a finding',
+    findingLocation: 'WHERE',
+    findingObservedAt: 'WHEN',
+    findingCondition: 'WHAT YOU SAW',
+    findingOrder: 'WHAT YOU ORDERED',
+    findingOrderTo: 'GIVEN TO',
+    findingCorrected: 'Was it corrected?',
+    // THREE ANSWERS, ALL POSITIVE. "Not yet" is not a softer "no" — it says
+    // the work is under way, which is a different statement about the site
+    // from one left standing. There is deliberately no fourth option meaning
+    // "did not say": the gate refuses the row instead.
+    correctedYes: 'Corrected',
+    correctedNo: 'Not corrected',
+    correctedNotYet: 'Not yet — in progress',
+    findingRemove: 'Remove',
+    noneBoth: 'No unsafe conditions observed and no orders given',
+    noneBothNote: 'This is one statement covering BOTH item 4 and item 5. It is your attestation, not a blank.',
+
+    dobHeading: 'Violations, stop work orders and summonses',
+    dobNote: 'Pulled from the DOB records this project already holds. Confirm what belongs on this log, and add anything the system has not seen.',
+    dobAddManual: 'Add one the system does not have',
+    dobNoneToReport: 'None issued or received today',
+    incidentsHeading: 'Incidents or damage',
+    incidentsNote: 'Including damage to adjoining property.',
+    incidentsNoneToReport: 'No incidents or damage today',
+    entryPlaceholder: 'Describe it',
+    entryAdd: 'Add',
+
+    competentPersonHeading: 'Competent person',
+    competentPersonName: 'NAME OF THE COMPETENT PERSON',
+    competentPersonNote: 'Their name goes on the record. Their signature is not collected in this release — the log states that rather than leaving a blank a reader would take for "nobody was designated".',
+
+    scopeHeading: 'Not collected in this release',
+    scopeNote: 'These items are part of BC 3301.13.13 and this log states plainly that it does not carry them, rather than printing a blank a reader would take for "nothing to report".',
+
+    signHeading: 'Sign and freeze',
+    signNote: 'Signing completes this log and locks it, as 3301.13.13 requires before you leave the site.',
+    unansweredHint: 'Answer these before signing: {items}',
+    signatureHint: 'Tap your signature to affirm it for this log.',
+    savedLocally: 'Saved on this device — it files when you reconnect',
+    filed: 'Log filed and locked',
+    couldNotFile: 'Could not file this log',
+  },
+
   signature: {
     verified: 'VERIFIED',
     unaffirmed: 'UNAFFIRMED',

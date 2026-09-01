@@ -108,5 +108,86 @@ class TheTrapItselfIsReproduced(unittest.TestCase):
         self.assertNotIn("db.logbooks", code_of(self.FILE))
 
 
+class AStripperThatDeletesCodeIsWorseThanNoStripper(unittest.TestCase):
+    """The block-comment regex ate live code, and absence tests went quiet.
+
+    `_BLOCK` was `/\\*[\\s\\S]*?\\*/` applied before line comments, so a `//`
+    comment CONTAINING the characters `/*` opened a block that ran to the next
+    `*/` anywhere in the file. Found in CpNav.js:
+
+        // Its active rule is "any /logbooks/*", which now includes ...
+
+    which swallowed the entire nav-item map.
+
+    WHY THIS CLASS EXISTS SEPARATELY FROM THE ONES ABOVE. Those check that
+    prose is REMOVED. These check that code is KEPT, and that is the direction
+    with the silent failure: a deletion makes assertIn fail loudly, and makes
+    assertNotIn — 617 of them, across 20 files — pass while asserting nothing.
+    """
+
+    def test_a_line_comment_containing_a_block_opener_eats_nothing(self):
+        src = (
+            'const a = 1;\n'
+            '// its rule is "any /logbooks/*", which now includes the child\n'
+            'const BANNED = shouldNotSurvive();\n'
+            '{/* an ordinary jsx comment */}\n'
+            'const b = 2;\n'
+        )
+        out = strip_js(src)
+        self.assertIn("const BANNED = shouldNotSurvive();", out,
+                      "the code between the two was deleted")
+        self.assertIn("const b = 2;", out)
+        self.assertNotIn("any /logbooks/*", out, "the comment itself still goes")
+        self.assertNotIn("an ordinary jsx comment", out)
+
+    def test_the_failure_was_a_SILENT_pass_not_a_loud_one(self):
+        # The shape that matters: an absence assertion over a region a stray
+        # `/*` had blanked would pass with the banned call sitting right there.
+        src = (
+            '// see /docs/*.md\n'
+            'db.logbooks.deleteMany({});\n'
+            '/* real comment */\n'
+        )
+        self.assertIn("db.logbooks.deleteMany", strip_js(src),
+                      "an assertNotIn over this would have passed vacuously")
+
+    def test_comment_markers_inside_strings_are_not_comments(self):
+        src = (
+            "const url = 'https://x.test/a';\n"
+            'const glob = "/logbooks/*";\n'
+            'const tpl = `a /* not a comment */ b`;\n'
+            'const KEPT = 1;\n'
+        )
+        out = strip_js(src)
+        self.assertIn("https://x.test/a", out)
+        self.assertIn('"/logbooks/*"', out)
+        self.assertIn("a /* not a comment */ b", out)
+        self.assertIn("const KEPT = 1;", out)
+
+    def test_a_regex_literal_is_not_a_comment(self):
+        # `/[//]/` and `/x*/` both contain comment markers. Treating either as
+        # a comment deletes the rest of the line — code, again.
+        src = (
+            'const re = /[//]/;\n'
+            'const KEPT_A = 1;\n'
+            'const star = /a*/;\n'
+            'const KEPT_B = 2;\n'
+        )
+        out = strip_js(src)
+        self.assertIn("const KEPT_A = 1;", out)
+        self.assertIn("const KEPT_B = 2;", out)
+
+    def test_line_numbers_survive_a_block_comment(self):
+        # Failure messages quote line numbers; a stripper that collapses them
+        # sends the reader to the wrong place.
+        src = 'a\n/* one\ntwo\nthree */\nb\n'
+        self.assertEqual(strip_js(src).count("\n"), src.count("\n"))
+
+    def test_the_real_file_that_found_it(self):
+        nav = code_of("frontend/src/components/CpNav.js")
+        self.assertIn("setShowCheckinQr(true)", nav)
+        self.assertIn("item.path === CHECKIN_QR_ACTION", nav)
+
+
 if __name__ == "__main__":
     unittest.main()

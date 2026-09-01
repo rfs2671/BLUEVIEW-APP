@@ -85,6 +85,14 @@ const ROUTES = [
   // Ported onto the shared stepper in batch 1a. Same reason as the pair
   // above: this job is the only thing that executes a logbook screen.
   '/logbooks/toolbox_talk?projectId=p1',
+  // THE ONLY NEW EDITOR SINCE THE PORT, and the one with the strongest claim
+  // to a mount: every other route here was an existing screen moved onto the
+  // stepper, whereas this one was written against it from nothing. It also
+  // reaches for two things at mount that no other editor does — dobAPI for the
+  // violation suggestions and useCpProfile before the log read returns — and
+  // an error-boundary render is the only way either would surface, since the
+  // rest of the suite reads this file's source without ever executing it.
+  '/logbooks/site_superintendent_log?projectId=p1',
   '/admin/site-devices',
   '/admin/users',
   '/reports',
@@ -109,7 +117,12 @@ const server = http.createServer((req, res) => {
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const JWT = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ exp: 4102444800, sub: 'u1' })}.x`;
-const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'owner', company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
+// `superintendent_projects` is the CAPABILITY /auth/me computes. It is set
+// here so the mount exercises the SWAPPED nav — the branch this change adds —
+// rather than the untouched three-item default every other route already
+// covers. One project, which is the shape the DOB one-job rule produces and
+// the one that routes straight into the log.
+const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'owner', company_name: 'Acme', company_id: 'c1', account_status: 'approved', superintendent_projects: ['p1'] };
 const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, Brooklyn', company_id: 'c1', status: 'active', nyc_bin: '2115914' };
 const WORKER = { id: 'w1', _id: 'w1', name: 'Test Worker', company_id: 'c1', trade: 'Carpenter', certifications: [] };
 

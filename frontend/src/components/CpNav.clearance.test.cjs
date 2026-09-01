@@ -33,8 +33,27 @@ const THEME = fs.readFileSync(path.join(__dirname, '..', 'styles', 'theme.js'), 
 const spacingSrc = THEME.match(/export const spacing = \{[\s\S]*?\};/);
 if (!spacingSrc) throw new Error('spacing not found in theme.js');
 
+/**
+ * Comment-free source, for the declaration lifts only.
+ *
+ * `decl` matches up to the first line ENDING IN `;`, which is a statement
+ * boundary in code and nothing at all in prose. CP_NAV_ITEMS carries the note
+ *
+ *     // "Check-In", not "Check-In QR". The QR is how it happens to work today;
+ *
+ * and the lift stopped there, handing `new Function` half an array literal.
+ * It failed loudly here, which is the good case — but the same shape silently
+ * truncates any declaration whose comments happen to end a line with `;`.
+ *
+ * The raw SRC is still what the assertions below read: several of them check
+ * that a REASON is written down, and those need the prose.
+ */
+const CODE = SRC
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/(?<!:)\/\/[^\n]*/g, '');
+
 function decl(name) {
-  const m = SRC.match(new RegExp(`^(?:export )?const ${name} =[\\s\\S]*?;$`, 'm'));
+  const m = CODE.match(new RegExp(`^(?:export )?const ${name} =[\\s\\S]*?;$`, 'm'));
   if (!m) throw new Error(`${name} declaration not found in CpNav.js`);
   return m[0].replace(/^export /, '');
 }
@@ -94,6 +113,108 @@ ok(/DECOUPLED FROM ITEM COUNT ON PURPOSE/.test(SRC),
    'the reason is recorded, not just the prop');
 ok(/pill 70/.test(SRC),
    'the measurement is recorded, so the next reader need not re-derive it');
+
+// ── THE NAV STAYS AT THREE, AND THAT IS THE MEASUREMENT HOLDING ─────────────
+//
+// The superintendent log was briefly a FOURTH item. It is now a SUBSTITUTION:
+// a principal who is the registered CS sees it in place of Check-In, and
+// everyone else sees the nav unchanged.
+//
+// WHY THAT MATTERS HERE. Four items was structurally safe — CP_NAV_PILL_HEIGHT
+// carries no item-count term, so it provably could not move — but the 58 above
+// was measured at THREE, and at four every label drops from ~1/3 to ~1/4 of
+// the pill. "Dashboard" had ONE POINT of headroom at three. numberOfLines
+// turns that into an ellipsis rather than a wrap, which protects this constant
+// and not the reading. Three items keeps the measurement above a measurement
+// rather than an argument.
+{
+  const items = SRC.match(/^\s*\{ path: /gm) || [];
+  ok(items.length === 3,
+     `the nav ships three items (got ${items.length}) — the superintendent log `
+     + 'REPLACES one, it does not append');
+
+  // ── RUN IT, DO NOT READ IT ─────────────────────────────────────────────
+  // The claim "the nav stays at three" is the one the clearance above rests
+  // on, so it is EXECUTED rather than pattern-matched. A regex asserting the
+  // shape of the map passes any refactor that keeps the shape and changes the
+  // result, and "the branch exists" is exactly what was true of the required-
+  // logbooks wiring the whole time it did nothing.
+  //
+  // cpNavItems touches no react-native import, so it lifts cleanly; the icon
+  // identifiers are stubbed because only the PATHS are under test here.
+  const { cpNavItems, CHECKIN_QR_ACTION } =
+    // eslint-disable-next-line no-new-func
+    new Function(`
+      const LayoutDashboard = 'i', QrCode = 'i', Settings = 'i', HardHat = 'i';
+      ${decl('CHECKIN_QR_ACTION')}
+      ${decl('CP_NAV_ITEMS')}
+      ${decl('SUPERINTENDENT_ITEM')}
+      ${CODE.match(/export function cpNavItems[\s\S]*?\n\}/)[0].replace('export ', '')}
+      return { cpNavItems, CHECKIN_QR_ACTION };
+    `)();
+
+  const plain = cpNavItems(undefined);
+  const swapped = cpNavItems(['p1']);
+
+  ok(plain.length === 3 && swapped.length === 3,
+     `THREE EITHER WAY (${plain.length} / ${swapped.length}) — the capability `
+     + 'changes WHICH items, never HOW MANY, which is what keeps the measured '
+     + 'pill height above a measurement');
+  ok(plain.map((i) => i.path).includes(CHECKIN_QR_ACTION),
+     'a principal without the capability keeps Check-In');
+  ok(!swapped.map((i) => i.path).includes(CHECKIN_QR_ACTION),
+     'and a superintendent does NOT — it is replaced, not joined');
+  ok(swapped.map((i) => i.path).includes('/logbooks/site_superintendent_log'),
+     'by the superintendent log');
+  ok(plain[0].path === swapped[0].path
+     && plain[2].path === swapped[2].path,
+  'Dashboard and Settings do not move — only the middle slot changes, so '
+  + 'muscle memory for the other two survives');
+
+  for (const empty of [undefined, null, [], 'superintendent', 0, {}]) {
+    ok(cpNavItems(empty).map((i) => i.path).includes(CHECKIN_QR_ACTION),
+      `${JSON.stringify(empty)} is NOT a capability — an absent or malformed `
+      + 'field must never read as a yes');
+  }
+
+  const pill = decl('CP_NAV_PILL_HEIGHT');
+  ok(!/CP_NAV_ITEMS|\.length|label/.test(pill),
+     'the pill height still names no item count, no list and no label');
+  ok(CP_NAV_PILL_HEIGHT === 58 && CP_NAV_CLEARANCE === 106,
+     'pill 58, clearance 106 — the measured values, at the measured item count');
+
+  ok(/navItem: \{[\s\S]*?flex: 1/.test(SRC),
+     'items still share the width equally');
+  ok(SRC.includes('numberOfLines={1}'),
+     'and the label is still single-line');
+
+  ok(/path: '\/logbooks\/site_superintendent_log'/.test(SRC),
+     'the superintendent item points at the LOG TYPE path — the dashboard '
+     + 'routes by log_type and the two must not diverge');
+  ok(/A SUBSTITUTION, NOT A FOURTH ITEM/.test(SRC),
+     'and the reason the nav stayed at three is recorded, so the next person '
+     + 'to want a slot reads why appending was rejected');
+}
+
+// ── THE GATE IS THE CAPABILITY, NOT THE ROLE ────────────────────────────────
+//
+// THE CASE THAT DECIDES IT: the superintendent on 588 Thomas holds a `cp`
+// account. A role test would hide his own statutory log from him and offer it
+// to every CP who is not a superintendent — failing in both directions at
+// once, and failing SILENTLY, because a missing nav item looks like a nav
+// without that feature.
+{
+  ok(/superintendent_projects/.test(SRC),
+     'the gate reads the server-computed capability');
+  ok(!/role\s*===\s*'superintendent'|role\s*===\s*"superintendent"/.test(SRC),
+     'and NEVER the role — the one man who needs this holds a cp account');
+  ok(/Array\.isArray\(superintendentProjects\)\s*\n?\s*&& superintendentProjects\.length > 0/.test(SRC),
+     'a non-array or empty list is NOT capable — an absent field must not '
+     + 'read as a yes');
+  ok(/length === 1/.test(SRC) && /'\/logbooks'/.test(SRC),
+     'exactly one project goes straight in; more than one goes to the picker '
+     + 'rather than the nav guessing which site he is standing on');
+}
 
 // ── The screens consume it ──────────────────────────────────────────────────
 // The inset is the term the old hardcoded numbers were missing entirely, and

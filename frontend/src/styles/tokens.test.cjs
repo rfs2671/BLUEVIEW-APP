@@ -157,11 +157,19 @@ const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 // Every assertion below is vacuously true against an empty measurement, so a
 // regex that silently stops matching would turn this file green while
 // measuring nothing.
-// SEVENTEEN with app/logbooks/fall_protection.jsx. The number is a guard on
+// EIGHTEEN with app/logbooks/site_superintendent_log.jsx. The number is a guard on
 // the SCANNER, not a budget on the app: every assertion below is vacuously
 // true against an empty measurement, so a regex that stopped matching would
 // turn this file green while measuring nothing.
-ok(FILES.length === 17, `scanner reads 17 CP screens (found ${FILES.length})`);
+//
+// SEVENTEEN -> EIGHTEEN, and the space scale did NOT move with it. The
+// superintendent log arrived carrying marginBottom: 14 and marginTop: 10 —
+// two values invented at the keyboard, in a file whose whole premise is that
+// the scale is MEASURED from what the screens actually use. The screen was
+// changed to spacing.md and spacing.sm rather than the scale being widened to
+// admit them: a measured scale that grows every time someone eyeballs a gap
+// is no longer a claim about anything.
+ok(FILES.length === 18, `scanner reads 18 CP screens (found ${FILES.length})`);
 // SCANNER-IS-ALIVE guards, not debt ceilings. Every assertion below is
 // vacuously true against an empty measurement, so these exist to fail loudly
 // if a regex silently stops matching. The thresholds track the migration

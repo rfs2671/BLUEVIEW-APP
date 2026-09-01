@@ -56,13 +56,54 @@ export const END_OF_DAY_LOG_TYPES = Object.freeze([
   'ssc_daily_safety_log',
 ]);
 
+/**
+ * THE VISIT — and it went stale the same way, in the same file, one class over.
+ *
+ * The docstring above records that this mirror missed `fall_protection` when a
+ * twelfth log type shipped. A THIRTEENTH then shipped in a class this file did
+ * not model at all, and the test written to stop exactly that did not notice,
+ * because it compared only `immediate` and `end_of_day` against the server. A
+ * mirror that models two of three classes reports the third as the default,
+ * silently — which is worse than the original miss, since the default is a
+ * positive claim about when a signed statutory record stops being editable.
+ *
+ * What the server says (logbook_timing_meta), and what this now mirrors:
+ *
+ *   is_batchable        FALSE — it is NOT swept into an end-of-day batch, and
+ *                       sweep_stale_end_of_day_logs deliberately excludes it:
+ *                       an overnight sweep would freeze a visit its author had
+ *                       not finished.
+ *   freeze_on_sign      FALSE — the signature alone does not lock it.
+ *   freeze_on_finalize  TRUE  — it freezes when its author FINALIZES on
+ *                       departure. That is the mechanism, not a workaround.
+ *
+ * WITHOUT THIS the client answered `isBatchable('site_superintendent_log')`
+ * with TRUE, contradicting the server's own published contract, and
+ * LogbookLockBar would offer a button labelled "Finalize (End of Day)" on a
+ * log whose deadline is a man walking off site.
+ */
+export const VISIT_LOG_TYPES = Object.freeze([
+  'site_superintendent_log',
+]);
+
 export function isImmediateLog(logType) {
   return IMMEDIATE_LOG_TYPES.includes(logType);
 }
 
-/** True when this type may be swept into the end-of-day batch sign. */
+/** True for a visit-scoped log: frozen by its author's finalize on departure. */
+export function isVisitLog(logType) {
+  return VISIT_LOG_TYPES.includes(logType);
+}
+
+/**
+ * True when this type may be swept into the end-of-day batch sign.
+ *
+ * NOT simply "not immediate". A visit log is neither immediate nor batchable,
+ * and the two-way version of this predicate was what made the third class
+ * invisible.
+ */
 export function isBatchable(logType) {
-  return !isImmediateLog(logType);
+  return !isImmediateLog(logType) && !isVisitLog(logType);
 }
 
 /**

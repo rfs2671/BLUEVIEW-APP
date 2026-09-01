@@ -54,10 +54,113 @@ def strip_python(src: str) -> str:
 
 
 def strip_js(src: str) -> str:
-    """/* */ and // comments out."""
-    src = _BLOCK.sub("", src)
-    src = _LINE.sub("", src)
-    return _TRAILING.sub("", src)
+    """Comments out, CODE AND STRINGS LEFT INTACT — by scanning, not by regex.
+
+    ── WHY THIS IS NOT THREE re.sub CALLS ANY MORE ─────────────────────────
+
+    It was, and the block pattern was `/\\*[\\s\\S]*?\\*/` applied FIRST. So a
+    LINE comment that happened to contain the two characters `/*` opened a
+    block comment that ran to the next `*/` anywhere in the file. A real
+    occurrence, in CpNav.js:
+
+        // Its active rule is "any /logbooks/*", which now includes ...
+
+    swallowed thirty lines of live JSX — the whole nav item map — and handed
+    the caller source with the code silently missing.
+
+    THAT IS THIS MODULE'S OWN TRAP, INVERTED AND WORSE. The docstring above
+    describes an assertion matching DOCUMENTATION instead of code. This
+    deleted the code and left the documentation, so:
+
+        assertIn(...)     fails loudly, and is how it was found
+        assertNotIn(...)  PASSES, VACUOUSLY, and says nothing
+
+    There are 617 assertNotIn assertions across 20 files reading through this
+    helper. Any one of them covering a region a stray `/*` had blanked was
+    asserting nothing at all, and would keep passing while the banned code sat
+    right there.
+
+    A REGEX CANNOT DO THIS JOB. Whether `/*` opens a comment depends on
+    whether you are already inside a string, a template literal, a line
+    comment or a regex literal — that is state, and state is what a scanner
+    has. So this walks the source once, tracking exactly that, and replaces
+    each comment with a newline-preserving blank so line numbers still line up
+    for anyone reading a failure message.
+    """
+    out = []
+    i, n = 0, len(src)
+    # The last significant character, used to tell a REGEX LITERAL from a
+    # division. `/` after a value divides; `/` after an operator or an opening
+    # bracket starts a regex. Getting this wrong matters: a regex containing
+    # `//` inside a character class would otherwise blank the rest of the line.
+    prev = ""
+    while i < n:
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+
+        if c == "/" and nxt == "/":
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c == "/" and nxt == "*":
+            j = src.find("*/", i + 2)
+            block = src[i:(n if j < 0 else j + 2)]
+            # Keep the newlines so line numbers survive.
+            out.append("\n" * block.count("\n"))
+            i = n if j < 0 else j + 2
+            continue
+        if c in "'\"`":
+            quote = c
+            out.append(c)
+            i += 1
+            while i < n:
+                ch = src[i]
+                out.append(ch)
+                if ch == "\\":
+                    if i + 1 < n:
+                        out.append(src[i + 1])
+                        i += 2
+                        continue
+                if ch == quote:
+                    i += 1
+                    break
+                i += 1
+            prev = quote
+            continue
+        if c == "/" and (prev == "" or prev in "(,=:[!&|?{};+-*%~^<>"):
+            # A regex literal. Copied verbatim; its contents are not comments.
+            out.append(c)
+            i += 1
+            in_class = False
+            while i < n:
+                ch = src[i]
+                out.append(ch)
+                if ch == "\\":
+                    if i + 1 < n:
+                        out.append(src[i + 1])
+                        i += 2
+                        continue
+                elif ch == "[":
+                    in_class = True
+                elif ch == "]":
+                    in_class = False
+                elif ch == "/" and not in_class:
+                    i += 1
+                    break
+                elif ch == "\n":
+                    # Not a regex after all (they cannot span lines). Bail out
+                    # rather than consuming the rest of the file.
+                    i += 1
+                    break
+                i += 1
+            prev = "/"
+            continue
+
+        out.append(c)
+        if not c.isspace():
+            prev = c
+        i += 1
+    return "".join(out)
 
 
 def strip_css(src: str) -> str:

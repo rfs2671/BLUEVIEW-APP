@@ -111,6 +111,10 @@ const EN_ONLY_NAMESPACES = [
   // signs it; the certification NAMES are card identifiers and stay in
   // oshaLogModel, not here.
   'oshaLog',
+  // app/logbooks/site_superintendent_log.jsx — the BC 3301.13.13 construction
+  // superintendent log. Signed by the superintendent and read by a DOB
+  // inspector; no worker sees it.
+  'siteSuperintendent',
   // app/logbooks/scaffold_maintenance.jsx — the DOB sidewalk-shed daily
   // inspection. The 19 question labels stay in scaffoldMaintenanceModel
   // because the filed PDF prints the same strings.
@@ -397,12 +401,17 @@ function walk(dir, out = []) {
 }
 const allSource = [...walk(path.join(FRONTEND, 'app')), ...walk(path.join(FRONTEND, 'src'))];
 const renderSites = allSource.filter((p) => /<SignaturePad/.test(fs.readFileSync(p, 'utf8')));
-// FOURTEEN with the fall-protection log. The count is pinned so a NEW render
-// site cannot appear without someone checking it against the rule below — that
-// no call site passes `lang`, which is the premise the whole reconnection rests
-// on. It is a checkpoint, not a ceiling.
-ok(renderSites.length === 14,
-  `14 files render <SignaturePad> (got ${renderSites.length})`);
+// FIFTEEN with the site superintendent log. The count is pinned so a NEW
+// render site cannot appear without someone checking it against the rule below
+// — that no call site passes `lang`, which is the premise the whole
+// reconnection rests on. It is a checkpoint, not a ceiling.
+//
+// The fifteenth is EN-only by scope (siteSuperintendent is in
+// EN_ONLY_NAMESPACES) and still passes no `lang`, which is the point: the
+// screen's own copy not being translated yet is a content decision, and it
+// must not become a per-call-site locale override on the signature pad.
+ok(renderSites.length === 15,
+  `15 files render <SignaturePad> (got ${renderSites.length})`);
 const passLang = renderSites.filter((p) => /<SignaturePad[\s\S]{0,1200}?\blang=/.test(fs.readFileSync(p, 'utf8')));
 ok(passLang.length === 0,
   `zero render sites pass lang= — the app locale is the only path to Spanish${passLang.length ? ` — ${JSON.stringify(passLang)}` : ''}`);

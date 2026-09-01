@@ -42,8 +42,8 @@ const M = new Function(`
     .replace(/^import .*$/gm, '')
     .replace(/^export default [\s\S]*$/m, '')
     .replace(/^export (async function|function|const) /gm, '$1 ')}
-  return { IMMEDIATE_LOG_TYPES, END_OF_DAY_LOG_TYPES, isImmediateLog,
-           isBatchable, freezeIfImmediate };
+  return { IMMEDIATE_LOG_TYPES, END_OF_DAY_LOG_TYPES, VISIT_LOG_TYPES,
+           isImmediateLog, isVisitLog, isBatchable, freezeIfImmediate };
 `)();
 
 // The server's own table, read rather than retyped.
@@ -51,15 +51,44 @@ const timingBlock = SERVER.slice(
   SERVER.indexOf('LOGBOOK_TIMING_CLASS = {'),
   SERVER.indexOf('def logbook_timing_class'),
 );
-const serverImmediate = [...timingBlock.matchAll(/"([a-z_]+)":\s*"immediate"/g)]
-  .map((m) => m[1]);
-const serverEndOfDay = [...timingBlock.matchAll(/"([a-z_]+)":\s*"end_of_day"/g)]
-  .map((m) => m[1]);
+/**
+ * EVERY entry, with WHATEVER class it names — not two greps for two classes
+ * this file already knew about.
+ *
+ * THE ORIGINAL SHAPE IS WHY THE THIRD CLASS SHIPPED UNMIRRORED. This read
+ * `"immediate"` and `"end_of_day"` by name, so `site_superintendent_log:
+ * "visit"` matched neither pattern and was invisible. The balance check below
+ * then confirmed 10 + 2 === 10 + 2 and reported that every registered type was
+ * accounted for, while a type the server had classified sat in no client list
+ * at all and answered `isBatchable` with the two-way default.
+ *
+ * A test that enumerates the cases it expects cannot report a case it did not
+ * expect. So: parse every "<key>": "<class>" pair, and let the SERVER decide
+ * which classes exist.
+ */
+const serverClass = new Map(
+  [...timingBlock.matchAll(/"([a-z_]+)":\s*"([a-z_]+)"/g)].map((m) => [m[1], m[2]]),
+);
+const byClass = (cls) => [...serverClass]
+  .filter(([, c]) => c === cls).map(([k]) => k);
+const serverImmediate = byClass('immediate');
+const serverEndOfDay = byClass('end_of_day');
+const serverVisit = byClass('visit');
 
-console.log('\n-- the two lists agree, type for type --');
-ok(serverImmediate.length > 0 && serverEndOfDay.length > 0,
+console.log('\n-- the lists agree, type for type, class for class --');
+ok(serverImmediate.length > 0 && serverEndOfDay.length > 0 && serverVisit.length > 0,
   `the server table was located (${serverImmediate.length} immediate, `
-  + `${serverEndOfDay.length} end-of-day)`);
+  + `${serverEndOfDay.length} end-of-day, ${serverVisit.length} visit)`);
+
+// THE CLASSES THEMSELVES ARE THE ANCHOR. If the server grows a FOURTH class,
+// this fails and names it — rather than the new class defaulting silently on
+// the client the way `visit` did.
+{
+  const classes = [...new Set(serverClass.values())].sort();
+  ok(JSON.stringify(classes) === JSON.stringify(['end_of_day', 'immediate', 'visit']),
+    `ANCHOR: the server declares exactly these timing classes — ${JSON.stringify(classes)}. `
+    + 'A new one means a new client list, not a wider comparison here');
+}
 {
   const missing = serverImmediate.filter((t) => !M.IMMEDIATE_LOG_TYPES.includes(t));
   ok(missing.length === 0,
@@ -75,9 +104,31 @@ ok(serverImmediate.length > 0 && serverEndOfDay.length > 0,
     'and the END_OF_DAY lists agree too — a type in neither list would be '
     + 'batchable on the client and immediate on the server');
 }
-ok(M.IMMEDIATE_LOG_TYPES.length + M.END_OF_DAY_LOG_TYPES.length
-   === serverImmediate.length + serverEndOfDay.length,
-  'every registered type is on exactly one of the two lists');
+{
+  const missing = serverVisit.filter((t) => !M.VISIT_LOG_TYPES.includes(t));
+  const extra = M.VISIT_LOG_TYPES.filter((t) => !serverVisit.includes(t));
+  ok(missing.length === 0 && extra.length === 0,
+    'and the VISIT lists agree — the class that shipped mirrored nowhere'
+    + `${missing.length ? ` — MISSING ${JSON.stringify(missing)}` : ''}`
+    + `${extra.length ? ` — EXTRA ${JSON.stringify(extra)}` : ''}`);
+}
+
+// EVERY REGISTERED TYPE ON EXACTLY ONE LIST, counted against the WHOLE table
+// rather than against the two classes this file used to know about. The old
+// version summed two client lists and two server greps; a type in a third
+// class was absent from both sides and the equation still balanced.
+{
+  const onAClient = [...M.IMMEDIATE_LOG_TYPES, ...M.END_OF_DAY_LOG_TYPES,
+    ...M.VISIT_LOG_TYPES];
+  const unmirrored = [...serverClass.keys()].filter((t) => !onAClient.includes(t));
+  ok(unmirrored.length === 0,
+    'every type in the server table is on exactly one client list'
+    + `${unmirrored.length ? ` — UNMIRRORED ${JSON.stringify(unmirrored)}` : ''}`);
+  ok(onAClient.length === new Set(onAClient).size,
+    'and none is on two — a type in two lists makes the predicates disagree');
+  ok(onAClient.length === serverClass.size,
+    `client lists total ${onAClient.length}, server table has ${serverClass.size}`);
+}
 
 console.log('\n-- and the predicate follows the list --');
 for (const t of serverImmediate) {
@@ -87,6 +138,17 @@ for (const t of serverImmediate) {
 for (const t of serverEndOfDay) {
   ok(M.isImmediateLog(t) === false, `${t}: stays open, frozen by the EOD sign`);
   ok(M.isBatchable(t) === true, `${t}: and it IS batchable`);
+}
+for (const t of serverVisit) {
+  // THE THREE ANSWERS THAT MUST NOT COLLAPSE INTO TWO. A visit log is not
+  // immediate (the signature alone does not lock it) and not batchable (the
+  // overnight sweep must never freeze a visit its author had not finished).
+  // Before VISIT_LOG_TYPES existed the second of these was TRUE on the client
+  // and FALSE on the server.
+  ok(M.isVisitLog(t) === true, `${t}: frozen by its author's finalize on departure`);
+  ok(M.isImmediateLog(t) === false, `${t}: the signature alone does not freeze it`);
+  ok(M.isBatchable(t) === false,
+    `${t}: and it is NOT batchable — the EOD sweep must never touch it`);
 }
 // An UNKNOWN type must behave as end_of_day, matching logbook_timing_class's
 // documented default — the safer one, because nothing is force-frozen by

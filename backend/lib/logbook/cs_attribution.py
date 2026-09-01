@@ -231,3 +231,38 @@ def attribution_sentence(result) -> str:
                 f"determined from the record.")
     return (f"Signed by {who}. No construction superintendent is registered "
             f"for this project in this system.")
+
+
+# ── THE CAPABILITY ──────────────────────────────────────────────────────────
+#
+# The same question this module already answers at READ time, asked at MENU
+# time: is this person the registered construction superintendent here?
+#
+# ONE PREDICATE, TWO CALLERS, AND THAT IS THE POINT. A nav item that decides
+# "is he the superintendent" by its own rule would drift from the sentence the
+# filed document prints about him. So the menu asks `attribute_signer` -- the
+# same function, the same four states, the same date resolution.
+#
+# TWO STATES QUALIFY, and only two: the account link and the licence match are
+# the cases where the system has an affirmative reason to believe this person
+# holds the role.
+CS_CAPABLE_STATES = (MATCHED_ACCOUNT, MATCHED_LICENCE)
+
+
+def is_registered_cs(result) -> bool:
+    """Does this attribution say the signer IS the registered CS?
+
+    NO_REGISTRATION IS FALSE HERE, AND THAT IS NOT THE SAME CLAIM the read-time
+    path makes about it. At read time an absent registration means NOTHING WAS
+    CHECKED and must never print as a finding. At menu time the question is
+    different -- "should this person be offered the superintendent's log as
+    their primary action" -- and "nobody is registered" is not a yes.
+
+    THIS IS SAFE ONLY BECAUSE IT GATES A SHORTCUT. The log stays reachable from
+    the CP dashboard for anyone assigned to the project, so a superintendent
+    whose registration an admin has not yet filled in loses a menu entry, not
+    the ability to record his visit. If this predicate is ever used to REFUSE a
+    filing, that reasoning collapses and the module's first rule -- IT NEVER
+    BLOCKS -- is broken.
+    """
+    return isinstance(result, dict) and result.get("state") in CS_CAPABLE_STATES

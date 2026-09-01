@@ -17,9 +17,10 @@ import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
-import { LayoutDashboard, QrCode, Settings } from 'lucide-react-native';
+import { HardHat, LayoutDashboard, QrCode, Settings } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
 import { withAlpha } from '../styles/semanticColors';
 import CheckinQrModal from './CheckinQrModal';
 
@@ -91,6 +92,58 @@ const CP_NAV_ITEMS = [
   { path: '/settings',        icon: Settings,        label: 'Settings'  },
 ];
 
+// ── THE SUPERINTENDENT'S SLOT ───────────────────────────────────────────────
+//
+// A SUBSTITUTION, NOT A FOURTH ITEM. The nav stays at three.
+//
+// WHY NOT FOUR. CP_NAV_PILL_HEIGHT cannot move — it is composed from padding
+// and icon size only — so a fourth item was structurally safe. It was not
+// LEGIBLE: items share the width equally, so a fourth drops each from ~1/3 to
+// ~1/4 of the pill, and at 320pt "Dashboard" already had ONE POINT of
+// headroom at three. numberOfLines turns that into an ellipsis rather than a
+// wrap, which protects the layout and not the reading. One point of headroom
+// is not a margin worth keeping on a control used outdoors, in sun, gloved.
+//
+// WHAT IT REPLACES, AND WHY NOTHING IS LOST. Check-In. The nav entry opens the
+// same QR modal the dashboard already offers, so it is a second door to one
+// room; the superintendent's log had no door at all in this menu.
+//
+// GATED ON THE CAPABILITY, NEVER THE ROLE. The superintendent on 588 Thomas
+// holds a `cp` account. A role test would hide this from the one man who has
+// to file it and show it to every CP who does not. The server answers the
+// question — /auth/me returns `superintendent_projects`, computed through
+// attribute_signer, the SAME predicate the filed document uses to say who
+// signed it — so the menu and the record cannot disagree about who the
+// superintendent is.
+//
+// AND IT ONLY EVER HIDES A SHORTCUT. The log is required on every project
+// class, so the CP dashboard lists it and routes to it by log type. A
+// superintendent whose registration an admin has not yet filled in loses a
+// menu entry, not the ability to record his visit — which is the rule
+// cs_attribution.py states in capitals: IT NEVER BLOCKS.
+const SUPERINTENDENT_ITEM = {
+  path: '/logbooks/site_superintendent_log',
+  icon: HardHat,
+  // "Super" is what he is called on site. The full title does not fit a third
+  // of a 320pt pill and the abbreviation is not a compromise — see navLabel.
+  label: 'Super',
+};
+
+/**
+ * The three items this principal sees.
+ *
+ * `superintendentProjects` is the list from /auth/me. Non-empty means the
+ * server has an affirmative reason to believe this person holds the role.
+ */
+export function cpNavItems(superintendentProjects) {
+  const capable = Array.isArray(superintendentProjects)
+    && superintendentProjects.length > 0;
+  if (!capable) return CP_NAV_ITEMS;
+  return CP_NAV_ITEMS.map(
+    (it) => (it.path === CHECKIN_QR_ACTION ? SUPERINTENDENT_ITEM : it),
+  );
+}
+
 const NavItem = ({ item, isActive, onPress, colors: c }) => {
   const Icon = item.icon;
   return (
@@ -116,27 +169,61 @@ const CpNav = () => {
   const insets   = useSafeAreaInsets();
   const { isDark, colors: c } = useTheme();
   const [showCheckinQr, setShowCheckinQr] = useState(false);
+  const { user } = useAuth();
+
+  const superProjects = user?.superintendent_projects;
+  const items = cpNavItems(superProjects);
+
+  /**
+   * Where the superintendent item goes.
+   *
+   * THE SCREEN NEEDS A PROJECT and the nav has no project context, so it
+   * carries the one the capability itself names.
+   *
+   * EXACTLY ONE is the normal case and is not a coincidence: the NYC DOB
+   * one-job rule (eff. Jan 2026) limits a CS to one active job, and
+   * register_construction_superintendent raises a conflict alert when a
+   * licence appears on a second. So one project means straight in.
+   *
+   * MORE THAN ONE means the rule has been breached or a registration was left
+   * active, and the nav MUST NOT GUESS which site he is standing on — filing a
+   * superintendent's visit against the wrong project is a worse outcome than
+   * one extra tap. It routes to the dashboard, which is the project picker.
+   */
+  const openSuperintendentLog = () => {
+    const only = Array.isArray(superProjects) && superProjects.length === 1
+      ? superProjects[0] : null;
+    router.push(only
+      ? `${SUPERINTENDENT_ITEM.path}?projectId=${encodeURIComponent(only)}`
+      : '/logbooks');
+  };
 
   // blurContent already carries a near-opaque background, so the nav
   // reads fine without the blur layer.
   const navInner = (
     <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : withAlpha('#ffffff', 0.9) }]}>
       <View style={styles.nav}>
-        {CP_NAV_ITEMS.map((item) => {
-          const isActive =
-            pathname === item.path ||
-            (item.path === '/logbooks' &&
-             pathname.startsWith('/logbooks/'));
+        {items.map((item) => {
+          // DASHBOARD MUST NOT LIGHT UP ON THE SUPERINTENDENT'S OWN SCREEN.
+          // Its active rule is "any /logbooks/*", which now includes a sibling
+          // item's path — so two of three would read as active at once.
+          const isSuper = item.path === SUPERINTENDENT_ITEM.path;
+          const isActive = isSuper
+            ? pathname === SUPERINTENDENT_ITEM.path
+            : (pathname === item.path
+               || (item.path === '/logbooks'
+                   && pathname.startsWith('/logbooks/')
+                   && pathname !== SUPERINTENDENT_ITEM.path));
           return (
             <NavItem
               key={item.path}
               item={item}
               isActive={isActive}
-              onPress={() => (
-                item.path === CHECKIN_QR_ACTION
-                  ? setShowCheckinQr(true)
-                  : router.push(item.path)
-              )}
+              onPress={() => {
+                if (item.path === CHECKIN_QR_ACTION) { setShowCheckinQr(true); return; }
+                if (isSuper) { openSuperintendentLog(); return; }
+                router.push(item.path);
+              }}
               colors={c}
             />
           );
@@ -243,6 +330,17 @@ const styles = StyleSheet.create({
   // stops depending on item count, label length and font scale together. That
   // is what makes a FOURTH item safe to add later without moving every screen's
   // clearance. Keep it.
+  //
+  // THE FOURTH ITEM ARRIVED (the superintendent log, label "Super"), and the
+  // measurements above were NOT re-taken on a device for it — the pill height
+  // is asserted to be unchanged by derivation instead, in
+  // CpNav.clearance.test.cjs, which is sound because the derivation provably
+  // contains no item-count or label-width term. What is NOT covered by that
+  // argument is legibility: at 320pt and four items "Dashboard" and "Settings"
+  // now ellipsize. That was accepted deliberately. If a FIFTH item is ever
+  // added, re-measure rather than extending the same reasoning again — four
+  // ~72pt columns is where icon + any label stops being readable at all, and
+  // the failure then is not the pill growing, it is every label reading "Da…".
   navLabel: { fontSize: 11, fontWeight: '500' },
   border: {
     ...StyleSheet.absoluteFillObject,
