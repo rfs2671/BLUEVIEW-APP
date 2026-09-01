@@ -511,15 +511,46 @@ export default function DashboardScreen() {
     onSiteNow: activeCheckIns.length,
   };
 
-  // Worst outcome across the dashboard's supporting reads (workers, today's
-  // check-ins). A dead zone must not pass as a quietly complete dashboard, so
-  // the failure gets a banner rather than being swallowed into empty arrays.
+  // ── The dashboard's supporting reads, BY NAME ─────────────────────────
+  //
+  // LOADED, FAILED and PARTIALLY LOADED ARE THREE STATES. This used to collapse
+  // the last two: a worst-of across both reads produced one string -- "some of
+  // today's data could not be read" -- which is the same sentence whether one
+  // of two reads failed or both did. On a compliance screen that is unusable:
+  // a reader who cannot tell WHICH number is untrustworthy has to distrust all
+  // of them, which is the opposite of what the banner is for.
+  //
+  // The information was always here. The condition knew which read failed and
+  // threw the name away one line later. It is carried through now, so the next
+  // failure names itself instead of starting another round of theories.
+  //
+  // `affects` MATTERS MORE THAN THE SOURCE NAME. On a first load a failed read
+  // leaves its state at the initial [] -- so the count renders 0, not "—". A
+  // plausible-looking zero is the dangerous output here, and the banner is the
+  // only thing on the page that says it is not a real one.
+  const dashboardSources = [
+    {
+      state: workersState,
+      label: 'the worker list',
+      affects: 'the Workers total',
+    },
+    {
+      state: checkinsState,
+      label: "today's check-ins",
+      affects: 'the On Site Now count',
+    },
+  ];
+  const failedSources = dashboardSources.filter((d) => d.state !== 'ok');
+  // Worst outcome wins the MODE (an error is not a dead zone), but the mode no
+  // longer decides the whole sentence.
   const dashboardFetchState =
-    workersState === 'error' || checkinsState === 'error'
+    failedSources.some((d) => d.state === 'error')
       ? 'error'
-      : workersState === 'offline' || checkinsState === 'offline'
+      : failedSources.some((d) => d.state === 'offline')
         ? 'offline'
         : 'ok';
+  const dashboardPartial =
+    failedSources.length > 0 && failedSources.length < dashboardSources.length;
 
   if (authLoading) {
     return (
@@ -771,20 +802,43 @@ export default function DashboardScreen() {
     );
   };
 
+  /** "a" / "a and b" — Oxford-free because the list is never longer than two. */
+  const joinNames = (items) =>
+    items.length <= 1 ? (items[0] || '') : items.join(' and ');
+
   // Honest banner for supporting reads that never landed. Rendered on every
   // layout so the failure is visible wherever the user actually is.
+  //
+  // NAMES THE SOURCE, THE AFFECTED NUMBER, AND WHAT STILL LOADED. The third
+  // part is the one that makes the screen usable: without it, one failed read
+  // out of two is indistinguishable from total failure, and an admin who
+  // cannot tell the difference stops trusting the rows that are fine.
   const renderDataNotice = () => {
     if (loading || dashboardFetchState === 'ok') return null;
-    return (
-      <OfflineNotice
-        mode={dashboardFetchState}
-        detail={
-          dashboardFetchState === 'offline'
-            ? "Some of today's data could not be fetched. What you see may be incomplete — it is not a confirmation that there is nothing."
-            : "Some of today's data could not be read from the server. What you see may be incomplete."
-        }
-      />
+
+    const failedLabels = joinNames(failedSources.map((d) => d.label));
+    const failedAffects = joinNames(failedSources.map((d) => d.affects));
+    const okLabels = joinNames(
+      dashboardSources.filter((d) => d.state === 'ok').map((d) => d.label),
     );
+
+    // "could not be fetched" is a dead zone; "could not be read from the
+    // server" is a server that answered and refused. The distinction is kept
+    // because it decides whether waiting or escalating is the right move.
+    const verb =
+      dashboardFetchState === 'offline'
+        ? 'could not be fetched'
+        : 'could not be read from the server';
+
+    const plural = failedSources.length > 1;
+    const detail =
+      `${failedLabels.charAt(0).toUpperCase()}${failedLabels.slice(1)} ${verb}. `
+      + `${failedAffects.charAt(0).toUpperCase()}${failedAffects.slice(1)} `
+      + `${plural ? 'are' : 'is'} not reliable — a zero there means the read `
+      + `failed, not that there are none.`
+      + (dashboardPartial ? ` ${okLabels.charAt(0).toUpperCase()}${okLabels.slice(1)} loaded normally.` : '');
+
+    return <OfflineNotice mode={dashboardFetchState} detail={detail} />;
   };
 
   // ── Phase B3: empty state for fresh customers ──────────────────
