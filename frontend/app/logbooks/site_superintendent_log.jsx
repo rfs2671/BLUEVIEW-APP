@@ -48,7 +48,9 @@ import { outdoor, spacing } from '../../src/styles/theme';
 import { useToast } from '../../src/components/Toast';
 import { useT } from '../../src/i18n';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
+import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import { logbooksAPI, dobAPI } from '../../src/utils/api';
+import { scratchKey, stash, take, drop } from '../../src/utils/logbookScratch';
 // TWO MODULES, AND THEY ARE NOT INTERCHANGEABLE. `signatureAudit` is the
 // LEDGER (recordSignatureEvent, device fingerprint, integrity); the predicate
 // that says whether a signature was affirmed lives in `signatureAffirmed`.
@@ -94,6 +96,7 @@ export default function SiteSuperintendentLog() {
   const logDate = String(date || todayISO());
 
   const { cpName, cpSignature, setCpSignature, setCpName, profileLoaded } = useCpProfile();
+  const consent = useEsraConsent();
 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -152,6 +155,18 @@ export default function SiteSuperintendentLog() {
           if (existing.cp_signature) setCpSignature(existing.cp_signature);
           if (existing.cp_name) setCpName(existing.cp_name);
         }
+        // ── AND ANYTHING HE HAD TYPED, ON TOP ────────────────────────────
+        //
+        // AFTER the server hydrate, deliberately: the stash is NEWER. It is
+        // what he had on screen a moment ago and has not saved, so it wins
+        // over the stored document rather than being overwritten by it.
+        //
+        // NEVER ONTO A FROZEN DOCUMENT. A log that came back locked is
+        // read-only, and restoring edits onto it would put text on screen
+        // that no longer corresponds to anything writable. `take` still
+        // clears the stash, so it cannot resurface later either.
+        const held = take(scratchId);
+        if (held && !(existing && existing.is_locked === true)) restore(held);
       } catch (_e) {
         // A failed read is not an empty log. Leave the form as it is and let
         // him work offline; the draft is local-first like every other editor.
@@ -231,6 +246,49 @@ export default function SiteSuperintendentLog() {
     })));
   }
 
+  // ── WHAT HE HAS TYPED, HELD ACROSS THE TRIP TO /consent ─────────────────
+  //
+  // THE RAW FIELDS, NOT buildData's DOCUMENT SHAPE. The document shape is
+  // lossy by design — deriveConditionAndOrderBlocks drops a finding row that
+  // has a location typed but no condition yet, and unticked DOB suggestions
+  // never reach it at all. Those are still his work, and a screen that hands
+  // back less than he left is not preserving anything.
+  //
+  // See logbookScratch.js for why this exists at all: the consent screen is a
+  // route, and the claim that the navigator keeps this screen mounted beneath
+  // it could not be verified. Correct under either answer.
+  const scratchId = scratchKey(LOG_TYPE, projectId, logDate);
+
+  const snapshot = () => ({
+    arrivedAt, departedAt, printedName, progress, activities, locations,
+    inspectedOn, inspectionLocation, inspectionResult,
+    findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
+    competentPersonName, step,
+  });
+
+  const restore = (v) => {
+    if (!v || typeof v !== 'object') return;
+    setArrivedAt(v.arrivedAt ?? '');
+    setDepartedAt(v.departedAt ?? '');
+    setPrintedName(v.printedName ?? '');
+    setProgress(v.progress ?? '');
+    setActivities(v.activities ?? '');
+    setLocations(v.locations ?? '');
+    setInspectedOn(v.inspectedOn ?? logDate);
+    setInspectionLocation(v.inspectionLocation ?? '');
+    setInspectionResult(v.inspectionResult ?? '');
+    setFindings(Array.isArray(v.findings) ? v.findings : []);
+    setNoneBoth(v.noneBoth === true);
+    setDobEntries(Array.isArray(v.dobEntries) ? v.dobEntries : []);
+    setDobNone(v.dobNone === true);
+    setIncidentEntries(Array.isArray(v.incidentEntries) ? v.incidentEntries : []);
+    setIncidentsNone(v.incidentsNone === true);
+    setCompetentPersonName(v.competentPersonName ?? '');
+    // BACK ON THE STEP HE LEFT. Returning him to step 1 after a five-step form
+    // is its own small loss.
+    if (Number.isInteger(v.step) && v.step >= 1 && v.step <= TOTAL_STEPS) setStep(v.step);
+  };
+
   // ── the document this screen would file ─────────────────────────────────
   const buildData = useCallback((departure) => {
     const both = deriveConditionAndOrderBlocks(findings, noneBoth);
@@ -279,6 +337,37 @@ export default function SiteSuperintendentLog() {
     if (!departedAt.trim()) setDepartedAt(departure);
     if (!isAffirmedSignature(cpSignature)) return;
     if (unanswered.length > 0) return;
+
+    // ── THE AGREEMENT TO SIGN ELECTRONICALLY ───────────────────────────────
+    //
+    // BB 2024-007 § V.5. The backend has recorded this since #308 and nothing
+    // ever asked for it, so every signature applied before this line existed
+    // was applied without recorded consent — and no later migration can fix
+    // that, because a consent recorded in October does not describe a
+    // signature applied in September.
+    //
+    // ASKED HERE, AT THE SIGNATURE, AND NOT AT SCREEN OPEN. Consent is about
+    // the act of signing, so the act is what it gates. He fills the whole log
+    // either way; nothing he typed is at risk, and a man who has already
+    // consented — which is everyone after the first time — never sees it.
+    //
+    // ANYTHING OTHER THAN A RECORDED CURRENT CONSENT STOPS HERE and opens the
+    // sheet in place. `ensure()` returns false for not-agreed, for superseded
+    // wording, AND for "could not ask" — the last one deliberately, because a
+    // signature applied while we cannot tell whether consent exists is the
+    // defect this whole path removes. The sheet names which case it is.
+    //
+    // HIS ENTRY IS HELD FIRST, because `ensure()` may navigate. See
+    // logbookScratch.js: the consent screen is a route, and whether this
+    // screen stays mounted beneath it is a property of the navigator that
+    // could not be verified. Stashing makes the answer irrelevant — if it
+    // stays mounted the stash is written and never read.
+    stash(scratchId, snapshot());
+    if (!(await consent.ensure())) return;
+    // He is still here, so nothing was navigated away from and the stash is
+    // dead weight. Drop it rather than leaving it to be restored onto a
+    // later, different visit.
+    drop(scratchId);
 
     setSigning(true);
     try {

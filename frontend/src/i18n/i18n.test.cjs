@@ -115,6 +115,13 @@ const EN_ONLY_NAMESPACES = [
   // superintendent log. Signed by the superintendent and read by a DOB
   // inspector; no worker sees it.
   'siteSuperintendent',
+  // src/components/EsraConsentModal.jsx — the frame around the agreement to
+  // sign electronically. ON THE LIST BECAUSE THE AGREEMENT ITSELF IS ENGLISH:
+  // lib/esra_consent.py carries one text and the modal renders it verbatim, so
+  // a Spanish frame would imply the agreement had been translated when it has
+  // not. It comes OFF this list at the same time as the consent text is
+  // translated, not before — and that is a compliance decision, not a UI one.
+  'esraConsent',
   // app/logbooks/scaffold_maintenance.jsx — the DOB sidewalk-shed daily
   // inspection. The 19 question labels stay in scaffoldMaintenanceModel
   // because the filed PDF prints the same strings.
