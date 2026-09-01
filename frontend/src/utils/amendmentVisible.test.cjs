@@ -62,13 +62,18 @@ console.log('\n1. THE CARD NO LONGER ACCUSES HIM');
 
 console.log('\n2. THE CARD SAYS WHO AND WHY');
 {
-  // `gapDate` is declared ABOVE this helper, so it is not the end anchor —
-  // slicing to it yields an empty string and every assertion below passes
-  // vacuously. The next declaration after the helper is the end.
-  const start = INDEX.indexOf('const amendmentLine');
-  const end = INDEX.indexOf('const gapsOldestFirst');
-  ok(start > 0 && end > start, 'the helper block was located at all');
-  const fn = INDEX.slice(start, end);
+  // THE RENDERER MOVED. The card built this sentence inline and produced
+  // "…on 2026-08-14. Photo Review it and sign." — a stored fragment glued to
+  // the next clause. It now delegates to amendmentSentence in the shared
+  // module, so these assertions follow it there rather than re-testing a
+  // template the screen no longer owns. The intent is unchanged: the card
+  // names the author, branches on whether a reason was recorded, and says so
+  // when none was.
+  const fn = fs.readFileSync(
+    path.join(FRONTEND, 'src', 'utils', 'amendmentChain.js'), 'utf8',
+  ).split('\r\n').join('\n');
+  ok(/amendmentSentence/.test(INDEX),
+    'the card delegates to the shared renderer');
   ok(/a\.by/.test(fn) && /a\.at/.test(fn), 'it names the author and the date');
   ok(/has_reason/.test(fn), 'it branches on whether a reason was recorded');
   ok(/No reason was recorded/.test(fn),
