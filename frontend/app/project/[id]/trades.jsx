@@ -449,8 +449,30 @@ export default function ProjectTradesScreen() {
                     )}
                     {showSuggest && (
                       <View style={s.suggestBox}>
+                        {/*
+                          THE HEIGHT IS ON THE CONTAINER AND THE SCROLL IS ON
+                          THE LIST. It used to be maxHeight on this ScrollView
+                          with nothing bounding the View around it, which broke
+                          both surfaces from one cause:
+
+                            web    — the box measured empty and rendered nothing
+                            native — the rows drew but the list would not move,
+                                     so no trade was reachable
+
+                          `nestedScrollEnabled` is required because this sits
+                          inside the page ScrollView; without it Android gives
+                          the gesture to the parent. This is the shape the two
+                          working dropdowns already use — GCAutocomplete and
+                          AddressAutocomplete both bound the container and set
+                          the prop on the list.
+
+                          It surfaced now because #224 replaced the type-ahead
+                          with a tap-open dropdown and dropped the filter, so
+                          all 25 vocabulary entries render at once. A typed
+                          handful used to fit; the full list has to scroll.
+                        */}
                         <ScrollView
-                          style={{ maxHeight: 220 }}
+                          nestedScrollEnabled
                           keyboardShouldPersistTaps="handled"
                         >
                           {vocabulary.map((t) => (
@@ -718,6 +740,10 @@ function buildStyles(colors, isDark) {
       borderRadius: borderRadius.md,
       borderWidth: 1,
       borderColor: colors.glass.border,
+      // BOUNDS THE BOX, so the ScrollView inside it has a height to scroll
+      // within. Same as GCAutocomplete's `dropdown` and AddressAutocomplete's
+      // — both put the cap here, not on the list.
+      maxHeight: 220,
       overflow: 'hidden',
     },
     suggestItem: {

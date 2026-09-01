@@ -4577,6 +4577,22 @@ ROLE_SUPERINTENDENT = "superintendent"
 # looks broken, so creation is refused up front instead.
 ROLES_REQUIRING_COMPANY = ("cp", ROLE_SUPERINTENDENT)
 
+# THE ROLES SCOPED TO THEIR ASSIGNED PROJECTS — a DIFFERENT question from the
+# one above, and it gets its own name despite the identical membership.
+#
+# ROLES_REQUIRING_COMPANY answers "must this role carry a company_id when the
+# account is created" (:7466). This answers "may this role act only on projects
+# it was assigned to". They agree today and need not tomorrow: a role added to
+# one for its own reason must not silently acquire the other's restriction, or
+# lose it. Two rules that happen to coincide are still two rules.
+#
+# admin/owner are deliberately ABSENT — they are scoped by COMPANY through
+# project_access_ok, and holding them to personal assignments would refuse an
+# admin filing on a project he does not personally hold. A site device is
+# absent for its own reason: project_access_ok branch 1 scopes it to the
+# project it was provisioned for, and it has no assigned_projects at all.
+ROLES_SCOPED_TO_ASSIGNED_PROJECTS = ("cp", ROLE_SUPERINTENDENT)
+
 
 def is_superintendent(user) -> bool:
     return str((user or {}).get("role") or "").strip().lower() == ROLE_SUPERINTENDENT
@@ -20329,12 +20345,25 @@ def _submit_missing_trade_detail(log_type, payload):
 @api_router.post("/logbooks", dependencies=[Depends(require_approved)])
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
-    # CP write-scope gate: a Competent Person may only create/upsert
-    # logbooks for a project they're assigned to. Checked before the
-    # project lookup so an unassigned CP can't probe project existence.
-    # Other roles (admin/owner/superintendent/site_device) are
-    # unaffected and retain their existing broader access.
-    if current_user.get("role") == "cp":
+    # PROJECT WRITE-SCOPE GATE: a CP or a superintendent may only create/upsert
+    # logbooks for a project they're assigned to. Checked before the project
+    # lookup so an unassigned user can't probe project existence.
+    #
+    # SUPERINTENDENT WAS ADDED HERE DELIBERATELY, REVERSING WHAT THIS COMMENT
+    # USED TO SAY. It read "Other roles (admin/owner/superintendent/
+    # site_device) are unaffected and retain their existing broader access" —
+    # written when the superintendent role existed but nothing used it. The
+    # effect was that the role meant to be NARROWER than a CP's was broader: it
+    # skipped this branch entirely and fell through to project_access_ok, whose
+    # branch 2 admits anyone in the project's COMPANY. So a superintendent
+    # could file on any project in the company while a CP was held to his
+    # assignments.
+    #
+    # Nobody holds the role today, which is why nothing was exposed — and is
+    # why it is closed now rather than the first time somebody is given it.
+    # admin/owner/site_device keep their existing access; only the role that
+    # was wrong is moved.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
         assigned = current_user.get("assigned_projects", []) or []
         if data.project_id not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
