@@ -164,6 +164,63 @@ export async function freeDiskBytes() {
 //   - a name any list mentions             -> keep
 // Only a file that parses AND is named by no list at all is removed.
 
+// NOT EVERY CACHED LIST IS A FLAT LIST OF FILE RECORDS.
+//
+// cacheDocList stores whatever array a screen hands it, and the screens do not
+// agree on a shape. Plans and documents store [{id, cache_version, ...}].
+// site/logbooks.jsx stores [{date, logs:[...]}] — the records are one level
+// down, and NOTHING at the top level carries an id. A keep-set built by
+// reading `f.id` off each element therefore came back EMPTY for that key while
+// the logbook PDFs on disk (written by warmDocCache as {logId}.{version}.pdf)
+// matched SWEEPABLE exactly. sweepDocCache runs from the plans screen on every
+// successful list load, so opening Plans deleted the super's offline logbooks —
+// the compliance record, the one file a DOB inspector asks for.
+//
+// So: descend into array-valued properties as well, and treat any object with
+// an id as a record wherever it is found.
+const NEST_DEPTH = 3;
+
+// THE VERSION FIELD IS NOT AGREED ON EITHER. Plans key the cached bytes on
+// `cache_version`; logbooks key theirs on `updated_at || submitted_at ||
+// created_at` (an amendment bumps updated_at, so the corrected PDF
+// re-downloads). collectKeepNames cannot know which screen wrote which record,
+// and guessing wrong deletes a file someone is relying on underground — so it
+// keeps the name for EVERY version this cache could have written for that id.
+// The extra names cost nothing: a name no file bears keeps no file.
+const VERSION_FIELDS = ['cache_version', 'updated_at', 'submitted_at', 'created_at'];
+
+function addRecordNames(keep, rec) {
+  const id = rec.id || rec._id;
+  if (!id) return;
+  // `?? 0` is the plans default when the record carries no cache_version, and
+  // has to stay in the set even when other version fields are present.
+  const versions = new Set([rec.cache_version ?? 0]);
+  for (const field of VERSION_FIELDS) {
+    const v = rec[field];
+    if (v !== undefined && v !== null && v !== '') versions.add(v);
+  }
+  for (const v of versions) {
+    // Extension is not on the record, so keep every extension this cache
+    // can produce for that id+version rather than guessing one.
+    keep.add(safeName(id, v, 'pdf'));
+  }
+}
+
+function collectFromNode(keep, node, depth) {
+  if (!node || typeof node !== 'object' || depth > NEST_DEPTH) return;
+  if (Array.isArray(node)) {
+    for (const el of node) collectFromNode(keep, el, depth);
+    return;
+  }
+  addRecordNames(keep, node);
+  // Only ARRAY-valued properties. A container is `{date, logs:[...]}`; walking
+  // every object-valued property instead would wander into `log.data` and the
+  // base64 photo blobs under it for no gain.
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) collectFromNode(keep, value, depth + 1);
+  }
+}
+
 /** The on-disk names every cached list currently refers to, across all
  *  projects. Null -- distinct from an empty Set -- when the lists could not be
  *  read, because "I could not look" must never be treated as "nothing to
@@ -182,14 +239,7 @@ export async function collectKeepNames() {
       let list;
       try { list = JSON.parse(raw); } catch (_e) { return null; }
       if (!Array.isArray(list)) continue;
-      for (const f of list) {
-        const id = f && (f.id || f._id);
-        if (!id) continue;
-        const v = f.cache_version ?? 0;
-        // Extension is not on the record, so keep every extension this cache
-        // can produce for that id+version rather than guessing one.
-        keep.add(safeName(id, v, 'pdf'));
-      }
+      collectFromNode(keep, list, 0);
     }
     return keep;
   } catch (_e) {

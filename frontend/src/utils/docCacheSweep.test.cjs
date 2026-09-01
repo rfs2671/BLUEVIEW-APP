@@ -232,7 +232,120 @@ async function main() {
   }
 
   // ═════════════════════════════════════════════════════════════════════════
-  // 6. THE SWEEP RUNS ONLY BEHIND A LIST THE SCREEN TRUSTED ENOUGH TO STORE.
+  // 6. THE OFFLINE LOGBOOKS SURVIVE A SWEEP FIRED FROM THE PLANS SCREEN.
+  //
+  //    Every case above builds a PLANS-shaped list — [{id, cache_version}] —
+  //    and that is the whole reason this defect shipped. cacheDocList stores
+  //    whatever array a screen hands it, and site/logbooks.jsx hands it
+  //    [{date, logs:[...]}]: the records are one level down and NOTHING at the
+  //    top level carries an id. A keep-set that reads `f.id` off each element
+  //    came back EMPTY for that key, while the logbook PDFs warmDocCache had
+  //    written ({logId}.{updated_at}.pdf) matched SWEEPABLE exactly. The sweep
+  //    fires from files.jsx on every successful plans load, so a CP opening
+  //    Plans on the street deleted the super's offline compliance record.
+  //
+  //    Versions do not agree either: plans key on `cache_version`, logbooks on
+  //    `updated_at || submitted_at || created_at`.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const log = {
+      id: 'lg1',
+      status: 'submitted',
+      created_at: '2026-05-02T07:00:00Z',
+      submitted_at: '2026-05-03T18:30:00Z',
+      updated_at: '2026-05-04T14:15:00Z',   // an amendment; what pdfVersion uses
+    };
+    // Ask the module for the on-disk name rather than hand-sanitising it here,
+    // so the test cannot drift from safeName().
+    const naming = load(makeDevice({ lists: {} }));
+    const liveLogPdf = naming.cachedDocName('lg1', log.updated_at);
+    const supersededLogPdf = naming.cachedDocName('lg1', '2026-04-28T09:00:00Z');
+    // The full-day combined report. Its id is INVENTED by the logbooks screen
+    // (`day_{projectId}_{date}`) and appears in no log record, so it survives
+    // only because that screen writes the identity onto the cached entry.
+    const dayPdf = naming.cachedDocName('day_P_2026-05-04', log.updated_at);
+
+    const d = makeDevice({
+      lists: {
+        // The CP's plans list — the screen that TRIGGERS the sweep.
+        'plans:A': [f('a1', 2)],
+        // The super's logbooks list, nested, on the same device — exactly the
+        // shape app/site/logbooks.jsx writes, day-report identity and all.
+        'site_logbooks:P': [
+          {
+            date: '2026-05-04',
+            id: 'day_P_2026-05-04',
+            cache_version: log.updated_at,
+            logs: [log],
+          },
+          { date: '2026-05-01', id: 'day_P_2026-05-01', cache_version: '2026-05-01', logs: [] },
+        ],
+      },
+      files: ['a1.2.pdf', liveLogPdf, supersededLogPdf, dayPdf, 'orphan.9.pdf'],
+    });
+
+    const r = await load(d).sweepDocCache();
+    ok(d.disk.has(liveLogPdf),
+      'THE SUBMITTED LOGBOOK PDF SURVIVES a sweep fired from the plans screen — '
+      + 'the keep-set reads records nested inside {date, logs:[...]}, not just '
+      + 'flat file rows');
+    ok(d.disk.has('a1.2.pdf'), "and the plans screen's own current plan survives");
+    ok(!d.disk.has('orphan.9.pdf'), 'while a genuine orphan is still removed');
+    ok(d.disk.has(dayPdf),
+      'THE FULL-DAY REPORT SURVIVES TOO — the sweep reads the id off the '
+      + '{date, ...} container itself, which is where the logbooks screen '
+      + 'declares the name it invented for a file no record mentions');
+    ok(!d.disk.has(supersededLogPdf),
+      'and a SUPERSEDED logbook PDF is still removed — keeping every version '
+      + 'field is not the same as keeping everything');
+    ok(r.deleted.length === 2, 'the counts report exactly those two removals');
+
+    // The keep-set directly, so a failure here names the cause rather than the
+    // symptom.
+    const keep = await load(d).collectKeepNames();
+    ok(keep !== null && keep.has(liveLogPdf),
+      'collectKeepNames descends into the nested logs array');
+    ok(keep.has('a1.2.pdf'), 'and still reads a flat plans row');
+
+    // The fixture above is hand-built, so on its own it proves only what
+    // docCache does with that shape. THE SCREEN HAS TO ACTUALLY WRITE IT:
+    // the day report's id is invented by app/site/logbooks.jsx and appears
+    // nowhere else, so if datesToList stops attaching it, the keep-set goes
+    // back to not naming that file and the sweep deletes it again.
+    const lb = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'app', 'site', 'logbooks.jsx'), 'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+      .replace(/^\s*\/\/.*$/gm, '');
+    const lbTree = parser.parse(lb, { sourceType: 'module', plugins: ['jsx'] });
+    let datesToList = null;
+    (function walkLb(n, seen) {
+      if (!n || typeof n !== 'object' || seen.has(n)) return;
+      seen.add(n);
+      if (n.type === 'VariableDeclarator' && n.id.name === 'datesToList' && n.init) {
+        datesToList = generate(n.init).code;
+      }
+      for (const k of Object.keys(n)) {
+        const v = n[k];
+        if (Array.isArray(v)) v.forEach((c) => walkLb(c, seen));
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walkLb(v, seen);
+      }
+    }(lbTree, new Set()));
+
+    ok(datesToList !== null, 'logbooks.jsx still builds its cached list in datesToList');
+    ok(datesToList !== null
+      && /\bid\b/.test(datesToList) && datesToList.indexOf('cache_version') !== -1,
+      'AND STAMPS A CACHE IDENTITY ON EACH CACHED ENTRY — without an id on the '
+      + 'entry, nothing on the device names the full-day report PDF and the '
+      + 'sweep is right to delete it');
+    const dayIdUses = (lb.match(/dayPdfId\s*\(/g) || []).length;
+    ok(dayIdUses >= 2,
+      'and the name is built by ONE helper used both where the file is '
+      + 'declared to the sweep and where it is opened — two spellings of that '
+      + 'id would be this same defect one level up');
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 7. THE SWEEP RUNS ONLY BEHIND A LIST THE SCREEN TRUSTED ENOUGH TO STORE.
   // ═════════════════════════════════════════════════════════════════════════
   {
     const screen = fs.readFileSync(

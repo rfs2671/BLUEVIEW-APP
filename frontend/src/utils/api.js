@@ -12,9 +12,39 @@ const CLIENT_VERSION = Constants.expoConfig?.version
 // API Base URL - uses the preview URL which proxies /api to backend
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
+/**
+ * HOW LONG A REQUEST IS ALLOWED TO SAY NOTHING.
+ *
+ * There was no timeout at all, so an offline request waited out the PLATFORM
+ * socket timeout — on Android well over a minute of a screen that looks frozen
+ * rather than a screen that says "offline". And nothing bounds it from the
+ * other end either: the deploy runs bare uvicorn with no --timeout, there is no
+ * gunicorn and no timeout middleware, so the client is the ONLY ceiling on a
+ * request anywhere in this system.
+ *
+ * 25s, and the number is set by the slowest endpoint still riding this default,
+ * not by taste:
+ *   • GET /api/weather makes up to two OpenWeather calls at 10s each when an
+ *     address needs geocoding — a 20s server-side ceiling.
+ *   • GET /api/projects/{id}/dropbox-files does an inline recursive Dropbox
+ *     listing on the COLD path (project_files empty): 5-15s.
+ * Anything under those turns a slow-but-working request into a false "offline".
+ *
+ * settleFetch already reads a timeout as offline rather than as an error
+ * (isOfflineError matches ECONNABORTED), so this ceiling surfaces as the
+ * offline banner, which is what the caller wants.
+ *
+ * ⚠️ THE DEFAULT MUST NOT AMPUTATE THE GENUINELY LONG JOBS. Every endpoint
+ * below that can legitimately exceed 25s carries its own `timeout:` at the call
+ * site. Adding a new endpoint that scrapes an external API in a loop, renders a
+ * PDF with remote images, or carries a photo payload means adding one there.
+ */
+const DEFAULT_TIMEOUT_MS = 25000;
+
 // Create axios instance
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
+  timeout: DEFAULT_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -686,7 +716,15 @@ export const dropboxAPI = {
   },
 
   syncProject: async (projectId) => {
-    const response = await apiClient.post(`/api/projects/${projectId}/sync-dropbox`);
+    // MOSTLY fire-and-forget, but not entirely: before scheduling the R2 copy
+    // it does one INLINE recursive `files/list_folder` against Dropbox purely
+    // to return the file count. A big folder takes 12-20s, and the user is
+    // watching a Sync button he pressed on purpose.
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/sync-dropbox`,
+      undefined,
+      { timeout: 60000 },
+    );
     return response.data;
   },
 
@@ -922,13 +960,18 @@ export const logbooksAPI = {
     return response.data;
   },
 
+  // ⚠️ THE BODY CARRIES THE ACTIVITY PHOTOS AS BASE64 — several MB, pushed up
+  // jobsite LTE. The server work is fast (enhancement is a background task);
+  // what takes the time is the UPLOAD. A false timeout here is the worst kind
+  // in this app: the super re-submits and the day's record is written twice.
   create: async (data) => {
-    const response = await apiClient.post('/api/logbooks', data);
+    const response = await apiClient.post('/api/logbooks', data, { timeout: 90000 });
     return response.data;
   },
 
   update: async (logbookId, data) => {
-    const response = await apiClient.put(`/api/logbooks/${logbookId}`, data);
+    // Same payload shape — an amendment carries its photos too.
+    const response = await apiClient.put(`/api/logbooks/${logbookId}`, data, { timeout: 90000 });
     return response.data;
   },
 
@@ -971,8 +1014,12 @@ export const logbooksAPI = {
   },
 
   getPdf: async (logbookId) => {
+    // Real WeasyPrint, but text-only (this template emits no <img>), so 0.5-3s
+    // once warm. The first render after a deploy pays the font-cache warmup,
+    // which is what the margin over the default is for.
     const response = await apiClient.get(`/api/reports/logbook/${logbookId}/pdf`, {
       responseType: 'blob',
+      timeout: 60000,
     });
     return response.data;
   },
@@ -1217,7 +1264,14 @@ export const dobAPI = {
   },
 
   syncNow: async (projectId) => {
-    const response = await apiClient.post(`/api/projects/${projectId}/dob-sync`);
+    // 23 NYC Open Data endpoints, hit SEQUENTIALLY at 20s each server-side,
+    // with a possible second full pass for BIN healing. 8-25s on a good day
+    // and minutes on a bad one — the 25s default would fail it routinely.
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/dob-sync`,
+      undefined,
+      { timeout: 120000 },
+    );
     return response.data;
   },
 
@@ -1242,18 +1296,20 @@ export const permitRenewalAPI = {
     const response = await apiClient.get(`/api/permit-renewals/${renewalId}`);
     return response.data;
   },
+  // Both of these run a chain of SEQUENTIAL DOB lookups server-side (15-20s
+  // each), so they sit well past the 25s default: 20-60s is ordinary.
   checkEligibility: async (permitDobLogId, projectId) => {
     const response = await apiClient.post('/api/permit-renewals/check-eligibility', {
       permit_dob_log_id: permitDobLogId,
       project_id: projectId,
-    });
+    }, { timeout: 60000 });
     return response.data;
   },
   prepare: async (permitDobLogId, projectId) => {
     const response = await apiClient.post('/api/permit-renewals/prepare', {
       permit_dob_log_id: permitDobLogId,
       project_id: projectId,
-    });
+    }, { timeout: 90000 });
     return response.data;
   },
   getDashboardAlerts: async () => {

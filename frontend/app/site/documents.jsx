@@ -6,7 +6,6 @@ import {
   ScrollView,
   Pressable,
   TextInput,
-  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -164,9 +163,15 @@ export default function SiteDocumentsScreen() {
     setLoading(true);
     // Cache-FIRST: paint the saved list before the network is even attempted, so
     // a super in a cellar sees the real documents instead of a spinner that
-    // resolves into a blank screen.
+    // resolves into a blank screen. The spinner has to come DOWN here too:
+    // the body below is gated on `loading`, so a cached paint that leaves
+    // `loading` true is painted behind the spinner and the super waits out the
+    // whole network timeout to see documents that were already on the tablet.
     const cached = await readCachedDocList(scopeKey);
-    if (cached.length) setFiles(cached);
+    if (cached.length) {
+      setFiles(cached);
+      setLoading(false);
+    }
 
     const r = await settleFetch(() => dropboxAPI.getProjectFiles(siteProject.id));
     if (r.status === 'ok') {
@@ -219,11 +224,14 @@ export default function SiteDocumentsScreen() {
       remoteUrl: file?.r2_url || file?.directUrl,
     });
 
-    // Android can now render a cached file too — PDFViewer stages a local
-    // pdf.js copy for `file://` sources. Android still takes the REMOTE viewer
-    // while online, so the online path is byte-for-byte what it was; drop the
-    // `|| offline` to prefer the cached copy there as well.
-    if (local && (Platform.OS === 'ios' || offline)) {
+    // THE BYTES ON DISK WIN, ON EVERY PLATFORM. This used to read
+    // `(Platform.OS === 'ios' || offline)`, and `offline` is `fetchState ===
+    // 'offline'` — how the last list fetch went, not a live network signal. A
+    // tablet that loaded this screen with signal and then lost it still reads
+    // 'ok', so Android reached past the correct bytes on this tablet for a
+    // remote URL that could not resolve. PDFViewer stages a local pdf.js copy
+    // for `file://` sources.
+    if (local) {
       setSelectedPdfFile({ ...file, directUrl: local });
       setPdfViewerVisible(true);
       return;
