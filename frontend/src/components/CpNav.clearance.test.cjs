@@ -95,6 +95,49 @@ ok(/DECOUPLED FROM ITEM COUNT ON PURPOSE/.test(SRC),
 ok(/pill 70/.test(SRC),
    'the measurement is recorded, so the next reader need not re-derive it');
 
+// ── A FOURTH ITEM, AND WHY THE CLEARANCE DID NOT MOVE ───────────────────────
+// The superintendent log added a fourth nav item. The 58 above was measured at
+// three items, and it was NOT re-measured on a device for the fourth — so the
+// claim being made here is narrower and has to be stated honestly: the pill
+// height cannot depend on item count BECAUSE THE DERIVATION CONTAINS NO TERM
+// THAT VARIES WITH IT. That is checkable from the source, and it is checked.
+//
+// The failure this guards is the one already recorded above: the pill grows,
+// eats the clearance the three screens derive, and covers the last row — which
+// a screenshot does not reveal, because the pill is ~90% opaque and a covered
+// row is still faintly visible, just not tappable.
+{
+  const items = SRC.match(/^\s*\{ path: /gm) || [];
+  ok(items.length === 4,
+     `the nav ships four items (got ${items.length}) — if this fails, the count `
+     + 'changed and the reasoning below needs re-reading, not the number bumped');
+
+  // The derivation, term by term. If any term ever mentions the item list, the
+  // "cannot depend on item count" argument is void and the 58 needs measuring.
+  const pill = decl('CP_NAV_PILL_HEIGHT');
+  ok(!/CP_NAV_ITEMS|\.length|label/.test(pill),
+     'the pill height names no item count, no list and no label — so a fourth '
+     + 'item provably cannot change it');
+  ok(CP_NAV_PILL_HEIGHT === 58 && CP_NAV_CLEARANCE === 106,
+     'and it did not: pill 58, clearance 106, unchanged at four items');
+
+  // Width DOES change — each item drops from ~1/3 to ~1/4 of the pill — and
+  // numberOfLines is the whole reason that is a legibility cost rather than a
+  // layout one. Asserted here as well as above because THIS is the change that
+  // made it load-bearing rather than precautionary.
+  ok(/navItem: \{[\s\S]*?flex: 1/.test(SRC),
+     'items still share the width equally, which is what narrows the labels');
+  ok(SRC.includes('numberOfLines={1}'),
+     'so the squeezed label ellipsizes instead of wrapping the pill taller');
+
+  // The new item is reachable, and it is a route rather than the QR sentinel.
+  ok(/path: '\/logbooks\/site_superintendent'/.test(SRC),
+     'the superintendent log is reachable from the nav');
+  ok(/THE FOURTH ITEM ARRIVED/.test(SRC),
+     'and the source records that the measurement was reasoned, not re-taken — '
+     + 'the next person to add an item is told to measure instead');
+}
+
 // ── The screens consume it ──────────────────────────────────────────────────
 // The inset is the term the old hardcoded numbers were missing entirely, and
 // it is the one that differs between gesture and 3-button navigation.

@@ -2,7 +2,7 @@
  * The pinned ink finally has a pinned canvas under it.
  *
  * THE DEFECT. `outdoor` is the app's light look, frozen, worn deliberately by
- * the ten logbook editors: a CP fills a compliance log outdoors, often in
+ * the eleven logbook editors: a CP fills a compliance log outdoors, often in
  * direct sun, and a dark card is unreadable there whatever theme he has set.
  * The pin was applied to the CONTENT and never to the CANVAS —
  * AnimatedBackground kept painting the LIVE theme. In dark mode that put
@@ -23,8 +23,11 @@
  * the stops alone leaves a light canvas with a dark scanline and no tint — a
  * third look matching neither theme.
  *
- * TEN SCREENS, ONE WRAPPER. Every editor mounts LogbookStepper, so the fix is
- * one prop at two call sites, not ten screen edits.
+ * ELEVEN SCREENS, ONE WRAPPER. Every editor mounts LogbookStepper, so the fix
+ * was one prop at two call sites, not ten screen edits — and it is why the
+ * eleventh editor inherited a pinned canvas for free, which is exactly what
+ * made its own unpinned CONTENT a silent dark-mode blank rather than a visible
+ * mismatch.
  *
  *   node frontend/src/utils/outdoorCanvasPin.test.cjs
  */
@@ -107,15 +110,29 @@ console.log('\n-- the four correctly-themed screens are untouched --');
   }
 }
 
-console.log('\n-- and the ten pinned editors still route through the stepper --');
+console.log('\n-- and the eleven pinned editors still route through the stepper --');
 {
   const dir = path.join(FRONTEND, 'app', 'logbooks');
   const LIVE = new Set(['index.jsx', 'preshift_signin.jsx', 'review.jsx',
     'subcontractor_orientation.jsx']);
   const pinned = fs.readdirSync(dir)
     .filter((f) => f.endsWith('.jsx') && !LIVE.has(f));
-  ok(pinned.length === 10,
-    `ANCHOR: ten pinned editors (${pinned.length}) — ${pinned.join(', ')}`);
+  // TEN BECAME ELEVEN: site_superintendent.jsx, the BC 3301.13.13 log.
+  //
+  // THE ANCHOR EARNED ITS KEEP HERE. That screen was written reaching for
+  // useTheme() and mounting an unpinned pad, and it was the CENSUS — not a
+  // screenshot, not a review — that caught it. The failure it would have
+  // shipped is the same defect this file documents, running the other way:
+  // LogbookStepper pins the canvas LIGHT unconditionally, so in dark mode the
+  // screen would have drawn dark-theme ink, which is LIGHT, on a light
+  // gradient. Blank screen, no error, and invisible to anyone testing in
+  // light mode — which is everyone, because the pinned canvas looks identical
+  // in both.
+  //
+  // So the number goes up by one and the reason is written down. Do not bump
+  // it again without saying which screen and why.
+  ok(pinned.length === 11,
+    `ANCHOR: eleven pinned editors (${pinned.length}) — ${pinned.join(', ')}`);
 
   const notStepper = pinned.filter(
     (f) => !/LogbookStepper/.test(read(path.join('app', 'logbooks', f))));
@@ -132,7 +149,7 @@ console.log('\n-- and the ten pinned editors still route through the stepper --'
     + `pixel they own comes from outdoor. Found: ${JSON.stringify(live)}`);
 }
 
-console.log('\n-- SignaturePad renders its LIGHT-MODE self on the pinned ten --');
+console.log('\n-- SignaturePad renders its LIGHT-MODE self on the pinned eleven --');
 {
   const PAD = code(read('src/components/SignaturePad.js'));
   ok(/pinned\s*=\s*false/.test(PAD),
@@ -163,7 +180,7 @@ console.log('\n-- SignaturePad renders its LIGHT-MODE self on the pinned ten --'
 
 console.log('\n-- the six other mounters are byte-identical --');
 {
-  // Only the ten pinned editors pass it. Everything else - including the four
+  // Only the eleven pinned editors pass it. Everything else - including the four
   // correctly-themed logbook screens - must render exactly as before.
   // THE FOUR THAT ACTUALLY RENDER ONE. `grep -l SignaturePad` returns more
   // files than this, and every extra is a false positive: review.jsx only
@@ -186,9 +203,12 @@ console.log('\n-- the six other mounters are byte-identical --');
 
 console.log('\n-- every render site is accounted for, pinned or live --');
 {
-  // 14 render sites: 10 pinned, 4 live. Pinned so a NEW one cannot appear
+  // 15 render sites: 11 pinned, 4 live. Pinned so a NEW one cannot appear
   // without someone deciding which half it belongs to - which is exactly
   // the decision that was never made for the canvas.
+  //
+  // The fifteenth is site_superintendent.jsx and it is PINNED. It arrived
+  // unpinned and this assertion is what said so.
   const walk = (d, out = []) => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
@@ -201,8 +221,8 @@ console.log('\n-- every render site is accounted for, pinned or live --');
     .map((f) => [f, code(fs.readFileSync(f, 'utf8'))])
     .filter(([, src]) => /<SignaturePad[\s>]/.test(src));
   const live = sites.filter(([, src]) => !/<SignaturePad\s+pinned/.test(src));
-  ok(sites.length === 14,
-    'ANCHOR: 14 render sites (' + sites.length + ')');
+  ok(sites.length === 15,
+    'ANCHOR: 15 render sites (' + sites.length + ')');
   ok(live.length === 4,
     'exactly four stay live: ' + JSON.stringify(live.map(([f]) => path.basename(f))));
 }

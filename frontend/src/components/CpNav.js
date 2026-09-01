@@ -17,7 +17,7 @@ import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
-import { LayoutDashboard, QrCode, Settings } from 'lucide-react-native';
+import { HardHat, LayoutDashboard, QrCode, Settings } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 import { withAlpha } from '../styles/semanticColors';
@@ -88,6 +88,18 @@ const CP_NAV_ITEMS = [
   // what the CP is reaching for is a way to check a man in. See the label
   // note on navLabel about why the length is not what keeps this safe.
   { path: CHECKIN_QR_ACTION,  icon: QrCode,          label: 'Check-In'  },
+  // THE FOURTH ITEM, AND WHY THE HEIGHT DOES NOT MOVE. CP_NAV_PILL_HEIGHT is
+  // composed from padding + icon size only — it carries no item count and no
+  // label width — so a fourth item cannot change it, and CP_NAV_CLEARANCE and
+  // the three screens deriving from it stay where they are.
+  //
+  // WHAT A FOURTH ITEM DOES CHANGE IS WIDTH: each item drops from ~1/3 to
+  // ~1/4 of the pill. At 320pt "Dashboard" already had ONE POINT of headroom
+  // with three items, so it now ellipsizes — which is what `numberOfLines={1}`
+  // is for, and is a legibility cost rather than a layout one. The label here
+  // is deliberately SHORT so the truncation lands on the pre-existing items
+  // rather than on the one being introduced.
+  { path: '/logbooks/site_superintendent', icon: HardHat, label: 'Super' },
   { path: '/settings',        icon: Settings,        label: 'Settings'  },
 ];
 
@@ -243,6 +255,17 @@ const styles = StyleSheet.create({
   // stops depending on item count, label length and font scale together. That
   // is what makes a FOURTH item safe to add later without moving every screen's
   // clearance. Keep it.
+  //
+  // THE FOURTH ITEM ARRIVED (the superintendent log, label "Super"), and the
+  // measurements above were NOT re-taken on a device for it — the pill height
+  // is asserted to be unchanged by derivation instead, in
+  // CpNav.clearance.test.cjs, which is sound because the derivation provably
+  // contains no item-count or label-width term. What is NOT covered by that
+  // argument is legibility: at 320pt and four items "Dashboard" and "Settings"
+  // now ellipsize. That was accepted deliberately. If a FIFTH item is ever
+  // added, re-measure rather than extending the same reasoning again — four
+  // ~72pt columns is where icon + any label stops being readable at all, and
+  // the failure then is not the pill growing, it is every label reading "Da…".
   navLabel: { fontSize: 11, fontWeight: '500' },
   border: {
     ...StyleSheet.absoluteFillObject,

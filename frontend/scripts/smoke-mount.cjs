@@ -85,6 +85,14 @@ const ROUTES = [
   // Ported onto the shared stepper in batch 1a. Same reason as the pair
   // above: this job is the only thing that executes a logbook screen.
   '/logbooks/toolbox_talk?projectId=p1',
+  // THE ONLY NEW EDITOR SINCE THE PORT, and the one with the strongest claim
+  // to a mount: every other route here was an existing screen moved onto the
+  // stepper, whereas this one was written against it from nothing. It also
+  // reaches for two things at mount that no other editor does — dobAPI for the
+  // violation suggestions and useCpProfile before the log read returns — and
+  // an error-boundary render is the only way either would surface, since the
+  // rest of the suite reads this file's source without ever executing it.
+  '/logbooks/site_superintendent?projectId=p1',
   '/admin/site-devices',
   '/admin/users',
   '/reports',
