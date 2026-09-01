@@ -33,7 +33,7 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { projectsAPI, csRegistrationAPI } from '../../src/utils/api';
+import { projectsAPI, csRegistrationAPI, adminUsersAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -60,6 +60,8 @@ export default function SuperintendentScreen() {
   // Registered" is a compliance claim; never render it off a failed read.
   const [fetchState, setFetchState] = useState('ok');
   const [projectsState, setProjectsState] = useState('ok');
+  const [users, setUsers] = useState([]);
+  const [usersState, setUsersState] = useState('ok');
 
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -73,6 +75,7 @@ export default function SuperintendentScreen() {
     full_name: '',
     license_number: '',
     nyc_id_email: '',
+    user_id: '',
     sst_number: '',
     phone: '',
   });
@@ -100,8 +103,14 @@ export default function SuperintendentScreen() {
     setLoading(true);
     // settleFetch replaces `.catch(() => [])` so an unreachable server is
     // reported instead of rendering as "nobody is registered".
-    const [regsRes, projsRes] = await Promise.all([
+    const [regsRes, usersRes, projsRes] = await Promise.all([
       settleFetch(() => csRegistrationAPI.getAll()),
+      // EVERY APPROVED USER IN THE COMPANY, NO ROLE FILTER. A CS licence is a
+      // DOB credential, not an app role: Michael is role "cp" and IS the
+      // construction superintendent. Filtering by role would hide the one
+      // person this screen exists to link — the same mistake as gating the log
+      // on role == "superintendent".
+      settleFetch(() => adminUsersAPI.getAll()),
       settleFetch(() => projectsAPI.getAll()),
     ]);
 
@@ -111,6 +120,17 @@ export default function SuperintendentScreen() {
       setRegistrations(Array.isArray(regs) ? regs : (regs?.items || []));
     } else {
       console.error('Load registrations failed:', regsRes.error);
+    }
+
+    // A FAILED USER LOAD IS NOT AN EMPTY COMPANY. The picker says it could
+    // not load rather than offering an empty list, which would read as "there
+    // is nobody to link".
+    setUsersState(usersRes.status);
+    if (usersRes.status === 'ok') {
+      const us = usersRes.data;
+      setUsers(Array.isArray(us) ? us : (us?.items || []));
+    } else {
+      console.error('Load users failed:', usersRes.error);
     }
 
     setProjectsState(projsRes.status);
@@ -134,6 +154,7 @@ export default function SuperintendentScreen() {
       full_name: '',
       license_number: '',
       nyc_id_email: '',
+      user_id: '',
       sst_number: '',
       phone: '',
     });
@@ -151,6 +172,11 @@ export default function SuperintendentScreen() {
       full_name: reg.full_name || '',
       license_number: reg.license_number || '',
       nyc_id_email: reg.nyc_id_email || '',
+      // THE EXISTING LINK, SHOWN SO IT CAN BE FIXED. Registrations created
+      // before the picker existed carry user_id: null, and Michael's is one of
+      // them. An edit form that silently dropped the field would make an
+      // unlinked registration permanently unlinkable.
+      user_id: reg.user_id || '',
       sst_number: reg.sst_number || '',
       phone: reg.phone || '',
     });
@@ -174,6 +200,10 @@ export default function SuperintendentScreen() {
         nyc_id_email: form.nyc_id_email.trim() || null,
         sst_number: form.sst_number.trim() || null,
         phone: form.phone.trim() || null,
+        // NULL, NOT '' — an empty string is a user id that matches nobody, and
+        // attribute_signer compares it against the signer's id. Absent must
+        // read as absent.
+        user_id: form.user_id || null,
       };
       const result = await csRegistrationAPI.create(payload);
 
@@ -221,6 +251,11 @@ export default function SuperintendentScreen() {
       const sstNew = form.sst_number.trim() || null;
       if (sstNew !== (editingReg.sst_number || null))
         changed.sst_number = sstNew;
+      // NULL, NOT '' — see the create payload. Compared against the stored
+      // value so "not linked" -> "linked" AND "linked" -> "not linked" are both
+      // real changes that get sent.
+      const userNew = form.user_id || null;
+      if (userNew !== (editingReg.user_id || null)) changed.user_id = userNew;
       const phoneNew = form.phone.trim() || null;
       if (phoneNew !== (editingReg.phone || null))
         changed.phone = phoneNew;
@@ -424,6 +459,43 @@ export default function SuperintendentScreen() {
                     </Text>
                   ) : null}
 
+                  {/* THREE STATES, AND THE ADMIN MUST BE ABLE TO SEE THE
+                      MIDDLE ONE. Every registration created before the picker
+                      existed carries user_id: null, and an admin who cannot
+                      SEE that a registration is unlinked will not know to fix
+                      it. The third state — a link to a user who is no longer
+                      in the company — looks linked until somebody tries to use
+                      it, so it is called out rather than rendered as a blank.
+
+                      What it decides: with a link, attribute_signer can return
+                      MATCHED_ACCOUNT; without one the best available answer is
+                      MATCHED_LICENCE, which the module itself calls
+                      "corroboration, not binding". */}
+                  {(() => {
+                    if (!reg.user_id) {
+                      return (
+                        <Text style={[s.nycidText, s.linkMissing]} numberOfLines={1}>
+                          Not linked to a user account
+                        </Text>
+                      );
+                    }
+                    const linked = users.find(
+                      (u) => String(u.id || u._id) === String(reg.user_id),
+                    );
+                    if (!linked) {
+                      return (
+                        <Text style={[s.nycidText, s.linkBroken]} numberOfLines={1}>
+                          Linked to a user who no longer exists
+                        </Text>
+                      );
+                    }
+                    return (
+                      <Text style={[s.nycidText, s.linkOk]} numberOfLines={1}>
+                        {`Linked to ${linked.full_name || linked.name || linked.email}`}
+                      </Text>
+                    );
+                  })()}
+
                   <View style={s.cardActions}>
                     <Pressable
                       onPress={() => openEdit(reg)}
@@ -583,6 +655,69 @@ export default function SuperintendentScreen() {
                     Used for DOB NOW filings and signature audit trail
                   </Text>
                 </View>
+
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>APP ACCOUNT</Text>
+                  {/* EVERY APPROVED USER IN THE COMPANY, NO ROLE FILTER.
+                      A CS licence is a DOB credential, not an app role —
+                      Michael is role "cp" and IS the construction
+                      superintendent, so a role filter would hide the one
+                      person this control exists to link.
+
+                      WHAT IT DECIDES: with a link, attribute_signer returns
+                      MATCHED_ACCOUNT for logs he signs. Without one the best
+                      available answer is MATCHED_LICENCE, which that module
+                      calls "corroboration, not binding" — two humans typed the
+                      same string.
+
+                      NO DEFAULT SELECTION. Linking the wrong user would assert
+                      an identity on a statutory record, so nothing is
+                      pre-picked and the empty state says so plainly. */}
+                  {usersState !== 'ok' ? (
+                    <Text style={[s.helperText, s.linkBroken]}>
+                      Could not load the user list. Save without a link and add
+                      it later — the registration still files.
+                    </Text>
+                  ) : (
+                    <>
+                      <Pressable
+                        onPress={() => setForm({ ...form, user_id: '' })}
+                        style={[s.userRow, !form.user_id && s.userRowActive]}
+                      >
+                        <Text style={[s.userRowText, !form.user_id && s.userRowTextActive]}>
+                          Not linked
+                        </Text>
+                      </Pressable>
+                      {users.map((u) => {
+                        const uid = String(u.id || u._id);
+                        const label = u.full_name || u.name || u.email;
+                        return (
+                          <Pressable
+                            key={uid}
+                            onPress={() => setForm({ ...form, user_id: uid })}
+                            style={[s.userRow, form.user_id === uid && s.userRowActive]}
+                          >
+                            {/* NAME AND EMAIL BOTH. Two people can share a
+                                name, and picking the wrong one puts another
+                                man's identity on a compliance record. */}
+                            <Text
+                              style={[s.userRowText, form.user_id === uid && s.userRowTextActive]}
+                              numberOfLines={1}
+                            >
+                              {label}
+                            </Text>
+                            <Text style={s.userRowEmail} numberOfLines={1}>{u.email}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </>
+                  )}
+                  <Text style={s.helperText}>
+                    Links this registration to the account that signs. Optional —
+                    a registration with no account still files.
+                  </Text>
+                </View>
+
 
                 <View style={s.formGroup}>
                   <Text style={s.formLabel}>SST NUMBER</Text>
@@ -835,6 +970,28 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
       marginTop: 2,
     },
+    // The three link states are distinguished by COLOUR as well as words: an
+    // admin scanning a list of registrations has to see which ones need fixing
+    // without reading every line. `critical`, not `danger` — the module
+    // exports attention / critical / verified.
+    userRow: {
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: withAlpha('#64748b', 0.25),
+      marginBottom: 6,
+    },
+    userRowActive: {
+      borderColor: semantic.verified,
+      backgroundColor: withAlpha(semantic.verified, 0.10),
+    },
+    userRowText: { fontSize: 14, color: colors.text.primary },
+    userRowTextActive: { fontWeight: '700' },
+    userRowEmail: { fontSize: 12, color: colors.text.muted, marginTop: 1 },
+    linkOk: { color: semantic.verified },
+    linkMissing: { color: semantic.attention },
+    linkBroken: { color: semantic.critical },
     statusBadge: {
       paddingHorizontal: spacing.sm,
       paddingVertical: 4,
