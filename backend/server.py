@@ -23857,10 +23857,28 @@ async def cs_attribution_for(db_, project_id, log_date, signer):
     if db_ is None or not project_id:
         return attribute_signer(signer, None, log_date)
     try:
-        reg = await db_.cs_registrations.find_one({
+        # THE ACTIVE ONE, AND DETERMINISTICALLY.
+        #
+        # This was a bare find_one on (project_id, is_deleted) with no
+        # `is_active` and no sort. A project ACCUMULATES registrations --
+        # register_construction_superintendent deactivates the predecessor and
+        # inserts a new row rather than editing in place, and an admin can
+        # switch one off -- so this returned whichever row Mongo handed back
+        # first. When that was the deactivated predecessor, attribute_signer
+        # read its `deactivated_at` and a project with a live registered CS
+        # reported as having none: the exact failure the account link exists to
+        # prevent, degrading toward telling a statutory record that a named
+        # person was not registered.
+        #
+        # Two active rows should not exist, but "should not" is not "cannot" --
+        # one migration and it would. Newest created_at wins, ties on _id, the
+        # same ordering _filed_log and open_amendment_head use.
+        _regs = await db_.cs_registrations.find({
             "project_id": str(project_id),
+            "is_active": True,
             "is_deleted": {"$ne": True},
-        })
+        }).sort([("created_at", -1), ("_id", -1)]).to_list(20)
+        reg = _regs[0] if _regs else None
     except Exception as e:  # pragma: no cover
         logger.warning(f"[cs-log] registration read failed for {project_id}: {e!r}")
         reg = None
