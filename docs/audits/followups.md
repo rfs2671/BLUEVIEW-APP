@@ -4,6 +4,98 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-08-28 — a correctly configured control that could not reach the responses that needed it
+
+Fixed in #341 (`da74996`). Recorded because the SHAPE is the point, and because
+it is the third instance this week of one family: a check that runs, is
+correct, and cannot act on the case that matters.
+
+### The control was right in every particular
+
+`CORSMiddleware` had the right origins — both hosts we own, exact-match, no
+wildcard and no `allow_origin_regex` — the right methods, the right
+credentials flag. Nothing about its configuration was wrong, then or now.
+
+It was registered BEFORE the rate limiter. Starlette's `add_middleware`
+PREPENDS, so the last registration is the outermost layer: registering CORS
+first put the limiter OUTSIDE it. A limiter that short-circuits returns its own
+response without passing back through CORS, so a 429 left the server with **no
+`Access-Control-Allow-Origin` header at all** — and a 429 to a preflight is
+precisely the response most in need of one.
+
+The browser cannot tell that from a misconfiguration. It says:
+
+    Response to preflight request doesn't pass access control check:
+    It does not have HTTP ok status.
+
+which sends you to audit the origin list, where every entry is present and
+correct, and where a hand-run preflight returns 200 with the right header —
+because one cold request is never rate limited. **Every direct test of the
+control passed. The control was never reached.**
+
+Same family as the double whose `sort()` did nothing and still satisfied a
+determinism assertion, and the `--include=*.js` sweep blind to 96 `.cjs` files,
+and the local test glob that ran 85 of CI's 93. In each, the thing that failed
+was not the logic but its REACH, and reach is what a direct test of the logic
+cannot see. **A control that cannot match is indistinguishable, at every
+observation point, from one that matches everything — until someone reads the
+order.**
+
+Hence the fix's test asserts on `app.user_middleware` rather than on the
+source: what broke was the ORDER of a list whose entries were all correct, and
+a source-text check would have passed throughout.
+
+### THE ASYMMETRY THAT HID IT — a shared limit is not a shared budget
+
+The cap was one rule: `("ANY", "/api/admin/{rest:path}", "60/1 minute", "ip")`.
+One rule, one number, applied identically to every client. It broke exactly one
+of them.
+
+A browser sends an `Origin`, so it gets a **preflight** — and `evaluate()`
+counted `OPTIONS`. So the web spent **two requests of the allowance per call**.
+The native app sends no `Origin`, gets no preflight, spends **one**, and has no
+CORS layer to be bypassed: a 429 there arrives as a 429 and is handled.
+
+Same limit, half the budget, and a refusal that surfaces as a different error
+class. An admin page fanning out several calls at once crossed 60/min on the
+laptop while the phone stayed comfortably inside it — which is why this read as
+"web is broken" rather than "we are rate limiting ourselves", and why it was
+invisible to the client the team uses most.
+
+**The general rule: a per-identity limit is only equal if every client spends
+it at the same rate.** Before setting a cap, ask what one user ACTION costs on
+each surface. Preflights, retries, polling and cache-miss fan-out all mean two
+clients under one number are not under one budget.
+
+### AND THE SAME SHAPE ONE LEVEL UP, IN HOW THIS WAS DIAGNOSED
+
+Recorded at the operator's instruction, because it is the same failure in the
+conversation rather than in the code.
+
+An uncertain finding was reported with its uncertainty attached — a suspected
+mechanism, explicitly flagged as unconfirmed. It was then restated back as
+settled, and the next several questions PRESUMED it: a regex that does not
+exist in this codebase, a commit SHA that is not in this repository, and a
+"has this ever worked" question built on both. The correction was made, flagged
+again, and passed back a second time as accepted fact.
+
+**A correction that is issued and not read is worse than one never made,
+because repetition confers authority.** Each restatement made the false premise
+sound more established, and the questions built on it were well-formed, which
+made them harder to refuse than the original claim had been.
+
+The countermeasure is cheap and it is the same one the code uses: **check the
+claim against the artifact, not against the last person who said it.** Three
+commands settled all of it — `grep allow_origin_regex`, `git cat-file -t
+<sha>`, `git log -S'ALLOWED_ORIGINS'`. Any of them, run once, at any point,
+would have stopped the framing before it acquired weight.
+
+Both sides of that exchange are worth recording. The finding was flagged as
+uncertain and it was still restated as fact; and the restatement was accepted
+far enough to shape three rounds of questions before it was checked.
+
+---
+
 ## PARKED — 2026-08-28 — PR #90's worker_project_trades backfill: do not run it as written, and find out whether it already ran
 
 `chore/production-mongosh-scripts` (PR #90) has been open since 2026-08-08 and
