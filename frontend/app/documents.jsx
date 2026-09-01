@@ -257,10 +257,10 @@ export default function DocumentsScreen() {
         remoteUrl: file?.r2_url || file?.directUrl,
       });
 
-      // Android can now render a cached file too — PDFViewer stages a local
-      // pdf.js copy for `file://` sources. Android still takes the REMOTE
-      // viewer while online, so the online path is byte-for-byte what it was;
-      // drop the `|| offline` to prefer the cached copy there as well.
+      // Android renders every file from the pdf.js copy PDFViewer stages on
+      // the device — there is no remote viewer any more, so on Android the
+      // viewer pulls the bytes to disk itself if this hasn't. Handing it the
+      // cached uri here just saves that round trip.
       if (local && (Platform.OS === 'ios' || offline)) {
         setSelectedPdfFile({ ...file, directUrl: local });
         setPdfViewerVisible(true);

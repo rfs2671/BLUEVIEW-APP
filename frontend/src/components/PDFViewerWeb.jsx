@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, Scroll
 import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
+import { authorizedPdfUrl } from '../utils/pdfSrc';
 import { semantic, withAlpha } from '../styles/semanticColors';
 
 // Build a stable document identifier for an annotation. Direct-upload files
@@ -23,17 +24,15 @@ const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_
 // Handles three shapes: relative `/api/...` (backend-proxy), absolute backend proxy,
 // or any other absolute URL (already presigned / Dropbox / R2 public). Backend-proxy
 // URLs get a `?token=` query param appended so the iframe request is authenticated.
+//
+// The rule about WHICH urls may be given the token lives in utils/pdfSrc.js and
+// is shared with the native viewer: only our own origin, checked by origin and
+// not merely by path shape.
 async function resolvePdfSrc(rawUrl) {
   if (!rawUrl) return null;
-  let abs = rawUrl;
-  if (rawUrl.startsWith('/')) abs = `${API_BASE}${rawUrl}`;
-  if (abs.includes('/api/projects/') && abs.includes('/files/') && abs.endsWith('/content')) {
-    try {
-      const tok = await AsyncStorage.getItem('blueview_token');
-      if (tok) abs += (abs.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
-    } catch {}
-  }
-  return abs;
+  let token = null;
+  try { token = await AsyncStorage.getItem('blueview_token'); } catch {}
+  return authorizedPdfUrl(rawUrl, { apiBase: API_BASE, token });
 }
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -60,24 +59,38 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   const [showRecipientPicker, setShowRecipientPicker] = useState(false);
   const containerRef = useRef(null);
 
-  useEffect(() => {
-    if (visible && projectId) {
-      setLoading(true);
-      setError(false);
+  /**
+   * ONE loader, for the first open AND for Try Again.
+   *
+   * Try Again used to be its own inline handler calling `setUrl(r.url)` with
+   * the RAW response url — never absolutised, never authorised — so a retry
+   * pointed the iframe at a bare relative `/api/...` path and failed every
+   * time. The button could not work. There is now one path to `url`.
+   */
+  const loadPdf = useCallback(async () => {
+    if (!projectId) return;
+    setLoading(true);
+    setError(false);
+    try {
       // Direct-upload path: r2_url is already a backend-proxy URL or presigned URL.
-      if (file?.directUrl || file?.r2_url) {
-        resolvePdfSrc(file.directUrl || file.r2_url).then(src => { setUrl(src); setLoading(false); });
-      } else if (file?.path) {
-        dropboxAPI.getFileUrl(projectId, file.path)
-          .then(async res => { setUrl(await resolvePdfSrc(res.url)); setLoading(false); })
-          .catch(() => { setError(true); setLoading(false); });
-      } else {
-        setError(true);
-        setLoading(false);
+      let raw = file?.directUrl || file?.r2_url || null;
+      if (!raw && file?.path) {
+        const res = await dropboxAPI.getFileUrl(projectId, file.path);
+        raw = res?.url || null;
       }
+      if (!raw) { setError(true); setLoading(false); return; }
+      setUrl(await resolvePdfSrc(raw));
+      setLoading(false);
+    } catch (_e) {
+      setError(true);
+      setLoading(false);
     }
+  }, [projectId, file]);
+
+  useEffect(() => {
+    if (visible) loadPdf();
     return () => { setUrl(null); };
-  }, [visible, file, projectId]);
+  }, [visible, loadPdf]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
   const docKey = documentKeyFor(file);
@@ -239,7 +252,8 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
           <FileText size={48} strokeWidth={1} color="#64748b" />
           <Text style={styles.errorTitle}>Could not load document</Text>
           <Text style={styles.errorSub}>The file may be unavailable or corrupted.</Text>
-          <Pressable style={styles.retryBtn} onPress={() => { setError(false); setLoading(true); dropboxAPI.getFileUrl(projectId, file.path).then(r => { setUrl(r.url); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}>
+          {/* Retry runs the SAME loader the first open ran. */}
+          <Pressable style={styles.retryBtn} onPress={loadPdf}>
             <Text style={styles.retryText}>Try Again</Text>
           </Pressable>
         </View>

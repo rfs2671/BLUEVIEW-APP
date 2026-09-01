@@ -17,66 +17,70 @@ import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
-import { ensurePdfJsViewer, localViewerUrlFor, isLocalFileUri, pdfJsViewerDir } from '../utils/pdfjsViewer';
+import { ensurePdfJsViewer, localViewerUrlFor, pdfJsViewerDir } from '../utils/pdfjsViewer';
+import { ensureCachedDocFile } from '../utils/docCache';
+import {
+  isLocalFileUri, authorizedPdfUrl, pdfSourcePlan, pdfCacheKey,
+  PDF_SOURCE_NONE, PDF_SOURCE_LOCAL, PDF_SOURCE_DOWNLOAD,
+} from '../utils/pdfSrc';
 
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
-// Resolve whatever URL the backend gave us into something a native WebView can render.
-// Backend-proxy paths (`/api/projects/.../files/.../content`) get upgraded to an
-// absolute api.levelog.com URL and carry a `?token=` JWT so the stream endpoint
-// accepts the request (WebViews can't set Authorization headers).
-async function resolvePdfSrc(rawUrl) {
-  if (!rawUrl) return null;
-  // A cached `file://` uri from docCache is already final — it has no API base
-  // to resolve against and must never be given a `?token=`.
-  if (isLocalFileUri(rawUrl)) return rawUrl;
-  let abs = rawUrl;
-  if (rawUrl.startsWith('/')) abs = `${API_BASE}${rawUrl}`;
-  if (abs.includes('/api/projects/') && abs.includes('/files/') && abs.endsWith('/content')) {
-    try {
-      const tok = await AsyncStorage.getItem('blueview_token');
-      if (tok) abs += (abs.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
-    } catch {}
+/**
+ * Turn whatever url the backend handed us into something THIS platform can
+ * render, without ever letting the JWT off our own origin.
+ *
+ *   local `file://`  — already final. Never decorated with a token.
+ *   iOS + remote     — WKWebView/PDFKit renders the PDF itself. It cannot set
+ *                      an Authorization header, so our own proxy url carries
+ *                      `?token=`; a foreign url is left bare. The request goes
+ *                      to api.levelog.com and nowhere else.
+ *   Android + remote — Android's WebView has NO PDF renderer, which is why a
+ *                      viewer was ever wrapped around it. The bytes are pulled
+ *                      to disk with the token in the Authorization HEADER
+ *                      (docCache), and the pdf.js copy staged on this device
+ *                      draws the local file. This is what replaced encoding a
+ *                      token-bearing url into a viewer hosted by a third party.
+ *
+ * Returns a uri, or null when the bytes could not be put on disk — the caller
+ * shows the error state. There is deliberately NO remote-viewer fallback: a
+ * fallback is how the token got off the device in the first place.
+ */
+async function nativePdfUri(rawUrl, file) {
+  const plan = pdfSourcePlan(rawUrl, Platform.OS);
+  if (plan.kind === PDF_SOURCE_NONE) return null;
+  if (plan.kind === PDF_SOURCE_LOCAL) return plan.uri;
+  if (plan.kind === PDF_SOURCE_DOWNLOAD) {
+    return ensureCachedDocFile({
+      fileId: pdfCacheKey(file, rawUrl),
+      cacheVersion: file?.cache_version ?? 0,
+      remoteUrl: rawUrl,
+    });
   }
-  return abs;
-}
-
-// On Android, WebView can't natively render PDFs — we wrap the URL in
-// Mozilla's hosted pdf.js viewer. On iOS, WKWebView renders application/pdf
-// content natively via PDFKit with smooth pinch/zoom/pan, so we load the
-// PDF URL directly.
-// #pagemode=none CLOSES pdf.js's thumbnail sidebar. It is the library's own
-// default, not ours -- we ship no sidebar code at all -- and on a 6" phone it
-// takes half the screen. pdf.js also PERSISTS sidebar state in its ViewHistory,
-// so once it opens it reopens for every later document, which is why it read as
-// undismissable. iOS never reaches here: PDFKit has no sidebar.
-function pdfJsViewerUrl(pdfUrl) {
-  return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(pdfUrl)}#pagemode=none`;
+  let token = null;
+  try { token = await AsyncStorage.getItem('blueview_token'); } catch {}
+  return authorizedPdfUrl(rawUrl, { apiBase: API_BASE, token });
 }
 
 /**
- * Three cases, and only the third is new:
- *   iOS (any url)          — hand it straight to WKWebView/PDFKit. A local
- *                            `file://` already works there, which is why iOS
- *                            never needed a bundled viewer.
- *   Android + REMOTE url   — the hosted mozilla.github.io viewer, EXACTLY as
- *                            before. The online path is deliberately untouched.
- *   Android + LOCAL file:// — the pdf.js copy staged on disk by pdfjsViewer.js.
- *                            This is the offline case; without it a cached PDF
- *                            renders nothing.
+ * Two cases now, because Android's remote case no longer exists:
+ *   iOS (any url)           — hand it straight to WKWebView/PDFKit. A local
+ *                             `file://` already works there, which is why iOS
+ *                             never needed a bundled viewer.
+ *   Android (always local)  — the pdf.js copy staged on disk by pdfjsViewer.js.
+ *                             `nativePdfUri` guarantees the url is a `file://`
+ *                             by the time it gets here; anything else returns
+ *                             null and the caller keeps the error state rather
+ *                             than reaching for a viewer we do not host.
  */
 function webViewSourceForPdf(pdfUrl, localViewerUri) {
   if (Platform.OS === 'ios') {
     // PDFKit via WKWebView: smooth native zoom/scroll.
     return { uri: pdfUrl };
   }
-  if (isLocalFileUri(pdfUrl)) {
-    // No staged viewer yet -> caller keeps showing the loader / error.
-    if (!localViewerUri) return null;
-    return { uri: localViewerUrlFor(localViewerUri, pdfUrl) };
-  }
-  // Android, remote url: pdf.js fallback (unchanged).
-  return { uri: pdfJsViewerUrl(pdfUrl) };
+  // No staged viewer yet -> caller keeps showing the loader / error.
+  if (!isLocalFileUri(pdfUrl) || !localViewerUri) return null;
+  return { uri: localViewerUrlFor(localViewerUri, pdfUrl) };
 }
 
 export default function PDFViewer({ visible, file, projectId, onClose }) {
@@ -85,8 +89,9 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const [url, setUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  // `file://` uri of the locally staged pdf.js viewer.html — Android + offline
-  // only. Null on iOS and on the online path.
+  // `file://` uri of the locally staged pdf.js viewer.html — Android only, and
+  // now on EVERY Android open rather than only the offline ones. Null on iOS,
+  // which renders PDFs through PDFKit and needs no viewer of ours.
   const [localViewerUri, setLocalViewerUri] = useState(null);
   const [errorHint, setErrorHint] = useState('');
 
@@ -112,9 +117,10 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const isLocalPdf = isLocalFileUri(url);
   const needsLocalViewer = isLocalPdf && Platform.OS === 'android';
 
-  // Stage the offline pdf.js viewer on disk the first time an Android device
-  // opens a cached `file://` PDF. Cheap and memoised after that — it only
-  // copies two assets and writes one HTML file.
+  // Stage the pdf.js viewer on disk the first time an Android device opens a
+  // PDF. Cheap and memoised after that — it only copies two assets and writes
+  // one HTML file. `url` is always a `file://` on Android by this point, so
+  // this runs online as well as off.
   useEffect(() => {
     if (!visible || !needsLocalViewer) { setLocalViewerUri(null); return; }
     let mounted = true;
@@ -127,50 +133,74 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           setLoading(false);
           return;
         }
-        // ⚠️ Most likely `assets-missing`: assets/pdfjs/*.txt is still the
-        // documented placeholder rather than a real pdf.js build.
+        // ⚠️ `assets-missing` means assets/pdfjs/*.txt is a placeholder
+        // rather than a real pdf.js build. Since Android has no other way to
+        // draw a PDF, that now stops viewing outright instead of falling back
+        // to a viewer hosted elsewhere.
         setErrorHint(
           res?.reason === 'assets-missing'
-            ? 'The offline PDF viewer is not installed in this build.'
-            : 'The offline PDF viewer could not be prepared.'
+            ? 'The PDF viewer is not installed in this build.'
+            : 'The PDF viewer could not be prepared.'
         );
         setError(true);
         setLoading(false);
       })
       .catch(() => {
         if (!mounted) return;
-        setErrorHint('The offline PDF viewer could not be prepared.');
+        setErrorHint('The PDF viewer could not be prepared.');
         setError(true);
         setLoading(false);
       });
     return () => { mounted = false; };
   }, [visible, needsLocalViewer]);
 
-  useEffect(() => {
-    if (visible && projectId) {
-      setLoading(true);
-      setError(false);
-      setErrorHint('');
-      setUrl(null);
+  /**
+   * ONE loader, for the first open AND for Try Again.
+   *
+   * Try Again used to be its own inline handler that called `setUrl(r.url)`
+   * with the RAW response url — no absolutising, no auth — so a retry loaded a
+   * bare relative `/api/...` path and failed every time. The button could not
+   * work. Two paths to the same state is how that happened; there is now one.
+   */
+  const loadPdf = useCallback(async () => {
+    if (!projectId) return;
+    setLoading(true);
+    setError(false);
+    setErrorHint('');
+    setUrl(null);
+    try {
       // Direct-upload files expose their URL on the record itself (either
       // `directUrl` pushed by construction-plans.jsx or the raw `r2_url`
       // from the list response). Only fall back to the Dropbox temp-link
       // endpoint for files that don't have a direct URL (i.e. Dropbox-
       // synced files whose `path` is still populated).
-      if (file?.directUrl || file?.r2_url) {
-        resolvePdfSrc(file.directUrl || file.r2_url)
-          .then(src => { setUrl(src); setLoading(false); })
-          .catch(() => { setError(true); setLoading(false); });
-      } else if (file?.path) {
-        dropboxAPI.getFileUrl(projectId, file.path)
-          .then(async res => { setUrl(await resolvePdfSrc(res.url)); setLoading(false); })
-          .catch(() => { setError(true); setLoading(false); });
-      } else {
+      let raw = file?.directUrl || file?.r2_url || null;
+      if (!raw && file?.path) {
+        const res = await dropboxAPI.getFileUrl(projectId, file.path);
+        raw = res?.url || null;
+      }
+      if (!raw) { setError(true); setLoading(false); return; }
+
+      const uri = await nativePdfUri(raw, file);
+      if (!uri) {
+        // Android only: the bytes could not be put on disk, and there is no
+        // remote-viewer fallback by design.
+        setErrorHint('This document could not be saved to this device for viewing.');
         setError(true);
         setLoading(false);
+        return;
       }
+      setUrl(uri);
+      setLoading(false);
+    } catch (_e) {
+      setError(true);
+      setLoading(false);
     }
-  }, [visible, file, projectId]);
+  }, [projectId, file]);
+
+  useEffect(() => {
+    if (visible) loadPdf();
+  }, [visible, loadPdf]);
 
   // Load annotations — direct-upload files use `file:{id}` as the key.
   const docKey = documentKeyFor(file);
@@ -342,8 +372,11 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 <Text style={styles.actionText}>Open Externally</Text>
               </Pressable>
             )}
-            {!!file?.path && !isLocalPdf && (
-              <Pressable style={[styles.actionBtn, { backgroundColor: withAlpha('#ffffff', 0.1) }]} onPress={() => { setError(false); setErrorHint(''); setLoading(true); dropboxAPI.getFileUrl(projectId, file.path).then(r => { setUrl(r.url); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}>
+            {/* Retry runs the SAME loader the first open ran — resolving,
+                authorising and (on Android) re-fetching the bytes. Hidden once
+                `url` is a local file, where a retry would change nothing. */}
+            {!isLocalPdf && (
+              <Pressable style={[styles.actionBtn, { backgroundColor: withAlpha('#ffffff', 0.1) }]} onPress={loadPdf}>
                 <Text style={styles.actionText}>Try Again</Text>
               </Pressable>
             )}
@@ -358,8 +391,9 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
             onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}
           >
             {/* WebView for PDF — iOS uses PDFKit natively (smooth pinch-zoom);
-                Android wraps the URL in pdf.js since its WebView can't render
-                PDFs on its own. */}
+                Android draws the on-device copy with the pdf.js staged by
+                pdfjsViewer.js, since its WebView can't render PDFs on its
+                own. */}
             {React.createElement(
               require('react-native-webview').default,
               {
