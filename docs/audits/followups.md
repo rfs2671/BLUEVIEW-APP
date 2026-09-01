@@ -1810,3 +1810,62 @@ attorney's document:**
 to it: could this have failed? If a filter, a join or a grouping cannot be shown
 to have EXCLUDED something it should have excluded, it has not been tested — it
 has only been run.
+
+---
+
+### Role where capability was meant: diagnosed three times, real twice
+
+The superintendent on 588 Thomas holds a `cp` account. So any control that asks
+"is this person a superintendent" by reading `role` fails in the only case that
+matters — it hides his own statutory log from him, and offers it to every CP who
+is not a superintendent. That is a real defect, and it was found twice:
+
+**THE CP NAV.** The slot offering the BC 3301.13.13 log gated on the account's
+role in its first draft. Corrected before shipping, to a capability computed
+server-side through `attribute_signer` — the same predicate the filed document
+uses to say who signed it, so the menu and the record cannot disagree about who
+the superintendent is.
+
+**THE ROUTER.** `_layout.jsx` constrains role `cp` to `/logbooks`, `/documents`
+and `/settings`, and routes every other role to the admin dashboard. `CpNav`
+renders on those three CP screens and nowhere else. So a `superintendent`-ROLE
+account reaches neither the CP logbook list nor the CP nav, and has no path to
+the log named after his job. Unfixed, and moot only because no such account
+exists in production.
+
+── AND TWICE IT WAS NOT REAL, WHICH IS THE MORE USEFUL HALF ──────────────────
+
+**`/finalize`.** Reported as gating on bare `role == "cp"`, and therefore as
+working for the current CP "by accident". It does not gate there at all:
+`_authorize_logbook_write` runs on the line above and calls
+`user_can_act_on_project`, which is role-blind apart from its admin branch. The
+`role == "cp"` check below it is a documented duplicate kept for its more
+specific 403 message, and `update_logbook` and `amend_logbook` carry the same
+one. See #348.
+
+**THE LOGBOOK TILE.** Asserted to gate on `role == "cp"`, which would have made
+the nav the last remaining path for a superintendent-role user. It has no role
+gate: the sole role reference on that screen filters PROJECTS, and does the
+opposite — role `cp` is narrowed to assigned projects while every other role
+gets all company projects. And the nav was never a path for that user either,
+since `CpNav` renders only on screens the router will not send him to.
+
+── THE TELL, AND IT IS THE SAME BOTH TIMES ───────────────────────────────────
+
+**A role check sitting AFTER a shared authorizer, mistaken for the gate.**
+
+Read bottom-up, `if (role == "cp") { ... 403 }` names one role and refuses it,
+which invites the conclusion that every other role is ungated. Read top-down,
+the authorizer above it already decided — role-blind — and the check below is
+belt-and-braces for a better message.
+
+So the question to ask of a role check is not "what does this let through" but
+**"what ran before it"**. If a shared authorizer precedes it, the role check is
+not the gate and probably never was; an audit that stops at the role check
+reports a hole that does not exist, and then proposes a fix that removes a good
+error message.
+
+**Neither false positive was free.** One produced a PR that deleted a deliberate
+duplicate and had to be reverted; the other nearly justified keeping an item on
+a nav bar measured at one point of headroom. A wrong diagnosis does not cost
+nothing just because the code turns out to be fine.
