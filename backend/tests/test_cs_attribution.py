@@ -122,16 +122,45 @@ class ItResolvesAgainstTheLOGS_OwnDate(unittest.TestCase):
         r = CA.attribute_signer(SIGNER, reg, "2026-08-30")
         self.assertEqual(r["state"], CA.MATCHED_ACCOUNT)
 
-    def test_a_silently_DEACTIVATED_registration_is_UNDETERMINED_not_a_match(self):
-        """THE HONEST LIMIT. is_active is a CURRENT-STATE boolean and only the
-        delete path stamps a timestamp, so switching a registration off erases
-        when it was on. The check says it cannot tell rather than guessing."""
+    def test_deactivated_BEFORE_the_log_means_it_was_not_active_then(self):
+        r = CA.attribute_signer(
+            SIGNER,
+            dict(REG, is_active=False,
+                 deactivated_at=datetime(2026, 3, 1, tzinfo=timezone.utc)),
+            "2026-08-30")
+        self.assertEqual(r["state"], CA.NO_REGISTRATION)
+
+    def test_deactivated_AFTER_the_log_still_described_it(self):
+        """A registration retired last month does not un-describe a log signed
+        while it stood."""
+        r = CA.attribute_signer(
+            SIGNER,
+            dict(REG, is_active=False,
+                 deactivated_at=datetime(2026, 10, 1, tzinfo=timezone.utc)),
+            "2026-08-30")
+        self.assertEqual(r["state"], CA.MATCHED_ACCOUNT)
+
+    def test_BOTH_off_switches_stamp_a_time_so_the_question_is_answerable(self):
+        """AN EARLIER VERSION OF THIS MODULE CLAIMED ONLY THE DELETE PATH
+        STAMPED ONE, and documented a permanent "cannot be determined" for a
+        question the data could already answer. The writers had been INFERRED
+        from the model and the delete endpoint rather than ENUMERATED. This
+        asserts the two that were missed."""
+        src = (BACKEND / "server.py").read_text(encoding="utf-8")
+        # supersession by a new CS, and an admin switching it off
+        self.assertIn(
+            '{"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}',
+            src)
+        self.assertIn('update["deactivated_at"] = now', src)
+
+    def test_UNDETERMINED_survives_ONLY_for_the_pre_stamping_rump(self):
+        """A row switched off before either stamper existed carries is_active
+        False and no deactivated_at. The moment is unrecoverable, so the check
+        says so. THAT SET CANNOT GROW."""
         r = CA.attribute_signer(SIGNER, dict(REG, is_active=False), "2026-08-30")
         self.assertEqual(r["state"], CA.UNDETERMINED)
 
-    def test_a_TODAYS_log_is_unaffected_by_that_limit(self):
-        """is_active is current, so for a log dated at or before the
-        registration's creation there is nothing historical to determine."""
+    def test_a_TODAYS_log_is_unaffected_by_that_rump(self):
         r = CA.attribute_signer(SIGNER, dict(REG, is_active=False), "2026-01-01")
         self.assertNotEqual(r["state"], CA.UNDETERMINED)
 
