@@ -1265,11 +1265,43 @@ export default {
   // consent text is ever translated, this namespace comes off the allowlist
   // WITH it, not before.
   esraConsent: {
-    close: 'Close',
+    screenTitle: 'Signing electronically',
+    back: 'Back',
     agree: 'I agree',
+    // A DIFFERENT LABEL AFTER A REFUSAL. "I agree" sitting under a paragraph
+    // that says he declined reads as though the app had forgotten.
+    agreeAfterAll: 'I agree after all',
+    decline: 'I do not agree',
     retry: 'Try again',
     // NOT "Cancel" — the log is not cancelled, it is left unsigned.
-    notNow: 'Not now — leave this unsigned',
+    backToLog: 'Back to the log — leave it unsigned',
+
+    // ── THE REFUSAL, STATED ────────────────────────────────────────────────
+    // An honest dead end: what he cannot do, and what he can do instead. No
+    // persuasion, no re-asking the same question in different words. The
+    // agreement stays on the page beneath this so he can change his mind, and
+    // the button below it says so.
+    consentDeclined: 'You did not agree',
+    consentDeclinedBody:
+      'You cannot file this log electronically without accepting. Paper '
+      + 'remains available, and your entry is kept here unsigned. Your '
+      + 'decision has been recorded with the date.',
+    declinedOn: 'Recorded {date}.',
+    declinedNoDate: 'Your decision has been recorded.',
+
+    // Reached by navigating here directly, having already agreed. Says so
+    // rather than presenting a decision that has been taken.
+    consentAlready: 'You have already agreed',
+    consentAlreadyBody:
+      'Your agreement to sign electronically is on file. There is nothing to '
+      + 'do here.',
+
+    // WHICH WORDING HE IS READING. The record stores the text verbatim against
+    // a dated version; a person is entitled to know which one was put in front
+    // of him, because that is the thing being kept as evidence.
+    versionNote:
+      'This wording is recorded with your decision, word for word and dated, '
+      + 'so it can be shown later exactly as you read it today.',
 
     consentNeeded: 'Before you sign',
     consentNeededBody:

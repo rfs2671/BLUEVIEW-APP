@@ -14175,6 +14175,39 @@ async def latest_esra_consent(db_, user_id: str) -> Optional[dict]:
         return None
 
 
+async def latest_esra_decline(db_, user_id: str) -> Optional[dict]:
+    """The most recent REFUSAL to sign electronically, or None.
+
+    ── WHY A SEPARATE COLLECTION ───────────────────────────────────────────
+    `latest_esra_consent` returns the newest row in `esra_consents` and every
+    caller treats A ROW AS A CONSENT -- `has_consented` is `bool(row)`. Writing
+    a decline into that collection would therefore make a refusal read as an
+    agreement, which is precisely the direction its own docstring says cannot
+    be undone: "an entry signed without consent cannot be retroactively
+    consented to".
+
+    So declines live in `esra_consent_declines` and the consent read path is
+    byte-identical to before this endpoint existed. Nothing about recording a
+    refusal can break the question "has he agreed".
+
+    A FAILED READ RETURNS None, the same posture as the consent read, and for
+    a different reason: a decline that cannot be read is reported as "no
+    decline on record", which shows him the agreement again rather than
+    stranding him behind a refusal the system cannot see. Asking twice is
+    recoverable; a silent permanent block is not.
+    """
+    if db_ is None or not user_id:
+        return None
+    try:
+        rows = await db_.esra_consent_declines.find(
+            {"user_id": str(user_id), "is_deleted": {"$ne": True}},
+        ).sort("declined_at", -1).to_list(1)
+        return rows[0] if rows else None
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"[esra] decline read failed for {user_id}: {e!r}")
+        return None
+
+
 async def has_current_esra_consent(db_, user_id: str) -> bool:
     """Has this user agreed to the wording IN FORCE NOW?
 
@@ -14209,6 +14242,8 @@ async def get_esra_consent(current_user = Depends(get_current_user)):
     row = await latest_esra_consent(db, uid)
     check = verify_stored_consent(row)
     _agreed_at = (row or {}).get("agreed_at")
+    _declined = await latest_esra_decline(db, uid)
+    _declined_at = (_declined or {}).get("declined_at")
     return {
         "current_version": ESRA_CONSENT_VERSION,
         "current_text": ESRA_CONSENT_TEXT,
@@ -14224,6 +14259,21 @@ async def get_esra_consent(current_user = Depends(get_current_user)):
         # the same fact as the row being wrong -- the distinction the OSHA
         # register draws between "No findings" and "Not checked".
         "verification": check["reason"],
+        # ── HAS HE REFUSED, AND WHEN ────────────────────────────────────────
+        #
+        # Reported so the screen can say "you declined on the 2nd" instead of
+        # presenting the same question as though it had never been asked. A
+        # product that re-asks identically after a refusal is a loop, and the
+        # operator's rule is: never a silent block, never a loop.
+        #
+        # IT DOES NOT GATE ANYTHING. `has_consented` and `is_current` are
+        # computed exactly as before; a decline is a fact shown to the person,
+        # not a lock. He may agree at any time -- see decline_esra_consent.
+        "has_declined": bool(_declined),
+        "declined_at": (
+            _declined_at.isoformat() if isinstance(_declined_at, datetime) else None
+        ),
+        "declined_version": (_declined or {}).get("consent_version"),
     }
 
 
@@ -14295,6 +14345,87 @@ async def agree_esra_consent(
         "already": False,
         "consent_version": ESRA_CONSENT_VERSION,
         "agreed_at": now.isoformat(),
+    }
+
+
+@api_router.post("/esra-consent/decline")
+async def decline_esra_consent(
+    body: EsraConsentAgree,
+    request: Request,
+    current_user = Depends(get_current_user),
+):
+    """Record that this user REFUSED to sign electronically.
+
+    ── A REFUSAL IS A FACT ABOUT THE RECORD ────────────────────────────────
+
+    Not merely the absence of one. "He was asked on 2 September and said no" is
+    a different and more useful statement than "no consent on file", which is
+    also what an admin who never sent the invitation produces. The second
+    cannot be told from the first unless the refusal is written down, and the
+    person it describes is the one whose signature is missing from a statutory
+    log.
+
+    THE WORDING IS STORED VERBATIM, exactly as the agreement stores it. What he
+    declined is as much a part of the record as what someone else accepted --
+    and if the text later changes, a refusal that named only a version pointer
+    would resolve to words he was never shown. Same failure the consent
+    registry exists to prevent, same fix.
+
+    ── IT IS NOT A LOCK ────────────────────────────────────────────────────
+
+    Declining does not bar him from agreeing later, and this writes nothing
+    that could. The screen says paper remains available and offers the
+    agreement again; a refusal that could not be revisited would be a state
+    the product has no way out of, set by one tap.
+
+    ── AND IT DOES NOT TOUCH THE CONSENT PATH ──────────────────────────────
+
+    Separate collection. See latest_esra_decline: any row in `esra_consents` is
+    read as a consent by every caller, so a decline written there would read as
+    an agreement.
+
+    THE VERSION IS CHECKED, NOT TRUSTED, for the same reason the agreement
+    checks it: a client holding stale wording would otherwise record a refusal
+    of text nobody showed him.
+    """
+    uid = str(current_user.get("id") or current_user.get("_id") or "")
+    if str(body.consent_version or "") != ESRA_CONSENT_VERSION:
+        raise HTTPException(
+            status_code=409, detail={"code": "ESRA_CONSENT_VERSION_STALE"},
+        )
+    if not uid:
+        raise HTTPException(
+            status_code=400, detail={"code": "ESRA_CONSENT_NO_SUBJECT"},
+        )
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "user_id": uid,
+        # Denormalised for the same reason the agreement denormalises it: the
+        # refusal must stay readable when the user row has moved on.
+        "user_email": current_user.get("email"),
+        "user_name": current_user.get("name") or current_user.get("full_name"),
+        "role_at_time": current_user.get("role"),
+        "company_id": current_user.get("company_id"),
+        "consent_version": ESRA_CONSENT_VERSION,
+        "consent_text": ESRA_CONSENT_TEXT,
+        "declined_at": now,
+        "ip_address": (request.client.host if request and request.client else None),
+        "user_agent": (request.headers.get("user-agent") if request else None),
+        "is_deleted": False,
+    }
+    # NOT IDEMPOTENT, and deliberately so. Declining twice is two facts: he was
+    # asked again and refused again. The agreement collapses repeats because
+    # the FIRST agreement is the one that matters; for a refusal it is the
+    # most recent, and the history of being re-asked is worth keeping.
+    await db.esra_consent_declines.insert_one(doc)
+    await audit_log("esra_consent_decline", uid, "user", uid, {
+        "consent_version": ESRA_CONSENT_VERSION,
+    })
+    return {
+        "recorded": True,
+        "consent_version": ESRA_CONSENT_VERSION,
+        "declined_at": now.isoformat(),
     }
 
 
@@ -38802,6 +38933,12 @@ async def startup_event():
         # it authorises. It is never purged for the same reason signature_events
         # is not.
         "esra_consents",
+        # AND SO IS A REFUSAL. "He was asked on the 2nd and said no" is
+        # evidence about why a statutory log carries no electronic signature —
+        # which is exactly the question asked when one is missing. Listed here
+        # rather than relying on its absence from the purge allowlist, because
+        # that absence is not a decision anyone wrote down.
+        "esra_consent_declines",
     }
 
     async def _soft_delete_purge_tick():

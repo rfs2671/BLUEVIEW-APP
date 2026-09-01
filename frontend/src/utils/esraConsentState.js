@@ -54,6 +54,22 @@ export const STALE = 'stale';
 export const UNKNOWN = 'unknown';
 
 /**
+ * HE WAS ASKED AND SAID NO.
+ *
+ * A FIFTH STATE, not a flavour of NOT_AGREED, because the two produce
+ * different screens: one asks a question, the other states a consequence.
+ * Presenting the same question identically after a refusal is a loop, and the
+ * refusal is itself a fact about the record — "asked on the 2nd, said no" is
+ * a different statement from "no consent on file", which is also what an
+ * admin who never sent the invitation produces.
+ *
+ * IT IS NOT A LOCK. He may agree at any time; the screen says so, and the
+ * agreement's own wording promises he can withdraw. A one-tap permanent block
+ * would be a state the product has no exit from.
+ */
+export const DECLINED = 'declined';
+
+/**
  * Read the server's answer into one of the four states.
  *
  * `payload` is the body of GET /api/esra-consent, or null/undefined when the
@@ -69,7 +85,16 @@ export function consentState(payload) {
   // NOW", computed by consent_is_current(). It is read rather than recomputed
   // from the two version fields, so the client cannot disagree with the server
   // about the one thing the POST will check.
+  //
+  // CHECKED BEFORE THE DECLINE, and the order is the rule: a man who declined
+  // in March and agreed in April has AGREED. A decline is a fact that was true
+  // when it was recorded, not a standing veto, so it must never outrank a
+  // current consent.
   if (payload.is_current === true) return READY;
+
+  // Asked, and refused. Reported apart from NOT_AGREED because the screens
+  // differ: one asks, the other states a consequence and offers paper.
+  if (payload.has_declined === true) return DECLINED;
 
   // Agreed to SOMETHING, but not the current wording. Reported apart from
   // never-agreed because what a person is asked differs: one is being asked
@@ -109,9 +134,26 @@ export function consentCopyKey(state) {
     case NOT_AGREED: return 'consentNeeded';
     case STALE: return 'consentChanged';
     case UNKNOWN: return 'consentUnavailable';
+    case DECLINED: return 'consentDeclined';
+    case READY: return 'consentAlready';
     default: return 'consentNeeded';
   }
 }
+
+/**
+ * Is there a wording to put in front of him, and a decision to take?
+ *
+ * DECLINED IS STILL ASKABLE. The refusal is stated first, but the agreement
+ * has to remain on the page beneath it — a dead end he cannot reverse is not
+ * what was asked for, and the wording itself promises he can withdraw, which
+ * only means something if he can also change his mind the other way.
+ *
+ * UNKNOWN IS NOT. Recording a decision we could not first read back is how a
+ * duplicate or a contradiction gets written.
+ */
+export const isAskable = (state, text) => (
+  state !== UNKNOWN && typeof text === 'string' && text.trim().length > 0
+);
 
 /**
  * Copy for a refusal CODE from POST /api/esra-consent.

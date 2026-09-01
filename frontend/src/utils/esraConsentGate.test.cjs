@@ -33,7 +33,7 @@ const CODE = (s) => s
 
 const SCREEN = read('app', 'logbooks', 'site_superintendent_log.jsx');
 const HOOK = read('src', 'hooks', 'useEsraConsent.js');
-const MODAL = read('src', 'components', 'EsraConsentModal.jsx');
+const SCREEN_CONSENT = read('app', 'consent.jsx');
 
 const M = loadEsm('src/utils/esraConsentState.js');
 
@@ -62,6 +62,22 @@ console.log('\n1. FOUR STATES, AND ABSENCE IS NOT A NO');
     + 'shape we do not recognise has told us nothing');
   ok(M.consentState('yes') === M.UNKNOWN && M.consentState(7) === M.UNKNOWN,
     'a non-object is never a consent');
+}
+
+console.log('\n1b. A REFUSAL IS ITS OWN STATE');
+{
+  ok(M.consentState({ has_consented: false, is_current: false, has_declined: true })
+     === M.DECLINED,
+  'asked and refused is DECLINED, not merely not-agreed — one asks a '
+  + 'question, the other states a consequence');
+
+  // ORDER IS THE RULE. A man who declined in March and agreed in April has
+  // AGREED. A decline is a fact that was true when recorded, never a standing
+  // veto over a later consent.
+  ok(M.consentState({ has_consented: true, is_current: true, has_declined: true })
+     === M.READY,
+  'a CURRENT consent outranks an earlier decline');
+  ok(M.canSign(M.DECLINED) === false, 'and a decline does not sign');
 }
 
 console.log('\n2. ONLY ONE STATE MAY SIGN');
@@ -124,30 +140,74 @@ console.log('\n5. THE GATE IS ON THE SIGNATURE, IN THE SCREEN');
     'and says why, so the next reader does not "fix" it into an open-time gate');
 }
 
-console.log('\n6. IT IS NEVER A DEAD END');
+console.log('\n6. A FIRST-CLASS SCREEN, AND NEVER A DEAD END BY ACCIDENT');
 {
-  const modal = CODE(MODAL);
-  ok(/onRetry/.test(modal) && /onAgree/.test(modal),
-    'every state offers a way forward — Agree, or Retry');
-  ok(/const askable = !isUnknown && haveText;/.test(modal),
-    'UNKNOWN offers RETRY and never Agree — recording an agreement we could '
-    + 'not first read back is how a contradiction gets written');
-  ok(/haveText/.test(modal),
-    'and no wording means no Agree button, rather than a button over an empty box');
-  ok(/onClose/.test(modal),
-    'it can be dismissed — a consent that cannot be declined is not freely '
-    + 'given, and the wording itself promises he can withdraw');
+  const scr = CODE(SCREEN_CONSENT);
+
+  // IT IS A ROUTE, NOT A SHEET. A legal act has to be readable at length, and
+  // a modal invites the gesture that dismisses it.
+  ok(/app[\\/]consent\.jsx/.test('app/consent.jsx'), 'ANCHOR: the file is a route');
+  ok(!/from 'react-native'[\s\S]{0,200}\bModal\b/.test(scr),
+    'and it renders no Modal');
+  ok(/router\.push\('\/consent'\)/.test(CODE(HOOK)),
+    'the gate PUSHES to it');
+
+  // THE LINE THE WHOLE DESIGN RESTS ON. `replace` would discard the editor and
+  // the half-filled log with it.
+  ok(!/router\.replace\('\/consent'\)/.test(CODE(HOOK)),
+    'and never REPLACES — push keeps the editor mounted, so his entry survives');
+  ok(/router\.back\(\)/.test(scr),
+    'and it returns him with back(), to the screen still underneath');
+
+  ok(/isAskable\(state, text\)/.test(scr),
+    'UNKNOWN offers RETRY and never Agree — recording a decision we could not '
+    + 'first read back is how a contradiction gets written');
 
   const en = read('src', 'i18n', 'en.js');
-  for (const k of ['consentNeededBody', 'consentChangedBody', 'consentUnavailableBody']) {
-    ok(new RegExp(`${k}:`).test(en), `${k} exists — every state says what is missing`);
+  for (const k of ['consentNeededBody', 'consentChangedBody',
+    'consentUnavailableBody', 'consentDeclinedBody', 'consentAlreadyBody']) {
+    ok(new RegExp(`${k}:`).test(en), `${k} exists — every state says where he stands`);
   }
-  ok(/Everything you have \n?\s*'?\+?\s*'?entered is kept/.test(en.replace(/\s+/g, ' '))
-     || /entered is kept/.test(en),
-  'and the outage copy says his entry is KEPT — the difference between a '
-    + 'wait and a wall');
-  ok(/leave this unsigned/.test(en),
-    'the dismiss says what actually happens, rather than "Cancel"');
+  ok(/entered is kept/.test(en),
+    'the outage copy says his entry is KEPT — the difference between a wait '
+    + 'and a wall');
+  ok(/leave it unsigned/.test(en),
+    'and the way out says what actually happens, rather than "Cancel"');
+}
+
+console.log('\n6b. DECLINING IS HONEST, RECORDED, AND NOT A TRAP');
+{
+  const scr = CODE(SCREEN_CONSENT);
+  const en = read('src', 'i18n', 'en.js');
+  const api = CODE(read('src', 'utils', 'api.js'));
+
+  ok(/esraConsentAPI\.decline\(version\)/.test(scr), 'he can decline');
+  ok(/'\/api\/esra-consent\/decline'/.test(api),
+    'and it is RECORDED server-side, not just a client state');
+
+  // THE DEAD END, STATED. Not softened, not re-asked in other words.
+  ok(/cannot file this log electronically without accepting/.test(en),
+    'the consequence is stated plainly');
+  // JOINED FIRST. The copy is a multi-line string concatenation, so "Paper "
+  // ends one line and "remains available" begins the next. A control run
+  // replaced "Paper " with "No " and this assertion still passed on the
+  // orphaned half — matching a fragment of a sentence is not matching the
+  // sentence.
+  const joined = en.replace(/'\s*\+\s*'/g, '').replace(/\s+/g, ' ');
+  ok(/Paper remains available/.test(joined),
+    'and the alternative is named IN FULL — never a silent block');
+  ok(/cannot file this log electronically without accepting\. Paper remains available/
+    .test(joined),
+  'the consequence and the alternative are one sentence, in that order');
+  ok(/declinedOn:/.test(en) && /\{date\}/.test(en),
+    'the refusal is shown back with its date');
+
+  // NOT A TRAP. The agreement stays on the page and the button says so.
+  ok(/agreeAfterAll/.test(scr) && /agreeAfterAll:/.test(en),
+    'he can still agree afterwards — a one-tap permanent lock would be a '
+    + 'state with no exit, and the wording itself promises he may withdraw');
+  ok(/state === DECLINED \? null : \(/.test(scr),
+    'but he is not offered Decline a second time — the state already says it');
 }
 
 console.log('\n7. THE WORDING IS THE SERVER\'S, VERBATIM');
@@ -155,7 +215,7 @@ console.log('\n7. THE WORDING IS THE SERVER\'S, VERBATIM');
   // lib/esra_consent.py: a consent whose text the client chooses is evidence
   // of nothing. A client that invents wording when the real wording is missing
   // is exactly that, so there is no fallback text anywhere.
-  const modal = CODE(MODAL);
+  const modal = CODE(SCREEN_CONSENT);
   ok(/\{String\(text\)\.split/.test(modal), 'it renders the text it was given');
   ok(!/I agree to do business electronically/.test(modal + CODE(HOOK) + CODE(SCREEN)),
     'and NO copy of the agreement exists on the client — not in the modal, '
@@ -163,20 +223,70 @@ console.log('\n7. THE WORDING IS THE SERVER\'S, VERBATIM');
   const en = read('src', 'i18n', 'en.js');
   ok(!/I agree to do business electronically/.test(en),
     'nor in the translation catalogue, which is where a "helpful" copy would go');
-  ok(/current_text/.test(CODE(HOOK)),
-    'the hook takes the wording from the response');
-  ok(/setText\(''\)/.test(CODE(HOOK)),
+  ok(/current_text/.test(CODE(SCREEN_CONSENT)),
+    'the screen takes the wording from the response');
+  ok(/setText\(''\)/.test(CODE(SCREEN_CONSENT)),
     'and CLEARS it on a failed read, so stale wording is never shown as though '
     + 'this response carried it');
 }
 
+console.log('\n7b. HIS ENTRY SURVIVES THE TRIP, WITHOUT TRUSTING THE NAVIGATOR');
+{
+  // WHY THIS EXISTS. The consent screen is a route, and the design rested on
+  // "expo-router's Stack keeps the screen beneath a push mounted". THREE
+  // ATTEMPTS TO VERIFY THAT IN A HEADLESS BROWSER WERE INCONCLUSIVE — the
+  // first navigated the document instead of the navigator, the next two never
+  // reached a control that navigates. Probably true is not the standard for
+  // whether a man loses a filled compliance log, so the design stops
+  // depending on it and this asserts the replacement.
+  const S = loadEsm('src/utils/logbookScratch.js');
+  const code = CODE(SCREEN);
+
+  const k = S.scratchKey('site_superintendent_log', 'p1', '2026-09-02');
+  ok(k.includes('p1') && k.includes('2026-09-02') && k.includes('site_superintendent_log'),
+    'the key names the type, the project AND the date — one stash per document');
+  ok(S.scratchKey('a', 'p1', 'd') !== S.scratchKey('b', 'p1', 'd'),
+    'so two logs on one day cannot overwrite each other');
+
+  S.stash(k, { arrivedAt: '07:00' });
+  ok(S.take(k)?.arrivedAt === '07:00', 'what was stashed comes back');
+  ok(S.take(k) === null,
+    'and it is TAKEN, not read — a lingering stash would resurrect abandoned '
+    + 'edits onto a later visit');
+  ok(S.take('never-stashed') === null,
+    'nothing held reads as null, never as an empty form — restoring {} over a '
+    + 'loaded document would blank it');
+  S.stash(k, null);
+  ok(S.take(k) === null, 'a nullish value clears rather than storing nothing');
+
+  ok(code.indexOf('stash(scratchId, snapshot());') < code.indexOf('consent.ensure()'),
+    'the editor stashes BEFORE the gate can navigate');
+  ok(/drop\(scratchId\);/.test(code),
+    'and drops it when it did not navigate after all');
+  ok(/const held = take\(scratchId\);/.test(code)
+     && code.indexOf('hydrate(existing.data') < code.indexOf('const held = take(scratchId)'),
+  'the restore runs AFTER the server hydrate — the stash is newer and wins');
+  ok(/!\(existing && existing\.is_locked === true\)/.test(code),
+    'but never onto a FROZEN document, which is read-only');
+}
+
 console.log('\n8. AGREEING DOES NOT SIGN FOR HIM');
 {
+  // CHECKED ON THE CONSENT SCREEN, which is where the chain would now be
+  // written. This assertion used to read the EDITOR, and after the modal
+  // became a route it was pointing at a file that could no longer contain the
+  // defect — it passed for the wrong reason, and a control run said so by
+  // chaining the submit and going undetected.
+  const scr = CODE(SCREEN_CONSENT);
+  ok(!/handleSubmit|onSubmit|\.submit\(/.test(scr),
+    'the consent screen cannot reach a submit at all — a signature applied '
+    + 'from a tap on a different button is not an intent to sign');
+  ok(/router\.back\(\);/.test(scr) && !/router\.back\(\);\s*[a-zA-Z]/.test(scr),
+    'agreeing returns him to the editor and stops there; he taps Sign himself');
   ok(!/onAgree=\{[^}]*handleSubmit/.test(CODE(SCREEN)),
-    'the Agree button never chains into the submit — a signature applied from '
-    + 'a tap on a different button is not an intent to sign');
-  ok(/re-read|RE-READ/.test(HOOK),
-    'and the hook re-reads the server rather than trusting the POST body, '
+    'and the editor wires nothing into the agreement either');
+  ok(/RE-READ/.test(SCREEN_CONSENT) && /const after = await read\(\);/.test(CODE(SCREEN_CONSENT)),
+    'and the screen re-reads the server rather than trusting the POST body, '
     + 'which reports what the request DID and not whether he may now sign');
 }
 

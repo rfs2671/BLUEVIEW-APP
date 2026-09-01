@@ -1404,6 +1404,24 @@ export const esraConsentAPI = {
     });
     return response.data;
   },
+  /**
+   * A REFUSAL IS A FACT ABOUT THE RECORD, not the absence of one.
+   *
+   * "Asked on the 2nd, said no" is a different statement from "no consent on
+   * file" — which is also what an admin who never sent the invitation
+   * produces. The two cannot be told apart unless the refusal is written
+   * down, and the person it describes is the one whose signature is missing
+   * from a statutory log.
+   *
+   * The server stores the wording verbatim, exactly as the agreement does,
+   * and into a SEPARATE collection so a refusal can never read as a consent.
+   */
+  decline: async (consentVersion) => {
+    const response = await apiClient.post('/api/esra-consent/decline', {
+      consent_version: consentVersion,
+    });
+    return response.data;
+  },
 };
 
 /**
