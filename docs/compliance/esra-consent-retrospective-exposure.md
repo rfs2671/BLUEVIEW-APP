@@ -69,6 +69,26 @@ that counts only `signature_events` will understate the exposure, and any
 characterisation drawn from the ledger alone will be wrong about that first
 month.
 
+### The ledger understates for a second, ONGOING reason
+
+`recordSignatureEvent` (`frontend/src/utils/signatureAudit.js:119`) catches
+every failure, logs to the console, and returns `null`. Its own comment says
+so: *"Non-blocking — the signature still saves on the document. The audit trail
+entry will be missing, but the app doesn't break."* **There is no queue and no
+retry.**
+
+Eleven of the twelve signing editors are local-first: they write a draft
+locally and push when a connection returns. So a CP who signs with no signal —
+the case that support exists for — gets `cp_signature` persisted on the
+document and **the ledger row is dropped permanently.** The offline drain
+(`draftSync`) re-sends the document and re-applies the freeze; it does not
+re-send the signature event.
+
+This is not a consequence of the consent gap and is not fixed by anything in
+#347. It is stated here because it bears directly on what any count of
+`signature_events` means: **the ledger is a partial record of signing, by
+design, and the size of the shortfall is unknown.** Query 3 measures it.
+
 There is a third, older collection, `daily_logs`, which predates `logbooks`.
 **Whether it carries signatures could not be established from the source** — no
 signature field is written to it anywhere in `server.py` that the author could
@@ -216,3 +236,7 @@ it does.
 - The superintendent log's editor is online-only, which is what makes the
   gate's fail-closed behaviour safe. If the log becomes local-first, the gate
   needs a cached consent state and that decision must be re-taken.
+- **`signature_events` drops rows on a failed write, silently and by design**
+  (section 3). This is a defect in the audit trail independent of consent, it
+  is live today, and it is not scheduled. It should be, and it is raised here
+  because it was found while establishing what the ledger can be asked.
