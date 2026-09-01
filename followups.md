@@ -661,6 +661,69 @@ Known gaps and deferred work, newest first.
 
 ---
 
+## A TEST DOUBLE WHOSE `sort()` DID NOTHING PASSED A DETERMINISM ASSERTION
+
+**THIRD INSTANCE THIS WEEK of a check that ran and could not see the thing it
+was for — and the FIRST where the blind spot was in the HARNESS rather than in
+the search.**
+
+`cs_attribution_for` was fixed to read the ACTIVE registration deterministically:
+
+```python
+_regs = await db_.cs_registrations.find({...}).sort(
+    [("created_at", -1), ("_id", -1)]).to_list(20)
+```
+
+The test asserted the ordering — same input, two orders, same answer. It
+passed. The fake cursor was:
+
+```python
+def sort(self, *a, **k):
+    return self          # <-- accepts the call, ignores the spec
+```
+
+So `to_list` returned INSERTION order, the assertion compared insertion order
+against itself, and **it would have passed just as well if the production code
+had no `sort()` at all.** The assertion tested the fake.
+
+**WHAT MAKES THIS ITS OWN FAILURE.** The other two were searches too narrow for
+their claim: `git log -S` on two literals reported "the code did not change"
+while `get_current_user` had; a `_filed_log` review read four functions and
+never opened `_authorize_logbook_write`. Both were the *question* being
+wrong. Here the question was exactly right — "does the order of the input
+change the answer" is the correct test for a determinism fix — and the
+INSTRUMENT could not measure it. A green assertion is evidence about the
+harness first and the code second, and only the second if the harness models
+the call.
+
+**THE RULE.** *A double must model every call the code under test makes, or the
+assertions that depend on that call are decoration.* A stub that accepts a
+method and ignores its arguments is worse than one that raises: raising fails
+loudly the moment the code starts using it, while `return self` silently
+converts an assertion into a tautology.
+
+**HOW TO CATCH IT, cheaply:** make the double's behaviour observable and assert
+on it. If `sort()` is a no-op, feed it input whose insertion order is WRONG and
+watch the test fail. The corrected fake applies the spec:
+
+```python
+def sort(self, spec, *a, **k):
+    for field, direction in reversed(list(spec)):
+        self.docs.sort(key=lambda d: d.get(field), reverse=(direction == -1))
+    return self
+```
+
+and the hostile fixture — the deactivated registration FIRST, which is the
+order an unsorted `find_one` is entitled to return — now fails against the old
+code and passes against the new.
+
+**AND THE SAME SHAPE ELSEWHERE.** `test_logbook_write_guards`' collection double
+gained a `find()` the same week, because `amend_logbook` started calling one and
+a double that cannot model a call fails on the fake rather than on the guard.
+That one failed loudly (AttributeError) and was fixed in minutes. This one
+passed quietly. **Prefer doubles that raise on an unmodelled call over doubles
+that shrug.**
+
 ## A LOSING FORK HAS NO WAY OUT, AND ONE IS LIVE ON 588 THOMAS
 
 **KNOWN PERMANENT STATE ON A PRODUCTION RECORD. One worker, one document, no
