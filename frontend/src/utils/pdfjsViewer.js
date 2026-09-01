@@ -37,6 +37,17 @@ import { Asset } from 'expo-asset';
  *   On iOS, a file:// source needs allowingReadAccessToURL pointed at the
  *   DIRECTORY, or WKWebView grants read access to the single file only.
  *
+ * WHY THE PAGE EVICTS CANVASES INSTEAD OF JUST RENDERING LAZILY
+ *   Lazy rendering alone only delays the crash. Every page that scrolled past
+ *   left a <canvas> in the DOM holding its backing bitmap — around 4–8 MB a
+ *   sheet at the scale below, and the IntersectionObserver had no branch for a
+ *   page LEAVING the viewport, so nothing ever came back. A 200-sheet plan set
+ *   scrolled end to end accumulated the whole thing and Chromium killed the
+ *   renderer, which is what the crash-after-load reports were. The page now
+ *   holds a bounded window of rasterised sheets (KEEP_RENDERED) and frees the
+ *   rest — removing the element AND zeroing width/height, because removal on
+ *   its own does not drop the bitmap.
+ *
  * ⚠️ ASSET PLACEMENT IS A HUMAN STEP. assets/pdfjs/*.txt currently hold
  *    documented placeholders, not the real pdf.js build. `ensurePdfJsViewer()`
  *    detects that by size and returns { ok: false, reason: 'assets-missing' }
@@ -56,7 +67,9 @@ const STAMP_NAME = '.stamp';
 
 // Bump when viewer.html or the staging layout changes, so an installed app
 // re-stages instead of running last version's viewer.
-const VIEWER_VERSION = '1';
+//   2 — page eviction / bounded canvas window. An app still running the `1`
+//       viewer keeps the leak, so this bump is the fix's delivery mechanism.
+const VIEWER_VERSION = '2';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -114,6 +127,19 @@ const VIEWER_SCRIPT = [
   '  var pagesEl = document.getElementById("pages");',
   '  var MAX_CANVAS_PX = 16000000;',   // ~16MP per page, keeps big plans off the OOM killer
   '  var MAX_CANVAS_EDGE = 4096;',
+  // How far either side of the viewport a page counts as "near". Feeds both
+  // the observer's rootMargin and the no-observer sweep, so the two paths
+  // agree on what is near.
+  '  var BAND = 1.5;',
+  // THE WINDOW. At BAND = 1.5 the near set spans four viewport heights, which
+  // on a phone is four or five full-width sheets, so anything smaller than
+  // that would have the observer and the evictor fighting: a page still inside
+  // the band would be freed and then never redrawn, because
+  // IntersectionObserver reports threshold CROSSINGS, not steady state. 7 is
+  // the near set plus roughly a page of hysteresis each side — a flick back
+  // lands on a canvas that is still there — and it caps the page at about 7
+  // sheets of bitmap (~30–50 MB) no matter how long the set is.
+  '  var KEEP_RENDERED = 7;',
   '',
   '  function post(obj){',
   '    try { if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}',
@@ -148,6 +174,10 @@ const VIEWER_SCRIPT = [
   '',
   '  var doc = null;',
   '  var slots = [];',
+  // Rasterised pages, least-recently-wanted first. The only thing that keeps a
+  // canvas alive.
+  '  var rendered = [];',
+  '  var io = null;',
   '  var baseWidth = 0;',
   '',
   '  function targetScale(vp1){',
@@ -161,39 +191,153 @@ const VIEWER_SCRIPT = [
   '    return s;',
   '  }',
   '',
+  // Give a page back. Detaching the <canvas> is NOT enough: the element is
+  // still reachable from the slot, and even an unreachable one keeps its
+  // backing store until a GC that may never come under memory pressure.
+  // Setting width and height to 0 drops the bitmap there and then, which is
+  // the only step that actually returns the megabytes.
+  '  function releaseSlot(slot){',
+  '    if (slot.task) { try { slot.task.cancel(); } catch (e) {} slot.task = null; }',
+  // Anything already in flight for this slot renders into a canvas we are
+  // about to throw away; the generation stamp tells it not to attach.
+  '    slot.gen = slot.gen + 1;',
+  '    if (slot.canvas) {',
+  '      if (slot.canvas.parentNode) slot.canvas.parentNode.removeChild(slot.canvas);',
+  '      try { slot.canvas.width = 0; slot.canvas.height = 0; } catch (e) {}',
+  '      slot.canvas = null;',
+  '    }',
+  // pdf.js caches the parsed operator list and any decoded images on the page
+  // object; on a scanned sheet that outweighs the canvas.
+  '    if (slot.page) { try { slot.page.cleanup(); } catch (e) {} slot.page = null; }',
+  '    slot.el.innerHTML = "";',
+  '    slot.done = false;',
+  '    slot.busy = false;',
+  '  }',
+  '',
+  '  function touch(slot){',
+  '    var i = rendered.indexOf(slot);',
+  '    if (i >= 0) rendered.splice(i, 1);',
+  '    rendered.push(slot);',
+  '  }',
+  '',
+  // Hold the window down to KEEP_RENDERED, oldest first. A page still inside
+  // the band is skipped, never freed — the observer would not fire for it
+  // again and it would sit blank on screen.
+  '  function trim(){',
+  '    var i = 0;',
+  '    while (rendered.length > KEEP_RENDERED && i < rendered.length) {',
+  '      if (rendered[i].visible) { i = i + 1; continue; }',
+  '      releaseSlot(rendered.splice(i, 1)[0]);',
+  '    }',
+  '  }',
+  '',
   '  function renderSlot(slot){',
-  '    if (slot.done || slot.busy) return;',
+  '    if (slot.done) { touch(slot); return; }',
+  '    if (slot.busy) return;',
   '    slot.busy = true;',
+  '    var gen = slot.gen;',
   '    doc.getPage(slot.n).then(function(page){',
+  '      if (slot.gen !== gen) { slot.busy = false; try { page.cleanup(); } catch (e) {} return null; }',
+  '      slot.page = page;',
   '      var vp1 = page.getViewport({ scale: 1 });',
   '      var vp = page.getViewport({ scale: targetScale(vp1) });',
   '      var canvas = document.createElement("canvas");',
   '      canvas.width = Math.max(1, Math.floor(vp.width));',
   '      canvas.height = Math.max(1, Math.floor(vp.height));',
   '      var ctx = canvas.getContext("2d");',
-  '      return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function(){',
+  '      slot.task = page.render({ canvasContext: ctx, viewport: vp });',
+  '      return slot.task.promise.then(function(){',
+  '        slot.task = null;',
+  '        slot.busy = false;',
+  '        if (slot.gen !== gen) { canvas.width = 0; canvas.height = 0; return; }',
+  // A slot released and re-requested mid-render can have two renders land on
+  // it. Whatever was here loses its bitmap before it loses its parent.
+  '        if (slot.canvas && slot.canvas !== canvas) {',
+  '          try { slot.canvas.width = 0; slot.canvas.height = 0; } catch (e) {}',
+  '        }',
   '        slot.el.innerHTML = "";',
   '        slot.el.appendChild(canvas);',
+  '        slot.canvas = canvas;',
   '        slot.done = true;',
-  '        slot.busy = false;',
+  '        touch(slot);',
+  '        trim();',
   '      });',
-  '    })["catch"](function(e){ slot.busy = false; post({ type: "pdf-page-error", page: slot.n, detail: String(e) }); });',
+  '    })["catch"](function(e){',
+  '      slot.task = null;',
+  '      slot.busy = false;',
+  '      if (e && e.name === "RenderingCancelledException") return;',
+  '      post({ type: "pdf-page-error", page: slot.n, detail: String(e) });',
+  '    });',
+  '  }',
+  '',
+  '  function inBand(slot){',
+  '    var h = window.innerHeight || document.documentElement.clientHeight || 800;',
+  '    var r = slot.el.getBoundingClientRect();',
+  '    return r.bottom > -(BAND * h) && r.top < h + (BAND * h);',
+  '  }',
+  '',
+  // The no-IntersectionObserver path, and the same shape as the observer's
+  // callback: mark what is near, draw only that, then trim. Bounded by
+  // KEEP_RENDERED exactly like the observer path.
+  '  function sweep(){',
+  '    for (var i = 0; i < slots.length; i++) {',
+  '      slots[i].visible = inBand(slots[i]);',
+  '      if (slots[i].visible) renderSlot(slots[i]);',
+  '    }',
+  '    trim();',
+  '  }',
+  '',
+  '  var sweepPending = false;',
+  '  function scheduleSweep(){',
+  '    if (sweepPending) return;',
+  '    sweepPending = true;',
+  '    setTimeout(function(){ sweepPending = false; sweep(); }, 120);',
   '  }',
   '',
   // Lazy render: only pages near the viewport. A 200-sheet plan set must not
-  // rasterise 200 canvases up front.
+  // rasterise 200 canvases up front — nor keep the ones it has already drawn.
   '  function watch(){',
   '    if (typeof IntersectionObserver === "undefined") {',
-  '      for (var i = 0; i < slots.length; i++) renderSlot(slots[i]);',
+  // WAS: a for-loop over every slot calling renderSlot. That rasterised the
+  // whole set at once and uncapped, which is the worst version of this bug.
+  '      window.addEventListener("scroll", scheduleSweep, true);',
+  '      window.addEventListener("resize", scheduleSweep);',
+  '      sweep();',
   '      return;',
   '    }',
-  '    var io = new IntersectionObserver(function(entries){',
+  '    io = new IntersectionObserver(function(entries){',
   '      for (var i = 0; i < entries.length; i++) {',
-  '        if (entries[i].isIntersecting) renderSlot(entries[i].target.__slot);',
+  '        var slot = entries[i].target.__slot;',
+  '        if (!slot) continue;',
+  '        if (entries[i].isIntersecting) {',
+  '          slot.visible = true;',
+  '          renderSlot(slot);',
+  '        } else {',
+  '          slot.visible = false;',
+  '        }',
   '      }',
-  '    }, { rootMargin: "150% 0px" });',
+  '      trim();',
+  '    }, { rootMargin: (BAND * 100) + "% 0px" });',
   '    for (var j = 0; j < slots.length; j++) io.observe(slots[j].el);',
   '  }',
+  '',
+  // The WebView outlives the document — PDFViewer.native.jsx repoints `source`
+  // at the next file rather than tearing the view down — so the observer, the
+  // canvases and pdf.js's own caches have to be let go on the way out.
+  '  function teardown(){',
+  '    if (io) { io.disconnect(); io = null; }',
+  '    window.removeEventListener("scroll", scheduleSweep, true);',
+  '    window.removeEventListener("resize", scheduleSweep);',
+  '    for (var i = 0; i < slots.length; i++) {',
+  '      slots[i].visible = false;',
+  '      releaseSlot(slots[i]);',
+  '    }',
+  '    rendered.length = 0;',
+  // The only point at which the file bytes can go — see the note at
+  // getDocument below.
+  '    if (doc) { try { doc.destroy(); } catch (e) {} doc = null; }',
+  '  }',
+  '  window.addEventListener("pagehide", teardown);',
   '',
   '  function layout(){',
   '    baseWidth = Math.max(200, document.documentElement.clientWidth || window.innerWidth || 320);',
@@ -208,10 +352,14 @@ const VIEWER_SCRIPT = [
   '            el.className = "pg";',
   '            el.style.width = baseWidth + "px";',
   '            el.style.height = Math.round(baseWidth * (vp1.height / vp1.width)) + "px";',
-  '            var slot = { n: pageNo, el: el, done: false, busy: false };',
+  '            var slot = { n: pageNo, el: el, done: false, busy: false,',
+  '                          visible: false, canvas: null, page: null, task: null, gen: 0 };',
   '            el.__slot = slot;',
   '            slots.push(slot);',
   '            pagesEl.appendChild(el);',
+  // Sizing the placeholder is all this page object was wanted for. Without the
+  // cleanup, laying out a 200-sheet set leaves 200 parsed pages in pdf.js.
+  '            try { page.cleanup(); } catch (e) {}',
   '          });',
   '        });',
   '      })(n);',
@@ -227,6 +375,13 @@ const VIEWER_SCRIPT = [
   '      disableAutoFetch: true,',
   '      isEvalSupported: false',
   '    });',
+  // THE BYTES STAY. Tempting to null them here, but it would free nothing:
+  // pdf.js parses page content streams lazily out of THIS array, and with
+  // disableRange/disableStream there is no second copy to fall back on, so it
+  // holds the buffer for the life of the document. Dropping our own reference
+  // is still worth doing — it makes doc.destroy() in teardown() the single
+  // release point instead of one of two.
+  '    bytes = null;',
   '    task.promise.then(function(pdf){',
   '      doc = pdf;',
   '      return layout();',
