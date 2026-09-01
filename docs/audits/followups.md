@@ -4,6 +4,73 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## QUEUED — 2026-09-01 — two open questions from the trades evening, neither investigated
+
+Recorded at the operator's instruction so they survive the session. **Neither
+has been looked at.** Everything below is the question and where to start, not
+a finding — the code has not been read for either.
+
+Both queue behind the superintendent editor, which is the last blocker to
+Michael filing.
+
+### 1. A worker uploaded a photo of his FACE instead of his SST card, and the gate accepted it
+
+Happened at the gate on the evening of 2026-08-28. The card capture accepted a
+selfie and the check-in completed.
+
+**What has to be answered, in this order** — the first three decide whether
+this is a data-quality annoyance or a retention problem:
+
+  * **What is stored.** Does a `certifications[]` row exist for it, and with
+    what `type` / `review_reason` / `extraction_completeness`? The capture path
+    has a `not_sst` refusal for a purple Worker Wallet, so there IS a "this is
+    the wrong card entirely" branch — the question is whether a face reaches it
+    or falls through to `SST_UNSPECIFIED`.
+  * **What the OSHA register shows.** If a cert row was written, does the man
+    now READ as holding a credential on the register and the LL196 attestation?
+    A row that satisfies the OSHA baseline because it is merely present is the
+    worst outcome here.
+  * **Whether the CP sees it.** `needs_review` / `review_reason` are what put a
+    row in the cert-review queue. If the face landed with `needs_review` false,
+    nobody is told.
+  * **Whether the image is retained under a certification key.** This is the
+    one with consequences beyond compliance: a photograph of a worker's face,
+    stored as though it were a credential document, under whatever retention
+    the cert images carry. Check the R2 key and what reads it.
+
+Start at the capture path in `server.py` (the `resolved_kind` / `not_sst` block)
+and at `card_audit`, then follow the stored row to the register and the
+attestation PDF.
+
+### 2. Who assigns a trade to a worker with NO pairing at all, and on which screen
+
+The gate admits a worker with no roster: `not allowed_pairs` stamps
+`trade`/`company` as `UNASSIGNED`, sets `needs_trade_assignment` with
+`trade_flag_reason = "no_roster"`, and notifies the CP. That is deliberate and
+correct — a config gap must not block a man at a turnstile.
+
+**The open question is what happens next.** The admin path to assign one was
+broken on 2026-08-28 in two ways at once (#340, and the picker's lost filter
+from #224), and while it was broken nobody could complete the assignment the
+gate had flagged. So:
+
+  * Is the per-project roster screen (`app/project/[id]/trades.jsx`, reached
+    from the project card titled "Check-in Trades") the ONLY way to resolve a
+    flagged check-in, or is there a second path — from the flagged-review area,
+    the daily jobsite log, or the notification itself?
+  * If it is the only one, a single broken screen suspends every pending trade
+    assignment in the company, and the flag has no other outlet.
+  * The notification that fires on `needs_trade_assignment` — where does its
+    deeplink land? If it lands somewhere that cannot complete the assignment,
+    that is the gap.
+
+Related and already recorded: the naming problem that sent the operator to the
+wrong screen — "Check-in Trades" is a per-project SUBCONTRACTOR ROSTER, the
+trade VOCABULARY is a Python literal in `server.py` with no admin screen at
+all, and nothing on the roster screen says so.
+
+---
+
 ## PRACTICE — 2026-08-28 — a correctly configured control that could not reach the responses that needed it
 
 Fixed in #341 (`da74996`). Recorded because the SHAPE is the point, and because
