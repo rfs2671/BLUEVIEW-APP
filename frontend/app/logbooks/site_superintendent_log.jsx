@@ -88,7 +88,7 @@ import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { isAffirmedSignature } from '../../src/utils/signatureAffirmed';
 import { useAuth } from '../../src/context/AuthContext';
 import {
-  csLogItems, csItemState, csUnanswered, CS_LOG_ITEMS,
+  csLogItems, csItemState, csUnanswered, csItemLabels,
 } from '../../src/utils/superintendentLogModel';
 import {
   emptyFinding, findingIsEmpty, findingGaps, deriveConditionAndOrderBlocks,
@@ -97,6 +97,15 @@ import {
 
 const LOG_TYPE = 'site_superintendent_log';
 const TOTAL_STEPS = 5;
+
+/**
+ * The write answered, and answered with nothing that names a record.
+ *
+ * A CONSTANT BECAUSE IT IS A PAIR. It is thrown at the one place that can
+ * detect it and read at the one place that reports it, and a literal at each
+ * end is how the two drift into a machine string reaching a jobsite.
+ */
+const NO_RECORD_RETURNED = 'LOG_NOT_FILED';
 
 const todayISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
   .format(new Date());
@@ -603,55 +612,94 @@ export default function SiteSuperintendentLog() {
         ? await logbooksAPI.update(existingLogId, payload)
         : await logbooksAPI.create(payload);
       const savedId = saved?.id || saved?._id || existingLogId;
+
+      // ── NO ID, NO RECORD ───────────────────────────────────────────────
+      //
+      // ABSENCE OF AN EXCEPTION IS NOT PROOF OF A WRITE. `create` resolving
+      // proves only that a response arrived; the id is the one thing in it
+      // that proves a document exists — and it is also the only way to name
+      // the document that has to be sealed.
+      //
+      // THIS IS WHERE THE LOG WAS LOST. The two calls that NEED an id were
+      // guarded (`if (savedId)`) and the three lines that REPORT one were
+      // not, so a response with no id skipped the ledger event, skipped the
+      // finalize, and still said "Log filed and locked" — copy that asserts
+      // the seal by name — then navigated away from the screen holding the
+      // only copy of what he had typed. Nothing threw, so nothing was
+      // reported.
+      //
+      // AND THE SERVER HAS THAT PATH. create_logbook re-reads the row it just
+      // inserted and returns serialize_id(that read); a read that does not see
+      // its own write makes it None, which FastAPI renders as 200 `null`. The
+      // server half is fixed too (backend/tests/test_superintendent_log_files
+      // .py), and this guard must hold regardless of it: a client that
+      // believes a body it did not check is one bad deploy from doing this
+      // again.
+      //
+      // THROWN, NOT RETURNED, so it lands in the one place this handler
+      // reports a failure to file. That is also what makes it compose with
+      // fix/superintendent-local-first: its catch sorts a push failure into
+      // refused / offline / unsynced and holds the entry on the device, and a
+      // throw here is routed by that sort like any other failed push.
+      if (!savedId) throw new Error(NO_RECORD_RETURNED);
+
       setExistingLogId(savedId);
       // BIND THE SERVER ID ONTO THE DRAFT. Without it a later drain would take
       // this key for a create and the server would refuse it as already filed.
-      if (savedId) await setDraftBackendId(_key, savedId);
+      //
+      // UNCONDITIONAL, like the two below it. The guard above is what makes
+      // that safe, and setDraftBackendId(_key, undefined) is precisely the
+      // write that would have made this binding a lie.
+      await setDraftBackendId(_key, savedId);
 
       // ── THE SIGNATURE EVENT ────────────────────────────────────────────
       // `superintendent_sign`, NEVER `cp_sign`. See the note at the top of
       // this file: deriveActingCapacity reads the event type first, and the
       // wrong one records this log as signed by a Competent Person.
-      if (savedId) {
-        // ── AWAITED HERE, AND ONLY HERE ──────────────────────────────────
-        //
-        // THIS IS THE ONE EDITOR THAT SEALS IN THE SAME BREATH IT SIGNS. The
-        // finalize a few lines below makes the record immutable, and the
-        // server now asks the ledger at that moment whether an event exists
-        // for this document. Fired and forgotten, this POST races that seal:
-        // the server would report a gap for a row that is merely in flight,
-        // and a detector that cries wolf is a detector nobody reads. Awaiting
-        // orders the two, so a gap reported at finalize is a real one.
-        //
-        // NON-BLOCKING IS UNCHANGED. recordSignatureEvent catches its own
-        // error and resolves with null; it has never rejected, which is why
-        // the `.catch` that used to sit here had never once run. Awaiting a
-        // promise that cannot reject cannot refuse the log — it only costs
-        // the round trip, which this handler is already paying for twice.
-        //
-        // AND THE null IS READ. It is the function's whole failure report; the
-        // caller that is about to seal the record is the last one that may
-        // throw it away.
-        const _evtId = await recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'superintendent_sign',
-          signerName: printedName.trim() || cpName,
-          signerRole: user?.role || 'cp',
-          signatureData: cpSignature,
-          contentSnapshot: {
-            log_type: LOG_TYPE, date: logDate, project_id: projectId,
-            data: payload.data, status: 'submitted',
-          },
-          user,
-        });
-        if (!_evtId) {
-          console.error(
-            '[signature-ledger] the superintendent log is about to be sealed '
-            + 'with no audit row.',
-            { documentId: savedId, projectId, date: logDate, logType: LOG_TYPE },
-          );
-        }
+      //
+      // ── AWAITED HERE, AND ONLY HERE ──────────────────────────────────────
+      //
+      // THIS IS THE ONE EDITOR THAT SEALS IN THE SAME BREATH IT SIGNS. The
+      // finalize a few lines below makes the record immutable, and the server
+      // now asks the ledger at that moment whether an event exists for this
+      // document. Fired and forgotten, this POST races that seal: the server
+      // would report a gap for a row that is merely in flight, and a detector
+      // that cries wolf is a detector nobody reads. Awaiting orders the two,
+      // so a gap reported at finalize is a real one.
+      //
+      // NON-BLOCKING IS UNCHANGED. recordSignatureEvent catches its own error
+      // and resolves with null; it has never rejected, which is why the
+      // `.catch` that used to sit here had never once run. Awaiting a promise
+      // that cannot reject cannot refuse the log — it only costs the round
+      // trip, which this handler is already paying for twice.
+      //
+      // AND THE null IS READ. It is the function's whole failure report; the
+      // caller that is about to seal the record is the last one that may throw
+      // it away.
+      //
+      // NO LONGER `if (savedId)`. The guard above already refused the case
+      // this was written for, and a condition that can no longer be false
+      // reads as though the caller is still unsure — which is the shape the
+      // whole defect had.
+      const _evtId = await recordSignatureEvent({
+        documentType: 'logbook',
+        documentId: savedId,
+        eventType: 'superintendent_sign',
+        signerName: printedName.trim() || cpName,
+        signerRole: user?.role || 'cp',
+        signatureData: cpSignature,
+        contentSnapshot: {
+          log_type: LOG_TYPE, date: logDate, project_id: projectId,
+          data: payload.data, status: 'submitted',
+        },
+        user,
+      });
+      if (!_evtId) {
+        console.error(
+          '[signature-ledger] the superintendent log is about to be sealed '
+          + 'with no audit row.',
+          { documentId: savedId, projectId, date: logDate, logType: LOG_TYPE },
+        );
       }
 
       // ── THE FREEZE, AND WHY IT IS AN EXPLICIT CALL ─────────────────────
@@ -684,28 +732,35 @@ export default function SiteSuperintendentLog() {
       // is why it has its own catch. The document is on the server and
       // UNLOCKED; the two ways that can happen are not the same thing and must
       // not read the same to him.
-      if (savedId) {
-        try {
-          await logbooksAPI.finalize(savedId);
-        } catch (freezeErr) {
-          const status = freezeErr?.response?.status;
-          if (typeof status === 'number' && status >= 400 && status < 500) {
-            // A JUDGEMENT. The server looked at the log and refused to freeze
-            // it, and it will keep refusing until the log changes. Never
-            // frozen locally: the device must not claim a lock the record
-            // does not have.
-            const code = finalizeErrorCode(freezeErr);
-            await recordFinalizeError(savedId, code, _key, 'editor');
-            toast.error(tFinalize('errorTitle'), gateCopy(code));
-            return;
-          }
-          // NOT A JUDGEMENT — it never arrived. The content is filed, the
-          // freeze is owed, and draftSync's applyRemoteFreeze re-applies it on
-          // reconnect precisely because the draft says finalized.
-          if (localSaved) { await reportHeldOnDevice(savedId); return; }
-          await reportNothingSaved(savedId);
+      //
+      // UNCONDITIONAL, for the reason the guard above gives. `if (savedId)`
+      // wrapped this whole block until the guard made it dead: the seal was
+      // quietly opting out beside a success message that says "filed and
+      // LOCKED" — and there is no second actor to notice, because
+      // sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES, so a log this
+      // screen does not finalize is never finalized by anything. The catch
+      // stays; it is about a finalize that FAILED, which is a different
+      // question from a finalize that was never attempted.
+      try {
+        await logbooksAPI.finalize(savedId);
+      } catch (freezeErr) {
+        const status = freezeErr?.response?.status;
+        if (typeof status === 'number' && status >= 400 && status < 500) {
+          // A JUDGEMENT. The server looked at the log and refused to freeze
+          // it, and it will keep refusing until the log changes. Never
+          // frozen locally: the device must not claim a lock the record
+          // does not have.
+          const code = finalizeErrorCode(freezeErr);
+          await recordFinalizeError(savedId, code, _key, 'editor');
+          toast.error(tFinalize('errorTitle'), gateCopy(code));
           return;
         }
+        // NOT A JUDGEMENT — it never arrived. The content is filed, the
+        // freeze is owed, and draftSync's applyRemoteFreeze re-applies it on
+        // reconnect precisely because the draft says finalized.
+        if (localSaved) { await reportHeldOnDevice(savedId); return; }
+        await reportNothingSaved(savedId);
+        return;
       }
 
       // The server holds it and it is locked. Record the same freeze here, so
@@ -716,13 +771,57 @@ export default function SiteSuperintendentLog() {
       // DRAFT KEY, because there was no server id yet; clearing only by id
       // would leave it up permanently, and a banner that cannot come down is
       // how a superintendent learns to read past all of them.
+      //
+      // THE SECOND IS NO LONGER CONDITIONAL EITHER. It was written
+      // `if (savedId)` for the same reason the wrapper above was, and the
+      // guard has retired that reason: leaving the test in would say the
+      // handler is still unsure whether it has an id, which is the exact
+      // shape of the defect this branch exists to remove.
       await clearFinalizeError(_key);
-      if (savedId) await clearFinalizeError(savedId);
+      await clearFinalizeError(savedId);
 
       setLocked(true);
       toast.success(t('filed'));
       router.push('/logbooks');
     } catch (pushErr) {
+      // ── WHAT WAS DONE, AND WHAT HE IS TOLD, ARE TWO QUESTIONS ──────────
+      //
+      // The SORT below decides what HAPPENS — queue the key, freeze on the
+      // device, raise a durable banner, or stay put and let him fix it.
+      // `reasonFor` decides what he READS. They are computed separately
+      // because they do not partition the same way: SUBMIT_UNATTESTED_ITEMS
+      // and a FINALIZE_* refusal are both 4xx and take the same branch, but
+      // only one of them can name the items he left blank. Folding the
+      // wording into the sort is what would force one to be dropped for the
+      // other, and both halves of this merge are load-bearing.
+      //
+      // SUBMIT_UNATTESTED_ITEMS carries `items` precisely so the client can
+      // point at the items he has not answered. This printed the bare machine
+      // code and threw the useful half away, leaving a man on a jobsite to
+      // read "SUBMIT_UNATTESTED_ITEMS" and guess which of the four it meant.
+      //
+      // SAME WORDING AS THE HINT on the disabled button, through the same
+      // labels: one condition must not be described two ways depending on
+      // whether the client or the server noticed it.
+      const detail = pushErr?.response?.data?.detail;
+      const items = Array.isArray(detail?.items) ? detail.items : [];
+
+      /** The most specific sentence this failure can be given. */
+      const reasonFor = (code) => {
+        if (items.length) {
+          return t('unansweredHint').replace('{items}', csItemLabels(items).join(', '));
+        }
+        // NOT A CODE. This one is not the server refusing him anything he can
+        // correct — it is the app declining to claim a filing it cannot
+        // prove, and what he needs to know is that nothing was confirmed and
+        // his entry is still here.
+        if (pushErr?.message === NO_RECORD_RETURNED) return t('noRecordReturned');
+        // gateCopy, NOT the raw code: the server names the condition, this
+        // screen owns the wording. It is the reason `couldNotFile` stopped
+        // printing `detail.code` at him in the first place.
+        return gateCopy(code);
+      };
+
       // REFUSAL IS NOT OFFLINE, and neither is a 5xx. Three outcomes, and the
       // superintendent is told a different thing in each.
       const handle = existingLogId || _key;
@@ -733,9 +832,12 @@ export default function SiteSuperintendentLog() {
         // The server judged the log. The draft is untouched and still
         // editable, so fixing it and submitting again is the remedy — the key
         // is deliberately NOT queued for a replay of a write it just refused.
+        // This is the branch SUBMIT_UNATTESTED_ITEMS arrives on, and the one
+        // where naming the items is the whole difference between a refusal he
+        // can act on and a machine string.
         const code = finalizeErrorCode(pushErr);
         await recordFinalizeError(handle, code, _key, 'editor');
-        toast.error(t('couldNotFile'), gateCopy(code));
+        toast.error(t('couldNotFile'), reasonFor(code));
         return;
       }
 
@@ -749,11 +851,18 @@ export default function SiteSuperintendentLog() {
       }
 
       if (!isOfflineError(pushErr)) {
-        // A 5xx reached a server that then failed. The work IS on this device
-        // and IS queued, but nothing here may claim the log was filed.
+        // A 5xx reached a server that then failed — OR the write answered 200
+        // with nothing that names a record (NO_RECORD_RETURNED, thrown above).
+        // THE SAME THING IS TRUE OF BOTH: a server was reached, the document's
+        // fate is unknown, and the work is on this device. So both are queued
+        // and neither may claim the log was filed. It is deliberately NOT
+        // reportHeldOnDevice — that freezes the draft, announces a success and
+        // navigates away, and none of the three is honest about a filing this
+        // handler could not confirm. He stays on the screen and can retry,
+        // which is what `noRecordReturned` tells him to do.
         await markPending(_key);
         await recordFinalizeError(handle, 'NOT_ON_SERVER', _key, 'unsynced');
-        toast.error(t('couldNotFile'), gateCopy(null));
+        toast.error(t('couldNotFile'), reasonFor(null));
         return;
       }
 
@@ -1021,9 +1130,10 @@ export default function SiteSuperintendentLog() {
     { key: 5, label: t('stepSign'), render: stepSign },
   ];
 
-  const unansweredLabels = unanswered
-    .map((k) => (CS_LOG_ITEMS.find((i) => i.key === k) || {}).label || k)
-    .join(', ');
+  // THE SAME LABELS THE REFUSAL RENDERS. csItemLabels is what handleSubmit's
+  // catch uses on the server's `items` list, so the hint on the disabled
+  // button and the message from a 400 cannot come to name one item two ways.
+  const unansweredLabels = csItemLabels(unanswered).join(', ');
 
   return (
     <LogbookStepper
