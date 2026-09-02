@@ -365,9 +365,16 @@ export default function SiteDailyLogsScreen() {
       // call used to discard that, so "from here on the log cannot be lost" was
       // a promise nothing checked. The catch below announces "Saved on this
       // device" as a SUCCESS toast; this result is what makes that true.
+      //
+      // `push_body` IS THE REQUEST, RECORDED. The reconnect drain cannot
+      // rebuild a daily-log payload from `data` — that is why draftSync refuses
+      // to try — so the body built above is stored verbatim and the registered
+      // pusher (src/utils/dailyLogPusher.js) replays exactly it. Written only
+      // HERE, on submit: the debounced autosave passes `data` alone, so a drain
+      // can never file a half-typed autosave under this date as the signed log.
       let localSaved = false;
       try {
-        localSaved = await writeDraft(key, { data: formData, status: 'submitted' });
+        localSaved = await writeDraft(key, { data: formData, status: 'submitted', push_body: logData });
       } catch (_e) {
         // A THROW IS A FALSE — see the note at the same guard in hot_work.
         localSaved = false;
@@ -414,40 +421,40 @@ export default function SiteDailyLogsScreen() {
           );
           return;
         }
-        // ── THE KEY IS QUEUED. NOTHING DRAINS IT. ────────────────────────────
+        // ── QUEUED, AND NOW ACTUALLY DRAINED ─────────────────────────────────
         // `markPending` records the key in the index draftSync reads on every
-        // reconnect — and that drain holds
-        // `SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log'])`, so it
-        // sees this key, returns `skipped-type`, and moves on. Forever. The
-        // skip is deliberate and right: a daily log posts a flatter shape to
-        // dailyLogsAPI than the drain can reconstruct, and inventing a
-        // compliance payload from a partial match writes a malformed statutory
-        // record. What was wrong is that this branch never knew, and told a
-        // superintendent at a gate tablet — in a GREEN SUCCESS toast — that
-        // "this log will sync when you are back online".
+        // reconnect. For as long as this screen has existed that drain held
+        // `SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log'])` and
+        // returned `skipped-type` for this very key — while this branch showed
+        // a GREEN SUCCESS toast reading "this log will sync when you are back
+        // online". It never would. Only a human reopening this date and
+        // pressing Save could file it, and the tablet had just told him he did
+        // not need to.
         //
-        // It will not. The only thing that files it is a human reopening this
-        // date and pressing Save, so that is what the copy says. The key is
-        // still queued: it costs nothing, it is what raises the badge, and it
-        // is what the per-screen pusher will drain once that exists.
+        // WHAT MAKES THE PROMISE TRUE. The skip is still right — the drain
+        // cannot rebuild a daily-log payload without guessing — so instead of
+        // removing it, this screen records the EXACT body it would have sent
+        // (`push_body`, above) and registers its own pusher for the type
+        // (src/utils/dailyLogPusher.js, wired at app start). The drain replays
+        // that body verbatim on the next reconnect. Nothing is reconstructed
+        // and nothing is invented, which is what the skip was protecting.
         //
-        // BOTH HALVES OR NEITHER. "Your entry is gone" would be just as false —
-        // the log IS on this device and it is complete. So every branch below
-        // states that first and asks for the save second, and NEITHER is a
-        // success toast: a state that needs him to come back later is not a
-        // success, and a green banner is how he learns to stop reading them.
+        // SO THE COPY SAYS SO — and says where the log is meanwhile, because
+        // "your entry is gone" was always the other way to get this wrong. The
+        // server-refusal branch stays a WARNING: it retries, but a server that
+        // said no once may keep saying no, and he should see that it filed.
         await markPending(key);
         setPendingSync(true);
-        console.warn('Daily log saved on device only; the push failed and no drain will re-send it:', pushErr?.message);
+        console.warn('Daily log push failed; queued for the reconnect drain:', pushErr?.message);
         if (isOfflineError(pushErr)) {
-          toast.warning(
-            'Saved on this device — not filed yet',
-            'No connection, so it did not reach the server. Nothing will send it for you — open today’s log and press Save again once you have signal.',
+          toast.success(
+            'Saved on this device',
+            'No connection — it is queued and will upload automatically when you are back online.',
           );
         } else {
           toast.warning(
             'Saved on this device — not filed yet',
-            'The server did not accept it. Your entries are safe here and nothing is lost — open today’s log and press Save again later.',
+            'The server did not accept it. Your entries are safe here and it stays queued to upload — check back that today’s log filed.',
           );
         }
       }
@@ -598,14 +605,15 @@ export default function SiteDailyLogsScreen() {
                     <Text style={styles.saveFailedText}>NOT saved on device</Text>
                   </View>
                 ) : pendingSync ? (
-                  /* NOT "waiting to sync". Nothing drains this log type — see
-                     the note in handleSubmit — so the badge names the state it
-                     is actually in: here, and not filed. It is the durable half
-                     of the message; the toast that said it is gone in four
-                     seconds and he may well have walked away by then. */
+                  /* THE DURABLE HALF. The toast is gone in four seconds and he
+                     may be back at the gate by then; this is what he reads
+                     afterwards, so it carries the same promise — and only
+                     because a registered pusher now keeps it (see
+                     handleSubmit). While that promise was false this said
+                     nothing about uploading at all. */
                   <View style={styles.pendingBadge}>
                     <CloudOff size={12} strokeWidth={2} color={semantic.attention} />
-                    <Text style={styles.pendingText}>On device — not filed</Text>
+                    <Text style={styles.pendingText}>Saved — will upload</Text>
                   </View>
                 ) : hasServerLog ? (
                   <View style={styles.existingBadge}>

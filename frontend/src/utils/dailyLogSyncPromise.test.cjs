@@ -81,17 +81,25 @@ ok(SKIPPED.size > 0, `SKIP_LOG_TYPES parsed and non-empty (${[...SKIPPED].join('
 ok(/if \(SKIP_LOG_TYPES\.has\(parsed\.logType\)\)/.test(drainSrc),
   'the drain still consults SKIP_LOG_TYPES before pushing anything');
 
-// STEP 2 HAS NOT LANDED. There is no way for a screen to hand the drain its own
-// pusher, so "drainable" is exactly "not skipped". When the registry is built,
-// this assertion flips and the definition below grows a second term — in the
-// same commit, so the two can never disagree.
-const registryPresent = /export function registerDraftPusher\(/.test(drainSrc);
-ok(registryPresent === false,
-  'no per-screen pusher registry exists yet — so a skipped type cannot sync by '
-  + 'any route, and no screen may say it will');
+// THE SECOND ROUTE. A screen may hand the drain its own push function for a
+// type the generic path refuses to reconstruct, so "drainable" is no longer
+// "not skipped" — it is "not skipped, OR owned by a pusher". Both terms are
+// read out of shipped source: unregister the daily log and the definition
+// narrows on its own, and the copy assertions below flip back with it.
+ok(/export function registerDraftPusher\(/.test(drainSrc),
+  'draftSync exposes a per-screen pusher registry — the second route by which a '
+  + 'skipped type can legitimately sync');
+
+const pusherSrc = read('src', 'utils', 'dailyLogPusher.js');
+ok(pusherSrc.length > 0, 'dailyLogPusher.js read and non-empty');
+const REGISTERED = new Set(
+  [...pusherSrc.matchAll(/registerDraftPusher\('([^']+)'/g)].map((m) => m[1]),
+);
+ok(REGISTERED.size > 0,
+  `the daily-log pusher registers its types (${[...REGISTERED].join(', ')})`);
 
 /** Will the reconnect drain push this log type unattended? */
-const drainable = (logType) => !SKIPPED.has(logType);
+const drainable = (logType) => !SKIPPED.has(logType) || REGISTERED.has(logType);
 
 // ── THE TWO DAILY-LOG SCREENS ────────────────────────────────────────────────
 // Each is described by the markers it actually contains. Both are asserted to
@@ -155,8 +163,13 @@ for (const { rel, deferred, badge } of SCREENS) {
     ok(SAVE_AGAIN.test(branch),
       `${rel}: and names the one thing that actually files it — saving again`);
   } else {
+    // THE PROMISE IS EARNED, so it must actually be made. A capability nothing
+    // tells him about is the same defect wearing the other face: he retypes a
+    // log that was going to file itself, or closes the app believing it is lost.
     ok(AUTOMATIC.test(branch),
-      `${rel}: the drain WILL push this type, so the screen may say so`);
+      `${rel}: the drain WILL push this type, so the screen says so`);
+    ok(SAFE_HERE.test(branch),
+      `${rel}: and still says where the log is in the meantime`);
   }
 
   // ── the persistent pending indicator ───────────────────────────────────────
@@ -176,6 +189,15 @@ for (const { rel, deferred, badge } of SCREENS) {
       + `${badgePromises.length ? ` — ${JSON.stringify(badgePromises.map((l) => l.trim()))}` : ''}`);
     ok(/device/i.test(badgeSlice),
       `${rel}: while still telling him the work is here`);
+  } else {
+    // The badge OUTLIVES the toast, so it is the thing he actually reads — and
+    // it is where the false promise survived longest on daily-log.jsx. Now that
+    // the promise is true it has to be here too, or the durable surface
+    // contradicts the transient one.
+    ok(AUTOMATIC.test(badgeSlice),
+      `${rel}: the durable badge carries the same true promise the toast made`);
+    ok(/saved|device/i.test(badgeSlice),
+      `${rel}: and still tells him the work is here`);
   }
 }
 

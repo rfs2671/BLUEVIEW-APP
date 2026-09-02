@@ -28,11 +28,24 @@ import { isAffirmedSignature } from './signatureAffirmed';
  *     what the editors send: create/update {project_id, log_type, date, data,
  *     cp_signature, cp_name, status}. The draft stores precisely those fields
  *     and the key encodes project/type/date, so nothing is guessed.
- *   • DAILY-LOG types ('daily_log', 'site_daily_log') are deliberately SKIPPED:
- *     they post a different, flatter shape to dailyLogsAPI, and inventing a
- *     compliance payload from a partial match is not worth the risk of writing
- *     a malformed record. They stay safe on-device and re-push on the next
- *     manual save. Wiring them needs a per-screen pusher — see the report.
+ *   • DAILY-LOG types ('daily_log', 'site_daily_log') are still refused by the
+ *     GENERIC path: they post a different, flatter shape to dailyLogsAPI, and
+ *     inventing a compliance payload from a partial match is not worth the risk
+ *     of writing a malformed record. That reasoning has not changed, and the
+ *     reconstruction above is still never applied to them.
+ *
+ *     WHAT CHANGED — the per-screen pusher this header used to propose now
+ *     exists, and it REMOVES the guess rather than taking it. A screen that
+ *     owns a shape this module cannot rebuild registers its own push function
+ *     (registerDraftPusher) and records the EXACT request body it would have
+ *     sent in the draft (`push_body`), so the drain replays that body verbatim.
+ *     A skipped type with no registered pusher is refused exactly as before,
+ *     and so is a draft with no recorded body: nothing is ever assembled from a
+ *     partial match. See dailyLogPusher.js.
+ *
+ *     Until that landed, a gate tablet told a superintendent in a GREEN SUCCESS
+ *     TOAST that his required daily log "will sync when you are back online",
+ *     and this drain was the thing that would not send it.
  *
  * A push that fails again just stays pending; the key is only cleared on a
  * confirmed success.
@@ -57,7 +70,51 @@ import { isAffirmedSignature } from './signatureAffirmed';
 
 const PREFIX = 'logbook_draft:';
 // Handled by dailyLogsAPI with a different payload shape — see note above.
+// STILL SKIPPED BY THE GENERIC PATH. A registered pusher (below) is what sends
+// these; this set is what keeps pushOne's reconstruction away from them.
 const SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log']);
+
+/**
+ * PER-SCREEN PUSHERS — the escape hatch for a shape this module cannot rebuild.
+ *
+ * { logType -> async ({ key, draft, body, projectId, logType, date }) => { backendId, mode } }
+ *
+ * WHY A REGISTRY AND NOT A MOUNTED HOOK. The drain runs from a NetInfo
+ * transition and at startup with NO COMPONENT MOUNTED — that is the entire
+ * point of it. A pusher supplied by a screen's useEffect would be gone the
+ * moment the superintendent navigated away, which is exactly when a reconnect
+ * happens. So registration is a module-level act performed once at app start
+ * (app/_layout.jsx, beside setupDraftAutoSync), and the pusher is a plain
+ * function that owns a payload shape, not a component that owns a screen.
+ *
+ * WHAT A PUSHER IS TRUSTED WITH, AND WHAT IT IS NOT. It is handed a body the
+ * SCREEN recorded verbatim at submit time and told where to send it. It does
+ * not build a payload, and this module does not build one for it — the moment
+ * either of those is true we are back to inventing a compliance record from a
+ * partial match, which is the thing the skip exists to prevent.
+ *
+ * A pusher THROWS to fail. The refusal handling around it is the same
+ * three-way split the rest of this file makes: a 4xx is a judgement, anything
+ * else is not, and neither clears the key.
+ */
+const DRAFT_PUSHERS = new Map();
+
+/**
+ * Hand the drain a push function for a log type it refuses to reconstruct.
+ * Returns an unregister fn. Registering the same type twice replaces it.
+ */
+export function registerDraftPusher(logType, push) {
+  if (!logType || typeof push !== 'function') return () => {};
+  DRAFT_PUSHERS.set(logType, push);
+  return () => {
+    if (DRAFT_PUSHERS.get(logType) === push) DRAFT_PUSHERS.delete(logType);
+  };
+}
+
+/** Will the drain push this log type? The screens' copy depends on the answer. */
+export function canDrainLogType(logType) {
+  return !SKIP_LOG_TYPES.has(logType) || DRAFT_PUSHERS.has(logType);
+}
 // { [logbookId]: { code, key, at } } — the last finalize the SERVER refused for
 // that logbook. See recordFinalizeError below for why this exists.
 const FINALIZE_ERROR_KEY = 'logbook_finalize_errors';
@@ -200,10 +257,91 @@ async function clearUnsyncedBanner(key, logId) {
   if (logId) await clearFinalizeError(logId);
 }
 
+/**
+ * Drain ONE key through a pusher its screen registered.
+ *
+ * DELIBERATELY NOT A PATH THROUGH pushOne. Everything below pushOne's skip
+ * check — the photo upload, the empty-draft guard, the unsigned-submit gate,
+ * the preshift completeness gate, the remote freeze — is written against the
+ * standard logbook payload and against logbooksAPI. Threading a second shape
+ * through it would put every one of those branches on a code path they were
+ * never reasoned about, on the load-bearing CP logbook drain. So this is a
+ * sibling, and pushOne's body is untouched.
+ *
+ * The parts that DO transfer are the ones that are about the queue rather than
+ * the payload, and they behave identically: a vanished draft stops being
+ * tracked, a success binds the server id and clears the key, and a failure of
+ * any kind leaves the key PENDING for the next reconnect.
+ */
+async function pushRegistered(key, parsed, push) {
+  const draft = await readDraft(key);
+  if (!draft) {
+    await clearPending(key);
+    return { key, ok: false, reason: 'no-draft' };
+  }
+
+  // ── NO BODY, NO PUSH ────────────────────────────────────────────────────
+  // The body is recorded by the screen at submit time and by nothing else, so
+  // its absence means one of two things: the key was queued by a build from
+  // before push_body existed, or the local write that should have recorded it
+  // failed. In both cases the only honest payload is the one we do not have,
+  // and assembling a substitute from `draft.data` is precisely the guess this
+  // whole mechanism exists to avoid.
+  //
+  // Left PENDING, not cleared, and not an error: the next manual save records a
+  // body and the drain after that sends it. This is the one state where the
+  // screen's "it will upload" badge is optimistic, and it is bounded — it can
+  // only be a key queued by an older build, and only until he saves that date
+  // once more. It is announced in syncPendingDrafts so it is findable.
+  const body = draft.push_body;
+  if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
+    return { key, ok: false, reason: 'no-push-body' };
+  }
+
+  try {
+    const r = await push({ ...parsed, key, draft, body });
+    const backendId = (r && r.backendId) || null;
+    // Bind the id BEFORE clearing the key: a create whose id is lost makes the
+    // next save POST a duplicate for the same day.
+    if (backendId && backendId !== draft.backend_id) {
+      await setDraftBackendId(key, backendId);
+    }
+    await clearPending(key);
+    // NO clearUnsyncedBanner HERE, deliberately. That banner is the
+    // LogbookLockBar surface, raised by recordFinalizeError and read only by
+    // the CP logbook editors. The two daily-log screens have no lock bar — they
+    // carry their own in-page badge, driven by the pending index this line just
+    // cleared — so calling it would be a write nothing reads, and
+    // localSaveVisibility.test.cjs pins the count of its callers precisely so
+    // that a new one has to be justified rather than added by symmetry.
+    return { key, ok: true, mode: (r && r.mode) || 'registered' };
+  } catch (e) {
+    // The same three-way split the standard path makes, and for the same
+    // reason: a 4xx is a judgement the server will keep making, anything else
+    // never reached it. NEITHER clears the key — the log is on the device and
+    // the next reconnect tries again.
+    if (isServerRefusal(e)) {
+      const code = finalizeErrorCode(e);
+      return {
+        key, ok: false, reason: 'push-refused',
+        code, logId: draft.backend_id || null,
+      };
+    }
+    return { key, ok: false, reason: e?.message || 'push-failed' };
+  }
+}
+
 async function pushOne(key) {
   const parsed = parseDraftKey(key);
   if (!parsed) return { key, ok: false, reason: 'unparseable-key' };
-  if (SKIP_LOG_TYPES.has(parsed.logType)) return { key, ok: false, reason: 'skipped-type' };
+  // A skipped type never reaches the reconstruction below. It reaches its own
+  // screen's pusher, or nothing at all — the behaviour it had before one
+  // existed.
+  if (SKIP_LOG_TYPES.has(parsed.logType)) {
+    const push = DRAFT_PUSHERS.get(parsed.logType);
+    if (!push) return { key, ok: false, reason: 'skipped-type' };
+    return pushRegistered(key, parsed, push);
+  }
 
   const draft = await readDraft(key);
   if (!draft) {
@@ -458,6 +596,11 @@ export async function syncPendingDrafts() {
       // Diagnostic only. The user-visible surface is the banner LogbookLockBar
       // renders from the record written above — this drain has no screen.
       console.warn(`[draftSync] ${r.reason} for ${r.logId || r.key} (${r.code || 'no code'}); staying pending`);
+    } else if (r.reason === 'no-push-body') {
+      // Not counted as a refusal — the server never saw it. Announced anyway,
+      // because a key that can never drain until a human saves again is worth
+      // finding in a log rather than inferring from its silence.
+      console.warn(`[draftSync] ${r.key} has no recorded push body; it stays pending until the next manual save`);
     }
   }
   if (synced) console.log(`[draftSync] pushed ${synced}/${keys.length} pending draft(s)`);

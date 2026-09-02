@@ -13,6 +13,7 @@ import { InspectorLockProvider, useInspectorLock } from '../src/context/Inspecto
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
+import { registerDailyLogPushers } from '../src/utils/dailyLogPusher';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
@@ -286,9 +287,21 @@ function AppShell() {
   // at startup). markPending() used to only RECORD a failed push — nothing ever
   // re-sent it, so "syncs when you reconnect" was not actually built. This is
   // the drain. It only re-sends pushes the user already initiated.
+  //
+  // THE PUSHERS ARE REGISTERED FIRST, and the order is load-bearing:
+  // setupDraftAutoSync drains once immediately (the app may have been killed
+  // with keys pending), so a registration after it would miss that pass and a
+  // daily log queued overnight would wait for the next reconnect. Registering
+  // here rather than in a screen is the point — the drain fires with nothing
+  // mounted, which is exactly when a superintendent's tablet finds signal
+  // again. ONE trigger, still: this adds a payload shape, not a listener.
   useEffect(() => {
+    const unregisterPushers = registerDailyLogPushers();
     const unsubscribe = setupDraftAutoSync();
-    return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+      unregisterPushers();
+    };
   }, []);
 
   // One Stack element, optionally wrapped. On mobile the rendered tree is

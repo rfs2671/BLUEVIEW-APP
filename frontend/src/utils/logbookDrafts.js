@@ -132,7 +132,7 @@ export function draftKey({ projectId, logType, date, workerId }) {
   return workerId ? `${base}:${workerId}` : base;
 }
 
-/** Returns { data, cp_signature, cp_name, status, backend_id, finalized } or null. */
+/** Returns { data, cp_signature, cp_name, status, backend_id, finalized, push_body } or null. */
 export async function readDraft(key) {
   try {
     const raw = await AsyncStorage.getItem(key);
@@ -149,6 +149,26 @@ export async function readDraft(key) {
       // silently ALWAYS FALSE and the offline finalize-lock never engaged (only
       // the server's is_locked did). Returning it makes the offline lock real.
       finalized: p.finalized ?? false,
+      // THE EXACT REQUEST BODY THE SCREEN WOULD HAVE SENT, when its screen
+      // chose to record one. Null for every standard logbook type and for every
+      // draft written before this existed.
+      //
+      // WHY IT EXISTS. draftSync's generic drain can only push the types whose
+      // payload reconstructs EXACTLY from what the editors store — that is the
+      // whole reason 'daily_log' and 'site_daily_log' were skipped: they post a
+      // flatter shape to dailyLogsAPI, and inventing a compliance payload from
+      // a partial match writes a malformed statutory record. Recording the body
+      // VERBATIM removes the guess instead of taking it: the drain replays what
+      // the user pressed Save on, byte for byte, including audit stamps taken at
+      // the moment of his action rather than at reconnect time.
+      //
+      // IT IS THE SUBMITTED CONTENT, NOT THE LATEST. Only a submit writes it;
+      // the debounced autosave passes `data` alone and leaves this untouched. So
+      // a drain files what he actually saved, never a half-typed autosave he
+      // never signed off on — the exact failure localSaveVisibility.test.cjs
+      // names. It costs one extra copy of one day's log on disk, which is the
+      // price of not guessing.
+      push_body: p.push_body ?? null,
     };
   } catch (_e) {
     return null;
@@ -157,7 +177,7 @@ export async function readDraft(key) {
 
 /**
  * Persist the draft locally. `patch` may carry any of
- * { data, cp_signature, cp_name, status, backend_id }; fields left `undefined`
+ * { data, cp_signature, cp_name, status, backend_id, push_body }; fields left `undefined`
  * are preserved from the existing draft — so a per-field autosave (which omits
  * `status`) never downgrades a 'submitted' log back to 'draft', and a
  * server-id bind never wipes the payload.
@@ -209,7 +229,11 @@ export async function writeDraft(key, patch) {
       const onlyBackendId =
         patch.backend_id !== undefined &&
         patch.data === undefined && patch.cp_signature === undefined &&
-        patch.cp_name === undefined && patch.status === undefined;
+        // `push_body` is CONTENT — it is the request that would be replayed
+        // against the server — so it is listed here with the rest and cannot
+        // slip past the lock as if it were bookkeeping.
+        patch.cp_name === undefined && patch.status === undefined &&
+        patch.push_body === undefined;
       if (!onlyBackendId) return false;
     }
     const merged = {
@@ -219,6 +243,10 @@ export async function writeDraft(key, patch) {
       status: patch.status !== undefined ? patch.status : (prev?.status || 'draft'),
       backend_id: patch.backend_id !== undefined ? patch.backend_id : (prev?.backend_id ?? null),
       finalized: patch.finalized !== undefined ? patch.finalized : (prev?.finalized ?? false),
+      // See readDraft for what this is and why. Preserved like every other
+      // field, so an autosave that omits it cannot erase the body the last
+      // submit recorded — which is precisely the copy the drain must send.
+      push_body: patch.push_body !== undefined ? patch.push_body : (prev?.push_body ?? null),
       updated_at: Date.now(),
     };
     await AsyncStorage.setItem(key, JSON.stringify(merged));
