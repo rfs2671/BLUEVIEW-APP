@@ -443,7 +443,15 @@ export default function SiteLogbooksViewer() {
       base64Data = signature;
     } else if (typeof signature === 'object') {
       base64Data = signature.data || signature.paths || null;
-      signerName = signature.signer_name || '';
+      // BOTH SPELLINGS, and not by accident. SignaturePad — the only writer of
+      // a signature in this app — emits `signerName`; nothing writes
+      // `signer_name`, so reading it alone left this '' on every drawn
+      // signature. The block then showed the bare label and nothing else,
+      // because the image branch below also skips a `paths` array (it needs a
+      // string). Documents already filed may carry either key, so this widens
+      // rather than swaps — server.py's render_signature_html reads exactly
+      // these two, in this order.
+      signerName = signature.signer_name || signature.signerName || '';
     }
     return (
       <View style={{ marginTop: spacing.sm }}>
