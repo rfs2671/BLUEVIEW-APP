@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from lib.cert_vocab import SST_CLASS_TYPES
+from lib.worker_projection import WORKER_NO_CARD_IMAGE
 from lib.logbook.schema import (
     CATEGORY_LL196,
     SOURCE_AUTO_DETECTED,
@@ -294,10 +295,13 @@ async def generate_ll196_attestation(
     if project is None:
         raise ValueError(f"project not found: {project_id}")
 
+    # build_attestation_data reads `name`/`full_name`, `trade` and
+    # `certifications` off each of these and puts a roster row on a PDF. The
+    # base64 card photo never reaches the document, so it is not loaded.
     workers = await db.workers.find({
         "project_id": project_id,
         "is_deleted": {"$ne": True},
-    }).to_list(2000)
+    }, WORKER_NO_CARD_IMAGE).to_list(2000)
 
     attestation_data = build_attestation_data(
         project=project, workers=workers,

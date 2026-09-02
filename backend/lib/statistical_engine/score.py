@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from lib.cert_vocab import SST_CLASS_TYPES
+from lib.worker_projection import WORKER_NO_CARD_IMAGE
 from lib.server_http import ServerHttpClient
 from lib.statistical_engine.baselines import (
     compare_project_to_peers,
@@ -466,7 +467,12 @@ async def gather_score_inputs(
         if company_id:
             try:
                 cutoff_future = (cur_now + timedelta(days=30)).date()
-                cursor = db.workers.find({"company_id": company_id})
+                # Every worker in the company, to count expiring SST certs.
+                # The loop below reads `certifications` and nothing else, so
+                # the base64 card photo on each document is projected out.
+                cursor = db.workers.find(
+                    {"company_id": company_id}, WORKER_NO_CARD_IMAGE,
+                )
                 async for w in cursor:
                     certs = w.get("certifications") or []
                     for c in certs:

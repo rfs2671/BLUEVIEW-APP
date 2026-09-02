@@ -2327,6 +2327,12 @@ from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
     OSHA_TYPES,
 )
 
+# THE CARD PHOTO IS BASE64 ON THE WORKER DOCUMENT, so every read of MANY
+# workers must project it out or it loads a phone photo per worker. Defined
+# under lib/ for the same circular-import reason as cert_vocab above, and for
+# the same "no second copy to drift" reason. See lib/worker_projection.py.
+from lib.worker_projection import WORKER_NO_CARD_IMAGE  # noqa: E402
+
 
 
 # ══ COLOUR-FIRST CARD CLASSIFICATION ════════════════════════════════════════
@@ -14607,7 +14613,13 @@ async def scan_expiring_certifications(admin=Depends(get_admin_user)):
         query["company_id"] = company_id
     elif not is_platform_operator(admin):
         query["_id"] = None
-    workers = await db.workers.find(query).to_list(5000)
+    # FIVE THOUSAND WHOLE DOCUMENTS, for a report of names and verdicts. This
+    # reads every worker in the company, hands each to
+    # validate_worker_certifications (which reads `certifications` and nothing
+    # else) and returns a name, a company, a trade and a block/warning list.
+    # The base64 card photo on each document was loaded and thrown away — the
+    # same defect that took GET /workers down, on a bigger set with no limit.
+    workers = await db.workers.find(query, WORKER_NO_CARD_IMAGE).to_list(5000)
     blocked_workers = []
     warning_workers = []
     for w in workers:
@@ -15444,7 +15456,12 @@ async def get_project_checkins(
     workers_map = {}
     if missing_worker_ids:
         query_ids = [to_query_id(wid) for wid in missing_worker_ids]
-        workers_list = await db.workers.find({"_id": {"$in": query_ids}, "is_deleted": {"$ne": True}}).to_list(len(query_ids))
+        # NAME AND COMPANY ARE ALL THIS MAP IS FOR — see the backfill below,
+        # which reads `name` and `company` off it and nothing else. The card
+        # photo is base64 on these documents and is neither read here nor
+        # returned by this endpoint, so it is projected out. The sibling
+        # /flagged endpoint is the one reader that DOES need it and keeps it.
+        workers_list = await db.workers.find({"_id": {"$in": query_ids}, "is_deleted": {"$ne": True}}, WORKER_NO_CARD_IMAGE).to_list(len(query_ids))
         for w in workers_list:
             workers_map[str(w["_id"])] = w
 
@@ -15493,7 +15510,8 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
             missing_ids.add(c["worker_id"])
     workers_map = {}
     if missing_ids:
-        wlist = await db.workers.find({"_id": {"$in": [to_query_id(wid) for wid in missing_ids]}, "is_deleted": {"$ne": True}}).to_list(len(missing_ids))
+        # Name/company backfill only — the base64 card photo is projected out.
+        wlist = await db.workers.find({"_id": {"$in": [to_query_id(wid) for wid in missing_ids]}, "is_deleted": {"$ne": True}}, WORKER_NO_CARD_IMAGE).to_list(len(missing_ids))
         for w in wlist:
             workers_map[str(w["_id"])] = w
 
@@ -15541,7 +15559,8 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
             missing_ids.add(c["worker_id"])
     workers_map = {}
     if missing_ids:
-        wlist = await db.workers.find({"_id": {"$in": [to_query_id(wid) for wid in missing_ids]}, "is_deleted": {"$ne": True}}).to_list(len(missing_ids))
+        # Name/company backfill only — the base64 card photo is projected out.
+        wlist = await db.workers.find({"_id": {"$in": [to_query_id(wid) for wid in missing_ids]}, "is_deleted": {"$ne": True}}, WORKER_NO_CARD_IMAGE).to_list(len(missing_ids))
         for w in wlist:
             workers_map[str(w["_id"])] = w
 
@@ -29276,7 +29295,13 @@ async def nightly_compliance_check():
 
         cert_alerts = 0
         cert_no_company = 0
-        async for w in db.workers.find(cert_window_filter):
+        # AN UNBOUNDED CURSOR OVER THE COLLECTION, run nightly. It reads
+        # `certifications` (through validate_worker_certifications), `_id`,
+        # `company_id`, `name` and `company`; the base64 card photo it pulled was
+        # never touched. A cursor streams, so this never produced the sort-limit
+        # 500 GET /workers did — it just moved a photograph per worker over the
+        # wire every night for nothing.
+        async for w in db.workers.find(cert_window_filter, WORKER_NO_CARD_IMAGE):
             try:
                 # THE GATE'S OWN VERDICT, not a second copy of the date maths.
                 # validate_worker_certifications owns the 30-day window and the
@@ -31952,7 +31977,10 @@ async def _handle_list_workers(
     query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
-    workers = await db.workers.find(query).to_list(1000)
+    # A ROSTER OF NAMES, read as a thousand whole documents. `_match` and the
+    # formatting below read `name`, `trade` and `company` only; the base64 card
+    # photo is projected out.
+    workers = await db.workers.find(query, WORKER_NO_CARD_IMAGE).to_list(1000)
 
     def _match(w: dict) -> bool:
         if trade:
@@ -34745,7 +34773,8 @@ async def _get_checklist_candidates(
         wq: Dict[str, Any] = {"is_deleted": {"$ne": True}}
         if company_id:
             wq["company_id"] = company_id
-        workers = await db.workers.find(wq).to_list(200)
+        # An @-mention candidate list: id, name, trade, company. No photo.
+        workers = await db.workers.find(wq, WORKER_NO_CARD_IMAGE).to_list(200)
         for w in workers:
             out.append({
                 "id":      str(w.get("_id")),
