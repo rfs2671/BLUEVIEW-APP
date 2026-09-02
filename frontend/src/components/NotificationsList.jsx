@@ -41,6 +41,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import {
   AlertTriangle,
   AlertCircle,
@@ -54,6 +55,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic } from '../styles/semanticColors';
 import { notificationsAPI } from '../utils/api';
+import { notificationRoute } from '../utils/notificationDeeplink';
 
 const SEVERITY_ICONS = {
   critical: AlertCircle,
@@ -93,6 +95,7 @@ export default function NotificationsList({
   onSeeAll,
 }) {
   const { colors } = useTheme();
+  const router = useRouter();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -153,6 +156,31 @@ export default function NotificationsList({
     }
   }, [projectId, onUnreadCountChange]);
 
+  /**
+   * WHAT A TAP DOES: mark read, then GO THERE.
+   *
+   * The header above has always claimed "Mark-read on click + deeplink
+   * follow". Only the first half was ever written — every row's onPress was
+   * handleMarkRead and nothing else — so a notification that says "Add the
+   * sub to the roster and assign this worker" marked itself read and left the
+   * admin exactly where he stood. The server has stored the destination on
+   * `deeplink` since this inbox shipped.
+   *
+   * ORDER MATTERS, AND SO DOES NOT AWAITING. Navigation is issued
+   * synchronously off the tap; the mark-read POST is fire-and-forget (it
+   * already updates optimistically and swallows its own failure). Awaiting it
+   * first would make a slow or dead network eat the tap — the one behaviour
+   * this is here to end.
+   *
+   * A notification with no destination — most of them are FYI — still marks
+   * read and stays put.
+   */
+  const handleOpen = useCallback((item) => {
+    const to = notificationRoute(item?.deeplink);
+    handleMarkRead(item);
+    if (to) router.push(to);
+  }, [handleMarkRead, router]);
+
   const handleMarkAllRead = useCallback(async () => {
     try {
       await notificationsAPI.markAllRead({ projectId });
@@ -208,7 +236,7 @@ export default function NotificationsList({
             key={item.id || item._id}
             item={item}
             colors={colors}
-            onPress={() => handleMarkRead(item)}
+            onPress={() => handleOpen(item)}
           />
         ))}
         {onSeeAll && (
@@ -238,7 +266,7 @@ export default function NotificationsList({
         <NotificationItem
           item={item}
           colors={colors}
-          onPress={() => handleMarkRead(item)}
+          onPress={() => handleOpen(item)}
         />
       )}
       refreshControl={

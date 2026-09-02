@@ -13549,7 +13549,16 @@ async def register_and_checkin(data: dict, request: Request):
                     "worker_id": str(worker["_id"]),
                     "reason": trade_flag_reason,
                 },
-                deeplink_anchor="workforce",
+                # The screen the message actually asks for: the per-project
+                # subcontractor roster editor (app/project/[id]/trades.jsx),
+                # where the sub or the missing trade gets added.
+                #
+                # This used to pass an ANCHOR naming a "workforce" section of
+                # the project page. No such section exists — the word had zero
+                # matches anywhere under frontend/ — so the reader was told to
+                # go fix something and handed a fragment that resolved to
+                # nothing. A destination that is its own screen is a path.
+                deeplink_path="trades",
             )
         except Exception as e:
             logger.warning(f"[needs_trade] dispatch_notification failed: {e!r}")
@@ -14034,7 +14043,10 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                         "worker_id": str(worker["_id"]),
                         "reason": trade_flag_reason,
                     },
-                    deeplink_anchor="workforce",
+                    # Same destination as the register-and-checkin twin: the
+                    # roster editor at app/project/[id]/trades.jsx. See the
+                    # note there on why the old anchor was not a destination.
+                    deeplink_path="trades",
                 )
             except Exception as e:
                 logger.warning(f"[needs_trade] dispatch_notification failed: {e!r}")

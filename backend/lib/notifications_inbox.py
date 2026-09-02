@@ -16,7 +16,7 @@ PUBLIC SURFACE:
 
   • ``dispatch_notification(db, *, project, kind, severity, title,
     message, source_kind, source_id, metadata, expires_at,
-    deeplink_anchor) -> List[str]``
+    deeplink_anchor, deeplink_path) -> List[str]``
     — Fan-out to eligible users for a project. Per-user dedup on
     ``(user_id, source_kind, source_id)``. Returns inserted-id list.
 
@@ -52,7 +52,8 @@ DOCUMENT SCHEMA (``db.notifications``):
   message       str         # 1-2 sentence body
   source_kind   str         # what generated this ("prediction")
   source_id     str         # FK to source (predicted_events._id)
-  deeplink      str         # FE route path, may include #anchor
+  deeplink      str         # FE route path (may name a child
+                            # route), may include #anchor
   status        str         # "active" | "dismissed"
   created_at    datetime
   read_at       datetime | None
@@ -107,13 +108,31 @@ READ_RETENTION_DAYS = 90
 
 
 def _build_deeplink(
-    project_id: str, anchor: Optional[str] = None,
+    project_id: str,
+    anchor: Optional[str] = None,
+    sub_path: Optional[str] = None,
 ) -> str:
     """Construct the FE deeplink path for a project. Matches the
     expo-router route shape (``/project/{id}``). Anchor is
     appended with ``#`` for FE scroll-into-view of the relevant
-    section."""
+    section.
+
+    ``sub_path`` names a CHILD ROUTE under the project — a real
+    screen with its own file in ``frontend/app/project/[id]/``
+    (``"trades"`` -> ``/project/{id}/trades``).
+
+    THE TWO ARE NOT INTERCHANGEABLE, and treating them as one is
+    how ``deeplink_anchor="workforce"`` shipped: an anchor points
+    at a SECTION of the project page, so it can only ever reach a
+    section that page renders. "workforce" was not one — the
+    string had zero matches anywhere under ``frontend/`` — and the
+    admin the notification was written for was sent to a fragment
+    that resolved to nothing. A destination that is its own screen
+    has to be a path.
+    """
     base = f"/project/{project_id}"
+    if sub_path:
+        base = f"{base}/{sub_path.strip('/')}"
     if anchor:
         return f"{base}#{anchor}"
     return base
@@ -173,6 +192,7 @@ async def dispatch_notification(
     metadata: Optional[Dict[str, Any]] = None,
     expires_at: Optional[datetime] = None,
     deeplink_anchor: Optional[str] = None,
+    deeplink_path: Optional[str] = None,
 ) -> List[str]:
     """Dispatch an in-app notification to all eligible users for
     a project. Returns the list of inserted notification ids
@@ -227,7 +247,9 @@ async def dispatch_notification(
         recipients = recipients[:MAX_DISPATCH_RECIPIENTS]
 
     now = datetime.now(timezone.utc)
-    deeplink = _build_deeplink(project_id, anchor=deeplink_anchor)
+    deeplink = _build_deeplink(
+        project_id, anchor=deeplink_anchor, sub_path=deeplink_path,
+    )
 
     inserted_ids: List[str] = []
     for user in recipients:

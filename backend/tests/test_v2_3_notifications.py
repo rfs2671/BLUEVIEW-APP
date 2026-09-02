@@ -425,6 +425,40 @@ class TestDispatchNotification(unittest.TestCase):
         doc = db[NOTIFICATIONS_COLLECTION].docs[0]
         self.assertEqual(doc["deeplink"], "/project/P1")
 
+    def test_deeplink_can_name_a_sub_screen(self):
+        """A NOTIFICATION CAN POINT AT A SCREEN, not only a section of the
+        project page.
+
+        checkin_needs_trade tells an admin to add a sub to the project's
+        roster; that roster lives on its own route (app/project/[id]/trades),
+        which an anchor on /project/{id} cannot reach. The anchor form is
+        kept for the prediction dispatch, which really does target a section.
+        """
+        db = _StubDb(users=[_user("U_ADMIN", role="admin")])
+        _run(dispatch_notification(
+            db, project=_project(),
+            kind="checkin_needs_trade",
+            title="X", message="Y",
+            source_kind="checkin", source_id="sub_screen",
+            deeplink_path="trades",
+        ))
+        doc = db[NOTIFICATIONS_COLLECTION].docs[0]
+        self.assertEqual(doc["deeplink"], "/project/P1/trades")
+
+    def test_deeplink_path_and_anchor_compose(self):
+        """Both together still produce one well-formed link."""
+        db = _StubDb(users=[_user("U_ADMIN", role="admin")])
+        _run(dispatch_notification(
+            db, project=_project(),
+            kind="checkin_needs_trade",
+            title="X", message="Y",
+            source_kind="checkin", source_id="both",
+            deeplink_path="/trades/",
+            deeplink_anchor="roster",
+        ))
+        doc = db[NOTIFICATIONS_COLLECTION].docs[0]
+        self.assertEqual(doc["deeplink"], "/project/P1/trades#roster")
+
     def test_per_user_insert_failure_isolated(self):
         """If one user's insert raises, the other recipients still
         get their notifications."""
