@@ -111,6 +111,15 @@ const ROUTES = [
   // sets when /api/auth/me (or the stored user) carries site_mode. So they run
   // against SITE_USER instead of USER — see siteRoute() below. Without that
   // the screens would bounce to '/' and report a vacuous green.
+  //
+  // THESE FIVE RENDER LIGHT IN BOTH THEME PASSES, and the `[dark]` label on
+  // them is about the stored preference, not the pixels. A site device is
+  // PINNED to light by ThemeProvider — it is a fixed tablet read in daylight
+  // by inspectors with no control to change it — so the pin deliberately
+  // outranks `blueview_theme`, which the harness sets below. The dark branch
+  // of buildStyles() in these five screens is therefore unreachable in the
+  // product, and the second pass here re-mounts them rather than covering it.
+  // The pin itself is asserted in src/context/siteDeviceTheme.test.cjs.
   '/site',
   '/site/logbooks',
   '/site/documents',

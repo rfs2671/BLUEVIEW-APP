@@ -263,12 +263,28 @@ function RouteGuard() {
 }
 
 function AppShell() {
-  const { isDark, themeKey } = useTheme();
+  const { isDark, themeKey, setSiteDevice } = useTheme();
+  const { user, siteMode, isLoading: authLoading } = useAuth();
   const toast = useToast();
   const bg = isDark ? '#050a12' : '#D6E4F7';
   // RN-Web desktop presentation layer. False on native and on web < 1024,
   // where the tree below is byte-identical to what it was before this hook.
   const isDesktop = useIsDesktop();
+
+  // THE GATE TABLET IS LIGHT, and it has to become light the moment it is
+  // provisioned. ThemeProvider mounts OUTSIDE AuthProvider, so it decides the
+  // theme from the STORED user on boot; that read cannot see a login, which is
+  // how a tablet is set up, and a login does not restart the app. AppShell is
+  // the innermost consumer and sits inside both providers, so it is the one
+  // place the live role can be handed back to the theme.
+  //
+  // Held until auth settles: mid-validation siteMode is false for everyone,
+  // and reporting that would clear a pin the boot read had already made
+  // correctly. It never pushes anyone to dark, so no other role moves.
+  useEffect(() => {
+    if (authLoading) return;
+    setSiteDevice(siteMode || user?.role === 'site_device');
+  }, [authLoading, siteMode, user?.role]);
 
   // Phase C2 — bridge 429 responses from api.js's response
   // interceptor to the user-visible toast system. Re-registers
