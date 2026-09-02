@@ -3548,6 +3548,37 @@ class ChecklistCompletionUpdate(BaseModel):
 
 # ==================== LOGBOOK MODELS ====================
 
+# ── THE NAME THAT PRINTS ON A FILED RECORD ────────────────────────────────
+#
+# `cp_name` had no validation at any layer: bare Optional[str], no strip, no
+# length, and neither the submit gate nor finalize ever looked at it. The
+# client's only bar is `signerName?.trim()` in SignaturePad. So "2" reached 25
+# signed documents and printed as the named Competent Person on the per-logbook
+# DOB PDF, on the combined daily report, on the EMAILED compliance report, and
+# as the CS-attribution fallback on the superintendent log.
+#
+# ONE TYPO BECOMES THE DEFAULT IDENTITY. The pad's field is bound to the shared
+# CP profile, and saving persists it to db.users.cp_name — so every later editor
+# on that device re-seeds the bad value across all thirteen log types. That is
+# the amplification, and it is why a per-document check is not enough on its own:
+# the profile write has to reject it too.
+#
+# DELIBERATELY MINIMAL. Two letters somewhere, at least two characters total.
+# It refuses "2", ".", "x", "1234"; it admits "Bo", "J. O'Neill", "María-José",
+# "Nguyen Van A". This is not a name parser and must never become one — a
+# stricter rule refuses a real person at the moment he is trying to sign, which
+# is worse than the defect it prevents.
+_CP_NAME_MIN_LETTERS = 2
+
+
+def _cp_name_looks_like_a_name(value) -> bool:
+    """True when this could be somebody's name. See the note above."""
+    s = str(value or "").strip()
+    if len(s) < 2:
+        return False
+    return sum(1 for ch in s if ch.isalpha()) >= _CP_NAME_MIN_LETTERS
+
+
 class LogbookCreate(BaseModel):
     project_id: str
     log_type: str  # scaffold_maintenance, toolbox_talk, preshift_signin, osha_log, daily_jobsite
@@ -20225,7 +20256,16 @@ async def update_cp_profile(data: CPProfileUpdate, current_user = Depends(get_cu
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
     if data.cp_name is not None:
-        update["cp_name"] = data.cp_name
+        # THE AMPLIFIER, AND THE REASON A PER-DOCUMENT CHECK IS NOT ENOUGH.
+        # This value is re-seeded into every later editor on the device, so one
+        # bad save becomes the signer's default identity across all thirteen
+        # log types. Refusing it here is what stops the spread; the submit
+        # gates only stop each individual filing.
+        if not _cp_name_looks_like_a_name(data.cp_name):
+            raise HTTPException(
+                status_code=400, detail={"code": "INVALID_CP_NAME"},
+            )
+        update["cp_name"] = str(data.cp_name).strip()
     if data.cp_signature is not None:
         update["cp_signature"] = data.cp_signature
     if data.cp_title is not None:
@@ -20664,6 +20704,26 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
             )
+        # AND THE NAME THAT WILL PRINT. Checked here, after the signature, for
+        # the reason the comment below gives about ordering: a submit with no
+        # signature is not a submit, so that is reported first. `cp_name` is
+        # what the per-logbook DOB PDF, the combined report and the emailed
+        # compliance report print as the Competent Person -- "2" printed on 25
+        # of them before this gate existed.
+        #
+        # ONLY ON SUBMIT. A draft may hold anything, including an empty name;
+        # this refuses the FILING, not the typing.
+        # A NAME THAT IS PRESENT MUST BE A NAME. Absence is deliberately NOT
+        # refused here: this closes the reported defect ("2" on 25 filed
+        # records) without inventing a new refusal for a document that carries
+        # no name at all. That is a real defect too -- it prints a blank CP on
+        # the same PDFs -- but refusing it at submit would block a CP in the
+        # field on drafts created before this gate existed, and it wants its own
+        # decision rather than riding along with this one.
+        if str(data.cp_name or "").strip() and not _cp_name_looks_like_a_name(data.cp_name):
+            raise HTTPException(
+                status_code=400, detail={"code": "SUBMIT_INVALID_CP_NAME"},
+            )
         # AFTER the signature check, deliberately. An unsigned submit is not a
         # submit at all, so that condition is reported first and the existing
         # contract is unchanged. The CP is not made to sign and THEN be refused
@@ -20955,9 +21015,20 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     # check below reuse it instead of re-reading.
     existing_lb = await _authorize_logbook_write(logbook_id, current_user)
 
-    # CP write-scope gate: kept ahead of the general rule for its specific
+    # PROJECT WRITE-SCOPE GATE: kept ahead of the general rule for its specific
     # message. Subsumed by the assigned branch above, and cheap.
-    if current_user.get("role") == "cp":
+    #
+    # ROLES_SCOPED_TO_ASSIGNED_PROJECTS, NOT A BARE "cp". #338 introduced that
+    # constant and pointed create_logbook at it, but the three gates in this
+    # file that were already written as `role == "cp"` were not repointed. The
+    # asymmetry that left is the defect: a superintendent could not CREATE a
+    # logbook on a project he was not assigned to, and could still UPDATE,
+    # AMEND and FINALIZE one there.
+    #
+    # The constant's own comment says two rules that happen to coincide are
+    # still two rules; the corollary is that one rule written out twice will
+    # drift, and this is where it drifted.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
         assigned = current_user.get("assigned_projects", []) or []
         if existing_lb.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
@@ -20965,10 +21036,15 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     # Tier 1 (1): FINALIZED (locked) logs are immutable — block in-place edits
     # (§28-211.1 tamper exposure). Same guard/pattern as update_daily_log (423).
     # Corrections go through POST /logbooks/{id}/amend (linked child, original
-    # left intact). Reuses the CP-role fetch when present; one cheap read otherwise.
-    _lock_target = existing_lb if current_user.get("role") == "cp" else await db.logbooks.find_one(
-        {"_id": to_query_id(logbook_id)}, {"is_locked": 1}
-    )
+    # left intact).
+    #
+    # `existing_lb` is the document _authorize_logbook_write already returned,
+    # UNCONDITIONALLY, at the top of this function. The role test that used to
+    # sit here ("reuses the CP-role fetch when present") described a time when
+    # that fetch was CP-only; it has not been for some time, so the test bought
+    # a redundant read for every non-CP and, worse, read like a third write-
+    # scope gate next to the two real ones.
+    _lock_target = existing_lb
     if _lock_target and _lock_target.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
 
@@ -21022,12 +21098,10 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     # Runs after the 423 and before `update` is built, so a rejection mutates
     # nothing. The extra read happens only on a submit, never on a draft save.
     if data.status == "submitted":
-        _cur = existing_lb if current_user.get("role") == "cp" else await db.logbooks.find_one(
-            {"_id": to_query_id(logbook_id)},
-            # log_type is read from the STORED doc: LogbookUpdate has no such
-            # field, and the trade gate below has to know which form this is.
-            {"data": 1, "cp_signature": 1, "log_type": 1},
-        )
+        # Same document, same reason as _lock_target above — no second read.
+        # log_type is read from the STORED doc: LogbookUpdate has no such field,
+        # and the trade gate below has to know which form this is.
+        _cur = existing_lb
         _cur = _cur or {}
         _eff_data = data.data if data.data is not None else _cur.get("data")
         _eff_sig = data.cp_signature if data.cp_signature is not None else _cur.get("cp_signature")
@@ -21046,6 +21120,30 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         if not _is_affirmed_signature(_eff_sig):
             raise HTTPException(
                 status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
+            )
+        # _eff_name, not data.cp_name, for the same reason as _eff_sig above:
+        # a submit that patches only `status` is judged on the name already
+        # stored, not on a field the request happened not to carry.
+        _eff_name = data.cp_name if data.cp_name is not None else _cur.get("cp_name")
+        # AND THE NAME THAT WILL PRINT. Checked here, after the signature, for
+        # the reason the comment below gives about ordering: a submit with no
+        # signature is not a submit, so that is reported first. `cp_name` is
+        # what the per-logbook DOB PDF, the combined report and the emailed
+        # compliance report print as the Competent Person -- "2" printed on 25
+        # of them before this gate existed.
+        #
+        # ONLY ON SUBMIT. A draft may hold anything, including an empty name;
+        # this refuses the FILING, not the typing.
+        # A NAME THAT IS PRESENT MUST BE A NAME. Absence is deliberately NOT
+        # refused here: this closes the reported defect ("2" on 25 filed
+        # records) without inventing a new refusal for a document that carries
+        # no name at all. That is a real defect too -- it prints a blank CP on
+        # the same PDFs -- but refusing it at submit would block a CP in the
+        # field on drafts created before this gate existed, and it wants its own
+        # decision rather than riding along with this one.
+        if str(_eff_name or "").strip() and not _cp_name_looks_like_a_name(_eff_name):
+            raise HTTPException(
+                status_code=400, detail={"code": "SUBMIT_INVALID_CP_NAME"},
             )
         # After the signature check — same reasoning as create_logbook.
         # _eff_data, not data.data: the ordinary flow is create-then-submit, so
@@ -21257,7 +21355,11 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     # outsider must not be able to learn that another company's log is already
     # finalized by getting the document back instead of a 403.
     existing = await _authorize_logbook_write(logbook_id, current_user)
-    if current_user.get("role") == "cp":
+    # ROLES_SCOPED_TO_ASSIGNED_PROJECTS — see the note in update_logbook. This
+    # was the sharpest instance of the drift: finalize is the act that FREEZES
+    # a compliance record, and a superintendent could perform it on a project
+    # he was not assigned to while being refused the create on the same one.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
@@ -21355,7 +21457,8 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
                                else None),
             },
         )
-    if current_user.get("role") == "cp":
+    # ROLES_SCOPED_TO_ASSIGNED_PROJECTS — see the note in update_logbook.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
         assigned = current_user.get("assigned_projects", []) or []
         if original.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")

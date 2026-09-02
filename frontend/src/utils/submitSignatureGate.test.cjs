@@ -244,13 +244,22 @@ const SUBMIT_CODES = [...new Set(
 // FIVE since SUBMIT_UNATTESTED_ITEMS, the superintendent log's attestation
 // gate. This assertion is what caught that code shipping with NO CLIENT COPY --
 // the exact defect #285 shipped and #286 had to come back for.
-ok(SUBMIT_CODES.length === 5
-  && SUBMIT_CODES.includes('SUBMIT_EMPTY_LOG')
-  && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE')
-  && SUBMIT_CODES.includes('SUBMIT_MISSING_TRADE')
-  && SUBMIT_CODES.includes('SUBMIT_NO_CONTENT')
-  && SUBMIT_CODES.includes('SUBMIT_UNATTESTED_ITEMS'),
-  `server.py returns exactly the 4 submit codes (${SUBMIT_CODES.join(', ')})`);
+// SIX since SUBMIT_INVALID_CP_NAME, the gate on the name that prints as the
+// Competent Person on the filed DOB record. The count in the message is
+// DERIVED, not typed: it read "the 4 submit codes" while asserting 5, which is
+// the same staleness this file exists to catch, one level up.
+const EXPECTED_SUBMIT_CODES = [
+  'SUBMIT_EMPTY_LOG',
+  'SUBMIT_INVALID_CP_NAME',
+  'SUBMIT_MISSING_CP_SIGNATURE',
+  'SUBMIT_MISSING_TRADE',
+  'SUBMIT_NO_CONTENT',
+  'SUBMIT_UNATTESTED_ITEMS',
+];
+ok(SUBMIT_CODES.length === EXPECTED_SUBMIT_CODES.length
+  && EXPECTED_SUBMIT_CODES.every((c) => SUBMIT_CODES.includes(c)),
+  `server.py returns exactly the ${EXPECTED_SUBMIT_CODES.length} submit codes `
+  + `(${SUBMIT_CODES.join(', ')})`);
 for (const c of SUBMIT_CODES) {
   ok(en.includes(`code_${c}:`),
     `${c}: has mapped copy, so it never falls back to the generic message`);

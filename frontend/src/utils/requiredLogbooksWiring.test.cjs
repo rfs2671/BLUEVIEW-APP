@@ -216,8 +216,22 @@ console.log('\n-- who owns which switch --');
 {
   const at = SCREEN.indexOf('activations.map((act)');
   const block = SCREEN.slice(at, SCREEN.indexOf('</>', at));
-  ok(block.includes("const mine = act.activated_by !== 'admin';"),
-    'ownership is read off the server’s answer, never a client-side list of types');
+  // TWO FACTS, NOT ONE. `mine` used to be `act.activated_by !== 'admin'` —
+  // a statement about the LOG only. For an admin-activated type that refused
+  // every caller INCLUDING AN ADMIN, and since this is the only call site of
+  // logbookActivationAPI.set in the app, superintendent_log_active and
+  // hot_work_permitted could not be switched on from any screen by anybody.
+  // The invariant this assertion names is still the one that matters: the
+  // log's owner comes from the SERVER's answer, never a client-side list of
+  // log types. The user's role is a separate fact and belongs in the test.
+  ok(/act\.activated_by/.test(block),
+    'ownership is read off the server’s answer');
+  ok(!/log_type\s*===\s*['"]/.test(block) && !/site_superintendent_log/.test(block),
+    'no client-side list of log types decides who owns a switch');
+  ok(/const mine = act\.activated_by !== 'admin' \|\| isAdminUser;/.test(block),
+    'an admin can activate an admin-activated log');
+  ok(/\['admin', 'owner'\]\.includes\(/.test(SCREEN),
+    'isAdminUser mirrors get_admin_user, which admits admin and owner');
   ok(/mine\s*\?\s*handleToggleLogbook\(act\)/.test(block.replace(/\s+/g, ' ')),
     'a CP-owned switch flips');
   ok(block.includes('An admin sets this one'),

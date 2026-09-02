@@ -13,9 +13,22 @@ import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
+// WHERE A ROLE LANDS AFTER LOGIN.
+//
+// A `superintendent` fell through to '/' — the admin dashboard — because only
+// site_mode and cp were named. Nothing then routed him to the CP logbook list,
+// and the CP nav is not rendered on that screen, so he reached neither the list
+// nor the nav: the two places his own statutory log is reachable from.
+//
+// He belongs on /logbooks for the same reason a CP does. That is where the
+// thirteen log types are listed, including the Construction Superintendent Log
+// he is the one person required to file. _layout.jsx's path constraint is
+// widened to match, or he would be bounced straight back off it.
+const LOGBOOK_LIST_ROLES = ['cp', 'superintendent'];
+
 function getRedirectPath(userData) {
   if (userData.site_mode) return '/site';
-  if (userData.role === 'cp') return '/logbooks';
+  if (LOGBOOK_LIST_ROLES.includes(userData.role)) return '/logbooks';
   return '/';
 }
 

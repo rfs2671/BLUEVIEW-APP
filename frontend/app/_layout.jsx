@@ -178,7 +178,10 @@ function RouteGuard() {
     if (!isMounted || isLoading || !isAuthenticated) return;
 
     const isSiteDevice = siteMode || user?.role === 'site_device';
-    const isCp = user?.role === 'cp';
+    // A superintendent is held to the same paths as a CP, and for the same
+    // reason: /logbooks is where his own statutory log lives. login.jsx sends
+    // him here; without this he would be sent back to '/' on the next render.
+    const isCp = user?.role === 'cp' || user?.role === 'superintendent';
 
     // Phase B3: customer onboarding gate. Newly-registered users
     // (onboarding_step ∈ {1,2,3,4} on their /auth/me payload) land
