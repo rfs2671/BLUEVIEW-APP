@@ -6,7 +6,6 @@ import {
   ScrollView,
   Pressable,
   TextInput,
-  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -164,9 +163,15 @@ export default function SiteDocumentsScreen() {
     setLoading(true);
     // Cache-FIRST: paint the saved list before the network is even attempted, so
     // a super in a cellar sees the real documents instead of a spinner that
-    // resolves into a blank screen.
+    // resolves into a blank screen. The spinner has to come DOWN here too:
+    // the body below is gated on `loading`, so a cached paint that leaves
+    // `loading` true is painted behind the spinner and the super waits out the
+    // whole network timeout to see documents that were already on the tablet.
     const cached = await readCachedDocList(scopeKey);
-    if (cached.length) setFiles(cached);
+    if (cached.length) {
+      setFiles(cached);
+      setLoading(false);
+    }
 
     const r = await settleFetch(() => dropboxAPI.getProjectFiles(siteProject.id));
     if (r.status === 'ok') {
@@ -219,11 +224,20 @@ export default function SiteDocumentsScreen() {
       remoteUrl: file?.r2_url || file?.directUrl,
     });
 
-    // Android renders every file from the pdf.js copy PDFViewer stages on the
-    // device — there is no remote viewer any more, so on Android the viewer
-    // pulls the bytes to disk itself if this hasn't. Handing it the cached uri
-    // here just saves that round trip.
-    if (local && (Platform.OS === 'ios' || offline)) {
+    // THE BYTES ON DISK WIN, ON EVERY PLATFORM. This used to read
+    // `(Platform.OS === 'ios' || offline)`, and `offline` is `fetchState ===
+    // 'offline'` — how the last list fetch went, not a live network signal. A
+    // tablet that loaded this screen with signal and then lost it still reads
+    // 'ok', so Android reached past the correct bytes on this tablet for a
+    // remote URL that could not resolve. PDFViewer stages a local pdf.js copy
+    // for `file://` sources.
+    //
+    // AND NOTHING IS GIVEN UP BY PREFERRING IT: Android no longer has a
+    // remote viewer at all. PDFViewer renders every document from the
+    // pdf.js copy staged on the device, and pulls the bytes to disk itself
+    // if this has not — so handing it the cached uri only saves a round
+    // trip it would otherwise make.
+    if (local) {
       setSelectedPdfFile({ ...file, directUrl: local });
       setPdfViewerVisible(true);
       return;
