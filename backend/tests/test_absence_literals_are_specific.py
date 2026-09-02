@@ -201,6 +201,10 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     ("test_report_six_defects.py", "AMENDMENT"),
     ("test_source_text_helper.py", "forbidden"),
     ("test_text_format.py", "Sst12345678"),
+    # The enrollment signature on the stubbed `workers` doc. It can only reach
+    # the orientation PDF by the renderer falling back to it, so ANY occurrence
+    # is the finding — that is the whole assertion.
+    ("test_orientation_gate_signature.py", "ENROLLMENTNOTTHEGATEMARK"),
 
     # ── BADGE WORDS ──────────────────────────────────────────────────────────
     # A rendered all-caps status token. The claim IS the word: this document
@@ -208,6 +212,7 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     # containing it exists to false-alarm on.
     ("test_logbook_renderers.py", "UNSIGNED"),
     ("test_signature_affirmation.py", "UNAFFIRMED"),
+    ("test_orientation_gate_signature.py", "UNAFFIRMED"),
 
     # ── VOCABULARY BANS ──────────────────────────────────────────────────────
     # The claim is literally about the WORD appearing in prose a human reads.
@@ -220,6 +225,12 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     ("test_pr50_defcon_gc_voice.py", "threshold"),
     ("test_kiosk_affirm_control.py", "toolbox"),
     ("test_kiosk_affirm_control.py", "charla"),
+    # The export must not call a signature "inherited" — a claim about where a
+    # mark came from, which nothing on a signature records. A gate capture and
+    # a reused profile credential are the same bare string. Any spelling of the
+    # word in the rendered prose is the same unsupported claim, so anchoring it
+    # to one sentence would only invite the next one.
+    ("test_orientation_gate_signature.py", "inherited"),
 
     # ── A SYMBOL THAT MUST NOT EXIST IN A MODULE, UNDER ANY SPELLING ─────────
     # Here the word IS the unit: a longer identifier containing it is the same

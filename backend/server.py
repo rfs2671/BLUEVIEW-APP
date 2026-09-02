@@ -23971,12 +23971,46 @@ def _signature_affirmation_html(sig):
     CP took an explicit affirmative action on THIS document (sig.affirmed is
     True). An inherited/reused credential or a legacy signature renders
     UNAFFIRMED — an honest deficiency, never a VERIFIED stamp the signer never
-    made for this record. Mirrors SignaturePad's attention/verified treatment."""
+    made for this record. Mirrors SignaturePad's attention/verified treatment.
+
+    IT SAYS UNAFFIRMED. IT NO LONGER SAYS "INHERITED".
+
+    Those are two different claims and only the first one is ours to make.
+    UNAFFIRMED is a statement about THIS object: no affirmation record is
+    attached to it. That is checkable, and it stays.
+
+    "Inherited signature" is a claim about ORIGIN — that the mark was made
+    elsewhere, for something else, and reused here. Nothing on a signature
+    records origin. The renderer was inferring it from shape alone, and the
+    shape does not carry it: a worker's signature drawn at the gate, on the
+    spot, for the orientation in front of him arrives here as a bare data-URL
+    string, byte-indistinguishable from `workers.signature` copied onto a
+    roster row. The first is not inherited. The export called it inherited
+    anyway, on a document that goes to an inspector, about a named man.
+
+    THIS IS THE SAME FINDING AS _preshift_signature_cell's, which is worth
+    reading next to this one: that column printed NOT AFFIRMED for six men who
+    had affirmed, from a field nobody wrote. The lesson there was that a
+    compliance document must not make a claim its data cannot support. The word
+    dropped here is that claim; the deficiency it was attached to is not
+    dropped, because the deficiency is real.
+
+    WHY THE PREDICATE IS NOT LOOSENED INSTEAD. The other available fix is to
+    let a gate-captured string count as affirmed. It must not, and the reason
+    is the indistinguishability above read in the dangerous direction: the
+    inherited credential this whole mechanism exists to catch is ALSO a bare
+    string. Accepting the shape would stamp "✓ AFFIRMED for this document" on
+    the precise object _is_affirmed_signature was written to refuse — and,
+    because the same predicate gates submission (submit_logbook, the CS
+    attribution path, the compliance sweeps), would let one through a gate as
+    well as onto a page. Over-claiming affirmation is the worse error in a way
+    that cannot be walked back once a PDF is filed. So the predicate is
+    untouched and the wording gives up the half it could not prove."""
     affirmed = _is_affirmed_signature(sig)
     if not affirmed:
         return (
             '<div style="font-size:12px;font-weight:700;color:#d97706;margin-top:4px;">'
-            '⚠ UNAFFIRMED — inherited signature, not affirmed for this document</div>'
+            '⚠ UNAFFIRMED — no affirmation record for this document</div>'
         )
 
     def _fmt(raw):
@@ -25119,7 +25153,22 @@ def render_signature_html(sig, label="CP Signature"):
         )
 
     def _img(b64):
-        return ('<img src="data:image/png;base64,' + b64
+        # ALREADY A DATA URL? DO NOT PREFIX IT TWICE.
+        #
+        # checkin.html does `canvas.toDataURL('image/png')`, which returns the
+        # FULL url, prefix included, and register_and_checkin stores that
+        # verbatim as data.worker_signature on the orientation logbook. Gluing
+        # another prefix on produced
+        #   src="data:image/png;base64,data:image/png;base64,iVBOR..."
+        # — an invalid URL, so the orientation PDF printed a broken image for a
+        # signature the tablet showed correctly. The tablet renders the string
+        # directly and never saw it.
+        #
+        # SAME CONVENTION AS _preshift_signature_cell, deliberately: that
+        # function has carried this exact guard all along, one screenful away.
+        # Two spellings of one rule is how they drift, so this is its spelling.
+        _src = b64 if str(b64).startswith("data:") else "data:image/png;base64," + b64
+        return ('<img src="' + _src
                 + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
 
     if isinstance(sig, str):
