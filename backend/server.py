@@ -38470,7 +38470,95 @@ async def startup_event():
         partialFilterExpression={"is_deleted": {"$eq": False}},
         name="checkins_active_by_project"
     )
-	
+
+    # ── UNSERVED SORTS ON BASE64-BEARING COLLECTIONS ────────────────────────
+    #
+    # The same shape as workers_by_company_name above, found by sweeping for it
+    # rather than by waiting for the next 500: backend/scripts/
+    # find_unserved_sorts.py, ratcheted by tests/test_sorts_are_indexed.py.
+    #
+    # Every one of these applies the SAME ESR reasoning written out above —
+    # equality fields first, then the sort field in the sort's direction — and
+    # the SAME exclusion: `is_deleted: {"$ne": True}` is not in any key. A $ne
+    # over a two-valued field is a range scan, and a range key sitting between
+    # the equality prefix and the sort key destroys the ordering the sort
+    # depends on. It is applied to the documents the index scan returns.
+
+    # GET /logbooks/project/{id}/submitted — THE ENDPOINT THAT FAILED IN FRONT
+    # OF A DOB INSPECTOR, and GET /logbooks/project/{id}/logs, which filters
+    # identically. Both match (project_id, status) by equality and sort `date`
+    # descending. The nearest existing index is
+    # (project_id, log_type, date) — `log_type` is unpinned by that filter, so
+    # it cannot walk `date` in order and Mongo fell back to an in-memory sort
+    # over documents carrying photo base64 under data.activities[].photos[].
+    #
+    # THIS INDEX ALREADY EXISTS ON PRODUCTION. It was created by hand in the
+    # Atlas UI to stop the outage, with no deploy — which means it lives on
+    # exactly one cluster, in no version control, and would not exist in the
+    # next environment anyone builds. Declaring it here is the actual fix;
+    # _ensure_index_resilient is idempotent, so the running cluster no-ops.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("project_id", 1), ("status", 1), ("date", -1)],
+        name="logbooks_project_status_date",
+    )
+
+    # The same collection, sorted the same way, by the callers that DO NOT pin
+    # `status`: GET /logbooks/project/{id} (status is never in that filter) and
+    # the stale-unsigned scan in the notifications endpoint, which constrains
+    # log_type with `$in` and date with `$lt` — both ranges, neither an
+    # equality pin. logbooks_project_status_date above cannot serve them for
+    # precisely the reason (project_id, log_type, date) could not serve the
+    # endpoint that failed: an unpinned key sits before `date`.
+    #
+    # So this is a second index, not a duplicate. It is the two-key prefix that
+    # covers every project-scoped `date` sort regardless of what else the
+    # caller filters on.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("project_id", 1), ("date", -1)],
+        name="logbooks_project_date",
+    )
+
+    # GET /annotations/{project_id}/{document_path} matches both of those by
+    # equality and sorts `created_at` descending, to_list(500). The existing
+    # (project_id, document_path) index stops one key short of the sort.
+    #
+    # SAME PAYLOAD PROBLEM, DIFFERENT FIELD: _generate_annotation_screenshot
+    # writes a full JPEG data URL onto `screenshot` on the annotation document
+    # itself, so 500 annotations on a busy drawing is the 32MB budget. This is
+    # the third collection with the workers/logbooks shape and it has not
+    # failed yet only because no single drawing has enough threads on it.
+    #
+    # This SUPERSEDES the unnamed (project_id, document_path) index created
+    # above — that one is now a strict prefix of this one. Dropping it is a
+    # separate change; a redundant prefix index costs write amplification, not
+    # correctness.
+    await _ensure_index_resilient(
+        db.document_annotations,
+        keys=[("project_id", 1), ("document_path", 1), ("created_at", -1)],
+        name="annotations_project_document_created",
+    )
+
+    # GET /admin/users sorts every user by `name`. `company_id` is added to the
+    # filter only when the caller is not an owner, so this serves the
+    # company-scoped call — the one that grows with the tenant.
+    #
+    # NOT A COMPLETE FIX, and for the same reason workers_by_company_name is
+    # not: the OWNER call carries no company_id at all, so no index led by
+    # company_id can serve its sort. What rescued the workers path was the
+    # projection, and this endpoint's projection is `{"password": 0}` — an
+    # EXCLUSION, so every document it sorts still carries the CP's
+    # `cp_signature` base64. An inclusion projection naming the fields the list
+    # row actually renders is the fix for that call; it changes a response
+    # shape, so it is deliberately not in this change. The gap is recorded as
+    # the single allowlist entry in tests/test_sorts_are_indexed.py.
+    await _ensure_index_resilient(
+        db.users,
+        keys=[("company_id", 1), ("name", 1)],
+        name="users_by_company_name",
+    )
+
     # COI expiration tracking (Phase 3 prep)
     await db.certificates_of_insurance.create_index(
         [("company_id", 1), ("expiration_date", 1)],
