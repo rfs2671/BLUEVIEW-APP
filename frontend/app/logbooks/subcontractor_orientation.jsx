@@ -33,6 +33,12 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { collapseChains } from '../../src/utils/amendmentChain';
+// "UNASSIGNED" IS NOT A TRADE. The gate writes that literal onto the
+// orientation draft when the project has no roster or the worker's sub is not
+// on it, and it is a truthy string — so every check that asked "is there a
+// trade?" with `String(x || '').trim()` answered YES for the one record that
+// most needed a No. cleanTrade is the rule, and it already lived here.
+import { cleanTrade } from '../../src/utils/dailyJobsiteModel';
 import { logbooksAPI } from '../../src/utils/api';
 import { finalizeErrorCode, recordFinalizeError, clearFinalizeError } from '../../src/utils/draftSync';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
@@ -398,8 +404,10 @@ export default function SubcontractorOrientation() {
     setAssigningTrade(null);
   };
 
-  /** A submitted orientation must name the trade the worker was oriented to do. */
-  const orientationTrade = (o) => String((o?.data || {}).worker_trade || '').trim();
+  /** A submitted orientation must name the trade the worker was oriented to do.
+   *  Read through cleanTrade so the gate's "UNASSIGNED" placeholder counts as
+   *  the absence it is — the server refuses it either way. */
+  const orientationTrade = (o) => cleanTrade((o?.data || {}).worker_trade);
 
   const handleSignExisting = async (orientation, cpSig, cpN) => {
     // PRE-FLIGHT. The server refuses this submit (SUBMIT_MISSING_TRADE), and
@@ -981,7 +989,7 @@ export default function SubcontractorOrientation() {
                         <Text style={styles.orientName}>{d.worker_name || 'Unknown Worker'}</Text>
                         <Text style={styles.orientMeta}>
                           {d.worker_company || '—'}
-                          {d.worker_trade ? ` · ${d.worker_trade}` : ''}
+                          {cleanTrade(d.worker_trade) ? ` · ${cleanTrade(d.worker_trade)}` : ''}
                         </Text>
                         <Text style={styles.orientDate}>
                           {d.completed_at
@@ -1121,7 +1129,7 @@ export default function SubcontractorOrientation() {
                             the fix beside it — a refusal the CP meets only
                             after signing, on a screen listing a dozen workers,
                             names nobody and offers nothing. */}
-                        {!isSigned && !isLocked && !String(d.worker_trade || '').trim() && (
+                        {!isSigned && !isLocked && !cleanTrade(d.worker_trade) && (
                           <View style={styles.tradeMissingBox}>
                             <Text style={styles.tradeMissingTitle}>No trade assigned</Text>
                             <Text style={styles.tradeMissingText}>

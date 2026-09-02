@@ -20578,7 +20578,22 @@ def _submit_missing_trade_detail(log_type, payload):
     if not isinstance(payload, dict):
         return None
     d = payload
-    if str(d.get("worker_trade") or "").strip():
+    # "UNASSIGNED" IS AN ABSENT TRADE, AND THIS ASKED BY TRUTHINESS.
+    # register_and_checkin coerces a blank trade to the literal "UNASSIGNED"
+    # (`trade = trade or "UNASSIGNED"`, the no_roster and not_listed branches)
+    # and then stamps that same local onto the orientation draft — the insert's
+    # `"worker_trade": trade or ""` handles a blank that is already gone. A
+    # non-empty string satisfied `.strip()`, so the one gate that exists to stop
+    # a scope-less orientation being FILED passed the exact rows it was written
+    # for. _recorded_trade is the helper that already knows the sentinel, and
+    # already says so: "Anything that reads a frozen trade to decide whether one
+    # exists has to ask through here." This is that ask.
+    #
+    # THE STORED VALUE IS DELIBERATELY LEFT ALONE. The sentinel is load-bearing
+    # elsewhere — _display_sub_company renders it as "Pending assignment", and
+    # rows already carry it. The reader learns the sentinel; the data is not
+    # rewritten.
+    if _recorded_trade(d.get("worker_trade")):
         return None
     return {
         "code": "SUBMIT_MISSING_TRADE",

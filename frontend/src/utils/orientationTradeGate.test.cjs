@@ -107,9 +107,9 @@ ok(/No trade assigned/.test(src), 'an unsigned trade-less row says so on the car
 ok(/cannot be signed until \{d\.worker_name \|\| 'this worker'\}/.test(src),
   '...naming the worker');
 ok(/Assign trade/.test(src), '...and carries an Assign-trade control');
-ok(/!String\(d\.worker_trade \|\| ''\)\.trim\(\)/.test(code),
+ok(/!cleanTrade\(d\.worker_trade\)/.test(code),
   'the warning shows only when the trade is actually missing');
-ok(/!isSigned && !isLocked && !String\(d\.worker_trade/.test(code),
+ok(/!isSigned && !isLocked && !cleanTrade\(d\.worker_trade\)/.test(code),
   'and never on a row that is already signed or frozen');
 
 ok(assignFn.length > 0, 'handleAssignTrade exists');
@@ -120,6 +120,48 @@ ok(/status: 'draft'/.test(assignFn) && !/status: 'submitted'/.test(assignFn),
 ok(/markPending\(key\)/.test(assignFn),
   'an assignment that could not be pushed stays queued');
 ok(/worker_trade: trade/.test(assignFn), 'and it writes the trade it was given');
+
+// ── "UNASSIGNED" IS AN ABSENT TRADE, NOT A TRADE ─────────────────────────────
+console.log('\n── The sentinel does not defeat the two safeguards ──');
+
+// THE DEFECT THIS SECTION EXISTS FOR. register_and_checkin coerces a blank
+// trade to the literal "UNASSIGNED" (`trade = trade or "UNASSIGNED"`) and then
+// stamps that same local onto the orientation draft. Both safeguards used to
+// ask "is there a trade?" by TRUTHINESS, and a non-empty string answers yes —
+// so the one row that most needed the fix was the one row never offered it,
+// and the server let it be filed. The rule now goes through the shared
+// predicate, which is the same one buildCrewsFromRoster already used.
+// The model is ESM and this file is CJS, so it is loaded the way
+// dailyJobsiteModel.test.cjs loads it: exports stripped, body evaluated.
+const model = new Function(`
+  ${fs.readFileSync(path.join(__dirname, 'dailyJobsiteModel.js'), 'utf8')
+      .replace(/^export default [\s\S]*$/m, '')
+      .replace(/^export (const|function|let) /gm, '$1 ')}
+  return { cleanTrade, isUnassignedTrade };
+`)();
+
+ok(model.cleanTrade('UNASSIGNED') === '', 'the shared predicate reads the sentinel as absent');
+ok(model.cleanTrade('unassigned') === '', '...case-insensitively');
+ok(model.cleanTrade('  UNASSIGNED  ') === '', '...and padded');
+ok(model.cleanTrade('Concrete') === 'Concrete', '...while a real trade survives');
+ok(model.cleanTrade('Unassigned Laborer') === 'Unassigned Laborer',
+  '...and a trade that merely CONTAINS the word is not disqualified');
+
+ok(/from '\.\.\/\.\.\/src\/utils\/dailyJobsiteModel'/.test(src)
+   && /cleanTrade/.test(src),
+  'the screen imports that predicate rather than re-spelling the rule');
+ok(!/String\(d\.worker_trade \|\| ''\)\.trim\(\)/.test(code),
+  'the repair box no longer asks by truthiness — the sentinel would pass it');
+ok(!/String\(\(o\?\.data \|\| \{\}\)\.worker_trade \|\| ''\)\.trim\(\)/.test(code),
+  'and neither does the pre-flight guard');
+ok(/const orientationTrade = \(o\) => cleanTrade\(\(o\?\.data \|\| \{\}\)\.worker_trade\)/.test(code),
+  'the pre-flight reads the trade through the predicate');
+ok(/cleanTrade\(d\.worker_trade\)/.test(code),
+  'and the row meta renders a real trade only, never the placeholder');
+
+// The server half of the same rule.
+ok(/_recorded_trade\(d\.get\("worker_trade"\)\)/.test(serverSrc),
+  'the submit gate asks server-side through _recorded_trade, which knows the sentinel');
 
 // ── The gate check-in stays fail-open ────────────────────────────────────────
 console.log('\n── The worker at the turnstile is never blocked ──');
