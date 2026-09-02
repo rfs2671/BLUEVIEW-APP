@@ -31,6 +31,32 @@ const CODE = (s) => s
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(?<!:)\/\/.*$/gm, '');
 
+/**
+ * The balanced-brace body that follows an anchor.
+ *
+ * TEXTUAL ORDER IS NOT EXECUTION ORDER in a hooks component: a callback is
+ * declared above the effect that calls it and runs after it. An ordering claim
+ * about one function has to be asked of that function's body, or it silently
+ * measures where the declarations happen to sit. Returns '' when the anchor is
+ * absent, so a missing function FAILS the assertion by name instead of
+ * aborting the run.
+ */
+function block(src, anchor) {
+  const at = src.indexOf(anchor);
+  if (at < 0) return '';
+  const open = src.indexOf('{', at);
+  if (open < 0) return '';
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  return '';
+}
+
 const SCREEN = read('app', 'logbooks', 'site_superintendent_log.jsx');
 const HOOK = read('src', 'hooks', 'useEsraConsent.js');
 const SCREEN_CONSENT = read('app', 'consent.jsx');
@@ -263,11 +289,43 @@ console.log('\n7b. HIS ENTRY SURVIVES THE TRIP, WITHOUT TRUSTING THE NAVIGATOR')
     'the editor stashes BEFORE the gate can navigate');
   ok(/drop\(scratchId\);/.test(code),
     'and drops it when it did not navigate after all');
-  ok(/const held = take\(scratchId\);/.test(code)
-     && code.indexOf('hydrate(existing.data') < code.indexOf('const held = take(scratchId)'),
-  'the restore runs AFTER the server hydrate — the stash is newer and wins');
-  ok(/!\(existing && existing\.is_locked === true\)/.test(code),
+  // ── ASKED OF THE LOAD FUNCTION NOW, NOT OF THE FILE ──────────────────────
+  //
+  // Both assertions below were written as whole-file `indexOf` comparisons
+  // against the shape the load happened to have: one server branch, with the
+  // take inline. The screen then became local-first
+  // (siteSuperintendentLocalFirst.test.cjs) and the restore moved into a named
+  // `applyHeld` callback — and a callback is DECLARED above the code that
+  // CALLS it, so a whole-file index measured DECLARATION order and reported
+  // the opposite of the truth. That is a test tracking an implementation's
+  // layout rather than its claim.
+  //
+  // THE CLAIMS ARE UNCHANGED and are both still asserted: the stash goes on
+  // AFTER whatever hydrated the form, because it is newer than both sources;
+  // and it never goes onto a frozen document. What changed is that there are
+  // now TWO sources to be newer than, and the second one — the on-device draft
+  // — is the branch a superintendent with no signal actually takes.
+  ok(/const held = take\(scratchId\);/.test(code),
+    'the stash is TAKEN, in one place, and the restore is that one step');
+
+  const applyHeld = block(code, 'const applyHeld');
+  const load = block(code, 'const fetchData');
+  ok(/take\(scratchId\)/.test(applyHeld) && /restore\(held\)/.test(applyHeld),
+    'taking and restoring are the same step, so neither can happen without '
+    + 'the other');
+  ok(load.indexOf('readDraft(_key)') > 0
+     && load.indexOf('readDraft(_key)') < load.indexOf('applyHeld(')
+     && load.indexOf('hydrate(existing.data') < load.lastIndexOf('applyHeld('),
+  'the restore runs AFTER the hydrate — from the local draft and from the '
+  + 'server alike; the stash is newer than both and wins over both');
+
+  ok(/if \(held && !isLocked\)/.test(applyHeld),
     'but never onto a FROZEN document, which is read-only');
+  ok(/applyHeld\(draft\.finalized === true\)/.test(load)
+     && /applyHeld\(existing\?\.is_locked === true\)/.test(load),
+  'and BOTH sources say whether the document is frozen — the local draft as '
+  + 'well as the server, which is a case the single-branch load could not '
+  + 'even express');
 }
 
 console.log('\n8. AGREEING DOES NOT SIGN FOR HIM');
