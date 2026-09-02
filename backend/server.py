@@ -511,6 +511,29 @@ if not JWT_SECRET:
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 720
 
+# ── THE SESSION SLIDES, BECAUSE NOTHING ELSE EVER MOVED IT ─────────────────
+#
+# 720 hours is thirty days, and there is no refresh route: create_token is
+# called from POST /api/auth/login and nowhere else. So the clock on a gate
+# tablet started at the one moment an admin typed the kiosk password into it
+# and was never touched again. Day 31 the tablet has to be visited in person.
+#
+# Any authenticated request whose token has aged past this now carries a fresh
+# one back in a response header (see _reissue_token_if_stale). A device that
+# talks to the API at all -- once a month is enough -- never reaches day 30.
+#
+# 24 HOURS, NOT ZERO. Re-issuing on every request would re-sign on every read
+# in the product and make each device rewrite its credentials to disk hundreds
+# of times a day, for a clock that only needs moving once. And not something
+# near the far end either: a threshold of 700 hours would mean a device has to
+# be online during one specific hour a month or be stranded anyway.
+JWT_REISSUE_AFTER_HOURS = 24
+
+# Not a cookie and not a body field. A header rides on the request the client
+# was already making, so there is no new route to call, nothing for an offline
+# device to miss, and no endpoint's response shape changes.
+REISSUED_TOKEN_HEADER = "X-Refreshed-Token"
+
 DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
 DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
 DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://api.levelog.com/api/dropbox/callback')
@@ -906,7 +929,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
-    expose_headers=["Content-Disposition"],
+    # X-Refreshed-Token IS ON THIS LIST BECAUSE THE BROWSER HIDES WHAT IS NOT.
+    # The web build reads response headers through fetch/XHR, which expose only
+    # the CORS-safelisted set plus whatever is named here. Ship the re-issue
+    # without this line and it works on native, silently never lands on web,
+    # and the failure looks like "the token just expired" a month later.
+    expose_headers=["Content-Disposition", REISSUED_TOKEN_HEADER],
 )
 
 # Create a router with the /api prefix
@@ -4447,6 +4475,57 @@ def create_token(user_id: str, email: str, role: str, site_mode: bool = False, p
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+
+def _reissue_token_if_stale(payload) -> Optional[str]:
+    """A fresh full-term token for a session that has started to age, or None.
+
+    THE POINT IS A GATE TABLET THAT SURVIVES. It is offline for weeks at a
+    time by design -- a construction site is a dead zone -- and its password
+    lives in an admin's head, not on the jobsite. Under a 30-day token and no
+    refresh route, the only cure for day 31 was somebody driving out there.
+    Now any authenticated request it manages to make resets the clock.
+
+    NONE IS THE SAFE ANSWER AND IT IS THE ANSWER TO EVERYTHING UNCERTAIN. No
+    iat, an iat that is not a number, an iat in the future (a device with a
+    wrong clock), a vanished sub, a signing call that raises -- every one of
+    them returns None, which means "no header", which is byte-for-byte what
+    every deploy did before this function existed. A re-issue that cannot
+    happen must never be able to turn a working request into a failed one:
+    the request it would break is a CP filing his statutory day.
+
+    THE CLAIMS ARE COPIED, NOT RECOMPUTED. Re-reading the user document to
+    rebuild them would add a query to every aging request and, worse, would
+    silently hand a device a DIFFERENT session than the one it presented. The
+    token is already proven authentic by the decode above; this extends it and
+    changes nothing else. Note the payload is passed through create_token's
+    own _jwt_claim, so a null company_id stays null rather than becoming the
+    string "None" -- the trap that helper already documents.
+    """
+    try:
+        if not isinstance(payload, dict):
+            return None
+        iat = payload.get("iat")
+        if not isinstance(iat, (int, float)) or isinstance(iat, bool):
+            return None
+        age = datetime.now(timezone.utc) - datetime.fromtimestamp(iat, tz=timezone.utc)
+        if age < timedelta(hours=JWT_REISSUE_AFTER_HOURS):
+            return None
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        return create_token(
+            user_id,
+            payload.get("email"),
+            payload.get("role"),
+            site_mode=bool(payload.get("site_mode", False)),
+            project_id=payload.get("project_id"),
+            company_id=payload.get("company_id"),
+        )
+    except Exception as e:  # pragma: no cover - defensive; see the docstring
+        logger.warning(f"token re-issue skipped: {e!r}")
+        return None
+
+
 async def _record_client_version(user_id, version: str) -> None:
     """Stamp the version this user's app last reported. Fire-and-forget."""
     try:
@@ -4482,6 +4561,14 @@ async def get_current_user(
     request: Request = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     token: Optional[str] = None,
+    # FastAPI injects the outgoing Response into a dependency that asks for
+    # one, which is the whole re-issue mechanism: no middleware, no new route,
+    # no change to any endpoint's body. Defaults to None because the direct
+    # get_current_user(token=...) call paths pass nothing, and because a route
+    # that returns its own Response object (the PDF and R2 streams) never
+    # merges these headers -- in which case the device simply does not get a
+    # re-issue on that request, and gets one on the next JSON call it makes.
+    response: Response = None,
 ):
     raw_token = None
     if credentials:
@@ -4501,6 +4588,20 @@ async def get_current_user(
         if not user_id:
             logger.error("❌ AUTH FAIL: No user_id in token")
             raise HTTPException(status_code=401, detail="Invalid token")
+
+        # THE ONE CHANCE THIS DEVICE GETS. The token is authentic and not yet
+        # expired -- that is everything needed to extend it, and the branches
+        # below can still refuse the request for other reasons (deleted user,
+        # deactivated device) without this having granted anything: a header
+        # on a 401 response is never read, because the client only adopts a
+        # token off the success path.
+        if response is not None:
+            try:
+                fresh = _reissue_token_if_stale(payload)
+                if fresh:
+                    response.headers[REISSUED_TOKEN_HEADER] = fresh
+            except Exception as e:  # pragma: no cover - never fail the request
+                logger.warning(f"token re-issue header not set: {e!r}")
 
         if site_mode:
             device = await db.site_devices.find_one({"_id": to_query_id(user_id)})
