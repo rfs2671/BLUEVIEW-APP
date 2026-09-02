@@ -4240,6 +4240,105 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
         logger.error(f"[eod-freeze] could not flag {doc.get('_id')}: {e!r}")
 
 
+# How far back the nightly reconciliation looks. Bounded on purpose: an
+# UNBOUNDED pass would re-report the same historical gaps every night forever,
+# and a detector whose output is mostly last year's known problems is a
+# detector nobody reads. Seven nights is long enough that a gap survives a
+# weekend and a holiday before it stops being announced; the full historical
+# count is a one-off audit query (see the backfill note), not a nightly line.
+SIGNATURE_LEDGER_LOOKBACK_DAYS = 7
+
+
+async def sweep_signature_ledger_gaps(database, now=None) -> dict:
+    """ASK THE LEDGER THE QUESTION THE AUDITOR WILL ASK, THE NIGHT AFTER.
+
+    THE OFFLINE GAP IS VISIBLE FROM NOWHERE ELSE. A CP signs at a jobsite with
+    no signal. The draft drains later through frontend/src/utils/draftSync.js,
+    which pushes `cp_signature` and `status: 'submitted'` and has never called
+    recordSignatureEvent -- so the log is filed, signed, and the ledger never
+    hears about it. Nothing FAILED on the device, so the device reported
+    nothing; there is no error anywhere to find. The same is true of every
+    caller's `if (docId)` guard, which skips the ledger write outright when the
+    save had no server id to record against -- which is precisely the offline
+    case. Only a server-side question about the FILED RECORD finds these.
+
+    WHY NOT AT WRITE TIME. The client posts its ledger event moments AFTER the
+    save returns, so a check inside that request would manufacture a gap for
+    every honest signature in the system. Asked a day later, with the client
+    long since done, a gap is a gap. That is also why today's logs are excluded
+    and not merely deprioritised.
+
+    WHAT COUNTS AS SIGNED here is INK OR AFFIRMATION, deliberately broader than
+    the freeze sweep's affirmed-only rule. The freeze is deciding whether to
+    SEAL a record, where erring toward not-sealing is safe. This is deciding
+    whether a signature exists that the ledger should know about, and a legacy
+    pre-affirmation signature is still a person's mark on a compliance record.
+
+    LOGS, NOT ALERTS. No compliance_alerts row and no CP-facing surface: this
+    reports an engineering defect in the audit trail, not an obligation the CP
+    can discharge. There is nothing he could do about it, and a banner telling
+    him his signed log has no audit row would be the third exception treatment
+    on that screen.
+
+    Returns counts for the caller to log. Never raises: it shares the 3am tick
+    with two other detectors and the end-of-day freeze.
+    """
+    today = eastern_date(now)
+    try:
+        _floor = (datetime.strptime(today, "%Y-%m-%d")
+                  - timedelta(days=SIGNATURE_LEDGER_LOOKBACK_DAYS)
+                  ).strftime("%Y-%m-%d")
+    except Exception:  # pragma: no cover — today is always a valid date string
+        _floor = ""
+    out = {"checked": 0, "gaps": 0}
+    try:
+        cursor = database.logbooks.find({
+            "status": "submitted",
+            "date": {"$lt": today, "$gte": _floor},
+            "is_deleted": {"$ne": True},
+        })
+        filed = await cursor.to_list(2000)
+    except Exception as e:
+        logger.error(f"[signature-ledger] could not read filed logs: {e!r}")
+        return out
+
+    for doc in filed:
+        try:
+            sig = doc.get("cp_signature")
+            if not (_has_signature_ink(sig) or _is_affirmed_signature(sig)):
+                # No signature, no ledger row, nothing missing. Reporting these
+                # would bury the real gaps under every unsigned draft.
+                continue
+            out["checked"] += 1
+            if await signature_event_count(database, "logbook", doc["_id"]):
+                continue
+            out["gaps"] += 1
+            # EVERYTHING THE DETECTOR ALREADY HAS IN HAND goes in the line. It
+            # is holding the whole document; making the reader go back to Mongo
+            # for the project or the date is how a log line becomes a lead
+            # instead of a finding.
+            logger.error(
+                f"[signature-ledger] NO LEDGER ROW for a filed, signed logbook "
+                f"— the signature is on the document and the audit trail has "
+                f"nothing. document_type='logbook' "
+                f"document_id={str(doc['_id'])!r} "
+                f"log_type={doc.get('log_type')!r} "
+                f"project_id={doc.get('project_id')!r} "
+                f"company_id={doc.get('company_id')!r} "
+                f"date={doc.get('date')!r} "
+                f"signer={doc.get('cp_name')!r} "
+                f"created_by={doc.get('created_by')!r} "
+                f"finalized_by={doc.get('finalized_by')!r} "
+                f"is_locked={bool(doc.get('is_locked'))}",
+            )
+        except Exception as e:
+            # One unreadable document must not stop the reconciliation for
+            # every other project.
+            logger.error(
+                f"[signature-ledger] check failed for {doc.get('_id')}: {e!r}")
+    return out
+
+
 def superintendent_unanswered(data, log_date=None):
     """Attestable items with neither content nor a nothing-to-report.
 
@@ -13488,9 +13587,21 @@ async def register_and_checkin(data: dict, request: Request):
                 authenticated_role="worker",
             )
         except Exception as _e:  # pragma: no cover
-            logger.warning(
-                f"[gate] affirmation signature event failed for "
-                f"{worker.get('name')!r}: {_e!r}")
+            # ERROR, NOT WARNING, AND NAMED. The fail-soft above is deliberate
+            # and stays -- the turnstile is not a compliance gate -- but it
+            # means this line IS the record of the affirmation. A warning that
+            # gives only a worker's name cannot be reconciled to anything: the
+            # ledger is queried by document, and the document id for an
+            # affirmation is (project, eastern date), so both go in the line.
+            logger.error(
+                f"[signature-ledger] AFFIRMATION NOT RECORDED — the worker "
+                f"affirmed at the gate and no ledger row was written. "
+                f"document_type={PRESHIFT_AFFIRMATION_DOC_TYPE!r} "
+                f"document_id="
+                f"{preshift_affirmation_document_id(project_id, eastern_date(now))!r} "
+                f"project_id={str(project_id)!r} date={eastern_date(now)!r} "
+                f"worker={worker.get('name')!r} worker_id={str(worker['_id'])!r} "
+                f"lang={_sig_lang!r}: {_e!r}")
 
     # FIRST check-in on this project with a resolved trade — store the pairing
     # so every later visit HERE reads it instead of re-prompting. Skipped when
@@ -16126,8 +16237,46 @@ async def create_signature_event(
         "is_deleted": False,
     }
     
-    result = await db.signature_events.insert_one(event_doc)
+    # ── THE ONE PLACE THAT KNOWS THE WRITE FAILED ───────────────────────────
+    #
+    # BOTH CALLERS SWALLOW, AND BOTH ARE RIGHT TO. The endpoint's 500 lands in
+    # a client whose recordSignatureEvent catches its own error and returns
+    # null; the gate catches deliberately, because a ledger write must never
+    # cost a man his check-in. So if the failure is not recorded HERE it is
+    # recorded nowhere, and the resulting state -- a signature on the document,
+    # no row in the ledger -- is INDISTINGUISHABLE FROM A SIGNATURE THAT WAS
+    # NEVER MADE. That is the whole defect: not that writes fail, but that a
+    # failed one leaves the ledger looking exactly like an honest absence.
+    #
+    # Re-raised, not converted. The callers' handling is unchanged; this only
+    # ensures the attempt is on the record before their handling runs.
+    try:
+        result = await db.signature_events.insert_one(event_doc)
+    except Exception as e:
+        logger.error(
+            f"[signature-ledger] INSERT FAILED — no ledger row exists for a "
+            f"signature that was made. document_type={document_type!r} "
+            f"document_id={document_id!r} event_type={event_type!r} "
+            f"signer={signer_name!r} signer_user_id={signer_user_id!r} "
+            f"acting_capacity={acting_capacity!r} content_hash={content_hash} "
+            f"at={now.isoformat()}: {e!r}",
+        )
+        raise
     return str(result.inserted_id)
+
+
+# ── IS THERE A LEDGER ROW FOR THIS DOCUMENT? ────────────────────────────────
+#
+# The question an auditor asks, asked by the system itself. Kept as one helper
+# because it is asked from three places (the finalize seal, the nightly
+# reconciliation, and any future reader) and a selector written three times is
+# a selector that will disagree with itself.
+async def signature_event_count(database, document_type: str, document_id: str) -> int:
+    return await database.signature_events.count_documents({
+        "document_type": document_type,
+        "document_id": str(document_id),
+        "is_deleted": {"$ne": True},
+    })
  
  
 # ==================== SIGNATURE EVENT ENDPOINTS ====================
@@ -16156,32 +16305,61 @@ async def record_signature_event(
     # explicitly rather than omitting the key: an absent key cannot be told
     # apart from an event nobody captured one for, which is the permanent and
     # unrepairable state of every event written before this existed.
+    # THE PROJECT AND THE DATE COME OUT OF THE SAME READ. They cost nothing
+    # here -- the document is already being fetched -- and they are the two
+    # fields a gap is reconciled by. Without them a failure line names a Mongo
+    # id and an auditor still has to go back to the database to learn which
+    # jobsite and which day he is looking at.
     _log_type = None
+    _project_id = None
+    _date = None
     if str(data.document_type or "") == "logbook" and data.document_id:
         try:
             _doc = await db.logbooks.find_one(
-                {"_id": to_query_id(data.document_id)}, {"log_type": 1})
+                {"_id": to_query_id(data.document_id)},
+                {"log_type": 1, "project_id": 1, "date": 1})
             _log_type = (_doc or {}).get("log_type")
+            _project_id = (_doc or {}).get("project_id")
+            _date = (_doc or {}).get("date")
         except Exception as _e:  # pragma: no cover
             logger.warning(f"[signature] log type lookup failed: {_e!r}")
     _snapshot = attach_attestation(data.content_snapshot, _log_type)
 
-    event_id = await create_signature_event(
-        document_type=data.document_type,
-        document_id=data.document_id,
-        event_type=data.event_type,
-        signer_name=data.signer_name,
-        signer_role=data.signer_role,
-        signer_user_id=user_id,
-        signature_data=data.signature_data,
-        content_snapshot=_snapshot,
-        device_info=data.device_info,
-        ip_address=ip_address,
-        acting_capacity=data.acting_capacity,
-        # Tier 1 (4): the server-verified role of the authenticated signer — the
-        # trustworthy counterpart to the client-claimed signer_role.
-        authenticated_role=current_user.get("role"),
-    )
+    # ── THE ACTOR IS KNOWN HERE AND NOWHERE BELOW ───────────────────────────
+    #
+    # create_signature_event logs the document; this logs the PERSON, which is
+    # the one identity the client cannot forge and the only one an operator can
+    # go and ask. The 500 this re-raises reaches a client that discards it (see
+    # recordSignatureEvent), so this line is the server's whole record of the
+    # request having happened at all.
+    try:
+        event_id = await create_signature_event(
+            document_type=data.document_type,
+            document_id=data.document_id,
+            event_type=data.event_type,
+            signer_name=data.signer_name,
+            signer_role=data.signer_role,
+            signer_user_id=user_id,
+            signature_data=data.signature_data,
+            content_snapshot=_snapshot,
+            device_info=data.device_info,
+            ip_address=ip_address,
+            acting_capacity=data.acting_capacity,
+            # Tier 1 (4): the server-verified role of the authenticated signer —
+            # the trustworthy counterpart to the client-claimed signer_role.
+            authenticated_role=current_user.get("role"),
+        )
+    except Exception as _e:
+        logger.error(
+            f"[signature-ledger] REQUEST FAILED — a client reported a signature "
+            f"and no ledger row was written. document_type="
+            f"{data.document_type!r} document_id={data.document_id!r} "
+            f"event_type={data.event_type!r} log_type={_log_type!r} "
+            f"project_id={_project_id!r} date={_date!r} "
+            f"signer={data.signer_name!r} actor_user_id={user_id!r} "
+            f"actor_role={current_user.get('role')!r} ip={ip_address!r}: {_e!r}",
+        )
+        raise
 
     return {"event_id": event_id, "message": "Signature event recorded"}
  
@@ -21404,6 +21582,47 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     await audit_log("logbook_finalize", str(current_user.get("id", "")), "logbook", logbook_id, {
         "log_type": existing.get("log_type"), "project_id": existing.get("project_id"), "date": existing.get("date"),
     })
+
+    # ── THE LEDGER IS ASKED AT THE MOMENT THE RECORD IS SEALED ──────────────
+    #
+    # THE COMPLETENESS GATE ABOVE HAS ALREADY REFUSED AN UNSIGNED LOG, so by
+    # this line the document carries a CP signature by construction. If the
+    # ledger holds nothing for it, that is not an ambiguity to be resolved
+    # later -- it is the 33 happening again, and this is the last moment at
+    # which anything about it can still be reconstructed. After the lock, the
+    # only surviving evidence of who signed and what they saw is whatever was
+    # written down while it was happening.
+    #
+    # THIS IS DETECTIVE, NEVER PREVENTIVE. The finalize has ALREADY committed
+    # above and is not reconsidered: refusing to seal a signed record over a
+    # missing audit row would take a CP's filed log away from him to protect an
+    # observability property, which is the trade this change exists to avoid.
+    #
+    # THE DRAIN IS THE CASE THIS CATCHES. draftSync's applyRemoteFreeze calls
+    # /finalize for every log signed offline, and that path has never recorded
+    # a signature event at all -- no client failed, so no client reported
+    # anything, and this is the first server-side moment that can notice.
+    try:
+        _ledger_rows = await signature_event_count(db, "logbook", logbook_id)
+        if not _ledger_rows:
+            logger.error(
+                f"[signature-ledger] SEALED WITH NO LEDGER ROW — a logbook was "
+                f"finalized carrying a CP signature and the ledger holds no "
+                f"event for it. document_type='logbook' "
+                f"document_id={str(logbook_id)!r} "
+                f"log_type={existing.get('log_type')!r} "
+                f"project_id={existing.get('project_id')!r} "
+                f"date={existing.get('date')!r} "
+                f"signer={existing.get('cp_name')!r} "
+                f"finalized_by={str(current_user.get('id', ''))!r} "
+                f"at={now.isoformat()}",
+            )
+    except Exception as _e:
+        # A presence CHECK must never be able to fail a finalize that already
+        # committed — the same rule the photo purge above follows.
+        logger.warning(
+            f"[signature-ledger] presence check failed for "
+            f"logbook={logbook_id}: {_e!r}")
     return serialize_id(await db.logbooks.find_one({"_id": to_query_id(logbook_id)}))
 
 
@@ -38729,6 +38948,18 @@ async def startup_event():
                 logger.info(
                     "[eod-freeze] froze %s stale signed log(s); flagged %s unsigned",
                     _swept["frozen"], _swept["unsigned"],
+                )
+            # THE AUDIT-TRAIL RECONCILIATION, in the same tick and AFTER the
+            # freeze: a log the freeze just sealed is one whose ledger row had
+            # better exist, and this is the hour at which asking is free of the
+            # race with the client's own post-save write.
+            _ledger = await sweep_signature_ledger_gaps(db)
+            if _ledger["gaps"]:
+                logger.error(
+                    "[signature-ledger] %s of %s signed log(s) filed in the "
+                    "last %s day(s) have NO ledger row",
+                    _ledger["gaps"], _ledger["checked"],
+                    SIGNATURE_LEDGER_LOOKBACK_DAYS,
                 )
         except Exception as e:
             logger.error(f"[v2_logbook] nightly tick failed: {e!r}", exc_info=True)
