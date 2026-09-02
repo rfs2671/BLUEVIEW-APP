@@ -88,6 +88,13 @@ function flaggedReasonSummary({ expired = 0, unknown = 0, needsTrade = 0 } = {})
 export default function LogBooksScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  // Mirrors get_admin_user on the server, which admits ["admin", "owner"] —
+  // the same predicate the activation endpoint itself enforces. Asking the
+  // same question the server asks is what stops the control and the endpoint
+  // disagreeing about who may press it.
+  const isAdminUser = ['admin', 'owner'].includes(
+    String(user?.role || '').toLowerCase(),
+  );
   const { isDark, colors } = useTheme();
   const toast = useToast();
   const insets = useSafeAreaInsets();
@@ -661,7 +668,18 @@ export default function LogBooksScreen() {
                 <View style={styles.heroDivider} />
                 <Text style={styles.toggleGroupTitle}>On site today</Text>
                 {activations.map((act) => {
-                  const mine = act.activated_by !== 'admin';
+                  // WHO MAY FLIP THIS ONE — a question about the LOG and
+                  // the USER, and it used to ask only about the log.
+                  //
+                  // `act.activated_by !== 'admin'` is a fact about the log, so
+                  // for an admin-activated type the control refused EVERY
+                  // caller, including an actual admin. There is exactly one
+                  // call site of logbookActivationAPI.set in the app, and it is
+                  // behind this test — so `superintendent_log_active` and
+                  // `hot_work_permitted` could not be switched on from any
+                  // screen, on any project, by anybody. The server endpoint was
+                  // correct the whole time and simply never reached.
+                  const mine = act.activated_by !== 'admin' || isAdminUser;
                   return (
                     <View key={act.log_type} style={styles.scaffoldToggleRow}>
                       <HardHat size={18} strokeWidth={1.5} color={semantic.neutral} />

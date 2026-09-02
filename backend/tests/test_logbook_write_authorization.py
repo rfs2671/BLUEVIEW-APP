@@ -168,9 +168,25 @@ class TheDuplicateStaysAndSaysWhy(unittest.TestCase):
     """
 
     def test_all_three_that_carry_it_still_do(self):
+        """THE INVARIANT IS THE SCOPE CHECK AND ITS MESSAGE, not the predicate.
+
+        This asserted the literal `current_user.get("role") == "cp"`, which is
+        a stronger claim than the docstring above makes: the reason the
+        duplicate stays is that it produces the SPECIFIC sentence, and that is
+        unchanged. The predicate itself widened to
+        ROLES_SCOPED_TO_ASSIGNED_PROJECTS because #338 added superintendents to
+        create_logbook and left these three spelled the old way — so a
+        superintendent could not create a logbook on an unassigned project and
+        could still update, amend and FINALIZE one there.
+
+        Pinned as "reads the shared constant" so the next role added to that
+        tuple reaches all four gates without editing this file.
+        """
         for fn in ("update_logbook", "finalize_logbook", "amend_logbook"):
             with self.subTest(fn=fn):
-                self.assertIn('current_user.get("role") == "cp"', _fn_body(fn))
+                body = _fn_body(fn)
+                self.assertIn("ROLES_SCOPED_TO_ASSIGNED_PROJECTS", body)
+                self.assertIn('current_user.get("assigned_projects"', body)
 
     def test_and_it_produces_the_more_specific_message(self):
         for fn in ("update_logbook", "finalize_logbook", "amend_logbook"):

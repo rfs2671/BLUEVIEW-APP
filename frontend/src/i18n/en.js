@@ -86,6 +86,12 @@ export default {
     // above: the server names the condition, the client owns the wording.
     code_SUBMIT_EMPTY_LOG: 'This log is empty. Fill it in before submitting.',
     code_SUBMIT_MISSING_CP_SIGNATURE: 'This log is not signed. Sign it before submitting.',
+    // NAMES THE FIELD AND THE CONSEQUENCE. This value prints as the Competent
+    // Person on the filed DOB record and on the emailed report, so "check the
+    // name" is not enough — the CP has to know what the name is FOR before he
+    // will treat a one-character entry as worth fixing.
+    code_SUBMIT_INVALID_CP_NAME:
+      'Enter the full name of the person signing. It prints on the filed record as the Competent Person.',
     // TWO REFUSALS, NOT ONE, and the difference is which tap fixes it.
     //
     // The server gate now asks whether the signature is AFFIRMED for this
