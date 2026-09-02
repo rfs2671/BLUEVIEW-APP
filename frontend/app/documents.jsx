@@ -269,6 +269,7 @@ export default function DocumentsScreen() {
         fileId: file?.id || file?._id,
         cacheVersion: file?.cache_version ?? 0,
         remoteUrl: file?.r2_url || file?.directUrl,
+        expectedSize: file?.size,
       });
 
       // THE BYTES ON DISK WIN, ON EVERY PLATFORM. This used to read

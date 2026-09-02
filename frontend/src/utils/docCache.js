@@ -60,13 +60,41 @@ async function ensureDir() {
   } catch (_e) { /* best effort */ }
 }
 
-/** Local uri if this exact {id}.{version} is already on disk, else null. */
-export async function getCachedDocFile(fileId, cacheVersion, ext = 'pdf') {
+/**
+ * A LENGTH WE CAN ACTUALLY CHECK AGAINST, OR NOTHING.
+ *
+ * The backend writes `size` on every file record, and defaults it to 0 when
+ * Dropbox did not report one (server.py: `entry.get("size", 0)`). 0 is
+ * therefore "unknown", not "empty" — enforcing it would reject every good
+ * download of a file whose size the listing lost. Same for a missing field, a
+ * string, NaN. Only a positive finite number is a length.
+ */
+function expectedBytes(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
+ * Local uri if this exact {id}.{version} is already on disk, else null.
+ *
+ * `expectedSize` is optional and comes from the list record. WHY THE READ PATH
+ * CHECKS IT AT ALL, when the write path below can no longer produce a short
+ * file: every tablet in the field is already carrying fragments written by the
+ * old non-atomic download, and the only thing that removes them is
+ * sweepDocCache — whose one call site is the CP files screen, unreachable from
+ * /site/*. A gate tablet would serve its corrupt copy for ever. Comparing
+ * against the length the list already carries clears them on first open, at
+ * the cost of one number.
+ */
+export async function getCachedDocFile(fileId, cacheVersion, ext = 'pdf', { expectedSize } = {}) {
   if (!canUseFs() || !fileId) return null;
   try {
     const uri = DOC_DIR + safeName(fileId, cacheVersion, ext);
     const info = await FileSystem.getInfoAsync(uri);
-    return info.exists && info.size > 0 ? uri : null;
+    if (!info.exists || !(info.size > 0)) return null;
+    const want = expectedBytes(expectedSize);
+    if (want !== null && Number(info.size) !== want) return null;
+    return uri;
   } catch (_e) { return null; }
 }
 
@@ -75,26 +103,93 @@ export async function getCachedDocFile(fileId, cacheVersion, ext = 'pdf') {
  * proxy path the API returns; it is resolved against the API base. Auth rides
  * in the header. Returns the local uri, or null on failure (never throws — a
  * caching failure must not break viewing while online).
+ *
+ * NOTHING PARTIAL EVER WEARS THE REAL NAME.
+ *
+ * expo-file-system 19.0.24's legacy downloadAsync streams the response body
+ * straight into the path it is handed. On Android (FileSystemLegacyModule.kt,
+ * inside OkHttp's onResponse) that is literally
+ *
+ *     val file = uri.toFile(); file.delete()
+ *     val sink = file.sink().buffer()
+ *     sink.writeAll(response.body!!.source())
+ *
+ * — an okio buffered sink flushing 8KiB segments to the destination as they
+ * arrive. A connection dropped mid-body throws out of writeAll and leaves every
+ * flushed segment on disk under that exact name. Worse, OkHttp 4.9.2 has
+ * already set `signalledCallback = true` before calling onResponse, so the
+ * IOException is only LOGGED: the promise never settles, and the `catch` here
+ * never runs at all. There is no error handler that can clean up after that.
+ *
+ * So the download is aimed at `{name}.part` and only ever RENAMED into place
+ * once it is complete and (when a length is known) the right length. Android's
+ * moveAsync is File.renameTo on the same volume — one atomic rename that
+ * replaces the destination; iOS' removes the destination and moves. Either way
+ * a reader sees the old whole file or the new whole file, never a fragment.
+ *
+ * A `.part` left behind by a hung promise or a killed process is bounded at one
+ * per file — the temp name is deterministic, so the next attempt overwrites it
+ * — and it deliberately does NOT match the sweep's `{id}.{version}.{ext}`
+ * grammar, so a sweep can never delete a transfer that is still running.
+ *
+ * `expectedSize` is optional: the plans and documents screens carry `size` on
+ * every record, the logbook screens carry none, and both must work.
  */
-export async function cacheDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf' }) {
+export async function cacheDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf', expectedSize } = {}) {
   if (!canUseFs() || !fileId || !remoteUrl) return null;
+  const dest = DOC_DIR + safeName(fileId, cacheVersion, ext);
+  const part = `${dest}.part`;
+  const want = expectedBytes(expectedSize);
+  const scrub = async () => {
+    try { await FileSystem.deleteAsync(part, { idempotent: true }); } catch (_e) {}
+  };
+
   try {
     await ensureDir();
-    const dest = DOC_DIR + safeName(fileId, cacheVersion, ext);
+
+    // ALREADY ON DISK — but only if it is the file we were asked for. The old
+    // early-return took any non-empty file, which is what made a truncated
+    // plan permanent: it was never re-downloaded, so nothing could correct it.
     const existing = await FileSystem.getInfoAsync(dest);
-    if (existing.exists && existing.size > 0) return dest;
+    if (existing.exists && existing.size > 0 && (want === null || Number(existing.size) === want)) {
+      return dest;
+    }
+    // A WRONG-LENGTH FILE IS NOT DELETED HERE, only refused as a hit. Deleting
+    // it up front and then losing the connection would take a drawing off a
+    // phone in a cellar and put nothing back — the failure this module refuses
+    // everywhere else. It stays where it is, unserved (getCachedDocFile checks
+    // the same length), until the rename below replaces it with a whole file.
 
     const base = apiClient?.defaults?.baseURL || '';
     const url = /^https?:\/\//i.test(remoteUrl) ? remoteUrl : `${base}${remoteUrl}`;
     const token = await getToken();
-    const res = await FileSystem.downloadAsync(url, dest, {
+    const res = await FileSystem.downloadAsync(url, part, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
-    if (res?.status === 200 && res?.uri) return res.uri;
-    // A failed download can leave a 0-byte / error-body file behind.
-    try { await FileSystem.deleteAsync(dest, { idempotent: true }); } catch (_e) {}
+    if (res?.status !== 200 || !res?.uri) { await scrub(); return null; }
+
+    // VERIFY BEFORE PROMOTING. A 200 whose body was cut short still resolves —
+    // the transport reports success and the file is simply the wrong size.
+    const got = await FileSystem.getInfoAsync(part);
+    if (!got.exists || !(got.size > 0)) { await scrub(); return null; }
+    if (want !== null && Number(got.size) !== want) { await scrub(); return null; }
+
+    try {
+      await FileSystem.moveAsync({ from: part, to: dest });
+    } catch (_e) {
+      // A rename that refuses because the destination exists: clear it and
+      // retry once. Still atomic from a reader's point of view in the sense
+      // that matters — the only thing that can appear at `dest` is whole.
+      try { await FileSystem.deleteAsync(dest, { idempotent: true }); } catch (_e2) {}
+      await FileSystem.moveAsync({ from: part, to: dest });
+    }
+    return dest;
+  } catch (_e) {
+    // THE OUTER CATCH CLEANS UP. This is the path a dropped connection takes,
+    // and it used to return null having deleted nothing.
+    await scrub();
     return null;
-  } catch (_e) { return null; }
+  }
 }
 
 /**
@@ -289,11 +384,14 @@ export async function sweepDocCache({ dryRun = false } = {}) {
   return { scanned: names.length, deleted, kept };
 }
 
-/** Cached copy if present, else download it. Null if unavailable offline. */
-export async function ensureCachedDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf' }) {
-  const hit = await getCachedDocFile(fileId, cacheVersion, ext);
+/** Cached copy if present, else download it. Null if unavailable offline.
+ *  `expectedSize` (the list record's `size`, when it has one) is checked on
+ *  BOTH halves: a fragment already on disk fails the hit, and a short download
+ *  fails the fetch. */
+export async function ensureCachedDocFile({ fileId, cacheVersion, remoteUrl, ext = 'pdf', expectedSize } = {}) {
+  const hit = await getCachedDocFile(fileId, cacheVersion, ext, { expectedSize });
   if (hit) return hit;
-  return cacheDocFile({ fileId, cacheVersion, remoteUrl, ext });
+  return cacheDocFile({ fileId, cacheVersion, remoteUrl, ext, expectedSize });
 }
 
 /**
@@ -301,15 +399,18 @@ export async function ensureCachedDocFile({ fileId, cacheVersion, remoteUrl, ext
  * project doesn't pull hundreds of files on one screen open. Fire-and-forget:
  * callers should NOT await this on the render path.
  */
-export async function warmDocCache(files, { limit = 25, idOf, versionOf, urlOf } = {}) {
+export async function warmDocCache(files, { limit = 25, idOf, versionOf, urlOf, sizeOf } = {}) {
   if (!canUseFs() || !Array.isArray(files)) return 0;
   let n = 0;
   for (const f of files.slice(0, limit)) {
     const fileId = idOf ? idOf(f) : (f.id || f._id);
     const remoteUrl = urlOf ? urlOf(f) : (f.r2_url || f.directUrl);
     const cacheVersion = versionOf ? versionOf(f) : (f.cache_version ?? 0);
+    // `size` on the Dropbox/upload record. Absent on logbook records, which is
+    // why it is read defensively rather than required.
+    const expectedSize = sizeOf ? sizeOf(f) : f?.size;
     if (!fileId || !remoteUrl) continue;
-    const got = await cacheDocFile({ fileId, cacheVersion, remoteUrl });
+    const got = await cacheDocFile({ fileId, cacheVersion, remoteUrl, expectedSize });
     if (got) n += 1;
   }
   return n;
