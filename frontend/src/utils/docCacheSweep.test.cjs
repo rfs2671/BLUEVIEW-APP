@@ -308,40 +308,66 @@ async function main() {
     ok(keep.has('a1.2.pdf'), 'and still reads a flat plans row');
 
     // The fixture above is hand-built, so on its own it proves only what
-    // docCache does with that shape. THE SCREEN HAS TO ACTUALLY WRITE IT:
-    // the day report's id is invented by app/site/logbooks.jsx and appears
-    // nowhere else, so if datesToList stops attaching it, the keep-set goes
-    // back to not naming that file and the sweep deletes it again.
-    const lb = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'app', 'site', 'logbooks.jsx'), 'utf8',
-    ).replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    // docCache does with that shape. SOMETHING HAS TO ACTUALLY WRITE IT: the
+    // day report's id is INVENTED by the site logbooks surface and appears
+    // nowhere else on the device, so if the stored row stops carrying it, the
+    // keep-set goes back to not naming that file and the sweep deletes it.
+    //
+    // THE ROW BUILDER MOVED, AND THE GUARANTEE DID NOT. It used to be
+    // `datesToList` inside app/site/logbooks.jsx, which cached WHOLE documents
+    // and sliced them to 60 dates; it is now `identityRow` in
+    // src/utils/siteLogbookHistory.js, which stores identity for every filed
+    // date and keeps the detail on the filesystem. What is asserted is the
+    // same thing either way: the stored entry carries `id` + `cache_version`.
+    const strip = (p) => fs.readFileSync(p, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
       .replace(/^\s*\/\/.*$/gm, '');
-    const lbTree = parser.parse(lb, { sourceType: 'module', plugins: ['jsx'] });
-    let datesToList = null;
-    (function walkLb(n, seen) {
+    const lb = strip(path.join(__dirname, '..', '..', 'app', 'site', 'logbooks.jsx'));
+    const histPath = path.join(__dirname, 'siteLogbookHistory.js');
+    const histSrc = fs.existsSync(histPath) ? strip(histPath) : '';
+    ok(histSrc !== '', 'src/utils/siteLogbookHistory.js exists');
+
+    const histTree = parser.parse(histSrc, { sourceType: 'module', plugins: ['jsx'] });
+    let rowBuilder = null;
+    (function walkHist(n, seen) {
       if (!n || typeof n !== 'object' || seen.has(n)) return;
       seen.add(n);
-      if (n.type === 'VariableDeclarator' && n.id.name === 'datesToList' && n.init) {
-        datesToList = generate(n.init).code;
+      if (n.type === 'FunctionDeclaration' && n.id && n.id.name === 'identityRow') {
+        rowBuilder = generate(n).code;
+      }
+      if (n.type === 'VariableDeclarator' && n.id.name === 'identityRow' && n.init) {
+        rowBuilder = generate(n.init).code;
       }
       for (const k of Object.keys(n)) {
         const v = n[k];
-        if (Array.isArray(v)) v.forEach((c) => walkLb(c, seen));
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walkLb(v, seen);
+        if (Array.isArray(v)) v.forEach((c) => walkHist(c, seen));
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walkHist(v, seen);
       }
-    }(lbTree, new Set()));
+    }(histTree, new Set()));
 
-    ok(datesToList !== null, 'logbooks.jsx still builds its cached list in datesToList');
-    ok(datesToList !== null
-      && /\bid\b/.test(datesToList) && datesToList.indexOf('cache_version') !== -1,
-      'AND STAMPS A CACHE IDENTITY ON EACH CACHED ENTRY — without an id on the '
+    ok(rowBuilder !== null,
+      'the site logbooks list is still built by one named row builder (identityRow)');
+    ok(rowBuilder !== null
+      && /\bid\b/.test(rowBuilder) && rowBuilder.indexOf('cache_version') !== -1,
+      'AND STAMPS A CACHE IDENTITY ON EACH STORED ENTRY — without an id on the '
       + 'entry, nothing on the device names the full-day report PDF and the '
       + 'sweep is right to delete it');
-    const dayIdUses = (lb.match(/dayPdfId\s*\(/g) || []).length;
-    ok(dayIdUses >= 2,
-      'and the name is built by ONE helper used both where the file is '
-      + 'declared to the sweep and where it is opened — two spellings of that '
-      + 'id would be this same defect one level up');
+    // AND THE LOGS UNDER IT KEEP THEIRS. The keep-set descends into the nested
+    // `logs` array and rebuilds `{id}.{version}` from `updated_at`; a row that
+    // dropped either would take every individual logbook PDF with it.
+    ok(rowBuilder !== null
+      && /\blogs\b/.test(rowBuilder) && rowBuilder.indexOf('updated_at') !== -1,
+      'and each log under it keeps its own id and version, which is what names '
+      + 'the individual logbook PDFs the sweep must not delete');
+
+    // ONE SPELLING OF THE NAME, ACROSS BOTH FILES: where the file is declared
+    // to the sweep (the row builder) and where it is opened (the screen). Two
+    // spellings of that id would be this same defect one level up.
+    ok(/dayReportId\s*\(/.test(histSrc),
+      'the day-report id is built by a named helper where the row declares it');
+    ok(/dayReportId\s*\(/.test(lb),
+      'and the screen that OPENS that file resolves its name through the same '
+      + 'helper rather than spelling it a second time');
   }
 
   // ═════════════════════════════════════════════════════════════════════════
