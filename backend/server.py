@@ -11581,9 +11581,19 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     # ── LANDMINE 2: document_page_index is keyed by file_id, NOT project_id.
     # Collect the project's file ids BEFORE deleting project_files, or the
     # index rows orphan silently with nothing left to find them by.
+    #
+    # NO CAP. This was `to_list(5000)`, which is a silent truncation on the one
+    # scan that has to be exhaustive: past the cap the page-index rows orphan
+    # with nothing left to find them by (project_files is deleted a few lines
+    # down, taking the only file ids with it), and on a COMPANY-LESS project so
+    # do the objects — the `{company_id}/{project_id}/` prefix sweep below is
+    # skipped when company_id is falsy, leaving the per-row loop as the only
+    # thing that reaches them. A Dropbox-synced drawing set passes 5000 files
+    # without being unusual. The projection is two fields, so draining the
+    # cursor costs a few MB on the largest project rather than a bounded lie.
     file_docs = await db.project_files.find(
         {"project_id": project_id}, {"_id": 1, "r2_key": 1},
-    ).to_list(5000)
+    ).to_list(None)
     file_ids = [str(f["_id"]) for f in file_docs]
     if file_ids:
         idx_res = await db.document_page_index.delete_many(
@@ -11613,8 +11623,17 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     # Enhanced + thumbnail derivatives of daily-log photos. Unconditional (not
     # nested under the company sweep below) so an orphaned or company-less
     # project still has its derivatives purged.
+    #
+    # BUILT THE WAY THE KEYS WERE. _logbook_capture_photo_r2_key runs the
+    # project segment through _logbook_photo_key_segment; a prefix assembled
+    # from the raw id is a DIFFERENT prefix the moment the two disagree, and it
+    # would list nothing while the purge reported success. Ordinary
+    # ObjectId-shaped ids pass through the function unchanged, so this does not
+    # move the normal case — it removes the possibility of the sweep and the
+    # writer naming two different places.
     r2_deleted += await _r2_delete_prefix(
-        _r2_client, R2_BUCKET_NAME, f"logbook-photos/{project_id}/",
+        _r2_client, R2_BUCKET_NAME,
+        f"logbook-photos/{_logbook_photo_key_segment(project_id)}/",
     )
     if company_id:
         r2_deleted += await _r2_delete_prefix(
@@ -20410,8 +20429,56 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     _same_company_or_403(rec, current_user)
 
     r2_key = rec.get("r2_key", "")
+
+    # ── WHEN THE OBJECT OUTLIVES THE ROW ────────────────────────────────────
+    #
+    # The row always goes — that is what was asked for. The BYTES are spared in
+    # two cases, both of them "something else still speaks for this object".
+    #
+    # 1. DROPBOX IS THE SOURCE OF TRUTH. The docstring above has always said a
+    #    Dropbox-synced file loses only its Mongo row. It never did: the delete
+    #    below was unconditional, so the handler's behaviour and its own stated
+    #    contract disagreed. It now matches.
+    #
+    # 2. THE KEY IS NOT UNIQUE, AND THE ROW IS NOT ITS OWNER. An r2_key is
+    #    `{company_id}/{project_id}/{filename}` built from the BASENAME with no
+    #    path component. The direct-upload path de-duplicates on name and
+    #    suffixes a timestamp, so it can never collide; the Dropbox sync path
+    #    does not — it keys the ROW on `dropbox_path` and the OBJECT on the
+    #    basename. `/Drawings/A/plan.pdf` and `/Drawings/B/plan.pdf` are
+    #    therefore two rows addressing ONE object.
+    #
+    #    Deleting either row used to destroy the shared bytes and leave the
+    #    surviving row pointing at nothing. THAT LOSS WAS PERMANENT: sync does
+    #    not repair it, because the survivor's `dropbox_content_hash` still
+    #    matches Dropbox and sync takes its "unchanged" branch, updating
+    #    last_synced_at and never re-uploading. Nobody deleted that file and
+    #    nobody was told it had gone.
+    #
+    # Case 1 already covers every colliding row today, since only sync can
+    # produce a collision. The count is asked anyway rather than relying on
+    # that: it is the invariant that actually matters ("do not delete bytes a
+    # live row still references"), and it does not depend on which writer
+    # happened to mint the key.
+    #
+    # THIS IS NOT A RETENTION DECISION. Nothing here decides how long an
+    # unreferenced object should live; a genuinely unreferenced object is still
+    # deleted immediately, exactly as before. Sweeping the objects this leaves
+    # behind — a Dropbox row's cache after its last row is gone — is the
+    # orphan-collection question, and it is deliberately not answered here.
+    _retained_reason = ""
+    if r2_key:
+        if rec.get("dropbox_path"):
+            _retained_reason = "dropbox_is_source_of_truth"
+        elif await db.project_files.count_documents({
+            "_id": {"$ne": rec_oid},
+            "r2_key": r2_key,
+            "is_deleted": {"$ne": True},
+        }):
+            _retained_reason = "key_shared_with_another_file"
+
     r2_deleted = False
-    if r2_key and _r2_client and R2_BUCKET_NAME:
+    if r2_key and not _retained_reason and _r2_client and R2_BUCKET_NAME:
         try:
             await asyncio.to_thread(
                 _r2_client.delete_object,
@@ -20428,6 +20495,7 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     logger.info(
         f"File hard-deleted by {current_user.get('email')}: "
         f"name={rec.get('name')} r2_key={r2_key or '-'} r2_deleted={r2_deleted} "
+        f"r2_retained={_retained_reason or '-'} "
         f"mongo_deleted={delete_result.deleted_count}"
     )
     return {
@@ -20435,6 +20503,11 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
         "file_id": file_id,
         "name": rec.get("name", ""),
         "r2_deleted": r2_deleted,
+        # WHY the object was kept, when it was. Absent means "there was nothing
+        # to keep or it was deleted" — `r2_deleted` already says which. A
+        # reason string is reported rather than inferred so the caller is not
+        # left reading a false failure into `r2_deleted: false`.
+        **({"r2_retained_reason": _retained_reason} if _retained_reason else {}),
         "mongo_deleted": delete_result.deleted_count == 1,
     }
 
