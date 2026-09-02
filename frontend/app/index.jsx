@@ -32,6 +32,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
+import { useProjectCache } from '../src/context/ProjectCacheContext';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import apiClient from '../src/utils/api';
@@ -225,6 +226,10 @@ function AdminRowTile({ action, onPress }) {
 export default function DashboardScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isPending, isLoading: authLoading } = useAuth();
+  // Layout-level offline hydration (src/context/ProjectCacheContext.jsx).
+  // Availability only — it carries no fetch status, so it never speaks for
+  // whether the server answered. That stays fetchData()'s job below.
+  const { cachedProjects, hydrated: cacheHydrated } = useProjectCache();
   const { isDark, colors } = useTheme();
   const s = buildStyles(colors, isDark);
   const toast = useToast();
@@ -291,6 +296,23 @@ export default function DashboardScreen() {
       router.replace('/demo');
     }
   }, [layoutReady, isAuthenticated, isPending, authLoading]);
+
+  // SEED FROM THE LAYOUT-LEVEL HYDRATION. The parent layout has been reading
+  // the cached list since mount, keyed on the stored session rather than on the
+  // validated one, so it is ready long before isAuthenticated flips — offline
+  // that flip waits out the /auth/me rejection, up to 25s in a dead zone. This
+  // paints the picker in that window instead of holding a spinner over a list
+  // that was on disk the whole time.
+  //
+  // It seeds ONLY when nothing has been set yet, so it can never clobber a live
+  // read that has already landed. fetchData() below still runs, still refreshes,
+  // and still owns every offline/error toast — the provenance of what is on
+  // screen is reported there, not here.
+  useEffect(() => {
+    if (!cacheHydrated || cachedProjects.length === 0) return;
+    setProjects((prev) => (prev.length > 0 ? prev : cachedProjects));
+    setLoading(false);
+  }, [cacheHydrated, cachedProjects]);
 
   useEffect(() => {
     if (isAuthenticated && !isPending) {
@@ -422,7 +444,13 @@ export default function DashboardScreen() {
       // CACHE-FIRST: show the cached project list immediately so the dashboard is
       // never empty when a cache exists — robust to the OTA-apply timing race.
       // Then refresh from the server (and re-cache) when online.
-      const _cachedProjects = await readCachedProjectList();
+      // The parent layout has usually hydrated this already; reuse it rather
+      // than paying a second AsyncStorage round trip. The direct read stays as
+      // the fallback for the case where this screen's fetch beat the layout's
+      // hydration, and for any harness that mounts the screen on its own.
+      const _cachedProjects = cachedProjects.length > 0
+        ? cachedProjects
+        : await readCachedProjectList();
       if (_cachedProjects.length > 0) {
         setProjects(_cachedProjects);
         setLoading(false);

@@ -36,6 +36,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI, logbookActivationAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
+import { useProjectCache } from '../../src/context/ProjectCacheContext';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -88,6 +89,12 @@ function flaggedReasonSummary({ expired = 0, unknown = 0, needsTrade = 0 } = {})
 export default function LogBooksScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  // Layout-level offline hydration (src/context/ProjectCacheContext.jsx).
+  // THIS is the screen the ruling was about: the gate tablet opens Log Books
+  // directly and never touches a dashboard, so the hydration it needs cannot
+  // live on one. It carries no fetch status — fetchInitial() below still owns
+  // what the screen says about the server.
+  const { cachedProjects, hydrated: cacheHydrated, storedUser } = useProjectCache();
   // Mirrors get_admin_user on the server, which admits ["admin", "owner"] —
   // the same predicate the activation endpoint itself enforces. Asking the
   // same question the server asks is what stops the control and the endpoint
@@ -154,6 +161,38 @@ export default function LogBooksScreen() {
     if (isAuthenticated) fetchInitial();
   }, [isAuthenticated]);
 
+  // SEED FROM THE LAYOUT-LEVEL HYDRATION — the reason this file changed.
+  //
+  // fetchInitial() is gated on isAuthenticated, and offline that gate does not
+  // open until /auth/me rejects: instant in airplane mode, but up to the 25s
+  // DEFAULT_TIMEOUT_MS in a dead zone where the socket connects and never
+  // answers. For the whole of that window this screen held "Loading log
+  // books…" over a project list that was sitting readable in AsyncStorage. The
+  // parent layout starts that read at mount instead, so the picker can paint
+  // here immediately.
+  //
+  // Seeds ONLY into an empty picker, so a live read that already landed is
+  // never clobbered. It sets no fetch state and shows no banner: fetchInitial()
+  // still runs, still refreshes, and still owns everything this screen says
+  // about the server.
+  useEffect(() => {
+    if (!cacheHydrated || cachedProjects.length === 0) return;
+    // Nothing to seed into — a live read already landed, or a project is
+    // already selected. Guarded here rather than inside a state updater: an
+    // updater must stay pure, and fetchProjectData() below is a side effect
+    // that StrictMode's double-invoke would fire twice.
+    if (projects.length > 0 || selectedProject) return;
+    const visible = filterVisibleProjects(cachedProjects);
+    if (visible.length === 0) return;
+    const first = visible[0];
+    setProjects(visible);
+    setSelectedProject(first);
+    // Sub-reads all carry their own offline fallbacks, so this is safe with no
+    // network — it just shows empty logs until the CP drafts.
+    fetchProjectData(first._id || first.id);
+    setLoading(false);
+  }, [cacheHydrated, cachedProjects, user, storedUser, projects.length, selectedProject]);
+
   // Task A: gate the Check-In Review banner on a real flagged count. The
   // /flagged endpoint already returns a per-project `count`; sum it across the
   // CP's visible projects and remember the first non-empty one to land on.
@@ -212,10 +251,19 @@ export default function LogBooksScreen() {
   // the project(s) they're assigned to, so they can't navigate to an unassigned
   // project's logbook. Other roles (admin/owner/superintendent) see all company
   // projects. Shared by the cache-first read AND the live read below.
-  const filterVisibleProjects = (list) => {
+  //
+  // THE IDENTITY IS A PARAMETER because this now also runs BEFORE auth
+  // resolves. The layout hydrates the cached list off the stored session, which
+  // is readable in milliseconds; `user` from AuthContext is not set until
+  // /auth/me settles, which offline can take the full 25s timeout. Left reading
+  // `user` directly, the pre-auth seed below would see role === undefined, skip
+  // the CP branch, and paint EVERY company project into a CP's picker — the
+  // exact scoping this filter exists to enforce. `storedUser` is the same
+  // identity AuthContext itself falls back to when validation fails offline.
+  const filterVisibleProjects = (list, identity = user || storedUser) => {
     const arr = Array.isArray(list) ? list : [];
-    return user?.role === 'cp'
-      ? arr.filter(p => (user?.assigned_projects || []).includes(p.id || p._id))
+    return identity?.role === 'cp'
+      ? arr.filter(p => (identity?.assigned_projects || []).includes(p.id || p._id))
       : arr;
   };
 
@@ -229,7 +277,13 @@ export default function LogBooksScreen() {
     //   3) on refresh failure KEEP the cached list (never blank it).
     // The old code did `getAll().catch(() => [])`, which SWALLOWED the offline
     // error into an empty list — the live CP blocker.
-    const _cached = await readCachedProjectList();
+    // The parent layout has usually hydrated this already; reuse it rather than
+    // paying a second AsyncStorage round trip. The direct read stays the
+    // fallback for a mount that beat the layout's hydration, and for any
+    // harness that mounts this screen on its own.
+    const _cached = cachedProjects.length > 0
+      ? cachedProjects
+      : await readCachedProjectList();
     const cachedVisible = filterVisibleProjects(_cached);
     let picked = null;
     if (cachedVisible.length > 0) {

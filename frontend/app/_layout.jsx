@@ -10,6 +10,7 @@ import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider, useToast } from '../src/components/Toast';
 import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { InspectorLockProvider, useInspectorLock } from '../src/context/InspectorLockContext';
+import { ProjectCacheProvider } from '../src/context/ProjectCacheContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
@@ -319,13 +320,26 @@ export default function RootLayout() {
         <ThemeProvider>
           <DatabaseProvider>
             <AuthProvider>
-              <FeatureFlagsProvider>
-                <InspectorLockProvider>
-                  <ToastProvider>
-                    <AppShell />
-                  </ToastProvider>
-                </InspectorLockProvider>
-              </FeatureFlagsProvider>
+              {/* Offline cache hydration is LAYOUT-LEVEL, not screen-level.
+                  A hydration that runs only where the operator happens to land
+                  cannot serve a screen navigated to directly — and the gate
+                  tablet is exactly the device where someone opens Log Books and
+                  never touches a dashboard. Inside AuthProvider because it
+                  hydrates only for a device that holds a stored session, and
+                  drops the list when auth settles to logged-out; above the
+                  Stack so every route mounts with it already reading. It adds
+                  availability only: it never mints a fetch status, so the
+                  screens' fetchState / detailState gates still speak for their
+                  own requests. See ProjectCacheContext.jsx. */}
+              <ProjectCacheProvider>
+                <FeatureFlagsProvider>
+                  <InspectorLockProvider>
+                    <ToastProvider>
+                      <AppShell />
+                    </ToastProvider>
+                  </InspectorLockProvider>
+                </FeatureFlagsProvider>
+              </ProjectCacheProvider>
             </AuthProvider>
           </DatabaseProvider>
         </ThemeProvider>
