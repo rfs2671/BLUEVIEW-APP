@@ -99,6 +99,7 @@ import argparse
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -231,7 +232,8 @@ async def main(*, dry_run: bool) -> int:
         ]
         if null_ids:
             res = await db.projects.update_many(
-                null_filter, {"$set": {fld: []}}
+                null_filter,
+                {"$set": {fld: [], "updated_at": datetime.now(timezone.utc)}},
             )
             print(
                 f"  {fld:<28} null   → []  modified={res.modified_count}"
@@ -250,7 +252,8 @@ async def main(*, dry_run: bool) -> int:
         ]
         if missing_ids:
             res = await db.projects.update_many(
-                missing_filter, {"$set": {fld: []}}
+                missing_filter,
+                {"$set": {fld: [], "updated_at": datetime.now(timezone.utc)}},
             )
             print(
                 f"  {fld:<28} missing → [] modified={res.modified_count}"

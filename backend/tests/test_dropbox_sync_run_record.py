@@ -179,8 +179,22 @@ class dropbox_last_synced_IS_NOT_OVERLOADED(unittest.TestCase):
             if "dropbox_last_synced" in keys:
                 found.append(keys)
         self.assertEqual(len(found), 1, "the timestamp write moved or multiplied")
-        self.assertEqual(found[0], ["dropbox_last_synced"],
-                         "nothing else was loaded onto that $set")
+        # THE RULING IS ABOUT THE COUNTS, NOT THE KEY COUNT. What must never
+        # ride here is sync RESULT DATA — expected/synced/failed/status — which
+        # belongs in the run record so `dropbox_last_synced` keeps meaning one
+        # thing: a sync finished.
+        #
+        # `updated_at` is admitted deliberately and is not an overload of that
+        # meaning. It is the document's change marker, which the gate tablet
+        # reconciles its offline cache against; the client reads sync state to
+        # decide whether its cached file list is trustworthy, so a change to
+        # that state has to move the marker or the tablet is never told. See
+        # test_writers_stamp_updated_at.py.
+        self.assertEqual(sorted(found[0]), ["dropbox_last_synced", "updated_at"],
+                         "nothing but the change marker was added to that $set")
+        for banned in ("expected", "synced", "failed", "status", "run_id"):
+            self.assertNotIn(banned, found[0],
+                             "sync counts belong in the run record, not here")
 
     def test_the_helpers_do_not_touch_it(self):
         """READ THE BODY, NOT THE PROSE. The first version of this unparsed the

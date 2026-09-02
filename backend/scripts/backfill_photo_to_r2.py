@@ -156,6 +156,7 @@ async def backfill_one(db, doc: Dict[str, Any], execute: bool,
                 {"$set": {
                     f"{field}.original_r2_key": key,
                     f"{field}.backfilled_to_r2_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
                 }},
             )
             # Keep the in-memory copy in step with the document, so the reclaim

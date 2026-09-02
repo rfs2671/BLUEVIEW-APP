@@ -152,6 +152,7 @@ async def _patch_cache_status(
         update_fields["peer_stats_cache.error_kind"] = error_kind
     if error_message is not None:
         update_fields["peer_stats_cache.error_message"] = error_message
+    update_fields["updated_at"] = datetime.now(timezone.utc)
     try:
         await db.projects.update_one(
             {"_id": _to_mongo_id(project_id)},
@@ -180,7 +181,8 @@ async def _persist_full_cache(
     try:
         await db.projects.update_one(
             {"_id": _to_mongo_id(project_id)},
-            {"$set": {"peer_stats_cache": cache}},
+            {"$set": {"peer_stats_cache": cache,
+                      "updated_at": datetime.now(timezone.utc)}},
         )
         return True
     except Exception as e:

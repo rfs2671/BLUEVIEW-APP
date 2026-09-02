@@ -475,7 +475,15 @@ async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
                     failed += 1
                 await db.logbooks.update_one(
                     {"_id": to_query_id(logbook_id)},
-                    {"$set": {f"{field}.{k}": v for k, v in patch.items()}},
+                    {"$set": {
+                        **{f"{field}.{k}": v for k, v in patch.items()},
+                        # This runs as a background task AFTER the save that
+                        # created the log stamped its own time, so without this
+                        # the enhanced photos land behind a marker that has
+                        # already been read. A tablet reconciling on
+                        # `updated_at` would never learn they changed.
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
                 )
         if done or failed:
             logger.info(
@@ -19142,6 +19150,10 @@ async def _stamp_project_sync(project_id: str, summary: dict):
     """
     try:
         sets = {f"dropbox_sync.{k}": v for k, v in summary.items()}
+        # The client reads sync state to decide whether its cached file list is
+        # trustworthy at all, so a change to it must move the document marker
+        # the client syncs on.
+        sets["updated_at"] = datetime.now(timezone.utc)
         await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": sets})
     except Exception as e:
         logger.error(f"sync summary stamp failed for project {project_id}: {e}")
@@ -19287,7 +19299,11 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
         # finished with live in the run record beside it.
         await db.projects.update_one(
             {"_id": to_query_id(project_id)},
-            {"$set": {"dropbox_last_synced": now}}
+            # `updated_at` rides along because the client's offline-readiness
+            # check reads this field to decide whether the file list can be
+            # trusted. Unlike the per-file unchanged branch above, this fires
+            # once per run, not once per file.
+            {"$set": {"dropbox_last_synced": now, "updated_at": now}}
         )
         await _sync_run_close(
             run_id, project_id, "complete", len(entries), synced, failures,
@@ -21315,6 +21331,14 @@ async def _purge_finalized_photo_base64(logbook_id: str, doc: dict) -> int:
                     "$set": {
                         f"{field}.thumb_base64": thumb_b64,
                         f"{field}.base64_purged_at": now,
+                        # THE ONE THIS WHOLE CHECK EXISTS FOR. This materially
+                        # rewrites the photo content of a FILED COMPLIANCE
+                        # RECORD, in a fire-and-forget task that runs just
+                        # after finalize already bumped `updated_at`. A tablet
+                        # that synced on that bump holds full-size photos which
+                        # no longer exist server-side, and without this stamp
+                        # nothing would ever tell it.
+                        "updated_at": now,
                     },
                     "$unset": {f"{field}.base64": ""},
                 },
@@ -21633,9 +21657,13 @@ async def _remember_other_activities(project_id, data) -> None:
     try:
         await db.projects.update_one(
             {"_id": to_query_id(project_id)},
-            {"$addToSet": {
-                PROJECT_OTHER_ACTIVITIES_FIELD: {"$each": labels[:MAX_REMEMBERED_OTHER]},
-            }},
+            {
+                "$addToSet": {
+                    PROJECT_OTHER_ACTIVITIES_FIELD: {"$each": labels[:MAX_REMEMBERED_OTHER]},
+                },
+                # $addToSet is still a content change to the project doc.
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
         )
     except Exception as e:  # pragma: no cover — defensive
         logger.warning(
@@ -22069,7 +22097,15 @@ async def _refresh_required_logbooks(project_id: str) -> list:
     required = get_required_logbooks(project.get("project_class"), project)
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
-        {"$set": {"required_logbooks": required}},
+        # Stamped HERE rather than relying on the callers. Both of them happen
+        # to bump `updated_at` before calling, so the marker was correct by
+        # ordering luck — and a third caller that did not would have changed
+        # which compliance logs a project must file, silently, behind a
+        # timestamp nobody moved.
+        {"$set": {
+            "required_logbooks": required,
+            "updated_at": datetime.now(timezone.utc),
+        }},
     )
     return required
 
@@ -22191,8 +22227,11 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
         return v is not None and not (isinstance(v, str) and v.strip() == "")
 
     update = {k: v for k, v in update.items() if _supplied(v)}
-    # updated_at is stamped above and always survives, so a save that supplied
-    # nothing still records that he looked.
+    # Re-stamped explicitly rather than resting on `updated_at` surviving the
+    # filter above. Identical value either way; the difference is that the
+    # marker the tablet reconciles on is now visibly written at the write,
+    # instead of depending on a comprehension three lines up staying benign.
+    update["updated_at"] = datetime.now(timezone.utc)
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
     await _refresh_required_logbooks(project_id)
     return {"message": "Scaffold info saved"}
@@ -29042,6 +29081,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
                         "violations": violations_count,
                         "inspections": inspections_count,
                     },
+                    "updated_at": datetime.now(timezone.utc),
                 }},
             )
             logger.info(
@@ -29066,9 +29106,13 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # Wrapped like the block above — a stamp failure must never fail the sync
     # that already inserted its records.
     try:
+        _dob_sync_now = datetime.now(timezone.utc)
         await db.projects.update_one(
             {"_id": to_query_id(project_id)},
-            {"$set": {"last_dob_sync_at": datetime.now(timezone.utc)}},
+            {"$set": {
+                "last_dob_sync_at": _dob_sync_now,
+                "updated_at": _dob_sync_now,
+            }},
         )
     except Exception as _e:
         logger.warning(f"last_dob_sync_at write failed for {project_id}: {_e}")

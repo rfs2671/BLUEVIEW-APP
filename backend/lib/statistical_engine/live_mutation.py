@@ -1804,7 +1804,8 @@ async def predict_for_project_nightly(
         try:
             await db.projects.update_one(
                 {"_id": project["_id"]},
-                {"$set": {"prediction_cache": cache_doc}},
+                {"$set": {"prediction_cache": cache_doc,
+                          "updated_at": cur_now}},
             )
         except Exception as e:
             logger.warning(
@@ -1927,7 +1928,8 @@ async def predict_for_project_live(
         try:
             await db.projects.update_one(
                 {"_id": project["_id"]},
-                {"$set": {"prediction_cache": updated_cache}},
+                {"$set": {"prediction_cache": updated_cache,
+                          "updated_at": cur_now}},
             )
         except Exception as e:
             logger.warning(

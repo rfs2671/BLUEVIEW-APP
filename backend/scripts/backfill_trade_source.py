@@ -30,6 +30,7 @@ import asyncio
 import os
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -94,7 +95,10 @@ async def main(apply: bool) -> int:
             if apply:
                 await db.projects.update_one(
                     {"_id": project["_id"]},
-                    {"$set": {"trade_assignments": rows}},
+                    {"$set": {
+                        "trade_assignments": rows,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
                 )
 
     print(f"\nrows: {seen['vocabulary']} vocabulary, {seen['custom']} custom")

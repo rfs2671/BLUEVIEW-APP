@@ -213,6 +213,7 @@ async def _patch_pending(
                 "peer_stats_cache.error_kind":    "",
                 "peer_stats_cache.error_message": "",
                 "peer_stats_cache.failed_at":     None,
+                "updated_at":                     now,
             }},
         )
     except Exception as e:
@@ -236,6 +237,7 @@ async def _patch_failed(
                 "peer_stats_cache.failed_at":     now,
                 "peer_stats_cache.error_kind":    error_kind,
                 "peer_stats_cache.error_message": (error_message or "")[:500],
+                "updated_at":                     now,
             }},
         )
     except Exception as e:
@@ -255,7 +257,8 @@ async def _persist_full_cache(
     try:
         await db.projects.update_one(
             {"_id": _to_mongo_id(project_id)},
-            {"$set": {"peer_stats_cache": cache}},
+            {"$set": {"peer_stats_cache": cache,
+                      "updated_at": datetime.now(timezone.utc)}},
         )
         return True
     except Exception as e:

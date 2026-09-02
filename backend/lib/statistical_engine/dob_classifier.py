@@ -352,6 +352,7 @@ async def _persist_and_return(
                     "dob_project_type":    project_type,
                     "dob_job_snapshot":    snapshot,
                     "dob_extracted_scope": extracted_scope,
+                    "updated_at":          datetime.now(timezone.utc),
                 }
             },
         )

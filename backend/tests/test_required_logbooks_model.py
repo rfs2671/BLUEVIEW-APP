@@ -393,8 +393,18 @@ class TheStoredSetIsRefreshedWhenAToggleMoves(unittest.TestCase):
         self.assertNotIn("scaffold_maintenance", saved["required_logbooks"])
 
     def test_it_writes_only_the_cached_field(self):
+        """The point is that recomputing a CACHE must not rewrite project DATA
+        — a refresh that also touched project_class or a toggle could undo the
+        very change that triggered it.
+
+        `updated_at` is not project data; it is the document's change marker,
+        and this helper now stamps it itself rather than inheriting one from
+        whichever caller happened to bump it first. That ordering luck was the
+        bug: this write changes WHICH COMPLIANCE LOGS A PROJECT MUST FILE, and
+        a caller that did not pre-stamp would have moved it behind a timestamp
+        nobody updated. See test_writers_stamp_updated_at.py."""
         _, saved = self._refresh({"_id": "p1", "project_class": "regular"})
-        self.assertEqual(set(saved), {"required_logbooks"})
+        self.assertEqual(set(saved), {"required_logbooks", "updated_at"})
 
     def test_the_scaffold_write_path_calls_it(self):
         fn = _CODE[_CODE.index("async def update_scaffold_info"):]

@@ -249,7 +249,7 @@ async def run_weekly_phase_inference(
             if result:
                 await db.projects.update_one(
                     {"_id": project["_id"]},
-                    {"$set": {"ai_inferred_phase": result}},
+                    {"$set": {"ai_inferred_phase": result, "updated_at": now}},
                 )
                 n_updated += 1
             # result is None → leave ai_inferred_phase at prior value.

@@ -1937,6 +1937,7 @@ async def _persist_cache(db, project: Dict[str, Any], cache: Dict[str, Any]) -> 
     # opens the gate.
     if snapshot and (not project.get("pluto_snapshot") or refreshed_at):
         update["pluto_snapshot"] = snapshot
+    update["updated_at"] = datetime.now(timezone.utc)
     try:
         await db.projects.update_one(
             {"_id": project_id},
