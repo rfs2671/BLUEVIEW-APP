@@ -201,6 +201,36 @@ function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // 0b. AN HONEST NOTICE IS NOT THE CRASH SCREEN, AND MUST NOT READ AS ONE.
+  //
+  // scripts/smoke-mount.cjs — the only gate that EXECUTES these screens —
+  // decides whether a route crashed by searching the rendered body for the
+  // error boundary's title. <OfflineNotice mode="error"> used to open with
+  // that same phrase, so the two were indistinguishable. It cut both ways: a
+  // screen honestly reporting a failed read FAILED the mount gate, and a real
+  // boundary on any screen showing that notice would have been waved through
+  // as "just the notice". These two strings have to stay disjoint.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const layout = path.join(FRONTEND, 'app', '_layout.jsx');
+    const notice = path.join(FRONTEND, 'src', 'components', 'OfflineNotice.jsx');
+    const boundary = fs.existsSync(layout)
+      ? (read(layout).match(/<Text style={errorStyles\.title}>([^<]+)</) || [])[1]
+      : null;
+    ok(!!boundary, 'the error boundary still renders a title the mount gate can key on');
+    // COMMENTS STRIPPED FIRST. The rule is about what RENDERS; the note in
+    // OfflineNotice.jsx explaining this rule necessarily quotes the phrase,
+    // and a check that failed on its own documentation would be deleted
+    // rather than obeyed.
+    const noticeCode = fs.existsSync(notice)
+      ? read(notice).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, '')
+      : '';
+    ok(!!boundary && noticeCode !== '' && !noticeCode.includes(boundary),
+      `OfflineNotice does not contain the error boundary's title (${boundary}) — a `
+      + 'crash and an honest failed read must not render the same words');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // 1. app/site/documents.jsx
   // ═══════════════════════════════════════════════════════════════════════
   {
@@ -296,8 +326,14 @@ function main() {
         ...commonSeed,
         loading: false,
         fetchState: 'ok',
+        // THE LIST IS DRAWN OFF THE INDEX, not off a map of whole documents.
+        // `filteredIndex` is the identity rows for the active tab; the day's
+        // rendered detail is read off the filesystem into `dayLogs`, which is
+        // why an unopened day is `undefined` here rather than an empty array.
         sortedDates: [],
-        filteredDates: {},
+        filteredIndex: [],
+        dayLogs: {},
+        dayLoading: null,
         expandedDate: null,
         visibleLogCount: 0,
         activeTab: 'daily_log',
@@ -320,19 +356,55 @@ function main() {
       'logbooks: offline AND not ready — one explanation of the screen, and it is '
       + 'the one about the tablet');
 
-    const notReadyShort = render({
-      readiness: NOT_READY,
+    const ROW = {
+      date: '2026-08-30',
+      id: 'day_P1_2026-08-30',
+      cache_version: '2026-08-30T07:05:00+00:00',
+      logs: [{ id: 'l1', log_type: 'daily_log', status: 'submitted', updated_at: 'v1' }],
+    };
+    const withRows = (over) => render({
       sortedDates: ['2026-08-30'],
-      filteredDates: { '2026-08-30': [{ id: 'l1', log_type: 'daily_log', status: 'submitted' }] },
+      filteredIndex: [ROW],
       visibleLogCount: 1,
       renderLogContent: () => null,
       handleCombinedPdf: () => {},
       handleViewLogPdf: () => {},
       handleShareLogPdf: () => {},
-      setExpandedDate: () => {},
+      openDate: () => {},
+      ...over,
     });
+
+    const notReadyShort = withRows({ readiness: NOT_READY });
     ok(notReadyShort.includes(NOT_READY_HEADING),
       'logbooks: the warning is rendered ABOVE a list that has rows');
+    ok(notReadyShort.includes('2026-08-30'),
+      'logbooks: and the list under it really did render — a seed the screen no '
+      + 'longer reads would make the assertion above vacuous');
+
+    // A DAY WHOSE DETAIL IS NOT ON THIS TABLET IS NOT A BLANK DAY.
+    //
+    // The index is the complete filed history, so the date is real and the
+    // count beside it is real. The rendered detail lives on the filesystem and
+    // can be absent — never downloaded, or superseded by an amendment. Drawing
+    // an opened date with nothing under it would show a filed day as an empty
+    // one to a DOB inspector, which is the same claim-about-the-record the
+    // empty state exists to refuse.
+    const openMissing = withRows({ expandedDate: '2026-08-30', dayLogs: { '2026-08-30': null } });
+    ok(openMissing.includes('not saved on this tablet'),
+      'logbooks: an opened day whose detail this tablet does not hold SAYS SO '
+      + 'rather than rendering blank');
+    ok(openMissing.includes('One record was filed on this date'),
+      'logbooks: and still reports how many records were filed, off the index');
+    ok(openMissing.includes('PDF'),
+      'logbooks: and still offers the PDFs, which are a separate cache and are '
+      + 'usually still here');
+
+    const openLoading = withRows({ expandedDate: '2026-08-30', dayLoading: '2026-08-30' });
+    ok(openLoading.includes('Opening this day'),
+      'logbooks: while the day is being read off disk the screen says so, so the '
+      + 'gap is never mistaken for an empty day');
+    ok(!openLoading.includes('not saved on this tablet'),
+      'logbooks: and does not accuse the tablet before the read has finished');
 
     const readyEmptyOk = render({});
     ok(readyEmptyOk.includes('No Submitted Logs'),

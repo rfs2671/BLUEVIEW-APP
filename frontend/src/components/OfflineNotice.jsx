@@ -32,7 +32,15 @@ export default function OfflineNotice({ mode = 'offline', detail, cachedCount, s
     ? (cachedCount > 0
         ? `Reconnect to refresh. ${cachedCount} saved item${cachedCount === 1 ? '' : 's'} shown.`
         : 'Reconnect to load this. Nothing is saved on this device yet.')
-    : 'Something went wrong reading this. Pull to refresh or try again.');
+    // NOT "Something went wrong". That is the ERROR BOUNDARY's title
+    // (app/_layout.jsx), and scripts/smoke-mount.cjs decides whether a route
+    // crashed by looking for exactly that phrase in the rendered body. A
+    // notice that opened with it made the two indistinguishable, and the
+    // collision cut both ways: an honest error notice failed the gate, and a
+    // REAL boundary on any screen showing one would have been dismissed as
+    // "just the notice". The wording below says the same thing to the reader
+    // and leaves the crash screen its own name.
+    : 'The server could not return this. Pull to refresh or try again.');
 
   return (
     <View style={[s.wrap, { borderColor: withAlpha(tint, 0.4), backgroundColor: withAlpha(tint, 0.1) }, style]}>

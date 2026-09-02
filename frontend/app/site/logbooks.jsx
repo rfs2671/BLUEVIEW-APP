@@ -25,10 +25,12 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { csLogItems, csItemState, csItemSummary } from '../../src/utils/superintendentLogModel';
+import { ensureCachedDocFile, warmDocCache } from '../../src/utils/docCache';
 import {
-  cacheDocList, readCachedDocList, ensureCachedDocFile, warmDocCache,
-} from '../../src/utils/docCache';
-import { settleFetch } from '../../src/utils/offlineState';
+  readHistoryIndex, readDayDetail, syncLogbookHistory,
+  dayReportId, dayReportVersion,
+} from '../../src/utils/siteLogbookHistory';
+import { isOfflineError } from '../../src/utils/offlineState';
 import { headcountDisplay } from '../../src/utils/dailyJobsiteModel';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -75,10 +77,29 @@ const LOG_TABS = [
   { key: 'site_superintendent_log', labelKey: 'tabSuperintendent', icon: ClipboardList, color: '#f59e0b' },
 ];
 
-// How many days of submitted records we keep on the device. AsyncStorage is
-// not a filesystem — an unbounded write on a long-running project eventually
-// fails, and a failed write means NOTHING is here in the dead zone.
-const CACHE_DATE_LIMIT = 60;
+// THIS SCREEN NO LONGER STORES A WINDOW OF DAYS, AND THAT IS THE POINT.
+//
+// It used to keep `CACHE_DATE_LIMIT = 60` dates of WHOLE submitted documents
+// under one AsyncStorage key. Two things were wrong with that and the second
+// destroys records:
+//
+//   1. 60 dates of a photo-and-signature-heavy job measured 5,768,861 bytes
+//      against a 6 MB AsyncStorage ceiling that is DATABASE-WIDE. At 91.7% the
+//      write was one busy month from being REJECTED — and a rejected write is
+//      not a missing photo, it is an EMPTY SCREEN offline for the one person
+//      there to read the record.
+//   2. the `.slice(0, 60)` did not hide date 61, it UN-NAMED it. This list is
+//      what declares each day's full-day-report PDF, and sweepDocCache deletes
+//      every cached document that no stored list names — so opening Plans
+//      deleted the report for every date past the window.
+//
+// Raising 60 could not work: the server's own ceiling is 4000 dates and that
+// is 366 MB of documents, 61x the whole database ceiling however it is sliced.
+// The weight was never the dates. Per date, measured: the list and its badge
+// counts are 91 B, naming every PDF for the sweep is 221 B, and the rendered
+// day detail is 95,829 B — 99.67% of it. So the detail moved to the
+// filesystem and the identity stayed, which is 4000 dates in 20.4% of the
+// ceiling. src/utils/siteLogbookHistory.js owns all of it.
 
 // ⚠️ ANDROID LIMIT — PDFViewer.native.jsx renders Android PDFs through a
 // REMOTE viewer (mozilla.github.io/pdf.js), so on Android there is nothing on
@@ -145,7 +166,17 @@ export default function SiteLogbooksViewer() {
 
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('daily_jobsite');
-  const [logsByDate, setLogsByDate] = useState({});
+  // THE LIST AND THE DETAIL ARE TWO STATES NOW, because they live in two
+  // places. `dateIndex` is every filed date this device holds — identity only,
+  // out of chunked AsyncStorage, complete history at 342 B a date. `dayLogs`
+  // is the rendered detail for the days that have actually been opened, read
+  // off the filesystem one day at a time. Merging them back into one
+  // `logsByDate` would put the 95,829 B/date back on the render path and,
+  // sooner, back in the cache.
+  const [dateIndex, setDateIndex] = useState([]);
+  const [dayLogs, setDayLogs] = useState({});
+  // The date whose detail is being read, so an expand is not a blank gap.
+  const [dayLoading, setDayLoading] = useState(null);
   const [expandedDate, setExpandedDate] = useState(null);
   // 'ok' | 'offline' | 'error' — how the LAST server read went. This is the
   // whole point of the screen: a failed read must NEVER render as "No
@@ -188,82 +219,17 @@ export default function SiteLogbooksViewer() {
   //  LIST — cache-first, and a failed read NEVER empties the screen
   // ===========================================================================
 
-  const scopeKey = siteProject?.id ? `site_logbooks:${siteProject.id}` : '';
-
-  // cacheDocList only stores arrays, so the {date: logs} map round-trips as an
-  // array of {date, logs} entries.
-  //
-  // EACH ENTRY ALSO DECLARES THE FULL-DAY REPORT'S CACHE IDENTITY. That PDF is
-  // built on the server and cached under an id this screen INVENTS —
-  // `day_{projectId}_{date}` (see handleCombinedPdf) — so no record in this
-  // list, or anywhere else on the device, names the file. docCache's sweep
-  // keeps only what a stored list names, so the report was deleted the next
-  // time anyone opened Plans. The screen that invents the name is the screen
-  // that has to declare it; declaring it here keeps the naming in ONE file
-  // instead of teaching docCache about logbook scope keys.
-  const datesToList = (dates) => Object.entries(dates || {})
-    .map(([date, logs]) => {
-      const entry = { date, logs: Array.isArray(logs) ? logs : [] };
-      const id = dayPdfId(date);
-      return id
-        ? { ...entry, id, cache_version: dayPdfVersion(date, entry.logs) }
-        : entry;
-    })
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, CACHE_DATE_LIMIT);
-
-  const listToDates = (list) => {
-    const out = {};
-    for (const entry of (Array.isArray(list) ? list : [])) {
-      if (entry?.date && Array.isArray(entry.logs)) out[entry.date] = entry.logs;
-    }
-    return out;
-  };
-
-  // Inline activity photos are base64 blobs — megabytes each. If the full
-  // write is rejected, drop them and keep the compliance TEXT, which is what
-  // an inspector is actually reading.
-  // Spread the entry rather than rebuilding it: the day-report `id` and
-  // `cache_version` datesToList put on it are what stop the sweep deleting
-  // that PDF, and this fallback write must not drop them.
-  const stripPhotoBlobs = (list) => list.map((entry) => ({
-    ...entry,
-    logs: (entry.logs || []).map((log) => {
-      const activities = log?.data?.activities;
-      if (!Array.isArray(activities)) return log;
-      return {
-        ...log,
-        data: {
-          ...log.data,
-          activities: activities.map((act) => (
-            Array.isArray(act?.photos)
-              ? { ...act, photos: act.photos.map(({ base64, ...rest }) => rest) }
-              : act
-          )),
-        },
-      };
-    }),
-  }));
-
-  const writeListThrough = async (list) => {
-    if (await cacheDocList(scopeKey, list)) return;
-    await cacheDocList(scopeKey, stripPhotoBlobs(list));
-  };
-
-  const flattenLogs = (dates) => Object.values(dates || {}).flat();
-
   // Immutable once submitted, but an amendment bumps updated_at — key the
   // cached bytes on it so a corrected record re-downloads instead of serving
-  // a stale PDF.
+  // a stale PDF. Works on a stored identity row as well as on a whole
+  // document: the row keeps `updated_at` for exactly this reason.
   const pdfVersion = (log) => String(log?.updated_at || log?.submitted_at || log?.created_at || '0');
 
-  // The full-day report's cache identity, in ONE place: datesToList writes it
-  // onto the cached entry (so the sweep keeps the file) and handleCombinedPdf
-  // reads it (so the file it opens is the file that was kept). Two copies of
-  // this name would have been the same defect one level up.
-  const dayPdfId = (date) => (siteProject?.id ? `day_${siteProject.id}_${date}` : null);
-  const dayPdfVersion = (date, logs) =>
-    (Array.isArray(logs) ? logs : []).map(pdfVersion).sort().pop() || date;
+  // The full-day report's cache identity comes from siteLogbookHistory, which
+  // is also what WRITES it onto the stored row — so the file this screen opens
+  // is the file the sweep was told to keep. Two copies of this name in two
+  // files was the original defect, one level up.
+  const dayPdfId = (date) => dayReportId(siteProject?.id, date);
 
   // 🔒 Relative API paths only. The JWT rides in the Authorization HEADER
   // (docCache does this), never in a URL — a URL-borne token leaks into
@@ -271,46 +237,101 @@ export default function SiteLogbooksViewer() {
   const logPdfPath = (logbookId) => `/api/reports/logbook/${logbookId}/pdf`;
   const dayPdfPath = (date) => `/api/reports/project/${siteProject?.id}/date/${date}/pdf`;
 
+  /**
+   * THE LIST IS THE WHOLE FILED HISTORY, OR IT SAYS IT IS NOT.
+   *
+   * 1. INDEX FIRST — paint every date this device already holds before the
+   *    network is touched, so a dead zone shows the record immediately. The
+   *    stored index is complete BY CONSTRUCTION: siteLogbookHistory commits it
+   *    only when a walk reached the end, and its reader hands back ZERO rows
+   *    for a half-written one rather than a fragment that reads as a short
+   *    complete list.
+   *
+   * 2. THEN WALK. On failure the index stays exactly as it was — the old
+   *    `setLogsByDate({})` was the bug: offline it rendered a confident "No
+   *    Submitted Logs" to a DOB inspector. An incomplete walk cannot shrink
+   *    anything either, and cannot replace what is on screen: rendering the
+   *    pages that happened to arrive would be a short list presented as the
+   *    list, which is the ruling this screen exists under.
+   */
   const fetchLogbooks = async () => {
     setLoading(true);
 
-    // 1. CACHE FIRST — paint whatever this device already holds before the
-    //    network is touched, so a dead zone shows records immediately.
-    const cachedDates = listToDates(await readCachedDocList(scopeKey));
-    if (Object.keys(cachedDates).length > 0) {
-      setLogsByDate(cachedDates);
+    const cached = await readHistoryIndex(siteProject.id);
+    const cachedRows = (cached && cached.rows) || [];
+    if (cachedRows.length > 0) {
+      setDateIndex(cachedRows);
       setLoading(false);
     }
 
-    // 2. Then refresh. On failure we KEEP the cached list — the old
-    //    `setLogsByDate({})` was the bug: offline it rendered a confident
-    //    "No Submitted Logs" to a DOB inspector.
-    const r = await settleFetch(() => logbooksAPI.getSubmitted(siteProject.id));
-    setFetchState(r.status);
+    const r = await syncLogbookHistory(siteProject.id);
+    // 'ok' | 'offline' | 'error' — the same three states, from the same
+    // discriminator. A walk that finished is the only one that answers 'ok';
+    // a page that never reached a server is offline, and anything else the
+    // server actually answered with is an error.
+    setFetchState(r.complete ? 'ok' : (isOfflineError(r.error) ? 'offline' : 'error'));
 
-    if (r.status === 'ok') {
-      const dates = r.data?.dates || {};
-      setLogsByDate(dates);
-      const list = datesToList(dates);
-      writeListThrough(list).catch(() => {});
+    if (r.complete) {
+      const fresh = await readHistoryIndex(siteProject.id);
+      const rows = (fresh && fresh.rows) || [];
+      setDateIndex(rows);
+      // A date whose detail was just rewritten must not keep serving the copy
+      // already in memory — an amendment changes the day's version, and the
+      // expanded card has to re-read. What replaces it is the walk's FIRST
+      // page: the newest sixty dates, which is the window this screen used to
+      // hold whole, so the recent days an inspector actually asks for open
+      // with no disk read at all. On web — where nothing can be written to
+      // disk and readDayDetail can never answer — it is the only detail there
+      // is, which is why it is seeded rather than discarded.
+      setDayLogs(r.recent || {});
 
-      // 3. Fire-and-forget: put each submitted log's PDF on disk so the
-      //    bytes are here in the dead zone. NOT awaited — never on the
-      //    render path.
-      const submitted = flattenLogs(dates).filter(l => l.status === 'submitted' && (l.id || l._id));
+      // Fire-and-forget: put each submitted log's PDF on disk so the bytes are
+      // here in the dead zone. NOT awaited — never on the render path. Newest
+      // first and bounded, because an inspector asks for the recent ones and
+      // the manifest store is what fills the rest of the history in the
+      // background.
+      const submitted = rows
+        .flatMap((row) => row.logs || [])
+        .filter((l) => l.status === 'submitted' && l.id);
       warmDocCache(submitted, {
-        idOf: (l) => l.id || l._id,
+        idOf: (l) => l.id,
         versionOf: pdfVersion,
-        urlOf: (l) => logPdfPath(l.id || l._id),
+        urlOf: (l) => logPdfPath(l.id),
       }).catch(() => {});
     } else {
       console.warn(
-        `Logbooks load ${r.status} — keeping ${Object.keys(cachedDates).length} cached date(s)`,
+        `Logbooks walk incomplete (${r.reason || 'unknown'}) — keeping `
+        + `${cachedRows.length} stored date(s)`,
         r.error,
       );
     }
 
     setLoading(false);
+  };
+
+  /**
+   * One day's rendered detail, off the filesystem, on demand.
+   *
+   * NULL IS RECORDED, NOT RETRIED AS EMPTY. A day whose detail file is missing
+   * is a day this tablet can still produce as a PDF but cannot draw inline,
+   * and the card says exactly that. Storing `null` distinguishes it from a day
+   * nobody has opened yet, so the notice appears instead of a spinner that
+   * never ends.
+   */
+  const openDate = async (date) => {
+    if (expandedDate === date) { setExpandedDate(null); return; }
+    setExpandedDate(date);
+    if (Object.prototype.hasOwnProperty.call(dayLogs, date)) return;
+    const row = dateIndex.find((r) => r.date === date);
+    setDayLoading(date);
+    try {
+      const logs = await readDayDetail(siteProject?.id, date, row?.cache_version);
+      setDayLogs((prev) => ({ ...prev, [date]: logs }));
+    } catch (_e) {
+      setDayLogs((prev) => ({ ...prev, [date]: null }));
+    } finally {
+      setDayLoading((d) => (d === date ? null : d));
+    }
   };
 
   // ===========================================================================
@@ -398,10 +419,14 @@ export default function SiteLogbooksViewer() {
       // The full-day report is generated server-side, so offline it exists
       // only if a previous open cached it. Same header auth, same local open.
       // Version it on the newest log of the day so an amendment re-downloads.
-      // Same two helpers datesToList uses to declare this file to the sweep.
+      // THE VERSION COMES OFF THE STORED ROW, not off whatever detail happens
+      // to be in memory: the row is what named this file to the sweep, so the
+      // file that was kept is the file this opens. Falling back to the date
+      // matches dayReportVersion for a day with no logs.
+      const row = dateIndex.find((r) => r.date === date);
       const local = await ensureCachedDocFile({
         fileId: dayPdfId(date),
-        cacheVersion: dayPdfVersion(date, logsByDate?.[date]),
+        cacheVersion: row ? row.cache_version : dayReportVersion(dayLogs?.[date], date),
         remoteUrl: dayPdfPath(date),
       });
       if (!local) {
@@ -422,18 +447,20 @@ export default function SiteLogbooksViewer() {
     }
   };
 
-  // Filter logs by active tab
-  const filteredDates = {};
-  for (const [date, logs] of Object.entries(logsByDate)) {
-    const matching = logs.filter(l => l.log_type === activeTab);
-    if (matching.length > 0) {
-      filteredDates[date] = matching;
-    }
-  }
+  // Filter dates by active tab — off the INDEX, which is why the index has to
+  // carry `log_type` at all. This is the (a) half of the split: 91 B a date,
+  // and it is what makes complete history renderable without the 95,829 B.
+  const filteredIndex = dateIndex
+    .map((row) => ({
+      ...row,
+      logs: (row.logs || []).filter((l) => l.log_type === activeTab),
+    }))
+    .filter((row) => row.logs.length > 0)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
-  const sortedDates = Object.keys(filteredDates).sort((a, b) => b.localeCompare(a));
+  const sortedDates = filteredIndex.map((row) => row.date);
   // Records actually on screen for this tab — what the offline banner reports.
-  const visibleLogCount = Object.values(filteredDates).reduce((n, logs) => n + logs.length, 0);
+  const visibleLogCount = filteredIndex.reduce((n, row) => n + row.logs.length, 0);
 
   const formatDate = (dateStr) => {
     try {
@@ -1605,9 +1632,12 @@ export default function SiteLogbooksViewer() {
             {LOG_TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.key;
-              const count = Object.values(logsByDate)
-                .flat()
-                .filter(l => l.log_type === tab.key).length;
+              // Counted off the INDEX, so the badge is the count over the
+              // WHOLE filed history rather than over a sixty-day window that
+              // was never labelled as one.
+              const count = dateIndex
+                .reduce((n, row) => n + (row.logs || [])
+                  .filter((l) => l.log_type === tab.key).length, 0);
 
               return (
                 <Pressable
@@ -1667,14 +1697,24 @@ export default function SiteLogbooksViewer() {
             {fetchState !== 'ok' && mayClaimEmpty && (
               <OfflineNotice mode={fetchState} cachedCount={visibleLogCount} />
             )}
-            {sortedDates.map((date) => {
-              const logs = filteredDates[date];
+            {filteredIndex.map((row) => {
+              const date = row.date;
+              // TWO LISTS, AND THE DIFFERENCE IS THE WHOLE DESIGN. `logs` is
+              // the day's INDEX — enough to draw the row, count it and name
+              // its PDFs. `detail` is the rendered document, read off the
+              // filesystem when the day is opened: undefined = not read yet,
+              // null = this tablet does not hold it, an array = draw it.
+              const logs = row.logs;
+              const detail = dayLogs[date];
+              const detailLogs = Array.isArray(detail)
+                ? detail.filter((l) => l.log_type === activeTab)
+                : null;
               const isExpanded = expandedDate === date;
 
               return (
                 <View key={date}>
                   <Pressable
-                    onPress={() => setExpandedDate(isExpanded ? null : date)}
+                    onPress={() => openDate(date)}
                     style={s.dateHeader}
                   >
                     <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -1701,7 +1741,61 @@ export default function SiteLogbooksViewer() {
                         />
                       </View>
 
-                      {logs.map((log, idx) => (
+                      {/* READING THIS DAY OFF THE FILESYSTEM. A day is
+                          ~96 KB of rendered detail; the read is one file and a
+                          parse, so this is a flicker rather than a wait, but a
+                          blank gap under an opened date would read as an empty
+                          day and that is a claim about the RECORD. */}
+                      {dayLoading === date && (
+                        <View style={s.dayLoading}>
+                          <ActivityIndicator size="small" color={colors.text.muted} />
+                          <Text style={s.dayLoadingText}>Opening this day…</Text>
+                        </View>
+                      )}
+
+                      {/* THE DETAIL IS NOT ON THIS TABLET, SAID PLAINLY.
+                          The date is real and its records are real — the index
+                          that listed it is the complete filed history — but the
+                          inline copy of this particular day was never saved
+                          here, or was superseded by an amendment. Drawing
+                          nothing would present a filed day as a blank one to an
+                          inspector. The PDFs are a separate cache and are very
+                          often still here, so the buttons stay. */}
+                      {dayLoading !== date && detail === null && (
+                        <GlassCard style={s.dayMissingCard}>
+                          <View style={s.dayMissingHead}>
+                            <AlertTriangle size={18} strokeWidth={1.8} color={semantic.attention} />
+                            <Text style={s.dayMissingTitle}>
+                              The details for this day are not saved on this tablet
+                            </Text>
+                          </View>
+                          <Text style={s.dayMissingText}>
+                            {logs.length === 1
+                              ? 'One record was filed on this date.'
+                              : `${logs.length} records were filed on this date.`}
+                            {' '}Open the full day report above, or a record’s own PDF
+                            below. Put this tablet on Wi-Fi to save the details here.
+                          </Text>
+                          {logs.map((log, idx) => (
+                            <View key={log.id || idx} style={s.dayMissingRow}>
+                              <FileText size={14} strokeWidth={1.5} color={colors.text.muted} />
+                              <Text style={s.dayMissingRowText}>{tabLabel(log.log_type)}</Text>
+                              {log.status === 'submitted' && !!log.id && (
+                                <Pressable
+                                  style={s.pdfActionBtn}
+                                  onPress={() => handleViewLogPdf(log, date)}
+                                  onLongPress={() => handleShareLogPdf(log, date)}
+                                >
+                                  <Download size={14} strokeWidth={1.5} color="#3b82f6" />
+                                  <Text style={s.pdfActionText}>PDF</Text>
+                                </Pressable>
+                              )}
+                            </View>
+                          ))}
+                        </GlassCard>
+                      )}
+
+                      {(detailLogs || []).map((log, idx) => (
                         <GlassCard key={log.id || idx} style={s.logCard}>
                           {/* Document Header */}
                           <View style={s.docHeader}>
@@ -1819,6 +1913,35 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.full,
   },
   dateBadgeText: { fontSize: 14, fontWeight: '600', color: '#4ade80' },
+
+  // Opening a day: the detail lives on the filesystem, so there is a read
+  // between the tap and the record.
+  dayLoading: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingVertical: spacing.md, paddingHorizontal: spacing.sm,
+  },
+  dayLoadingText: { fontSize: 15, color: colors.text.muted },
+
+  // A day whose inline copy this tablet does not hold. An advisory, not an
+  // alarm: the date is real, the records are real, and their PDFs are very
+  // often still here.
+  dayMissingCard: {
+    marginTop: spacing.sm, marginBottom: spacing.md, padding: spacing.md,
+    gap: spacing.sm,
+    borderWidth: 1, borderColor: withAlpha(semantic.attention, 0.4),
+    backgroundColor: withAlpha(semantic.attention, 0.1),
+  },
+  dayMissingHead: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  dayMissingTitle: {
+    flex: 1, fontSize: 16, fontWeight: '700', color: semantic.attention,
+  },
+  dayMissingText: { fontSize: 15, lineHeight: 21, color: colors.text.secondary },
+  dayMissingRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1, borderTopColor: colors.glass.border,
+  },
+  dayMissingRowText: { flex: 1, fontSize: 15, color: colors.text.primary },
 
   // Log card — full document style
   logCard: { marginTop: spacing.sm, marginBottom: spacing.md, padding: spacing.md },
