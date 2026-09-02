@@ -1422,6 +1422,13 @@ export default {
     signNote: 'Signing completes this log and locks it, as 3301.13.13 requires before you leave the site.',
     unansweredHint: 'Answer these before signing: {items}',
     signatureHint: 'Tap your signature to affirm it for this log.',
+    savedAutomatically: 'Saved automatically as you go.',
+    // THE OFFLINE FILING, AND IT SAYS WHAT ACTUALLY HAPPENED. He signed, the
+    // log is frozen on this device as 3301.13.13 requires before he leaves,
+    // and it has not reached the server yet. Saying "filed and locked" there
+    // would be a claim about a record nobody else can see; the durable ON THIS
+    // DEVICE ONLY banner carries the rest.
+    savedLocallyTitle: 'Signed and frozen on this device',
     savedLocally: 'Saved on this device — it files when you reconnect',
     filed: 'Log filed and locked',
     couldNotFile: 'Could not file this log',

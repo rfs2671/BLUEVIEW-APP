@@ -39,6 +39,34 @@ const CODE = (s) => s
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(?<!:)\/\/.*$/gm, '');
 
+/**
+ * The balanced-brace body that follows an anchor.
+ *
+ * TEXTUAL ORDER IS NOT EXECUTION ORDER in a hooks component, and an ordering
+ * claim about ONE function has to be asked of that function's body. Section 2
+ * below compared indexes over the whole file until the screen became
+ * local-first: the LOAD then began calling `setLocked(true)` when it finds a
+ * frozen draft on the device — correct, unrelated to that rule, and ABOVE the
+ * submit — so the file-wide index quietly started measuring a different
+ * statement and the assertion inverted. Returns '' when the anchor is absent,
+ * so a missing function fails by name instead of aborting the run.
+ */
+function braceBlock(src, anchor) {
+  const at = src.indexOf(anchor);
+  if (at < 0) return '';
+  const open = src.indexOf('{', at);
+  if (open < 0) return '';
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return src.slice(at, i + 1);
+    }
+  }
+  return '';
+}
+
 let failures = 0;
 const ok = (c, m) => {
   if (c) { console.log(`  ok  ${m}`); } else { failures += 1; console.log(`FAIL  ${m}`); }
@@ -98,10 +126,34 @@ console.log('\n2. THE FREEZE IS AT DEPARTURE');
   // this rule and names `setLocked(true)` while doing so, so a plain indexOf
   // over the raw source finds the EXPLANATION before the statement and reports
   // an order that is not the code's. Strip the comments first.
-  ok(CODE(SCREEN).indexOf('logbooksAPI.finalize')
-     < CODE(SCREEN).indexOf('setLocked(true)'),
+  //
+  // AND AGAINST THE SUBMIT HANDLER, NOT THE WHOLE FILE. This was a whole-file
+  // comparison until the screen became local-first: the LOAD now calls
+  // `setLocked(true)` when it finds a frozen draft on the device, which is
+  // correct and has nothing to do with this rule, and it sits above the submit
+  // — so the file-wide index started measuring a different statement and the
+  // assertion inverted. The claim is unchanged: on the path that FILES the
+  // log, the server freeze precedes the screen's claim to be locked.
+  const submitBody = braceBlock(CODE(SCREEN), 'const handleSubmit');
+  ok(submitBody.indexOf('logbooksAPI.finalize') > 0
+     && submitBody.indexOf('logbooksAPI.finalize') < submitBody.indexOf("toast.success(t('filed'))"),
   'and the freeze happens BEFORE the screen claims to be locked, so the '
     + 'claim is never made about a document the server refused');
+
+  // AND THE SAME RULE ON THE PATH WITH NO SERVER. The screen became
+  // local-first, so there is a second way to file: with no signal the log is
+  // frozen on the DEVICE (`freezeLocally`, which marks the draft finalized so
+  // draftSync re-applies the lock when it lands) and the screen says something
+  // weaker than "filed and locked", because that would not be true yet. The
+  // ordering rule is the one above, asked of the branch the server never sees.
+  const offlinePath = braceBlock(submitBody, 'const reportHeldOnDevice');
+  ok(offlinePath.indexOf('freezeLocally()') > 0
+     && offlinePath.indexOf('freezeLocally()') < offlinePath.indexOf('setLocked(true)'),
+  'the OFFLINE filing freezes the on-device draft before it claims to be '
+    + 'locked — with no signal that draft IS the record');
+  ok(/toast\.success\(t\('savedLocallyTitle'\)/.test(offlinePath)
+     && !/t\('filed'\)/.test(offlinePath),
+  'and it never says "filed and locked" about a log no server has seen');
 
   // THE MIRROR NOW MODELS THE CLASS, and this assertion is the reason the
   // wording above changed. It was written the other way round — "the mirror
