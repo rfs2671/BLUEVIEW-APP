@@ -16,6 +16,7 @@ import { setupDraftAutoSync } from '../src/utils/draftSync';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
+import UpdateRequiredNotice from '../src/components/UpdateRequiredNotice';
 
 // Phase C1: initialize Sentry at module top-level so any error
 // during AuthProvider / ThemeProvider / DatabaseProvider mounting
@@ -308,6 +309,12 @@ function AppShell() {
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <RouteGuard />
       {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
+      {/* LAST, so it paints over everything. Renders null unless the server
+          has actually returned 426 — which it does only when a client floor is
+          configured, and none is. Its whole job is to replace a dozen screens
+          each showing its own generic error with one sentence naming the
+          cause. See src/utils/updateRequired.js. */}
+      <UpdateRequiredNotice />
     </View>
   );
 }

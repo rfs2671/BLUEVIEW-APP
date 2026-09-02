@@ -620,7 +620,19 @@ QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 # DO NOT REINSTATE BY MOVING THE `logger` LINE. That fixes the crash and leaves
 # the real defect: a backend that cannot boot without a file it does not ship.
 # The floor has to be built without reading across the boundary at all.
-CLIENT_MINIMUM_SUPPORTED = None
+# ── REBUILT AS AN ENVIRONMENT VARIABLE, which is what the note above left
+# open ("baking it in at image build time is the open option"). It reads
+# nothing, opens nothing, and cannot fail: os.environ is already populated
+# before this module is imported, so there is no boot path to crash on.
+#
+# UNSET BY DEFAULT, AND SHIPPED UNSET. Every deploy that exists today has no
+# CLIENT_MINIMUM_SUPPORTED variable, so this is None on all of them and the
+# behaviour is byte-identical to the disabled state above. Setting a floor is a
+# separate, deliberate act.
+#
+# NO DEFAULT IN THE get(). A default would arm the gate on every deploy that
+# never opted in, which is the lockout the whole design is built to prevent.
+CLIENT_MINIMUM_SUPPORTED = (os.environ.get("CLIENT_MINIMUM_SUPPORTED", "") or "").strip() or None
 
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -4478,11 +4490,123 @@ def _client_version_needs_stamp(user: dict, reported: str) -> bool:
     return (datetime.now(timezone.utc) - seen) > timedelta(hours=24)
 
 
+# ── THE FLOOR, APPLIED ─────────────────────────────────────────────────────
+#
+# Until now `client_minimum_supported` was reported by /api/version and
+# rendered as 9pt grey text by two screens. Nothing judged a request against
+# it, so a device on a native build that receives no OTA at all could talk to a
+# current API indefinitely and the API could not tell.
+#
+# THE GOVERNING PROPERTY IS FAIL OPEN, and it outranks the feature. This is a
+# compliance app; a CP standing on a jobsite files his day through it. An
+# unset, blank, or unparseable floor -- "latest", "v1.3.0", a value someone
+# cleared -- must let EVERY device through, because the alternative is one
+# typo in a deploy variable locking every phone in the field out at once, with
+# nobody on site able to do anything about it. So the refusal is one predicate
+# that answers True in exactly one case and False for every other input there
+# is. test_client_version_floor_enforcement.py enumerates that sentence.
+
+_FLOOR_UNSET = object()
+
+# ASCII digits only, matching JS `/^\d+$/`. `str.isdigit()` accepts '²' and
+# other unicode digits that int() then refuses.
+_ASCII_DIGITS = re.compile(r"[0-9]+")
+
+
+def _parse_client_version(v):
+    """(1, 3, 0) from "1.3.0", or None when it is not a version.
+
+    MIRRORS frontend/src/utils/clientVersion.js::parseVersion, deliberately and
+    exactly. Two implementations of one rule that disagree would tell a device
+    it is fine on the strip on its own screen and refuse it at the API, and the
+    person debugging that has no reason to suspect two parsers.
+    """
+    if not isinstance(v, str):
+        return None
+    trimmed = v.strip()
+    if not trimmed:
+        return None
+    # A build suffix is not a version bump: "1.3.0-rc1" is AT 1.3.0, not below
+    # it. Ruling otherwise refuses the exact build QA is holding.
+    core = re.split(r"[-+]", trimmed, maxsplit=1)[0]
+    parts = core.split(".")
+    if not parts or len(parts) > 4:
+        return None
+    nums = []
+    for p in parts:
+        if not _ASCII_DIGITS.fullmatch(p):
+            return None
+        nums.append(int(p))
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums)
+
+
+def _client_is_below_floor(reported, floor=_FLOOR_UNSET) -> bool:
+    """True ONLY when both sides parse and `reported` is genuinely older.
+
+    Numeric, not lexicographic: "1.10.0" < "1.9.0" as strings, which would
+    refuse the newest installs and admit the oldest.
+    """
+    if floor is _FLOOR_UNSET:
+        floor = CLIENT_MINIMUM_SUPPORTED
+    f = _parse_client_version(floor)
+    if f is None:
+        return False        # no floor, or a floor nobody can read -> no verdict
+    r = _parse_client_version(reported)
+    if r is None:
+        return False        # an install we cannot assess is not accused
+    n = max(len(f), len(r))
+    return r + (0,) * (n - len(r)) < f + (0,) * (n - len(f))
+
+
+def _enforce_client_version_floor(request) -> None:
+    """Raise 426 for a stranded install; return silently for everything else.
+
+    426 Upgrade Required, not 401 and not 403. A 401 would log the user out and
+    hand him a login screen that also cannot work; a 403 reads as a permissions
+    problem and sends him to his admin. The client branches on this one status
+    to show a single sentence naming the cause -- see
+    frontend/src/utils/updateRequired.js.
+
+    NOT MIDDLEWARE. Wired here, inside the one authenticated choke point, so
+    /api/version (how a refused client learns the floor) and /api/auth/login
+    stay reachable. Enforced globally, a refused device would see only opaque
+    failures, which is the cascade this replaces.
+    """
+    if request is None:
+        return              # the token= call path passes no Request
+    if _parse_client_version(CLIENT_MINIMUM_SUPPORTED) is None:
+        return              # THE SHIPPED STATE: no floor configured, no verdict
+    try:
+        # Same read and same 32-char bound as the stamp below, so the value
+        # judged is the value recorded.
+        reported = (request.headers.get("x-client-version") or "").strip()[:32]
+    except Exception:       # pragma: no cover - a header map that misbehaves
+        return
+    if not reported or not _client_is_below_floor(reported):
+        return
+    raise HTTPException(
+        status_code=426,
+        detail={
+            "error": "client_update_required",
+            "minimum_supported": CLIENT_MINIMUM_SUPPORTED,
+            "reported": reported,
+        },
+        headers={"X-Minimum-Client-Version": str(CLIENT_MINIMUM_SUPPORTED)},
+    )
+
+
 async def get_current_user(
     request: Request = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     token: Optional[str] = None,
 ):
+    # BEFORE the token work, so a stranded install is told it is stranded
+    # rather than being handed a 401 it cannot act on. No-op unless a floor is
+    # configured, which no deploy currently does.
+    _enforce_client_version_floor(request)
+
     raw_token = None
     if credentials:
         raw_token = credentials.credentials

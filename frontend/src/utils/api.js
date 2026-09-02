@@ -1,6 +1,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import { noteUpdateRequired } from './updateRequired';
 
 // The NATIVE build's version, which is what eligibility for an OTA is keyed on.
 // Not the bundle id and not its age: an ineligible device can hold a perfectly
@@ -166,6 +167,12 @@ export const parseRateLimitError = (err) => {
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
+    // 426 FIRST, and on its own branch. A refused install is not a logged-out
+    // one: falling through to the 401 arm would clearAuth() on top of
+    // everything else and replace the one sentence he needs with a login
+    // screen that also cannot work. No-op unless the server actually sent a
+    // 426, which it does only when a floor is configured — none is.
+    noteUpdateRequired(error);
     if (error.response?.status === 401) {
       await clearAuth();
       // Navigation will be handled by AuthContext
