@@ -481,17 +481,29 @@ export default function DailyLogScreen() {
           );
           return;
         }
+        // ── QUEUED, BUT NOTHING DRAINS THIS TYPE ─────────────────────────────
+        // Same defect, same cause as site/daily-logs.jsx: `markPending` files
+        // the key in the index draftSync reads on reconnect, and that drain's
+        // `SKIP_LOG_TYPES` holds 'daily_log'. It sees the key, returns
+        // `skipped-type`, and the log stays here forever. The skip is correct —
+        // a daily log posts a flatter shape than the generic drain can rebuild
+        // without guessing — so what changes is the promise, not the skip.
+        //
+        // This branch used to be a SUCCESS toast reading "will sync when you
+        // reconnect", and the banner below repeated it. Neither was true. The
+        // log is not lost, and saying so is half the message; the other half is
+        // that only he can file it, by opening this date and saving again.
         await markPending(key);
         setDraftPending(true);
         if (pushErr?.offline || isOfflineError(pushErr)) {
-          toast.success(
-            'Saved on this device',
-            'Your daily log and signatures are stored on this device and will sync when you reconnect.'
+          toast.warning(
+            'Saved on this device — not filed yet',
+            'No connection, so your log and signatures did not reach the server. Nothing will send them for you — open today’s log and press Save again once you have signal.'
           );
         } else {
           toast.error(
-            'Not synced yet',
-            `${pushErr?.userMessage || pushErr?.response?.data?.detail || 'The server rejected this save.'} Your daily log is saved on this device.`
+            'Saved on this device — not filed yet',
+            `${pushErr?.userMessage || pushErr?.response?.data?.detail || 'The server rejected this save.'} Your daily log and signatures are safe on this device — open today’s log and press Save again later.`
           );
         }
       }
@@ -809,12 +821,16 @@ export default function DailyLogScreen() {
                 </View>
               )}
 
-              {/* A push that never landed is not a loss — say so plainly. */}
+              {/* A push that never landed is not a loss — say so plainly. And
+                  do not follow it with a promise nothing keeps: no drain pushes
+                  this log type (see handleSubmit), so the banner names the one
+                  action that files it. This is the durable half — the toast is
+                  gone in four seconds and he may be on another floor by then. */}
               {!localSaveFailed && draftPending && (
                 <View style={s.pendingBanner}>
                   <CloudOff size={14} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.pendingText}>
-                    Saved on this device — will sync when you reconnect.
+                    Saved on this device — not filed. Open this log and press Save again when you have signal.
                   </Text>
                 </View>
               )}

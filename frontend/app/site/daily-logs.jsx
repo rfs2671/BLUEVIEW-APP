@@ -414,13 +414,41 @@ export default function SiteDailyLogsScreen() {
           );
           return;
         }
+        // ── THE KEY IS QUEUED. NOTHING DRAINS IT. ────────────────────────────
+        // `markPending` records the key in the index draftSync reads on every
+        // reconnect — and that drain holds
+        // `SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log'])`, so it
+        // sees this key, returns `skipped-type`, and moves on. Forever. The
+        // skip is deliberate and right: a daily log posts a flatter shape to
+        // dailyLogsAPI than the drain can reconstruct, and inventing a
+        // compliance payload from a partial match writes a malformed statutory
+        // record. What was wrong is that this branch never knew, and told a
+        // superintendent at a gate tablet — in a GREEN SUCCESS toast — that
+        // "this log will sync when you are back online".
+        //
+        // It will not. The only thing that files it is a human reopening this
+        // date and pressing Save, so that is what the copy says. The key is
+        // still queued: it costs nothing, it is what raises the badge, and it
+        // is what the per-screen pusher will drain once that exists.
+        //
+        // BOTH HALVES OR NEITHER. "Your entry is gone" would be just as false —
+        // the log IS on this device and it is complete. So every branch below
+        // states that first and asks for the save second, and NEITHER is a
+        // success toast: a state that needs him to come back later is not a
+        // success, and a green banner is how he learns to stop reading them.
         await markPending(key);
         setPendingSync(true);
-        console.warn('Daily log server push deferred (will sync on reconnect):', pushErr?.message);
+        console.warn('Daily log saved on device only; the push failed and no drain will re-send it:', pushErr?.message);
         if (isOfflineError(pushErr)) {
-          toast.success('Saved on this device', 'No connection — this log will sync when you are back online.');
+          toast.warning(
+            'Saved on this device — not filed yet',
+            'No connection, so it did not reach the server. Nothing will send it for you — open today’s log and press Save again once you have signal.',
+          );
         } else {
-          toast.warning('Saved on this device', 'The server rejected the sync. Your log is safe here and will retry.');
+          toast.warning(
+            'Saved on this device — not filed yet',
+            'The server did not accept it. Your entries are safe here and nothing is lost — open today’s log and press Save again later.',
+          );
         }
       }
     } catch (error) {
@@ -570,9 +598,14 @@ export default function SiteDailyLogsScreen() {
                     <Text style={styles.saveFailedText}>NOT saved on device</Text>
                   </View>
                 ) : pendingSync ? (
+                  /* NOT "waiting to sync". Nothing drains this log type — see
+                     the note in handleSubmit — so the badge names the state it
+                     is actually in: here, and not filed. It is the durable half
+                     of the message; the toast that said it is gone in four
+                     seconds and he may well have walked away by then. */
                   <View style={styles.pendingBadge}>
                     <CloudOff size={12} strokeWidth={2} color={semantic.attention} />
-                    <Text style={styles.pendingText}>Saved on device</Text>
+                    <Text style={styles.pendingText}>On device — not filed</Text>
                   </View>
                 ) : hasServerLog ? (
                   <View style={styles.existingBadge}>
