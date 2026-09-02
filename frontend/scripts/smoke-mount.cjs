@@ -104,6 +104,18 @@ const ROUTES = [
   '/settings',
   '/checkin',
   '/owner',
+  // THE SITE DEVICE — a fixed tablet at the gate, read by DOB inspectors, and
+  // until now the only surface in the app with ZERO executed coverage. These
+  // five need more than a URL: every one of them redirects away unless
+  // useAuth() reports siteMode true AND a siteProject, which AuthContext only
+  // sets when /api/auth/me (or the stored user) carries site_mode. So they run
+  // against SITE_USER instead of USER — see siteRoute() below. Without that
+  // the screens would bounce to '/' and report a vacuous green.
+  '/site',
+  '/site/logbooks',
+  '/site/documents',
+  '/site/daily-logs',
+  '/site/checkins',
 ];
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.ttf': 'font/ttf', '.woff': 'font/woff', '.woff2': 'font/woff2', '.map': 'application/json' };
@@ -125,15 +137,21 @@ const JWT = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ exp: 4102444800, sub: 
 const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'owner', company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
 const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, Brooklyn', company_id: 'c1', status: 'active', nyc_bin: '2115914' };
 const WORKER = { id: 'w1', _id: 'w1', name: 'Test Worker', company_id: 'c1', trade: 'Carpenter', certifications: [] };
+// The gate tablet. AuthContext reads site_mode/project_id/project_name off
+// /api/auth/me to set siteMode + siteProject; a user without them makes every
+// /site/* screen router.replace() away before it renders anything.
+const SITE_USER = { ...USER, id: 'sd1', email: 'site@test.local', full_name: 'Gate Tablet', name: 'Gate Tablet', role: 'site_device', site_mode: true, project_id: 'p1', project_name: 'Smoke Site', project: PROJECT };
+// A /site/* route only reaches its own screen as a site device.
+const siteRoute = (r) => r === '/site' || r.startsWith('/site/');
 
 // Every API call resolves to a benign shape. The point is mounting, not data.
-function stub(page) {
+function stub(page, me = USER) {
   return page.route('**://api.levelog.com/**', (route) => {
     const url = route.request().url();
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*', 'Content-Type': 'application/json' };
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
     let body = {};
-    if (url.includes('/api/auth/me')) body = USER;
+    if (url.includes('/api/auth/me')) body = me;
     else if (url.includes('feature-flags')) body = { flags: {} };
     else if (url.includes('dob-summary')) body = { by_project: {}, totals: {} };
     else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
@@ -176,7 +194,11 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
 
     for (const route of ROUTES) {
       const page = await ctx.newPage();
-      await stub(page);
+      const me = siteRoute(route) ? SITE_USER : USER;
+      // Page-level init scripts run after the context one, so this overwrites
+      // the stored user for the gate tablet without disturbing the other routes.
+      if (me !== USER) await page.addInitScript((u) => localStorage.setItem('blueview_user', u), JSON.stringify(me));
+      await stub(page, me);
       const errors = [];
       page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
       page.on('console', (m) => {
