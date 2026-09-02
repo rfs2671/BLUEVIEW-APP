@@ -178,8 +178,23 @@ export default function SiteLogbooksViewer() {
 
   // cacheDocList only stores arrays, so the {date: logs} map round-trips as an
   // array of {date, logs} entries.
+  //
+  // EACH ENTRY ALSO DECLARES THE FULL-DAY REPORT'S CACHE IDENTITY. That PDF is
+  // built on the server and cached under an id this screen INVENTS —
+  // `day_{projectId}_{date}` (see handleCombinedPdf) — so no record in this
+  // list, or anywhere else on the device, names the file. docCache's sweep
+  // keeps only what a stored list names, so the report was deleted the next
+  // time anyone opened Plans. The screen that invents the name is the screen
+  // that has to declare it; declaring it here keeps the naming in ONE file
+  // instead of teaching docCache about logbook scope keys.
   const datesToList = (dates) => Object.entries(dates || {})
-    .map(([date, logs]) => ({ date, logs: Array.isArray(logs) ? logs : [] }))
+    .map(([date, logs]) => {
+      const entry = { date, logs: Array.isArray(logs) ? logs : [] };
+      const id = dayPdfId(date);
+      return id
+        ? { ...entry, id, cache_version: dayPdfVersion(date, entry.logs) }
+        : entry;
+    })
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, CACHE_DATE_LIMIT);
 
@@ -194,8 +209,11 @@ export default function SiteLogbooksViewer() {
   // Inline activity photos are base64 blobs — megabytes each. If the full
   // write is rejected, drop them and keep the compliance TEXT, which is what
   // an inspector is actually reading.
+  // Spread the entry rather than rebuilding it: the day-report `id` and
+  // `cache_version` datesToList put on it are what stop the sweep deleting
+  // that PDF, and this fallback write must not drop them.
   const stripPhotoBlobs = (list) => list.map((entry) => ({
-    date: entry.date,
+    ...entry,
     logs: (entry.logs || []).map((log) => {
       const activities = log?.data?.activities;
       if (!Array.isArray(activities)) return log;
@@ -224,6 +242,14 @@ export default function SiteLogbooksViewer() {
   // cached bytes on it so a corrected record re-downloads instead of serving
   // a stale PDF.
   const pdfVersion = (log) => String(log?.updated_at || log?.submitted_at || log?.created_at || '0');
+
+  // The full-day report's cache identity, in ONE place: datesToList writes it
+  // onto the cached entry (so the sweep keeps the file) and handleCombinedPdf
+  // reads it (so the file it opens is the file that was kept). Two copies of
+  // this name would have been the same defect one level up.
+  const dayPdfId = (date) => (siteProject?.id ? `day_${siteProject.id}_${date}` : null);
+  const dayPdfVersion = (date, logs) =>
+    (Array.isArray(logs) ? logs : []).map(pdfVersion).sort().pop() || date;
 
   // 🔒 Relative API paths only. The JWT rides in the Authorization HEADER
   // (docCache does this), never in a URL — a URL-borne token leaks into
@@ -358,10 +384,10 @@ export default function SiteLogbooksViewer() {
       // The full-day report is generated server-side, so offline it exists
       // only if a previous open cached it. Same header auth, same local open.
       // Version it on the newest log of the day so an amendment re-downloads.
-      const dayVersion = (logsByDate?.[date] || []).map(pdfVersion).sort().pop() || date;
+      // Same two helpers datesToList uses to declare this file to the sweep.
       const local = await ensureCachedDocFile({
-        fileId: `day_${siteProject.id}_${date}`,
-        cacheVersion: dayVersion,
+        fileId: dayPdfId(date),
+        cacheVersion: dayPdfVersion(date, logsByDate?.[date]),
         remoteUrl: dayPdfPath(date),
       });
       if (!local) {

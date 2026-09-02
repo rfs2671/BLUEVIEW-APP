@@ -150,6 +150,10 @@ export default function DocumentsScreen() {
   const dropboxOnly = (list) =>
     (Array.isArray(list) ? list : []).filter((p) => Boolean(p.dropbox_folder_path));
 
+  // The scope both halves of the cache agree on. One place, so the early paint
+  // below and fetchFiles below that can never drift apart.
+  const docScope = (projectId) => `docs:${projectId}`;
+
   const fetchProjects = async () => {
     setLoading(true);
 
@@ -162,6 +166,16 @@ export default function DocumentsScreen() {
       setProjects(cached);
       picked = cached[0];
       setSelectedProject(picked);
+
+      // AND DROP THE SPINNER HERE. The body is gated on `loading`, which used
+      // to stay true until BOTH the projects request and fetchFiles had
+      // settled — offline that is two full network timeouts of spinner over a
+      // list this device was already holding. Read the cached FILE list too
+      // (AsyncStorage, no network) so the screen that appears is the whole
+      // screen, not a project picker over an empty pane.
+      const cachedFiles = await readCachedDocList(docScope(picked._id || picked.id));
+      if (cachedFiles.length) setFiles(cachedFiles);
+      setLoading(false);
     }
 
     const r = await settleFetch(() => projectsAPI.getAll());
@@ -192,7 +206,7 @@ export default function DocumentsScreen() {
 
   const fetchFiles = async (projectId) => {
     if (!projectId) return;
-    const scopeKey = `docs:${projectId}`;
+    const scopeKey = docScope(projectId);
     setRefreshing(true);
 
     const cached = await readCachedDocList(scopeKey);
@@ -257,11 +271,19 @@ export default function DocumentsScreen() {
         remoteUrl: file?.r2_url || file?.directUrl,
       });
 
-      // Android can now render a cached file too — PDFViewer stages a local
-      // pdf.js copy for `file://` sources. Android still takes the REMOTE
-      // viewer while online, so the online path is byte-for-byte what it was;
-      // drop the `|| offline` to prefer the cached copy there as well.
-      if (local && (Platform.OS === 'ios' || offline)) {
+      // THE BYTES ON DISK WIN, ON EVERY PLATFORM. This used to read
+      // `(Platform.OS === 'ios' || offline)`, and `offline` is a record of how
+      // the last fetch went, not a live network signal — load online, save,
+      // walk into a dead zone, tap: still 'ok', so Android reached past the
+      // correct bytes for a remote URL that could not resolve. PDFViewer
+      // stages a local pdf.js copy for `file://` sources.
+      //
+      // AND NOTHING IS GIVEN UP BY PREFERRING IT: Android no longer has a
+      // remote viewer at all. PDFViewer renders every document from the
+      // pdf.js copy staged on the device, and pulls the bytes to disk itself
+      // if this has not — so handing it the cached uri only saves a round
+      // trip it would otherwise make.
+      if (local) {
         setSelectedPdfFile({ ...file, directUrl: local });
         setPdfViewerVisible(true);
         return;
