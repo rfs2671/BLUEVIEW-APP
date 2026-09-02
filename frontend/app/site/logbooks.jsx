@@ -9,7 +9,7 @@ import {
   ArrowLeft, ClipboardList, BookOpen, Users, FileText,
   Building2, Calendar, CheckCircle, ChevronRight, ChevronDown,
   CloudSun, Clock, MapPin, Wrench, ShieldCheck, Eye, Truck,
-  AlertTriangle, Pen, XCircle, Download, Share2, Lock,
+  AlertTriangle, Pen, XCircle, Download, Share2, Lock, ImageOff,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -118,6 +118,49 @@ const logbookPhotoUri = (photo, log, activityIndex, photoIndex) => {
     || photo.uri
     || null;
 };
+
+// ONE filed photo, and what this screen does when it cannot show it.
+//
+// A DOB INSPECTOR READS THIS SCREEN, so a photo that does not appear is a
+// compliance fact, not a rendering detail. Two silences used to live here:
+//
+//   1. `if (!uri) return null` — the record says the crew filed three photos
+//      and the row drew two, or none, and said nothing. An absence that
+//      renders as nothing is indistinguishable from a photo nobody took.
+//   2. No `onError`. logbookPhotoUri's `||` chain can only detect a FALSY
+//      value, never a failed LOAD, so a 404 — the R2 object is gone, the key
+//      never uploaded, `uri` is a dead file:/// path from the CP's phone —
+//      drew a blank square, forever.
+//
+// The CP editor has carried an onError on its tiles all along
+// (daily_jobsite.jsx, photoTileUri + tileRetry); this is the same surface on
+// the screen where being wrong costs more. THE OUTCOME DIFFERS, and must:
+// there the failure flips the tile to the OTHER copy, here logbookPhotoUri has
+// already spent inline base64, inline thumb, the served URL and the local path
+// before it returned, so there is no other copy to flip to. What is left is to
+// say so.
+//
+// Its own component, not a branch inside the renderer, because it needs state
+// per tile: one photo failing must not blank the other two.
+function DocPhoto({ uri, s, t }) {
+  const [failed, setFailed] = useState(false);
+  if (!uri || failed) {
+    return (
+      <View style={[s.activityPhoto, s.activityPhotoMissing]}>
+        <ImageOff size={14} strokeWidth={2} color={semantic.neutral} />
+        <Text style={s.activityPhotoMissingText}>{t('fPhotoUnavailable')}</Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri }}
+      style={s.activityPhoto}
+      resizeMode="cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 export default function SiteLogbooksViewer() {
   const { colors, isDark } = useTheme();
@@ -554,13 +597,18 @@ export default function SiteLogbooksViewer() {
                   { text: act.work_description || 'N/A', flex: 2 },
                   { text: act.work_locations || 'N/A', flex: 1 },
                 ]} />
+                {/* EVERY PHOTO THE RECORD CLAIMS GETS A SLOT. One that cannot
+                    be resolved or cannot be loaded says so — see DocPhoto. */}
                 {(act.photos || []).length > 0 && (
                   <View style={s.photoRow}>
-                    {act.photos.map((photo, pi) => {
-                      const uri = logbookPhotoUri(photo, log, i, pi);
-                      if (!uri) return null;
-                      return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
-                    })}
+                    {act.photos.map((photo, pi) => (
+                      <DocPhoto
+                        key={pi}
+                        s={s}
+                        t={t}
+                        uri={logbookPhotoUri(photo, log, i, pi)}
+                      />
+                    ))}
                   </View>
                 )}
               </React.Fragment>
@@ -1841,6 +1889,18 @@ function buildStyles(colors, isDark) {
   // Photo row
   photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingVertical: spacing.xs, paddingLeft: spacing.sm },
   activityPhoto: { width: 80, height: 60, borderRadius: 6, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
+  // The slot a photo the record CLAIMS occupies when this device cannot show
+  // it. Same 80x60 footprint as a real tile, so the row still reads as "three
+  // photos" and an inspector can see which one is missing. Dashed and muted:
+  // it states a fact about the device, it does not accuse the record.
+  activityPhotoMissing: {
+    alignItems: 'center', justifyContent: 'center', gap: 2, padding: 2,
+    borderStyle: 'dashed', borderColor: withAlpha('#ffffff', 0.22),
+    backgroundColor: withAlpha('#ffffff', 0.04),
+  },
+  activityPhotoMissingText: {
+    fontSize: 9, lineHeight: 11, textAlign: 'center', color: colors.text.muted,
+  },
 
   // Signature section
   signatureSection: { marginTop: spacing.md },

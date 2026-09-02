@@ -2231,87 +2231,107 @@ export default function DailyJobsiteLog() {
               </View>
             </>
 
-            {/* CAMERA — only once crew, activity and location are all set. */}
-            {!ready ? (
-              <Text style={s.lockedHint}>{t('cameraLockedHint')}</Text>
-            ) : (
-              <View style={s.photoBlock}>
+            {/* CAMERA — only once crew, activity and location are all set.
+                THE GATE IS ON THE CAMERA, NOT ON THE EVIDENCE. This whole
+                block used to be the ELSE branch of `!ready`, and the grid of
+                ALREADY-TAKEN photos sat inside it — so an un-ready row did not
+                just lose its shutter, it lost the photos it was already
+                holding, with no message and nothing logged. `cameraReady`
+                requires activity_ids AND a work_description (see the note on
+                the predicate), so a legacy row, an amendment-copied row, or a
+                row whose chips were deselected after the fact is un-ready
+                while still carrying photos. Those are the subcontractor crews
+                whose photos "disappeared".
+                A photo already taken is a fact about the day. Nothing about
+                the state of the chips can un-take it, so nothing about the
+                state of the chips may hide it. */}
+            <View style={s.photoBlock}>
+              {/* Only a ready row can promise a label, because only a ready
+                  row has all three parts of one. */}
+              {ready && (
                 <Text style={s.taggedWith}>
                   {t('photoTaggedWith')} {crewName(a)} · {a.work_description} · {a.work_locations}
                 </Text>
-                {/* The BUCKET's count, not this row's: the cap is per
-                    subcontractor and shared across its rows. No counter until
-                    there is something to count. */}
-                {(a.photos || []).length > 0 && (
-                  <Text style={s.photoCount}>
-                    {`${t('photoLabel')} ${photosInBucket(activities, i)}/${MAX_PHOTOS_PER_SUBCONTRACTOR}`}
-                  </Text>
-                )}
+              )}
+              {/* The BUCKET's count, not this row's: the cap is per
+                  subcontractor and shared across its rows. No counter until
+                  there is something to count. */}
+              {(a.photos || []).length > 0 && (
+                <Text style={s.photoCount}>
+                  {`${t('photoLabel')} ${photosInBucket(activities, i)}/${MAX_PHOTOS_PER_SUBCONTRACTOR}`}
+                </Text>
+              )}
 
-                {(a.photos || []).length > 0 && (
-                  // A WRAPPING GRID, NOT A HORIZONTAL SCROLLER. A horizontal
-                  // scroller is a swipe affordance, and this screen is tap-only.
-                  <View style={s.photoGrid}>
-                    {(a.photos || []).map((photo, pi) => (
-                      <View key={photo.id ?? pi} style={s.photoThumb}>
-                        {photo.pending ? (
-                          <View style={[s.photoImage, s.photoPending]}>
-                            <ActivityIndicator size="small" color={outdoor.textDim} />
-                          </View>
-                        ) : (
-                          <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
-                            <Image
-                              source={{ uri: photoTileUri(photo, i, pi, tileRetry[tileKey(photo, i, pi)]) }}
-                              // The preferred copy did not load. Flip THIS tile
-                              // to the other one rather than showing a blank
-                              // square: offline with an uploaded photo falls
-                              // back to the local file, and a missing local
-                              // file falls forward to the served URL.
-                              onError={() => setTileRetry((prev) => {
-                                const k = tileKey(photo, i, pi);
-                                return prev[k] ? prev : { ...prev, [k]: true };
-                              })}
-                              style={s.photoImage}
-                            />
-                          </Pressable>
-                        )}
-                        <Pressable
-                          style={s.photoRemove}
-                          hitSlop={16}
-                          accessibilityRole="button"
-                          onPress={() => removeActivityPhoto(i, pi)}
-                        >
-                          <X size={16} strokeWidth={3} color={outdoor.textOnSelected} />
+              {(a.photos || []).length > 0 && (
+                // A WRAPPING GRID, NOT A HORIZONTAL SCROLLER. A horizontal
+                // scroller is a swipe affordance, and this screen is tap-only.
+                <View style={s.photoGrid}>
+                  {(a.photos || []).map((photo, pi) => (
+                    <View key={photo.id ?? pi} style={s.photoThumb}>
+                      {photo.pending ? (
+                        <View style={[s.photoImage, s.photoPending]}>
+                          <ActivityIndicator size="small" color={outdoor.textDim} />
+                        </View>
+                      ) : (
+                        <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
+                          <Image
+                            source={{ uri: photoTileUri(photo, i, pi, tileRetry[tileKey(photo, i, pi)]) }}
+                            // The preferred copy did not load. Flip THIS tile
+                            // to the other one rather than showing a blank
+                            // square: offline with an uploaded photo falls
+                            // back to the local file, and a missing local
+                            // file falls forward to the served URL.
+                            onError={() => setTileRetry((prev) => {
+                              const k = tileKey(photo, i, pi);
+                              return prev[k] ? prev : { ...prev, [k]: true };
+                            })}
+                            style={s.photoImage}
+                          />
                         </Pressable>
-                      </View>
-                    ))}
-                  </View>
-                )}
+                      )}
+                      {/* The remove control rides with the tile on an un-ready
+                          row too: a CP who can see a mis-taken photo must be
+                          able to drop it, and he could not do either before. */}
+                      <Pressable
+                        style={s.photoRemove}
+                        hitSlop={16}
+                        accessibilityRole="button"
+                        onPress={() => removeActivityPhoto(i, pi)}
+                      >
+                        <X size={16} strokeWidth={3} color={outdoor.textOnSelected} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              )}
 
-                {bucketRemaining(activities, i) <= 0 ? (
-                  <Text style={s.lockedHint}>{t('photoCapRowHint')}</Text>
-                ) : (
-                  <View style={s.photoActions}>
-                    <Pressable
-                      style={s.photoBtn}
-                      accessibilityRole="button"
-                      onPress={() => takeActivityPhoto(i)}
-                    >
-                      <Camera size={22} strokeWidth={2} color={outdoor.textOnSelected} />
-                      <Text style={s.photoBtnText}>{t('photoTake')}</Text>
-                    </Pressable>
-                    <Pressable
-                      style={s.photoBtnGhost}
-                      accessibilityRole="button"
-                      onPress={() => pickActivityPhoto(i)}
-                    >
-                      <ImageIcon size={22} strokeWidth={2} color={outdoor.text} />
-                      <Text style={s.photoBtnGhostText}>{t('photoGallery')}</Text>
-                    </Pressable>
-                  </View>
-                )}
-              </View>
-            )}
+              {/* ONE reason at a time, and the gate comes first: an un-ready
+                  row is not also at its cap, whatever the arithmetic says. */}
+              {!ready ? (
+                <Text style={s.lockedHint}>{t('cameraLockedHint')}</Text>
+              ) : bucketRemaining(activities, i) <= 0 ? (
+                <Text style={s.lockedHint}>{t('photoCapRowHint')}</Text>
+              ) : (
+                <View style={s.photoActions}>
+                  <Pressable
+                    style={s.photoBtn}
+                    accessibilityRole="button"
+                    onPress={() => takeActivityPhoto(i)}
+                  >
+                    <Camera size={22} strokeWidth={2} color={outdoor.textOnSelected} />
+                    <Text style={s.photoBtnText}>{t('photoTake')}</Text>
+                  </Pressable>
+                  <Pressable
+                    style={s.photoBtnGhost}
+                    accessibilityRole="button"
+                    onPress={() => pickActivityPhoto(i)}
+                  >
+                    <ImageIcon size={22} strokeWidth={2} color={outdoor.text} />
+                    <Text style={s.photoBtnGhostText}>{t('photoGallery')}</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
           </Card>
         );
       })}

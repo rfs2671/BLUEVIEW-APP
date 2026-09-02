@@ -158,6 +158,12 @@ const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'sem
   'ShieldCheck', 'AlertTriangle', 'Truck', 'MapPin', 'ClipboardList', 'FileText',
   'Users', 'CheckCircle', 'BookOpen', 'Pen', 'CloudSun', 'Clock', 'Eye', 'Wrench',
   'headcountDisplay',
+  // One filed photo. Stubbed HERE because no fixture in this file carries a
+  // photo — inspectorPhotoMissing.test.cjs slices and executes the real one
+  // against the real renderer. Named all the same: this list is the record of
+  // what the renderer block closes over, and an omission is how a free name
+  // survives to ReferenceError on the first fixture that reaches it.
+  'DocPhoto',
   // BC 3301.13.13 items. REAL, not stubbed: the branch's whole job is to
   // render three kinds of empty differently, and a stub would make the test
   // pass without exercising the distinction it exists to defend.

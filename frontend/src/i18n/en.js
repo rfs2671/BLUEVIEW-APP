@@ -1481,6 +1481,14 @@ export default {
     // generate_combined_report), so one record reads the same on both. A blank
     // would be ambiguous — never asked, or asked and unanswered?
     fNotRecorded: '— Not recorded',
+    // A DIFFERENT FACT FROM fNotRecorded, and deliberately different words. The
+    // record HAS this photo — the activity row lists it — and this device
+    // cannot render it: the R2 object is gone, the key never uploaded, or the
+    // only handle left is a dead file:/// path from the CP's own phone. An
+    // inspector must be able to tell "no photo was taken" from "a photo was
+    // taken and I cannot show it to you", so this must never collapse into
+    // "— Not recorded", and it must never be silence.
+    fPhotoUnavailable: 'Photo unavailable',
 
     // Hot work
     hwWorkType: 'Work Type',
