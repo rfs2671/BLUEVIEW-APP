@@ -19025,6 +19025,259 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 
     return files
 
+
+# ══ SITE MANIFEST ═══════════════════════════════════════════════════════════
+#
+# WHAT IT IS FOR. A fixed Android tablet is bolted to the gate. It has to hold
+# everything the project has approved it to see -- plans, documents AND
+# submitted logbooks -- fill itself on first connection with nobody preparing
+# it, and still open all of it after a cold boot with no network. To do that the
+# client needs ONE cheap read that names the COMPLETE approved set, so it can
+# work out what is missing, what has changed version, and what is no longer
+# approved.
+#
+# WHY THE ROWS ARE THREE LETTERS WIDE. This is polled, not browsed. The client
+# needs an identity and a version per record and nothing else; `name`, `path`,
+# `modified`, `source` and the proxy url are all things the LISTING endpoints
+# already serve to the screens that render them. A manifest row that carried
+# them would be four times the bytes for no decision the client can make with
+# them. `s` (size) earns its place because the store budgets disk before it
+# starts pulling; `e` (extension) earns its place because the tablet can render
+# PDFs and nothing else, and a compact row carries no filename to infer it from.
+#
+# ── THE 500 CAP, WHICH IS THE WHOLE REASON THIS IS PAGINATED ────────────────
+#
+# The read this replaces for logbooks is
+#
+#     GET /logbooks/project/{id}/submitted   ->  .to_list(500)
+#
+# 500 is a SILENT ceiling. A project past it returns its first 500 rows with
+# nothing in the response saying so; no caller can tell a 500-row project from a
+# truncated 1300-row one. Against the screens that exist today that is a display
+# bug. Against a diff-and-delete client it is a cache shredder: the client's
+# rule is "an id the manifest does not name is deleted locally", so every
+# logbook past the cap reads as withdrawn and the tablet deletes the compliance
+# record a DOB inspector asks for -- offline, where it cannot be fetched back.
+#
+# So this endpoint does two separate things, and it needs both:
+#
+#   1. IT PAGES, so the whole set is actually obtainable. Each section carries
+#      its own skip and its own has_more, and the client walks to the end.
+#      Paging alone is not enough: a client that stops early still holds a
+#      partial set and cannot tell.
+#
+#   2. IT DECLARES `complete`, which is true ONLY when this single response IS
+#      the entire approved set -- both sections exhausted AND both skips zero.
+#      Deliberately not derivable from the rows: a client cannot tell a short
+#      page from a complete one by counting, which is precisely how the 500 cap
+#      stayed invisible. The client refuses to delete anything unless it holds a
+#      complete assembly, so a paging bug, a dropped page or a mid-walk network
+#      failure all degrade to "download but never remove" -- stale, never lost.
+#
+# The last page of a walk is NOT `complete`, because it is not the whole set. A
+# client that fetched only page 2 of 2 would otherwise be told it holds
+# everything and delete page 1.
+#
+# ── SKIP/LIMIT, NOT A CURSOR ────────────────────────────────────────────────
+#
+# `_id` is ObjectId on some rows and a plain string on others (to_query_id falls
+# back), and BSON orders those as different TYPES -- so a `_id > cursor` range
+# scan silently skips whole classes of row. Skip/limit over a fixed `_id` sort
+# has no such trap. Its known weakness is that a row deleted mid-walk shifts the
+# rows behind it back by one and one can be missed; that row is then absent from
+# the assembly, is dropped locally and re-downloads on the next poll. Churn,
+# self-healing, and never a loss of anything the server still holds.
+#
+# ── THE FILE FILTER STAYS IN PYTHON ─────────────────────────────────────────
+#
+# Which files a site device may see is `projects.site_device_subfolders`,
+# applied per record by _path_is_under_allowed_subfolder. It cannot be pushed
+# into the Mongo query: the comparison is case-insensitive, it is relative to a
+# base prefix stored on a DIFFERENT document, and the list is normalised at read
+# time. So the page is taken from Mongo and filtered afterwards, exactly as the
+# listing endpoint does, calling the SAME helper -- a second copy of that rule
+# would be a second thing to get wrong and the two would drift in silence.
+#
+# One consequence is deliberate and is not a bug: `total` and `has_more` for the
+# files section describe the RAW page walk, so a page may return fewer rows than
+# its limit, or none at all, while has_more is still true. The walk still covers
+# every row exactly once, which is the property that matters. Counting the
+# filtered set instead would mean filtering the entire collection on every page.
+
+# One page of manifest rows. Large because the point is to need few round trips
+# on a tablet that has just been switched on, bounded because an unbounded limit
+# is the same silent-ceiling defect with the number chosen by the caller.
+MANIFEST_PAGE_DEFAULT = 1000
+MANIFEST_PAGE_MAX = 2000
+
+
+def _manifest_version(rec: dict):
+    """The version half of the client's on-disk name `{id}.{version}.{ext}`.
+
+    NOT A FREE CHOICE. docCache keys a logbook PDF on
+    `updated_at || submitted_at || created_at`, and the site logbooks screen
+    writes files under exactly that name. A manifest that picked a different
+    field -- or a different precedence -- would name the same file differently,
+    so every logbook would download a second time and both copies would sit on
+    the tablet for ever.
+
+    Naive datetimes are marked UTC for the same reason serialize_id marks them:
+    the value is rendered into a filename by `new Date()` on the client, and an
+    unmarked one is read as local time and produces a second on-disk copy.
+    """
+    for field in ("updated_at", "submitted_at", "created_at"):
+        v = rec.get(field)
+        if v is None or v == "":
+            continue
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+    return "0"
+
+
+def _manifest_ext(name: str) -> str:
+    """Lowercased extension, or "" — the store pulls bytes only for what the
+    tablet can actually open offline."""
+    base = str(name or "").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[-1].lower() if "." in base else ""
+
+
+@api_router.get(
+    "/projects/{project_id}/manifest",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def get_project_manifest(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    limit: int = Query(MANIFEST_PAGE_DEFAULT, ge=1, le=MANIFEST_PAGE_MAX),
+    files_skip: int = Query(0, ge=0),
+    logbooks_skip: int = Query(0, ge=0),
+):
+    """The complete set this caller is approved to hold offline, as compact rows.
+
+    Response:
+
+        {
+          "project_id": str,
+          "generated_at": datetime,
+          "limit": int,
+          "files":    {"rows": [{"id","v","s","e"}], "skip", "total", "has_more"},
+          "logbooks": {"rows": [{"id","v"}],         "skip", "total", "has_more"},
+          "complete": bool
+        }
+
+    `complete` means THIS RESPONSE IS THE WHOLE APPROVED SET. It is false on a
+    page with more behind it and false on any page reached with a non-zero skip.
+    A client may only delete local records against a complete assembly; see the
+    block above this handler for why that rule is what makes the endpoint safe.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_id = get_user_company_id(current_user) or project.get("company_id")
+    folder_path = project.get("dropbox_folder_path") or ""
+
+    is_site_device = (
+        current_user.get("site_mode")
+        or current_user.get("role") == "site_device"
+    )
+    allowed_subfolders = _normalize_subfolder_names(
+        project.get("site_device_subfolders") or []
+    )
+
+    def _visible_to_site(path: str) -> bool:
+        return _path_is_under_allowed_subfolder(
+            path, folder_path, allowed_subfolders
+        )
+
+    # ── files ──────────────────────────────────────────────────────────────
+    #
+    # A site device with nothing configured sees nothing, and the short-circuit
+    # is here rather than left to the filter so the query is never issued. Same
+    # safe default the listing endpoint applies: a device approved for no
+    # subfolder must not enumerate -- let alone download -- a project's Dropbox.
+    file_rows = []
+    files_total = 0
+    if not (is_site_device and not allowed_subfolders):
+        file_query = {
+            "project_id": project_id,
+            "company_id": company_id,
+            "is_deleted": {"$ne": True},
+        }
+        files_total = await db.project_files.count_documents(file_query)
+        page = await (
+            db.project_files.find(file_query)
+            .sort("_id", 1)
+            .skip(files_skip)
+            .limit(limit)
+        ).to_list(limit)
+        for rec in page:
+            dropbox_path = rec.get("dropbox_path", "")
+            if is_site_device and not _visible_to_site(dropbox_path):
+                continue
+            rec_id = str(rec.get("_id", ""))
+            if not rec_id:
+                continue
+            file_rows.append({
+                "id": rec_id,
+                # `?? 0` is the client's default for a record with no
+                # cache_version, and the on-disk name is built from it.
+                "v": rec.get("cache_version", 0) or 0,
+                "s": rec.get("size", 0) or 0,
+                "e": _manifest_ext(rec.get("name") or dropbox_path),
+            })
+
+    # ── submitted logbooks ─────────────────────────────────────────────────
+    #
+    # SUBMITTED ONLY. A draft is not a filed record and must never be pulled
+    # onto the device an inspector reads from.
+    log_query = {
+        "project_id": project_id,
+        "status": "submitted",
+        "is_deleted": {"$ne": True},
+    }
+    logs_total = await db.logbooks.count_documents(log_query)
+    log_page = await (
+        db.logbooks.find(log_query)
+        .sort("_id", 1)
+        .skip(logbooks_skip)
+        .limit(limit)
+    ).to_list(limit)
+    log_rows = [
+        {"id": str(rec.get("_id", "")), "v": _manifest_version(rec)}
+        for rec in log_page
+        if rec.get("_id")
+    ]
+
+    files_has_more = (files_skip + limit) < files_total
+    logs_has_more = (logbooks_skip + limit) < logs_total
+
+    return {
+        "project_id": project_id,
+        "generated_at": datetime.now(timezone.utc),
+        "limit": limit,
+        "files": {
+            "rows": file_rows,
+            "skip": files_skip,
+            "total": files_total,
+            "has_more": files_has_more,
+        },
+        "logbooks": {
+            "rows": log_rows,
+            "skip": logbooks_skip,
+            "total": logs_total,
+            "has_more": logs_has_more,
+        },
+        # Both sections exhausted AND both walks started at zero. Anything less
+        # is a fragment, and a fragment must never authorise a deletion.
+        "complete": (
+            not files_has_more and not logs_has_more
+            and files_skip == 0 and logbooks_skip == 0
+        ),
+    }
+
+
 # ══ DROPBOX SYNC RUN RECORD ═════════════════════════════════════════════════
 #
 # WHY THIS EXISTS. The plans screen caches its file list for offline use, and it
