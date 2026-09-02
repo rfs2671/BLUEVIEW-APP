@@ -141,8 +141,16 @@ ok(unsaved.photoTileUri({}, 0, 0) === undefined,
 // when the first one fails to LOAD (a `||` chain only advances on a falsy
 // value, never on a failed load). The assertion's point is unchanged — the
 // grid <Image> really calls this, with this photo and this position.
-ok(/uri: photoTileUri\(photo, i, pi/.test(editorSrc),
-  'editor: the grid <Image> actually calls it (not dead code)');
+//
+// AND THE POSITION IS NO LONGER (i, pi). The served url addresses
+// data.activities[ai].photos[pi] on the SERVER's document, and the list this
+// grid maps over has been reconciled since that document was written — a
+// hand-added crew sitting after an unassigned-worker row moves up by one on
+// load, and its tiles were requesting another crew's photos. servedIndex
+// resolves the stored coordinates; it falls back to (i, pi) for a photo the
+// server has never seen. See cpForeignPhotoResolution.test.cjs.
+ok(/uri: photoTileUri\(photo, \.\.\.servedIndex\(photo, i, pi\)/.test(editorSrc),
+  'editor: the grid <Image> actually calls it (not dead code), with the SERVED position');
 
 // ── the save path must not undo the purge ───────────────────────────────────
 ok(saved.isPurgedPhoto(PURGED) === true,

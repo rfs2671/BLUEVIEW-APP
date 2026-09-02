@@ -274,9 +274,21 @@ console.log('\n── Q1: the phone wins ──');
 // screens break the call across lines, and a marker that misses the call
 // entirely would have made the ORDER assertion below vacuous rather than
 // failing loudly. It failed loudly, which is why this comment exists.
+//
+// daily_jobsite IS MARKED DIFFERENTLY, AND THE DIFFERENCE IS THE POINT. Its
+// draft branch now makes a getByProject call OF ITS OWN, for the day's server
+// ID and nothing else: without it a CP who only ever OPENS the superintendent's
+// log holds a draft with backend_id null, existingLogId stays null, and every
+// photo he did not take resolves to `undefined` — no request, so no onError,
+// so no retry (cpForeignPhotoResolution.test.cjs). That call reads an id; it
+// hydrates nothing, which is what "the phone wins" is about. So the marker for
+// this screen is the SERVER-WINS read specifically — the settleFetch-wrapped
+// one whose result feeds hydrate — and the id lookup is pinned separately
+// below as a read that must NOT hydrate.
 const SERVER_CALL = Object.fromEntries(
   ALL_LOGBOOKS.filter((n) => n !== 'subcontractor_orientation')
-    .map((n) => [n, '.getByProject(']),
+    .map((n) => [n, n === 'daily_jobsite'
+      ? 'settleFetch(() => logbooksAPI.getByProject(' : '.getByProject(']),
 );
 for (const [name, serverCall] of Object.entries(SERVER_CALL)) {
   const src = screen(name);
@@ -293,6 +305,24 @@ for (const [name, serverCall] of Object.entries(SERVER_CALL)) {
   ok(branch.length > 0, `${name}: located the draft branch`);
   ok(/\breturn\b/.test(branch),
     `${name}: and the draft branch returns rather than falling into the server read`);
+}
+
+// AND THE ID LOOKUP INSIDE daily_jobsite's DRAFT BRANCH TAKES NOTHING ELSE.
+// It exists so the photo tiles have a log id to build a url from; if it ever
+// hydrates, the phone stops winning and an offline CP's unsynced work is
+// overwritten by the server copy — the exact failure this whole section pins.
+{
+  const src = screen('daily_jobsite');
+  const branch = src.slice(
+    src.indexOf('readDraft(_key)'),
+    src.indexOf('settleFetch(() => logbooksAPI.getByProject('),
+  );
+  ok(/logbooksAPI\.getByProject\(projectId, 'daily_jobsite', date\)\.catch\(\(\) => null\)/.test(branch),
+    'daily_jobsite: the draft branch asks for the day\'s server row, and a failed read is null (offline is unchanged)');
+  ok(!/hydrate\(_serverLog/.test(branch) && !/setActivities\(withActivityIds\(_serverLog/.test(branch),
+    'daily_jobsite: and it hydrates NOTHING from that response — the id and the photo layout, nothing else');
+  ok(/setExistingLogId\(_serverId\)/.test(branch) && /setDraftBackendId\(_key, String\(_serverId\)\)/.test(branch),
+    'daily_jobsite: it adopts the id and binds it, so the next open does not have to ask again');
 }
 
 // The two daily-log screens keep their server read (they need the list and the
