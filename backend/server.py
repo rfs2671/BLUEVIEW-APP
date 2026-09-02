@@ -26366,21 +26366,193 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
     }
 
 
+# ══ THE GATE TABLET'S ONLY LOGBOOK READ ══════════════════════════════════════
+#
+# frontend/app/site/logbooks.jsx is the SINGLE caller of the endpoint below
+# (logbooksAPI.getSubmitted, src/utils/api.js:1011) and the only way an
+# inspector standing on the site reaches a filed compliance record. It served
+# whole documents, unprojected, capped at 500 logs. Three consequences, and
+# they compound.
+#
+# ── WHY A PROJECTION AT ALL: THE TABLET COULD NOT CACHE ITS OWN RECORDS ──────
+#
+# That screen is cache-first by design — `writeListThrough` stores the list
+# under ONE AsyncStorage key so a dead zone still shows records. Android
+# AsyncStorage is SQLite with `PRAGMA max_page_count` derived from a 6MB
+# default (ReactDatabaseSupplier), DATABASE-WIDE, and nothing here overrides it:
+# the app is CNG/prebuild with no android/ directory. A write over that ceiling
+# is REJECTED. A 60-date window of a photo-and-signature-heavy job measured
+# 21,171,731 bytes unprojected — 3.4x the ceiling — so the write failed, and a
+# failed write does not mean a missing photo, it means the offline screen has
+# NOTHING on it for the one person who is there to read the record. (The
+# screen's own rescue, `stripPhotoBlobs`, removes `base64` and nothing else, so
+# on a finalized log — where the purge already took `base64` — the second
+# attempt was byte-for-byte the first and failed identically.)
+#
+# ── DERIVED FROM THE CONSUMER, NOT GUESSED ──────────────────────────────────
+#
+# Everything logbooks.jsx reads off a returned log was enumerated before a
+# field was named here. Two blobs, and only two, are provably UNRENDERABLE by
+# that screen:
+#
+#   cp_signature.paths   SignatureBlock (logbooks.jsx:430) resolves
+#                        `signature.data || signature.paths` and then draws it
+#                        only `if typeof base64Data === 'string'`. `paths` is an
+#                        ARRAY of stroke point arrays — SignaturePad.js:247
+#                        appends one {x, y} per PanResponder move with no
+#                        simplification — so the image branch is unreachable
+#                        for it. The strokes crossed the wire and drew nothing.
+#                        THE OBJECT STAYS: the screen asks whether a signature
+#                        EXISTS (`log.cp_name && !log.cp_signature`), and the
+#                        affirmation metadata on it is itself the record. Only
+#                        the polyline goes. The PDF renderers keep reading it
+#                        through their own reads (_signature_paths_to_svg).
+#
+#   data.activities[].photos[].base64
+#                        the FULL-SIZE original, drawn into an 80x60 view
+#                        (styles.activityPhoto). `logbookPhotoUri` is a ladder —
+#                        base64, then thumb_base64, then the served-thumb URL —
+#                        and the full-size copy is served on demand by
+#                        get_logbook_activity_photo, an endpoint of its own.
+#                        It is detail content, not list content.
+#
+# WHAT DELIBERATELY STAYS, because the renderers DRAW it:
+#
+#   thumb_base64         the retained ~400px copy, and the LAST inline one.
+#                        logbookPhotoUri is inline-first on purpose: an
+#                        inspector in a dead zone must still see the photo. The
+#                        finalize purge is forbidden to remove this copy; this
+#                        read may not remove it either.
+#   worker_signature     drawn into an <Image> by renderPreshiftSignin and
+#                        renderToolboxTalk. Removing it would not merely blank a
+#                        picture: the same renderer keys "Not Signed:" off its
+#                        ABSENCE, so a projection that dropped it would tell a
+#                        DOB inspector that every worker who signed at the kiosk
+#                        was unsigned. A record that lies is worse than one that
+#                        is large.
+#
+# EXCLUSION, NOT INCLUSION, and the difference is which way the mistake falls.
+# Naming one field to REMOVE cannot break a reader that starts reading a second
+# field tomorrow — that field simply arrives. Naming twenty to KEEP breaks it
+# silently, and on this screen "silently" means a compliance record renders
+# blank to an inspector with nothing anywhere saying why. The same call, for the
+# same reason, as WORKER_LIST_FIELDS above (server.py:14138) — that one is an
+# inclusion list because its consumers were three known reads of a flat row;
+# this payload is thirteen log types deep and every one of them is a `data`
+# shape this file does not own.
+SUBMITTED_LOGBOOK_EXCLUDED_FIELDS = {
+    "cp_signature.paths": 0,
+    "data.activities.photos.base64": 0,
+}
+
+# ── THE CAP, AND WHY IT COUNTS DATES ────────────────────────────────────────
+#
+# `.to_list(500)` returned the 500 most recent logs and said nothing about it.
+# At thirteen registered log types that is roughly five WEEKS on a busy job,
+# after which older filed records were simply unreachable through the tablet's
+# only logbook screen. The operator has ruled the tablet must hold everything it
+# is approved to see.
+#
+# A TRUNCATED RESPONSE CAN MAKE THIS CLIENT DELETE FILES. `datesToList` names
+# each day's full-day-report PDF onto the cached entry, and `sweepDocCache`
+# (src/utils/docCache.js:261) deletes every cached document that no stored list
+# names. So a response that quietly dropped dates made the next sweep delete the
+# offline PDFs for those dates. That is why the PARAMETER-FREE response is the
+# complete set: an installed device cannot be upgraded to read a `complete`
+# flag, so the request it already sends must never come back silently short.
+# Only a caller that opts into paging — by sending `limit` — can receive a
+# partial set, and it is told so in the body.
+#
+# THE CEILING COUNTS DATES BECAUSE THE CALENDAR BOUNDS IT. A project cannot
+# file on more days than it has run; 4000 dates is eleven years of daily
+# filing. A cap on LOGS has no such bound and was the defect. If this one is
+# ever reached the response says `complete: false` and names its cursor, which
+# is the honest failure the old cap could not express.
+MAX_SUBMITTED_DATES = 4000
+
+
+def _submitted_date_key(value) -> str:
+    """The grouping key for one filed log.
+
+    Matches the client's own bucketing: it groups on `date` and sorts the keys
+    with `b.date.localeCompare(a.date)`, so an undated log lands under
+    "unknown" and — 'u' sorting above any '2' — appears first, exactly where it
+    did before. Kept as its own function so the page cursor and the grouping
+    below cannot disagree about what one date key is.
+    """
+    return value if isinstance(value, str) and value.strip() else "unknown"
+
+
 @api_router.get("/logbooks/project/{project_id}/submitted")
-async def get_submitted_logbooks(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
-    """Get all submitted logbook entries grouped by date. For site device inspector view."""
-    logbooks = await db.logbooks.find({
+async def get_submitted_logbooks(
+    project_id: str,
+    before: Optional[str] = Query(
+        None, max_length=32,
+        description="Return only dates strictly older than this key (cursor).",
+    ),
+    limit: Optional[int] = Query(
+        None, ge=1, le=MAX_SUBMITTED_DATES,
+        description="Dates per page. Omit for the complete set.",
+    ),
+    current_user = Depends(get_current_user),
+    _proj = Depends(require_project_access),
+):
+    """Submitted logbook entries grouped by date. The site device's only read.
+
+    Returns {dates, complete, next_before, date_count, log_count}. `dates` is
+    unchanged in shape and stays first for the installed clients that read
+    nothing else.
+
+    PAGES BY DATE, NEVER BY LOG. The client caches [{date, logs}] entries and
+    renders a day as a unit; half a day in one page and half in the next would
+    cache a date that is missing filed records with nothing saying so. So the
+    page boundary is always a date boundary: the distinct dates are ordered
+    first, the page is cut there, and only then are that page's logs read.
+    """
+    query = {
         "project_id": project_id,
         "status": "submitted",
         "is_deleted": {"$ne": True},
-    }).sort("date", -1).to_list(500)
-    by_date = {}
+    }
+
+    # Step 1 — the ordered date index. Cheap: one key per calendar day the
+    # project filed on, never per log.
+    raw_by_key: Dict[str, List] = {}
+    for value in await db.logbooks.distinct("date", query):
+        raw_by_key.setdefault(_submitted_date_key(value), []).append(value)
+    keys = sorted(raw_by_key.keys(), reverse=True)
+
+    # Step 2 — cut the page on a date boundary. The cursor is a date key and the
+    # order is descending, so "older than the cursor" is "sorts below it".
+    remaining = [k for k in keys if k < before] if before else keys
+    page = remaining[:(limit or MAX_SUBMITTED_DATES)]
+    # COMPLETE means: this body is the whole submitted history of this project.
+    # A cursor was given, or a page was cut -> it is not, and it says so.
+    complete = before is None and len(page) == len(keys)
+    next_before = page[-1] if page and len(page) < len(remaining) else None
+
+    # Step 3 — the logs for exactly those dates. The raw stored values are
+    # replayed rather than the keys, so an undated log (null, missing, or "")
+    # is fetched by what is actually on the document; `$in: [None]` matches a
+    # missing field as well as a null one.
+    wanted = [v for k in page for v in raw_by_key[k]]
+    logbooks = []
+    if wanted:
+        logbooks = await db.logbooks.find(
+            {**query, "date": {"$in": wanted}},
+            SUBMITTED_LOGBOOK_EXCLUDED_FIELDS,
+        ).sort("date", -1).to_list(None)
+
+    by_date: Dict[str, List] = {k: [] for k in page}
     for log in logbooks:
-        d = log.get("date", "unknown")
-        if d not in by_date:
-            by_date[d] = []
-        by_date[d].append(serialize_id(dict(log)))
-    return {"dates": by_date}
+        by_date[_submitted_date_key(log.get("date"))].append(serialize_id(dict(log)))
+    return {
+        "dates": by_date,
+        "complete": complete,
+        "next_before": next_before,
+        "date_count": len(by_date),
+        "log_count": len(logbooks),
+    }
 
 @api_router.put("/projects/{project_id}/report-settings", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):
