@@ -16,6 +16,10 @@ import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SiteNav from '../../src/components/SiteNav';
 import OfflineNotice from '../../src/components/OfflineNotice';
+import SiteReadinessNotice, {
+  useSiteReadiness,
+  canClaimEmpty,
+} from '../../src/components/SiteReadinessNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
@@ -147,6 +151,16 @@ export default function SiteLogbooksViewer() {
   // whole point of the screen: a failed read must NEVER render as "No
   // Submitted Logs", which tells a DOB inspector no compliance records exist.
   const [fetchState, setFetchState] = useState('ok');
+
+  // AND HOW THE LAST SERVER READ WENT IS NOT WHETHER THIS TABLET IS WHOLE.
+  // The state above is about the network a moment ago. This one is about the
+  // device: whether it holds the complete approved set at all. A tablet that
+  // read the server perfectly and wrote its own store partway through reports
+  // 'ok' above and renders a SHORT list of submitted logs with nothing on
+  // screen saying it is short — which is the one thing an inspector cannot
+  // work out by looking.
+  const readiness = useSiteReadiness(siteProject?.id);
+  const mayClaimEmpty = canClaimEmpty(readiness);
 
   // Inspector Mode — plain toggle, no PIN. Releasing it restores full
   // navigation and drops the device back on the site dashboard.
@@ -1616,6 +1630,11 @@ export default function SiteLogbooksViewer() {
 
         {/* Content */}
         <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent}>
+          {/* WHETHER THIS TABLET IS WHOLE, stated before anything it shows.
+              Silent on a device that is complete and current, which is the
+              normal case; the inspector never sees it on a healthy tablet. */}
+          <SiteReadinessNotice readiness={readiness} />
+
           {loading ? (
             <View style={s.loadingCenter}>
               <ActivityIndicator size="large" color={colors.text.primary} />
@@ -1624,8 +1643,15 @@ export default function SiteLogbooksViewer() {
           ) : sortedDates.length === 0 ? (
             // HONEST EMPTY STATE: "No Submitted Logs" is a claim about the
             // RECORD, so it may only be made when the SERVER answered. A
-            // failed read says so instead.
-            fetchState === 'ok' ? (
+            // failed read says so instead. UNCHANGED.
+            //
+            // WITH ONE CONDITION ADDED IN FRONT OF BOTH. On a tablet that has
+            // never finished downloading, neither branch is true: the record is
+            // not what is empty, and "showing saved copy" would present
+            // whatever happens to be here as the set. The notice above is the
+            // whole story, and it is the story about the tablet.
+            !mayClaimEmpty ? null
+            : fetchState === 'ok' ? (
               <GlassCard style={s.emptyCard}>
                 <FileText size={40} strokeWidth={1} color={colors.text.muted} />
                 <Text style={s.emptyTitle}>No Submitted Logs</Text>
@@ -1638,7 +1664,7 @@ export default function SiteLogbooksViewer() {
             )
           ) : (
             <>
-            {fetchState !== 'ok' && (
+            {fetchState !== 'ok' && mayClaimEmpty && (
               <OfflineNotice mode={fetchState} cachedCount={visibleLogCount} />
             )}
             {sortedDates.map((date) => {
