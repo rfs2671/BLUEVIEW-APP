@@ -61,7 +61,7 @@ import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { isAffirmedSignature } from '../../src/utils/signatureAffirmed';
 import { useAuth } from '../../src/context/AuthContext';
 import {
-  csLogItems, csItemState, csUnanswered, CS_LOG_ITEMS,
+  csLogItems, csItemState, csUnanswered, csItemLabels,
 } from '../../src/utils/superintendentLogModel';
 import {
   emptyFinding, findingIsEmpty, findingGaps, deriveConditionAndOrderBlocks,
@@ -70,6 +70,15 @@ import {
 
 const LOG_TYPE = 'site_superintendent_log';
 const TOTAL_STEPS = 5;
+
+/**
+ * The write answered, and answered with nothing that names a record.
+ *
+ * A CONSTANT BECAUSE IT IS A PAIR. It is thrown at the one place that can
+ * detect it and read at the one place that reports it, and a literal at each
+ * end is how the two drift into a machine string reaching a jobsite.
+ */
+const NO_RECORD_RETURNED = 'LOG_NOT_FILED';
 
 const todayISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
   .format(new Date());
@@ -384,52 +393,87 @@ export default function SiteSuperintendentLog() {
         ? await logbooksAPI.update(existingLogId, payload)
         : await logbooksAPI.create(payload);
       const savedId = saved?.id || saved?._id || existingLogId;
+
+      // ── NO ID, NO RECORD ───────────────────────────────────────────────
+      //
+      // ABSENCE OF AN EXCEPTION IS NOT PROOF OF A WRITE. `create` resolving
+      // proves only that a response arrived; the id is the one thing in it
+      // that proves a document exists — and it is also the only way to name
+      // the document that has to be sealed.
+      //
+      // THIS IS WHERE THE LOG WAS LOST. The two calls that NEED an id were
+      // guarded (`if (savedId)`) and the three lines that REPORT one were
+      // not, so a response with no id skipped the ledger event, skipped the
+      // finalize, and still said "Log filed and locked" — copy that asserts
+      // the seal by name — then navigated away from the screen holding the
+      // only copy of what he had typed. Nothing threw, so nothing was
+      // reported.
+      //
+      // AND THE SERVER HAS THAT PATH. create_logbook re-reads the row it just
+      // inserted and returns serialize_id(that read); a read that does not see
+      // its own write makes it None, which FastAPI renders as 200 `null`. The
+      // server half is fixed too (backend/tests/test_superintendent_log_files
+      // .py), and this guard must hold regardless of it: a client that
+      // believes a body it did not check is one bad deploy from doing this
+      // again.
+      //
+      // THROWN, NOT RETURNED, so it lands in the one place this handler
+      // reports a failure to file. That is also what makes it compose with
+      // fix/superintendent-local-first: its catch sorts a push failure into
+      // refused / offline / unsynced and holds the entry on the device, and a
+      // throw here is routed by that sort like any other failed push.
+      if (!savedId) throw new Error(NO_RECORD_RETURNED);
+
       setExistingLogId(savedId);
 
       // ── THE SIGNATURE EVENT ────────────────────────────────────────────
       // `superintendent_sign`, NEVER `cp_sign`. See the note at the top of
       // this file: deriveActingCapacity reads the event type first, and the
       // wrong one records this log as signed by a Competent Person.
-      if (savedId) {
-        // ── AWAITED HERE, AND ONLY HERE ──────────────────────────────────
-        //
-        // THIS IS THE ONE EDITOR THAT SEALS IN THE SAME BREATH IT SIGNS. The
-        // finalize a few lines below makes the record immutable, and the
-        // server now asks the ledger at that moment whether an event exists
-        // for this document. Fired and forgotten, this POST races that seal:
-        // the server would report a gap for a row that is merely in flight,
-        // and a detector that cries wolf is a detector nobody reads. Awaiting
-        // orders the two, so a gap reported at finalize is a real one.
-        //
-        // NON-BLOCKING IS UNCHANGED. recordSignatureEvent catches its own
-        // error and resolves with null; it has never rejected, which is why
-        // the `.catch` that used to sit here had never once run. Awaiting a
-        // promise that cannot reject cannot refuse the log — it only costs
-        // the round trip, which this handler is already paying for twice.
-        //
-        // AND THE null IS READ. It is the function's whole failure report; the
-        // caller that is about to seal the record is the last one that may
-        // throw it away.
-        const _evtId = await recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'superintendent_sign',
-          signerName: printedName.trim() || cpName,
-          signerRole: user?.role || 'cp',
-          signatureData: cpSignature,
-          contentSnapshot: {
-            log_type: LOG_TYPE, date: logDate, project_id: projectId,
-            data: payload.data, status: 'submitted',
-          },
-          user,
-        });
-        if (!_evtId) {
-          console.error(
-            '[signature-ledger] the superintendent log is about to be sealed '
-            + 'with no audit row.',
-            { documentId: savedId, projectId, date: logDate, logType: LOG_TYPE },
-          );
-        }
+      //
+      // ── AWAITED HERE, AND ONLY HERE ──────────────────────────────────────
+      //
+      // THIS IS THE ONE EDITOR THAT SEALS IN THE SAME BREATH IT SIGNS. The
+      // finalize a few lines below makes the record immutable, and the server
+      // now asks the ledger at that moment whether an event exists for this
+      // document. Fired and forgotten, this POST races that seal: the server
+      // would report a gap for a row that is merely in flight, and a detector
+      // that cries wolf is a detector nobody reads. Awaiting orders the two,
+      // so a gap reported at finalize is a real one.
+      //
+      // NON-BLOCKING IS UNCHANGED. recordSignatureEvent catches its own error
+      // and resolves with null; it has never rejected, which is why the
+      // `.catch` that used to sit here had never once run. Awaiting a promise
+      // that cannot reject cannot refuse the log — it only costs the round
+      // trip, which this handler is already paying for twice.
+      //
+      // AND THE null IS READ. It is the function's whole failure report; the
+      // caller that is about to seal the record is the last one that may throw
+      // it away.
+      //
+      // NO LONGER `if (savedId)`. The guard above already refused the case
+      // this was written for, and a condition that can no longer be false
+      // reads as though the caller is still unsure — which is the shape the
+      // whole defect had.
+      const _evtId = await recordSignatureEvent({
+        documentType: 'logbook',
+        documentId: savedId,
+        eventType: 'superintendent_sign',
+        signerName: printedName.trim() || cpName,
+        signerRole: user?.role || 'cp',
+        signatureData: cpSignature,
+        contentSnapshot: {
+          log_type: LOG_TYPE, date: logDate, project_id: projectId,
+          data: payload.data, status: 'submitted',
+        },
+        user,
+      });
+      if (!_evtId) {
+        console.error(
+          '[signature-ledger] the superintendent log is about to be sealed '
+          + 'with no audit row.',
+          { documentId: savedId, projectId, date: logDate, logType: LOG_TYPE },
+        );
       }
 
       // ── THE FREEZE, AND WHY IT IS AN EXPLICIT CALL ─────────────────────
@@ -457,14 +501,42 @@ export default function SiteSuperintendentLog() {
       // (superintendent_log_deadline). That governs how late he may sign, not
       // what signing does — signing early is never a violation — so the
       // freeze is the same act on every project.
-      if (savedId) await logbooksAPI.finalize(savedId);
+      //
+      // UNCONDITIONAL, for the reason the guard above gives. `if (savedId)`
+      // here was the seal quietly opting out beside a success message that
+      // says "filed and LOCKED" — and there is no second actor to notice:
+      // sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES, so a log this
+      // screen does not finalize is never finalized by anything.
+      await logbooksAPI.finalize(savedId);
 
       setLocked(true);
       toast.success(t('filed'));
       router.push('/logbooks');
     } catch (e) {
-      toast.error(t('couldNotFile'),
-        e?.response?.data?.detail?.code || e?.message || '');
+      // ── A REFUSAL HE CAN ACT ON ────────────────────────────────────────
+      //
+      // SUBMIT_UNATTESTED_ITEMS carries `items` precisely so the client can
+      // point at the items he has not answered. This printed the bare machine
+      // code and threw the useful half away, leaving a man on a jobsite to
+      // read "SUBMIT_UNATTESTED_ITEMS" and guess which of the four it meant.
+      //
+      // SAME WORDING AS THE HINT on the disabled button, through the same
+      // labels: one condition must not be described two ways depending on
+      // whether the client or the server noticed it.
+      const detail = e?.response?.data?.detail;
+      const items = Array.isArray(detail?.items) ? detail.items : [];
+      let reason;
+      if (items.length) {
+        reason = t('unansweredHint').replace('{items}', csItemLabels(items).join(', '));
+      } else if (e?.message === NO_RECORD_RETURNED) {
+        // NOT A CODE. This one is not the server refusing him anything he can
+        // correct — it is the app declining to claim a filing it cannot prove,
+        // and what he needs to know is that nothing was filed and to try again.
+        reason = t('noRecordReturned');
+      } else {
+        reason = detail?.code || e?.message || '';
+      }
+      toast.error(t('couldNotFile'), reason);
     } finally {
       setSigning(false);
     }
@@ -722,9 +794,10 @@ export default function SiteSuperintendentLog() {
     { key: 5, label: t('stepSign'), render: stepSign },
   ];
 
-  const unansweredLabels = unanswered
-    .map((k) => (CS_LOG_ITEMS.find((i) => i.key === k) || {}).label || k)
-    .join(', ');
+  // THE SAME LABELS THE REFUSAL RENDERS. csItemLabels is what handleSubmit's
+  // catch uses on the server's `items` list, so the hint on the disabled
+  // button and the message from a 400 cannot come to name one item two ways.
+  const unansweredLabels = csItemLabels(unanswered).join(', ');
 
   return (
     <LogbookStepper

@@ -1425,6 +1425,10 @@ export default {
     savedLocally: 'Saved on this device — it files when you reconnect',
     filed: 'Log filed and locked',
     couldNotFile: 'Could not file this log',
+    // NOT A SERVER REFUSAL — there is nothing on the form for him to correct.
+    // It says the app declined to claim a filing it could not prove, because
+    // "Log filed and locked" over nothing is how a statutory record was lost.
+    noRecordReturned: 'The server did not confirm a saved record, so nothing was filed. Your entry is still here — try again.',
   },
 
   signature: {
