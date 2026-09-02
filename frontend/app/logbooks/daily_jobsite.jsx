@@ -1623,7 +1623,25 @@ export default function DailyJobsiteLog() {
       const docId = existingLogId || created?.id || created?._id;
       if (docId) {
         const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
-        recordSignatureEvent({
+        // ── AWAITED, BECAUSE THIS ROW AND THE SERVER'S RACE FOR THE SAME SLOT
+        //
+        // The server now DERIVES a ledger row from the document at /finalize,
+        // so an offline signature is no longer lost — but the derived row
+        // cannot record the signing device or the signing IP, because at
+        // derivation time the only ones available belong to whatever had
+        // signal later. This POST can, and it is the ONLY writer that can.
+        //
+        // handleSubmitAndSign calls /finalize a few lines after this returns.
+        // Fired and forgotten, the two are in flight together and the server's
+        // derivation can win — no duplicate (both writers key on the same
+        // signing act) but the genuine device and IP are then never recorded
+        // for a CP who was online the whole time. Awaiting orders them.
+        //
+        // NON-BLOCKING IS UNCHANGED: recordSignatureEvent catches its own
+        // error and resolves with null, so it has never rejected and awaiting
+        // it cannot refuse the log. Same change, same reasoning, as the
+        // awaited call in site_superintendent_log.jsx.
+        const _evtId = await recordSignatureEvent({
           documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
           signerName: cpName, signerRole: user?.role || 'cp', signatureData: cpSignature,
           contentSnapshot: {
@@ -1631,7 +1649,17 @@ export default function DailyJobsiteLog() {
             status: submitStatus,
           },
           user,
-        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
+        });
+        if (!_evtId) {
+          // Not a failure of the filing, and never surfaced to the CP: the
+          // server derives a row at /finalize and the night sweep asks again.
+          // This says the DEVICE-accurate row is the one that was lost.
+          console.error(
+            '[signature-ledger] no contemporaneous row for this signature; '
+            + 'the server will derive one without the signing device or IP.',
+            { documentId: docId, projectId, date, logType: 'daily_jobsite' },
+          );
+        }
       }
     }
     return savedId || null;

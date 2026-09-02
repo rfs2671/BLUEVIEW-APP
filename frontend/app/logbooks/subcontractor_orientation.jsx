@@ -552,8 +552,30 @@ export default function SubcontractorOrientation() {
       setOrientations(next);
       await writeCachedList(projectId, next);
 
-      // Record audit event for CP signing the orientation. Only meaningful once
-      // the row exists server-side; an offline sign is audited when it syncs.
+      // ── "AN OFFLINE SIGN IS AUDITED WHEN IT SYNCS" — IT NOW IS ────────────
+      //
+      // This comment used to say that as a statement of fact and it was FALSE
+      // for as long as it stood. draftSync pushed the drained orientation with
+      // its signature and its `submitted` status and wrote NO ledger event,
+      // ever; nothing failed, so nothing was reported, and the signature was
+      // filed with no audit row. Thirty-three signatures on the live project
+      // are in that state.
+      //
+      // It is true now, and NOT because of anything on this line. The server
+      // DERIVES the row from the accepted document
+      // (ensure_signature_ledger_row, called at /finalize, which the drain's
+      // applyRemoteFreeze reaches for every locally-finalized draft — which is
+      // every signed one). A row derived from the document cannot be lost
+      // separately from the document; a queue on this device could.
+      //
+      // THIS CALL STILL MATTERS AND IS NOT REDUNDANT. It is the only writer
+      // that can record the SIGNING device and the SIGNING IP. The derived row
+      // marks both as not-recorded, because at derivation time the only ones
+      // available belong to whatever had signal later.
+      //
+      // The `if (landed)` guard therefore stays exactly as it is: with no
+      // server id there is nothing to post against, and the durable half is
+      // now server-side rather than missing.
       // recordSignatureEvent imported at top level
       if (landed) {
         recordSignatureEvent({

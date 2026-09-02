@@ -46,6 +46,17 @@ from lib.logbook.attestations import (  # noqa: E402
     NONE_ON_DOCUMENT as ATTESTATION_NONE_ON_DOCUMENT,
     PREDATES_CAPTURE as ATTESTATION_PREDATES_CAPTURE,
 )
+# WHO WROTE A LEDGER ROW AND WHAT IT CAN VOUCH FOR. Same shape, and for the
+# same reason: a row the SERVER derived from an accepted document cannot record
+# the signing device or the signing IP, and a row that does not SAY so is
+# indistinguishable from one the signing device wrote itself.
+from lib.logbook.signature_provenance import (  # noqa: E402
+    contemporaneous_provenance, derived_provenance, undetermined_provenance,
+    provenance_of, provenance_sentence,
+    EVENT_KEY as PROVENANCE_EVENT_KEY,
+    SIGNED_AT_AFFIRMED_AT as PROVENANCE_SIGNED_AT_AFFIRMED_AT,
+    SIGNED_AT_TIMESTAMP as PROVENANCE_SIGNED_AT_TIMESTAMP,
+)
 import re
 import hashlib
 from urllib.parse import quote_plus
@@ -4251,6 +4262,34 @@ SIGNATURE_LEDGER_LOOKBACK_DAYS = 7
 
 async def sweep_signature_ledger_gaps(database, now=None) -> dict:
     """ASK THE LEDGER THE QUESTION THE AUDITOR WILL ASK, THE NIGHT AFTER.
+
+    ── WHAT THIS STILL FINDS NOW THAT THE ROW IS DERIVED SERVER-SIDE ─────────
+
+    ensure_signature_ledger_row writes a row for a signed document at
+    /finalize, which draftSync reaches for every signed draft it drains — so
+    the offline gap this was built to see should now be close to empty. THAT IS
+    NOT THE SAME AS THIS BEING VACUOUS, and it is deliberately left alone
+    rather than narrowed to suit its own fix. Four things still land here:
+
+      * THE 33. They are not backfilled and never will be — a reconstructed
+        content_snapshot would attest to content the signer never saw. They are
+        an honest absence, and this is what keeps them countable.
+      * A DERIVATION THAT COULD NOT WRITE. ensure_signature_ledger_row never
+        raises, by design; when the ledger is unreachable it logs and returns
+        None, and this is the second look.
+      * A SIGNED, SUBMITTED LOG THAT NEVER FINALIZES AND IS NEVER TOUCHED
+        AGAIN, whose online client's own post-save write also failed. Both
+        halves have to fail, which is why it is rare and why it is still worth
+        detecting.
+      * A SIGNATURE SHAPE THE DERIVATION REFUSES. It writes nothing for a
+        document with no ink and no affirmation, on purpose: a row for a
+        signature nobody made is a fabricated attestation. This sweep asks the
+        SAME breadth question, so the two agree about what counts as signed and
+        a document that is signed-but-underivable is reported rather than lost
+        between them.
+
+    A detector kept honest about its own fix. If this ever reports zero for a
+    week that is a finding, not a formality.
 
     THE OFFLINE GAP IS VISIBLE FROM NOWHERE ELSE. A CP signs at a jobsite with
     no signal. The draft drains later through frontend/src/utils/draftSync.js,
@@ -13585,6 +13624,21 @@ async def register_and_checkin(data: dict, request: Request):
                 ip_address=client_ip,
                 acting_capacity="Worker - signature affirmation",
                 authenticated_role="worker",
+                # CONTEMPORANEOUS BY CONSTRUCTION. This request IS the act:
+                # the worker tapped Affirm at the turnstile and the device
+                # fingerprint, the user agent and the IP above are the gate's
+                # own, read from the request that carried the tap. Nothing
+                # derives affirmation rows, so this can never be the fallback.
+                provenance=contemporaneous_provenance(written_by="gate"),
+                # NO signature_key, AND THAT IS DELIBERATE — see the note on
+                # signature_ledger_key. This event's `signature_data` is a
+                # REFERENCE to the stroke on the worker document, not the
+                # stroke itself: no ink, no client timestamp. And the document
+                # id here is (project, date), shared by EVERY worker who
+                # affirms that day, so a key computed over what is left would
+                # be identical for all of them and the first row would swallow
+                # the rest. An event with nothing of its own to key on gets no
+                # key, and the idempotency it does not need is not applied.
             )
         except Exception as _e:  # pragma: no cover
             # ERROR, NOT WARNING, AND NAMED. The fail-soft above is deliberate
@@ -16184,8 +16238,72 @@ def compute_content_hash(content: dict) -> str:
     import json
     canonical = json.dumps(content, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
- 
- 
+
+
+# ── THE IDENTITY OF A SIGNING ACT ───────────────────────────────────────────
+#
+# WHAT THIS IS FOR. Two independent writers now describe the same signature:
+# the signing client's own POST /signature-events (which holds the real device
+# and IP) and the server's derivation from an accepted document (which is what
+# makes an OFFLINE signature durable at all). Both must be able to recognise
+# the other's row, or one signing act ends up in the ledger twice.
+#
+# KEYED ON THE ACT, NEVER ON ARRIVAL ORDER OR ON A COUNTER. `version` is a
+# count of existing rows, so it depends entirely on who got there first and is
+# useless as an identity. What identifies a signing act is the document it was
+# made on, the capacity it was made in, WHEN the signer made it, and the mark
+# itself.
+#
+# THE SERVER'S OWN STAMPS ARE DELIBERATELY EXCLUDED. _finalize_cp_signature
+# adds `affirmed_received_at` and sometimes `affirmation_flag` to the signature
+# before storing it, and the client posts the UNSTAMPED object it holds. If
+# either field entered this hash the two writers would compute different
+# identities for one signature and every online signature would be recorded
+# twice. Only fields the CLIENT authored are read.
+_SIGNATURE_IDENTITY_FIELDS = ("affirmedAt", "timestamp", "signerName")
+
+
+def signature_ledger_key(document_type, document_id, event_type,
+                         signature_data):
+    """A stable fingerprint of one signing act, computable by either writer.
+
+    RETURNS None WHEN THE SIGNATURE HAS NO IDENTITY OF ITS OWN, and that answer
+    is load-bearing rather than a failure. The gate's affirmation event carries
+    a REFERENCE to the stroke on the worker document — no ink, no client
+    timestamp — and its document id is (project, eastern date), which EVERY
+    worker who affirms that day shares. A key computed over what is left would
+    be byte-identical for all of them, and the first row inserted would then
+    swallow every other worker's affirmation as a duplicate.
+
+    So an event with nothing distinctive of its own gets no key and no
+    deduplication. It does not need any: nothing derives those rows, so there
+    is no second writer to collide with. Only the paths where two writers
+    genuinely describe one act are keyed.
+    """
+    sig = signature_data if isinstance(signature_data, dict) else {}
+    ink = sig.get("paths")
+    if ink is None:
+        # A bare base64 string is a signature too — render_signature_html
+        # treats `isinstance(sig, str)` as an image, and _has_signature_ink
+        # accepts both shapes. Read the same two the predicate reads.
+        ink = sig.get("data") if isinstance(signature_data, dict) else signature_data
+    _stamp = (sig.get("affirmedAt") or sig.get("timestamp")) if isinstance(sig, dict) else None
+    if not ink and not _stamp:
+        return None
+    parts = {
+        "document_type": str(document_type or ""),
+        "document_id": str(document_id or ""),
+        "event_type": str(event_type or ""),
+        "ink": hashlib.sha256(
+            json.dumps(ink, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest(),
+    }
+    for f in _SIGNATURE_IDENTITY_FIELDS:
+        parts[f] = str(sig.get(f) or "") if isinstance(sig, dict) else ""
+    canonical = json.dumps(parts, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 async def create_signature_event(
     document_type: str,
     document_id: str,
@@ -16199,21 +16317,48 @@ async def create_signature_event(
     ip_address: str = None,
     acting_capacity: str = None,
     authenticated_role: str = None,
+    signature_key: str = None,
+    provenance: dict = None,
+    event_timestamp: datetime = None,
 ) -> str:
     """Create a signature event in the audit ledger.
-    Returns the inserted event_id as a string."""
-    
+    Returns the inserted event_id as a string.
+
+    IDEMPOTENT ON THE SIGNING ACT when a `signature_key` is supplied. Two
+    writers now describe the same signature — the signing client's own POST and
+    the server's derivation from the accepted document — and without this the
+    ledger would carry one signing act twice. The row that already exists WINS,
+    whichever writer put it there: an audit ledger is append-only, so a row is
+    never upgraded, replaced or annotated after the fact. That is why the
+    online client's row is worth preserving and why the derived one is marked.
+    """
+
     now = datetime.now(timezone.utc)
-    
+
+    # ── THE ROW THAT IS ALREADY THERE WINS ──────────────────────────────────
+    #
+    # Checked BEFORE the version count, because the count is what makes a
+    # duplicate look legitimate: a second row for one signature would be handed
+    # version 2 and read as a second signing.
+    if signature_key:
+        _already = await db.signature_events.find_one({
+            "document_type": document_type,
+            "document_id": str(document_id),
+            "signature_key": signature_key,
+            "is_deleted": {"$ne": True},
+        })
+        if _already is not None:
+            return str(_already["_id"])
+
     # Determine version: count existing events for this document
     existing_count = await db.signature_events.count_documents({
         "document_type": document_type,
         "document_id": document_id,
     })
     version = existing_count + 1
-    
+
     content_hash = compute_content_hash(content_snapshot)
-    
+
     event_doc = {
         "document_type": document_type,
         "document_id": document_id,
@@ -16232,11 +16377,28 @@ async def create_signature_event(
         "content_snapshot": content_snapshot,
         "content_hash": content_hash,
         "signature_data": signature_data,
-        "timestamp": now,
+        # THE MOMENT THE SIGNATURE WAS MADE, not the moment the row was
+        # written, whenever the two can differ. For a contemporaneous row they
+        # are the same instant and `now` is right. For a DERIVED row they are
+        # hours apart, and stamping the sync time here would put a time on the
+        # record that nobody signed at — so the caller passes the signer's own
+        # stamp and `provenance.derived_at` keeps the sync instant.
+        "timestamp": event_timestamp or now,
         "ip_address": ip_address,
+        # THE IDENTITY OF THE SIGNING ACT, so the other writer can recognise
+        # this row. Absent on every row written before this existed, which is
+        # what provenance_of reports as PREDATES_MARKING.
+        "signature_key": signature_key,
+        # UNDETERMINED, NEVER None, WHEN A CALLER DID NOT SAY. A missing key is
+        # what provenance_of reads as PREDATES_MARKING — the state reserved for
+        # rows written before this existed — so leaving it off a row written
+        # TODAY would make a new record claim to be an old one, which is the
+        # same lie the public endpoint refuses a logbook over. A caller that
+        # did not answer is recorded as not having answered.
+        PROVENANCE_EVENT_KEY: provenance or undetermined_provenance(),
         "is_deleted": False,
     }
-    
+
     # ── THE ONE PLACE THAT KNOWS THE WRITE FAILED ───────────────────────────
     #
     # BOTH CALLERS SWALLOW, AND BOTH ARE RIGHT TO. The endpoint's 500 lands in
@@ -16250,8 +16412,27 @@ async def create_signature_event(
     #
     # Re-raised, not converted. The callers' handling is unchanged; this only
     # ensures the attempt is on the record before their handling runs.
+    from pymongo.errors import DuplicateKeyError
+
     try:
         result = await db.signature_events.insert_one(event_doc)
+    except DuplicateKeyError:
+        # THE CHECK ABOVE IS NOT ATOMIC, AND THE RACE IS REAL: daily_jobsite
+        # fires recordSignatureEvent WITHOUT awaiting it and then calls
+        # /finalize, so the client's POST and the server's derivation can be
+        # in flight at the same instant. The partial unique index on
+        # (document_type, document_id, signature_key) is what actually settles
+        # it; this converts the loser's exception into the winner's row, which
+        # is the same answer the pre-check gives when it is not raced.
+        _won = await db.signature_events.find_one({
+            "document_type": document_type,
+            "document_id": str(document_id),
+            "signature_key": signature_key,
+            "is_deleted": {"$ne": True},
+        })
+        if _won is not None:
+            return str(_won["_id"])
+        raise
     except Exception as e:
         logger.error(
             f"[signature-ledger] INSERT FAILED — no ledger row exists for a "
@@ -16277,8 +16458,212 @@ async def signature_event_count(database, document_type: str, document_id: str) 
         "document_id": str(document_id),
         "is_deleted": {"$ne": True},
     })
- 
- 
+
+
+# ── THE EVENT TYPE A LOG'S CP SIGNATURE IS ─────────────────────────────────
+#
+# The client sends this explicitly and it is not guessed for it. The derivation
+# has no client to ask, so it resolves the same thing from the log type — and
+# it must agree with the editors, because deriveActingCapacity (signatureAudit
+# .js) reads the event type FIRST and the wrong one records a superintendent's
+# statutory log as signed by a Competent Person.
+_SIGNATURE_EVENT_TYPE_BY_LOG_TYPE = {
+    "site_superintendent_log": "superintendent_sign",
+    "ssc_daily_safety_log": "cp_sign",
+}
+
+
+def signature_event_type_for(log_type) -> str:
+    return _SIGNATURE_EVENT_TYPE_BY_LOG_TYPE.get(
+        str(log_type or "").strip(), "cp_sign")
+
+
+async def ensure_signature_ledger_row(logbook, written_by: str) -> str:
+    """DERIVE THE LEDGER ROW FROM THE DOCUMENT THE SERVER JUST ACCEPTED.
+
+    ── WHY DERIVED AND NOT QUEUED ─────────────────────────────────────────────
+
+    A signature made with no signal produced NO LEDGER ROW AT ALL, and nothing
+    failed to report it. All thirteen recordSignatureEvent call sites guard on
+    `if (docId)`; offline there is no server id, so the call is SKIPPED. The
+    draft drains later through draftSync, which pushes `cp_signature` and
+    `status: 'submitted'` and has never written a signature event. Thirty-three
+    signatures on the live project are in that state, and
+    subcontractor_orientation.jsx:556 has a comment claiming they are audited
+    when they sync.
+
+    The obvious fix is a retry queue on the device. It is the wrong one: a
+    device queue is lost with the device, which is the same failure one layer
+    down. The DOCUMENT is already durable — logbookDrafts writes it, draftSync
+    delivers it, and both are proven — so a row derived FROM the document
+    cannot go missing separately from the thing it describes.
+
+    ── WHEN IT FIRES, AND WHY THAT IS NOT A RACE ──────────────────────────────
+
+    THE ONLINE CLIENT'S ROW IS THE PRIMARY AND MUST BE ALLOWED TO WIN. It is
+    the only row that can carry the real signing device and the real signing IP,
+    and it is written moments after the save returns. So the derivation must
+    never fire on the request that is CARRYING the signature to the server —
+    that request is the client's own signing round trip, and its ledger POST is
+    in flight behind it.
+
+    Callers therefore pass `written_by` from a point where the signature is
+    ALREADY STORED and the request did not bring it: /finalize, or a later
+    update. draftSync reaches such a point on every signed draft it drains —
+    applyRemoteFreeze calls /finalize for any locally-finalized draft, and
+    every signed draft is locally finalized (freezeIfImmediate -> markFinalized
+    for the ten immediate types, an explicit markFinalized in the two
+    end-of-day editors). The online path reaches it too, and finds the client's
+    row already there.
+
+    This is deliberately NOT a time-based guess. `_finalize_cp_signature`'s own
+    docstring records that a CP may affirm hours before the log files while
+    perfectly online ("draft-all-day"), so lag says nothing about connectivity.
+
+    ── WHAT IT REFUSES TO DO ──────────────────────────────────────────────────
+
+    IT NEVER FABRICATES. An unsigned document derives nothing: the row would be
+    an attestation nobody made, which is worse than the absence it replaces.
+    The 33 existing gaps are NOT backfilled for the same reason one step
+    further on — their content_snapshot would have to be reconstructed from a
+    document that has since been edited, and /signature-events/verify would
+    then assert a hash over content the signer never saw.
+
+    Returns the event id when a row exists or was written, else None. NEVER
+    RAISES: every caller has already committed the CP's document, and an audit
+    write must not be able to fail a filing that succeeded.
+    """
+    try:
+        sig = (logbook or {}).get("cp_signature")
+        # INK OR AFFIRMATION — the same breadth sweep_signature_ledger_gaps
+        # uses, and for its stated reason: a legacy pre-affirmation signature
+        # is still a person's mark on a compliance record. An EMPTY DICT is
+        # neither, and that is the shape production actually held.
+        if not (_has_signature_ink(sig) or _is_affirmed_signature(sig)):
+            return None
+
+        # `id` AS WELL AS `_id`, BECAUSE serialize_id MUTATES IN PLACE. It pops
+        # `_id` and writes `id` onto the very dict it is handed, so a caller
+        # that serialized before calling this would hand over a document with
+        # no `_id` — and the derivation would silently do nothing, which is the
+        # exact failure mode this whole change exists to remove.
+        doc_id = str((logbook or {}).get("_id")
+                     or (logbook or {}).get("id") or "")
+        if not doc_id:
+            return None
+        log_type = (logbook or {}).get("log_type")
+        event_type = signature_event_type_for(log_type)
+        key = signature_ledger_key("logbook", doc_id, event_type, sig)
+
+        # ── A SIGNATURE WITH NO IDENTITY STILL MUST NOT BE WRITTEN TWICE ────
+        #
+        # signature_ledger_key returns None for a signature carrying neither
+        # ink nor a client stamp, and without a key create_signature_event has
+        # nothing to deduplicate on — so a second /finalize would mint a second
+        # row for one signature. That shape is rare here (the derivation
+        # already refuses anything with no ink and no affirmation) but it is
+        # reachable: an affirmed credential whose stamps were stripped.
+        #
+        # The fallback is the DOCUMENT-level question, which is the one the
+        # nightly sweep and the finalize check both ask: does this document
+        # have any ledger row at all. Coarser than the key deliberately — for a
+        # signature that cannot be identified, "the ledger already knows about
+        # this document" is the strongest true statement available, and
+        # erring toward not writing is right when the alternative is two rows
+        # claiming to be two signings.
+        if not key:
+            if await signature_event_count(db, "logbook", doc_id):
+                return None
+
+        # THE SIGNING INSTANT SURVIVES THE SYNC. SignaturePad stamps
+        # `timestamp`, `affirmed`, `affirmedAt` and `affirmedLang` INSIDE the
+        # signature object at the moment of the stroke, and the object travels
+        # with the document — so the one thing a sync-time row would otherwise
+        # get wrong, the WHEN, is recoverable. `affirmedAt` first, matching
+        # _finalize_cp_signature, which treats it as the real attestation
+        # moment and validates it. A signature with neither stamp is a real
+        # shape (a legacy base64 credential) and the source is recorded as
+        # absent rather than silently filled in with the sync time.
+        _signed_at = None
+        _source = None
+        if isinstance(sig, dict):
+            if sig.get("affirmedAt"):
+                _signed_at = _parse_iso_dt(sig.get("affirmedAt"))
+                _source = PROVENANCE_SIGNED_AT_AFFIRMED_AT
+            if _signed_at is None and sig.get("timestamp"):
+                _signed_at = _parse_iso_dt(sig.get("timestamp"))
+                _source = PROVENANCE_SIGNED_AT_TIMESTAMP
+        if _signed_at is None:
+            _source = None
+
+        now = datetime.now(timezone.utc)
+        # THE SNAPSHOT IS THE DOCUMENT AS STORED, which is what makes this
+        # honest and is exactly what makes a BACKFILL of the 33 dishonest: here
+        # the server is holding the record it has just accepted, in the state
+        # the signature was applied to. A backfill would be reading a document
+        # that has moved on since.
+        snapshot = attach_attestation({
+            "log_type": log_type,
+            "date": (logbook or {}).get("date"),
+            "project_id": (logbook or {}).get("project_id"),
+            "data": (logbook or {}).get("data"),
+            "status": (logbook or {}).get("status"),
+        }, log_type)
+
+        return await create_signature_event(
+            document_type="logbook",
+            document_id=doc_id,
+            event_type=event_type,
+            signer_name=(logbook or {}).get("cp_name")
+            or (sig.get("signerName") if isinstance(sig, dict) else None),
+            signer_role="cp",
+            # THE AUTHOR OF THE DOCUMENT, NOT THE ACCOUNT THAT SYNCED IT.
+            # `created_by` is who wrote the log; the authenticated caller on a
+            # drain is whoever's session the drain ran under, and on /finalize
+            # can be a different person entirely. Recording the caller here
+            # would name the wrong signer.
+            signer_user_id=(logbook or {}).get("created_by"),
+            signature_data=sig,
+            content_snapshot=snapshot,
+            # ── THE TWO THINGS DERIVING REALLY DOES COST ────────────────────
+            # Left EMPTY, deliberately and visibly. The device and the network
+            # available here belong to whatever had signal LATER — possibly the
+            # same phone on a different network, possibly a different phone
+            # after a reinstall. Writing them would be a fabrication of exactly
+            # the kind this ledger exists to prevent, and it would be an
+            # invisible one.
+            device_info={},
+            ip_address=None,
+            acting_capacity=None,
+            authenticated_role=None,
+            signature_key=key,
+            provenance=derived_provenance(
+                written_by=written_by,
+                derived_at=now,
+                signed_at=_signed_at,
+                signed_at_source=_source,
+            ),
+            event_timestamp=_signed_at,
+        )
+    except Exception as e:
+        # THE CP'S DOCUMENT IS ALREADY SAVED. Every call site is past its own
+        # commit, and refusing a filed log over an audit write is the trade
+        # this whole change exists to avoid. Logged under the tag the rest of
+        # the ledger uses so one grep spans all of it.
+        logger.error(
+            f"[signature-ledger] DERIVATION FAILED — a signed document was "
+            f"accepted and no ledger row could be derived for it. "
+            f"document_type='logbook' "
+            f"document_id={str((logbook or {}).get('_id'))!r} "
+            f"log_type={(logbook or {}).get('log_type')!r} "
+            f"project_id={(logbook or {}).get('project_id')!r} "
+            f"date={(logbook or {}).get('date')!r} "
+            f"signer={(logbook or {}).get('cp_name')!r} "
+            f"written_by={written_by!r}: {e!r}",
+        )
+        return None
+
+
 # ==================== SIGNATURE EVENT ENDPOINTS ====================
  
 @api_router.post("/signature-events")
@@ -16348,6 +16733,18 @@ async def record_signature_event(
             # Tier 1 (4): the server-verified role of the authenticated signer —
             # the trustworthy counterpart to the client-claimed signer_role.
             authenticated_role=current_user.get("role"),
+            # ── THIS ROW IS THE PRIMARY, AND IT SAYS SO ─────────────────────
+            #
+            # The signing device wrote it, over its own connection, moments
+            # after the save returned: `device_info` and `ip_address` here are
+            # the SIGNER'S, which is the one thing a server-derived row can
+            # never claim. The key lets the derivation recognise this row and
+            # stand down; the provenance lets an auditor tell the two apart
+            # without having to know which code path ran.
+            signature_key=signature_ledger_key(
+                data.document_type, data.document_id, data.event_type,
+                data.signature_data),
+            provenance=contemporaneous_provenance(written_by="signing_client"),
         )
     except Exception as _e:
         logger.error(
@@ -16448,8 +16845,16 @@ async def record_public_signature_event(data: dict, request: Request):
         content_snapshot=data["content_snapshot"],
         device_info=data.get("device_info"),
         ip_address=ip_address,
+        # The gate's own device and IP, at the turnstile, at the moment the
+        # worker affirmed. Contemporaneous by construction — this endpoint has
+        # no offline path and no derivation can reach it (a logbook is refused
+        # above), so the marker is not a claim it has to earn.
+        signature_key=signature_ledger_key(
+            data["document_type"], data["document_id"], data["event_type"],
+            data["signature_data"]),
+        provenance=contemporaneous_provenance(written_by="gate"),
     )
-    
+
     return {"event_id": event_id}
  
  
@@ -16517,6 +16922,21 @@ async def verify_signature_integrity(
         recomputed_hash = compute_content_hash(evt.get("content_snapshot", {}))
         is_valid = stored_hash == recomputed_hash
         
+        # ── HOW THIS ROW CAME TO BE WRITTEN, REPORTED ALONGSIDE THE HASH ────
+        #
+        # THE HASH ANSWERS A DIFFERENT QUESTION. `integrity_valid` says the
+        # snapshot has not been altered since it was stored; it says nothing
+        # about whether the device and IP on the row are the SIGNER'S. A row
+        # the server derived from an accepted document carries neither, and
+        # without this an auditor reading `device: {}` cannot tell that from a
+        # capture that failed.
+        #
+        # A row written before provenance marking existed reports
+        # PREDATES_MARKING, which is a statement about the RECORD and not about
+        # the signature — the same honest non-answer attestation_of gives, and
+        # unrepairable for the same reason: writing provenance onto an existing
+        # audit event would be altering the ledger.
+        _prov = provenance_of(evt)
         results.append({
             "event_id": str(evt["_id"]),
             "version": evt.get("version"),
@@ -16526,6 +16946,8 @@ async def verify_signature_integrity(
             "stored_hash": stored_hash,
             "recomputed_hash": recomputed_hash,
             "integrity_valid": is_valid,
+            "provenance": _prov,
+            "provenance_sentence": provenance_sentence(_prov),
         })
     
     all_valid = all(r["integrity_valid"] for r in results)
@@ -21100,6 +21522,13 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         asyncio.create_task(
             _enhance_logbook_photos(str(existing["_id"]), data.project_id)
         )
+        # SAME CONDITION AS update_logbook, and see the note there. A POST that
+        # carries no signature onto a row that already holds one is not the
+        # client's signing round trip, so the ledger is asked. A POST that
+        # carries the signature IS that round trip and is left alone — its own
+        # write is in flight and holds the device and IP this could not.
+        if data.cp_signature is None and (updated or {}).get("status") == "submitted":
+            await ensure_signature_ledger_row(updated, written_by="create_logbook")
         await _remember_other_activities(data.project_id, data.data)
         return serialize_id(updated)
 
@@ -21400,6 +21829,29 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         },
     )
 
+    # ── AND THE LEDGER, WHEN THIS REQUEST DID NOT BRING THE SIGNATURE ───────
+    #
+    # THE CONDITION IS `data.cp_signature is None`, AND IT IS NOT A PROXY FOR
+    # OFFLINE. It is the exact question that matters: did the CLIENT'S OWN
+    # SIGNING ROUND TRIP arrive in this request? If it did, its ledger POST is
+    # in flight behind the response, it carries the real device and the real
+    # IP, and deriving here would beat it to the row and downgrade it. If it
+    # did not -- a submit that patches only `status`, the shape the ordinary
+    # create-then-submit flow actually walks -- then the signature was accepted
+    # by an EARLIER request, that request's client has long since finished, and
+    # a missing row is a real gap rather than one in flight.
+    #
+    # NOT A TIME COMPARISON, deliberately. _finalize_cp_signature's own
+    # docstring records that a CP may affirm hours before the log files while
+    # perfectly online ("draft-all-day"), so the lag between the signature's
+    # stamp and its arrival says nothing at all about connectivity.
+    #
+    # BELT AND BRACES: /finalize is the path that catches the drain, and every
+    # signed offline draft reaches it. This catches a submitted log that never
+    # finalizes.
+    if data.cp_signature is None and (updated or {}).get("status") == "submitted":
+        await ensure_signature_ledger_row(updated, written_by="update_logbook")
+
     if data.data is not None:
         await _remember_other_activities((updated or {}).get("project_id"), data.data)
     return serialize_id(updated)
@@ -21541,6 +21993,28 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
+    # ── THE DERIVED ROW IS WRITTEN BEFORE THE IDEMPOTENT RETURN, NOT AFTER ──
+    #
+    # AND THAT PLACEMENT IS THE WHOLE OFFLINE FIX FOR TEN OF THE TWELVE TYPES.
+    # An immediate log LOCKS on `status: submitted`, so when draftSync drains
+    # one it is already `is_locked` by the time applyRemoteFreeze calls this —
+    # and the early return below is taken. Everything the base branch added at
+    # the bottom of this function (the presence check) is unreachable on
+    # exactly the path that produced the 33.
+    #
+    # WHY HERE AND NOT IN create/update. Those are the requests that CARRY the
+    # signature, which is the online client's own signing round trip: its
+    # ledger POST is in flight behind the response and it holds the real device
+    # and the real IP. Deriving there would beat it to the row every time and
+    # silently downgrade every online signature. This request carries no
+    # signature — it acts on one already stored — so the client's window has
+    # closed and a missing row is a real gap, not one in flight.
+    #
+    # draftSync reaches this line for every signed draft it drains: a signed
+    # draft is always locally finalized (freezeIfImmediate -> markFinalized for
+    # the ten immediate types, an explicit markFinalized in the two end-of-day
+    # editors), and applyRemoteFreeze calls /finalize for any finalized draft.
+    await ensure_signature_ledger_row(existing, written_by="finalize_logbook")
     if existing.get("is_locked"):
         return serialize_id(existing)  # idempotent — already finalized
     # Sits AFTER the is_locked early-return so re-finalizing an already-locked
@@ -21598,10 +22072,13 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     # missing audit row would take a CP's filed log away from him to protect an
     # observability property, which is the trade this change exists to avoid.
     #
-    # THE DRAIN IS THE CASE THIS CATCHES. draftSync's applyRemoteFreeze calls
-    # /finalize for every log signed offline, and that path has never recorded
-    # a signature event at all -- no client failed, so no client reported
-    # anything, and this is the first server-side moment that can notice.
+    # THE DRAIN IS NO LONGER THE CASE THIS CATCHES, AND THAT IS THE POINT.
+    # ensure_signature_ledger_row now runs at the top of this function and
+    # DERIVES a row for exactly that case, so a gap reaching this line means
+    # the derivation itself could not write one -- the ledger was unreachable,
+    # or the signature was a shape the derivation refuses (an empty dict, which
+    # is what production actually held). Narrower than it was, and for that
+    # reason a stronger signal: it now reports what the fix could not fix.
     try:
         _ledger_rows = await signature_event_count(db, "logbook", logbook_id)
         if not _ledger_rows:
@@ -21706,7 +22183,23 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     await audit_log("logbook_amend", str(current_user.get("id", "")), "logbook", str(result.inserted_id), {
         "parent_logbook_id": str(original["_id"]), "reason": str(reason).strip()[:200], "log_type": original.get("log_type"),
     })
-    return serialize_id(await db.logbooks.find_one({"_id": result.inserted_id}))
+    created_child = await db.logbooks.find_one({"_id": result.inserted_id})
+    # ── WIRED, AND TODAY IT CAN ONLY EVER BE A NO-OP ───────────────────────
+    #
+    # `cp_signature` is reset to None four lines up: an amendment MUST be
+    # re-signed, so there is no signing act here to record and
+    # ensure_signature_ledger_row returns immediately. It is called anyway
+    # because the thing that would make it necessary is a one-line change —
+    # copying the parent's signature onto the child, which is what "start from
+    # the original's data" already does for `data` — and that change would
+    # otherwise mint a signed compliance record with no ledger row on a path
+    # nobody thought to look at. The child's own signature, when the CP applies
+    # it, is recorded by the ordinary update/finalize paths.
+    # test_signature_ledger_offline_durability asserts the no-op, so if the
+    # child ever does inherit a signature that test fails rather than this
+    # quietly minting an attestation nobody made.
+    await ensure_signature_ledger_row(created_child, written_by="amend_logbook")
+    return serialize_id(created_child)
 
 
 # ══ ACTIVITY CHIPS — the sequence engine's only consumer ═════════════════════
@@ -39327,6 +39820,30 @@ async def startup_event():
         logger.info("📧 Renewal digest scheduled (daily 7am ET)")
     except Exception as _e:
         logger.error(f"renewal_digest_daily scheduler wire failed: {_e!r}")
+
+    # ── ONE LEDGER ROW PER SIGNING ACT, ENFORCED BY THE DATABASE ───────────
+    #
+    # Two writers now describe the same signature: the signing client's POST
+    # /signature-events and the server's derivation from an accepted document.
+    # create_signature_event checks before it inserts, but check-then-insert is
+    # not atomic and the race is REAL — daily_jobsite fires its ledger write
+    # without awaiting it and then calls /finalize, so both can be in flight at
+    # once. This is what actually settles it; the pre-check only keeps the
+    # common case off the error path.
+    #
+    # PARTIAL, AND THAT IS LOAD-BEARING. Every row written before this existed
+    # has no `signature_key` at all. A plain unique index would read them all
+    # as null, collide on the second one, and fail to build — on a collection
+    # that must never be rewritten to suit an index. The filter restricts it to
+    # rows that carry a key, so it starts empty and only ever governs rows
+    # written from here on.
+    await _ensure_index_resilient(
+        db.signature_events,
+        keys=[("document_type", 1), ("document_id", 1), ("signature_key", 1)],
+        name="signature_events_one_row_per_signing_act",
+        unique=True,
+        partialFilterExpression={"signature_key": {"$type": "string"}},
+    )
 
     # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.
     await _ensure_index_resilient(

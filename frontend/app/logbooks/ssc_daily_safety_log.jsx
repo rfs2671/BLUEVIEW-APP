@@ -383,7 +383,13 @@ export default function SSCDailySafetyLog() {
     if (submitStatus === 'submitted' && cpSignature) {
       const docId = existingLogId || created?.id || created?._id;
       if (docId) {
-        recordSignatureEvent({
+        // AWAITED — see the identical note in daily_jobsite.jsx. This is the
+        // other end-of-day editor: it calls an explicit /finalize right after
+        // this returns, the server derives a ledger row there, and the derived
+        // row cannot carry the signing device or IP. Ordering the two is what
+        // lets the accurate row win when the CP is online. recordSignatureEvent
+        // resolves with null instead of rejecting, so this cannot refuse a log.
+        const _evtId = await recordSignatureEvent({
           documentType: 'logbook', documentId: docId, eventType: 'ssc_sign',
           signerName: cpName, signerRole: user?.role || 'ssc',
           signatureData: cpSignature,
@@ -391,7 +397,14 @@ export default function SSCDailySafetyLog() {
             log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
           },
           user,
-        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
+        });
+        if (!_evtId) {
+          console.error(
+            '[signature-ledger] no contemporaneous row for this signature; '
+            + 'the server will derive one without the signing device or IP.',
+            { documentId: docId, projectId, date, logType: LOG_TYPE },
+          );
+        }
       }
     }
     return savedId || null;
