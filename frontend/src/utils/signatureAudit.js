@@ -98,6 +98,30 @@ export async function recordSignatureEvent({
   actingCapacity,
   user,
 }) {
+  // ── A WRITE THAT NEVER HAPPENS IS NOT SILENCE ─────────────────────────────
+  //
+  // EVERY CALLER GUARDS ON `if (docId)` AND SKIPS. That guard is right — a
+  // POST with a null document_id would write a ledger row pointing at nothing —
+  // but the skip itself was reported by absolutely nothing, and it is not a
+  // rare branch. It is THE OFFLINE PATH: no server id means the push did not
+  // land, the log is filed from the local draft later by draftSync, and
+  // draftSync has never recorded a signature event. So the single most likely
+  // way to produce a signed logbook with no ledger row left no trace at all,
+  // on the device or on the server.
+  //
+  // The durable half of this is server-side (sweep_signature_ledger_gaps finds
+  // exactly these the following night). This half is so that a device log,
+  // when someone does have one, says which record it was about.
+  if (!documentId) {
+    console.error(
+      '[signature-ledger] SKIPPED — no server id for the document, so no '
+      + 'ledger event was attempted. This signature is filed with no audit '
+      + 'row unless something records it later.',
+      { documentType, eventType, signerName, signerRole },
+    );
+    return null;
+  }
+
   try {
     const deviceInfo = await buildDeviceInfo(user);
 
@@ -117,9 +141,33 @@ export async function recordSignatureEvent({
     const response = await apiClient.post('/api/signature-events', payload);
     return response.data?.event_id || null;
   } catch (error) {
-    console.error('Failed to record signature event:', error);
-    // Non-blocking — the signature still saves on the document.
-    // The audit trail entry will be missing, but the app doesn't break.
+    // ── THE FAILURE NOW SAYS WHAT IT WAS FOR ────────────────────────────────
+    //
+    // This was `console.error('Failed to record signature event:', error)`.
+    // It named no document, no signer and no event type, so even on a device
+    // whose console someone could read, the line could not be tied to a
+    // record — which is the same problem the missing ledger row has, one layer
+    // up. Tagged [signature-ledger] to match the server, so one grep spans
+    // both sides.
+    //
+    // STILL NON-BLOCKING, AND STILL RESOLVING WITH null. The contract is
+    // deliberate: the signature saves on the document either way and a CP must
+    // never be refused his filed log over an audit write. But `null` IS the
+    // failure report, and a caller that discards it discards the only thing
+    // this function can tell it — see the note at the awaited call site in
+    // site_superintendent_log.jsx.
+    console.error(
+      '[signature-ledger] WRITE FAILED — this signature has no audit row.',
+      {
+        documentType,
+        documentId,
+        eventType,
+        signerName,
+        signerRole,
+        status: error?.response?.status ?? null,
+        message: error?.message,
+      },
+    );
     return null;
   }
 }

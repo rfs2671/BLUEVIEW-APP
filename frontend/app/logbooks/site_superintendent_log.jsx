@@ -391,9 +391,26 @@ export default function SiteSuperintendentLog() {
       // this file: deriveActingCapacity reads the event type first, and the
       // wrong one records this log as signed by a Competent Person.
       if (savedId) {
-        // Non-blocking, exactly as every other editor treats it: the log is
-        // filed and must not be refused over an audit write.
-        recordSignatureEvent({
+        // ── AWAITED HERE, AND ONLY HERE ──────────────────────────────────
+        //
+        // THIS IS THE ONE EDITOR THAT SEALS IN THE SAME BREATH IT SIGNS. The
+        // finalize a few lines below makes the record immutable, and the
+        // server now asks the ledger at that moment whether an event exists
+        // for this document. Fired and forgotten, this POST races that seal:
+        // the server would report a gap for a row that is merely in flight,
+        // and a detector that cries wolf is a detector nobody reads. Awaiting
+        // orders the two, so a gap reported at finalize is a real one.
+        //
+        // NON-BLOCKING IS UNCHANGED. recordSignatureEvent catches its own
+        // error and resolves with null; it has never rejected, which is why
+        // the `.catch` that used to sit here had never once run. Awaiting a
+        // promise that cannot reject cannot refuse the log — it only costs
+        // the round trip, which this handler is already paying for twice.
+        //
+        // AND THE null IS READ. It is the function's whole failure report; the
+        // caller that is about to seal the record is the last one that may
+        // throw it away.
+        const _evtId = await recordSignatureEvent({
           documentType: 'logbook',
           documentId: savedId,
           eventType: 'superintendent_sign',
@@ -405,7 +422,14 @@ export default function SiteSuperintendentLog() {
             data: payload.data, status: 'submitted',
           },
           user,
-        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
+        });
+        if (!_evtId) {
+          console.error(
+            '[signature-ledger] the superintendent log is about to be sealed '
+            + 'with no audit row.',
+            { documentId: savedId, projectId, date: logDate, logType: LOG_TYPE },
+          );
+        }
       }
 
       // ── THE FREEZE, AND WHY IT IS AN EXPLICIT CALL ─────────────────────

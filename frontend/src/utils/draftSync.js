@@ -338,6 +338,29 @@ async function pushOne(key) {
   // push, which leaves the key PENDING — the content update above is idempotent,
   // so the next drain re-sends it and retries the freeze. Retry behaviour is
   // otherwise unchanged; there is still no cap.
+  // ── AND THIS IS ALSO WHERE THE SIGNATURE REACHES THE AUDIT LEDGER ────────
+  //
+  // THE DRAIN HAS NEVER WRITTEN A SIGNATURE EVENT AND STILL DOES NOT. That was
+  // the whole offline gap: every recordSignatureEvent call site guards on
+  // `if (docId)`, offline there is no server id, so the ledger write is
+  // SKIPPED — not failed, skipped — and this drain files the signed log with
+  // no audit row and nothing anywhere to observe. Thirty-three signatures on
+  // the live project are in that state.
+  //
+  // IT IS FIXED SERVER-SIDE, NOT HERE, AND DELIBERATELY SO. A retry queue on
+  // this device would be lost with the device, which is the same failure one
+  // layer down. The server DERIVES the row from the document it accepts
+  // (ensure_signature_ledger_row), and the call below is what reaches it:
+  // /finalize is a request that carries no signature, so the server knows no
+  // client write is in flight behind it and a missing row is a real gap.
+  //
+  // WHICH IS WHY THIS CALL IS LOAD-BEARING FOR MORE THAN THE FREEZE. Every
+  // signed draft is locally finalized before it gets here — freezeIfImmediate
+  // -> markFinalized for the ten immediate types, an explicit markFinalized in
+  // daily_jobsite and ssc_daily_safety_log — so `draft.finalized` is the
+  // condition that also decides whether the ledger hears about this signature
+  // at all. A future change that narrows it must move the derivation trigger
+  // with it, or it silently reopens the gap.
   const applyRemoteFreeze = async (id) => {
     if (!draft.finalized || !id) return { ok: true, code: null };
     try {
