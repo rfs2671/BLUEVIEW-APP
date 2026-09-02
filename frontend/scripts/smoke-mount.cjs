@@ -69,6 +69,12 @@ const ROUTES = [
   '/login',
   '/projects',                          // ProjectsTable
   '/project/p1',                        // project detail — CompliancePanel, DefconHeader
+  // PLANS & FILES. The per-file visibility branch rewrote this screen end to
+  // end — the folder allow-list came out, a per-row publish toggle and a bulk
+  // control went in — and nothing in CI has ever executed it. It is also the
+  // screen every "N files awaiting selection" affordance now points at, so a
+  // mount error here would strand the one action the count exists to prompt.
+  '/projects/p1/files',
   '/project/p1/dob-logs',               // DOB compliance
   '/workers',
   '/workers/w1',                        // worker detail — cert/OSHA expiry
@@ -135,7 +141,18 @@ const server = http.createServer((req, res) => {
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const JWT = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ exp: 4102444800, sub: 'u1' })}.x`;
 const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'owner', company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
-const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, Brooklyn', company_id: 'c1', status: 'active', nyc_bin: '2115914' };
+// dropbox_folder_path + files_awaiting_site_selection are set so the FILES row
+// on the project screen mounts its LINKED and its AWAITING branch rather than
+// the "Not linked" fallback — an amber row nothing ever renders is a row
+// nothing ever tests.
+const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, Brooklyn', company_id: 'c1', status: 'active', nyc_bin: '2115914', dropbox_folder_path: '/Smoke Site', files_awaiting_site_selection: 2 };
+// Two rows, one chosen and one not, so the files screen mounts BOTH per-row
+// states and its unpublished card. A single-state list would leave whichever
+// branch it missed unexecuted.
+const FILES = [
+  { id: 'f1', name: 'approved.pdf', path: '/smoke site/approved.pdf', type: 'file', size: 1024, modified: '', r2_url: '', cache_version: 1, source: 'dropbox_sync', site_visible: true },
+  { id: 'f2', name: 'fresh.pdf', path: '/smoke site/fresh.pdf', type: 'file', size: 2048, modified: '', r2_url: '', cache_version: 1, source: 'dropbox_sync', site_visible: false },
+];
 const WORKER = { id: 'w1', _id: 'w1', name: 'Test Worker', company_id: 'c1', trade: 'Carpenter', certifications: [] };
 // The gate tablet. AuthContext reads site_mode/project_id/project_name off
 // /api/auth/me to set siteMode + siteProject; a user without them makes every
@@ -154,6 +171,11 @@ function stub(page, me = USER) {
     if (url.includes('/api/auth/me')) body = me;
     else if (url.includes('feature-flags')) body = { flags: {} };
     else if (url.includes('dob-summary')) body = { by_project: {}, totals: {} };
+    // Before the bare-project match below, or `/p1/dropbox-files` falls
+    // through to the projects-LIST arm and the files screen renders an array
+    // of project documents as if they were drawings.
+    else if (url.includes('/dropbox-files')) body = FILES;
+    else if (url.includes('/dropbox-subfolders')) body = { subfolders: [] };
     else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
     else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
     else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;

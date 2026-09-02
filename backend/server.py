@@ -2192,6 +2192,30 @@ class ProjectResponse(BaseModel):
     # reads it through dropboxSyncState.js, which already treats a missing or
     # malformed summary as "never synced" and fails toward letting the CP work.
     dropbox_sync: Optional[Dict] = None
+    # HOW MANY FILES ARE WAITING FOR SOMEONE TO CHOOSE THEM.
+    #
+    # Nothing reaches a gate tablet until a person picks that file, and the
+    # operator took that trade knowing what it costs: "an admin who never
+    # opens Plans & Files will never see the count, and then the tablet
+    # silently falls behind instead of silently running ahead." This field is
+    # how the count leaves that screen. It rides on the project the detail
+    # screen already fetches rather than on a new endpoint, because a second
+    # round trip for one integer is a second thing to keep in sync.
+    #
+    # DECLARED HERE OR IT DOES NOT EXIST. Read the note above about
+    # dropbox_folder_path: this model is an allow-list, an undeclared field is
+    # dropped with no error at any layer, and the failure mode here is worse
+    # than the one that outage produced. A dropped count does not render as
+    # "unknown" — it renders as NOTHING WAITING, which is the one answer that
+    # would let the tablet fall behind while the screen says it has not.
+    #
+    # Optional, and None is a THIRD answer beside 0 and N: "you are not being
+    # told". Only admins and owners are — they are the only people PUT
+    # /projects/{id}/site-device-files will accept — so a CP gets None rather
+    # than a number he cannot act on, and a site device gets None because the
+    # size of what was withheld from an inspector's tablet is not the tablet's
+    # business. The client must not collapse None into 0.
+    files_awaiting_site_selection: Optional[int] = None
     created_at: Optional[datetime] = None
     nyc_bin: Optional[str] = None
     # BBL field — 10-digit Borough-Block-Lot. Renamed from nyc_bbl
@@ -11312,6 +11336,42 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
     # without this lift, GET on any of them 500s.
     _lift_project_list_defaults(project)
 
+    # THE BACKLOG, ON THE RESPONSE THIS SCREEN ALREADY ASKS FOR.
+    #
+    # `$ne: True`, NOT `== False`, and the two are different populations.
+    # _site_device_may_read_file publishes on `site_visible is True` and
+    # withholds everything else, so a legacy row that carries no key at all is
+    # invisible to the tablet. A count spelled `== False` would skip exactly
+    # those rows — the screen would say two files are waiting while the tablet
+    # is missing three, and the number that exists to make the backlog
+    # noticeable would be the thing hiding part of it. One predicate, stated
+    # the same way in both places.
+    #
+    # Soft-deleted rows are excluded because a deleted file is not waiting for
+    # anybody; counting it would produce an amber number no one can ever clear.
+    #
+    # ASKED ONLY WHEN IT WILL BE ANSWERED. The count is admin/owner-only — see
+    # the field's note on ProjectResponse — so the query runs behind the same
+    # test rather than being computed and then filtered away. It costs one
+    # count_documents served by the existing `project_files.project_id` index.
+    if (current_user or {}).get("role") in ("admin", "owner") \
+            and not _is_site_device(current_user):
+        try:
+            project["files_awaiting_site_selection"] = \
+                await db.project_files.count_documents({
+                    "project_id": project_id,
+                    "is_deleted": {"$ne": True},
+                    "site_visible": {"$ne": True},
+                })
+        except Exception as e:
+            # A count is an ADVISORY. The project must still load without it,
+            # and absent is the honest answer — the client renders no claim
+            # rather than "nothing waiting", which absent-collapsed-to-zero
+            # would have asserted.
+            logger.warning(
+                f"awaiting-selection count failed for project {project_id}: {e}")
+            project.pop("files_awaiting_site_selection", None)
+
     return ProjectResponse(**serialize_id(project))
 
 @api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -19822,6 +19882,13 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
 
         now = datetime.now(timezone.utc)
         synced = 0
+        # Rows THIS RUN created that nobody has chosen yet. Counted here and
+        # not read back off the collection afterwards, because the project's
+        # standing backlog and what this sync just added are different facts:
+        # "this sync brought in three drawings" names a cause an admin can act
+        # on, "there are forty-seven waiting" is a status line he has already
+        # scrolled past. The dispatch below reports the first one.
+        awaiting_selection = 0
         # Countable, not retried. Making the silent per-file skips visible is
         # this change; doing something about them is separate work.
         failures = []
@@ -19909,6 +19976,12 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                     file_record["site_visible"] = False
                     insert_res = await db.project_files.insert_one(file_record)
                     file_record["_id"] = insert_res.inserted_id
+                    # Counted on the INSERT branch for the same reason
+                    # site_visible is written on it: the update branch above
+                    # re-syncs a file that may well already be published, and
+                    # counting those would report a backlog this run did not
+                    # create.
+                    awaiting_selection += 1
 
                 # Sprint 3: spawn plan indexing for PDFs when a file is new/changed.
                 # Hash cache inside _index_pdf_file also catches unchanged bytes.
@@ -19936,7 +20009,78 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
         await _sync_run_close(
             run_id, project_id, "complete", len(entries), synced, failures,
         )
-        logger.info(f"Sync complete for project {project_id}: {synced}/{len(entries)} files")
+        logger.info(
+            f"Sync complete for project {project_id}: {synced}/{len(entries)} "
+            f"files, {awaiting_selection} awaiting selection")
+
+        # ── THE MOMENT THE FACT BECOMES TRUE ────────────────────────────────
+        # A notification fires once and cannot be un-fired; a backlog persists
+        # until someone works it off. Those two shapes do not match, and the
+        # answer is not to fire on the CONDITION — nothing in this codebase
+        # can retract an inbox row when its condition resolves, so a
+        # condition-shaped notification would sit there after the files were
+        # published, saying something that had stopped being true.
+        #
+        # So it fires on the EVENT that created the backlog. `source_id` is
+        # the sync RUN id, and the inbox dedups on
+        # (user_id, source_kind, source_id), which gives exactly the
+        # behaviour wanted from both directions: re-dispatching this run is
+        # idempotent, and the NEXT sync that brings in unchosen files is a
+        # different run and speaks again. Same knob checkin_needs_trade turns
+        # with `worker:est_day`, pointed at the unit that did the work.
+        #
+        # SILENT WHEN IT ADDED NOTHING. A sync that only refreshed
+        # last_synced_at created no backlog, and an inbox row saying so is how
+        # a reader learns to skip the kind — which would cost the one that
+        # matters its reader.
+        #
+        # NO EQUIVALENT ON THE DIRECT-UPLOAD PATH, deliberately: the admin who
+        # uploaded the drawing is standing at the screen that shows him it is
+        # unchosen. This exists for files that arrived while nobody looked.
+        if awaiting_selection > 0:
+            # Failure-isolated like every other dispatch site. A drawing that
+            # reached R2 is not un-synced because an inbox insert failed.
+            try:
+                _project = await db.projects.find_one(
+                    {"_id": to_query_id(project_id)})
+                if _project:
+                    _n = awaiting_selection
+                    await _notifications_inbox.dispatch_notification(
+                        db,
+                        project=_project,
+                        kind="files_awaiting_site_selection",
+                        # info, not warning. The three-value vocabulary is
+                        # info/warning/critical, and a file waiting to be
+                        # chosen is not a warning about anything — it is what
+                        # a correct system looks like the morning after a
+                        # sync. Amber on the screen says "needs review";
+                        # "warning" here would say "something went wrong".
+                        severity="info",
+                        title=(
+                            f"{_n} new file{'' if _n == 1 else 's'} ready to "
+                            f"review for site tablets"
+                        ),
+                        message=(
+                            f"A Dropbox sync of "
+                            f"{_project.get('name') or 'this project'} added "
+                            f"{_n} file{'' if _n == 1 else 's'}. Nothing is "
+                            f"published to gate tablets automatically — open "
+                            f"Plans & Files and choose which of them site "
+                            f"devices should be able to read."
+                        ),
+                        source_kind="dropbox_sync",
+                        source_id=str(run_id or f"{project_id}:{now.isoformat()}"),
+                        deeplink_anchor="files",
+                        metadata={
+                            "added_awaiting_selection": _n,
+                            "synced": synced,
+                            "run_id": str(run_id) if run_id else None,
+                        },
+                    )
+            except Exception as _inbox_err:
+                logger.warning(
+                    f"[inbox] awaiting-selection dispatch failed for project "
+                    f"{project_id}: {_inbox_err}")
 
     except Exception as e:
         logger.error(f"Background sync failed for project {project_id}: {e}")

@@ -12,7 +12,7 @@ import {
   Platform,
   Image,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -220,6 +220,33 @@ export default function ProjectDetailScreen() {
 
   const isAdmin = user?.role === 'admin';
 
+  // WHO MAY CHOOSE WHICH FILES A GATE TABLET READS. Deliberately NOT the
+  // `isAdmin` above: that one excludes 'owner', which is the role every
+  // self-serve signup receives, while projects/[id]/files.jsx — the screen
+  // this row opens — admits `['owner', 'admin']`, and so does the server
+  // (get_admin_user, and the count on GET /projects/{id}). Gating the row on
+  // `isAdmin` would hide the backlog from an owner on the screen while the
+  // screen behind it happily let him work it, which is the operator's failure
+  // mode exactly: he would never see the count.
+  //
+  // Scoped to this row on purpose. `isAdmin` also gates NFC TAGS and SITE
+  // DEVICES, and widening those is a decision about two other sections that
+  // does not belong in a change about a file count.
+  const canSelectSiteFiles = ['owner', 'admin']
+    .includes(String(user?.role || '').toLowerCase());
+
+  // FILES A SYNC OR AN UPLOAD BROUGHT IN THAT NOBODY HAS CHOSEN YET.
+  //
+  // Three answers, not two. A number renders; a 0 renders as "everything is
+  // published"; and ABSENT renders as nothing at all — an older cached
+  // project doc, or a role the server does not tell. Collapsing absent into 0
+  // would make the screen assert that nothing is waiting, which is the single
+  // claim this feature exists to stop it making falsely.
+  const awaitingSelection =
+    typeof project?.files_awaiting_site_selection === 'number'
+      ? project.files_awaiting_site_selection
+      : null;
+
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
@@ -231,6 +258,54 @@ export default function ProjectDetailScreen() {
       fetchData();
     }
   }, [isAuthenticated, projectId]);
+
+  // RE-READ THE PROJECT WHEN THIS SCREEN COMES BACK INTO VIEW.
+  //
+  // The awaiting-selection count rides on the project document, and the one
+  // thing that changes it is publishing files on projects/[id]/files — which
+  // the admin reaches from this screen and returns to with router.back().
+  // Without this, the amber count is stale at precisely the moment it matters
+  // most: he has just chosen the files, and the row still says they are
+  // waiting. A feature that lies about its own subject is worse than no
+  // feature.
+  //
+  // ONLY the project, not fetchData(). A full refetch is seven requests
+  // (NFC, devices, WhatsApp status + groups, active check-ins, checklists) to
+  // refresh one integer. Mirrors the useFocusEffect in logbooks/index.jsx and
+  // project/[id]/report-settings.jsx, narrowed to the read that can change.
+  //
+  // The mount pass is skipped: the effect above has already fetched, and
+  // firing both would double every project read on every screen open.
+  const focusedOnce = React.useRef(false);
+  useFocusEffect(
+    React.useCallback(() => {
+      if (!focusedOnce.current) { focusedOnce.current = true; return; }
+      if (!isAuthenticated || !projectId) return;
+      let cancelled = false;
+      (async () => {
+        try {
+          const fresh = await projectsAPI.getById(projectId);
+          if (cancelled || !fresh) return;
+          cacheProject(fresh);
+          setProject(fresh);
+          setProjectState('ok');
+          setProjectFromCache(false);
+        } catch (e) {
+          // Best-effort. The copy already on screen stays, and its own
+          // offline/error banner is unchanged — a failed refresh tells the
+          // reader nothing new about this job.
+          //
+          // (That sentence deliberately does not end on the word p-r-o-j-e-c-t
+          // followed by a full stop: test_project_response_delivers_what_the_
+          // app_reads scans this file as TEXT, and `project.` immediately
+          // above an identifier reads to its regex as a field access —
+          // `project` `.` `console` — and fails the build.)
+          console.warn('[project] focus refresh failed:', e?.message);
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [isAuthenticated, projectId])
+  );
 
   // DOB exposure rollup for the desktop tiles — ONE GET
   // /api/projects/dob-summary?project_id={id}. Desktop only; degrades to
@@ -1219,25 +1294,63 @@ export default function ProjectDetailScreen() {
               Linked-ness is `bool(dropbox_folder_path)` and the folder is
               managed on projects/[id]/files, which is the screen that renders
               the tree. This row states which it is and taps through. */}
-          {isAdmin && (
+          {canSelectSiteFiles && (
             <>
               <Text style={s.sectionLabel}>FILES</Text>
               <Pressable
                 onPress={() => router.push(`/projects/${projectId}/files`)}
                 style={({ pressed }) => [pressed && { opacity: 0.7 }]}
               >
-                <GlassCard style={s.dropboxRow}>
+                {/* THE BACKLOG, ON THE ROW THAT ALREADY GOES THERE.
+                    Not a new section. The count's whole job is to be seen by
+                    an admin who was not going to open Plans & Files, and a
+                    row he has to scroll past a second time is a row he learns
+                    to scroll past. This one already says what state the files
+                    are in and already taps through; it now says how many of
+                    them are waiting on him.
+
+                    Amber tint only when something IS waiting, so the row
+                    stays quiet chrome on a project with nothing outstanding.
+                    A permanent badge nobody can clear is wallpaper. */}
+                <GlassCard
+                  style={[
+                    s.dropboxRow,
+                    awaitingSelection > 0 && s.dropboxRowAwaiting,
+                  ]}
+                >
                   <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
                   <View style={s.dropboxRowInfo}>
                     <Text style={s.dropboxRowPath} numberOfLines={1}>
                       {project?.dropbox_folder_path || 'Not linked'}
                     </Text>
-                    <Text style={s.dropboxRowHint}>
-                      {project?.dropbox_folder_path
-                        ? 'Open the project files'
-                        : 'Choose a Dropbox folder for this project'}
-                    </Text>
+                    {/* NOT AN ERROR, AND THE WORDING CARRIES THAT. A file
+                        waiting to be chosen is what a correct system looks
+                        like the morning after a sync — the second sentence
+                        says so outright, because a bare count next to an
+                        amber border reads as a fault otherwise.
+
+                        `awaitingSelection > 0` and not `awaitingSelection &&`:
+                        a 0 is falsy but React Native renders the numeral, and
+                        `null` (unknown) must fall through to the neutral hint
+                        rather than claim a clean slate. */}
+                    {awaitingSelection > 0 ? (
+                      <Text style={s.dropboxRowAwaitingHint}>
+                        {awaitingSelection} file{awaitingSelection === 1 ? '' : 's'} awaiting
+                        selection · nothing goes to site tablets until you choose it
+                      </Text>
+                    ) : (
+                      <Text style={s.dropboxRowHint}>
+                        {project?.dropbox_folder_path
+                          ? 'Open the project files'
+                          : 'Choose a Dropbox folder for this project'}
+                      </Text>
+                    )}
                   </View>
+                  {awaitingSelection > 0 && (
+                    <View style={s.awaitingBadge}>
+                      <Text style={s.awaitingBadgeText}>{awaitingSelection}</Text>
+                    </View>
+                  )}
                   <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
                 </GlassCard>
               </Pressable>
@@ -1813,6 +1926,40 @@ function buildStyles(colors, isDark) {
     fontSize: 12,
     color: colors.text.muted,
     marginTop: 2,
+  },
+  // `attention` is amber — "needs review / advisory", per the taxonomy in
+  // semanticColors.js. The same token files.jsx uses on its own unpublished
+  // card, so the two screens describing the same fact do not disagree about
+  // how serious it is. NOT `critical`: nothing here is an enforcement matter.
+  dropboxRowAwaiting: {
+    borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+    backgroundColor: semantic.attentionBg,
+  },
+  // The hint text carries `text.secondary`, not the amber. The saturated
+  // state tokens are theme-insensitive and do not clear WCAG AA as body text
+  // on a tinted card (semanticColors.js) — the border and the badge carry the
+  // colour, the sentence carries the meaning.
+  dropboxRowAwaitingHint: {
+    fontSize: 12,
+    color: colors.text.secondary,
+    marginTop: 2,
+  },
+  awaitingBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: semantic.attentionBg,
+    borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+  },
+  awaitingBadgeText: {
+    color: semantic.attention,
+    fontSize: 11,
+    fontWeight: '700',
   },
   headerAddBtn: {
     width: 32,
