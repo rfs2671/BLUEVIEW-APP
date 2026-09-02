@@ -26916,7 +26916,50 @@ async def get_combined_report_pdf(project_id: str, date: str, token: Optional[st
     )
 
 
-@api_router.get("/reports/project/{project_id}/preview/{date}")
+# ── The three report sidecars, and the gate that was inert on them ───────────
+#
+# /preview/{date}, /history and /logs all read cross-company like this:
+#
+#     if role == "admin" and project.get("company_id") != current_user.get("company_id"):
+#         raise HTTPException(status_code=403, detail="Access denied")
+#
+# `role == "owner"` never reaches the comparison, and "owner" is not a rare
+# elevated role — /auth/register FORCES it on every self-serve signup, and says
+# so in its own comment, which also records that an approved owner of company A
+# reaching company B is "a tenant-scoping defect on those routes, tracked
+# separately". These are those routes. `role` is additionally in
+# ALLOWED_USER_FIELDS, so it is API-mutable: a value a customer can set was the
+# whole gate. Net effect, live: any approved self-serve account could read any
+# other company's filed logbooks, headcount and full report send history by
+# supplying a project id. /preview additionally carried NO require_approved and
+# NO require_project_access at all.
+#
+# THE GATE IS NOW require_project_access, the same dependency the ~56 other
+# project-scoped routes carry — and, decisively, the same one the FULL report
+# next door already carries (/reports/project/{id}/date/{date} and its /pdf
+# twin, both `_proj = Depends(require_project_access)`). The role check stays,
+# because it says something different: these panels are the admin view, and a
+# CP on his own project still must not see them.
+#
+# NO PLATFORM-OPERATOR BRANCH, and this is a decision, not an omission.
+# `project_access_ok` states it in as many words, and `_assert_worker_access`
+# repeats it: the operator's cross-company carve-out lives on the LIST
+# endpoints (GET /projects, GET /workers) and on the explicit /owner/* routes;
+# no single-resource route grants it. Nothing is lost here that was not already
+# lost: the operator could not read a foreign company's FULL report yesterday,
+# because /date/{date} has been gated this way all along. Only the metadata
+# sidecars leaked, and only through the `owner` hole — an accidental reader, not
+# a supported one. If a support workflow ever needs cross-tenant report reads,
+# it needs `Depends(require_platform_operator)` on a route that says so, not
+# this.
+#
+# ORDER: the dependencies resolve before the body, so a foreign or
+# marked-for-deletion project is refused before the role check speaks. Both
+# answers are still 403/404, so no id is confirmed to a prober.
+@api_router.get(
+    "/reports/project/{project_id}/preview/{date}",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
 async def get_report_preview(project_id: str, date: str, current_user = Depends(get_current_user)):
     """Get report preview metadata for a date — shows what has been filled so far (midday check).
     Returns summary of logbooks, checkins, daily log status without full HTML."""
@@ -26928,9 +26971,6 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
     project = await db.projects.find_one({"_id": project_id_obj})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-
-    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
-        raise HTTPException(status_code=403, detail="Access denied")
 
     # Gather all data for the date
     logbooks = await db.logbooks.find({
@@ -27312,7 +27352,13 @@ async def update_report_settings(project_id: str, data: dict, current_user = Dep
         "report_send_time": updated_project.get("report_send_time", "18:00"),
     }
 
-@api_router.get("/reports/project/{project_id}/history")
+# Tenancy: require_project_access. See the note above get_report_preview for
+# why the `role == "admin" and ...` gate this replaces was inert, and why there
+# is no platform-operator branch.
+@api_router.get(
+    "/reports/project/{project_id}/history",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
 async def get_report_history(
     project_id: str,
     current_user = Depends(get_current_user),
@@ -27324,16 +27370,13 @@ async def get_report_history(
     role = current_user.get("role")
     if role not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="Only admins can view report history")
-    
+
     # Verify project exists and user has access
     project_id_obj = to_query_id(project_id)
     project = await db.projects.find_one({"_id": project_id_obj})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
-        raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Get report emails (automatic scheduler sends)
     history = await db.report_emails.find({
         "project_id": project_id
@@ -27351,7 +27394,13 @@ async def get_report_history(
     }
 
 
-@api_router.get("/reports/project/{project_id}/logs")
+# Tenancy: require_project_access. See the note above get_report_preview for
+# why the `role == "admin" and ...` gate this replaces was inert, and why there
+# is no platform-operator branch.
+@api_router.get(
+    "/reports/project/{project_id}/logs",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
 async def get_submitted_logs(
     project_id: str,
     current_user = Depends(get_current_user),
@@ -27364,16 +27413,13 @@ async def get_submitted_logs(
     role = current_user.get("role")
     if role not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="Only admins can view logs")
-    
+
     # Verify project
     project_id_obj = to_query_id(project_id)
     project = await db.projects.find_one({"_id": project_id_obj})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
-    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
-        raise HTTPException(status_code=403, detail="Access denied")
-    
+
     # Build query
     query = {
         "project_id": project_id,

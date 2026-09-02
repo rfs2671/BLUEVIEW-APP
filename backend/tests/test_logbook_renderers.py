@@ -696,10 +696,21 @@ def logbook_with(photos, log_type="daily_jobsite"):
     }
 
 
-def preview(logbooks, role="admin", company_id="co_a"):
+def preview(logbooks, role="admin", company_id="co_a", assigned=("proj1",)):
+    # `assigned` is a parameter now because it is LOAD-BEARING on this route.
+    # The preview used to gate cross-company access on
+    # `role == "admin" and company mismatch`, which consulted the company and
+    # nothing else — so a co_b admin was refused whatever his assignments said,
+    # and a role=="owner" caller was never checked at all. The route now carries
+    # Depends(require_project_access), whose branch 3 is "explicitly assigned to
+    # this project", the same rule the FULL report next door has always applied.
+    # A fixture that hands every caller assigned_projects=["proj1"] therefore
+    # cannot ask the cross-company question any more — it authorises the caller
+    # by the other branch.
     db = _PreviewDb(logbooks)
     user = {"_id": "u1", "id": "u1", "role": role, "company_id": company_id,
-            "full_name": "Ada Admin", "assigned_projects": ["proj1"]}
+            "account_status": "approved",
+            "full_name": "Ada Admin", "assigned_projects": list(assigned)}
 
     async def _fake_user():
         return user
@@ -756,9 +767,31 @@ class FailedPhotoCountTest(unittest.TestCase):
                 self.assertNotIn("failed_photo_count", resp.text)
 
     def test_an_admin_from_another_company_still_403s(self):
-        resp = preview([logbook_with([photo("failed")])], company_id="co_b")
+        resp = preview([logbook_with([photo("failed")])],
+                       company_id="co_b", assigned=())
         self.assertEqual(resp.status_code, 403, resp.text)
         self.assertNotIn("failed_photo_count", resp.text)
+
+    def test_an_owner_from_another_company_403s_too(self):
+        """The hole this route shipped with: the old gate read
+        `role == "admin" and company mismatch`, so role "owner" — what
+        /auth/register forces on every self-serve signup — skipped the
+        comparison and was served company A's panel."""
+        resp = preview([logbook_with([photo("failed")])],
+                       role="owner", company_id="co_b", assigned=())
+        self.assertEqual(resp.status_code, 403, resp.text)
+        self.assertNotIn("failed_photo_count", resp.text)
+
+    def test_a_cross_company_admin_ASSIGNED_to_the_project_is_served(self):
+        """Branch 3 of project_access_ok, and a real behaviour change: the old
+        company-only gate refused this caller. It is the rule every other
+        project-scoped route already applies, including the full report at
+        /reports/project/{id}/date/{date}, so the preview now agrees with the
+        report it previews."""
+        resp = preview([logbook_with([photo("failed")])],
+                       company_id="co_b", assigned=("proj1",))
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["failed_photo_count"], 1)
 
 
 # ══════════════════════════════════════════════════════════════════════════
