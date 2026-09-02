@@ -4,6 +4,93 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-01 — a BLANK `cp_name` prints on the same filed PDFs, and nothing prevents it
+
+Deliberately left open by #353, which gated the OTHER half. Recorded so the
+narrowing reads as a decision rather than as the part somebody forgot.
+
+**What #353 closed:** a `cp_name` that is PRESENT must look like a name. `"2"`
+had reached 25 signed documents and printed as the named Competent Person.
+
+**What it did not close:** an ABSENT `cp_name` is still accepted at submit, and
+prints as a blank Competent Person on exactly the same documents — the
+per-logbook DOB PDF, the combined daily report, the emailed compliance report,
+and the CS-attribution fallback on the superintendent log. A blank signer on a
+filed §3301-02 record is no more usable than `"2"`; it is only quieter.
+
+**Why it was not closed in the same change, and this is the whole of the
+reasoning:** refusing absence at submit would refuse a CP standing on a site
+trying to file a draft that was created before the gate existed. The two
+defects look alike and behave differently — one refuses a bad value nobody
+meant to enter, the other refuses a man at the moment he is trying to sign.
+Riding the second in on the first's coat-tails would have shipped a field
+refusal nobody decided to ship.
+
+**What has to be known before closing it:**
+
+  * How many drafts currently hold no `cp_name`. `db.logbooks.count_documents(
+    {"status": {"$ne": "submitted"}, "is_deleted": {"$ne": True},
+     "$or": [{"cp_name": None}, {"cp_name": ""}]})` — if that is near zero the
+    refusal costs nothing and can simply be turned on.
+  * Whether the client can always supply one. `SignaturePad` requires
+    `signerName?.trim()` before it will confirm, and embeds it as
+    `cp_signature.signerName` — so on any signature captured by the pad the
+    name exists somewhere on the request even when `cp_name` is absent. The
+    cheapest honest fix may be to FALL BACK to that rather than to refuse:
+    the man typed his name, the field just did not carry it.
+  * Whether any server-side path files without a pad signature at all — the
+    offline drain replays `cp_signature` + `status: "submitted"` from a stored
+    draft, so it inherits whatever the draft holds.
+
+**Related, and the better long fix:** the C1 proposal to stamp server-set
+`signed_by` / `signed_by_name` at the moment the signature is applied. A
+hand-typed field is evidence of intent; it should never be the only thing
+naming the signer on a filed document. With that in place, `cp_name` becomes
+the printed attestation beside an authenticated name rather than the record's
+sole identity claim, and a blank one stops being load-bearing.
+
+---
+
+## PRACTICE — 2026-09-01 — three tests pinned a literal while their own docstrings named the invariant
+
+All three failed on a CORRECT change in #353, and each was repaired to assert
+what it already claimed to assert. Recorded because the family is the same one
+this file keeps returning to.
+
+| test | what its docstring claimed | what it actually asserted |
+|---|---|---|
+| `TheDuplicateStaysAndSaysWhy` | the duplicated gate stays because it produces the SPECIFIC message | the exact string `current_user.get("role") == "cp"` |
+| `requiredLogbooksWiring` | ownership is read off the server's answer, NEVER a client-side list of types | the whole `const mine = ...` line, verbatim |
+| `submitSignatureGate` | "server.py returns exactly the 4 submit codes" | five codes, with the count typed into the label |
+
+In every case the claimed invariant SURVIVED the change and the literal did
+not. The specific message was untouched; no list of log types appeared; the
+codes were still exhaustively enumerated. What moved was the spelling.
+
+**A CHECK THAT PASSES FOR THE WRONG REASON IS INDISTINGUISHABLE FROM ONE THAT
+PASSES FOR THE RIGHT ONE UNTIL THE CODE MOVES.** That is why all three surfaced
+in the same hour: nothing had touched those lines since they were written, so
+nothing had ever asked whether the assertion and the sentence above it agreed.
+
+Same family as the `sort()` that did nothing and still satisfied a determinism
+assertion, the `--include=*.js` sweep blind to 96 `.cjs` files, the local glob
+that ran 85 of CI's 93, and the CORS middleware that was correct in every
+particular and could not reach a 429. In each, the thing that failed was not
+the logic but its GRIP on the subject.
+
+**The rule, and it is cheap:** when an assertion's message states a principle,
+assert the principle. `assertIn("ROLES_SCOPED_TO_ASSIGNED_PROJECTS", body)`
+survives a rename that `assertIn('role == "cp"', body)` does not, and it is the
+thing the docstring was talking about. A literal is the right assertion only
+when the literal IS the requirement — a wire-format string, a machine code, a
+published label that must never be re-spelled.
+
+**The tell, in review:** if the assertion would still pass after someone
+deleted the behaviour and left the spelling, or fail after someone preserved
+the behaviour and changed the spelling, it is pinned to the wrong thing.
+
+---
+
 ## PRACTICE — 2026-08-28 — a correctly configured control that could not reach the responses that needed it
 
 Fixed in #341 (`da74996`). Recorded because the SHAPE is the point, and because
