@@ -91,7 +91,13 @@ if (orphaned === 0) {
       is_deleted: { $ne: true },
       $or: [{ deactivated_at: { $exists: false } }, { deactivated_at: null }],
     },
-    { project_id: 1, full_name: 1, license_number: 1, created_at: 1, updated_at: 1 },
+    // BOTH NAMES FOR THE NUMBER. Rows written before the rename carry
+    // `license_number`; rows written after carry `registration_number`.
+    // Projecting one name would blank the column for half the collection.
+    {
+      project_id: 1, full_name: 1, registration_number: 1, license_number: 1,
+      created_at: 1, updated_at: 1,
+    },
   ).forEach((r) => {
     const proj = db.projects.findOne(
       { _id: ObjectId.isValid(String(r.project_id)) ? ObjectId(String(r.project_id)) : r.project_id },

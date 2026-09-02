@@ -2,6 +2,56 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MEDIUM] The CS registration expiry is now stored and nothing reads it.
+  Enforcement is a product ruling, not an oversight.**
+  `cs_registrations` gained `issue_date` and `expiration_date`, both optional
+  `YYYY-MM-DD` strings validated at the model. Nothing checks either one:
+  registration succeeds with a past expiry, `attribute_signer` returns the same
+  four states, the BC 3301.13.13 attribution sentence is byte-identical, and
+  `/api/cs/project/{id}` still answers `registered: true`.
+
+  **Where a sweep would hook in.** `nightly_compliance_check` already runs this
+  exact shape twice — section 4 over `safety_staff_registrations.license_expiration`
+  and section 5 over `workers.certifications.expiration_date`. Both are global
+  non-project scans with a 30-day window and open-alert dedup, writing
+  `compliance_alerts` rows that the existing admin screen reads. A CS section
+  would be a third: scan `cs_registrations` on `{is_active: true, is_deleted:
+  {$ne: true}}`, compare `expiration_date` against a 30-day horizon, dedup on
+  one open alert per registration `_id` (the row is updated in place, never
+  re-inserted per state change — the same reasoning as keying the cert alert on
+  `worker._id`), and carry `company_id` so `get_compliance_alerts`, which scopes
+  on the admin's company, can see it. Alert only, no `dispatch_notification`,
+  for the reason section 5 records.
+
+  **Where BLOCKING would hook in, and why it is not there.** Refusal would have
+  to live in `register_construction_superintendent` (reject the registration) or
+  in `attribute_signer` (a fifth state, or `is_registered_cs` returning false).
+  The second breaks that module's first rule — IT NEVER BLOCKS — and
+  `is_registered_cs` is safe only because it gates a nav shortcut; using it to
+  refuse a filing collapses that reasoning. A superintendent whose card lapsed
+  yesterday still visited the site, and the obligation to record the visit does
+  not wait on a renewal. **Nobody has decided what an expired registration
+  should do**, and the tests in `test_cs_registration_schema.py`
+  (`AnExpiredRegistrationChangesNothing`) pin the absence so that adding
+  enforcement is a deliberate act.
+
+- **[LOW] `license_number_normalized` still carries the old name, and renaming
+  it is a data migration.**
+  The displayed identifier is now `registration_number` (reads take either
+  name; see `registration_number_of`). The *comparison key* was left alone:
+  three queries run on `license_number_normalized` — the one-job conflict check
+  and the compliance alert it writes, `list_cs_registrations`'s conflict count,
+  and `superintendent_projects_for`, which is how a superintendent's log
+  reaches his nav. Every existing row carries that key and no other.
+
+  Renaming it means either migrating every row or `$or`-ing both keys in all
+  three queries, and in the meantime the one-job rule would be answering on
+  part of the collection. **It fails silently, not loudly**: a query on a key
+  no row carries returns no conflicts, which reads exactly like compliance.
+  There is no index on `cs_registrations` at all, so the cost is a migration
+  and a coordinated deploy, not index rebuilds. Cosmetic — the key is never
+  shown to a human.
+
 - **[LOW] Two folder-grouping implementations now exist, and the kiosk keeping
   its own was a decision, not drift.**
   `src/utils/dropboxTree.js` is the shared one, lifted out of

@@ -172,17 +172,40 @@ class TheInactivePathIsUnchanged(unittest.TestCase):
 
 
 class TheCaptureIsBeforeTheMutation(unittest.TestCase):
-    def test_source_order(self):
-        code = ast.unparse(ast.parse(textwrap.dedent(
+    """TWO INDEPENDENT DEFENCES, and both are asserted.
+
+    The serialisation now goes through `_cs_registration_out`, which copies the
+    document before handing it to serialize_id -- so the caller's `reg` keeps
+    its `_id` and the KeyError cannot recur even if the capture moved. That
+    copy is the first defence and is pinned below; the capture order is the
+    second and is pinned here, because a helper that stopped copying would
+    otherwise re-arm the original crash silently.
+    """
+
+    SERIALISE = "_cs_registration_out(reg)"
+
+    def _code(self):
+        return ast.unparse(ast.parse(textwrap.dedent(
             inspect.getsource(server.list_cs_registrations))))
+
+    def test_source_order(self):
+        code = self._code()
         self.assertLess(code.index("reg_oid = reg.get('_id')"),
-                        code.index("serialize_id(reg)"))
+                        code.index(self.SERIALISE))
 
     def test_no_read_of_reg_id_survives_the_call(self):
-        code = ast.unparse(ast.parse(textwrap.dedent(
-            inspect.getsource(server.list_cs_registrations))))
-        after = code[code.index("serialize_id(reg)"):]
+        code = self._code()
+        after = code[code.index(self.SERIALISE):]
         self.assertNotIn("reg['_id']", after)
+
+    def test_the_serialiser_copies_rather_than_mutating_its_argument(self):
+        """serialize_id does `obj['id'] = str(obj['_id']); del obj['_id']` on
+        the dict it is handed. The helper must not hand it the caller's."""
+        reg = {"_id": REG_A, "license_number": "CS 12345"}
+        out = server._cs_registration_out(reg)
+        self.assertEqual(reg["_id"], REG_A)
+        self.assertNotIn("_id", out)
+        self.assertEqual(out["id"], str(REG_A))
 
 
 if __name__ == "__main__":

@@ -233,7 +233,13 @@ class TheSentenceIsAFactNotAnAccusation(unittest.TestCase):
             {"id": "u9", "cs_license_number": "1234567", "name": "M R"},
             REG, "2026-08-30"))
         self.assertIn("account", by_id)
-        self.assertIn("licence number", by_lic)
+        # "REGISTRATION NUMBER", NOT "LICENCE NUMBER". The DOB card a
+        # construction superintendent carries is printed with a REGISTRATION
+        # number, and this sentence is rendered onto a BC 3301.13.13 log — so
+        # the old wording asserted a credential he does not hold, on the record
+        # where that costs most. MATCHED_LICENCE keeps its name: it is an
+        # internal state token that nothing prints.
+        self.assertIn("registration number", by_lic)
 
     def test_every_state_produces_a_sentence(self):
         for state in (CA.MATCHED_ACCOUNT, CA.MATCHED_LICENCE,

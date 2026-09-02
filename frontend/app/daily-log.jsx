@@ -116,7 +116,7 @@ export default function DailyLogScreen() {
   const [existingLog, setExistingLog] = useState(null);
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
-  const [csLicenseNumber, setCsLicenseNumber] = useState('');
+  const [csRegistrationNumber, setCsRegistrationNumber] = useState('');
   // OFFLINE vs EMPTY: 'ok' | 'offline' | 'error' for the project-logs read. Only
   // 'ok' may render the "No Logs Found" empty state.
   const [logsFetchState, setLogsFetchState] = useState('ok');
@@ -223,7 +223,8 @@ export default function DailyLogScreen() {
     const r = await settleFetch(() => csRegistrationAPI.getForProject(projectId));
     if (r.status !== 'ok') {
       // OFFLINE vs EMPTY: a failed lookup is NOT "no CS registered". Leave the
-      // name and licence badge exactly as they are rather than blanking them,
+      // name and registration badge exactly as they are rather than blanking
+      // them,
       // which would read as "this project has no Construction Superintendent".
       console.warn('CS lookup unavailable (non-blocking):', r.status, r.error?.message);
       return;
@@ -236,9 +237,14 @@ export default function DailyLogScreen() {
         ...prev,
         superintendent_name: prev.superintendent_name || csData.full_name,
       }));
-      setCsLicenseNumber(csData.license_number || '');
+      // EITHER STORED NAME. The number is written as `registration_number`
+      // now; every registration created before that carries only
+      // `license_number`, and reading one name would blank the badge on all
+      // of them. The endpoint emits both, but this survives a stale one.
+      setCsRegistrationNumber(
+        csData.registration_number || csData.license_number || '');
     } else {
-      setCsLicenseNumber('');
+      setCsRegistrationNumber('');
     }
   };
 
@@ -981,9 +987,9 @@ export default function DailyLogScreen() {
                         setFormData({ ...formData, superintendent_signature: sig })
                       }
                     />
-                    {csLicenseNumber ? (
+                    {csRegistrationNumber ? (
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                        <Text style={{ fontSize: 11, color: colors.text.muted }}>CS LICENSE:</Text>
+                        <Text style={{ fontSize: 11, color: colors.text.muted }}>CS REGISTRATION:</Text>
                         <Text
                           style={{
                             fontSize: 11,
@@ -991,7 +997,7 @@ export default function DailyLogScreen() {
                             fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
                           }}
                         >
-                          {csLicenseNumber}
+                          {csRegistrationNumber}
                         </Text>
                       </View>
                     ) : null}

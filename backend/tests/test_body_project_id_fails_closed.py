@@ -107,7 +107,13 @@ def _site_device(admin, project=PROJ_A):
 def _cs_registration(admin, project=PROJ_A):
     db, state = _db(project)
     fields = set(server.CSRegistrationCreate.model_fields)
-    payload = {"project_id": "projA"}
+    # THE NUMBER IS REQUIRED ACROSS A PAIR, WHICH is_required() CANNOT SEE.
+    # `registration_number` and `license_number` are each Optional so either
+    # name may be sent alone, and a model validator refuses a body carrying
+    # neither. This loop fills FIELD-level requirements, so the number has to
+    # be supplied by name or the model rejects the payload before the tenancy
+    # rule under test is ever reached.
+    payload = {"project_id": "projA", "registration_number": "X"}
     for name, f in server.CSRegistrationCreate.model_fields.items():
         if name in payload or not f.is_required():
             continue

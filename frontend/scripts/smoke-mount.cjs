@@ -100,6 +100,13 @@ const ROUTES = [
   '/consent',
   '/admin/site-devices',
   '/admin/users',
+  // THE SUPERINTENDENT REGISTER. Two modals' worth of form built from one
+  // shared `form` state object, so a field added to the register modal and not
+  // to the state — or to the state and not to resetForm — is an undefined
+  // `.trim()` on first keystroke rather than anything a source grep can see.
+  // It is also the screen that writes the DOB designation a BC 3301.13.13 log
+  // is attributed against, and nothing else in CI executes it.
+  '/admin/superintendent',
   '/reports',
   '/settings',
   '/checkin',

@@ -107,7 +107,7 @@ export default function SiteDailyLogsScreen() {
   const [existingLog, setExistingLog] = useState(null);
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
-  const [csLicenseNumber, setCsLicenseNumber] = useState('');
+  const [csRegistrationNumber, setCsRegistrationNumber] = useState('');
 
   // The server id of TODAY's log, kept independently of `existingLog` and
   // persisted in the local draft. `existingLog` is only ever set from a
@@ -255,8 +255,8 @@ export default function SiteDailyLogsScreen() {
 
       // Auto-fill superintendent from CS registration. Non-blocking —
       // only pre-fills if the field is empty (existing signed log is
-      // never overwritten). Also gives us the license number for the
-      // badge under the signature pad.
+      // never overwritten). Also gives us the REGISTRATION number for the
+      // badge under the signature pad -- what the DOB card is printed with.
       try {
         const csData = await csRegistrationAPI.getForProject(siteProject.id);
         if (csData?.registered && csData.full_name) {
@@ -264,13 +264,15 @@ export default function SiteDailyLogsScreen() {
             ...prev,
             superintendent_name: prev.superintendent_name || csData.full_name,
           }));
-          setCsLicenseNumber(csData.license_number || '');
+          // EITHER STORED NAME -- see daily-log.jsx. Nothing migrates.
+          setCsRegistrationNumber(
+            csData.registration_number || csData.license_number || '');
         } else {
-          setCsLicenseNumber('');
+          setCsRegistrationNumber('');
         }
       } catch (e) {
         console.warn('CS lookup failed (non-blocking):', e?.message);
-        setCsLicenseNumber('');
+        setCsRegistrationNumber('');
       }
     } catch (error) {
       // Never strand the screen in its skeleton state — the draft above is
@@ -696,9 +698,9 @@ export default function SiteDailyLogsScreen() {
                   onNameChange={(n) => setFormData({...formData, superintendent_name: n})}
                   existingSignature={formData.superintendent_signature}
                   onSignatureCapture={(s) => setFormData({...formData, superintendent_signature: s})} />
-                {csLicenseNumber ? (
+                {csRegistrationNumber ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                    <Text style={{ fontSize: 14, color: colors.text.muted }}>CS LICENSE:</Text>
+                    <Text style={{ fontSize: 14, color: colors.text.muted }}>CS REGISTRATION:</Text>
                     <Text
                       style={{
                         fontSize: 14,
@@ -706,7 +708,7 @@ export default function SiteDailyLogsScreen() {
                         fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
                       }}
                     >
-                      {csLicenseNumber}
+                      {csRegistrationNumber}
                     </Text>
                   </View>
                 ) : null}

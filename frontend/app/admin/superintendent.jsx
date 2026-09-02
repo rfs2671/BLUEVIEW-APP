@@ -73,7 +73,9 @@ export default function SuperintendentScreen() {
   const [form, setForm] = useState({
     project_id: '',
     full_name: '',
-    license_number: '',
+    registration_number: '',
+    issue_date: '',
+    expiration_date: '',
     nyc_id_email: '',
     user_id: '',
     sst_number: '',
@@ -152,7 +154,12 @@ export default function SuperintendentScreen() {
     setForm({
       project_id: '',
       full_name: '',
-      license_number: '',
+      // THE CARD'S OWN THREE FIELDS. A DOB construction superintendent card is
+      // printed with a REGISTRATION NUMBER and an issue and expiration date.
+      // This screen captured the first and called it a license.
+      registration_number: '',
+      issue_date: '',
+      expiration_date: '',
       nyc_id_email: '',
       user_id: '',
       sst_number: '',
@@ -170,7 +177,13 @@ export default function SuperintendentScreen() {
     setForm({
       project_id: reg.project_id || '',
       full_name: reg.full_name || '',
-      license_number: reg.license_number || '',
+      // EITHER STORED NAME, AND THIS ONE MATTERS MOST. Every registration in
+      // the register today carries `license_number` and no
+      // `registration_number`. A form that loaded a blank here and then saved
+      // would strip the number off a live DOB designation.
+      registration_number: reg.registration_number || reg.license_number || '',
+      issue_date: reg.issue_date || '',
+      expiration_date: reg.expiration_date || '',
       nyc_id_email: reg.nyc_id_email || '',
       // THE EXISTING LINK, SHOWN SO IT CAN BE FIXED. Registrations created
       // before the picker existed carry user_id: null, and Michael's is one of
@@ -184,10 +197,10 @@ export default function SuperintendentScreen() {
   };
 
   const handleRegister = async () => {
-    if (!form.project_id || !form.full_name.trim() || !form.license_number.trim()) {
+    if (!form.project_id || !form.full_name.trim() || !form.registration_number.trim()) {
       toast.warning(
         'Missing Fields',
-        'Project, full name, and license number are required'
+        'Project, full name, and registration number are required'
       );
       return;
     }
@@ -196,7 +209,12 @@ export default function SuperintendentScreen() {
       const payload = {
         project_id: form.project_id,
         full_name: form.full_name.trim(),
-        license_number: form.license_number.trim(),
+        registration_number: form.registration_number.trim(),
+        // NULL, NOT '' — the server validates these as YYYY-MM-DD and an empty
+        // string is not a date. Absent must read as absent, the same rule the
+        // user link follows below.
+        issue_date: form.issue_date.trim() || null,
+        expiration_date: form.expiration_date.trim() || null,
         nyc_id_email: form.nyc_id_email.trim() || null,
         sst_number: form.sst_number.trim() || null,
         phone: form.phone.trim() || null,
@@ -243,8 +261,18 @@ export default function SuperintendentScreen() {
       const changed = {};
       if (form.full_name.trim() !== (editingReg.full_name || ''))
         changed.full_name = form.full_name.trim();
-      if (form.license_number.trim() !== (editingReg.license_number || ''))
-        changed.license_number = form.license_number.trim();
+      // DIFFED AGAINST EITHER STORED NAME. Comparing only against
+      // `registration_number` would make every legacy row look changed and
+      // re-send a number nobody edited on every save.
+      const numWas = editingReg.registration_number || editingReg.license_number || '';
+      if (form.registration_number.trim() !== numWas)
+        changed.registration_number = form.registration_number.trim();
+      const issueNew = form.issue_date.trim() || null;
+      if (issueNew !== (editingReg.issue_date || null))
+        changed.issue_date = issueNew;
+      const expiryNew = form.expiration_date.trim() || null;
+      if (expiryNew !== (editingReg.expiration_date || null))
+        changed.expiration_date = expiryNew;
       const emailNew = form.nyc_id_email.trim() || null;
       if (emailNew !== (editingReg.nyc_id_email || null))
         changed.nyc_id_email = emailNew;
@@ -302,13 +330,13 @@ export default function SuperintendentScreen() {
   const handleDelete = async (reg) => {
     const confirmed = Platform.OS === 'web'
       ? window.confirm(
-          'Remove this superintendent? License will be marked inactive on this project.'
+          'Remove this superintendent? The registration will be marked inactive on this project.'
         )
       : await new Promise((resolve) => {
           const { Alert } = require('react-native');
           Alert.alert(
             'Remove Superintendent',
-            'Remove this superintendent? License will be marked inactive on this project.',
+            'Remove this superintendent? The registration will be marked inactive on this project.',
             [
               { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
               { text: 'Remove', onPress: () => resolve(true), style: 'destructive' },
@@ -392,7 +420,7 @@ export default function SuperintendentScreen() {
             <Text style={s.titleLabel}>ADMIN</Text>
             <Text style={s.titleText}>Superintendents</Text>
             <Text style={s.subtitle}>
-              NYC DOB one-job rule — one CS license per active job (eff. Jan 2026)
+              NYC DOB one-job rule — one CS registration per active job (eff. Jan 2026)
             </Text>
           </View>
 
@@ -449,7 +477,23 @@ export default function SuperintendentScreen() {
                     </View>
                   )}
 
-                  <Text style={s.licenseText}>{reg.license_number || '—'}</Text>
+                  {/* EITHER STORED NAME. The card is printed with a
+                      REGISTRATION number; the field was called license_number
+                      and every row written before the rename still carries
+                      that name and no other. Reading only the new one would
+                      show '—' for the whole existing register. */}
+                  <Text style={s.licenseText}>
+                    {reg.registration_number || reg.license_number || '—'}
+                  </Text>
+                  {/* THE DATES PRINTED ON THE CARD, STATED AND NOT JUDGED.
+                      Nothing here decides what an expired registration means —
+                      that ruling has not been made. An absent date says so
+                      rather than rendering a blank a reader would take for
+                      "not expiring". */}
+                  <Text style={s.cardDatesText} numberOfLines={1}>
+                    {`Issued ${reg.issue_date || 'not recorded'} · `
+                      + `Expires ${reg.expiration_date || 'not recorded'}`}
+                  </Text>
                   <Text style={s.projectText} numberOfLines={1}>
                     {reg.project_name || 'Project'}
                   </Text>
@@ -630,15 +674,48 @@ export default function SuperintendentScreen() {
                 </View>
 
                 <View style={s.formGroup}>
-                  <Text style={s.formLabel}>LICENSE NUMBER</Text>
+                  {/* WHAT THE CARD SAYS. The DOB card a construction
+                      superintendent carries is printed with a REGISTRATION
+                      NUMBER. This field said LICENSE, and the label reached a
+                      BC 3301.13.13 log — a statutory record stating a
+                      credential the man does not hold. */}
+                  <Text style={s.formLabel}>REGISTRATION NUMBER</Text>
                   <GlassInput
-                    value={form.license_number}
-                    onChangeText={(v) => setForm({ ...form, license_number: v })}
-                    placeholder="NYC DOB CS License #"
+                    value={form.registration_number}
+                    onChangeText={(v) => setForm({ ...form, registration_number: v })}
+                    placeholder="NYC DOB CS registration #"
                     autoCapitalize="characters"
                   />
                   <Text style={s.helperText}>
                     Checked against all active projects for one-job rule compliance
+                  </Text>
+                </View>
+
+                {/* THE TWO DATES PRINTED BESIDE IT. Optional: an admin holding
+                    the card types them, one who does not still files a valid
+                    registration. NOTHING ENFORCES THEM — a past expiry is
+                    stored and warns nobody, because what an expired
+                    registration should do has not been decided. */}
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>ISSUE DATE</Text>
+                  <GlassInput
+                    value={form.issue_date}
+                    onChangeText={(v) => setForm({ ...form, issue_date: v })}
+                    placeholder="YYYY-MM-DD (optional)"
+                    autoCapitalize="none"
+                  />
+                </View>
+
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>EXPIRATION DATE</Text>
+                  <GlassInput
+                    value={form.expiration_date}
+                    onChangeText={(v) => setForm({ ...form, expiration_date: v })}
+                    placeholder="YYYY-MM-DD (optional)"
+                    autoCapitalize="none"
+                  />
+                  <Text style={s.helperText}>
+                    Recorded from the card. Nothing is blocked when it passes.
                   </Text>
                 </View>
 
@@ -793,12 +870,32 @@ export default function SuperintendentScreen() {
                 </View>
 
                 <View style={s.formGroup}>
-                  <Text style={s.formLabel}>LICENSE NUMBER</Text>
+                  <Text style={s.formLabel}>REGISTRATION NUMBER</Text>
                   <GlassInput
-                    value={form.license_number}
-                    onChangeText={(v) => setForm({ ...form, license_number: v })}
-                    placeholder="NYC DOB CS License #"
+                    value={form.registration_number}
+                    onChangeText={(v) => setForm({ ...form, registration_number: v })}
+                    placeholder="NYC DOB CS registration #"
                     autoCapitalize="characters"
+                  />
+                </View>
+
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>ISSUE DATE</Text>
+                  <GlassInput
+                    value={form.issue_date}
+                    onChangeText={(v) => setForm({ ...form, issue_date: v })}
+                    placeholder="YYYY-MM-DD (optional)"
+                    autoCapitalize="none"
+                  />
+                </View>
+
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>EXPIRATION DATE</Text>
+                  <GlassInput
+                    value={form.expiration_date}
+                    onChangeText={(v) => setForm({ ...form, expiration_date: v })}
+                    placeholder="YYYY-MM-DD (optional)"
+                    autoCapitalize="none"
                   />
                 </View>
 
@@ -959,6 +1056,11 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
       fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
       marginTop: 4,
+    },
+    cardDatesText: {
+      fontSize: 12,
+      color: colors.text.muted,
+      marginTop: 2,
     },
     projectText: {
       fontSize: 13,

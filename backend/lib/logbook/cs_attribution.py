@@ -1,9 +1,16 @@
 """Was the person who signed this log the registered CS for this project?
 
 THE TWO RECORDS NEVER MET. `cs_registrations` holds the DOB designation --
-full name, licence number, NYC.ID -- created by an ADMIN for a PROJECT.
+full name, registration number, NYC.ID -- created by an ADMIN for a PROJECT.
 `users` holds the account that signs. Nothing connected them, so a signature on
-a BC 3301.13.13 log could not be tied to the licence that gives it weight.
+a BC 3301.13.13 log could not be tied to the registration that gives it weight.
+
+THE NUMBER IS A REGISTRATION NUMBER, NOT A LICENCE NUMBER. That is what the DOB
+card is printed with, and a field label is part of a compliance record. It was
+stored as `license_number` and is now written as `registration_number`;
+`registration_number_of` reads EITHER, because nothing migrates. MATCHED_LICENCE
+keeps its name -- an internal token nothing prints -- while the sentence this
+module renders onto the log says "registration".
 
 Bulletin 2024-007 sec V.7 requires that individuals who sign electronic records
 be VERIFIED. It says nothing about licences -- the word does not appear in it --
@@ -86,13 +93,34 @@ UNDETERMINED = "undetermined"
 
 
 def normalise_licence(value) -> str:
-    """A licence number reduced to a comparison key.
+    """A registration number reduced to a comparison key.
 
     Mirrors what register_construction_superintendent already stores as
     `license_number_normalized`, so the two sides of the comparison are built
     the same way rather than nearly the same way.
     """
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def registration_number_of(registration) -> str:
+    """The number printed on the card, under whichever name it was stored.
+
+    THE CARD SAYS REGISTRATION NUMBER. This system called it a licence number
+    and stored it as `license_number`, which on a BC 3301.13.13 log states
+    something about the man's credentials that his card does not say.
+
+    NEW NAME FIRST, OLD NAME ALWAYS. Nothing migrates — every row written
+    before the rename carries `license_number` and no `registration_number` —
+    so a reader that only knew the new name would blank the number on every
+    historical registration, and the place it would blank it is the attribution
+    sentence on a filed document.
+
+    `or`, NOT `.get(a, .get(b))`: a stored empty string must fall through to
+    the other name rather than being taken for an answer.
+    """
+    reg = registration if isinstance(registration, dict) else {}
+    return (str(reg.get("registration_number") or "").strip()
+            or str(reg.get("license_number") or "").strip())
 
 
 def _as_date(value) -> Optional[str]:
@@ -126,7 +154,9 @@ def attribute_signer(signer, registration, log_date=None) -> Dict:
                 "checked_on": log_date}
 
     reg_name = registration.get("full_name")
-    reg_lic = registration.get("license_number")
+    # EITHER NAME. See registration_number_of — nothing migrates, so both
+    # shapes are live in the collection at the same time.
+    reg_lic = registration_number_of(registration) or None
 
     # ── Did the registration even exist on the log's date? ──────────────────
     day = _as_date(log_date)
@@ -213,8 +243,18 @@ def attribution_sentence(result) -> str:
     state = r.get("state")
 
     if state == MATCHED_ACCOUNT or state == MATCHED_LICENCE:
-        by = ("account" if state == MATCHED_ACCOUNT else "licence number")
-        tail = f" (licence {lic})" if lic else ""
+        # "REGISTRATION", NOT "LICENCE", AND THE DIFFERENCE IS THE RECORD'S.
+        # A construction superintendent's DOB card is printed with a
+        # REGISTRATION NUMBER. This sentence is rendered onto a BC 3301.13.13
+        # log by both renderers, so calling it a licence there asserts a
+        # credential the man does not hold, on the one document where a wrong
+        # statement about him costs most.
+        #
+        # THE CONSTANT KEEPS ITS NAME. MATCHED_LICENCE is an internal state
+        # token that nothing prints and several tests import; renaming it
+        # changes no record and breaks callers, so it stays as it is.
+        by = ("account" if state == MATCHED_ACCOUNT else "registration number")
+        tail = f" (registration {lic})" if lic else ""
         return (f"Signed by {who}, the construction superintendent registered "
                 f"for this project{tail}. Matched by {by}.")
     if state == NOT_REGISTERED_CS:

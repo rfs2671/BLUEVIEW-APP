@@ -13,7 +13,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import (BaseModel, Field, ConfigDict, EmailStr, field_validator,
+                      model_validator)
 from typing import List, Literal, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
@@ -4319,11 +4320,65 @@ class SignatureEventResponse(BaseModel):
  
 # ==================== CONSTRUCTION SUPERINTENDENT MODELS ====================
  
+# WHAT THE PHYSICAL CARD CARRIES, and what this system stored.
+#
+# A NYC construction superintendent's DOB card is printed with a REGISTRATION
+# NUMBER, an ISSUE date and an EXPIRATION date. This model stored the first of
+# the three and called it a licence number. Both are wrong on a compliance
+# record: the label states a credential the man does not hold, and an expiry
+# that is not stored is an expiry nothing can ever check.
+#
+# THE RENAME IS READ-BOTH / WRITE-NEW, WITH NO MIGRATION. Every existing row
+# carries `license_number`; new writes carry `registration_number`;
+# `registration_number_of` reads either. Requests may send either name, and
+# responses emit BOTH, because bundles already on phones read `license_number`
+# and a rename is not a reason to blank a number on somebody's screen.
+#
+# `license_number_normalized` KEEPS ITS NAME, deliberately. It is the
+# comparison key three queries run on -- the one-job conflict check, the list
+# endpoint's conflict count, and superintendent_projects_for -- it is never
+# shown to a human, and renaming it IS the migration that is out of scope:
+# until every row carried the new key those queries would need an $or and the
+# one-job rule would be answering on half the collection.
+
+def _cs_iso_date(value, field: str) -> Optional[str]:
+    """A YYYY-MM-DD string, or None. Anything else is refused.
+
+    A DATE NOBODY CAN PARSE IS NOT A DATE. `permit_renewals.current_expiration`
+    is the cautionary case in this codebase: mixed formats accumulated
+    unchecked until a sweep had to guess at them. This field exists so a future
+    sweep can read it, so it is validated at the door.
+
+    A PAST DATE IS ACCEPTED AND STORED. Refusing an expired registration would
+    be enforcement, which is a product ruling the operator has not made.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        raise ValueError(
+            f"{field} must be a date in YYYY-MM-DD form (got {text!r})")
+    return parsed.date().isoformat()
+
+
 class CSRegistrationCreate(BaseModel):
     """Register a Construction Superintendent to a project."""
     project_id: str
     full_name: str
-    license_number: str          # NYC DOB License/Registration Number
+    # THE NUMBER ON THE CARD. Either name is accepted on the way in; see the
+    # block above. Optional on each field, required across the pair -- the
+    # validator below refuses a body carrying neither.
+    registration_number: Optional[str] = None  # NYC DOB CS registration number
+    license_number: Optional[str] = None       # legacy name, still accepted
+    # THE TWO DATES PRINTED BESIDE IT. Optional so that every existing record,
+    # and every admin who has the card in front of him but not to hand, still
+    # produces a valid registration.
+    issue_date: Optional[str] = None        # YYYY-MM-DD
+    expiration_date: Optional[str] = None   # YYYY-MM-DD
     nyc_id_email: Optional[str] = None  # NYC.ID email used for DOB filings
     sst_number: Optional[str] = None    # SST card number if different
     phone: Optional[str] = None
@@ -4340,10 +4395,43 @@ class CSRegistrationCreate(BaseModel):
     # because "bound to this account" and "the numbers agree" are different
     # strengths of evidence.
     user_id: Optional[str] = None
- 
+
+    @field_validator("issue_date", "expiration_date")
+    @classmethod
+    def _dates_are_iso(cls, v, info):
+        return _cs_iso_date(v, info.field_name)
+
+    @model_validator(mode="after")
+    def _the_card_has_a_number(self):
+        """A registration with no number is not a registration.
+
+        OPTIONAL ON THE FIELD, REQUIRED ON THE RECORD. Both names had to become
+        optional so either could be sent alone; without this the model would
+        accept a body carrying neither, and `register_construction_superintendent`
+        would insert a CS row identified by nothing at all.
+        """
+        if not (str(self.registration_number or "").strip()
+                or str(self.license_number or "").strip()):
+            raise ValueError(
+                "registration_number is required (license_number accepted for "
+                "older clients)")
+        # AN EXPIRY BEFORE ITS ISSUE IS A TYPO, not a card. Catching it is data
+        # integrity, not enforcement: a card that expired last year is accepted
+        # and stored, because what to do about that has not been ruled on.
+        if (self.issue_date and self.expiration_date
+                and self.expiration_date < self.issue_date):
+            raise ValueError(
+                "expiration_date cannot precede issue_date")
+        return self
+
 class CSRegistrationUpdate(BaseModel):
     full_name: Optional[str] = None
+    # EITHER NAME, same as the create model. An older bundle sends
+    # license_number; both land in `registration_number` on the way to Mongo.
+    registration_number: Optional[str] = None
     license_number: Optional[str] = None
+    issue_date: Optional[str] = None        # YYYY-MM-DD
+    expiration_date: Optional[str] = None   # YYYY-MM-DD
     nyc_id_email: Optional[str] = None
     sst_number: Optional[str] = None
     phone: Optional[str] = None
@@ -4351,18 +4439,35 @@ class CSRegistrationUpdate(BaseModel):
     # typed for DOB first and the account created later.
     user_id: Optional[str] = None
     is_active: Optional[bool] = None
- 
+
+    @field_validator("issue_date", "expiration_date")
+    @classmethod
+    def _dates_are_iso(cls, v, info):
+        return _cs_iso_date(v, info.field_name)
+
+    # NO "must have a number" RULE HERE, deliberately. A PUT is a partial: the
+    # commonest one carries only is_active, and demanding a number would refuse
+    # every one of them.
+
 class CSRegistrationResponse(BaseModel):
     id: str
     project_id: str
     project_name: str
     full_name: str
-    license_number: str
+    # BOTH NAMES ON THE WAY OUT. `registration_number` is what the card says;
+    # `license_number` carries the same value because bundles already on phones
+    # read that key, and the rename must not blank a number on somebody's
+    # screen. Neither is required: a legacy row that somehow carries no number
+    # should serialise rather than 500 the whole list.
+    registration_number: Optional[str] = None
+    license_number: Optional[str] = None
+    issue_date: Optional[str] = None
+    expiration_date: Optional[str] = None
     nyc_id_email: Optional[str] = None
     sst_number: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool = True
-    conflict_warning: Optional[str] = None  # Set if license found on another active project
+    conflict_warning: Optional[str] = None  # Set if the number is on another active project
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
 	
@@ -4599,7 +4704,7 @@ from lib.logbook.daily_jobsite_source import (  # noqa: E402
 # The agreement to sign electronically, and the wording of every version of it.
 from lib.logbook.cs_attribution import (  # noqa: E402
     attribute_signer, attribution_sentence, normalise_licence,
-    is_registered_cs,
+    registration_number_of, is_registered_cs,
     MATCHED_ACCOUNT, MATCHED_LICENCE, NOT_REGISTERED_CS, NO_REGISTRATION,
     REGISTERED_LATER, UNDETERMINED,
 )
@@ -16367,7 +16472,35 @@ async def verify_signature_integrity(
  
  
 # ==================== CONSTRUCTION SUPERINTENDENT ENDPOINTS ====================
- 
+
+
+def _cs_registration_out(reg: dict) -> dict:
+    """One registration, serialised so that NO CLIENT SEES A BLANK NUMBER.
+
+    ONE PLACE, THREE ENDPOINTS. The list, the single fetch and the update all
+    hand a raw Mongo document to the client, and each of the three would
+    otherwise need its own copy of the read-both rule. The OSHA register and
+    the pre-shift sheet each drifted between two renderers here and each had to
+    be pulled back into one builder; this starts that way.
+
+    BOTH NAMES, ALWAYS. A row written before the rename carries only
+    `license_number` and gains `registration_number`; a row written after
+    carries only `registration_number` and gains `license_number`. Bundles
+    already on phones read the old key, so emitting one name would blank the
+    number on somebody's screen for no gain.
+
+    THE DATES ARE ALWAYS PRESENT, as null when unknown. A key that is sometimes
+    absent makes every reader write its own fallback.
+    """
+    out = serialize_id(dict(reg or {}))
+    number = registration_number_of(reg) or None
+    out["registration_number"] = number
+    out["license_number"] = number
+    out["issue_date"] = (reg or {}).get("issue_date")
+    out["expiration_date"] = (reg or {}).get("expiration_date")
+    return out
+
+
 @api_router.post("/admin/cs-registrations")
 async def register_construction_superintendent(
     data: CSRegistrationCreate,
@@ -16406,10 +16539,21 @@ async def register_construction_superintendent(
             {"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}
         )
     
-    # ONE-JOB RULE CHECK: Look for same license on other active projects
+    # ONE-JOB RULE CHECK: Look for same registration number on other active
+    # projects.
+    #
+    # EITHER FIELD NAME ON THE WAY IN. The model made both optional and
+    # requires one of them, so the number is taken from whichever arrived; from
+    # here down there is a single value and a single stored field.
     conflict_warning = None
-    license_clean = data.license_number.strip().upper()
-    
+    cs_number = (str(data.registration_number or "").strip()
+                 or str(data.license_number or "").strip())
+    # THE COMPARISON KEY, UNDER ITS OLD NAME ON PURPOSE. Three queries run on
+    # `license_number_normalized` and nothing is migrating the rows that
+    # already carry it. Renaming it does not fail loudly — the conflict check
+    # simply stops finding conflicts.
+    license_clean = cs_number.upper()
+
     conflicting = await db.cs_registrations.find({
         "license_number_normalized": license_clean,
         "is_active": True,
@@ -16448,8 +16592,15 @@ async def register_construction_superintendent(
     reg_doc = {
         "project_id": data.project_id,
         "full_name": data.full_name.strip(),
-        "license_number": data.license_number.strip(),
+        # WRITE THE NEW NAME. Reads take either (registration_number_of); only
+        # writes are one-sided, which is what keeps this a rename rather than a
+        # second copy of the same number drifting out of step with the first.
+        "registration_number": cs_number,
         "license_number_normalized": license_clean,
+        # THE TWO DATES THE CARD IS PRINTED WITH. Stored, and read by nothing
+        # yet — see the enforcement note on nightly_compliance_check.
+        "issue_date": data.issue_date,
+        "expiration_date": data.expiration_date,
         "nyc_id_email": (data.nyc_id_email or "").strip().lower() or None,
         "sst_number": (data.sst_number or "").strip() or None,
         "phone": (data.phone or "").strip() or None,
@@ -16469,7 +16620,12 @@ async def register_construction_superintendent(
         "project_id": data.project_id,
         "project_name": project.get("name"),
         "full_name": data.full_name,
-        "license_number": data.license_number,
+        # BOTH NAMES OUT. The bundle on an admin's phone today reads
+        # `license_number`; it keeps working, carrying the same value.
+        "registration_number": cs_number,
+        "license_number": cs_number,
+        "issue_date": data.issue_date,
+        "expiration_date": data.expiration_date,
         "nyc_id_email": data.nyc_id_email,
         "is_active": True,
         "conflict_warning": conflict_warning,
@@ -16511,7 +16667,9 @@ async def list_cs_registrations(
         # a wrong answer on the one question this endpoint exists to answer.
         reg_oid = reg.get("_id")
 
-        reg_data = serialize_id(reg)
+        # BOTH NAMES ON EVERY ROW, whichever one the document was written with.
+        # See _cs_registration_out.
+        reg_data = _cs_registration_out(reg)
         # Add project name
         project = await db.projects.find_one({"_id": to_query_id(reg["project_id"])})
         reg_data["project_name"] = project.get("name") if project else "Unknown"
@@ -16539,7 +16697,7 @@ async def get_cs_registration(registration_id: str, admin=Depends(get_admin_user
     reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
     if not reg:
         raise HTTPException(status_code=404, detail="CS registration not found")
-    return serialize_id(reg)
+    return _cs_registration_out(reg)
  
  
 @api_router.put("/admin/cs-registrations/{registration_id}")
@@ -16554,9 +16712,18 @@ async def update_cs_registration(
     
     if data.full_name is not None:
         update["full_name"] = data.full_name.strip()
-    if data.license_number is not None:
-        update["license_number"] = data.license_number.strip()
-        update["license_number_normalized"] = data.license_number.strip().upper()
+    # EITHER NAME IN, THE NEW NAME OUT. An older bundle sends `license_number`;
+    # it means the same number and is stored under the name the card uses. The
+    # comparison key keeps its old name — see the create path.
+    _num_in = data.registration_number if data.registration_number is not None \
+        else data.license_number
+    if _num_in is not None:
+        update["registration_number"] = _num_in.strip()
+        update["license_number_normalized"] = _num_in.strip().upper()
+    if data.issue_date is not None:
+        update["issue_date"] = data.issue_date
+    if data.expiration_date is not None:
+        update["expiration_date"] = data.expiration_date
     if data.nyc_id_email is not None:
         update["nyc_id_email"] = data.nyc_id_email.strip().lower() or None
     if data.sst_number is not None:
@@ -16576,7 +16743,7 @@ async def update_cs_registration(
         raise HTTPException(status_code=404, detail="CS registration not found")
     
     updated = await db.cs_registrations.find_one({"_id": to_query_id(registration_id)})
-    return serialize_id(updated)
+    return _cs_registration_out(updated)
  
  
 @api_router.delete("/admin/cs-registrations/{registration_id}")
@@ -16602,11 +16769,21 @@ async def get_project_cs(project_id: str, current_user=Depends(get_current_user)
     if not cs:
         return {"registered": False}
     
+    # THE NUMBER UNDER EITHER STORED NAME, EMITTED UNDER BOTH. This is the
+    # endpoint the two log editors call to print a badge beneath the
+    # superintendent's signature; a bundle in the field reads `license_number`,
+    # and reading only `registration_number` here would blank that badge on
+    # every registration written before the rename — which is all of them.
+    _num = registration_number_of(cs) or None
     return {
         "registered": True,
         "id": str(cs["_id"]),
         "full_name": cs.get("full_name"),
-        "license_number": cs.get("license_number"),
+        "registration_number": _num,
+        "license_number": _num,
+        # STATED, NOT JUDGED. Nothing here decides what an expired card means.
+        "issue_date": cs.get("issue_date"),
+        "expiration_date": cs.get("expiration_date"),
         "nyc_id_email": cs.get("nyc_id_email"),
         "sst_number": cs.get("sst_number"),
     }
