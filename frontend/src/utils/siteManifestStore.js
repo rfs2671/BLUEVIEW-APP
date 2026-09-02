@@ -257,10 +257,17 @@ const isCommit = (v) =>
   && typeof v[0][COMMIT_MARK] === 'string';
 
 /**
- * Read a manifest scope. Returns {state, rows, gen, chunks}, where state is
+ * Read a manifest scope. Returns {state, rows, gen, chunks, at}, where state is
  * 'complete' | 'partial' | 'absent'. `rows` is EMPTY for anything but
  * 'complete' — a fragment is never handed out, because every caller that
  * receives rows is entitled to treat them as the whole stored list.
+ *
+ * `at` is the moment a COMPLETE assembly became this device's set, or null when
+ * that is not recorded (a list committed by a build older than the stamp).
+ * NULL IS NOT ZERO AND IS NOT NOW: a caller that wants to show an age has to
+ * handle "not recorded" as its own case, because a tablet off the network since
+ * that build could be months out of date and reporting it as current would be a
+ * claim made out of an absence.
  */
 export async function readManifestList(scopeKey) {
   const head = await readCachedDocListOrNull(scopeKey);
@@ -269,22 +276,24 @@ export async function readManifestList(scopeKey) {
     // there, and saying 'absent' when chunks exist would hide the reason.
     const orphans = await chunkKeysFor(scopeKey);
     return orphans.length > 0
-      ? { state: 'partial', rows: [], gen: null, chunks: 0, reason: 'uncommitted-chunks' }
-      : { state: 'absent', rows: [], gen: null, chunks: 0, reason: 'nothing-stored' };
+      ? { state: 'partial', rows: [], gen: null, chunks: 0, at: null, reason: 'uncommitted-chunks' }
+      : { state: 'absent', rows: [], gen: null, chunks: 0, at: null, reason: 'nothing-stored' };
   }
 
   // A LIST FROM THE PREVIOUS BUILD IS A COMPLETE LIST. Reading it as absent
   // would make the first incomplete poll after an upgrade decline to union
   // against it, and the tablet would report a shrink it did not need to.
   if (!isCommit(head)) {
-    return { state: 'complete', rows: head, gen: null, chunks: 0, reason: 'unchunked' };
+    return { state: 'complete', rows: head, gen: null, chunks: 0, at: null, reason: 'unchunked' };
   }
 
   const gen = head[0][COMMIT_MARK];
   const chunks = head[0].__manifest_chunks;
   const declared = head[0].__manifest_rows;
+  const stamped = head[0].__manifest_at;
+  const at = Number.isFinite(stamped) ? stamped : null;
   if (!Number.isInteger(chunks) || chunks < 0) {
-    return { state: 'partial', rows: [], gen, chunks: 0, reason: 'bad-commit' };
+    return { state: 'partial', rows: [], gen, chunks: 0, at, reason: 'bad-commit' };
   }
 
   const rows = [];
@@ -293,16 +302,16 @@ export async function readManifestList(scopeKey) {
     // A CHUNK THE COMMIT NAMES AND THE DEVICE DOES NOT HAVE. This is the
     // whole point: return the fragment and it reads as a complete short list.
     if (part === null) {
-      return { state: 'partial', rows: [], gen, chunks, reason: `missing-chunk-${i}` };
+      return { state: 'partial', rows: [], gen, chunks, at, reason: `missing-chunk-${i}` };
     }
     for (const r of part) rows.push(r);
   }
   // The row count is recorded at commit time, so a chunk that was rewritten
   // shorter by something else is caught even though every key is present.
   if (Number.isInteger(declared) && declared !== rows.length) {
-    return { state: 'partial', rows: [], gen, chunks, reason: 'row-count-mismatch' };
+    return { state: 'partial', rows: [], gen, chunks, at, reason: 'row-count-mismatch' };
   }
-  return { state: 'complete', rows, gen, chunks, reason: null };
+  return { state: 'complete', rows, gen, chunks, at, reason: null };
 }
 
 /** Every chunk scope key currently stored for this manifest scope, with the
@@ -345,6 +354,15 @@ async function purgeGenerations(scopeKey, shouldRemove) {
  * Returns {ok, gen, chunks, reason}. On failure NOTHING is committed, so the
  * previously committed generation — if there was one — is still what the
  * reader returns, whole.
+ *
+ * `opts.at` IS THE AGE THE SCREENS SHOW, so it is a parameter rather than a
+ * `Date.now()` taken here. This function is also called for a write that came
+ * out of an INCOMPLETE walk — a union against a complete previous list, which
+ * is right, because a dropped page must never shrink anything — and stamping
+ * the clock on that write would make a tablet on a flaky link report itself
+ * current for ever while never once seeing the whole approved set. The caller
+ * passes the moment a COMPLETE assembly landed, or carries the previous one
+ * forward so the age keeps growing. `null` means "not recorded".
  */
 export async function writeManifestList(scopeKey, rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [];
@@ -376,6 +394,10 @@ export async function writeManifestList(scopeKey, rows, opts = {}) {
     [COMMIT_MARK]: gen,
     __manifest_chunks: chunks,
     __manifest_rows: list.length,
+    // Still no `id`, so this record contributes nothing to the sweep's
+    // keep-set and cannot be mistaken for a row.
+    __manifest_at: opts.at === undefined ? Date.now()
+      : (Number.isFinite(opts.at) ? opts.at : null),
   }];
   if (!(await cacheDocList(scopeKey, commit))) {
     await purgeGenerations(scopeKey, (g) => g === gen);
@@ -542,12 +564,21 @@ export async function syncSiteManifest(projectId, opts = {}) {
      * (they are still naming their ids in the sweep's keep-set), and try again
      * on the next poll.
      */
+    // AND THE AGE IS CARRIED, NOT REFRESHED, ON AN INCOMPLETE WALK. The union
+    // write below is a legitimate write — it is how a dropped page stops being
+    // able to shrink anything — but it is NOT evidence that this device has
+    // seen the whole approved set. Stamping it would reset the age the site
+    // screens show, and a tablet on a flaky link would then report itself
+    // current for ever while quietly falling months behind. So a complete walk
+    // stamps now, and an incomplete one carries the previous stamp forward so
+    // the age keeps growing.
+    const stampedAt = Date.now();
     const commitScope = async (scopeKey, prev, next) => {
-      if (manifest.complete) return writeManifestList(scopeKey, next);
+      if (manifest.complete) return writeManifestList(scopeKey, next, { at: stampedAt });
       if (prev.state !== 'complete') {
         return { ok: false, skipped: true, reason: `partial-store:${prev.reason}` };
       }
-      return writeManifestList(scopeKey, next);
+      return writeManifestList(scopeKey, next, { at: prev.at === undefined ? null : prev.at });
     };
     const wroteFiles = await commitScope(scopes.files, prevFiles, nextFiles);
     const wroteLogs = await commitScope(scopes.logbooks, prevLogs, nextLogs);

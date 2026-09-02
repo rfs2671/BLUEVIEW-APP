@@ -175,6 +175,21 @@ export function cachedDocName(fileId, cacheVersion, ext = 'pdf') {
   return safeName(fileId, cacheVersion, ext);
 }
 
+/**
+ * Can this platform hold files at all?
+ *
+ * listCachedDocs() returns an EMPTY SET both for "the directory is empty" and
+ * for "there is no directory on this platform" — correct for its own callers,
+ * which only ever ask whether a specific name is present, and wrong for a
+ * caller that wants to COUNT. On web the empty set would read as "nothing is
+ * saved", and a screen would print "0 of 15 saved" about a device that has no
+ * such thing as saving. This separates the two so a count can be withheld
+ * rather than fabricated.
+ */
+export function canCacheDocs() {
+  return canUseFs();
+}
+
 /** Free bytes on the device, or null if it cannot be determined.
  *  Used to refuse a Save all BEFORE it starts rather than dying on file 9. */
 export async function freeDiskBytes() {

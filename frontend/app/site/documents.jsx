@@ -26,6 +26,10 @@ import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import OfflineNotice from '../../src/components/OfflineNotice';
+import SiteReadinessNotice, {
+  useSiteReadiness,
+  canClaimEmpty,
+} from '../../src/components/SiteReadinessNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
@@ -109,6 +113,15 @@ export default function SiteDocumentsScreen() {
   // rendering the same "No Documents" an empty project renders.
   const [fetchState, setFetchState] = useState('ok');
   const offline = fetchState === 'offline';
+
+  // THE OTHER AXIS, AND THE ONE THIS SCREEN NEVER HAD. `fetchState` says
+  // whether the network answered a moment ago. It says nothing about whether
+  // this tablet holds the complete approved set — a device that fetched
+  // perfectly and wrote its own store partway through reads 'ok' here and
+  // renders a short list with nothing saying it is short. The two are
+  // independent and both are handled below.
+  const readiness = useSiteReadiness(siteProject?.id);
+  const mayClaimEmpty = canClaimEmpty(readiness);
 
   // Search matches the FOLDER as well as the filename, so "access" finds the
   // Access Agreements folder even when the files inside are named by address.
@@ -321,8 +334,17 @@ export default function SiteDocumentsScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* A failed load is NOT an empty project. Say which one it was. */}
-          {!loading && fetchState !== 'ok' && (
+          {/* WHAT THIS TABLET HOLDS, above what it happens to be showing. */}
+          <SiteReadinessNotice readiness={readiness} style={s.offlineBanner} />
+
+          {/* A failed load is NOT an empty project. Say which one it was.
+              UNCHANGED, except that it stands down when the tablet itself is
+              not ready. OfflineNotice's offline copy is "showing saved copy —
+              N saved items shown", which on a device with no complete set is
+              precisely the short list presented as the list that the notice
+              above exists to forbid. One explanation of the screen, and the
+              stronger one wins. */}
+          {!loading && fetchState !== 'ok' && mayClaimEmpty && (
             <OfflineNotice
               mode={fetchState}
               cachedCount={files.length}
@@ -392,9 +414,15 @@ export default function SiteDocumentsScreen() {
                 </View>
               </View>
             ))
-          ) : (query || fetchState === 'ok') ? (
+          ) : (query || fetchState === 'ok') && mayClaimEmpty ? (
             /* "No Documents" ONLY when the server actually answered with none —
-               otherwise the banner above is the whole story. */
+               otherwise the banner above is the whole story.
+               AND ONLY WHEN THIS DEVICE COULD HOLD THE ANSWER. On a tablet
+               that has never finished downloading, an empty screen is not a
+               fact about the project; it is a fact about the tablet, and the
+               readiness notice above is already stating it. Saying both would
+               offer two contradictory explanations of one blank screen, and
+               the reader would believe the reassuring one. */
             <GlassCard style={s.emptyCard}>
               <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
               <Text style={s.emptyText}>
