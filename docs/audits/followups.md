@@ -4,6 +4,103 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-01 — a sweep whose keep-set could see one of the two shapes it protected deleted the other
+
+Fixed in #355. Recorded because the shape explains more than one report, and
+because the mechanism is general.
+
+`sweepDocCache` deletes from a FLAT, SHARED `documents/` directory. What it
+keeps is whatever `collectKeepNames` can name, built by walking every
+`bv_doclist:` key in AsyncStorage and reading `id` / `cache_version` off each
+element.
+
+**TWO SCREENS WRITE INTO THAT ONE DIRECTORY AND STORE THEIR LISTS DIFFERENTLY.**
+The plans screen stores `[{id, cache_version, ...}]` — exactly the shape the
+keep-set builder expects. `app/site/logbooks.jsx` stores
+`[{date, logs:[...]}]`, where no top-level element carries an id at all, while
+writing real PDFs named `{id}.{version}.pdf` that match `SWEEPABLE`.
+
+An element with no id was SKIPPED, silently — `if (!id) continue`. So the
+logbook PDFs were named by nothing in the keep-set, and every sweep deleted
+them. And `sweepDocCache()` fires from the PLANS screen on every successful
+list load, so **opening Plans deleted the offline logbooks.**
+
+The day-report half was worse: `day_{projectId}_{date}` PDFs are keyed on an id
+the logbooks screen INVENTS at render time, which appears in no record
+anywhere. Nothing could ever have named them.
+
+### Why this is the family, not an accident
+
+The keep-set ran, returned a well-formed answer, and could not see half its
+subject. Against the shape it understood it was correct; against the shape it
+did not it reported "nothing to keep" — which is indistinguishable, at the call
+site, from "these files are genuinely orphaned." A deletion pass cannot tell
+those apart and has no reason to ask.
+
+Same as the `--include=*.js` sweep blind to 96 `.cjs` files, the local test glob
+that ran 85 of CI's 93, the `sort()` that did nothing and still satisfied a
+determinism assertion, and CORS being correct in every particular and unable to
+reach a 429. **The logic was right. Its REACH was not, and reach is what a test
+of the logic cannot see.**
+
+`docCacheSweep.test.cjs` could not catch it: every fixture it built was
+plans-shaped. A test that constructs only the shape the code already handles
+proves the code handles that shape.
+
+### The rule, for anything that deletes by exclusion
+
+**A keep-set is a claim about EVERY writer into the space being swept, not
+about the one that called the sweep.** Before shipping one, enumerate the
+writers — grep for what puts files in the directory, not for what reads it —
+and assert at least one fixture per writer. Where a writer's identity is
+INVENTED at render time rather than stored, it cannot be recovered by a reader
+and the writer has to declare it; that is why #355 made `site/logbooks.jsx`
+stamp the id rather than teaching `docCache` a second key format, which would
+have coupled the two and rotted quietly.
+
+**The cheap tell:** if the keep-set builder has a `continue` on malformed input,
+that branch is where a whole class of files goes to be deleted. Count what it
+skips and log it — a sweep that silently skips is a sweep that cannot be
+audited after the fact.
+
+---
+
+## PRACTICE — 2026-09-01 — file ownership has to follow the change, not the ticket
+
+Six workers ran in parallel, each pinned to its own worktree, partitioned by
+INTENT: one owned the token leak, one the viewer's memory, one offline plans.
+The boundaries were drawn from the defect list.
+
+**The work did not respect them, because the defects did not.** The
+token-leak worker had to change how Android resolves a document, which meant
+editing the three screens that open one — files another worker owned — and
+`pdfjsViewer.js`, which a third owned. Three conflicts on merge.
+
+They resolved cleanly, both sides agreed on intent, and the merged tree was
+verified to carry all three fixes. **That was luck.** Both sides happened to be
+editing the same hunk toward the same end; a worker that had reasoned from a
+different premise about that line would have produced a merge that applied
+cleanly and was wrong — which is the failure mode this file has already recorded
+twice tonight, in `project/[id].jsx` and in `followups.md` itself, where a clean
+auto-merge misfiled an entry below the block it belonged above.
+
+### The rule
+
+Partition by FILE, decided after reading the code, not by ticket. If two items
+in a batch touch one file, they are one work item or they are strictly ordered —
+they are never two parallel workers. The question to answer before splitting is
+not "are these different defects" but "can these be changed without meeting",
+and that is answered by reading, not by the list.
+
+Where an overlap is discovered mid-flight, the honest move is to stop the second
+worker rather than merge two independent readings of one line afterwards.
+
+**And where a clean merge does happen across a shared file, read the resolved
+file.** Three times tonight a merge applied with no conflict and was wrong or
+misplaced; each was caught by looking rather than by the absence of markers.
+
+---
+
 ## OPEN — 2026-09-01 — a BLANK `cp_name` prints on the same filed PDFs, and nothing prevents it
 
 Deliberately left open by #353, which gated the OTHER half. Recorded so the
