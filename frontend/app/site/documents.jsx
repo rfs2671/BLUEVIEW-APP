@@ -20,6 +20,8 @@ import {
   X,
   ChevronRight,
   LogOut,
+  Lock,
+  ClipboardList,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -28,6 +30,7 @@ import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import apiClient from '../../src/utils/api';
 import { settleFetch } from '../../src/utils/offlineState';
 import {
@@ -93,6 +96,14 @@ export default function SiteDocumentsScreen() {
   const s = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
+  // This screen is inside the Inspector Mode scope (src/utils/inspectorScope.js),
+  // so it renders with the tablet in a stranger's hands. Everything that leaves
+  // it — Home, and the logout — is hidden while the lock is engaged; the banner
+  // below is the only way off, and it goes to the tab carrying "Exit Inspector
+  // Mode". The route gate would bounce /site anyway, but a control that visibly
+  // does nothing is its own defect, and the logout is a real escape the gate
+  // deliberately does NOT close (/login stays allowed so a super can sign out).
+  const { isLocked } = useInspectorLock();
 
   const handleLogout = async () => {
     await logout();
@@ -261,11 +272,13 @@ export default function SiteDocumentsScreen() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/site')}
-            />
+            {!isLocked && (
+              <GlassButton
+                variant="icon"
+                icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => router.push('/site')}
+              />
+            )}
             <View style={s.siteBadge}>
               <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={s.siteBadgeText}>SITE DEVICE</Text>
@@ -274,14 +287,35 @@ export default function SiteDocumentsScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
-          <Pressable
-            onPress={handleLogout}
-            style={s.logoutBtn}
-            hitSlop={12}
-          >
-            <LogOut size={18} strokeWidth={1.5} color="#64748b" />
-          </Pressable>
+          {!isLocked && (
+            <Pressable
+              onPress={handleLogout}
+              style={s.logoutBtn}
+              hitSlop={12}
+            >
+              <LogOut size={18} strokeWidth={1.5} color="#64748b" />
+            </Pressable>
+          )}
         </View>
+
+        {/* Inspector Mode banner — the same read-only notice the logbooks tab
+            carries, and the route back to it. "Exit Inspector Mode" lives on
+            logbooks only, so there is exactly one place to release the lock. */}
+        {isLocked && (
+          <View style={s.inspectorBanner}>
+            <Lock size={16} strokeWidth={1.5} color="#f59e0b" />
+            <Text style={s.inspectorBannerText}>Inspector Mode — read only</Text>
+            <Pressable
+              style={s.inspectorLinkBtn}
+              onPress={() => router.push('/site/logbooks')}
+              accessibilityRole="button"
+              accessibilityLabel="Log Books"
+            >
+              <ClipboardList size={16} strokeWidth={1.5} color="#f59e0b" />
+              <Text style={s.inspectorLinkText}>Log Books</Text>
+            </Pressable>
+          </View>
+        )}
 
         {/* Title + search. An inspector arrives asking for a named document,
             not to browse — search is the primary control, so it sits beside the
@@ -447,6 +481,42 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.md,
     backgroundColor: withAlpha('#ffffff', 0.05),
   },
+  // Inspector Mode banner — same amber as the one on site/logbooks.jsx, so the
+  // two tabs in the inspector's scope read as one confined mode.
+  inspectorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: withAlpha('#f59e0b', 0.12),
+    borderWidth: 1,
+    borderColor: withAlpha('#f59e0b', 0.35),
+  },
+  inspectorBannerText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#f59e0b',
+    letterSpacing: 0.3,
+  },
+  inspectorLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    minHeight: 44,
+    minWidth: 72,
+    paddingHorizontal: spacing.lg,
+    borderRadius: borderRadius.full,
+    backgroundColor: withAlpha('#f59e0b', 0.18),
+    borderWidth: 1,
+    borderColor: withAlpha('#f59e0b', 0.4),
+  },
+  inspectorLinkText: { fontSize: 15, fontWeight: '700', color: '#f59e0b' },
   siteBadge: {
     flexDirection: 'row',
     alignItems: 'center',

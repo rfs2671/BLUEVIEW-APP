@@ -9,7 +9,7 @@ import {
   ArrowLeft, ClipboardList, BookOpen, Users, FileText,
   Building2, Calendar, CheckCircle, ChevronRight, ChevronDown,
   CloudSun, Clock, MapPin, Wrench, ShieldCheck, Eye, Truck,
-  AlertTriangle, Pen, XCircle, Download, Share2, Lock,
+  AlertTriangle, Pen, XCircle, Download, Share2, Lock, FolderOpen,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -1569,11 +1569,27 @@ export default function SiteLogbooksViewer() {
           </View>
         </View>
 
-        {/* Inspector Mode banner — read-only notice + exit control. */}
+        {/* Inspector Mode banner — read-only notice, the route to the other
+            half of the inspector's scope, and the exit control.
+
+            DOCUMENTS SITS HERE BECAUSE NOTHING ELSE OFFERS IT. While the lock
+            is engaged the site home never renders (the gate redirects /site),
+            and SiteNav is hidden below — so this banner is the ONLY navigation
+            an inspector has. Without this control the gate would admit
+            /site/documents and no screen would ever send him there. */}
         {isLocked && (
           <View style={s.inspectorBanner}>
             <Lock size={16} strokeWidth={1.5} color="#f59e0b" />
             <Text style={s.inspectorBannerText}>Inspector Mode — read only</Text>
+            <Pressable
+              style={s.inspectorLinkBtn}
+              onPress={() => router.push('/site/documents')}
+              accessibilityRole="button"
+              accessibilityLabel="Documents"
+            >
+              <FolderOpen size={16} strokeWidth={1.5} color="#f59e0b" />
+              <Text style={s.exitBtnText}>Documents</Text>
+            </Pressable>
             <Pressable
               style={s.exitBtn}
               onPress={handleExitInspector}
@@ -1925,5 +1941,20 @@ function buildStyles(colors, isDark) {
     borderColor: withAlpha('#f59e0b', 0.4),
   },
   exitBtnText: { fontSize: 15, fontWeight: '700', color: '#f59e0b' },
+  // The in-banner route to /site/documents. 44 minimum — work gloves, same
+  // rule as every other control on this device.
+  inspectorLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    minHeight: 44,
+    minWidth: 72,
+    paddingHorizontal: spacing.lg,
+    borderRadius: borderRadius.full,
+    backgroundColor: withAlpha('#f59e0b', 0.18),
+    borderWidth: 1,
+    borderColor: withAlpha('#f59e0b', 0.4),
+  },
 });
 }

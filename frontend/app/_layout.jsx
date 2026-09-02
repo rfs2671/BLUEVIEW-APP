@@ -12,6 +12,7 @@ import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { InspectorLockProvider, useInspectorLock } from '../src/context/InspectorLockContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
+import { INSPECTOR_LANDING, isInspectorAllowedPath } from '../src/utils/inspectorScope';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
@@ -207,17 +208,25 @@ function RouteGuard() {
       }
 
       // Tier 1 ③ "Inspector Mode": while the device-local lock is
-      // engaged, a site_device is confined to the read-only
-      // /site/logbooks tab. Any other in-site path (/site,
-      // /site/daily-logs, /site/checkins, /site/documents, …) — and
-      // anything else that slipped past the gate above — redirects
-      // back to logbooks. /login stays reachable so a logout is still
-      // possible. The super releases the lock with the "Exit Inspector
-      // Mode" control on the logbooks screen; unlocking flips
-      // inspectorLocked and re-runs this effect, restoring normal
-      // navigation.
-      if (inspectorLocked && pathname !== '/site/logbooks' && pathname !== '/login') {
-        router.replace('/site/logbooks');
+      // engaged, a site_device is confined to the RULED SCOPE — the
+      // read-only /site/logbooks and /site/documents tabs, plus /login
+      // so a logout is still possible. Every other in-site path (/site,
+      // /site/daily-logs, /site/checkins) — and anything else that
+      // slipped past the gate above — redirects to INSPECTOR_LANDING.
+      //
+      // THE SCOPE IS NAMED ONCE, in src/utils/inspectorScope.js. This
+      // test used to spell '/site/logbooks' inline and admit nothing
+      // else, which put /site/documents outside the lock: the plans,
+      // permits and agreements were unreachable on the one device that
+      // exists so a DOB inspector can read them. The two paths that
+      // stay out are the WRITE screens, and the note in that module
+      // says why nothing that writes may be added to the list.
+      //
+      // The super releases the lock with the "Exit Inspector Mode"
+      // control on the logbooks screen; unlocking flips inspectorLocked
+      // and re-runs this effect, restoring normal navigation.
+      if (inspectorLocked && !isInspectorAllowedPath(pathname)) {
+        router.replace(INSPECTOR_LANDING);
         return;
       }
     }
