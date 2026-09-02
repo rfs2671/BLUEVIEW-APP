@@ -26,6 +26,7 @@ import {
 } from '../../src/utils/docCache';
 import { settleFetch } from '../../src/utils/offlineState';
 import { headcountDisplay } from '../../src/utils/dailyJobsiteModel';
+import { signatureSignerName } from '../../src/utils/signatureAffirmed';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -443,7 +444,10 @@ export default function SiteLogbooksViewer() {
       base64Data = signature;
     } else if (typeof signature === 'object') {
       base64Data = signature.data || signature.paths || null;
-      signerName = signature.signer_name || '';
+      // BOTH SPELLINGS. SignaturePad writes `signerName`; only `signer_name`
+      // was read, so this block lost the name on every real signature and the
+      // label rendered with no one attached to it.
+      signerName = signatureSignerName(signature);
     }
     return (
       <View style={{ marginTop: spacing.sm }}>

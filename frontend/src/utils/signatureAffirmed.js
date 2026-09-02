@@ -158,4 +158,56 @@ export function affirmationHintKey(sig, profileLoaded) {
   return hasSignatureInk(sig) ? 'submitNeedsAffirmation' : 'submitNeedsSignature';
 }
 
+/**
+ * WHO SIGNED IT — reading the key the writer actually writes.
+ *
+ * SignaturePad emits `signerName`. A dead Pydantic model in server.py
+ * (`SignatureData`) declared `signer_name`, validated nothing, and every
+ * reader in the app was written against the DECLARATION instead of the stored
+ * payload. So the daily-log prefill lost the name on reopen, the previous-log
+ * modal rendered a blank, and the filed PDF printed
+ *
+ *     Superintendent (Superintendent)
+ *
+ * the role label twice, in the slot meant for the man's name — which is
+ * exactly why it survived: it degrades instead of blanking.
+ *
+ * BOTH SPELLINGS, ALWAYS. The stored shape is not negotiable — thousands of
+ * filed documents carry it, and older ones may carry either key. The order is
+ * `render_signature_html`'s, verbatim:
+ * `sig.get("signer_name") or sig.get("signerName") or ""`.
+ *
+ * Returns '' when there is no name, never a role label. A parenthetical
+ * naming the role asserts that a man named "Superintendent" signed; saying
+ * nothing is the honest rendering, and callers suppress the field.
+ */
+export function signatureSignerName(sig) {
+  if (!sig || typeof sig !== 'object') return '';
+  return sig.signer_name || sig.signerName || '';
+}
+
+/**
+ * WHEN IT WAS SIGNED.
+ *
+ * `signed_at` is written by NO writer anywhere — it was the other half of the
+ * same dead model, so every reader of it got undefined and rendered a bare
+ * "Signed:" with nothing after it.
+ *
+ * `affirmedAt` FIRST, mirroring the backend's own resolution in
+ * server.py (`_parse_iso_dt(sig.get("affirmedAt"))`, then `timestamp`) and
+ * SignaturePad's own display. It is the moment the signer adopted this
+ * document, which is what "Signed:" claims. `timestamp` is only the capture
+ * instant and CAN BE INHERITED from a reusable credential — see
+ * PER_DOCUMENT_SIGNATURE_FIELDS above, where it is deliberately not stripped —
+ * so it is the fallback, not the first choice. `signed_at` is read last for
+ * any legacy record that somehow carries it.
+ *
+ * Returns '' when absent, so callers can suppress the line rather than
+ * printing a label with no value.
+ */
+export function signatureSignedAt(sig) {
+  if (!sig || typeof sig !== 'object') return '';
+  return sig.affirmedAt || sig.timestamp || sig.signed_at || '';
+}
+
 export default isAffirmedSignature;

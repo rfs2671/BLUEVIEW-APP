@@ -93,6 +93,13 @@ const ROUTES = [
   // an error-boundary render is the only way either would surface, since the
   // rest of the suite reads this file's source without ever executing it.
   '/logbooks/site_superintendent_log?projectId=p1',
+  // THE CP'S DAILY LOG, and the twin of /site/daily-logs below. Its
+  // superintendent's copy was already mounted here and this one was not, so
+  // half of a role-split pair was executed and half was only ever parsed —
+  // exactly the gap that lets an edit land on the CP's screen unverified.
+  // Both render a signature block, and a named import that binds to undefined
+  // is a property read that every static sweep passes.
+  '/daily-log',
   // THE CONSENT SCREEN. Reached only from a signing path, so nothing else in
   // CI would ever execute it — and it is the page a man reads before he signs
   // a statutory record. The stub returns {} for /api/esra-consent, so this

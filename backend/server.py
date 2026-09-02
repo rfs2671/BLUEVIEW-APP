@@ -3209,9 +3209,38 @@ class SafetyCheckItem(BaseModel):
     checked_at: Optional[str] = None
 
 class SignatureData(BaseModel):
-    signer_name: str
-    signed_at: str
+    """The shape a signature is ACTUALLY stored in, as SignaturePad.js writes it.
+
+    THIS MODEL VALIDATES NOTHING and never has —
+    `DailyLogCreate.superintendent_signature` is a bare `Optional[Dict]`, so
+    the client payload is stored verbatim. That made it documentation, and it
+    was documenting a shape no writer produces: it declared `signer_name` and
+    `signed_at`, while SignaturePad has only ever written `signerName` and
+    `timestamp`. Readers trusted the declaration over the stored data, and the
+    filed daily-log PDF printed `Superintendent (Superintendent)` — the role
+    label in the slot meant for the man's name — because
+    `.get("signer_name", "Superintendent")` could never hit. `signed_at` was
+    written by no writer anywhere, so every reader of it got undefined.
+
+    KEPT AND CORRECTED RATHER THAN DELETED. Deleting a dead model removes the
+    only written record of the signature contract, and the next reader then
+    reconstructs the shape by grepping — which is exactly how a reader lands
+    on a stale key again. Corrected, the artifact that caused the incident is
+    the one that prevents it. Everything is optional because nothing validates
+    against it and real payloads vary (an affirmed inkless signature has no
+    `paths`); `signer_name` stays as a legacy alias because filed documents
+    carry it and readers must accept both spellings —
+    `render_signature_html` is the precedent:
+    `sig.get("signer_name") or sig.get("signerName") or ""`.
+    """
+    signerName: Optional[str] = None
+    timestamp: Optional[str] = None
     paths: Optional[List[List[Dict]]] = None
+    affirmed: Optional[bool] = None
+    affirmedAt: Optional[str] = None
+    affirmedLang: Optional[str] = None
+    # Legacy spelling, still present on already-filed documents.
+    signer_name: Optional[str] = None
 
 class DailyLogCreate(BaseModel):
     project_id: str
@@ -25937,7 +25966,15 @@ async def generate_combined_report(
         sup_sig_html = ""
         sup_sig_raw = daily_log.get("superintendent_signature")
         if sup_sig_raw and isinstance(sup_sig_raw, dict):
-            sn = sup_sig_raw.get("signer_name", "Superintendent")
+            # BOTH SPELLINGS, and no role-label default. SignaturePad writes
+            # `signerName`; the dead SignatureData model these readers were
+            # written against said `signer_name`. Reading only the latter with
+            # the ROLE as its default is what printed "Superintendent
+            # (Superintendent)" on every filed log — the label twice, in the
+            # slot meant for the man's name. Same rule as
+            # render_signature_html above; an absent name prints no
+            # parenthetical rather than claiming a man named "Superintendent".
+            sn = sup_sig_raw.get("signer_name") or sup_sig_raw.get("signerName") or ""
             sd = sup_sig_raw.get("data")
             inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(sd, str) and sd:
@@ -25947,7 +25984,7 @@ async def generate_combined_report(
                 sup_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
                     '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
-                    f'Superintendent ({sn}):</td></tr>'
+                    f'{("Superintendent (" + sn + ")") if sn else "Superintendent"}:</td></tr>'
                     f'<tr><td>{inner}</td></tr>'
                     '</table>'
                 )
@@ -25958,7 +25995,10 @@ async def generate_combined_report(
         cp_sig_html = ""
         cp_sig_raw = daily_log.get("competent_person_signature")
         if cp_sig_raw and isinstance(cp_sig_raw, dict):
-            cn = cp_sig_raw.get("signer_name", "Competent Person")
+            # Both spellings, no role-label default — see the superintendent
+            # block above; this one printed "Competent Person (Competent
+            # Person)".
+            cn = cp_sig_raw.get("signer_name") or cp_sig_raw.get("signerName") or ""
             cd = cp_sig_raw.get("data")
             inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(cd, str) and cd:
@@ -25968,7 +26008,7 @@ async def generate_combined_report(
                 cp_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
                     '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
-                    f'Competent Person ({cn}):</td></tr>'
+                    f'{("Competent Person (" + cn + ")") if cn else "Competent Person"}:</td></tr>'
                     f'<tr><td>{inner}</td></tr>'
                     '</table>'
                 )

@@ -58,6 +58,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, surface, withAlpha } from '../../src/styles/semanticColors';
 import { useIsWide } from '../../src/hooks/useIsDesktop';
 import { easternToday } from '../../src/utils/dates';
+import { signatureSignerName, signatureSignedAt } from '../../src/utils/signatureAffirmed';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -292,9 +293,12 @@ export default function SiteDailyLogsScreen() {
     corrective_actions_na: log.corrective_actions_na || false,
     incident_log: log.incident_log || '',
     incident_log_na: log.incident_log_na || false,
-    superintendent_name: log.superintendent_signature?.signer_name || '',
+    // BOTH SPELLINGS — see daily-log.jsx, the CP's twin of this screen.
+    // `?.signer_name` was always undefined, so the superintendent's name was
+    // dropped from the form every time he reopened a filed log.
+    superintendent_name: signatureSignerName(log.superintendent_signature),
     superintendent_signature: log.superintendent_signature || null,
-    competent_person_name: log.competent_person_signature?.signer_name || '',
+    competent_person_name: signatureSignerName(log.competent_person_signature),
     competent_person_signature: log.competent_person_signature || null,
   });
 
@@ -822,15 +826,27 @@ export default function SiteDailyLogsScreen() {
                     {selectedPreviousLog.superintendent_signature && (
                       <View style={styles.modalSection}>
                         <Text style={styles.modalLabel}>SUPERINTENDENT</Text>
-                        <Text style={styles.modalValue}>{selectedPreviousLog.superintendent_signature.signer_name}</Text>
-                        <Text style={styles.auditText}>Signed: {formatTimestamp(selectedPreviousLog.superintendent_signature.signed_at)}</Text>
+                        {/* Shared readers: `.signer_name` rendered blank and
+                            `.signed_at` is written by nothing, so this line
+                            read "Signed:" with no time. Suppressed when the
+                            record carries no value. */}
+                        {!!signatureSignerName(selectedPreviousLog.superintendent_signature) && (
+                          <Text style={styles.modalValue}>{signatureSignerName(selectedPreviousLog.superintendent_signature)}</Text>
+                        )}
+                        {!!signatureSignedAt(selectedPreviousLog.superintendent_signature) && (
+                          <Text style={styles.auditText}>Signed: {formatTimestamp(signatureSignedAt(selectedPreviousLog.superintendent_signature))}</Text>
+                        )}
                       </View>
                     )}
                     {selectedPreviousLog.competent_person_signature && (
                       <View style={styles.modalSection}>
                         <Text style={styles.modalLabel}>COMPETENT PERSON</Text>
-                        <Text style={styles.modalValue}>{selectedPreviousLog.competent_person_signature.signer_name}</Text>
-                        <Text style={styles.auditText}>Signed: {formatTimestamp(selectedPreviousLog.competent_person_signature.signed_at)}</Text>
+                        {!!signatureSignerName(selectedPreviousLog.competent_person_signature) && (
+                          <Text style={styles.modalValue}>{signatureSignerName(selectedPreviousLog.competent_person_signature)}</Text>
+                        )}
+                        {!!signatureSignedAt(selectedPreviousLog.competent_person_signature) && (
+                          <Text style={styles.auditText}>Signed: {formatTimestamp(signatureSignedAt(selectedPreviousLog.competent_person_signature))}</Text>
+                        )}
                       </View>
                     )}
                   </>

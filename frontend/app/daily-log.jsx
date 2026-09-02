@@ -69,6 +69,7 @@ import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 import { easternToday } from '../src/utils/dates';
+import { signatureSignerName, signatureSignedAt } from '../src/utils/signatureAffirmed';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -315,9 +316,12 @@ export default function DailyLogScreen() {
       corrective_actions_na: log.corrective_actions_na || false,
       incident_log: log.incident_log || '',
       incident_log_na: log.incident_log_na || false,
-      superintendent_name: log.superintendent_signature?.signer_name || '',
+      // BOTH SPELLINGS. `?.signer_name` alone was always undefined —
+      // SignaturePad writes `signerName` — so reopening a filed log silently
+      // dropped the signer's name out of the form.
+      superintendent_name: signatureSignerName(log.superintendent_signature),
       superintendent_signature: log.superintendent_signature || null,
-      competent_person_name: log.competent_person_signature?.signer_name || '',
+      competent_person_name: signatureSignerName(log.competent_person_signature),
       competent_person_signature: log.competent_person_signature || null,
     });
   };
@@ -1109,23 +1113,36 @@ export default function DailyLogScreen() {
                     {selectedPreviousLog.superintendent_signature && (
                       <View style={s.modalSection}>
                         <Text style={s.modalLabel}>SUPERINTENDENT SIGNATURE</Text>
-                        <Text style={s.modalValue}>
-                          {selectedPreviousLog.superintendent_signature.signer_name}
-                        </Text>
-                        <Text style={s.auditText}>
-                          Signed: {formatTimestamp(selectedPreviousLog.superintendent_signature.signed_at)}
-                        </Text>
+                        {/* Read through the shared helpers: `.signer_name`
+                            rendered blank on every filed log, and `.signed_at`
+                            is written by no writer at all, so this printed a
+                            bare "Signed:" with nothing after it. Each line is
+                            suppressed when the record has no value for it. */}
+                        {!!signatureSignerName(selectedPreviousLog.superintendent_signature) && (
+                          <Text style={s.modalValue}>
+                            {signatureSignerName(selectedPreviousLog.superintendent_signature)}
+                          </Text>
+                        )}
+                        {!!signatureSignedAt(selectedPreviousLog.superintendent_signature) && (
+                          <Text style={s.auditText}>
+                            Signed: {formatTimestamp(signatureSignedAt(selectedPreviousLog.superintendent_signature))}
+                          </Text>
+                        )}
                       </View>
                     )}
                     {selectedPreviousLog.competent_person_signature && (
                       <View style={s.modalSection}>
                         <Text style={s.modalLabel}>COMPETENT PERSON SIGNATURE</Text>
-                        <Text style={s.modalValue}>
-                          {selectedPreviousLog.competent_person_signature.signer_name}
-                        </Text>
-                        <Text style={s.auditText}>
-                          Signed: {formatTimestamp(selectedPreviousLog.competent_person_signature.signed_at)}
-                        </Text>
+                        {!!signatureSignerName(selectedPreviousLog.competent_person_signature) && (
+                          <Text style={s.modalValue}>
+                            {signatureSignerName(selectedPreviousLog.competent_person_signature)}
+                          </Text>
+                        )}
+                        {!!signatureSignedAt(selectedPreviousLog.competent_person_signature) && (
+                          <Text style={s.auditText}>
+                            Signed: {formatTimestamp(signatureSignedAt(selectedPreviousLog.competent_person_signature))}
+                          </Text>
+                        )}
                       </View>
                     )}
                   </>
