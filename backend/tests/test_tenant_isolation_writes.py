@@ -103,7 +103,11 @@ TIER1_DESTRUCTIVE = [
 
 TIER2_SETTINGS = [
     ("post", "/projects/{project_id}/nfc-tags"),
-    ("put", "/projects/{project_id}/site-device-subfolders"),
+    # Was site-device-subfolders (folder names). Per-file site visibility
+    # replaced that route wholesale; the successor inherits its duty here
+    # unchanged — it is still the write that decides what a gate tablet an
+    # inspector reads is allowed to show.
+    ("put", "/projects/{project_id}/site-device-files"),
     ("put", "/logbooks/project/{project_id}/scaffold-info"),
     ("post", "/projects/{project_id}/safety-staff"),
     ("put", "/projects/{project_id}/report-settings"),

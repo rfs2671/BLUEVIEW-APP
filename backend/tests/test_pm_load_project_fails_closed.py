@@ -249,7 +249,13 @@ class TheSweepCountOnlyGoesDOWN(unittest.TestCase):
     #   -3  the double-permissive lines (one _same_company_or_403 helper)
     #   -2  group D: the /admin/site-devices LIST (scoped at the query, not
     #       guarded) and PUT /whatsapp/groups/{id}/config
-    EXPECTED_TOTAL = 10
+    #   -1  PUT /projects/{id}/site-device-subfolders, DELETED outright when
+    #       per-file site visibility replaced the folder model. Its successor
+    #       PUT /projects/{id}/site-device-files carries
+    #       Depends(require_project_access) and hand-rolls no company check at
+    #       all, so the site is gone rather than moved. Counted here because
+    #       the sweep does not care WHY a site left, only that the diff says.
+    EXPECTED_TOTAL = 9
 
     def test_the_sweep_finds_the_expected_number(self):
         hits = sweep_bypass_sites()

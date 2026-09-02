@@ -175,11 +175,11 @@ export default function ProjectFilesScreen() {
   const [confirmUnlink, setConfirmUnlink] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
 
-  // Site-device visibility -- which top-level subfolders the kiosk role may
-  // see. Empty selection = the kiosk sees nothing.
-  const [siteDeviceSubfolders, setSiteDeviceSubfolders] = useState([]);
-  const [siteDeviceSelected, setSiteDeviceSelected] = useState([]);
-  const [savingSiteVisibility, setSavingSiteVisibility] = useState(false);
+  // Site-device visibility is PER FILE. There is no folder selection any
+  // more: a file is on the gate tablet because someone ticked that file.
+  // `publishing` holds the id currently in flight so one row can spin
+  // without the whole list going busy.
+  const [publishing, setPublishing] = useState(null);
 
   /**
    * THE ONE ROLE PREDICATE ON THIS SCREEN. Every admin-gated control below
@@ -379,9 +379,9 @@ export default function ProjectFilesScreen() {
       setFetchState(filesRes.status);
     }
 
-    if (isAdmin && effectiveProject?.dropbox_folder_path) {
-      fetchSiteDeviceVisibility();
-    }
+    // No separate visibility fetch any more — `site_visible` rides on each
+    // row of the file list itself, so the indicator can never disagree with
+    // the list it annotates.
 
     setLoading(false);
   };
@@ -460,7 +460,6 @@ export default function ProjectFilesScreen() {
       setShowFolderPicker(false);
       toast.success('Linked', `This project now reads from ${target}.`);
       handleSync();
-      if (isAdmin) fetchSiteDeviceVisibility();
     } catch (error) {
       console.error('Failed to link folder:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not link folder');
@@ -487,8 +486,10 @@ export default function ProjectFilesScreen() {
     try {
       await dropboxAPI.linkToProject(projectId, null);
       setProject((p) => (p ? { ...p, dropbox_folder_path: null } : p));
-      setSiteDeviceSubfolders([]);
-      setSiteDeviceSelected([]);
+      // Visibility is NOT cleared here any more. It lives on each file row, so
+      // it dies with the row and survives an unlink exactly as the file does —
+      // unlinking Dropbox is not a decision to un-publish what is already on
+      // the tablets, and it would be a strange place to make one silently.
       setConfirmUnlink(false);
       toast.success('Unlinked', 'This project no longer reads from Dropbox.');
     } catch (error) {
@@ -500,45 +501,58 @@ export default function ProjectFilesScreen() {
   };
 
   // ── Site-device visibility ─────────────────────────────────────────────
-  const fetchSiteDeviceVisibility = async () => {
-    if (!projectId) return;
+  //
+  // THE INDICATOR IS THE POINT. Nothing is auto-published any more, which is
+  // safe only if an admin can SEE what a sync brought in and left unpublished.
+  // Without that, "nothing is auto-published" degrades into "nobody notices
+  // the new drawing is missing" — the same failure as the old model, just
+  // pointing the other way.
+  const isPublished = (f) => f?.site_visible === true;
+  const unpublishedCount = files.filter((f) => !isPublished(f)).length;
+
+  const handleTogglePublish = async (file) => {
+    if (!isAdmin || !file?.id) return;
+    const next = !isPublished(file);
+    setPublishing(file.id);
     try {
-      const data = await dropboxAPI.getSiteDeviceSubfolders(projectId);
-      setSiteDeviceSubfolders(Array.isArray(data?.subfolders) ? data.subfolders : []);
-      setSiteDeviceSelected(Array.isArray(data?.selected) ? data.selected : []);
+      await dropboxAPI.setSiteDeviceFiles(projectId, [file.id], next);
+      // Patch the row locally rather than refetching the whole list: a refetch
+      // here would reorder the list under the admin's finger mid-review.
+      setFiles((prev) =>
+        prev.map((f) => (f.id === file.id ? { ...f, site_visible: next } : f)));
+      toast.success(
+        next ? 'On site tablets' : 'Off site tablets',
+        next
+          ? `${file.name} is now readable on this project's gate tablets.`
+          : `${file.name} is no longer readable on site devices.`,
+      );
     } catch (e) {
-      // Admin-only endpoint; a non-admin gets 403 and simply sees no card.
-      console.warn('Site device visibility load failed:', e?.message);
-      setSiteDeviceSubfolders([]);
-      setSiteDeviceSelected([]);
+      console.error('Publish toggle failed:', e);
+      toast.error('Error', e.response?.data?.detail || 'Could not change this');
+    } finally {
+      setPublishing(null);
     }
   };
 
-  const toggleSiteSubfolder = (name) => {
-    if (!isAdmin) return;
-    setSiteDeviceSelected((prev) => {
-      const low = (name || '').toLowerCase();
-      const has = prev.some((x) => x.toLowerCase() === low);
-      return has ? prev.filter((x) => x.toLowerCase() !== low) : [...prev, name];
-    });
-  };
-
-  const handleSaveSiteVisibility = async () => {
-    if (!isAdmin) return;
-    setSavingSiteVisibility(true);
+  const handlePublishAllShown = async () => {
+    // Deliberately scoped to what is ON SCREEN and unpublished, so the search
+    // and filter above it are the admin's way of saying which files this
+    // means. A blanket "publish everything" would rebuild the folder model.
+    const ids = filteredFiles.filter((f) => !isPublished(f)).map((f) => f.id)
+      .filter(Boolean);
+    if (!isAdmin || ids.length === 0) return;
+    setPublishing('bulk');
     try {
-      await dropboxAPI.setSiteDeviceSubfolders(projectId, siteDeviceSelected);
-      toast.success(
-        'Saved',
-        siteDeviceSelected.length === 0
-          ? 'Site devices will see no files from this project.'
-          : `Site devices can see ${siteDeviceSelected.length} folder(s).`,
-      );
+      await dropboxAPI.setSiteDeviceFiles(projectId, ids, true);
+      const set = new Set(ids);
+      setFiles((prev) =>
+        prev.map((f) => (set.has(f.id) ? { ...f, site_visible: true } : f)));
+      toast.success('On site tablets', `${ids.length} file(s) published.`);
     } catch (e) {
-      console.error('Save site visibility failed:', e);
-      toast.error('Error', e.response?.data?.detail || 'Could not save');
+      console.error('Bulk publish failed:', e);
+      toast.error('Error', e.response?.data?.detail || 'Could not publish');
     } finally {
-      setSavingSiteVisibility(false);
+      setPublishing(null);
     }
   };
 
@@ -927,35 +941,39 @@ export default function ProjectFilesScreen() {
                 )}
               </GlassCard>
 
-              {/* Site-device visibility. Lives beside the folder it scopes. */}
-              {isAdmin && linkedFolder && siteDeviceSubfolders.length > 0 && (
-                <GlassCard style={s.linkCard}>
-                  <Text style={s.cardLabel}>VISIBLE ON SITE DEVICES</Text>
+              {/* WHAT A SYNC BROUGHT IN THAT NOBODY HAS PUBLISHED.
+                  This card is what makes an explicit model safe. Adding a file
+                  to a folder no longer puts it on the tablet, which is right —
+                  but the cost of that is a drawing that quietly is not there,
+                  and an admin has to be able to see the backlog to pay it.
+                  Rendered whenever there is a backlog, whether the files came
+                  from a Dropbox sync or a direct upload. */}
+              {isAdmin && files.length > 0 && unpublishedCount > 0 && (
+                <GlassCard style={s.unpublishedCard}>
+                  <View style={s.unpublishedHead}>
+                    {/* attention, not critical: a file waiting to be chosen
+                        needs review, it is not a failure. */}
+                    <AlertCircle size={18} strokeWidth={1.5} color={semantic.attention} />
+                    <Text style={s.unpublishedTitle}>
+                      {unpublishedCount} file{unpublishedCount === 1 ? '' : 's'} not on site tablets
+                    </Text>
+                  </View>
                   <Text style={s.siteHint}>
-                    Kiosks see only the folders ticked here. With none ticked they
-                    see no files from this project.
+                    Files are never published automatically — a sync or an upload
+                    adds them here, and someone has to choose each one. Gate
+                    tablets on this project can read the other {files.length - unpublishedCount}.
                   </Text>
-                  {siteDeviceSubfolders.map((name) => {
-                    const on = siteDeviceSelected.some(
-                      (x) => x.toLowerCase() === name.toLowerCase());
-                    return (
-                      <Pressable
-                        key={name}
-                        onPress={() => toggleSiteSubfolder(name)}
-                        style={({ pressed }) => [s.siteRow, pressed && { opacity: 0.7 }]}
-                      >
-                        {on
-                          ? <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
-                          : <Folder size={18} strokeWidth={1.5} color={colors.text.subtle} />}
-                        <Text style={s.siteName}>{name}</Text>
-                      </Pressable>
-                    );
-                  })}
-                  <GlassButton
-                    title={savingSiteVisibility ? 'Saving…' : 'Save visibility'}
-                    onPress={handleSaveSiteVisibility}
-                    loading={savingSiteVisibility}
-                  />
+                  {filteredFiles.some((f) => !isPublished(f)) && (
+                    <GlassButton
+                      title={
+                        publishing === 'bulk'
+                          ? 'Publishing…'
+                          : `Publish the ${filteredFiles.filter((f) => !isPublished(f)).length} shown below`
+                      }
+                      onPress={handlePublishAllShown}
+                      loading={publishing === 'bulk'}
+                    />
+                  )}
                 </GlassCard>
               )}
 
@@ -1169,10 +1187,50 @@ export default function ProjectFilesScreen() {
                           {isColliding(file, collisions) && (
                             <Text style={s.collisionNote}>{COLLISION_NOTE}</Text>
                           )}
+
+                          {/* SAID IN WORDS, on the row. A tint or an icon
+                              alone is a state an admin has to already know how
+                              to read; this is the difference between a drawing
+                              being on the tablet or not, and an inspector is
+                              the one who finds out. Only the unpublished state
+                              is called out — "on the tablet" is the state an
+                              admin deliberately chose, so it does not need to
+                              argue for itself on every row. */}
+                          {!isPublished(file) && (
+                            <Text style={s.notPublishedNote}>
+                              Not on site tablet
+                            </Text>
+                          )}
                         </View>
 
                         {/* Actions */}
                         <View style={s.fileActions}>
+                          {/* The choice itself, on the row it is about. */}
+                          {isAdmin && !!file.id && (
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                handleTogglePublish(file);
+                              }}
+                              disabled={publishing === file.id}
+                              accessibilityRole="switch"
+                              accessibilityState={{ checked: isPublished(file) }}
+                              accessibilityLabel={
+                                isPublished(file)
+                                  ? `${file.name} is on site tablets. Tap to take it off.`
+                                  : `${file.name} is not on site tablets. Tap to publish it.`
+                              }
+                              style={s.fileActionBtn}
+                            >
+                              {publishing === file.id ? (
+                                <ActivityIndicator size="small" color={colors.text.muted} />
+                              ) : isPublished(file) ? (
+                                <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
+                              ) : (
+                                <AlertCircle size={18} strokeWidth={1.5} color={semantic.attention} />
+                              )}
+                            </Pressable>
+                          )}
                           <Pressable
                             onPress={(e) => {
                               e.stopPropagation();
@@ -1426,16 +1484,32 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
     marginBottom: spacing.md,
   },
-  siteRow: {
+  unpublishedCard: {
+    marginBottom: spacing.md,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+    backgroundColor: semantic.attentionBg,
+  },
+  unpublishedHead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
   },
-  siteName: {
+  unpublishedTitle: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: '600',
     color: colors.text.primary,
+  },
+  // attentionText, not the raw amber: the tint is theme-insensitive and does
+  // not clear AA as body text on these cards (semanticColors.js:55).
+  notPublishedNote: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: semantic.neutralStrong,
+    marginTop: 4,
   },
   folderGroup: {
     marginBottom: spacing.lg,

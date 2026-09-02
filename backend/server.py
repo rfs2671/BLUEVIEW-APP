@@ -19232,48 +19232,39 @@ async def get_dropbox_folders(path: str = "", current_user = Depends(get_current
 
     return folders
 
-def _normalize_subfolder_names(names: List[str]) -> List[str]:
-    """Strip leading slashes + trailing slashes, drop empties, dedupe
-    (case-insensitive by comparison but preserve caller casing).
-    Used so both 'Approved Plans' and '/Approved Plans/' end up as
-    the single canonical 'Approved Plans' entry."""
-    seen_lower = set()
-    out = []
-    for raw in names or []:
-        if not isinstance(raw, str):
-            continue
-        n = raw.strip().strip("/").strip()
-        if not n:
-            continue
-        low = n.lower()
-        if low in seen_lower:
-            continue
-        seen_lower.add(low)
-        out.append(n)
-    return out
+def _is_site_device(current_user: dict) -> bool:
+    """The kiosk identity, however it was minted. `site_mode` is set by the
+    device-provisioning path and `role` by the account; both are checked
+    because the two have historically been set independently.
+
+    ONE definition, because it now gates THREE routes. It used to gate one
+    (the listing), spelled inline; the other two never checked at all.
+    """
+    return bool(
+        (current_user or {}).get("site_mode")
+        or (current_user or {}).get("role") == "site_device"
+    )
 
 
-def _path_is_under_allowed_subfolder(
-    file_path: str, folder_path: str, allowed_subfolders: List[str]
-) -> bool:
-    """True iff file_path lives under any allowed subfolder of
-    folder_path. Path comparison is case-insensitive because Dropbox
-    preserves case in `name` but stores a lowercased `path_lower`; we
-    call this with either, so normalize both sides."""
-    if not file_path or not allowed_subfolders:
-        return False
-    fp = file_path.lower()
-    base = (folder_path or "").lower().rstrip("/")
-    # Strip the base project folder prefix so comparisons are relative.
-    rel = fp[len(base):] if base and fp.startswith(base) else fp
-    rel = rel.lstrip("/")
-    for sub in allowed_subfolders:
-        sub_low = sub.lower().strip("/").strip()
-        if not sub_low:
-            continue
-        if rel == sub_low or rel.startswith(sub_low + "/"):
-            return True
-    return False
+def _site_device_may_read_file(rec: dict) -> bool:
+    """A file reaches a tablet only because an admin chose THAT FILE.
+
+    Fail-closed on anything that is not the boolean True: a row with no
+    `site_visible` key is a row nobody has considered yet — a fresh Dropbox
+    sync, or a project migrated before per-file selection existed — and an
+    unconsidered drawing must not be readable by an inspector's tablet.
+
+    This REPLACES `_path_is_under_allowed_subfolder`, which asked whether a
+    file's path sat under a folder name on the project document. That question
+    could not be asked at all of a direct upload (`dropbox_path: ""`), and it
+    answered "yes" for every file a Dropbox sync later dropped into a chosen
+    folder — publishing drawings nobody had looked at. The predicate now
+    survives only inside
+    backend/scripts/migrate_site_device_file_visibility.py, where its one
+    remaining job is to reproduce the OLD answer once, so the migration can
+    convert it into explicit per-file choices.
+    """
+    return (rec or {}).get("site_visible") is True
 
 
 @api_router.get("/projects/{project_id}/dropbox-subfolders")
@@ -19320,49 +19311,96 @@ async def list_dropbox_subfolders(
         )
         subfolders = []
 
+    # NO `selected` KEY. It used to report project.site_device_subfolders, and
+    # returning it now would be a second answer to "what can the tablet see"
+    # that no longer decides anything — which is exactly the disagreement the
+    # per-file model exists to prevent. Visibility is a property of a FILE and
+    # is reported by GET /projects/{id}/dropbox-files as `site_visible`.
     return {
         "folder_path": folder_path,
         "subfolders": subfolders,
-        "selected": _normalize_subfolder_names(
-            project.get("site_device_subfolders") or []
-        ),
     }
 
 
-@api_router.put("/projects/{project_id}/site-device-subfolders", dependencies=[Depends(require_approved), Depends(require_project_access)])
-async def set_site_device_subfolders(
+@api_router.put("/projects/{project_id}/site-device-files", dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def set_site_device_files(
     project_id: str,
     data: dict,
     current_user = Depends(get_admin_user),
 ):
-    """Admin-only: set the list of subfolder names (relative to the
-    project's Dropbox folder) that site-device users are allowed to
-    see. Passing [] locks site devices out completely (safe default).
-    Names are stripped + deduped server-side; do not include slashes.
+    """Admin-only: publish (or withdraw) NAMED files on the gate tablet.
+
+    REPLACES PUT /projects/{id}/site-device-subfolders. That route took a list
+    of folder NAMES, and every file a later Dropbox sync dropped into one of
+    those folders was published without anyone looking at it. This route takes
+    file IDs and a direction, and touches nothing else.
+
+    WHY NOT "here is the new complete set". A whole-set replace is one stale
+    client away from silently withdrawing a file the admin never saw — the
+    browser sends the set it knew about, and anything added since vanishes off
+    the tablet with no one told. Naming the rows and the direction means a call
+    can only change what it names.
+
+        {"file_ids": ["<id>", ...], "visible": true}
+
+    `visible` has NO DEFAULT: the caller states which way it is choosing.
+    Unmatched IDs come back in `unmatched` rather than being swallowed, so a
+    partial apply is visible to the caller instead of looking like a success.
     """
-    project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
-        raise HTTPException(status_code=403, detail="Access denied to this project")
-    subfolders_raw = data.get("subfolders")
-    if not isinstance(subfolders_raw, list):
+    file_ids = data.get("file_ids")
+    if not isinstance(file_ids, list) or not file_ids:
         raise HTTPException(
             status_code=400,
-            detail="subfolders must be an array of folder names",
+            detail="file_ids must be a non-empty array of project file IDs",
         )
-    cleaned = _normalize_subfolder_names(subfolders_raw)
-    await db.projects.update_one(
-        {"_id": to_query_id(project_id)},
-        {"$set": {
-            "site_device_subfolders": cleaned,
-            "updated_at": datetime.now(timezone.utc),
-        }},
+    visible = data.get("visible")
+    if not isinstance(visible, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="visible must be true or false — say which way you are choosing",
+        )
+
+    # A malformed ID is a 400, not a silent skip. Skipping it would report
+    # success for a file that was never touched.
+    oids = []
+    for raw in file_ids:
+        try:
+            oids.append(ObjectId(str(raw)))
+        except Exception:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid file id: {raw!r}"
+            )
+
+    # Scoped to the project. require_project_access already authorized the
+    # project itself; this stops an ID from another project riding along.
+    scope = {"_id": {"$in": oids}, "project_id": project_id}
+    matched = await db.project_files.find(scope).to_list(None)
+    matched_ids = {str(rec["_id"]) for rec in matched}
+    unmatched = [str(raw) for raw in file_ids if str(raw) not in matched_ids]
+
+    if matched_ids:
+        await db.project_files.update_many(
+            scope,
+            {"$set": {
+                "site_visible": visible,
+                "site_visible_set_by": current_user.get("id"),
+                "site_visible_set_at": datetime.now(timezone.utc),
+            }},
+        )
+
+    logger.info(
+        f"site-device files {'published' if visible else 'withdrawn'} by "
+        f"{current_user.get('email')}: project={project_id} "
+        f"count={len(matched_ids)} unmatched={len(unmatched)}"
     )
     return {
-        "message": "Site device visibility updated",
-        "site_device_subfolders": cleaned,
+        "message": (
+            f"{len(matched_ids)} file(s) "
+            f"{'published to' if visible else 'withdrawn from'} site devices"
+        ),
+        "visible": visible,
+        "updated": sorted(matched_ids),
+        "unmatched": unmatched,
     }
 
 
@@ -19472,10 +19510,9 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
     """Get files from project's linked Dropbox folder (R2-backed with Dropbox fallback).
 
-    Role-based visibility: users with role=site_device only see files
-    whose path sits under one of the project's site_device_subfolders.
-    Empty list → site devices see nothing (safe default). Admins/CPs
-    see the full folder regardless.
+    Role-based visibility: a site device sees only the files an admin has
+    explicitly published (`site_visible: true` on the project_files row).
+    Nothing published → the tablet sees nothing. Admins/CPs are unfiltered.
     """
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
@@ -19493,36 +19530,33 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     company_id = company_id or project.get("company_id")
     folder_path = project.get("dropbox_folder_path")
 
-    is_site_device = (
-        current_user.get("site_mode")
-        or current_user.get("role") == "site_device"
-    )
-    allowed_subfolders = _normalize_subfolder_names(
-        project.get("site_device_subfolders") or []
-    )
+    is_site_device = _is_site_device(current_user)
 
-    def _visible_to_site(path: str) -> bool:
-        return _path_is_under_allowed_subfolder(
-            path, folder_path or "", allowed_subfolders
-        )
-
-    # Short-circuit: site device with no subfolders configured sees nothing.
-    if is_site_device and not allowed_subfolders:
-        return []
-
-    # Check project_files collection first (R2 cache + direct uploads)
-    cached_files = await db.project_files.find({
+    file_query = {
         "project_id": project_id,
         "company_id": company_id,
         "is_deleted": {"$ne": True},
-    }).to_list(5000)
+    }
+    if is_site_device:
+        # PUSHED INTO MONGO, not applied to the page after it comes back. A
+        # post-hoc filter under a row ceiling drops CHOSEN files silently as
+        # soon as a project holds more rows than the page — the tablet would
+        # be missing a published drawing and nothing would say so.
+        file_query["site_visible"] = True
 
-    if cached_files:
+    # to_list(5000) was a hard ceiling on what a tablet could ever see,
+    # independent of any filter, and it failed by omission: no error, just a
+    # short list. None means "all of them".
+    cached_files = await db.project_files.find(file_query).to_list(None)
+
+    # A SITE DEVICE NEVER REACHES THE LIVE DROPBOX FALLBACK BELOW. `if
+    # cached_files:` falls through on an empty list, and the fallback lists
+    # Dropbox itself — where there is no row, so nothing that could have been
+    # chosen. For a tablet, "nothing published" is an answer, not a cache miss.
+    if cached_files or is_site_device:
         files = []
         for rec in cached_files:
             dropbox_path = rec.get("dropbox_path", "")
-            if is_site_device and not _visible_to_site(dropbox_path):
-                continue
             r2_key = rec.get("r2_key", "")
             stored_url = rec.get("r2_url", "")
             rec_id = str(rec.get("_id", ""))
@@ -19538,6 +19572,11 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
                 "r2_url": proxy_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
                 "source": rec.get("source", "dropbox_sync"),
+                # Shipped so the Plans & Files screen can show an admin which
+                # files a sync brought in that nobody has published yet.
+                # Without it "nothing is auto-published" degrades into
+                # "nobody notices the new drawing is missing".
+                "site_visible": rec.get("site_visible") is True,
             })
         return files
 
@@ -19548,12 +19587,14 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     # Dropbox wants "" for root, not "/" — translate our stored sentinel.
     norm_folder = _dropbox_api_path(folder_path)
 
-    # Site devices need a RECURSIVE listing so we can see files inside
-    # the allowed subfolders, not just top-level entries.
+    # ADMINS AND CPs ONLY from here down — the site-device branch returned
+    # above. A live Dropbox listing has no project_files row behind any entry,
+    # so there is nothing a tablet could have been published; it was the
+    # recursive scan for site devices that made this path exist at all.
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": norm_folder, "recursive": bool(is_site_device)}
+        json={"path": norm_folder, "recursive": False}
     )
 
     if response.status_code != 200:
@@ -19583,12 +19624,6 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     files = []
     for entry in data.get("entries", []):
         path_lower = entry.get("path_lower", "")
-        if is_site_device:
-            # Only files; drop any folder entries from the recursive scan.
-            if entry.get(".tag") != "file":
-                continue
-            if not _visible_to_site(path_lower):
-                continue
         file_info = {
             "name": entry["name"],
             "path": path_lower,
@@ -19863,6 +19898,15 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                 else:
                     file_record["cache_version"] = 1
                     file_record["created_at"] = now
+                    # A FILE A SYNC BROUGHT IN IS NOT PUBLISHED. Written
+                    # explicitly rather than left absent so the unpublished
+                    # backlog is a Mongo COUNT, not an inference over a
+                    # missing key. Set on the INSERT branch only: the update
+                    # branch above does `$set: file_record`, and adding this
+                    # to the dict literal would un-publish every chosen file
+                    # on every re-sync — the tablet would appear to lose
+                    # drawings, with nothing to point at.
+                    file_record["site_visible"] = False
                     insert_res = await db.project_files.insert_one(file_record)
                     file_record["_id"] = insert_res.inserted_id
 
@@ -19962,6 +20006,24 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
     company_id = company_id or project.get("company_id")
+
+    # THE ALLOW-LIST WAS A LISTING FILTER ONLY. This route checked
+    # project_access_ok and nothing else, then fell through to a Dropbox
+    # get_temporary_link for WHATEVER PATH THE CALLER NAMED — not necessarily
+    # a path in this project's folder, and not necessarily a file with a row.
+    # A tablet that could compose a URL could read anything the company's
+    # Dropbox token could reach. It is authorized per-file now, like the
+    # listing, and a path with no row fails closed: nothing that has no row
+    # can have been chosen. Admins and CPs are untouched.
+    if _is_site_device(current_user):
+        chosen = await db.project_files.find_one({
+            "project_id": project_id, "dropbox_path": file_path
+        })
+        if not _site_device_may_read_file(chosen):
+            raise HTTPException(
+                status_code=403,
+                detail="This file is not published to site devices",
+            )
 
     # Check project_files for R2 URL first (company-scoped)
     file_rec = await db.project_files.find_one({
@@ -20115,6 +20177,11 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
         "size": len(file_bytes),
         "modified": now.isoformat(),
         "source": "direct_upload",
+        # Fail-closed like a synced row. This is also the row shape the old
+        # folder model could not publish AT ALL — dropbox_path is "", so no
+        # folder name could ever contain it — which is why per-file selection
+        # is the only model that can reach a directly-uploaded drawing.
+        "site_visible": False,
         "cache_version": 1,
         "created_at": now,
         "updated_at": now,
@@ -20354,6 +20421,18 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     # when rec["company_id"] was falsy, which is a property of the row rather
     # than of the caller.
     _same_company_or_403(rec, current_user)
+
+    # SAME COMPANY WAS THE ONLY QUESTION ASKED. This is the URL the listing
+    # itself hands out (`/files/{id}/content`), so a tablet holds real ids for
+    # the files it was shown — and ids are sequential-ish ObjectIds, so holding
+    # one is most of the way to guessing its neighbours. Every file on the
+    # project was streamable by any device on that project. Admins and CPs are
+    # untouched; only the kiosk identity has to have been chosen.
+    if _is_site_device(current_user) and not _site_device_may_read_file(rec):
+        raise HTTPException(
+            status_code=403,
+            detail="This file is not published to site devices",
+        )
 
     r2_key = rec.get("r2_key", "")
     if not r2_key or not _r2_client or not R2_BUCKET_NAME:
@@ -37701,6 +37780,14 @@ async def get_document_index_status(
         query["company_id"] = company_id
     # PDFs only
     query["name"] = {"$regex": r"\.pdf$", "$options": "i"}
+    if _is_site_device(current_user):
+        # A NAME IS A DISCLOSURE TOO. This route hands back no bytes, no
+        # r2_key and no link — but it names every PDF on the project and gives
+        # each one's file_id, which is an index of the drawings a tablet was
+        # NOT meant to be shown. `stream_project_file` refuses those ids, so
+        # this is not a way in; it is still the unpublished list, read off a
+        # tablet an inspector is holding. Same predicate as everywhere else.
+        query["site_visible"] = True
 
     files_out = []
     try:

@@ -697,20 +697,18 @@ export const dropboxAPI = {
     return response.data;
   },
 
-  // Site-device visibility config: which subfolders of the linked
-  // project folder the kiosk role is allowed to see. Empty list = kiosk
-  // sees nothing. Admins/CPs always see everything.
-  getSiteDeviceSubfolders: async (projectId) => {
-    const response = await apiClient.get(
-      `/api/projects/${projectId}/dropbox-subfolders`
-    );
-    return response.data;
-  },
-
-  setSiteDeviceSubfolders: async (projectId, subfolders) => {
+  // Site-device visibility is per FILE, not per folder. A file reaches a gate
+  // tablet only because an admin picked THAT FILE; a Dropbox sync never
+  // publishes anything on its own. Replaces setSiteDeviceSubfolders, which
+  // took folder names and published whatever later landed inside them.
+  //
+  // Names the rows AND the direction, so a call can only change what it names
+  // — a whole-set replace would silently withdraw any file this client had not
+  // heard about yet. `visible` has no default on the server either.
+  setSiteDeviceFiles: async (projectId, fileIds, visible) => {
     const response = await apiClient.put(
-      `/api/projects/${projectId}/site-device-subfolders`,
-      { subfolders }
+      `/api/projects/${projectId}/site-device-files`,
+      { file_ids: fileIds, visible }
     );
     return response.data;
   },

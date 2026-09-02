@@ -308,8 +308,15 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
         # A LOWER BOUND, stated. Most of these are dict / list membership,
         # which is exact and not this shape — but the count is asserted so a
         # sudden jump is visible rather than silent.
+        #
+        # 400 -> 410 when test_site_device_file_visibility.py landed: it adds
+        # 10 (396 -> 406), all of them membership against a list of file names,
+        # a response dict, or a set of AST node names — exact containers, the
+        # shape this ceiling explicitly does not police. The classifier did NOT
+        # need a new binding shape; the number is raised, in the diff, rather
+        # than the file being written around the pin.
         self.assertLess(
-            unclassified, 400,
+            unclassified, 410,
             f"{unclassified} assertNotIn haystacks could not be classified; "
             "if this has grown a lot, the classifier needs the new binding shape",
         )
