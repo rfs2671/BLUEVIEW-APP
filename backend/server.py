@@ -19144,6 +19144,136 @@ async def dropbox_api_call(company_id: str, method: str, url: str, **kwargs):
 
     return response
 
+
+# ══ DROPBOX LISTINGS ARE PAGED ══════════════════════════════════════════════
+#
+# list_folder returns ONE page of entries plus has_more and a cursor for
+# list_folder/continue. Four of the five call sites read data["entries"] once
+# and threw the rest away. The subfolder picker is the one that stings:
+# site_device_subfolders is set from exactly that list, so a truncated listing
+# silently limits what a gate tablet can EVER be approved to see -- an admin
+# cannot tick a checkbox that was never rendered.
+#
+# THE BOUND IS STATED, NOT IMPLIED. Dropbox pages list_folder at up to ~2000
+# entries, so 50 pages is ~100k files: far past any real project folder, and
+# small enough that a Dropbox stuck on has_more cannot spin a worker forever.
+# Reaching it TRUNCATES and logs loudly rather than raising -- a partial list
+# still beats no list, and the log is the only thing that can tell us the
+# bound was ever touched.
+_DROPBOX_MAX_LIST_PAGES = 50
+
+
+async def _dropbox_list_folder_all(
+    company_id: str, path: str, recursive: bool = False, **extra
+):
+    """list_folder, following has_more to exhaustion.
+
+    Returns (entries, first_response). The FIRST response is handed back so
+    callers keep their existing status-code and error-body handling exactly as
+    it was -- this helper changes how much is listed, not how failures read.
+    On a non-200 the entry list is empty and the caller's error branch runs.
+    """
+    body = {"path": path, "recursive": recursive}
+    body.update(extra)
+    response = await dropbox_api_call(
+        company_id, "post",
+        "https://api.dropboxapi.com/2/files/list_folder",
+        json=body,
+    )
+    if response.status_code != 200:
+        return [], response
+
+    data = response.json()
+    entries = list(data.get("entries", []))
+    pages = 1
+    while data.get("has_more"):
+        if pages >= _DROPBOX_MAX_LIST_PAGES:
+            logger.error(
+                f"Dropbox listing hit the {_DROPBOX_MAX_LIST_PAGES}-page bound "
+                f"— company={company_id} path={path!r} entries={len(entries)}. "
+                "THE LIST IS TRUNCATED."
+            )
+            break
+        cursor = data.get("cursor") or ""
+        if not cursor:
+            # has_more with no cursor is a Dropbox contract violation; stopping
+            # is the only option that terminates.
+            logger.error(
+                f"Dropbox said has_more with no cursor — company={company_id} "
+                f"path={path!r} entries={len(entries)}. THE LIST IS TRUNCATED."
+            )
+            break
+        cont = await dropbox_api_call(
+            company_id, "post",
+            "https://api.dropboxapi.com/2/files/list_folder/continue",
+            json={"cursor": cursor},
+        )
+        if cont.status_code != 200:
+            # Was a bare `break` in the sync: the listing silently shrank and
+            # the run recorded the short count as if it were the whole folder.
+            logger.error(
+                f"Dropbox list_folder/continue returned {cont.status_code} — "
+                f"company={company_id} path={path!r} after {len(entries)} "
+                "entries. THE LIST IS TRUNCATED."
+            )
+            break
+        data = cont.json()
+        entries.extend(data.get("entries", []))
+        pages += 1
+    return entries, response
+
+
+# ══ R2 OBJECT KEYS ══════════════════════════════════════════════════════════
+#
+# WHAT WAS WRONG. The key was {company_id}/{project_id}/{filename} with no path
+# component, while _sync_project_to_r2 lists RECURSIVELY. So
+# /Approved Plans/plan.pdf and /Permits/plan.pdf in one project produced TWO
+# project_files rows -- kept distinct by the unique index on
+# (project_id, dropbox_path) -- pointing at ONE R2 object. The second sync
+# overwrote the first's bytes. Nothing raised, nothing logged, and an inspector
+# opening "Permits/plan.pdf" got the approved-plans drawing. The index is what
+# made it invisible: had the ROWS collided too, the sync would have thrown.
+#
+# THE PREFIX IS LOAD-BEARING. hard_delete_project sweeps R2 by the
+# {company_id}/{project_id}/ prefix. Any key outside it would survive a project
+# delete as an orphan still holding customer drawings, so the new segment goes
+# INSIDE that prefix, never in front of it.
+#
+# NO BACKFILL, AND DELIBERATELY. Existing rows keep the flat key they already
+# have and no object is ever moved. Every reader resolves the object from the
+# STORED r2_key on the row -- stream_project_file, _index_pdf_file, the
+# page-render fallback, the annotation reads -- and none of them rebuilds a key
+# from the name, so a legacy row and a new row resolve through the same line.
+# Rewriting keys would buy nothing and would risk a plan that stops opening,
+# which is strictly worse than one that collides.
+def _r2_object_key(
+    company_id: str, project_id: str, filename: str, dropbox_path: str = ""
+) -> str:
+    """Build the R2 object key for a project file.
+
+    Dropbox-synced files get a segment derived from the file's FOLDER, so two
+    files sharing a basename in different folders cannot share an object. It is
+    derived from the path Dropbox gave us and is therefore STABLE across syncs
+    -- the same file always lands on the same object, so a re-sync overwrites
+    its own bytes rather than orphaning them.
+
+    Direct uploads carry no dropbox_path and get a random segment. Their
+    name-based de-dup only inspects rows that are not soft-deleted, so
+    re-uploading the name of a soft-deleted file used to reuse that file's key
+    and clobber an object still being served.
+
+    The filename stays the LAST segment: content-type is guessed from the key
+    tail, and an R2 listing has to stay readable by a human.
+    """
+    prefix = f"{company_id}/{project_id}"
+    if dropbox_path:
+        folder = dropbox_path.rsplit("/", 1)[0].lower()
+        seg = hashlib.sha256(folder.encode("utf-8")).hexdigest()[:12]
+    else:
+        seg = "u" + uuid.uuid4().hex[:11]
+    return f"{prefix}/{seg}/{filename}"
+
+
 @api_router.get("/dropbox/folders")
 async def get_dropbox_folders(path: str = "", current_user = Depends(get_current_user)):
     """Get Dropbox folders for selection.
@@ -19166,15 +19296,10 @@ async def get_dropbox_folders(path: str = "", current_user = Depends(get_current
         norm_path = norm_path.rstrip("/")
 
     try:
-        response = await dropbox_api_call(
-            company_id, "post",
-            "https://api.dropboxapi.com/2/files/list_folder",
-            json={
-                "path": norm_path,
-                "recursive": False,
-                "include_mounted_folders": True,
-                "include_non_downloadable_files": False,
-            }
+        entries, response = await _dropbox_list_folder_all(
+            company_id, norm_path, recursive=False,
+            include_mounted_folders=True,
+            include_non_downloadable_files=False,
         )
     except HTTPException:
         raise
@@ -19219,14 +19344,13 @@ async def get_dropbox_folders(path: str = "", current_user = Depends(get_current
                 detail = f"Dropbox error: {body_text[:200]}"
         raise HTTPException(status_code=400, detail=detail)
 
-    data = response.json()
     folders = [
         {
             "name": entry["name"],
             "path": entry.get("path_lower") or entry.get("path_display") or "",
             "id": entry.get("id", ""),
         }
-        for entry in data.get("entries", [])
+        for entry in entries
         if entry.get(".tag") == "folder"
     ]
 
@@ -19302,14 +19426,17 @@ async def list_dropbox_subfolders(
     try:
         # Dropbox wants "" for root, not "/" — translate our stored sentinel.
         api_path = _dropbox_api_path(folder_path)
-        resp = await dropbox_api_call(
-            company_id, "post",
-            "https://api.dropboxapi.com/2/files/list_folder",
-            json={"path": api_path, "recursive": False},
+        # PAGED. This list is what the Site Device Visibility checkboxes are
+        # rendered from, and site_device_subfolders is set from what gets
+        # ticked. Stopping at page one meant a folder that exists in Dropbox
+        # could never be approved for a gate tablet, with nothing on screen to
+        # say it had been left out.
+        sub_entries, resp = await _dropbox_list_folder_all(
+            company_id, api_path, recursive=False,
         )
         subfolders: List[str] = []
         if resp.status_code == 200:
-            for entry in resp.json().get("entries", []):
+            for entry in sub_entries:
                 if entry.get(".tag") == "folder":
                     subfolders.append(entry.get("name", ""))
             subfolders = [s for s in subfolders if s]
@@ -19550,10 +19677,8 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 
     # Site devices need a RECURSIVE listing so we can see files inside
     # the allowed subfolders, not just top-level entries.
-    response = await dropbox_api_call(
-        company_id, "post",
-        "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": norm_folder, "recursive": bool(is_site_device)}
+    dbx_entries, response = await _dropbox_list_folder_all(
+        company_id, norm_folder, recursive=bool(is_site_device),
     )
 
     if response.status_code != 200:
@@ -19579,9 +19704,8 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
             pass
         raise HTTPException(status_code=400, detail=detail)
 
-    data = response.json()
     files = []
-    for entry in data.get("entries", []):
+    for entry in dbx_entries:
         path_lower = entry.get("path_lower", "")
         if is_site_device:
             # Only files; drop any folder entries from the recursive scan.
@@ -19752,10 +19876,12 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
     try:
         # Dropbox wants "" for root, not "/" — translate our stored sentinel.
         api_path = _dropbox_api_path(folder_path)
-        response = await dropbox_api_call(
-            company_id, "post",
-            "https://api.dropboxapi.com/2/files/list_folder",
-            json={"path": api_path, "recursive": True}
+        # RECURSIVE, and paged to exhaustion by the helper. The cursor loop
+        # that used to live here was unbounded and swallowed a failed
+        # /continue with a bare `break`, so a short listing was recorded as if
+        # it were the whole folder.
+        all_entries, response = await _dropbox_list_folder_all(
+            company_id, api_path, recursive=True,
         )
         if response.status_code != 200:
             logger.error(f"Sync failed for project {project_id}: Dropbox list_folder returned {response.status_code}")
@@ -19770,20 +19896,7 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
             )
             return
 
-        data = response.json()
-        entries = [e for e in data.get("entries", []) if e[".tag"] == "file"]
-
-        # Handle pagination
-        while data.get("has_more"):
-            cursor_resp = await dropbox_api_call(
-                company_id, "post",
-                "https://api.dropboxapi.com/2/files/list_folder/continue",
-                json={"cursor": data["cursor"]}
-            )
-            if cursor_resp.status_code != 200:
-                break
-            data = cursor_resp.json()
-            entries.extend([e for e in data.get("entries", []) if e[".tag"] == "file"])
+        entries = [e for e in all_entries if e.get(".tag") == "file"]
 
         now = datetime.now(timezone.utc)
         synced = 0
@@ -19827,7 +19940,14 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                     continue
 
                 file_bytes = dl_resp.content
-                r2_key = f"{company_id}/{project_id}/{filename}"
+                # FOLDER-SCOPED. The listing above is recursive, so two files
+                # can share a basename; keying on the name alone put both on
+                # one object. An existing row is NOT re-keyed here for its own
+                # sake -- this line runs only when the bytes changed, and it
+                # re-uploads them, so the row and its object stay in step.
+                r2_key = _r2_object_key(
+                    company_id, project_id, filename, dropbox_path
+                )
                 ct = mimetypes.guess_type(filename)[0] or "application/octet-stream"
                 r2_url = ""
 
@@ -19928,17 +20048,16 @@ async def sync_project_dropbox(project_id: str, current_user = Depends(get_curre
     # Dropbox wants "" for root, not "/" — translate our stored sentinel.
     api_path = _dropbox_api_path(folder_path)
 
-    # Quick count from Dropbox for immediate response
-    response = await dropbox_api_call(
-        company_id, "post",
-        "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": api_path, "recursive": True}
+    # Quick count from Dropbox for immediate response. Paged: this number is
+    # what the client shows as "syncing N files", and a first-page-only count
+    # under-reported every folder past one page.
+    count_entries, response = await _dropbox_list_folder_all(
+        company_id, api_path, recursive=True,
     )
 
     file_count = 0
     if response.status_code == 200:
-        data = response.json()
-        file_count = len([e for e in data.get("entries", []) if e[".tag"] == "file"])
+        file_count = len([e for e in count_entries if e.get(".tag") == "file"])
 
     # Launch background sync
     asyncio.create_task(_sync_project_to_r2(project_id, company_id, folder_path))
@@ -20095,7 +20214,11 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         filename = f"{stem or filename}-{ts}.{ext or 'pdf'}"
 
-    r2_key = f"{company_id}/{project_id}/{filename}"
+    # UNIQUE PER UPLOAD. The de-dup above only inspects rows that are not
+    # soft-deleted, so re-uploading the name of a soft-deleted file passed
+    # straight through and reused that file's key -- clobbering an object the
+    # deleted row still pointed at, and which the trash view still served.
+    r2_key = _r2_object_key(company_id, project_id, filename)
     try:
         r2_url = await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, "application/pdf")
     except Exception as e:
@@ -37275,7 +37398,14 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
         if not _r2_client:
             continue
         old_key = f.get("r2_key") or f"{f.get('company_id', '')}/{project_id}/{raw}"
-        new_key = f"{f.get('company_id', '')}/{project_id}/{decoded}"
+        # RENAME IN PLACE — swap only the last segment. Rebuilding the key as
+        # company/project/name would flatten a folder-scoped key back to the
+        # shape that collides, and would strand the object this row points at.
+        _parent = (
+            old_key.rsplit("/", 1)[0] if "/" in old_key
+            else f"{f.get('company_id', '')}/{project_id}"
+        )
+        new_key = f"{_parent}/{decoded}"
         try:
             # Copy to new key (R2 is S3-compatible)
             await asyncio.to_thread(
