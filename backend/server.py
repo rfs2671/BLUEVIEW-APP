@@ -37645,7 +37645,7 @@ async def debug_test_plan_image_send(
     return result
 
 
-@api_router.get("/projects/{project_id}/debug/indexed-pages")
+@api_router.get("/projects/{project_id}/debug/indexed-pages", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def debug_indexed_pages(
     project_id: str,
     current_user=Depends(get_current_user),
@@ -37653,14 +37653,27 @@ async def debug_indexed_pages(
 ):
     """Admin diagnostic — show what v2 indexing actually stored for this
     project's pages. Returns the interesting fields only (no raw summaries
-    over 400 chars, no full embedding array)."""
+    over 400 chars, no full embedding array).
+
+    THE TWIN of get_document_index_status, forty lines below, and it carried
+    the identical defect: a role gate is not a tenant gate. `role` is checked
+    against ("admin", "owner") and then the project id went from the path
+    straight into the query, scoped only by the falsy-short-circuit company
+    term. "owner" is the role EVERY self-serve signup receives and
+    /auth/register sets company_id = None, so the default state of a new
+    account passed both halves and read another tenant's sheet numbers, sheet
+    titles and page summaries.
+
+    THE ROLE GATE STAYS. It is a separate question -- who may run a diagnostic
+    -- and require_project_access does not answer it. The company term is gone
+    for the same reason as its twin: the project is what gets authorized, and
+    an unowned index row ({"company_id": None} matches in Mongo) was both
+    readable by the wrong tenant and invisible to the right one.
+    """
     role = (current_user.get("role") or "").lower()
     if role not in ("admin", "owner"):
         raise HTTPException(status_code=403, detail="Admin access required")
-    company_id = get_user_company_id(current_user)
     q: Dict[str, Any] = {"project_id": project_id}
-    if company_id:
-        q["company_id"] = company_id
     rows = await db.document_page_index.find(q).sort([
         ("file_name", 1), ("page_number", 1),
     ]).limit(limit).to_list(limit)
@@ -37688,17 +37701,46 @@ async def debug_indexed_pages(
     return {"count": len(out), "pages": out}
 
 
-@api_router.get("/projects/{project_id}/document-index-status")
+@api_router.get("/projects/{project_id}/document-index-status", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def get_document_index_status(
     project_id: str,
     current_user=Depends(get_current_user),
 ):
     """Per-file indexing status for a project. Includes a top-level flag
-    that tells the frontend whether the server has a Qwen key at all."""
-    company_id = get_user_company_id(current_user)
+    that tells the frontend whether the server has a Qwen key at all.
+
+    SCOPED BY THE DEPENDENCY, NOT BY THE QUERY. This route had
+    `get_current_user` and nothing else, and its only tenancy term was
+
+        company_id = get_user_company_id(current_user)
+        if company_id:
+            query["company_id"] = company_id
+
+    the falsy short-circuit. /auth/register sets company_id = None, so for the
+    DEFAULT state of a self-serve account the term was dropped and the query
+    became {"project_id": <whatever was typed>}. It serves no bytes and no
+    r2_key -- and it names every PDF and hands out every file_id, which is what
+    stream_project_file takes. The index is the map.
+
+    The conditional is GONE rather than made unconditional, because scoping the
+    ROWS was never the right instrument here and fixing it that way would have
+    kept two bugs:
+
+      * `project_files` rows are written
+        `company_id = company_id or project.get("company_id")`, so an unowned
+        row holds None -- and {"company_id": None} MATCHES in Mongo. A caller
+        with a perfectly good company could still read unowned rows on another
+        tenant's project, and the owning tenant could NOT see its own;
+      * an explicitly assigned CP or superintendent whose own company differs
+        from the project's (project_access_ok branch 3) was authorized for the
+        job and served an EMPTY index.
+
+    Once require_project_access has established that this caller may have this
+    project, every file row ON that project is in scope. Same pair and same
+    order as the other routes on this resource -- reindex-document,
+    reindex-all, debug/test-plan-image-send.
+    """
     query: Dict[str, Any] = {"project_id": project_id}
-    if company_id:
-        query["company_id"] = company_id
     # PDFs only
     query["name"] = {"$regex": r"\.pdf$", "$options": "i"}
 
