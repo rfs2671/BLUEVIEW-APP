@@ -607,6 +607,37 @@ async function main() {
       + 'AsyncStorage');
     ok(M.dayReportVersion([], date) === date,
       'a day with no logs still names its report, so the sweep still keeps it');
+
+    // INHERITED FROM THE PIN THIS COMMIT DELETES. site/logbooks.jsx used to
+    // run `stripPhotoBlobs` before writing its list, and a backend source test
+    // grepped that screen for the name. The screen no longer stores anything --
+    // this module does -- so the grep pinned a deleted name in the wrong file.
+    // The concern is real and it is asserted here instead, by EXECUTION: not
+    // "the strip function is still present" but "no photo bytes come out".
+    //
+    // Stronger than what it replaces. `stripPhotoBlobs` was a blacklist that
+    // removed `base64` and would have needed editing again for `thumb_base64`;
+    // identityRow is an allow-list, so a photo field invented tomorrow is
+    // excluded without anyone remembering to exclude it.
+    const fat = {
+      id: 'L9', log_type: 'daily_jobsite', status: 'submitted',
+      updated_at: date + 'T07:05:00+00:00',
+      base64: 'A'.repeat(4096),
+      thumb_base64: 'B'.repeat(1024),
+      photos: [{ base64: 'C'.repeat(4096), thumb_base64: 'D'.repeat(1024) }],
+      data: { notes: 'E'.repeat(4096) },
+    };
+    const lean = M.identityRow(PID, date, [fat]).logs[0];
+    ok(JSON.stringify(lean).indexOf('AAAA') === -1
+      && JSON.stringify(lean).indexOf('BBBB') === -1
+      && JSON.stringify(lean).indexOf('CCCC') === -1
+      && JSON.stringify(lean).indexOf('DDDD') === -1
+      && JSON.stringify(lean).indexOf('EEEE') === -1,
+      'NO PHOTO BYTES REACH AsyncStorage -- base64, thumb_base64, a photos[] '
+      + 'array and data are all absent from the stored row, by allow-list');
+    ok(Object.keys(lean).sort().join(',') === 'id,log_type,status,updated_at',
+      'and the row is EXACTLY the four fields -- a fifth would be a new field '
+      + 'nobody sized against the 6 MB ceiling');
   }
 
   // ── H2. mergeHistoryRows keys on the DATE, not on id|version ────────────
