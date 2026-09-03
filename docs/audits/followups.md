@@ -4,6 +4,66 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-03 — startup_event has two eras of failure semantics and nothing marks the boundary
+
+`startup_event` is **1,589 lines** and performs **77 index creations**. It is
+registered `@app.on_event("startup")`, so an exception there does not skip a
+step -- it stops the service from booting at all.
+
+The first block is BARE sequential awaits with no guard, and seven of them are
+UNIQUE builds:
+
+    await db.users.create_index("email", unique=True)
+    await db.workers.create_index("phone", unique=True, sparse=True)
+    await db.nfc_tags.create_index("tag_id", unique=True)
+    await db.subcontractors.create_index("email", unique=True)
+    await db.companies.create_index("name", unique=True)
+    await db.daily_logs.create_index([...], unique=True)
+    await db.whatsapp_contacts.create_index([...], unique=True)
+
+A unique build is rejected when the collection already holds duplicates. So the
+day any of those seven meets duplicate data -- one repeated company name, one
+worker phone entered twice -- **the API does not start.** Not a degraded
+feature: a total outage, on a data condition, at the next restart, with no
+deploy having changed anything.
+
+Later blocks in the same function use `_ensure_index_resilient`, which catches a
+non-conflict `OperationFailure`, logs a warning and returns. Those cannot take
+the service down. That is the right behaviour and it is deliberate -- the
+partial unique index added for open amendments is documented as legitimately
+unable to build today, because production holds the duplicates it forbids, and
+it must not block startup.
+
+**So one function contains two opposite contracts, and nothing in it says
+where the boundary is.** A developer adding an index copies whichever line is
+nearest. Adding a unique one to the bare block is a latent outage; adding a
+critical one to the resilient block is an index that may silently never exist.
+
+### The rule
+
+Every index creation in `startup_event` should go through
+`_ensure_index_resilient`, and any that genuinely must exist before the app
+serves should say so explicitly rather than by being an unguarded `await` in
+the older half of a 1,589-line function.
+
+**And the general shape, which is worth more than the instance:** a destructive
+or blocking operation that has never fired is not thereby proven safe. It may
+be deferred behind a condition nobody has met yet. "It has never happened" and
+"it cannot happen" are different claims, and only the second is a guarantee.
+Nothing in this system distinguishes them -- which is why the seven unique
+builds above have looked fine for as long as the data happened to be clean.
+
+### How this was found, which is also worth recording
+
+By pulling on a claim that turned out to be false. A runbook asserted two TTL
+indexes still existed in production; the operator checked and they did not.
+Establishing why led through `startup_event`, and the real finding was standing
+next to the imagined one. **A wrong hypothesis investigated properly is not a
+wasted investigation** -- but the answer has to come from running the check, not
+from the document that prompted it.
+
+---
+
 ## PRACTICE — 2026-09-02 — `git stash` is ONE ref shared by every worktree, and two agents traded trees through it
 
 Roughly forty-five agent worktrees hang off this repository. `refs/stash` lives
