@@ -6,6 +6,17 @@ import { rememberConsent, readConsent } from '../utils/consentCache';
 import { consentState, canSign, READY, UNKNOWN } from '../utils/esraConsentState';
 
 /**
+ * A SIXTH REASON, AND IT IS NOT A SERVER STATE.
+ *
+ * The server said nothing — it could not be reached — and the device remembered
+ * a yes from a previous read. Kept apart from READY because it answers a
+ * different question: READY is "the server confirms he has agreed", CACHED is
+ * "he agreed once and we are honouring it with no signal". A screen that wants
+ * to say so can; nothing is required to.
+ */
+export const CACHED = 'cached';
+
+/**
  * The consent gate, for a screen that is about to apply a signature.
  *
  * ── ONE QUESTION, ASKED AT ONE MOMENT ───────────────────────────────────────
@@ -70,20 +81,28 @@ export function useEsraConsent() {
   }, [userId]);
 
   /**
-   * May a signature be applied right now?
+   * May a signature be applied right now, AND WHY NOT?
    *
-   * True, silently, when consent is on file. Otherwise routes to the agreement
-   * and returns false — including on UNKNOWN, deliberately: a signature
-   * applied while we cannot tell whether consent exists is the defect this
-   * whole path removes, and the screen names the outage rather than blocking
-   * mutely.
+   * `{ ok, reason }`. ok true, silently, when consent is on file. Otherwise it
+   * routes to the agreement and returns false — including on UNKNOWN,
+   * deliberately: a signature applied while we cannot tell whether consent
+   * exists is the defect this whole path removes, and the screen names the
+   * outage rather than blocking mutely.
+   *
+   * THE REASON IS CARRIED BECAUSE FOUR REFUSALS ARE NOT ONE. `ensure()`
+   * collapses NOT_AGREED, STALE, DECLINED and UNKNOWN into a single false, so a
+   * caller cannot tell a man who declined from a man whose server is down, and
+   * cannot say anything true to either. `reason` is one of the states from
+   * esraConsentState.js, or CACHED when an offline yes was honoured. Reading
+   * `state` instead does not work: it is React state and is not settled by the
+   * time this promise resolves.
    */
-  const ensure = useCallback(async () => {
+  const ensureWithReason = useCallback(async () => {
     setBusy(true);
     const next = await read();
     if (canSign(next)) {
       if (alive.current) setBusy(false);
-      return true;
+      return { ok: true, reason: READY };
     }
 
     // ── THE SERVER COULD NOT BE ASKED ──────────────────────────────────────
@@ -109,17 +128,31 @@ export function useEsraConsent() {
       const remembered = await readConsent(userId);
       if (remembered) {
         if (alive.current) setBusy(false);
-        return true;
+        return { ok: true, reason: CACHED };
       }
     }
 
-    if (!alive.current) return false;
+    if (!alive.current) return { ok: false, reason: next };
     setBusy(false);
     router.push('/consent');
-    return false;
+    return { ok: false, reason: next };
   }, [read, router, userId]);
 
-  return { state, busy, ensure };
+  /**
+   * The one-line form every signing screen uses: `if (!(await ensure())) return;`
+   *
+   * A BOOLEAN, AND IT MUST STAY ONE. Thirteen call sites negate this value
+   * directly, so anything truthy returned on a refusal — an object, a reason
+   * string — would read as permission and apply the signature it was written to
+   * stop. A screen that wants to say WHICH refusal it was calls
+   * ensureWithReason and reads `.ok` itself.
+   */
+  const ensure = useCallback(
+    async () => (await ensureWithReason()).ok,
+    [ensureWithReason],
+  );
+
+  return { state, busy, ensure, ensureWithReason };
 }
 
 export default useEsraConsent;

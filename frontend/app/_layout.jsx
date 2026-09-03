@@ -11,6 +11,7 @@ import { ToastProvider, useToast } from '../src/components/Toast';
 import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { InspectorLockProvider, useInspectorLock } from '../src/context/InspectorLockContext';
 import { siteDeviceTarget } from '../src/utils/inspectorConfinement';
+import { cpPathAllowed, cpNoCompanyPathAllowed, CP_HOME } from '../src/utils/cpConfinement';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
@@ -235,27 +236,26 @@ function RouteGuard() {
       return;
     }
 
-    // CP: can be on /logbooks/*, /documents, /settings, /login — NOT admin routes
-    if (isCp) {
-      const allowed =
-        pathname.startsWith('/logbooks') ||
-        pathname === '/documents' ||
-        pathname === '/settings' ||
-        pathname === '/login';
-      if (!allowed) {
-        router.replace('/logbooks');
-      }
+    // CP: can be on /logbooks/*, /documents, /settings, /consent, /login — NOT
+    // admin routes.
+    //
+    // THE LIST IS IN src/utils/cpConfinement.js NOW, and /consent is on it.
+    // Inline, it was a boolean expression inside an effect inside a component
+    // that renders null: nothing in the suite could execute it and nothing
+    // enumerated it. /consent was added to the app in #308, pushed to by
+    // twelve signing screens in b1f1ec5, and never added here — so every CP
+    // signature between 2026-09-01 and 2026-09-03 was bounced off the consent
+    // screen onto this very line's destination before the agreement painted.
+    if (isCp && !cpPathAllowed(pathname)) {
+      router.replace(CP_HOME);
     }
 
     // CP user exists but has no company assignment — authenticated but every
     // company-gated API endpoint will 403. Contain them to safe paths and surface
     // a clear action instead of a cascade of silent errors.
     if (user?.role === 'cp' && !user?.company_id) {
-      const safePaths = ['/logbooks', '/login', '/settings'];
-      const currentPath = pathname || '';
-      const isOnSafePath = safePaths.some(p => currentPath.startsWith(p));
-      if (!isOnSafePath) {
-        router.replace('/logbooks');
+      if (!cpNoCompanyPathAllowed(pathname)) {
+        router.replace(CP_HOME);
         if (toast && typeof toast.error === 'function') {
           setTimeout(() => {
             try {
