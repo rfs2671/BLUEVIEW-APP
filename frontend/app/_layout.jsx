@@ -13,6 +13,7 @@ import { InspectorLockProvider, useInspectorLock } from '../src/context/Inspecto
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
+import { setupSiteManifestSync } from '../src/utils/siteManifestStore';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
@@ -262,6 +263,38 @@ function RouteGuard() {
   return null;
 }
 
+/**
+ * The gate tablet keeps itself current, with nobody preparing it.
+ *
+ * A fixed Android tablet bolted to a construction gate has to hold everything
+ * the project has approved it to see — plans, documents and submitted logbooks
+ * — and still open all of it after a cold boot with the network down. This
+ * mounts the manifest poll that fills it: startup, NetInfo reconnect,
+ * foreground, and a plain interval.
+ *
+ * GATED ON THE SITE DEVICE, WHICH IS WHAT "/site/*" MEANS HERE. RouteGuard
+ * already confines a site_device to /site/*, so `siteMode && siteProject.id`
+ * is the same population by a more reliable test than a pathname — and it
+ * cannot start polling a project on a CP's phone.
+ *
+ * KEYED ON THE PROJECT ID, NOT MOUNTED ONCE. siteProject resolves after the
+ * auth bootstrap, so a run at mount would find no project and the first fill
+ * would wait out a whole interval. Re-running when the id appears is also what
+ * lets a device re-provisioned to another project switch without a restart.
+ */
+function SiteManifestSync() {
+  const { siteMode, siteProject } = useAuth();
+  const projectId = siteMode && siteProject?.id ? siteProject.id : null;
+
+  useEffect(() => {
+    if (!projectId) return undefined;
+    const stop = setupSiteManifestSync(() => projectId);
+    return () => { if (typeof stop === 'function') stop(); };
+  }, [projectId]);
+
+  return null;
+}
+
 function AppShell() {
   const { isDark, themeKey } = useTheme();
   const toast = useToast();
@@ -307,6 +340,7 @@ function AppShell() {
     <View key={themeKey} style={[styles.container, { backgroundColor: bg }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <RouteGuard />
+      <SiteManifestSync />
       {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
     </View>
   );
