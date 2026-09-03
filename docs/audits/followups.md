@@ -4,6 +4,420 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-02 — `git stash` is ONE ref shared by every worktree, and two agents traded trees through it
+
+Roughly forty-five agent worktrees hang off this repository. `refs/stash` lives
+in the common git dir, so every one of them pushes and pops the SAME stack.
+
+Two agents ran `git stash` inside the same window. The second one's `pop`
+restored the FIRST one's work into its tree, and its own changes went to the
+top of a stack it did not own. One agent found conflict markers in server.py
+that no merge it performed had produced; the other found its working tree
+emptied mid-run. Both recovered in full, but only because each noticed and
+neither assumed the tree it was looking at was its own.
+
+**`stash@{n}` is a POSITION, not an identity.** A concurrent push shifts every
+index, so even an agent that recorded "mine is stash@{0}" pops somebody else's a
+minute later. This is the same defect class as an index-keyed anything under
+concurrency, and it destroys uncommitted work rather than merely confusing a
+read.
+
+**The rule: no agent uses `git stash` in this repository.** To set work aside,
+make a temporary WIP commit and reset it afterwards, or copy the file to the
+scratchpad and copy it back. Both are private to the worktree.
+
+If a stash is genuinely unavoidable, it must be `git stash push -u -m
+"<unique-tag>"`, its SHA captured immediately from `git stash list
+--format='%H %gs'`, restored with `git stash apply <sha>` and NEVER `pop`, and
+dropped only after re-finding its current index by tag. That is four rules to
+remember correctly under concurrency, which is why the answer is simply not to.
+
+**The wider point.** Worktrees isolate the working tree and the index. They do
+NOT isolate the stash, the reflog, refs, hooks, or config. An agent reasoning
+"my worktree is mine" is right about files and wrong about everything that
+lives in the common git dir, and the failure is silent until it is destructive.
+
+---
+
+## PRACTICE — 2026-09-02 — a mutation control that patches the wrong occurrence reports a pass and means nothing
+
+A control broke `except DuplicateKeyError:` to prove the tests could see it
+missing. **106 tests passed against the supposedly broken code.** The string
+appears twice in server.py; the patch hit the first, six thousand lines away in
+an unrelated function, and never touched the code under test.
+
+The test suite was fine. The CONTROL was broken, and a broken control reports
+exactly what a well-covered change reports.
+
+This is the second instance recorded here. The first was a mutation whose anchor
+did not match because the file was CRLF and the patch was LF: it applied to
+nothing, the suite passed, and the pass was read as coverage.
+
+**A mutation control has TWO claims, and only one is usually checked.** The
+loud one is "the tests fail when the code is broken." The silent one is "the
+code was actually broken." A control that skips the second measures nothing, and
+it fails in the reassuring direction — toward a green suite and a confident
+report.
+
+**The rule: verify the mutation LANDED before believing the result.** Diff the
+file, or print the patched line, or assert the occurrence count changed. Where
+a symbol appears more than once, target it by enclosing function and not by
+first match. When a mutation produces NO failures, the first hypothesis is a
+control that did not apply — not a gap in coverage — because the former is far
+more common and is invisible in the output.
+
+Related: the tab-blind grep and the empty-set `executionSuccess`. Same family
+throughout — a check ran, produced a well-formed answer, and never reached its
+subject. Here the subject was the mutation itself.
+
+---
+
+## PRACTICE — 2026-09-02 — squashing the base of a stack breaks every branch above it
+
+Three PRs were verified to merge clean, then all three went CONFLICTING without
+anyone touching them. The cause was the merge of their own base.
+
+The four commits of the manifest work were squash-merged as one new commit. The
+three branches stacked on top still carried the ORIGINALS. Git then saw the same
+changes arriving twice by two different routes and refused every one of them --
+not because the content disagreed, but because the identical content had two
+identities.
+
+Nothing was wrong with the branches. The tell is that the conflicts appeared at
+the moment of an unrelated-looking merge and appeared in ALL of them at once; a
+real conflict arrives one branch at a time and names a line somebody edited.
+
+**The rule.** Squash-merging is a rewrite. Do not squash the base of a stack and
+then expect the stack. Either merge the whole stack in one PR, or after squashing
+the base, replay the rest:
+
+    git rebase --onto origin/main <last-commit-of-the-squashed-base> <tip>
+
+That replays only the commits the squash did not absorb. It is not a conflict
+resolution and should produce no conflicts -- if it does, that is a real one and
+worth reading.
+
+**The wider point.** The stack was created to make review granular, and the
+squash policy that makes history readable is the same policy that destroys the
+stack. Those two are in tension by construction, and the tension surfaces at
+merge time, which is the worst moment to discover it. Decide at BRANCH time: a
+stack whose base will be squashed is a single PR wearing three hats.
+
+---
+
+## PRACTICE — 2026-09-02 — a source pin greps a LOCATION; the thing worth protecting is a BEHAVIOUR
+
+A backend test read `frontend/app/site/logbooks.jsx` and asserted the string
+`stripPhotoBlobs` appeared in it. Moving the day detail off AsyncStorage removed
+that function, and the test went red -- for a MOVE, not for a regression.
+
+The screen had stopped being the owner. Storage now lives in
+`siteLogbookHistory` as identity rows, and the pin was still watching the
+previous owner, from a different language, in a different test suite.
+
+**The concern outlived the function, so it moved rather than died** -- and it
+moved somewhere it can be EXECUTED. The frontend suite now feeds `identityRow` a
+log carrying `base64`, `thumb_base64`, a `photos[]` array and a `data` blob and
+asserts none of those byte-strings appear in the stored row, then asserts the row
+is exactly its four fields.
+
+That is a STRONGER claim than the pin made, and the difference is the general
+lesson. `stripPhotoBlobs` was a blacklist that removed `base64`; its own
+docstring conceded it had become a permanent no-op and would need editing again
+for `thumb_base64`. `identityRow` is an allow-list, so a photo field invented
+tomorrow is excluded without anyone remembering to exclude it.
+
+**The rule.** A source grep pins a location. Locations move; behaviours are what
+the compliance record depends on. When a pin fails, the first question is not
+"how do I make it pass" but "did the subject move" -- and if it moved, the pin
+follows it into a suite that can run it. A pin that cannot be converted into an
+execution is a note, and should be written as a comment rather than as a test
+that will one day fail for the wrong reason.
+
+Filed alongside the other members of this family: the sweep blind to .cjs, the
+glob that ran 85 of 93, the sort() that did nothing.
+
+---
+
+## PRACTICE — 2026-09-02 — a test double thinner than the real module tests the double
+
+Two branches were built in parallel and each was green alone. One wrote a
+file-system double with `deleteAsync`, `getInfoAsync` and `downloadAsync`. The
+other changed the downloader to write to a `.part` path and rename on success.
+
+Merged, seven tests failed. Not because the atomic download was wrong -- because
+the double had no `moveAsync`, which the real `expo-file-system/legacy` has.
+Calling an absent method threw, the retry threw, the outer catch swallowed it,
+and every download returned null.
+
+**A double is a claim about the real module.** Every method the subject may call
+is part of that claim, including the ones it does not call YET. The gap does not
+appear when the double is written; it appears the first time the subject reaches
+for something the double never modelled, which is exactly when a change is being
+made and confidence matters most.
+
+The fix models the rename properly: `moveAsync` deletes the source name, adds the
+destination, and throws ENOENT if the source is absent -- so a promotion of a
+file that was never written cannot silently pass. Verified by mutation: deleting
+the `moveAsync` call from the product fails 2 of 52.
+
+**The cheap tell.** When a merge of two independently-green branches goes red in
+the TEST layer rather than the product layer, suspect the double before
+suspecting either change. And when writing a double for a module you did not
+write, enumerate its exported surface once rather than implementing the three
+methods today's subject happens to call.
+
+This one failed loudly, which is the good version. The same gap in a double whose
+absent method returns undefined instead of throwing is the silent version, and
+that is the one that ships.
+
+---
+
+## PRACTICE — 2026-09-02 — a grep whose pattern did not match its own output reported a red PR as green
+
+Seven PRs were checked for CI status with a pattern matching a check name
+followed by whitespace and `fail` or `pending`. `gh pr checks` emits
+TAB-separated fields. The pattern matched nothing, the count came back 0, and 0
+was read as "no failing checks".
+
+One of those PRs had a hard failure. It was reported to the operator as green.
+
+**A count of zero from a search is not a finding. It is either a finding or a
+broken search, and the two are indistinguishable without a positive control.**
+This is the same shape as the empty-set `executionSuccess` and the keep-set that
+skipped a whole file format: the check ran, produced a well-formed answer, and
+its REACH was wrong.
+
+**The rule, for any check whose passing condition is an absence.** Before
+trusting a zero, make the pattern match something known-present. Here that was
+one character of work -- printing the second field of every row would have shown
+`pass` values and proved the field split was right. A zero that has never been
+shown capable of being non-zero is not evidence.
+
+**And the correction that matters more:** when the answer is later shown to be
+wrong, say which part was wrong. The failure here was not "CI was flaky" or "the
+state was UNKNOWN at the time"; it was a pattern that could not match the output
+format. Naming the mechanism is what stops the same grep being written again an
+hour later.
+
+---
+
+## PRACTICE — 2026-09-02 — `railway logs --since` is silently ineffective when the line cap binds first
+
+Hunting a lost logbook write, `railway logs --since 20h` was run and returned a
+window of 500 lines covering 47 minutes. The same command with a larger `--since`
+returned the IDENTICAL window. A grep for the POST across "the last 20 hours"
+came back empty, and that empty result was very nearly reported as evidence the
+request never arrived.
+
+The flag does not widen what the line cap already bound. Whichever limit binds
+first wins, and the tool says nothing about which one did.
+
+**An empty grep over the wrong window is indistinguishable from an empty grep
+over the right one.** The only defence is to establish the window's real extent
+before searching it: print the first and last timestamps of what came back, and
+compare them against what was asked for. That takes one command and converts a
+silent truncation into a visible one.
+
+**The rule.** For any log query used as NEGATIVE evidence -- "the request never
+arrived", "the error never fired" -- the coverage of the query is part of the
+claim and has to be stated with it. "No POST in the log" is worthless; "no POST
+between 03:14 and 04:01, which is the whole window the tool returned" is a fact,
+and it visibly does not reach back to the event in question.
+
+Same family as the empty-set control and the tab-blind grep: a search that ran,
+returned a well-formed answer, and did not reach its subject.
+
+---
+
+## PRACTICE — 2026-09-02 — code that existed, was correct, and was never called
+
+`sendPendingSignatures` was present, well-written, and covered by tests. Nothing
+invoked it. Signatures queued on a device with no signal stayed queued.
+
+No sweep catches this. The function parses, its identifiers bind, its tests pass
+because tests call it directly, and every static check reads it as live code. The
+only thing missing is a caller, and absence of a caller is not a property any of
+those checks look at.
+
+The same shape appeared twice more in the same period: a drain that existed but
+was not wired to reconnect, and a guard whose call site had been removed.
+
+**The rule.** For any function whose job is to fire on an EVENT -- reconnect,
+foreground, boot, retry -- the test that matters is not "does it do the right
+thing when called" but "is it called". Those are different assertions and the
+first one passing says nothing about the second.
+
+Assert the wiring where the wiring lives: that the effect subscribes, that the
+listener list contains it, that teardown removes it. A test that imports the
+function and calls it has verified the body and left the entire question open.
+
+**The cheap sweep**, worth having: for each exported function, count call sites
+outside its own test file. Zero is not automatically wrong -- public API, dead
+code pending removal -- but zero on something named `send*`, `drain*`, `flush*`
+or `sync*` is a defect until someone explains it.
+
+---
+
+## PRACTICE — 2026-09-02 — a reader naming a field no writer produces, and the inverse
+
+Two readers consulted a field name that nothing in the codebase ever writes. The
+read returns undefined, the caller treats undefined as "not set", and the screen
+renders a plausible default. Nothing errors, nothing logs, and the feature is
+simply inert.
+
+The operator hit the mirror image of this from the other side: three field names
+were queried against production, all returned null, and the null was read as
+evidence about the data. The fields were never written by any code path, so the
+null was evidence about the QUERY.
+
+**Both directions are the same defect: a name that exists on one side of the
+read/write boundary and not the other.** Neither side can detect it alone. A
+reader cannot tell "written and empty" from "never written"; a writer has no idea
+whether anyone reads it.
+
+A checker exists (`backend/scripts/find_reads_without_writers.py`) and its own
+header records FOUR INSTANCES IN ONE DAY. Note its real limitation before relying
+on it: the backend half parses the AST, the frontend half is a TEXT search that
+cannot distinguish a read from a write. So it is strong on Python and weak
+exactly where the two readers above lived.
+
+**The rule.** A field name is an interface between two files that never import
+each other, and it is checked by nobody. When adding one, add both sides in the
+same commit -- and when a query returns null, establish that the field is written
+somewhere before drawing any conclusion from the null.
+
+---
+
+## PRACTICE — 2026-09-02 — the fix changed the guard rather than the field, which is the inverse defect
+
+A check was failing. The change made the check accept the value it was seeing.
+
+That is the correct fix when the check was too strict, and a defect-preserving
+one when the value was wrong -- and the two look identical in a diff. Both are a
+one-line edit to a conditional, both make the suite green, and neither leaves any
+trace of which situation it was.
+
+**The question that separates them is never asked by the tooling: is the guard
+wrong, or is the thing it is guarding wrong?** A guard loosened to admit bad data
+is worse than no guard, because it now certifies the bad data.
+
+**The rule.** When relaxing a check, say in the commit message what the check was
+protecting and why that protection is no longer owed. If that sentence cannot be
+written, the guard was probably right and the value is the bug. Where the guard
+is loosened for a real reason, the value that provoked it should get its own
+assertion so the newly-admitted case is pinned rather than merely tolerated.
+
+**The corollary for absence-ceilings and census tests**, which came up three times
+in one night: raising a ceiling to accommodate new code is the same move. The
+honest version is to make the new code satisfy what the guard is asking for --
+classified, anchored assertions -- rather than to move the number. Twice the
+workers did the honest version and said so; recording it here so it stays the
+default.
+
+---
+
+## OPEN — 2026-09-02 — the superintendent log that does not exist, and what has been RULED OUT
+
+A site superintendent signed and filed a log. The query returns []. The document
+is not in the collection.
+
+**What was ruled out, with the reason, because the ruling-out is the durable part:**
+
+The endpoint works. It was exercised directly and writes the row.
+
+**The null-body path cannot be what happened.** `create_logbook` ends by reading
+back the document it just inserted and returning `serialize_id(created)`. If that
+read-back misses, the response is a 200 whose body is `null` -- but the INSERT
+already happened. That path produces a confusing client and a present document,
+which is the opposite of the symptom. It is a real defect and it is not this one.
+
+**The Railway log does not reach back far enough** to say whether the POST
+arrived (see the `--since` entry above). That is an absence of evidence and was
+very nearly reported as evidence of absence.
+
+**So the mechanism is still unknown.** Recorded because the temptation, at the
+end of a long night, is to accept the most available explanation -- and the most
+available explanation here was disproved by reading what the code does after the
+insert.
+
+**Two fixes shipped that make it survivable regardless of cause**, which is the
+right response to an unexplained loss of a statutory record: the editor now keeps
+the CP's work on screen and refuses to claim a filing that did not happen, and a
+create that returns no id is reported as a failure rather than toasted as
+success. Neither is a diagnosis. The cause is still open.
+
+Do not close this on the strength of the fixes.
+
+---
+
+## PRACTICE — 2026-09-01 — a sweep whose keep-set could see one of the two shapes it protected deleted the other
+
+`sweepDocCache` deletes from a flat shared `documents/` directory. What it keeps
+is whatever `collectKeepNames` can name, built by walking every `bv_doclist:` key
+and reading `id` / `cache_version` off each element.
+
+**Two screens write into that one directory and store their lists differently.**
+The plans screen stores `[{id, cache_version, ...}]`, exactly the expected shape.
+`app/site/logbooks.jsx` stored `[{date, logs:[...]}]`, where no top-level element
+carries an id at all -- while writing real PDFs that matched the sweep pattern.
+
+An element with no id was SKIPPED, silently. So the logbook PDFs were named by
+nothing in the keep-set and every sweep deleted them. And the sweep fires from
+the PLANS screen on every successful list load, so **opening Plans deleted the
+offline logbooks.** The day-report half was worse: its id is invented at render
+time and appears in no record, so nothing could ever have named it.
+
+The keep-set ran, returned a well-formed answer, and could not see half its
+subject -- reporting "nothing to keep", which at the call site is
+indistinguishable from "genuinely orphaned". A deletion pass cannot tell those
+apart and has no reason to ask.
+
+Its own test could not catch it: every fixture it built was plans-shaped. **A
+test that constructs only the shape the code already handles proves the code
+handles that shape.**
+
+**The rule, for anything that deletes by exclusion.** A keep-set is a claim about
+EVERY writer into the swept space, not about the caller. Enumerate the writers --
+grep for what puts files there, not for what reads them -- and assert one fixture
+per writer. Where an identity is invented at render time it cannot be recovered
+by a reader, so the writer must declare it.
+
+**The cheap tell:** a `continue` on malformed input inside a keep-set builder is
+where a whole class of files goes to be deleted. Count what it skips and log it.
+
+---
+
+## PRACTICE — 2026-09-01 — file ownership has to follow the change, not the ticket
+
+Six workers ran in parallel, each in its own worktree, partitioned by INTENT: one
+owned the token leak, one the viewer, one offline plans. The boundaries came from
+the defect list.
+
+**The work did not respect them, because the defects did not.** Fixing the token
+leak required changing how Android resolves a document, which meant editing the
+three screens that open one -- files another worker owned -- and a viewer a third
+owned. Three conflicts.
+
+They resolved cleanly and both sides agreed on intent. **That was luck.** A worker
+reasoning from a different premise about the same line would have produced a
+merge that applied cleanly and was wrong, which is the failure mode this file has
+already recorded more than once.
+
+**The rule.** Partition by FILE, decided after reading the code, not by ticket. If
+two items touch one file they are one work item or they are strictly ordered --
+never two parallel workers. The question before splitting is not "are these
+different defects" but "can these be changed without meeting", and that is
+answered by reading, not by the list.
+
+Where an overlap is found mid-flight, stop the second worker rather than merge two
+independent readings of one line afterwards. **And where a clean merge does cross a
+shared file, READ the resolved file** -- three times in one night a merge applied
+with no markers and was wrong or misplaced, each caught by looking rather than by
+the absence of conflict.
+
+---
+
 ## OPEN — 2026-09-01 — a BLANK `cp_name` prints on the same filed PDFs, and nothing prevents it
 
 Deliberately left open by #353, which gated the OTHER half. Recorded so the
