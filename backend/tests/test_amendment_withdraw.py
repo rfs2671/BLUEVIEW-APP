@@ -1082,10 +1082,26 @@ class OneOpenAmendmentPerParentIsTheDatabasesRule(unittest.TestCase):
         src = inspect.getsource(server)
         self.assertIn("OPEN_AMENDMENT_INDEX_NAME", src)
         i = src.index("name=OPEN_AMENDMENT_INDEX_NAME")
-        window = src[i - 600:i + 400]
+        window = src[i - 900:i + 400]
         self.assertIn("_ensure_index_resilient", window)
         self.assertIn("unique=True", window)
         self.assertIn("OPEN_AMENDMENT_PARTIAL_FILTER", window)
+
+    def test_the_bootstrap_key_spec_is_a_LITERAL_and_matches_the_constant(self):
+        """find_unserved_sorts.py resolves `keys=` with an AST walk and can
+        only read a literal. Handed a constant NAME it reports "key spec not
+        literal" and STOPS COVERING the index — a sort dropping silently out of
+        the sweep, which test_sorts_are_indexed catches and did catch here.
+
+        So the call site spells the list out, the way every other
+        `_ensure_index_resilient` in this file does, and this asserts the two
+        writers still say the same thing."""
+        src = inspect.getsource(server)
+        i = src.index("name=OPEN_AMENDMENT_INDEX_NAME")
+        window = src[i - 900:i]
+        m = re.search(r"keys=(\[[^\]]*\]),", window)
+        self.assertIsNotNone(m, "no literal keys= at the bootstrap call site")
+        self.assertEqual(eval(m.group(1)), server.OPEN_AMENDMENT_INDEX_KEYS)
 
     def test_the_filter_selects_an_OPEN_amendment(self):
         """THE POSITIVE CONTROL. A filter that matched nothing would build an

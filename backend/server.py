@@ -41105,9 +41105,16 @@ async def startup_event():
     # to build over duplicates instead of failing quietly — the operator
     # applies indexes by hand, and a silently absent index would leave this
     # race open behind a green suite.
+    # THE KEY SPEC IS A LITERAL HERE, AND THAT IS NOT A STYLE CHOICE.
+    # find_unserved_sorts.py reads every index declaration in this file with an
+    # AST walk and can only resolve a literal `keys=`; handed a constant NAME it
+    # reports "key spec not literal" and stops covering the index, which is a
+    # sort silently dropping out of the sweep. OPEN_AMENDMENT_INDEX_KEYS stays
+    # as the value the tests and the by-hand script agree against, and
+    # test_amendment_withdraw asserts this literal still equals it.
     await _ensure_index_resilient(
         db.logbooks,
-        keys=OPEN_AMENDMENT_INDEX_KEYS,
+        keys=[("parent_logbook_id", 1)],
         name=OPEN_AMENDMENT_INDEX_NAME,
         unique=True,
         partialFilterExpression=OPEN_AMENDMENT_PARTIAL_FILTER,
