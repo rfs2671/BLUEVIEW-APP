@@ -212,8 +212,9 @@ console.log('\n7. THE BANNER OFFERS THE THIRD ANSWER');
     'api.js exposes logbooksAPI.withdraw');
   ok(/\/withdraw`/.test(API), 'and it posts to the withdraw route');
 
-  ok(/logbooksAPI\.withdraw\(logId\)/.test(BANNER),
-    'the banner calls it with the id of the correction on screen');
+  ok(/logbooksAPI\.withdraw\(logId, /.test(BANNER),
+    'the banner calls it with the id of the correction on screen AND the '
+    + 'signature drawn for it');
   ok(/logId = null/.test(BANNER),
     'the control is opt-in: a caller that passes no id gets exactly the '
     + 'banner it always got');
@@ -258,6 +259,82 @@ console.log('\n7. THE BANNER OFFERS THE THIRD ANSWER');
     'every toast call is optional-chained: useToast returns NULL outside a '
     + 'provider by design, and a missing toast must not turn a successful '
     + 'withdrawal into a crash on the screen it just fixed');
+}
+
+console.log('\n8. IT IS AN ATTESTED ACT, SO THE PAD COMES FIRST');
+{
+  const BANNER = read('../components/AmendmentBanner.jsx');
+  const API = read('api.js');
+  const CHAIN = read('amendmentChain.js');
+  const SERVER = read('../../../backend/server.py');
+
+  // ── THE SENTENCE ABOVE THE PAD IS THE SAME SENTENCE THE SERVER STORES ──
+  //
+  // The server writes WITHDRAWAL_ATTESTATION_STATEMENT onto the document
+  // beside the ink, because a signature with no recorded sentence above it
+  // attests to nothing nameable. If the client shows a DIFFERENT sentence,
+  // the record says a man was told something he was never told — which is
+  // worse than storing no sentence at all.
+  const clientStmt = (CHAIN.match(
+    /export const WITHDRAWAL_ATTESTATION_STATEMENT\s*=\s*([\s\S]*?);\n/) || [])[1];
+  ok(!!clientStmt, 'amendmentChain exports WITHDRAWAL_ATTESTATION_STATEMENT');
+  const serverStmt = (SERVER.match(
+    /WITHDRAWAL_ATTESTATION_STATEMENT = \(\n([\s\S]*?)\n\)\n/) || [])[1];
+  ok(!!serverStmt, 'and server.py defines one to compare it against');
+  const words = (s) => (s || '').replace(/["'\s+()]+/g, ' ').trim();
+  ok(words(clientStmt) === words(serverStmt),
+    'and the two are the SAME sentence, word for word');
+
+  // ── THE PAD, AND THE REFUSAL TO SEND WITHOUT INK ──
+  ok(/SignaturePad/.test(BANNER),
+    'the banner presents the EXISTING signature pad — a withdrawal is signed '
+    + 'for on the same control every other attested act uses');
+  // THE CONFIRM BUTTON'S OWN GATE, not merely the name appearing somewhere in
+  // the file. A mutation control that changed the button's `disabled` to
+  // `!sig` left `hasSignatureInk` in doWithdraw, so an assertion that only
+  // grepped the name stayed green while the button itself had stopped asking.
+  ok(/disabled=\{busy \|\| !hasSignatureInk\(sig\)\}/.test(BANNER),
+    'the CONFIRM BUTTON is gated on hasSignatureInk, not on presence: '
+    + 'cp_signature {} satisfied every presence gate in this app while the '
+    + 'documents it signed printed UNAFFIRMED');
+  ok(/if \(!logId \|\| busy \|\| !hasSignatureInk\(sig\)\) return;/.test(BANNER),
+    'and the handler asks again before it reaches the wire, so a refusal '
+    + 'never arrives as a toast that reads like a fault');
+  ok(/WITHDRAW_SIGNATURE_REQUIRED/.test(BANNER),
+    'and it owns the wording for the server’s refusal, so a client that '
+    + 'somehow sends none still teaches rather than saying "failed"');
+
+  // A control that cannot act must not be offered — the same rule the
+  // withdraw button already follows for logId.
+  ok(BANNER.indexOf('SignaturePad') > 0
+    && /signing \?|signing &&/.test(BANNER),
+    'the pad is revealed by the withdraw button rather than sitting open on '
+    + 'twelve editors under a log nobody is withdrawing');
+
+  ok(/withdraw: async \(logbookId, signature/.test(API),
+    'api.js takes the signature as a required-by-position argument, so a '
+    + 'caller that forgets it cannot silently send a reason in its place');
+  // THE BODY, NOT THE ARGUMENT LIST. `signature` appears in the function's
+  // own signature, so a slice of the whole function matches even when the
+  // POST omits it — which a mutation control confirmed by dropping it from
+  // the body and watching this assertion stay green.
+  ok(/\/withdraw`,\s*\{[^}]*\bsignature\b[^}]*\}/.test(API),
+    'and puts it in the POST BODY, beside the optional reason');
+
+  // EVERY NEW IMPORT RESOLVES. Same rule as section 7, same reason: the
+  // banner renders on TWELVE editors and a bad path is a crash on first paint.
+  const BANNER_DIR = path.join(HERE, '..', 'components');
+  ['./SignaturePad', '../utils/signatureAffirmed', '../utils/amendmentChain']
+    .forEach((spec) => {
+      const base = path.resolve(BANNER_DIR, spec);
+      const hit = ['.js', '.jsx', '.ts', '.tsx', ''].some(
+        (ext) => fs.existsSync(base + ext));
+      ok(hit, `AmendmentBanner's import of '${spec}' resolves to a real file`);
+    });
+  ok(/export default SignaturePad/.test(read('../components/SignaturePad.js')),
+    'and SignaturePad really is a default export');
+  ok(/export function hasSignatureInk/.test(read('signatureAffirmed.js')),
+    'and signatureAffirmed really exports hasSignatureInk');
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)\n` : '\nAll assertions passed.\n');

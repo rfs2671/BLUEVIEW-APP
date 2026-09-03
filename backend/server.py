@@ -22599,18 +22599,23 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
         "is_deleted": {"$ne": True},
         **WITHDRAWN_EXCLUDED,
     }).to_list(200)
-    _open_head = open_amendment_head(_children)
-    if _open_head is not None:
-        raise HTTPException(
+    def _already_open(head):
+        """The 409, built in ONE place so the racing caller and the late one
+        get a response the client cannot tell apart."""
+        return HTTPException(
             status_code=409,
             detail={
                 "code": "AMENDMENT_ALREADY_OPEN",
-                "logbook_id": str(_open_head.get("_id")),
-                "created_at": (_open_head.get("created_at").isoformat()
-                               if isinstance(_open_head.get("created_at"), datetime)
+                "logbook_id": str(head.get("_id")),
+                "created_at": (head.get("created_at").isoformat()
+                               if isinstance(head.get("created_at"), datetime)
                                else None),
             },
         )
+
+    _open_head = open_amendment_head(_children)
+    if _open_head is not None:
+        raise _already_open(_open_head)
     # ROLES_SCOPED_TO_ASSIGNED_PROJECTS — see the note in update_logbook.
     if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
         assigned = current_user.get("assigned_projects", []) or []
@@ -22637,7 +22642,42 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
         "updated_at": now,
         "is_deleted": False,
     }
-    result = await db.logbooks.insert_one(child)
+    # ── THE READ ABOVE AND THIS INSERT ARE NOT ATOMIC ──────────────────────
+    #
+    # Two simultaneous taps both reach here having each read "no open child".
+    # `logbooks_one_open_amendment_per_parent` is what stops the second from
+    # landing, and this is what turns its refusal into an answer.
+    #
+    # THE LOSER GETS EXACTLY WHAT A LATE ARRIVAL GETS. Unhandled, a
+    # DuplicateKeyError is a 500 on a button the CP just tapped — and this
+    # whole area of the app exists because a man tapped a button that appeared
+    # to do nothing. He must get the same 409 that hands him the correction
+    # already open, so `amendmentAdopt` needs no second code path for the race.
+    #
+    # DuplicateKeyError SPECIFICALLY, never a bare `except`. A genuine write
+    # failure swallowed here would report an open correction that does not
+    # exist, and the CP would be sent to adopt a document that was never
+    # written.
+    from pymongo.errors import DuplicateKeyError
+    try:
+        result = await db.logbooks.insert_one(child)
+    except DuplicateKeyError:
+        _raced = await db.logbooks.find({
+            "parent_logbook_id": str(original["_id"]),
+            "is_deleted": {"$ne": True},
+            **WITHDRAWN_EXCLUDED,
+        }).to_list(200)
+        _winner = open_amendment_head(_raced)
+        if _winner is not None:
+            raise _already_open(_winner)
+        # THE INDEX SAID THERE WAS ONE AND THE RE-READ CANNOT FIND IT. Rather
+        # than invent a logbook_id the client would then fail to open, say what
+        # is true: the correction exists and this request did not create it.
+        logger.error(
+            f"[amend] duplicate key on {OPEN_AMENDMENT_INDEX_NAME} but no open "
+            f"child re-read for parent={str(original['_id'])!r}")
+        raise HTTPException(
+            status_code=409, detail={"code": "AMENDMENT_ALREADY_OPEN"})
     await audit_log("logbook_amend", str(current_user.get("id", "")), "logbook", str(result.inserted_id), {
         "parent_logbook_id": str(original["_id"]), "reason": str(reason).strip()[:200], "log_type": original.get("log_type"),
     })
@@ -22678,42 +22718,47 @@ async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = 
     fields record who did it and when. Nothing is destroyed and nothing is
     rewritten.
 
-    ── ATTESTED, AND WHY NOT THROUGH signature_events ─────────────────────────
-    The operator's ruling is that a withdrawal of a proposed correction to a
-    compliance record is itself an act and must record who did it and when. It
-    is recorded in TWO places, and the pair is the point:
+    ── SIGNED FOR, AND ATTESTED IN TWO PLACES ─────────────────────────────────
+    OPERATOR RULING: "Signature required, as ruled. It is an attested act." A
+    withdrawal is a permanent statement about a compliance record — that a
+    proposed correction was abandoned, deliberately, by a named person — and it
+    is signed for like any other attested act. `_has_signature_ink` judges the
+    mark, because presence is not ink: `cp_signature: {}` satisfied every
+    presence gate in this app while the documents it signed printed UNAFFIRMED.
 
-      ON THE DOCUMENT   `withdrawn_by`, `withdrawn_by_name`, `withdrawn_at`,
-                        all server-stamped in the same update that sets the
-                        state. This is the DURABLE half, and it has to be:
-                        `audit_log` swallows its own exceptions (it logs and
-                        returns), so an audit row alone could silently not
-                        exist and leave a state change with nobody's name on
-                        it. A withdrawal that cannot say who made it is the
-                        defect this ruling is about.
+    It is recorded in TWO places, and the pair is the point:
+
+      ON THE DOCUMENT   `withdrawn_by`, `withdrawn_by_name`, `withdrawn_at`
+                        and `withdrawal_attestation` (the ink, the sentence
+                        above it, and the server's stamp of who and when), all
+                        in the SAME update that sets the state. This is the
+                        DURABLE half, and it has to be: `audit_log` swallows
+                        its own exceptions (it logs and returns), so an audit
+                        row alone could silently not exist and leave a state
+                        change with nobody's name on it. A withdrawal that
+                        cannot say who made it is the defect this ruling is
+                        about.
 
       IN audit_log      `logbook_withdraw`, beside the `logbook_amend` row this
                         act answers. The ledger that already holds the taking
                         of the action holds the taking-back of it, and the two
-                        rows read as one story.
+                        rows read as one story. It records THAT the act was
+                        attested, never the ink — a base64 mark in a row read
+                        in bulk buys nothing the document does not already
+                        hold.
 
-    NOT A signature_event, and the collection's own rules say why. Its unique
-    index is named `signature_events_one_row_per_signing_act`; its `version` is
-    a count of the signings of one document; `create_signature_event` requires
-    `signature_data` and a `content_snapshot`, and `attach_attestation` exists
-    to capture THE SENTENCE PRINTED ABOVE A SIGNATURE. A withdrawal has no
-    signature: nobody drew one, there is no sentence above one, and there is no
-    content being attested to — the content is precisely what is being
-    abandoned. Writing a row there would bump the document's signature version,
-    assert a signing act that did not happen, and store a content_hash of a
-    draft nobody stands behind. `ensure_signature_ledger_row` refuses to mint a
-    row for a document with no ink for exactly this reason: "a row for a
-    signature nobody made is a fabricated attestation."
+    NOT A signature_event, even now that there IS a signature. The full
+    argument is in `withdrawal_attestation`, and it turns on what that
+    collection's `version` counts: the signings of one document's CONTENT. The
+    mark here is real, but what it attests to is the ABANDONMENT of the
+    content, so a row there would bump the amendment's signature version and
+    assert a signing act performed on something nobody signed — the fabricated
+    attestation `ensure_signature_ledger_row` exists to refuse.
 
-    DEMANDING A DRAWN SIGNATURE TO ABANDON A DRAFT WOULD ALSO BE THE BUG. The
-    seven drafts exist because a correction path had too much friction and no
-    feedback. Putting a signature pad between a man and the undo of his own
-    double-tap is how an eighth draft gets made.
+    THE SECOND TAP STILL ASKS FOR NOTHING. An already-withdrawn amendment
+    returns 200 without a signature. This feature exists because a man tapped a
+    button twice; putting a pad in front of the second tap is how an eighth
+    draft gets made.
 
     A REASON IS ACCEPTED AND NEVER REQUIRED. `amendment_reason` is gated hard
     (six characters and a word) because it explains a CHANGE to a signed
@@ -22729,9 +22774,22 @@ async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = 
         or `status == "submitted"`, the same two clauses `_filed_log` uses,
         asked through the one predicate they now share. Only an unsigned draft
         can be withdrawn; a filed one is corrected by amending it in turn.
-    403 — the author, or an admin/owner of the project's company. The refusal
-        NAMES the author, because a CP looking at another man's correction on
-        his own signed log needs to know who to ask, not a closed door.
+    400 WITHDRAW_SIGNATURE_REQUIRED — no ink, no withdrawal. Asked LAST, so a
+        pad is never raised to answer a question already settled above.
+    403 — ANY ADMIN OR CP WITH PROJECT ACCESS MAY WITHDRAW. Not just the filer.
+
+        OPERATOR RULING, and the author check that used to be here is gone.
+        The filer might be the platform operator: a correction filed on a CP's
+        behalf by whoever was helping him would, under an author-only rule, be
+        permanently un-withdrawable BY THE CP WHOSE CARD IT WARNS ON. Locking a
+        permanent warning behind the person who was helping is the defect, not
+        the control. The RECORD naming who withdrew it and when — now with his
+        signature beside it — is the accountability; the restriction never was.
+
+        The set is `_authorize_logbook_write`'s and nothing wider: admin/owner
+        of the project's company, or anyone assigned to the project. An
+        unassigned CP of the right company and an admin of another company are
+        both still refused, by the gate every other logbook writer shares.
 
     ALREADY WITHDRAWN IS A NO-OP, RETURNED 200, and that is deliberate rather
     than lazy. This feature exists because a man tapped a button twice; the
@@ -22764,9 +22822,10 @@ async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = 
             status_code=400, detail={"code": WITHDRAW_NOT_AN_AMENDMENT},
         )
 
-    # THE FILED REFUSAL, BEFORE THE IDEMPOTENT RETURN AND BEFORE THE AUTHOR
-    # RULE. A filed correction is a record whoever is asking, so the answer
-    # must not depend on who asks — an admin gets the 423 too.
+    # THE FILED REFUSAL, BEFORE THE IDEMPOTENT RETURN AND BEFORE ANY QUESTION
+    # ABOUT THE ACTOR. A filed correction is a record whoever is asking, so the
+    # answer must not depend on who asks — an admin gets the 423 too, and so
+    # does the assigned CP the ruling above just admitted.
     if logbook_is_filed(amendment):
         raise HTTPException(
             status_code=423,
@@ -22775,20 +22834,30 @@ async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = 
         )
 
     if logbook_is_withdrawn(amendment):
-        # The second tap. The first withdrawal's attestation stands.
+        # The second tap. The first withdrawal's attestation stands, and no
+        # signature is asked for: demanding ink to change nothing would put a
+        # pad in front of the exact double-tap this feature exists to absorb.
         return serialize_id(amendment)
 
     user_id = str(current_user.get("id") or current_user.get("_id") or "")
-    user_role = str(current_user.get("role") or "")
-    if user_role not in ("admin", "owner") and amendment.get("created_by") != user_id:
-        _author = str(amendment.get("created_by_name") or "").strip()
+
+    # ── THE SIGNATURE, AND IT IS THE SERVER'S PREDICATES THAT JUDGE IT ──────
+    #
+    # Asked LAST of the refusals, deliberately. A filed amendment and a
+    # document that is not an amendment at all are refused whatever the caller
+    # sends, so asking for ink first would put a pad in front of a man to
+    # answer a question the server had already settled.
+    #
+    # PRESENCE IS NOT INK. `cp_signature: {}` satisfied every presence gate in
+    # this app while every document it signed printed UNAFFIRMED, which is why
+    # `_has_signature_ink` exists — an empty object, an empty `paths` list and
+    # an inkless `{"affirmed": True}` are each not a signature. This asks that
+    # one predicate rather than writing a fourth copy of the question.
+    _signature = (data or {}).get("signature")
+    if not _has_signature_ink(_signature):
         raise HTTPException(
-            status_code=403,
-            detail=(f"This correction was filed by {_author}. "
-                    "Only its author or an admin can withdraw it."
-                    if _author else
-                    "Only the author of this correction or an admin can "
-                    "withdraw it."),
+            status_code=400,
+            detail={"code": WITHDRAW_SIGNATURE_REQUIRED},
         )
 
     _reason = str((data or {}).get("reason") or "").strip()
@@ -22799,12 +22868,18 @@ async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = 
     #
     # The guard on the filter is what makes two simultaneous taps safe: the
     # second matches nothing and the first man's name is what stays on it.
+    _by_name = current_user.get("full_name") or current_user.get("name")
     _set = {
         "status": WITHDRAWN_STATUS,
         "withdrawn_at": now,
         "withdrawn_by": user_id,
-        "withdrawn_by_name": (current_user.get("full_name")
-                              or current_user.get("name")),
+        "withdrawn_by_name": _by_name,
+        # THE INK, IN THE SAME WRITE AS THE STATE IT ATTESTS TO. A separate
+        # write could be interrupted and leave a withdrawal claiming to be
+        # attested with nothing attesting it — and `audit_log` swallows its own
+        # exceptions, so it cannot be the record that closes that gap.
+        "withdrawal_attestation": withdrawal_attestation(
+            _signature, by=user_id, by_name=_by_name, at=now),
         "updated_at": now,
     }
     if _reason:
@@ -22824,6 +22899,11 @@ async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = 
         # well as that it was taken back.
         "amendment_reason": str(amendment.get("amendment_reason") or "")[:200],
         "withdrawal_reason": _reason[:200] or None,
+        # THAT it was signed for, never the ink itself. An audit row is read in
+        # bulk and a base64 signature in one would make the ledger unreadable
+        # for no gain — the mark itself is on the document, in the write above,
+        # which is the durable half either way.
+        "attested": True,
     })
 
     withdrawn = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
@@ -24818,6 +24898,115 @@ WITHDRAWN_EXCLUDED = {"status": {"$ne": WITHDRAWN_STATUS}}
 
 WITHDRAW_NOT_AN_AMENDMENT = "WITHDRAW_NOT_AN_AMENDMENT"
 WITHDRAW_FILED_AMENDMENT = "WITHDRAW_FILED_AMENDMENT"
+WITHDRAW_SIGNATURE_REQUIRED = "WITHDRAW_SIGNATURE_REQUIRED"
+
+# THE SENTENCE ABOVE THE PAD, STORED WITH THE INK.
+#
+# `attach_attestation` exists in this file because a signature with no recorded
+# sentence above it attests to nothing nameable — you can prove a man drew a
+# mark and not what he was told it meant. A withdrawal is signed for under the
+# same rule, so the sentence is stored on the document beside the ink rather
+# than living only in the client that rendered it. The client renders THIS
+# string; if the two ever diverge the record still says what the server
+# believed the signer was shown.
+WITHDRAWAL_ATTESTATION_STATEMENT = (
+    "I am withdrawing this proposed correction. It was never filed, it is not "
+    "part of the record, and the log it proposed to correct is unchanged."
+)
+
+
+def withdrawal_attestation(signature, *, by: str, by_name, at: datetime) -> dict:
+    """The attested half of a withdrawal, in a shape that is NOT a signing act.
+
+    ── WHY THIS IS NOT A signature_events ROW ─────────────────────────────────
+
+    That collection's unique index is literally named
+    `signature_events_one_row_per_signing_act`, and its `version` is a count of
+    the signings OF ONE DOCUMENT'S CONTENT. A withdrawal row there would bump
+    the amendment's signature version and assert a signing act performed on
+    content nobody signed — the content is precisely what is being abandoned.
+    That is the fabricated attestation `ensure_signature_ledger_row` refuses to
+    mint, in its own words: "a row for a signature nobody made is a fabricated
+    attestation." The signature here is real; what it attests to is the
+    ABANDONMENT, and there is no collection whose readers mean that.
+
+    ── SO IT LANDS ON THE DOCUMENT, SHAPED SO NO LEDGER READER CAN CLAIM IT ───
+
+    Exactly two readers ask a LOGBOOK what its signature is, and both read one
+    field, `cp_signature`: `ensure_signature_ledger_row` and
+    `sweep_signature_ledger_gaps`. Neither is reachable from here:
+
+      * the withdrawal never writes `cp_signature` and never clears the null
+        that amend_logbook already put there, so the derivation returns None
+        at its first line (no ink, no affirmation);
+      * the nightly sweep selects `status: "submitted"`, and a withdrawn
+        document's status is "withdrawn", so it is not in the cursor at all.
+
+    The ink is therefore nested under ONE field with no top-level `*_signature`
+    sibling, and carries `kind: "withdrawal"` so a future reader that goes
+    looking has to actively decide to treat it as a content signing rather than
+    stumble into it. `document_type`, `document_id`, `event_type`, `version`,
+    `signer` and `content_hash` — every key a signature-ledger reader keys on —
+    are deliberately absent.
+
+    ── WHAT THE CLIENT IS TRUSTED FOR, WHICH IS THE INK AND NOTHING ELSE ──────
+
+    `by`, `by_name` and `at` are server-stamped by the caller. A device with a
+    wrong clock must not be able to date an attestation and a client must not
+    be able to name someone else as its signer — the same rule the
+    withdrawn_by / withdrawn_at trio already follows, and they are written in
+    the same update as this.
+    """
+    return {
+        # NEVER a content signing. Named, so it cannot be mistaken silently.
+        "kind": "withdrawal",
+        "statement": WITHDRAWAL_ATTESTATION_STATEMENT,
+        "ink": signature,
+        "by": by,
+        "by_name": by_name,
+        "at": at,
+    }
+
+
+# ══ ONE OPEN AMENDMENT PER PARENT, ENFORCED BY THE DATABASE ═════════════════
+#
+# `open_amendment_head` / AMENDMENT_ALREADY_OPEN keys correctly on the parent,
+# but amend_logbook READS the children and then INSERTS with nothing between.
+# Two genuinely simultaneous requests both read "no open child" and both
+# insert. That is the fork production is carrying twice over — Aug 10 and Aug
+# 14, two open children on one parent, sixty and twenty-six seconds apart.
+#
+# THE SAME SHAPE signature_events_one_row_per_signing_act ALREADY USES: a
+# PARTIAL UNIQUE INDEX. The application check stays — it is what produces the
+# helpful 409 that hands the CP the correction already open — but it is now the
+# fast path in front of a rule the database enforces, not the only rule.
+OPEN_AMENDMENT_INDEX_NAME = "logbooks_one_open_amendment_per_parent"
+OPEN_AMENDMENT_INDEX_KEYS = [("parent_logbook_id", 1)]
+
+# PARTIAL, AND EVERY CLAUSE IS ONE A partialFilterExpression MAY CONTAIN.
+# Mongo permits equality, `$exists: true`, the range operators and `$type`, and
+# nothing else — no `$ne`, no `$or`, no `$not`, no `$nin`. An index whose
+# filter uses a forbidden operator is REJECTED, and `_ensure_index_resilient`
+# logs and returns rather than raising, so the rejection would be silent and
+# the race would stay open behind a green suite. Hence the shape below, and
+# hence the by-hand script that fails loudly.
+#
+# IT SELF-MAINTAINS, WHICH IS WHY THERE IS NO SENTINEL FIELD. Every clause
+# reads a field the document already carries, so a child leaves the index the
+# moment it is withdrawn, filed, signed or soft-deleted — no closing path has
+# to remember to unset anything, and a path that forgot would otherwise hold a
+# parent's Amend button shut forever.
+#
+# `cp_signature: None` matches null OR MISSING, which is Mongo's rule for an
+# equality-to-null and is exactly the question "unsigned" means here.
+OPEN_AMENDMENT_PARTIAL_FILTER = {
+    "parent_logbook_id": {"$type": "string"},
+    "is_amendment": True,
+    "is_deleted": False,
+    "status": "draft",
+    "is_locked": False,
+    "cp_signature": None,
+}
 
 
 def logbook_is_withdrawn(log) -> bool:
@@ -40896,6 +41085,32 @@ async def startup_event():
         name="signature_events_one_row_per_signing_act",
         unique=True,
         partialFilterExpression={"signature_key": {"$type": "string"}},
+    )
+
+    # ── ONE OPEN AMENDMENT PER PARENT, ENFORCED BY THE DATABASE ────────────
+    #
+    # The definition, and the argument for every clause of the filter, is at
+    # OPEN_AMENDMENT_PARTIAL_FILTER. In short: amend_logbook reads the parent's
+    # children and then inserts, with nothing between, so two simultaneous taps
+    # both read "no open child" and both insert. That is the fork production
+    # carries twice over. The application check stays as the fast path that
+    # produces the helpful 409; this is what actually settles it.
+    #
+    # IT MAY LEGITIMATELY FAIL TO BUILD TODAY, AND THAT IS NOT A BUG HERE.
+    # Production HAS the duplicates this index forbids — Aug 10 and Aug 14, two
+    # open children on one parent each. A unique build over them is rejected,
+    # and _ensure_index_resilient logs and returns rather than raising, which
+    # is right: an index must never block app startup. It is also why
+    # backend/scripts/create_open_amendment_index.js exists and why it REFUSES
+    # to build over duplicates instead of failing quietly — the operator
+    # applies indexes by hand, and a silently absent index would leave this
+    # race open behind a green suite.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=OPEN_AMENDMENT_INDEX_KEYS,
+        name=OPEN_AMENDMENT_INDEX_NAME,
+        unique=True,
+        partialFilterExpression=OPEN_AMENDMENT_PARTIAL_FILTER,
     )
 
     # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.

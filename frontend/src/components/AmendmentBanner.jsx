@@ -3,6 +3,9 @@ import { View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { FileEdit } from 'lucide-react-native';
 import { logbooksAPI } from '../utils/api';
 import { discardFinalizedDraft, clearPending } from '../utils/logbookDrafts';
+import { WITHDRAWAL_ATTESTATION_STATEMENT } from '../utils/amendmentChain';
+import { hasSignatureInk } from '../utils/signatureAffirmed';
+import SignaturePad from './SignaturePad';
 import { useToast } from './Toast';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { spacing, borderRadius } from '../styles/theme';
@@ -53,12 +56,26 @@ import { spacing, borderRadius } from '../styles/theme';
  *
  * "I did not mean to make this" is a real answer and it had no button.
  *
- * NO CONFIRMATION MODAL AND NO REQUIRED REASON, deliberately. The amendment is
- * unsigned by definition — that is what the server checks before allowing this
- * — so nothing filed is at risk, and the act is fully attested and fully
- * reversible by amending again. Putting a form in front of the undo of a
- * double-tap is how the eighth draft gets made. What the CP gets instead is a
- * sentence saying exactly what withdrawing does and does not do.
+ * IT IS SIGNED FOR. Operator ruling: "Signature required, as ruled. It is an
+ * attested act." A withdrawal is a permanent statement about a compliance
+ * record — that a proposed correction was abandoned, deliberately, by a named
+ * person — so the same pad every other attested act uses stands in front of it.
+ *
+ * THE PAD IS REVEALED, NOT RESIDENT. This banner renders on TWELVE logbook
+ * editors; a signature canvas sitting open under every corrected log the CP
+ * merely opens would be noise on eleven of them and a mis-tap risk on the
+ * twelfth. Tapping Withdraw reveals it, Cancel puts it away, and the confirm
+ * is gated on `hasSignatureInk` — the app's own predicate, because presence is
+ * not ink: `cp_signature: {}` satisfied every presence gate in this app while
+ * the documents it signed printed UNAFFIRMED.
+ *
+ * STILL NO REQUIRED REASON. `amendment_reason` is gated hard because it
+ * explains a CHANGE to a signed record; a withdrawal explains the ABSENCE of
+ * one, and the amendment's own reason is still on the document saying what was
+ * attempted. The sentence above the pad is the copy of record and comes from
+ * amendmentChain, which mirrors the string the server stores beside the ink —
+ * a signature over a sentence the server never heard of would put a claim in
+ * the record about what a man was shown.
  *
  * THE LOCAL DRAFT GOES WITH IT. The parent and its amendment share ONE draft
  * key, so leaving the child's working copy behind would let syncPendingDrafts
@@ -81,6 +98,13 @@ export default function AmendmentBanner({
   // successful withdrawal into a crash on the screen it just fixed.
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  // The pad, revealed by the Withdraw button. `signing` is the panel; `sig` is
+  // what the pad emitted; `signerName` is the pad's own name field, which
+  // SignaturePad renders but does not own — its `canConfirm` needs both a
+  // stroke and a name, so the Confirm below cannot be reached without them.
+  const [signing, setSigning] = useState(false);
+  const [sig, setSig] = useState(null);
+  const [signerName, setSignerName] = useState('');
 
   if (!amendment) return null;
 
@@ -89,10 +113,13 @@ export default function AmendmentBanner({
   const hasReason = !!(amendment.has_reason && amendment.reason);
 
   const doWithdraw = async () => {
-    if (!logId || busy) return;
+    // NO INK, NO REQUEST. The server refuses it anyway (400
+    // WITHDRAW_SIGNATURE_REQUIRED); this keeps the refusal off the wire and
+    // out of a toast that would read like a fault.
+    if (!logId || busy || !hasSignatureInk(sig)) return;
     setBusy(true);
     try {
-      await logbooksAPI.withdraw(logId);
+      await logbooksAPI.withdraw(logId, sig);
       if (draftKey) {
         await clearPending(draftKey);
         await discardFinalizedDraft(draftKey);
@@ -117,6 +144,16 @@ export default function AmendmentBanner({
         toast?.error(
           'This is the log itself',
           'Only a correction can be withdrawn, not the day it corrects.',
+        );
+      } else if (code === 'WITHDRAW_SIGNATURE_REQUIRED') {
+        // Reachable only if the pad emitted something this client called ink
+        // and the server did not. It still teaches, because "Could not
+        // withdraw" in front of a man who just signed reads as a fault in the
+        // app rather than as a thing he can fix.
+        toast?.error(
+          'Sign to withdraw',
+          'Withdrawing a correction is an attested act. Draw your signature '
+          + 'and your name, then confirm.',
         );
       } else {
         toast?.error('Could not withdraw',
@@ -171,30 +208,102 @@ export default function AmendmentBanner({
               If this correction was not meant to be made, you can withdraw it.
               The log you signed stays exactly as it is.
             </Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Withdraw this correction"
-              onPress={doWithdraw}
-              disabled={busy}
-              style={({ pressed }) => ({
-                alignSelf: 'flex-start',
-                paddingVertical: spacing.sm,
-                paddingHorizontal: spacing.md,
-                borderRadius: borderRadius.sm,
-                borderWidth: 1,
-                borderColor: semantic.attention,
-                backgroundColor: withAlpha(semantic.attention, pressed ? 0.18 : 0),
-                opacity: busy ? 0.6 : 1,
-              })}
-            >
-              {busy ? (
-                <ActivityIndicator size="small" color={semantic.attention} />
-              ) : (
+            {!signing ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Withdraw this correction"
+                onPress={() => setSigning(true)}
+                disabled={busy}
+                style={({ pressed }) => ({
+                  alignSelf: 'flex-start',
+                  paddingVertical: spacing.sm,
+                  paddingHorizontal: spacing.md,
+                  borderRadius: borderRadius.sm,
+                  borderWidth: 1,
+                  borderColor: semantic.attention,
+                  backgroundColor: withAlpha(semantic.attention, pressed ? 0.18 : 0),
+                  opacity: busy ? 0.6 : 1,
+                })}
+              >
                 <Text style={{ color: semantic.attention, fontWeight: '700' }}>
                   Withdraw this correction
                 </Text>
-              )}
-            </Pressable>
+              </Pressable>
+            ) : (
+              <View>
+                {/* THE SENTENCE HE IS SIGNING, ABOVE THE PAD AND NOT BESIDE
+                    IT. It is the same string the server stores on the document
+                    with the ink, so the record can say what he was told. */}
+                <Text
+                  style={{
+                    color: semantic.attention,
+                    fontWeight: '700',
+                    marginBottom: spacing.sm,
+                  }}
+                >
+                  {WITHDRAWAL_ATTESTATION_STATEMENT}
+                </Text>
+                {/* `pinned` for the same reason the ten logbook editors pass
+                    it: a CP signs outdoors in direct sun, and the chrome
+                    around a light-pinned canvas goes invisible without it. */}
+                <SignaturePad
+                  title="Sign to withdraw"
+                  signerName={signerName}
+                  onNameChange={setSignerName}
+                  onSignatureCapture={setSig}
+                  disabled={busy}
+                  autoLock={false}
+                  pinned
+                />
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    gap: spacing.sm,
+                    marginTop: spacing.sm,
+                  }}
+                >
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Confirm withdrawal"
+                    onPress={doWithdraw}
+                    // GATED ON INK, not on presence. `{}` is truthy in JS and
+                    // is not a signature.
+                    disabled={busy || !hasSignatureInk(sig)}
+                    style={({ pressed }) => ({
+                      paddingVertical: spacing.sm,
+                      paddingHorizontal: spacing.md,
+                      borderRadius: borderRadius.sm,
+                      borderWidth: 1,
+                      borderColor: semantic.attention,
+                      backgroundColor: withAlpha(
+                        semantic.attention, pressed ? 0.18 : 0),
+                      opacity: (busy || !hasSignatureInk(sig)) ? 0.5 : 1,
+                    })}
+                  >
+                    {busy ? (
+                      <ActivityIndicator size="small" color={semantic.attention} />
+                    ) : (
+                      <Text style={{ color: semantic.attention, fontWeight: '700' }}>
+                        Confirm withdrawal
+                      </Text>
+                    )}
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel withdrawal"
+                    onPress={() => { setSigning(false); setSig(null); }}
+                    disabled={busy}
+                    style={{
+                      paddingVertical: spacing.sm,
+                      paddingHorizontal: spacing.md,
+                      opacity: busy ? 0.5 : 1,
+                    }}
+                  >
+                    <Text style={{ color: semantic.attention }}>Cancel</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
           </View>
         ) : null}
       </View>

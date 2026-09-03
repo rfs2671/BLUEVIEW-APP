@@ -73,6 +73,7 @@ Run:  python -m pytest backend/tests/test_amendment_withdraw.py -q
 """
 
 import asyncio
+import json
 import inspect
 import os
 import re
@@ -129,6 +130,25 @@ ADMIN = {"id": "u-admin", "role": "admin", "company_id": "companyA",
 
 PARENT_ID = "6a7f1404bb9fdd3a9e6b96ac"
 
+# What SignaturePad.handleConfirm actually emits: vector `paths`, the typed
+# name, and a per-document affirmation stamp. Asserted against the SERVER's
+# own two predicates rather than a hand-rolled shape, so a fixture cannot
+# drift into something the endpoint would refuse in the field.
+SIGNATURE = {
+    "paths": [[{"x": 1, "y": 2}, {"x": 8, "y": 9}]],
+    "signerName": "Michael Cespedes",
+    "timestamp": "2026-09-02T19:46:00.000Z",
+    "affirmed": True,
+    "affirmedAt": "2026-09-02T19:46:00.000Z",
+    "affirmedLang": "en",
+}
+
+# `data=None` has to stay reachable as a REAL value -- it is the shape a client
+# that sends no body at all produces, and the signature refusal is exactly what
+# must answer it. So the "give me the ordinary happy path" default cannot be
+# None; it is a sentinel.
+_UNSET = object()
+
 
 def _child(_id="child-1", **over):
     """One of the seven. Unsigned, unlocked, is_amendment, with a parent."""
@@ -155,8 +175,15 @@ def _child(_id="child-1", **over):
     return doc
 
 
-def _run(user, doc, data=None, project=PROJ):
-    """Call the real handler against a mock db. Returns (result, state)."""
+def _run(user, doc, data=_UNSET, project=PROJ):
+    """Call the real handler against a mock db. Returns (result, state).
+
+    THE DEFAULT BODY CARRIES A SIGNATURE, because a withdrawal is an attested
+    act and the endpoint refuses one without ink. Pass `data` explicitly --
+    including `data=None` -- to exercise what a body missing it produces.
+    """
+    if data is _UNSET:
+        data = {"signature": SIGNATURE}
     state = {"store": dict(doc), "audits": [], "sig_events": []}
 
     async def lb_find_one(q, *a, **kw):
@@ -313,7 +340,8 @@ class TheWithdrawalIsAttested(unittest.TestCase):
         own reason is still on the document."""
         _, state = _run(SUPER, _child())
         self.assertIsNone(state["store"].get("withdrawal_reason"))
-        _, state2 = _run(SUPER, _child(), data={"reason": "double tap"})
+        _, state2 = _run(SUPER, _child(),
+                         data={"reason": "double tap", "signature": SIGNATURE})
         self.assertEqual(state2["store"]["withdrawal_reason"], "double tap")
         self.assertEqual(state2["audits"][0]["details"]["withdrawal_reason"],
                          "double tap")
@@ -368,16 +396,190 @@ class TheWithdrawalIsAttested(unittest.TestCase):
             server.withdrawal_sentence(st))
 
 
-class ItIsNotASigningAct(unittest.TestCase):
-    """WHY audit_log AND NOT signature_events.
+class ASignatureIsRequired(unittest.TestCase):
+    """OPERATOR RULING: "Signature required, as ruled. It is an attested act."
 
-    The collection's unique index is named
-    `signature_events_one_row_per_signing_act`; `version` counts the signings
-    of one document; `create_signature_event` requires signature_data and a
-    content_snapshot; `attach_attestation` captures THE SENTENCE PRINTED ABOVE
-    A SIGNATURE. A withdrawal has none of those -- the content is what is being
-    abandoned. A row there would bump the document's signature version and
-    assert a signing act nobody performed."""
+    A withdrawal is a permanent statement about a compliance record -- that a
+    proposed correction was abandoned, deliberately, by a named person. The
+    ruling is that it is signed for like any other attested act.
+
+    THE INK IS JUDGED BY THE SERVER'S OWN PREDICATES, not by presence. A
+    `cp_signature: {}` satisfied every presence gate in this app while every
+    document it signed printed UNAFFIRMED; `_has_signature_ink` exists because
+    of that. An empty object, an empty `paths` list and an inkless
+    `{"affirmed": True}` are all NOT a signature, and each is asserted."""
+
+    def test_a_withdrawal_with_NO_body_at_all_is_refused(self):
+        with self.assertRaises(HTTPException) as c:
+            _run(SUPER, _child(), data=None)
+        self.assertEqual(c.exception.status_code, 400)
+        self.assertEqual(c.exception.detail["code"],
+                         server.WITHDRAW_SIGNATURE_REQUIRED)
+
+    def test_a_body_with_a_reason_but_no_signature_is_refused(self):
+        """The shape the PREVIOUS client sent. It must not still work."""
+        with self.assertRaises(HTTPException) as c:
+            _run(SUPER, _child(), data={"reason": "double tap"})
+        self.assertEqual(c.exception.status_code, 400)
+
+    def test_an_EMPTY_OBJECT_is_not_a_signature(self):
+        """The shape production actually held."""
+        with self.assertRaises(HTTPException) as c:
+            _run(SUPER, _child(), data={"signature": {}})
+        self.assertEqual(c.exception.status_code, 400)
+
+    def test_an_INKLESS_affirmation_is_not_a_signature(self):
+        """`{"affirmed": True}` passes _is_affirmed_signature and fails
+        _has_signature_ink. An affirmation over a blank canvas is the one
+        shape a pad must never mint, and this endpoint must not accept it."""
+        with self.assertRaises(HTTPException) as c:
+            _run(SUPER, _child(),
+                 data={"signature": {"affirmed": True, "paths": []}})
+        self.assertEqual(c.exception.status_code, 400)
+
+    def test_nothing_is_written_when_the_signature_is_missing(self):
+        """A refusal that had already flipped the state would be worse than
+        no refusal."""
+        doc = _child()
+        try:
+            _run(SUPER, doc, data=None)
+        except HTTPException:
+            pass
+        self.assertEqual(doc["status"], "draft")
+
+    def test_the_refusal_comes_AFTER_the_filed_and_shape_refusals(self):
+        """A filed amendment and a non-amendment are refused whatever the
+        caller sends, so asking for a signature first would put a pad in front
+        of a man to answer a question the server had already settled."""
+        with self.assertRaises(HTTPException) as c:
+            _run(SUPER, _child(is_locked=True), data=None)
+        self.assertEqual(c.exception.status_code, 423)
+        with self.assertRaises(HTTPException) as c2:
+            _run(SUPER, _child(is_amendment=False), data=None)
+        self.assertEqual(c2.exception.status_code, 400)
+        self.assertEqual(c2.exception.detail["code"],
+                         server.WITHDRAW_NOT_AN_AMENDMENT)
+
+    def test_the_SECOND_TAP_still_needs_no_signature(self):
+        """Already withdrawn is a 200 no-op. Demanding ink to change nothing
+        would put a pad in front of the exact double-tap this feature exists
+        to absorb."""
+        out, state = _run(
+            SUPER,
+            _child(status=server.WITHDRAWN_STATUS, withdrawn_by="u-first",
+                   withdrawn_by_name="First Man", withdrawn_at=T0),
+            data=None)
+        self.assertEqual(state["store"]["withdrawn_by"], "u-first")
+        self.assertEqual(state["audits"], [])
+
+
+class TheAttestationOnTheDocument(unittest.TestCase):
+    """WHERE THE SIGNATURE GOES, AND WHY NOT INTO signature_events.
+
+    `signature_events`' unique index is literally named
+    `signature_events_one_row_per_signing_act` and its `version` counts the
+    signings OF ONE DOCUMENT'S CONTENT. A withdrawal row there would bump the
+    document's signature version and assert a signing act on content nobody
+    signed -- the fabricated attestation `ensure_signature_ledger_row` exists
+    to refuse. The signature is real; the thing it attests to is not the
+    content, it is the ABANDONMENT of the content.
+
+    So it lands on the DOCUMENT, in the same `update_one` that sets the state,
+    under a field whose shape no signature-ledger reader can mistake for a
+    content signing."""
+
+    def test_the_attestation_is_stored_on_the_document(self):
+        _, state = _run(SUPER, _child())
+        att = state["store"]["withdrawal_attestation"]
+        self.assertEqual(att["ink"], SIGNATURE)
+
+    def test_it_carries_the_statement_the_signer_was_shown(self):
+        """`attach_attestation` exists elsewhere because a signature with no
+        recorded sentence above it attests to nothing nameable. The same rule
+        applies here, so the sentence is stored WITH the ink."""
+        _, state = _run(SUPER, _child())
+        att = state["store"]["withdrawal_attestation"]
+        self.assertEqual(att["statement"],
+                         server.WITHDRAWAL_ATTESTATION_STATEMENT)
+        self.assertTrue(server.WITHDRAWAL_ATTESTATION_STATEMENT.strip())
+
+    def test_the_signer_and_the_time_are_SERVER_stamped(self):
+        """The client supplies ink and nothing else that matters. A device
+        with a wrong clock must not be able to date an attestation, and a
+        client must not be able to name someone else as its signer."""
+        before = datetime.now(timezone.utc)
+        _, state = _run(SUPER, _child(),
+                        data={"signature": dict(SIGNATURE, signerName="Someone Else"),
+                              "by": "u-forged", "at": "1999-01-01"})
+        after = datetime.now(timezone.utc)
+        att = state["store"]["withdrawal_attestation"]
+        self.assertEqual(att["by"], "u-super")
+        self.assertEqual(att["by_name"], "Michael Cespedes")
+        self.assertIsInstance(att["at"], datetime)
+        self.assertTrue(before <= att["at"] <= after)
+
+    def test_it_lands_in_the_SAME_write_as_the_state(self):
+        """audit_log swallows its own exceptions and cannot be the only
+        record. A separate write for the ink could be interrupted and leave a
+        withdrawal claiming to be attested with nothing attesting it."""
+        src = inspect.getsource(server.withdraw_amendment)
+        self.assertEqual(src.count("db.logbooks.update_one"), 1)
+        _, state = _run(SUPER, _child())
+        # One update carried all four: the state, the who, the when, the ink.
+        for f in ("status", "withdrawn_by", "withdrawn_at",
+                  "withdrawal_attestation"):
+            self.assertIn(f, state["store"])
+
+    def test_it_is_marked_as_a_WITHDRAWAL_and_never_a_content_signing(self):
+        _, state = _run(SUPER, _child())
+        self.assertEqual(state["store"]["withdrawal_attestation"]["kind"],
+                         "withdrawal")
+
+    def test_the_document_gains_NO_field_a_ledger_reader_keys_on(self):
+        """THE POSITIVE CONTROL FOR "no reader picks it up". Both readers of a
+        LOGBOOK's signature -- ensure_signature_ledger_row and
+        sweep_signature_ledger_gaps -- read exactly one field, `cp_signature`.
+        The withdrawal must not create one, must not overwrite the null that
+        is already there, and must not add any sibling with a name either one
+        could reach."""
+        _, state = _run(SUPER, _child())
+        self.assertIsNone(state["store"]["cp_signature"])
+        added = set(state["store"]) - set(_child())
+        self.assertEqual(added, {"withdrawn_at", "withdrawn_by",
+                                 "withdrawn_by_name", "withdrawal_attestation"})
+
+    def test_the_ledger_derivation_REFUSES_the_withdrawn_document(self):
+        """Run the real reader against the real post-withdrawal document. An
+        assertion about field names is a claim; this is the reader itself
+        declining to mint a row."""
+        _, state = _run(SUPER, _child())
+        with patch.object(server, "db", MagicMock()):
+            got = asyncio.run(server.ensure_signature_ledger_row(
+                state["store"], written_by="test"))
+        self.assertIsNone(got)
+
+    def test_and_the_control_that_proves_that_check_can_FAIL(self):
+        """The recurring defect of this codebase: a check that runs, returns a
+        well-formed answer and never reaches its subject. The same reader,
+        handed the same document with real ink in `cp_signature`, must get
+        PAST the refusal -- otherwise the assertion above proves nothing."""
+        _, state = _run(SUPER, _child())
+        signed = dict(state["store"], cp_signature=SIGNATURE)
+        db = MagicMock()
+        db.signature_events.find_one = AsyncMock(return_value={"_id": "e1"})
+        with patch.object(server, "db", db):
+            got = asyncio.run(server.ensure_signature_ledger_row(
+                signed, written_by="test"))
+        self.assertIsNotNone(got)
+
+    def test_the_nightly_sweep_cannot_reach_a_withdrawn_document_either(self):
+        """It selects `status: "submitted"`. A withdrawn document's status is
+        "withdrawn", so it is not in the cursor at all -- and this asserts the
+        selector rather than trusting the sentence."""
+        src = inspect.getsource(server.sweep_signature_ledger_gaps)
+        self.assertIn('"status": "submitted"', src)
+        self.assertIn('doc.get("cp_signature")', src)
+        self.assertNotIn("withdrawal_attestation", src)
 
     def test_no_signature_event_is_written(self):
         _, state = _run(SUPER, _child())
@@ -480,7 +682,32 @@ class OnlyAnAmendmentMayBeWithdrawn(unittest.TestCase):
 
 # ══ WHO MAY WITHDRAW ════════════════════════════════════════════════════════
 
-class TheAuthorOrAnAdmin(unittest.TestCase):
+class AnyAdminOrCPWithProjectAccess(unittest.TestCase):
+    """OPERATOR RULING: "any admin or CP with project access. Not just the
+    filer."
+
+    THE FILER MIGHT BE THE PLATFORM OPERATOR. A correction filed on a CP's
+    behalf by whoever was helping him would, under an author-only rule, be
+    permanently un-withdrawable BY THE CP WHOSE CARD IT WARNS ON. Locking a
+    permanent warning behind the person who was helping is the defect, not the
+    control.
+
+    THE RECORD IS THE ACCOUNTABILITY, NOT THE RESTRICTION. `withdrawn_by` /
+    `withdrawn_by_name` / `withdrawn_at` name who took it back and when, in the
+    same write that sets the state, and the attestation now carries his
+    signature as well. That is what answers "who did this", and it answers it
+    for a wider set of hands than an author check ever could.
+
+    THE SET IS `_authorize_logbook_write`'s, EXACTLY -- admin/owner of the
+    project's company, or anyone assigned to the project. Nothing wider: an
+    unassigned CP of the right company and an admin of another company are
+    both still refused, and this class asserts both rather than assuming the
+    shared gate holds.
+
+    WHAT DID NOT WIDEN: the 423 on a FILED amendment, which is asked BEFORE
+    any actor question so an admin gets it too, and the 400 on a document that
+    is not an amendment."""
+
     def test_the_author_may(self):
         _, state = _run(SUPER, _child())
         self.assertEqual(state["store"]["status"], server.WITHDRAWN_STATUS)
@@ -489,17 +716,47 @@ class TheAuthorOrAnAdmin(unittest.TestCase):
         _, state = _run(ADMIN, _child())
         self.assertEqual(state["store"]["withdrawn_by"], "u-admin")
 
-    def test_a_colleague_who_did_not_file_it_is_refused(self):
+    def test_an_ASSIGNED_CP_who_is_NOT_the_author_may(self):
+        """The ruling, in one line. `created_by` is "u-super"; this is not
+        him, is not an admin, and succeeds because he is assigned."""
+        _, state = _run(OTHER_CP, _child())
+        self.assertEqual(state["store"]["status"], server.WITHDRAWN_STATUS)
+        self.assertNotEqual(_child()["created_by"], OTHER_CP["id"])
+
+    def test_and_the_record_names_the_man_who_ACTUALLY_did_it(self):
+        """Widening the door is only safe because the record narrows it back
+        down to one name. The author's name stays on `created_by_name`; the
+        withdrawer's goes on `withdrawn_by_name`, and they are different
+        people here."""
+        _, state = _run(OTHER_CP, _child())
+        self.assertEqual(state["store"]["withdrawn_by"], "u-other")
+        self.assertEqual(state["store"]["withdrawn_by_name"], "Colleague CP")
+        self.assertEqual(state["store"]["created_by_name"], "Michael Cespedes")
+        self.assertEqual(state["audits"][0]["actor"], "u-other")
+
+    def test_an_UNASSIGNED_CP_of_the_right_company_is_still_refused(self):
+        """`user_can_act_on_project` admits admin/owner of the company OR a
+        user assigned to the project -- a plain CP of the right company with
+        no assignment is neither, which is what create_logbook already does."""
+        stranger = dict(OTHER_CP, assigned_projects=[])
         with self.assertRaises(HTTPException) as c:
-            _run(OTHER_CP, _child())
+            _run(stranger, _child())
         self.assertEqual(c.exception.status_code, 403)
 
-    def test_and_the_refusal_NAMES_the_author(self):
-        """A CP looking at another man's correction on his own signed log needs
-        to know who to ask. A closed door is how this incident started."""
+    def test_an_admin_of_ANOTHER_company_is_still_refused(self):
+        """The company scope on the admin branch. This admin belongs to
+        companyB; the project is companyA's, and he is assigned to nothing."""
+        foreign_admin = dict(ADMIN, company_id="companyB", id="u-admin-b")
         with self.assertRaises(HTTPException) as c:
-            _run(OTHER_CP, _child())
-        self.assertIn("Michael Cespedes", str(c.exception.detail))
+            _run(foreign_admin, _child())
+        self.assertEqual(c.exception.status_code, 403)
+
+    def test_no_author_only_branch_survives_in_the_endpoint(self):
+        """THE CODE, NOT THE PROSE -- the docstring discusses the author at
+        length. A `created_by` comparison anywhere in the body would be the
+        restriction growing back."""
+        src = code_of(server.withdraw_amendment)
+        self.assertNotIn("created_by", src)
 
     def test_an_unassigned_superintendent_is_out_before_any_of_it(self):
         """A superintendent is scoped to his assigned projects, exactly as a CP
@@ -771,6 +1028,360 @@ class ItCannotBeResurrected(unittest.TestCase):
         self.assertFalse(server.logbook_is_withdrawn({"status": "draft"}))
         self.assertFalse(server.logbook_is_withdrawn({}))
         self.assertFalse(server.logbook_is_withdrawn(None))
+
+
+# ══ THE SIMULTANEOUS DOUBLE TAP ═════════════════════════════════════════════
+#
+# `open_amendment_head` / AMENDMENT_ALREADY_OPEN keys correctly on the parent,
+# but it is a READ-then-INSERT with nothing between them. Two genuinely
+# simultaneous requests both read "no open child" and both insert -- which is
+# the fork on Aug 10 and Aug 14 (sixty and twenty-six seconds apart), and
+# nothing in the application layer can close it. The durable fix is the
+# database's, in the same shape `signature_events_one_row_per_signing_act`
+# already uses: a PARTIAL UNIQUE INDEX over the open-amendment condition.
+
+
+def _matches_partial_filter(doc, flt):
+    """Evaluate a Mongo partialFilterExpression against a document.
+
+    Only the operators a partialFilterExpression is ALLOWED to contain --
+    equality, `$type` -- because if the real filter ever grows one this helper
+    cannot evaluate, the test must break rather than quietly approximate.
+
+    `{field: null}` matches null OR MISSING, which is Mongo's rule and is the
+    whole reason `cp_signature: None` is the right clause for "unsigned".
+    """
+    for field, cond in flt.items():
+        val = doc.get(field, _UNSET)
+        if isinstance(cond, dict):
+            assert set(cond) == {"$type"}, f"unevaluable clause: {field}={cond}"
+            want = cond["$type"]
+            assert want == "string", f"unevaluable $type: {want}"
+            if not isinstance(val, str):
+                return False
+        elif cond is None:
+            if val is not _UNSET and val is not None:
+                return False
+        else:
+            if val is _UNSET or val != cond:
+                return False
+    return True
+
+
+class OneOpenAmendmentPerParentIsTheDatabasesRule(unittest.TestCase):
+    """THE INDEX, ITS FILTER, AND WHAT THE FILTER ACTUALLY SELECTS."""
+
+    def test_the_index_is_declared(self):
+        self.assertEqual(server.OPEN_AMENDMENT_INDEX_NAME,
+                         "logbooks_one_open_amendment_per_parent")
+        self.assertEqual(server.OPEN_AMENDMENT_INDEX_KEYS,
+                         [("parent_logbook_id", 1)])
+
+    def test_it_is_bootstrapped_with_the_app_and_is_UNIQUE_and_PARTIAL(self):
+        """A definition no startup path creates is a comment."""
+        src = inspect.getsource(server)
+        self.assertIn("OPEN_AMENDMENT_INDEX_NAME", src)
+        i = src.index("name=OPEN_AMENDMENT_INDEX_NAME")
+        window = src[i - 600:i + 400]
+        self.assertIn("_ensure_index_resilient", window)
+        self.assertIn("unique=True", window)
+        self.assertIn("OPEN_AMENDMENT_PARTIAL_FILTER", window)
+
+    def test_the_filter_selects_an_OPEN_amendment(self):
+        """THE POSITIVE CONTROL. A filter that matched nothing would build an
+        always-empty index, enforce nothing, and pass every absence assertion
+        below -- which is exactly the failure this repo keeps finding."""
+        self.assertTrue(_matches_partial_filter(
+            _child(), server.OPEN_AMENDMENT_PARTIAL_FILTER))
+
+    def test_and_it_selects_the_child_amend_logbook_ACTUALLY_writes(self):
+        """Not the fixture's idea of a child -- the real insert's. The fixture
+        and the endpoint could drift apart and the control above would still
+        pass."""
+        src = inspect.getsource(server.amend_logbook)
+        for clause in ('"cp_signature": None', '"status": "draft"',
+                       '"is_locked": False', '"is_amendment": True',
+                       '"is_deleted": False',
+                       '"parent_logbook_id": str(original["_id"])'):
+            self.assertIn(clause, src, clause)
+
+    def test_a_WITHDRAWN_child_releases_the_slot(self):
+        """This is what makes the index and `open_amendment_head` agree. A
+        withdrawn child that still occupied the slot would hold the parent's
+        Amend button shut forever -- the dead end withdrawal exists to open."""
+        self.assertFalse(_matches_partial_filter(
+            _child(status=server.WITHDRAWN_STATUS),
+            server.OPEN_AMENDMENT_PARTIAL_FILTER))
+
+    def test_a_FILED_child_releases_it(self):
+        for over in ({"status": "submitted"}, {"is_locked": True}):
+            self.assertFalse(_matches_partial_filter(
+                _child(**over), server.OPEN_AMENDMENT_PARTIAL_FILTER), over)
+
+    def test_a_SIGNED_child_releases_it(self):
+        """`open_amendment_head` does not call a signed child open, so the
+        index must not either -- or a CP who signed but has not filed would be
+        refused an amendment the application layer would have allowed."""
+        self.assertFalse(_matches_partial_filter(
+            _child(cp_signature=SIGNATURE),
+            server.OPEN_AMENDMENT_PARTIAL_FILTER))
+
+    def test_a_SOFT_DELETED_child_releases_it(self):
+        self.assertFalse(_matches_partial_filter(
+            _child(is_deleted=True), server.OPEN_AMENDMENT_PARTIAL_FILTER))
+
+    def test_an_ORIGINAL_is_never_governed_by_it(self):
+        """No parent link, not an amendment. A unique index that reached
+        originals would allow exactly one logbook in the collection."""
+        self.assertFalse(_matches_partial_filter(
+            _child(is_amendment=False, parent_logbook_id=None),
+            server.OPEN_AMENDMENT_PARTIAL_FILTER))
+
+    def test_the_index_NEVER_refuses_what_the_application_would_allow(self):
+        """THE INVARIANT BETWEEN THE TWO RULES, AND IT IS ONE-DIRECTIONAL.
+
+        The database enforces one definition of "open" and `open_amendment_head`
+        reports another. They do not have to be identical, but the index must
+        never be the STRICTER of the two -- an index that held a slot the
+        application considers free would refuse a CP an amendment for a reason
+        no screen could explain and no `open_amendment_head` read would show.
+
+        So: governed-by-the-index IMPLIES open-to-the-application. The converse
+        is allowed to fail, and does; the case is named in its own test below.
+        """
+        shapes = [
+            {},
+            {"status": server.WITHDRAWN_STATUS},
+            {"status": "submitted"},
+            {"is_locked": True},
+            {"is_deleted": True},
+            {"cp_signature": SIGNATURE},
+            {"cp_signature": {}},
+        ]
+        for over in shapes:
+            doc = _child(**over)
+            by_index = _matches_partial_filter(
+                doc, server.OPEN_AMENDMENT_PARTIAL_FILTER)
+            by_app = server.open_amendment_head([doc]) is not None
+            if by_index:
+                self.assertTrue(by_app, over)
+
+    def test_the_ONE_shape_the_index_lets_through_that_the_app_calls_open(self):
+        """`cp_signature: {}` -- the shape production actually held.
+
+        `open_amendment_head` asks `not c.get("cp_signature")`, and `not {}` is
+        True in Python, so it calls such a child OPEN. The index's clause is
+        `cp_signature: null`, which in Mongo matches null OR MISSING and NOT an
+        empty object -- so a child in that shape is not governed and a second
+        one beside it would not be refused by the database.
+
+        NAMED RATHER THAN CLOSED, and deliberately: this is the direction that
+        FAILS OPEN. The application-layer check still catches it on every
+        non-simultaneous attempt, exactly as it does today, so the worst case
+        is the race staying open for one shape rather than a CP being blocked
+        by a rule with no visible cause. Closing it would need `$or`, which a
+        partialFilterExpression may not contain."""
+        doc = _child(cp_signature={})
+        self.assertFalse(_matches_partial_filter(
+            doc, server.OPEN_AMENDMENT_PARTIAL_FILTER))
+        self.assertIsNotNone(server.open_amendment_head([doc]))
+
+    def test_the_filter_uses_only_operators_a_partial_index_permits(self):
+        """MongoDB rejects `$ne`, `$or`, `$not` and `$nin` in a
+        partialFilterExpression. A rejected index is swallowed by
+        `_ensure_index_resilient` (it logs and returns), so the failure would
+        be SILENT and the race would stay open with a test suite saying it was
+        closed."""
+        for field, cond in server.OPEN_AMENDMENT_PARTIAL_FILTER.items():
+            if isinstance(cond, dict):
+                self.assertEqual(set(cond), {"$type"}, field)
+
+
+class TheLOSER_OF_THE_RACE_GETS_THE_OPEN_CHILD(unittest.TestCase):
+    """The index turns the second simultaneous insert into a DuplicateKeyError.
+    Unhandled, that is a 500 on a button the CP just tapped -- and the whole
+    reason this feature exists is a man who tapped a button that appeared to do
+    nothing. He must get exactly what he would have got had he arrived a moment
+    later: the 409 that hands him the correction that is already open."""
+
+    def _amend(self, children, dup=False):
+        """`children` is what the parent's children READ returns.
+
+        THE RACE IS MODELLED, NOT ASSUMED. In a real simultaneous double tap
+        BOTH requests read "no open child" -- if this one's first read already
+        saw the winner it would raise 409 from the application check and the
+        insert would never run, which is a test that returns the right answer
+        for the wrong reason. So when `dup` is set the FIRST read is empty (the
+        racy read that lets both through) and the RE-read after the duplicate
+        key returns the winner.
+        """
+        state = {"inserted": [], "audits": [], "reads": 0}
+        parent = {"_id": PARENT_ID, "id": PARENT_ID, "project_id": "projA",
+                  "company_id": "companyA", "log_type": "daily_jobsite",
+                  "date": "2026-08-14", "data": {}, "is_locked": True,
+                  "status": "submitted", "is_deleted": False}
+
+        async def lb_find_one(q, *a, **kw):
+            if q.get("_id") == PARENT_ID:
+                return dict(parent)
+            for c in children:
+                if c["_id"] == q.get("_id"):
+                    return dict(c)
+            return dict(parent)
+
+        def lb_find(q, *a, **kw):
+            state["reads"] += 1
+            rows = ([] if (dup and state["reads"] == 1)
+                    else [dict(c) for c in children])
+            cur = MagicMock()
+            cur.to_list = AsyncMock(return_value=rows)
+            return cur
+
+        async def lb_insert_one(doc, *a, **kw):
+            if dup:
+                from pymongo.errors import DuplicateKeyError
+                raise DuplicateKeyError(
+                    "E11000 duplicate key error collection: db.logbooks "
+                    "index: logbooks_one_open_amendment_per_parent")
+            state["inserted"].append(doc)
+            r = MagicMock(); r.inserted_id = "new-child"
+            return r
+
+        db = MagicMock()
+        db.logbooks.find_one = AsyncMock(side_effect=lb_find_one)
+        db.logbooks.find = MagicMock(side_effect=lb_find)
+        db.logbooks.insert_one = AsyncMock(side_effect=lb_insert_one)
+        db.projects.find_one = AsyncMock(return_value=dict(PROJ))
+
+        async def fake_audit(*a, **kw):
+            state["audits"].append(a)
+
+        with patch.object(server, "db", db), \
+             patch.object(server, "audit_log", AsyncMock(side_effect=fake_audit)), \
+             patch.object(server, "ensure_signature_ledger_row",
+                          AsyncMock(return_value=None)):
+            try:
+                state["result"] = asyncio.run(server.amend_logbook(
+                    logbook_id=PARENT_ID,
+                    data={"reason": "corrected the headcount"},
+                    current_user=SUPER))
+            except HTTPException as e:
+                state["exc"] = e
+        return state
+
+    def test_the_ordinary_path_still_inserts(self):
+        """THE CONTROL. Without this, every assertion below would also pass on
+        an amend endpoint that had stopped working entirely."""
+        st = self._amend(children=[])
+        self.assertEqual(len(st["inserted"]), 1)
+        self.assertNotIn("exc", st)
+
+    def test_the_race_path_is_actually_REACHED_by_these_tests(self):
+        """THE CONTROL FOR THE THREE BELOW. If the first read saw the winner,
+        the application check would raise 409 on its own and the duplicate-key
+        handling would never run -- and every assertion below would pass
+        against an endpoint that has none. The re-read is the proof: two reads
+        means the first one came back empty and the insert was attempted."""
+        st = self._amend(children=[_child(_id="winner")], dup=True)
+        self.assertEqual(st["reads"], 2)
+        self.assertEqual(st["inserted"], [])
+
+    def test_a_duplicate_key_is_NOT_a_500(self):
+        st = self._amend(children=[_child(_id="winner")], dup=True)
+        self.assertIn("exc", st)
+        self.assertEqual(st["exc"].status_code, 409)
+
+    def test_and_it_hands_back_the_child_that_WON(self):
+        st = self._amend(children=[_child(_id="winner")], dup=True)
+        detail = st["exc"].detail
+        self.assertEqual(detail["code"], "AMENDMENT_ALREADY_OPEN")
+        self.assertEqual(detail["logbook_id"], "winner")
+
+    def test_the_loser_gets_the_SAME_shape_as_a_late_arrival(self):
+        """A client that already knows how to adopt an open correction
+        (amendmentAdopt.js) must not need a second code path for the race."""
+        late = self._amend(children=[_child(_id="winner")])
+        raced = self._amend(children=[_child(_id="winner")], dup=True)
+        self.assertEqual(late["exc"].status_code, raced["exc"].status_code)
+        self.assertEqual(set(late["exc"].detail), set(raced["exc"].detail))
+        self.assertEqual(late["exc"].detail["logbook_id"],
+                         raced["exc"].detail["logbook_id"])
+
+    def test_the_endpoint_catches_the_DATABASE_error_and_not_everything(self):
+        """A bare `except Exception` around an insert would swallow a genuine
+        write failure and report an open correction that does not exist.
+
+        THE EXCEPT CLAUSE, NOT THE IMPORT. A mutation control that replaced
+        `except DuplicateKeyError:` with `except ValueError:` left the import
+        line untouched, so a test asserting only the name was in the source
+        stayed green while the handling was gone."""
+        src = code_of(server.amend_logbook)
+        self.assertIn("except DuplicateKeyError:", src)
+        self.assertNotIn("except Exception", src)
+
+
+class TheOperatorCanBuildTheIndexByHand(unittest.TestCase):
+    """He applies indexes manually against Atlas -- a previous outage was fixed
+    that way with no deploy. A script that only exists inside a deploy is a
+    script he cannot run."""
+
+    SCRIPT = (Path(server.__file__).resolve().parent
+              / "scripts" / "create_open_amendment_index.js")
+
+    def test_the_script_is_versioned_in_the_repo(self):
+        self.assertTrue(self.SCRIPT.exists(), str(self.SCRIPT))
+
+    @staticmethod
+    def _script_filter(text):
+        """The script's PARTIAL_FILTER, parsed into Python.
+
+        PARSED, NOT GREPPED. Asserting that each field NAME appears in the file
+        passes on a script whose `status` clause says "submitted" — the two
+        definitions would have drifted in the one way that matters and the
+        check would still be green."""
+        m = re.search(r"const PARTIAL_FILTER = \{(.*?)\n\};", text, re.S)
+        assert m, "PARTIAL_FILTER not found in the script"
+        body = "{" + m.group(1) + "}"
+        # Bare object keys -> JSON keys. `$type` is a key too, so the class is
+        # [\w$] and not \w -- \w alone quotes the "type" and orphans the "$".
+        body = re.sub(r'([{,]\s*)([\w$]+)\s*:', r'\1"\2":', body)
+        body = re.sub(r",(\s*})", r"\1", body)  # trailing commas
+        # true / false / null are already JSON literals.
+        return json.loads(body)
+
+    def test_it_names_the_SAME_index_the_server_bootstraps(self):
+        """Two writers of one index definition. If they drift, the operator
+        builds an index the application does not believe in."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(server.OPEN_AMENDMENT_INDEX_NAME, text)
+        self.assertEqual(self._script_filter(text),
+                         server.OPEN_AMENDMENT_PARTIAL_FILTER)
+
+    def test_and_the_parse_that_check_depends_on_actually_WORKS(self):
+        """THE CONTROL. If `_script_filter` returned `{}` on a file it could
+        not read, the comparison above would be `{} == {}`-shaped nonsense
+        wearing a green tick."""
+        got = self._script_filter(self.SCRIPT.read_text(encoding="utf-8"))
+        self.assertEqual(len(got), 6)
+        self.assertEqual(got["status"], "draft")
+        self.assertEqual(got["parent_logbook_id"], {"$type": "string"})
+        self.assertIsNone(got["cp_signature"])
+
+    def test_it_REFUSES_to_build_over_existing_duplicates(self):
+        """PRODUCTION HAS THE DUPLICATES THIS INDEX FORBIDS -- Aug 10 and Aug
+        14, two open children on one parent each. A unique build against them
+        FAILS, and `_ensure_index_resilient` swallows that failure at startup.
+        The script must find them and say so instead of leaving the operator
+        with a silently absent index."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("aggregate", text)
+        self.assertIn("$group", text)
+
+    def test_it_verifies_the_index_actually_exists_afterwards(self):
+        """An empty/zero result is either a finding or a broken check, and
+        nothing distinguishes them without a positive control."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("getIndexes", text)
 
 
 if __name__ == "__main__":

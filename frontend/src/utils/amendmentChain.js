@@ -20,6 +20,25 @@
  */
 
 /** The stored id for a row, whichever shape the caller has. */
+/**
+ * THE SENTENCE PRINTED ABOVE THE WITHDRAWAL PAD.
+ *
+ * MIRRORS server.py's WITHDRAWAL_ATTESTATION_STATEMENT, word for word, and
+ * amendmentWithdrawn.test.cjs asserts the two are identical. The server stores
+ * this string on the document beside the ink, because a signature with no
+ * recorded sentence above it attests to nothing nameable — you can prove a man
+ * drew a mark and not what he was told it meant. If the client showed a
+ * DIFFERENT sentence, the record would say a man was told something he was
+ * never told, which is worse than storing no sentence at all.
+ *
+ * It lives here rather than in the banner because the server owns the copy of
+ * record and this file is already where the client's half of the amendment
+ * vocabulary lives (isFiled, isWithdrawn, amendmentSentence).
+ */
+export const WITHDRAWAL_ATTESTATION_STATEMENT =
+  'I am withdrawing this proposed correction. It was never filed, it is not '
+  + 'part of the record, and the log it proposed to correct is unchanged.';
+
 export const rowId = (o) => (o && (o.id || o._id)) || null;
 
 /**
