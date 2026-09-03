@@ -1,5 +1,42 @@
 # CO disagreement — what should happen when DOB tells us a different number
 
+> **CORRECTION, 2026-09-03 -- read this before the document below.**
+>
+> This document was written believing the CofO ingest worked. It did not. The
+> query named six columns the dataset does not have, starting with an `$order`
+> on `issuance_date` where the real column is `c_of_o_issuance_date`, and
+> Socrata rejected the whole request. **It returned HTTP 400 on every call, 96
+> times a day, from the day the feature shipped. Zero certificate-of-occupancy
+> records were ever ingested.**
+>
+> That was established by running the shipped query against the live dataset
+> beside the corrected one: 400 against 200-with-50-rows. The production audit
+> showing no `cofo` rows was therefore never a data gap; it was a broken query,
+> and the audit was right for a reason nobody had found.
+>
+> Specific claims below that were FALSE when written:
+> - that rows land in `dob_logs` carrying `co_number`, `issuance_date` and the
+>   rest -- nothing landed;
+> - that we "store the answer and then throw it away" -- the storing half never
+>   happened;
+> - that a `cofo` row is "fetched once and never refreshed" -- it was never
+>   fetched;
+> - that `_classify_cofo` sorts rows into `cofo_final` / `cofo_temporary` /
+>   `cofo_pending` -- all three collapsed to `cofo_final`, because
+>   `c_of_o_status` is the constant `'CO Issued'` across all 81,264 rows and the
+>   classifier matched `"ISSUED"` first.
+>
+> Claims below that were CORRECT and are confirmed: no `cofo` branch in
+> `_determine_severity`; the notification routing table has no production
+> consumer; `cofo` rows are excluded from the compliance rollup.
+>
+> Both defects are fixed in #380 (`8dd1e76`). Ingest now works and renewals no
+> longer classify as completions, so the argument this document makes -- that an
+> attested CO number is currently unfalsifiable by the software -- is about to
+> stop being true for the first time. **The reasoning stands; the premise about
+> what the pipe was doing did not.**
+
+
 Report only. **No product code was changed.** The completion field itself is
 being built concurrently in `backend/lib/project_retention.py` and the retention
 region of `backend/server.py`; nothing here touches either.
