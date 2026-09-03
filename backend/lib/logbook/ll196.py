@@ -6,11 +6,23 @@ LeveLog already tracks worker certifications (server.py
 `validate_worker_certifications`); this module rolls that data
 up into a monthly attestation PDF that's:
 
-  • generated on demand or on the daily 3 AM ET tick (one per
-    project per month),
+  • generated on demand. THERE IS NO 3 AM TICK. This docstring and
+    docs/features/v2-logbook.md both claimed one; nothing schedules
+    `generate_ll196_attestation`, and its only caller in the repo is
+    POST /projects/{id}/logbook/attestations/generate (server.py:7411),
+    which no client calls either. Every attestation that exists was
+    produced by an operator running the curl in
+    docs/operations/runbook.md §14.5,
   • uploaded to R2 at a deterministic key
     (`ll196/{company_id}/{project_id}/{year}-{month:02}.pdf`),
   • recorded in logbook_entries with category=ll196_attestation.
+
+WHO IS ON IT. Every worker with a check-in on this project inside the
+attestation month, Eastern. Argued in full at `_roster_for_period`, which is
+also where the query that returned zero rows on every run since this module
+shipped is written up. LL196 makes the GC responsible for "every worker on
+their site", and `checkins` is the only record written unconditionally for
+every worker on every visit.
 
 The PDF carries:
   • the attestation period (year + month),
@@ -38,9 +50,29 @@ from lib.logbook.schema import (
     SOURCE_AUTO_DETECTED,
     STATUS_COMPLETE,
     STATUS_DEFICIENT,
+    STATUS_NO_SITE_ACTIVITY,
 )
 
 logger = logging.getLogger(__name__)
+
+# NYC. The attestation period is a calendar month on the job site, and every
+# other date in this product is bounded the same way -- see
+# scripts/correct_missing_daily_log_flags.py::_day_had_gate_activity:
+# "Eastern, because that is the day boundary every other date in this product
+# uses ... A UTC comparison would move a 20:00 check-in to the next day."
+# On a month boundary that error moves a whole shift onto the wrong filing.
+_SITE_TZ = "America/New_York"
+
+# server.py:13336 WORKER_PROJECT_TRADES_COLLECTION. NOT imported: server.py
+# imports this module, so the dependency runs the other way (the reasoning is
+# written out in lib/cert_vocab.py). The two names are pinned equal by
+# tests/test_ll196_population.py so this copy cannot drift silently.
+_WORKER_PROJECT_TRADES = "worker_project_trades"
+
+# The sentinel a flagged check-in carries when the project had no trades
+# configured. server.py refuses to store it as a pairing and renders it
+# "Pending assignment"; it is not a trade and must never print as one.
+_UNASSIGNED = "UNASSIGNED"
 
 
 # Cert types that count as a current SST card. Mirrors
@@ -109,26 +141,63 @@ def _worker_sst_status(
     return "expired", None
 
 
+def _display_trade(value: Any) -> str:
+    """The trade as it may be PRINTED, or "" when there isn't one.
+
+    The same rule as server.py's `_recorded_trade` (server.py:13501), which
+    says it directly: "Anything that reads a frozen trade to decide whether
+    one exists has to ask through here, or the sentinel reads as a real answer
+    and suppresses the lookup that would have produced one." UNASSIGNED is the
+    frozen way of recording that NOTHING was recorded; printing it on a filing
+    would put a trade on a man who has not been assigned one.
+
+    This is a second copy of that rule, not an import -- server.py imports this
+    module, so the dependency cannot run back the other way (lib/cert_vocab.py
+    has the reasoning). tests/test_ll196_population.py pins the two against
+    each other so the copy cannot drift the way `_SST_CERT_TYPES` did.
+    """
+    s = str(value or "").strip()
+    return "" if s.upper() == _UNASSIGNED else s
+
+
 def build_attestation_data(
     *, project: Dict[str, Any], workers: List[Dict[str, Any]],
     year: int, month: int,
     now: Optional[datetime] = None,
+    trade_by_worker_id: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Pure: roll up worker SST status into the attestation_data
     dict that gets stored on the logbook_entries row.
 
     Test focus: the counts + roster shape are the contract this
     function promises. PDF rendering (below) consumes this dict
-    verbatim, so testing this function locks the data contract."""
+    verbatim, so testing this function locks the data contract.
+
+    `trade_by_worker_id` carries the PER-PROJECT trade, resolved by the
+    orchestrator. A worker document has no usable `trade`: the gate writers
+    deliberately stopped recording one ("no `trade` / `company` here. Those are
+    per-project and live in worker_project_trades; a worker-level copy is what
+    bled across jobs" -- server.py:14683), so reading it off the worker either
+    prints blank or prints ANOTHER JOB's answer. When the map is supplied it is
+    the only source; a worker missing from it renders blank, which is correct
+    -- absent beats silently wrong on a compliance register. When it is None
+    the caller has no project context at all and the legacy field is used.
+    """
     cur_now = now or datetime.now(timezone.utc)
     roster: List[Dict[str, Any]] = []
     counts = {"current": 0, "no_expiry": 0, "expired": 0, "missing": 0}
     for w in workers:
         status, expiry = _worker_sst_status(w, now=cur_now)
         counts[status] = counts.get(status, 0) + 1
+        worker_id = str(w.get("_id") or w.get("id") or "")
+        if trade_by_worker_id is None:
+            trade = _display_trade(w.get("trade"))
+        else:
+            trade = _display_trade(trade_by_worker_id.get(worker_id))
         roster.append({
+            "worker_id": worker_id,
             "name": w.get("name") or w.get("full_name") or "(unnamed)",
-            "trade": w.get("trade") or "",
+            "trade": trade,
             "sst_status": status,
             "sst_expiration": expiry,
         })
@@ -141,12 +210,26 @@ def build_attestation_data(
     ))
 
     deficient_count = counts["missing"] + counts["expired"]
-    overall_status = STATUS_COMPLETE if deficient_count == 0 else STATUS_DEFICIENT
-    summary = (
-        f"All {len(workers)} workers in good standing"
-        if deficient_count == 0
-        else f"{deficient_count} of {len(workers)} workers with SST deficiencies"
-    )
+    if not workers:
+        # NOBODY ON SITE IS NOT A PASS. "All 0 workers in good standing" over
+        # an empty table, filed with status=complete, is an affirmative
+        # statement about a roster that was never read. The schema already
+        # carries the ruling for the identical shape on daily logs
+        # (schema.py STATUS_NO_SITE_ACTIVITY): "the log was not filed, and
+        # saying it was is the same false claim in the other direction."
+        overall_status = STATUS_NO_SITE_ACTIVITY
+        summary = (
+            f"No worker checked in on this project during "
+            f"{year}-{month:02d}. Nothing is attested for this period."
+        )
+    elif deficient_count == 0:
+        overall_status = STATUS_COMPLETE
+        summary = f"All {len(workers)} workers in good standing"
+    else:
+        overall_status = STATUS_DEFICIENT
+        summary = (
+            f"{deficient_count} of {len(workers)} workers with SST deficiencies"
+        )
 
     return {
         "project_id": str(project.get("_id") or project.get("id") or ""),
@@ -259,6 +342,155 @@ def r2_key_for(attestation: Dict[str, Any]) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────
+# The population (I/O)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _month_utc_window(year: int, month: int) -> Tuple[datetime, datetime]:
+    """[start, end) in UTC for one Eastern calendar month.
+
+    Pure and injectable-free so the boundary is testable on its own. The
+    half-open end is the first instant of the next month, so a 23:59 EDT
+    check-in on the last day lands INSIDE the period and a 00:00 EDT one on
+    the first of the next month does not.
+    """
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo(_SITE_TZ)
+    start = datetime(year, month, 1, tzinfo=eastern)
+    nxt = (year + 1, 1) if month == 12 else (year, month + 1)
+    end = datetime(nxt[0], nxt[1], 1, tzinfo=eastern)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+async def _roster_for_period(
+    db, *, project_id: str, year: int, month: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """Every worker who was on THIS site during THIS month, plus each one's
+    per-project trade. Returns (worker_documents, trade_by_worker_id).
+
+    WHAT THIS REPLACED, and why it returned nothing:
+
+        db.workers.find({"project_id": project_id, ...})
+
+    `workers` documents have no top-level `project_id`. None of the three
+    writers sets one -- register_and_checkin nests it inside
+    `safety_orientations[]` (server.py:13892), submit_checkin writes none
+    (server.py:14697), POST /workers builds from `WorkerCreate`, which has no
+    such field (server.py:15561) -- and the PATCH allow-list excludes it. The
+    design is stated at server.py:12293: "workers are NOT project-scoped --
+    one worker spans many projects." So that filter matched zero rows on every
+    run, and the attestation filed "All 0 workers in good standing".
+
+    WHY `checkins` AND NOT THE OTHER TWO JOINS.
+
+      * `safety_orientations[].project_id` records ONBOARDING, not presence.
+        It is written on only one of the two gate paths and only when an
+        orientation checklist was actually submitted, so most men never get
+        one; and it has no end, so a man oriented in January still appears on
+        a December filing after he left the job. Wrong in both directions at
+        once. `hard_delete` also $pulls it (server.py:12293).
+      * `worker_project_trades` is keyed on (worker_id, project_id) and is the
+        closest thing to a roster, but `_store_worker_project_trade` REFUSES
+        to write when the trade is blank or UNASSIGNED (server.py:13414), and
+        the backfill enforces the same rule ("A worker whose history is
+        UNASSIGNED-only gets NO pairing"). It therefore omits exactly the men
+        whose paperwork is least complete -- the precise inversion of what a
+        compliance register is for. It also carries no period.
+      * `checkins` is written unconditionally, for every worker, on every
+        visit, by BOTH live gate writers (server.py:14218, :14802), carrying
+        project_id, worker_id and check_in_time. It is the only record that a
+        man was on this site on this day, and it is what every other
+        "who was on this project" read in server.py joins through.
+
+    NO to_list CEILING ON THE SCAN. The old `.to_list(2000)` was a silent
+    truncation waiting to happen on a filing that must be complete or say it
+    is not; the cursor is iterated instead, with a projection so each row is
+    three fields rather than a check-in document carrying base64 card images.
+    """
+    start_utc, end_utc = _month_utc_window(year, month)
+
+    worker_ids: List[str] = []
+    seen: set = set()
+    frozen_trade: Dict[str, str] = {}
+    frozen_at: Dict[str, datetime] = {}
+
+    cursor = db.checkins.find(
+        {
+            "project_id": project_id,
+            "is_deleted": {"$ne": True},
+            "check_in_time": {"$gte": start_utc, "$lt": end_utc},
+        },
+        {"worker_id": 1, "worker_trade": 1, "check_in_time": 1, "_id": 0},
+    )
+    async for c in cursor:
+        wid = str(c.get("worker_id") or "")
+        if not wid:
+            # A check-in that names no man cannot put one on the register.
+            continue
+        if wid not in seen:
+            seen.add(wid)
+            worker_ids.append(wid)
+        trade = _display_trade(c.get("worker_trade"))
+        if not trade:
+            continue
+        when = c.get("check_in_time")
+        prev = frozen_at.get(wid)
+        if prev is None or (when is not None and when >= prev):
+            frozen_trade[wid] = trade
+            if when is not None:
+                frozen_at[wid] = when
+
+    if not worker_ids:
+        return [], {}
+
+    # FROZEN FIRST, PAIRING SECOND, `workers` NEVER -- the same precedence
+    # server.py applies wherever a trade is shown for a worker on a project.
+    unresolved = [w for w in worker_ids if not frozen_trade.get(w)]
+    if unresolved:
+        try:
+            pairs = await db[_WORKER_PROJECT_TRADES].find(
+                {"project_id": project_id, "worker_id": {"$in": unresolved}},
+                {"worker_id": 1, "trade": 1, "_id": 0},
+            ).to_list(len(unresolved))
+        except Exception as e:  # pragma: no cover — defensive
+            # A missing trade prints blank; it must not lose the roster.
+            logger.warning(f"[ll196] pairing lookup failed: {e!r}")
+            pairs = []
+        for p in pairs:
+            t = _display_trade(p.get("trade"))
+            if t:
+                frozen_trade[str(p.get("worker_id") or "")] = t
+
+    # Check-ins store `str(worker["_id"])`. Query both shapes: production ids
+    # are ObjectIds, but legacy rows carry string _ids (the project lookup
+    # below has the same fallback).
+    query_ids: List[Any] = []
+    for wid in worker_ids:
+        oid = _to_object_id(wid)
+        query_ids.append(oid)
+        if oid != wid:
+            query_ids.append(wid)
+
+    workers = await db.workers.find({
+        "_id": {"$in": query_ids},
+        "is_deleted": {"$ne": True},
+    }).to_list(len(query_ids))
+
+    # A check-in whose worker document is gone or soft-deleted names nobody we
+    # can attest about. It is not silently dropped: it is counted and logged,
+    # because a register short by N men is the failure this whole change is
+    # about.
+    orphaned = len(worker_ids) - len(workers)
+    if orphaned:
+        logger.warning(
+            f"[ll196] project={project_id} period={year}-{month:02d}: "
+            f"{orphaned} of {len(worker_ids)} checked-in worker ids have no "
+            f"live worker document; they are absent from the register",
+        )
+    return workers, frozen_trade
+
+
+# ──────────────────────────────────────────────────────────────────
 # Orchestrator (I/O)
 # ──────────────────────────────────────────────────────────────────
 
@@ -294,14 +526,14 @@ async def generate_ll196_attestation(
     if project is None:
         raise ValueError(f"project not found: {project_id}")
 
-    workers = await db.workers.find({
-        "project_id": project_id,
-        "is_deleted": {"$ne": True},
-    }).to_list(2000)
+    workers, trade_by_worker_id = await _roster_for_period(
+        db, project_id=project_id, year=year, month=month,
+    )
 
     attestation_data = build_attestation_data(
         project=project, workers=workers,
         year=year, month=month, now=cur_now,
+        trade_by_worker_id=trade_by_worker_id,
     )
 
     # PDF render (operator can supply stub renderer; default uses
@@ -339,9 +571,13 @@ async def generate_ll196_attestation(
         "status": attestation_data["overall_status"],
         "source": SOURCE_AUTO_DETECTED,
         "linked_dob_log_ids": [],
+        # ONLY a deficiency carries a deficiency reason. This read
+        # `!= STATUS_COMPLETE`, which was the same test while `complete` and
+        # `deficient` were the only two outcomes; with `no_site_activity` it
+        # is not -- an empty month flags nobody and must not read as a fault.
         "deficiency_reason": (
             attestation_data["summary"]
-            if attestation_data["overall_status"] != STATUS_COMPLETE
+            if attestation_data["overall_status"] == STATUS_DEFICIENT
             else None
         ),
         "attestation_data": attestation_data,

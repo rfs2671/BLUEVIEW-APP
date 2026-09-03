@@ -80,8 +80,25 @@ BASELINE = {
     ("socrata_permits_historical", "issued_date"),
     ("users", "renewal_digest_opt_in"),
     ("users", "renewal_digest_opt_out"),
+    # Read by the two company-migration update_many filters at
+    # server.py:10967 and :10971. No writer, so neither filter can ever match
+    # a row. Left standing: it is a backfill that quietly does nothing, not a
+    # document filed with the City, and undoing it is its own change.
     ("workers", "created_by"),
-    ("workers", "project_id"),
+    # REMOVED, and this note is the record of the shrink the header asks for.
+    # ("workers", "project_id") was the LL196 attestation's roster query --
+    # db.workers.find({"project_id": project_id, ...}) at ll196.py:297. The
+    # sweep was right: no writer, ever. register_and_checkin nests project_id
+    # inside safety_orientations[] (server.py:13892), submit_checkin writes
+    # none (server.py:14697), POST /workers builds from WorkerCreate which has
+    # no such field (server.py:15561), and the PATCH allow-list excludes it.
+    # server.py:12293 states the design: "workers are NOT project-scoped."
+    # The read matched zero rows on every run and the monthly Local Law 196
+    # SST attestation filed "All 0 workers in good standing" over an empty
+    # roster with status=complete. It now enumerates the men from `checkins`;
+    # see lib/logbook/ll196.py::_roster_for_period and
+    # tests/test_ll196_population.py. This is the case the header describes:
+    # "you have found the next `daily_logs.phase`."
 }
 
 
