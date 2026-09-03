@@ -1,5 +1,39 @@
 # Runbook — remove the `dob_logs` TTL indexes (2026-07-24)
 
+> **CORRECTION, 2026-09-03 -- THIS RUNBOOK IS OBSOLETE. DO NOT RUN IT.**
+>
+> The Status line below says "the two live Atlas indexes still exist until
+> steps 3-4 are run by an operator." **That is not true and may never have
+> been.** The operator ran `getIndexes()` against production on 2026-09-03:
+> seven indexes on `dob_logs`, **none carrying `expireAfterSeconds`**, and
+> `dropIndex("dob_logs_ttl_short")` returned `IndexNotFound`.
+>
+> Nothing is scheduled to delete the 4,272 records. There is no deadline.
+>
+> Whether the two indexes ever existed cannot now be determined. The creating
+> code shipped 2026-05-03 (`2492070`) and was removed 2026-07-24 (`7906446`),
+> so for twelve weeks startup would have attempted them. Either they were
+> created and something later dropped them, or creation failed every time --
+> `_ensure_index_resilient` catches a non-conflict `OperationFailure`, logs a
+> warning and returns, so a failure would have left no trace anyone reads.
+> Railway logs do not reach back that far.
+>
+> **The declaration is gone.** `7906446` is an ancestor of `main`, and no
+> `expireAfterSeconds` in `server.py` targets `dob_logs` -- all eight belong to
+> other collections. An environment rebuild would NOT recreate these. The last
+> `dob_logs` index created at startup is `dob_logs_summary_dedup`, a compound
+> query index with no TTL.
+>
+> **Why this correction is worth more than the runbook was.** A document
+> asserting a fact about a production cluster was read, believed and acted on
+> six weeks later, and the fact was never checked. A runbook's Status line is a
+> claim about the world at the moment somebody wrote it; it does not age into
+> truth. Any step that says "X still exists in production" must be re-verified
+> against production before the steps that depend on it -- which is what step 2
+> below was FOR, and it works. The failure was in trusting the Status line
+> instead of running step 2.
+
+
 **Status:** not yet executed. Code removal is committed; the two live Atlas
 indexes still exist until steps 3–4 are run by an operator.
 
