@@ -93,10 +93,39 @@ const ROUTES = [
   // an error-boundary render is the only way either would surface, since the
   // rest of the suite reads this file's source without ever executing it.
   '/logbooks/site_superintendent_log?projectId=p1',
+  // ── AND THE SEVEN THAT WERE NEVER EXECUTED BY ANYTHING ────────────────────
+  //
+  // Eleven editors share one load path and one save path, and until now four of
+  // them could be mounted here while the other seven were only ever READ — by
+  // the source sweeps, which cannot see a missing binding or a bad import.
+  //
+  // That gap was not theoretical. The fetch-and-compare change
+  // (src/utils/draftFreshness.js) added an import, a hook and a new prop to all
+  // eleven at once; a typo in any of the seven below would have mounted to an
+  // error boundary and every other gate in this workflow would have stayed
+  // green. The rule the file already states — this job is the ONLY thing that
+  // executes a logbook screen — applies to all of them or to none.
+  //
+  // ~2s each. Cheap next to a CP meeting a blank screen at the gate.
+  '/logbooks/crane_operations?projectId=p1',
+  '/logbooks/concrete_operations?projectId=p1',
+  '/logbooks/excavation_monitoring?projectId=p1',
+  '/logbooks/hot_work?projectId=p1',
+  '/logbooks/fall_protection?projectId=p1',
+  '/logbooks/ssc_daily_safety_log?projectId=p1',
+  // The one editor that owns no stepper — so it renders DraftConflictNotice
+  // itself, and is the only place that wiring can be executed at all.
+  '/logbooks/preshift_signin?projectId=p1',
   // THE CONSENT SCREEN. Reached only from a signing path, so nothing else in
   // CI would ever execute it — and it is the page a man reads before he signs
   // a statutory record. The stub returns {} for /api/esra-consent, so this
   // mounts the OUTAGE branch; the agreement branch is verified separately.
+  // THE CP'S DECISION SURFACE on flagged check-ins — approve, send home,
+  // assign trade. It is not a logbook editor, so nothing above covers it, and
+  // like every other screen here it is executed nowhere else in CI. It now
+  // holds a decision on the device when the server is unreachable and overlays
+  // the queue onto every refetch, so it has real work to do at mount.
+  '/logbooks/review?projectId=p1',
   '/consent',
   '/admin/site-devices',
   '/admin/users',

@@ -512,6 +512,96 @@ export default function SiteLogbooksViewer() {
     );
   };
 
+  // ── A PHOTOGRAPH THAT WAS NOT THERE WHEN HE SIGNED SAYS SO ──────────────
+  //
+  // THIS IS THE SURFACE WHERE THE DISTINCTION MATTERS MOST, and it was the one
+  // surface that did not draw it. POST /api/logbooks/{id}/activity-photo lets a
+  // photograph be appended to a log the CP has already filed — deliberately: a
+  // photograph is not DOB-required daily log content, so attaching one is not
+  // an amendment to what he attested. The combined report and its PDF print
+  // "Added after filing" under such a tile for the reason server.py states —
+  // without the label the record silently asserts that every photograph on it
+  // was in front of the CP when he signed, which is the ONE claim the feature
+  // could manufacture.
+  //
+  // This screen is the tablet a DOB inspector reads standing on the site. It
+  // printed appended photographs beside the originals with nothing to tell them
+  // apart, so the claim the report was careful not to make was being made here
+  // instead.
+  //
+  // FROM THE STORED FACT, NEVER FROM THE ROUTE. `added_after_filing` is written
+  // by the server and only when the STORED status was already filed — a
+  // photograph appended to a draft WAS present when the CP later attested, and
+  // stamping it otherwise would be the same lie pointing the other way. This
+  // renderer therefore asks the document, not the request that produced it, and
+  // asks exactly the three fields _photo_added_after_filing_caption reads.
+  //
+  // THE FLAG IS THE CLAIM; THE ATTRIBUTION IS A COURTESY — server.py's rule,
+  // held to here. A row carrying the flag and no stamps is still labelled,
+  // rather than silently passing as an original because the metadata is thin.
+  //
+  // AND NEVER THE RAW `added_by`: that is a user id. Printing one on a
+  // compliance record tells a reader nothing and looks like a redaction.
+  const ADDED_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const addedAfterFilingLine = (photo) => {
+    const parts = [];
+    const when = new Date(photo.added_at);
+    // UTC, AND NOT THE DEVICE'S ZONE. The report and the PDF render this
+    // instant in UTC (server.py stores an aware UTC datetime and prints
+    // `%b`/day/year straight off it). A tablet that localised it would print a
+    // different date for the same photograph on an evening append, and one
+    // record reading two ways across two compliance surfaces is the defect
+    // this whole label exists to prevent.
+    //
+    // Built from the UTC getters rather than Intl: `timeZone: 'UTC'` needs a
+    // full-ICU Hermes build, and this must render identically on every device
+    // that can open the screen.
+    if (photo.added_at && !Number.isNaN(when.getTime())) {
+      parts.push(
+        `${ADDED_MONTHS[when.getUTCMonth()]} ${when.getUTCDate()}, ${when.getUTCFullYear()}`,
+      );
+    }
+    const who = String(photo.added_by_name || '').trim();
+    if (who) parts.push(who);
+    return parts.join(' · ');
+  };
+
+  // ONE PHOTO STRIP, USED BY BOTH RENDERERS. Two copies of this drifting apart
+  // is exactly how fall_protection ended up missing from LOG_TABS.
+  //
+  // `activityIndex` is the row's index in the UNFILTERED data.activities, which
+  // is what the served photo URL is keyed on (get_logbook_activity_photo walks
+  // data.activities[ai].photos[pi] and nothing else) — unchanged, and the
+  // callers still pass it.
+  //
+  // A PHOTOGRAPH PRESENT AT SIGNING RENDERS EXACTLY AS BEFORE: the same
+  // <Image>, the same style, the same key, the same parent <View>. The wrapper
+  // exists only where there is something to say.
+  const ActivityPhotoStrip = ({ photos, log, activityIndex }) => {
+    const list = photos || [];
+    if (list.length === 0) return null;
+    return (
+      <View style={s.photoRow}>
+        {list.map((photo, pi) => {
+          const uri = logbookPhotoUri(photo, log, activityIndex, pi);
+          if (!uri) return null;
+          if (!photo || !photo.added_after_filing) {
+            return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
+          }
+          const line = addedAfterFilingLine(photo);
+          return (
+            <View key={pi} style={s.appendedPhoto}>
+              <Image source={{ uri }} style={s.activityPhoto} resizeMode="cover" />
+              <Text style={s.appendedPhotoLabel}>{t('photoAddedAfterFiling')}</Text>
+              {line ? <Text style={s.appendedPhotoMeta}>{line}</Text> : null}
+            </View>
+          );
+        })}
+      </View>
+    );
+  };
+
   const DocInfoRow = ({ icon: Icon, text }) => (
     <View style={s.docInfoRow}>
       {Icon ? <Icon size={16} strokeWidth={1.5} color={colors.text.muted} /> : null}
@@ -603,15 +693,7 @@ export default function SiteLogbooksViewer() {
                   { text: act.work_description || 'N/A', flex: 2 },
                   { text: act.work_locations || 'N/A', flex: 1 },
                 ]} />
-                {(act.photos || []).length > 0 && (
-                  <View style={s.photoRow}>
-                    {act.photos.map((photo, pi) => {
-                      const uri = logbookPhotoUri(photo, log, i, pi);
-                      if (!uri) return null;
-                      return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
-                    })}
-                  </View>
-                )}
+                <ActivityPhotoStrip photos={act.photos} log={log} activityIndex={i} />
               </React.Fragment>
             ))}
           </>
@@ -1482,15 +1564,7 @@ export default function SiteLogbooksViewer() {
                     webbing or a deployed indicator is visible, a sentence
                     about one is an assertion. `i` is the row's index in
                     data.activities, which is what the served URL is keyed on. */}
-                {(r.photos || []).length > 0 && (
-                  <View style={s.photoRow}>
-                    {r.photos.map((photo, pi) => {
-                      const uri = logbookPhotoUri(photo, log, i, pi);
-                      if (!uri) return null;
-                      return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
-                    })}
-                  </View>
-                )}
+                <ActivityPhotoStrip photos={r.photos} log={log} activityIndex={i} />
               </React.Fragment>
             ))}
           </>
@@ -1998,6 +2072,18 @@ function buildStyles(colors, isDark) {
   // Photo row
   photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingVertical: spacing.xs, paddingLeft: spacing.sm },
   activityPhoto: { width: 80, height: 60, borderRadius: 6, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
+  // The wrapper is 80 wide — the tile's own width — so an appended photograph
+  // occupies exactly the same slot in the wrapping row as an original and the
+  // grid does not reflow around it. Only the caption is added beneath.
+  appendedPhoto: { width: 80 },
+  appendedPhotoLabel: {
+    fontSize: 9, lineHeight: 12, fontWeight: '700',
+    // semantic.attention — the amber the whole app uses for "needs review /
+    // advisory", theme-insensitive and contrast-checked. NOT the report's
+    // #b45309, which is a light-background value and unreadable on this screen.
+    color: semantic.attention, marginTop: 2,
+  },
+  appendedPhotoMeta: { fontSize: 9, lineHeight: 12, color: colors.text.muted },
 
   // Signature section
   signatureSection: { marginTop: spacing.md },

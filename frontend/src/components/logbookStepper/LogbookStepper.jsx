@@ -7,8 +7,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react-native';
 import AnimatedBackground from '../AnimatedBackground';
 import AmendmentBanner from '../AmendmentBanner';
+import DraftConflictNotice from '../DraftConflictNotice';
 import LogbookLockBar from '../LogbookLockBar';
 import { outdoor } from '../../styles/theme';
+import { submitRefused, isOverridable } from '../../utils/draftFreshness';
 
 /**
  * The chrome every logbook form wears.
@@ -42,6 +44,20 @@ export default function LogbookStepper({
   onStepChange,
   onExit,
   locked = false,
+  // ── THE ONE THING A LOCKED FORM MAY STILL OFFER ──────────────────────────
+  //
+  // Rendered only when `locked`, and OUTSIDE the pointerEvents wrapper below,
+  // which is why it can be interactive at all. That wrapper is deliberately
+  // absolute — "EVERY control below non-interactive — no per-field flags to
+  // miss" — and loosening it to let one control through would give that
+  // sentence up for the whole form.
+  //
+  // A SEPARATE SUBTREE KEEPS THE GUARANTEE STRUCTURAL. Whatever a form puts
+  // here is the complete set of what a filed record will accept from it, and
+  // it can be read in one place instead of audited across a 3,000-line render.
+  // Today that is exactly one thing: appending a photograph, which is not
+  // DOB-required log content and so is not an amendment to what the CP signed.
+  lockedExtra = null,
   // The loaded document's amendment facts, or null. Shape:
   // { reason, by, at, has_reason }. Read off the RECORD by the editor, never
   // derived here and never relative to today.
@@ -96,6 +112,37 @@ export default function LogbookStepper({
   // disabled-reason so the two can be on screen together without the warning
   // pushing the reason off the button it belongs to.
   submitWarning = '',
+  // ── THE DRAFT ON SCREEN IS NOT THE RECORD ────────────────────────────────
+  //
+  // The verdict from src/utils/draftFreshness.js compareDraftToServer, passed
+  // straight through. Ten editors share this one banner and this one gate; the
+  // eleventh (preshift_signin) owns no stepper and renders the same component
+  // itself.
+  //
+  // AND THIS ONE *IS* A GATE, unlike submitWarning directly above it. The rule
+  // there — a warning must never disable Submit — holds because a broken local
+  // store does not stop the log reaching the server, so blocking would turn a
+  // storage fault into an inability to file at all. THE OPPOSITE IS TRUE HERE:
+  // submitting is precisely the act that does the damage. `persistAndPush` PUTs
+  // the whole draft into update_logbook, which applies `data` as a wholesale
+  // `$set`, so pressing Submit over a newer server document is what reverts the
+  // correction.
+  //
+  // BUT IT IS NO LONGER A DEAD END. THE CP'S DRAFT WINS — it is the most recent
+  // authorship and he is the one who made it. The gate now holds only until he
+  // has been SHOWN the server change and taken the override in the banner; then
+  // it opens and he files his own work. What it never does is let that happen
+  // quietly, which is why acknowledging and submitting are two presses.
+  //
+  // A FILED SERVER DOCUMENT IS NOT COVERED BY THAT RULING and stays refused for
+  // good — see OVERRIDABLE_REASONS in draftFreshness. `submitRefused` is the one
+  // place that distinction is made, and both this button and every editor's
+  // `persistAndPush` ask it, so the affordance and the guard cannot drift.
+  draftConflict = null,
+  // Called when the CP takes the override in the banner. The editor owns the
+  // verdict state, so it owns the acknowledgement that rides on it — and clears
+  // both together on the next load.
+  onConflictAcknowledge,
   onSubmit,
   // Lock bar.
   logType,
@@ -123,6 +170,15 @@ export default function LogbookStepper({
   unavailable = null,
 }) {
   const total = steps.length;
+  // Named once, so the gate and the grey fill can never disagree about what a
+  // conflict is. A verdict object with `conflict: false` — the ordinary clean
+  // comparison, and every offline read — is NOT a conflict and blocks nothing.
+  //
+  // THE SAME PREDICATE THE SAVE PATH USES. Asking draftFreshness rather than
+  // re-deriving the rule here is what keeps a live button from meeting a
+  // refusing `persistAndPush`, and what makes "an acknowledged server-newer is
+  // submittable, a filed log never is" one decision instead of thirteen.
+  const conflictBlocked = submitRefused(draftConflict);
 
   if (loading) {
     // PINNED, like the tree below: this branch tints its spinner
@@ -273,11 +329,41 @@ export default function LogbookStepper({
               OUTSIDE the pointerEvents wrapper: a locked log makes everything
               inside non-interactive, and an explanation the CP cannot select or
               scroll to is not an explanation. */}
-          <AmendmentBanner amendment={amendment} />
+          {/* `logId` IS THE AMENDMENT'S OWN ID on this screen. The editors
+              prefer the editable child over its locked parent
+              (chooseEditableLog), so when the banner renders at all, the
+              document loaded IS the correction — which is exactly what the
+              withdraw endpoint has to be pointed at.
+
+              onWithdrawn REUSES onAmended, and that is not a shortcut: both
+              are "the set of documents for this day just changed on the
+              server, reload". The editors pass their fetchData to it. */}
+          <AmendmentBanner
+            amendment={amendment}
+            logId={logId}
+            draftKey={draftKeyValue}
+            onWithdrawn={onAmended}
+          />
+
+          {/* THE SAME PLACEMENT ARGUMENT AS THE BANNER ABOVE, for the same
+              reason: this answers "why is what I am looking at not the filed
+              log" before he touches anything, so it cannot sit below the step
+              content, and it is outside the pointerEvents wrapper so it stays
+              selectable on a locked log. Renders on EVERY step, not just the
+              submit step — the false inference it prevents is available to him
+              the moment the screen opens, not only when he goes to sign. */}
+          <DraftConflictNotice
+            conflict={draftConflict}
+            onAcknowledge={onConflictAcknowledge}
+          />
 
           <View pointerEvents={locked ? 'none' : 'auto'}>
             {current && current.render()}
           </View>
+
+          {/* OUTSIDE the wrapper, so it is reachable on a form where nothing
+              else is. See the prop's note: the wrapper does not move. */}
+          {locked && !!lockedExtra && lockedExtra}
 
           <LogbookLockBar
             logType={logType}
@@ -301,6 +387,39 @@ export default function LogbookStepper({
                 nowhere to live here and the CP met a dead grey button. Shown
                 only on the submit step: a reason to finish is not a reason to
                 stop paging. */}
+            {/* THE DEAD SUBMIT SAYS WHY, right where the button is. The full
+                explanation is in the banner at the top of the form; this is the
+                one line that belongs next to the control it disables, because a
+                CP who has paged to the end and met a grey button will not scroll
+                back up to find out. */}
+            {/* THREE STATES, AND THEY MUST NOT BE COLLAPSED. A CP who has paged
+                to the end meets one of: a button he can press after taking the
+                override above, a button that is live and about to replace the
+                server copy, or a button that will never open on this log. Saying
+                "blocked" for all three — which is what this line used to do —
+                was wrong in two of them, and it is the last thing he reads
+                before signing. */}
+            {step === total && conflictBlocked && isOverridable(draftConflict) && (
+              <Text style={s.submitWarning}>
+                Submitting is held until you confirm the change above. Your draft
+                is the newer work and you may file it — the notice at the top of
+                this form says what filing it will replace.
+              </Text>
+            )}
+            {step === total && conflictBlocked && !isOverridable(draftConflict) && (
+              <Text style={s.submitWarning}>
+                This log is already filed on the server and cannot be replaced.
+                Your draft is still saved on this device — use Amend on the filed
+                log to correct it.
+              </Text>
+            )}
+            {step === total && !conflictBlocked && !!draftConflict
+              && !!draftConflict.conflict && (
+              <Text style={s.submitWarning}>
+                Submitting will REPLACE the server copy of this log with this
+                draft. You confirmed this in the notice at the top of the form.
+              </Text>
+            )}
             {step === total && !!submitWarning && (
               <Text style={s.submitWarning}>{submitWarning}</Text>
             )}
@@ -324,11 +443,11 @@ export default function LogbookStepper({
               </Pressable>
             ) : (
               <Pressable
-                style={[s.primaryBtn, submitDisabled && s.primaryBtnDisabled]}
+                style={[s.primaryBtn, (submitDisabled || conflictBlocked) && s.primaryBtnDisabled]}
                 accessibilityRole="button"
                 accessibilityLabel={submitLabel}
-                accessibilityState={{ disabled: submitting || submitDisabled }}
-                disabled={submitting || submitDisabled}
+                accessibilityState={{ disabled: submitting || submitDisabled || conflictBlocked }}
+                disabled={submitting || submitDisabled || conflictBlocked}
                 onPress={onSubmit}
               >
                 {submitting

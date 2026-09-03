@@ -638,6 +638,90 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
       'and the retained thumbnail still works when it is all there is');
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  section('THE CAPTURE ROUTE IS TOLD WHICH LOG, WHENEVER THERE IS ONE');
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // WHAT WAS REPORTED AND LEFT UNFIXED. POST
+  // /api/projects/{id}/logbook-photo took no logbook id and performed no
+  // filed-state check of any kind. It parks bytes and writes no document, so it
+  // was never a way INTO a filed record — but it was not the gate its name
+  // suggests either, and it now checks the log whenever the client can name one.
+  //
+  // OPTIONAL BY DESIGN, NOT BY OMISSION. A photo taken before the log has ever
+  // reached the server has no id to send: the editor holds `existingLogId` null
+  // until the first push, and the drain uploads photos ahead of the create.
+  // That caller must keep working, and the block below is what proves it does.
+
+  {
+    const D = loadDrafts({ upload: okUpload() });
+    await D.uploadCapturePhoto({
+      projectId: 'proj1', logbookId: 'lb1', activityId: 'act_1',
+      photoId: 'cap_1', uri: 'file:///docs/1.jpg',
+    });
+    ok(D.posts[0].form.parts.logbook_id === 'lb1',
+      'uploadCapturePhoto sends logbook_id when the caller has one');
+  }
+
+  {
+    const D = loadDrafts({ upload: okUpload() });
+    await D.uploadCapturePhoto({
+      projectId: 'proj1', activityId: 'act_1', photoId: 'cap_1',
+      uri: 'file:///docs/1.jpg',
+    });
+    ok(!('logbook_id' in D.posts[0].form.parts),
+      'THE OFFLINE CREATE: with no id it sends NO logbook_id field at all — an '
+      + "empty string would be a value, and the server's absence branch is what "
+      + 'keeps a photo taken before the log exists');
+  }
+
+  {
+    const D = loadDrafts({ upload: okUpload() });
+    const r = await D.uploadPendingActivityPhotos('proj1', rows(), 'lb7');
+    ok(r.uploaded === 3 && D.posts.every((p) => p.form.parts.logbook_id === 'lb7'),
+      'uploadPendingActivityPhotos passes the log id down to every capture');
+  }
+
+  {
+    const D = loadDrafts({ upload: okUpload() });
+    const r = await D.uploadPendingActivityPhotos('proj1', rows());
+    ok(r.uploaded === 3 && D.posts.every((p) => !('logbook_id' in p.form.parts)),
+      '...and a two-argument call still works, and still sends nothing');
+  }
+
+  // THE THREE CALLERS THAT HAVE AN ID NOW SEND IT. Source assertions, because
+  // each lives in a screen or a drain whose surrounding machinery is not what
+  // is under test here — but a signature widened and never called with the new
+  // argument is the shape that makes a check pass while changing nothing.
+  ok(/uploadPendingActivityPhotos\(parsed\.projectId, data\.activities, draft\.backend_id\)/
+    .test(syncSrc),
+    'drain: syncPendingDrafts passes the draft\'s backend_id (null on an '
+    + 'offline create, which is the whole reason the field is optional)');
+  ok(/uploadPendingActivityPhotos\(projectId, persisted, existingLogId\)/.test(editorSrc),
+    'editor: the save-path sweep passes existingLogId');
+  ok(/uploadCapturePhoto\(\{ projectId, logbookId: existingLogId, activityId, photoId: id, uri: localUri \}\)/
+    .test(editorSrc),
+    'editor: the shutter-path capture passes it too');
+  ok(/uploadPendingActivityPhotos\(projectId, filed, existingLogId\)/
+    .test(LF(path.join(FRONTEND, 'app', 'logbooks', 'fall_protection.jsx'))),
+    'fall_protection: the fourth and last caller passes it as well');
+
+  // AND NOBODY ELSE CALLS EITHER FUNCTION. The enumeration is the check: a
+  // caller nobody found is how this codebase has broken before.
+  const CALLERS = [draftsSrc, syncSrc, editorSrc,
+    LF(path.join(FRONTEND, 'app', 'logbooks', 'fall_protection.jsx'))];
+  const totalCalls = CALLERS.join('\n').split('\n')
+    .filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
+    .join('\n')
+    .match(/\buploadCapturePhoto\(|\buploadPendingActivityPhotos\(/g) || [];
+  ok(totalCalls.length === 7,
+    'exactly seven live references across the whole app — the enumeration, held '
+    + 'as a count so an eighth appearing anywhere fails HERE rather than being '
+    + 'shipped with no logbook id: the two definitions in logbookDrafts.js, '
+    + "uploadCapturePhoto's two call sites (uploadPendingActivityPhotos and the "
+    + "editor's shutter path), and uploadPendingActivityPhotos's three (the "
+    + `drain, the editor's save sweep, fall_protection) (got ${totalCalls.length})`);
+
   ok(/const local = photo\.uri/.test(editorSrc),
     'editor: the lightbox also tries the local capture first');
   ok(/enhance_status === 'done'/.test(editorSrc)

@@ -1094,6 +1094,28 @@ export const logbooksAPI = {
     return response.data;
   },
 
+  // Take back an UNSIGNED amendment. A STATE, NOT A DELETE — the document
+  // survives and nothing is destroyed; it simply stops being an open
+  // correction, so it leaves the compliance card and stops blocking the next
+  // amend. `reason` is optional (the amendment's own reason is still on the
+  // record saying what was attempted). The server refuses a FILED amendment
+  // (423 WITHDRAW_FILED_AMENDMENT) and an original that is not an amendment at
+  // all (400 WITHDRAW_NOT_AN_AMENDMENT); a second call is a 200 no-op that
+  // leaves the first withdrawal's attested author and timestamp alone.
+  //
+  // A SIGNATURE IS REQUIRED, and it is the SECOND positional argument
+  // deliberately. It used to be `withdraw(id, reason)`; putting the signature
+  // after the optional reason would let a caller updated by eye pass a reason
+  // where the ink belongs and get a 400 it could not read. The server refuses
+  // an inkless call with 400 WITHDRAW_SIGNATURE_REQUIRED, and judges the mark
+  // with the same `_has_signature_ink` the app's other signature gates use —
+  // an empty object is not a signature.
+  withdraw: async (logbookId, signature, reason = undefined) => {
+    const response = await apiClient.post(
+      `/api/logbooks/${logbookId}/withdraw`, { reason, signature });
+    return response.data;
+  },
+
   getNotifications: async (projectId) => {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/notifications`);
     return response.data;

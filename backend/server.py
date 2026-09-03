@@ -355,6 +355,67 @@ def _logbook_photo_is_renderable(photo: dict) -> bool:
     return bool(_logbook_photo_sources(photo))
 
 
+# ── A PHOTOGRAPH THAT WAS NOT THERE WHEN HE SIGNED SAYS SO ───────────────────
+#
+# append_activity_photo lets a photograph be added to a log that is already
+# filed, because a photograph is not DOB-required daily log content and
+# treating one as an amendment to a compliance record is wrong on the merits.
+# The corollary is this: a report that prints an appended photograph beside the
+# ones the CP had in front of him, with nothing to tell them apart, makes the
+# record assert that all of them were present at attestation. That assertion is
+# the only thing this feature could manufacture, and this is what stops it.
+#
+# THE FLAG IS THE CLAIM; THE ATTRIBUTION IS A COURTESY. `added_after_filing`
+# alone is enough to mark the photograph, so a row that somehow carries no
+# stamp of who or when is still labelled rather than silently passed through.
+#
+# NEVER THE RAW `added_by`. That is a user id. Printing one on a report tells a
+# reader nothing and looks like a redaction; the display name is printed when
+# there is one, and nothing when there is not.
+_PHOTO_ADDED_AFTER_FILING_LABEL = "Added after filing"
+
+
+def _photo_added_after_filing_caption(photo: dict) -> str:
+    """The caption HTML for an appended photograph, or '' for an original.
+
+    Two lines: the label, then the attribution. Inline styles and no flex, like
+    the rest of this report — the same string is emailed as HTML and rendered
+    to PDF by WeasyPrint, so it has to survive both.
+    """
+    if not isinstance(photo, dict) or not photo.get("added_after_filing"):
+        return ""
+    import html as _h
+
+    parts = []
+    when = photo.get("added_at")
+    if isinstance(when, str) and when:
+        try:
+            when = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except Exception:
+            when = None
+    if isinstance(when, datetime):
+        # NOT strftime('%b %-d'): '%-d' is a glibc extension and this module is
+        # imported on developer machines that do not have it.
+        parts.append(f"{when.strftime('%b')} {when.day}, {when.year}")
+    who = str(photo.get("added_by_name") or "").strip()
+    if who:
+        parts.append(who)
+    out = (
+        '<span style="display:block;font-size:9px;line-height:1.35;'
+        'font-weight:700;color:#b45309;">&#9888; '
+        f'{_h.escape(_PHOTO_ADDED_AFTER_FILING_LABEL)}</span>'
+    )
+    if parts:
+        # Each part escaped on its own, THEN joined with the raw entity —
+        # escaping the joined string would emit a literal "&middot;".
+        _joined = " &middot; ".join(_h.escape(p) for p in parts)
+        out += (
+            '<span style="display:block;font-size:9px;line-height:1.35;'
+            f'color:#94a3b8;">{_joined}</span>'
+        )
+    return out
+
+
 def _enhance_bytes_to_r2_sync(raw_bytes: bytes, enh_key: str, thumb_key: str,
                               retain_thumb_b64: bool) -> dict:
     """Blocking: enhance -> upload both derivatives -> return the photo patch.
@@ -4298,6 +4359,15 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
             "date": {"$lt": today},
             "is_locked": {"$ne": True},
             "is_deleted": {"$ne": True},
+            # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
+            # this clause the nightly pass counts one as unsigned and
+            # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
+            # for it -- deduped on (project, log_type, date), so it is written
+            # once and then sits on the admin's alert list forever with no
+            # action that could ever clear it. The freeze branch cannot reach a
+            # withdrawn child either way (it has no affirmed signature), so
+            # this only ever removes a false alert.
+            **WITHDRAWN_EXCLUDED,
         })
         stale = await cursor.to_list(1000)
     except Exception as e:
@@ -19829,24 +19899,93 @@ def _normalize_subfolder_names(names: List[str]) -> List[str]:
     return out
 
 
+# The name an app-uploaded file answers to. A file uploaded through the app
+# never went near Dropbox: upload_project_file writes `dropbox_path: ""` and an
+# r2_key, so it has no folder to be under and the subfolder rule -- keyed on a
+# path -- refused it for EVERY possible value of site_device_subfolders. That
+# is not a strict rule, it is an unsatisfiable one, and it hid every direct
+# upload on every project from every tablet.
+#
+# It is repaired by making such files ADDRESSABLE rather than by publishing
+# them. They are treated as living in one reserved folder, which an admin ticks
+# exactly as they tick a real Dropbox subfolder -- and until they do, the file
+# stays invisible. The operator's ruling is "no auto-publish"; reachable is not
+# published. See _visibility_path_for_record.
+APP_UPLOADS_VIRTUAL_FOLDER = "Uploaded in App"
+
+
+def _visibility_path_for_record(rec: dict) -> str:
+    """The path the site-device visibility rule is applied to for one
+    project_files row.
+
+    For a Dropbox-synced row that is its real `dropbox_path`. For a row with no
+    Dropbox path at all -- a direct upload -- it is a synthetic path under
+    APP_UPLOADS_VIRTUAL_FOLDER, deliberately NOT under the project's Dropbox
+    folder: an admin who ticks the Dropbox folder chose what is inside that
+    folder, and an app upload was never inside it. Ticking the uploads folder
+    by name is the only thing that reveals these files.
+
+    A row with neither a path nor an r2_key names no retrievable file and gets
+    "" -- it stays refused, rather than being conjured into the uploads folder
+    as an entry the tablet would fail to download.
+    """
+    path = str(rec.get("dropbox_path") or "").strip()
+    if path:
+        return path
+    if not str(rec.get("r2_key") or "").strip():
+        return ""
+    name = str(rec.get("name") or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name:
+        name = str(rec.get("r2_key") or "").rsplit("/", 1)[-1].strip()
+    if not name:
+        return ""
+    return f"/{APP_UPLOADS_VIRTUAL_FOLDER}/{name}"
+
+
 def _path_is_under_allowed_subfolder(
     file_path: str, folder_path: str, allowed_subfolders: List[str]
 ) -> bool:
     """True iff file_path lives under any allowed subfolder of
     folder_path. Path comparison is case-insensitive because Dropbox
     preserves case in `name` but stores a lowercased `path_lower`; we
-    call this with either, so normalize both sides."""
+    call this with either, so normalize both sides.
+
+    THE BASE FOLDER SELECTED AS ITS OWN SUBFOLDER. The picker lists the base
+    folder's children, but an admin can and does tick the project folder itself
+    -- `dropbox_folder_path: '/588 plans'` with `site_device_subfolders:
+    ['588 plans']` is live production config. The base prefix is stripped
+    first, so `/588 plans/A-101.pdf` became the relative `A-101.pdf` and was
+    compared against `588 plans`, which matched nothing: the selection was read
+    as "a folder named 588 plans INSIDE /588 plans", which does not exist. Every
+    file on that project was hidden from the gate. A name that IS the base --
+    its leaf name or its full stored path -- now means everything under the
+    base, which is what ticking it plainly intends.
+
+    The base prefix is matched on a path SEGMENT boundary. A bare startswith
+    also matched `/588 plans archive/`, so a sibling folder that merely shared
+    the prefix had its contents measured against the selection as though they
+    were inside the project.
+    """
     if not file_path or not allowed_subfolders:
         return False
     fp = file_path.lower()
     base = (folder_path or "").lower().rstrip("/")
+    under_base = bool(base) and (fp == base or fp.startswith(base + "/"))
     # Strip the base project folder prefix so comparisons are relative.
-    rel = fp[len(base):] if base and fp.startswith(base) else fp
+    rel = fp[len(base):] if under_base else fp
     rel = rel.lstrip("/")
+    # The spellings that name the base folder itself rather than a child of it.
+    base_aliases = set()
+    if base:
+        base_aliases.add(base.strip("/"))
+        base_aliases.add(base.rsplit("/", 1)[-1])
+        base_aliases.discard("")
     for sub in allowed_subfolders:
         sub_low = sub.lower().strip("/").strip()
         if not sub_low:
             continue
+        if under_base and sub_low in base_aliases:
+            return True
         if rel == sub_low or rel.startswith(sub_low + "/"):
             return True
     return False
@@ -19872,8 +20011,31 @@ async def list_dropbox_subfolders(
         raise HTTPException(status_code=403, detail="Access denied to this project")
     company_id = company_id or project.get("company_id")
     folder_path = project.get("dropbox_folder_path") or ""
+
+    # Files uploaded through the app have no Dropbox path, so they appear in no
+    # Dropbox listing and this picker never offered a name that could reveal
+    # them. Offer the reserved one — but only where such files exist, so a
+    # project without them is not shown a folder holding nothing.
+    has_app_uploads = await db.project_files.count_documents({
+        "project_id": project_id,
+        "is_deleted": {"$ne": True},
+        "dropbox_path": {"$in": [None, ""]},
+        "r2_key": {"$nin": [None, ""]},
+    }) > 0
+
+    selected = _normalize_subfolder_names(
+        project.get("site_device_subfolders") or []
+    )
+
     if not folder_path:
-        return {"subfolders": [], "selected": [], "folder_path": ""}
+        # A project that has only ever had direct uploads has no linked folder.
+        # That early return used to answer with nothing selectable at all —
+        # precisely the project on which every file is invisible.
+        return {
+            "subfolders": [APP_UPLOADS_VIRTUAL_FOLDER] if has_app_uploads else [],
+            "selected": selected,
+            "folder_path": "",
+        }
 
     try:
         # Dropbox wants "" for root, not "/" — translate our stored sentinel.
@@ -19896,12 +20058,17 @@ async def list_dropbox_subfolders(
         )
         subfolders = []
 
+    # Appended after the sort so the reserved name sits at the end of the list
+    # rather than interleaved among the project's real Dropbox folders.
+    if has_app_uploads and not any(
+        s.lower() == APP_UPLOADS_VIRTUAL_FOLDER.lower() for s in subfolders
+    ):
+        subfolders.append(APP_UPLOADS_VIRTUAL_FOLDER)
+
     return {
         "folder_path": folder_path,
         "subfolders": subfolders,
-        "selected": _normalize_subfolder_names(
-            project.get("site_device_subfolders") or []
-        ),
+        "selected": selected,
     }
 
 
@@ -20097,7 +20264,14 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
         files = []
         for rec in cached_files:
             dropbox_path = rec.get("dropbox_path", "")
-            if is_site_device and not _visible_to_site(dropbox_path):
+            # The rule is applied to the record's VISIBILITY path, not to
+            # dropbox_path: a direct upload has none, and testing the raw ""
+            # refused it under every possible selection. The row still reports
+            # its real (empty) dropbox_path below — the synthetic one is a
+            # selection handle, not an address anything else may resolve.
+            if is_site_device and not _visible_to_site(
+                _visibility_path_for_record(rec)
+            ):
                 continue
             r2_key = rec.get("r2_key", "")
             stored_url = rec.get("r2_url", "")
@@ -20390,7 +20564,13 @@ async def get_project_manifest(
         ).to_list(limit)
         for rec in page:
             dropbox_path = rec.get("dropbox_path", "")
-            if is_site_device and not _visible_to_site(dropbox_path):
+            # Same visibility path the listing endpoint applies, via the same
+            # pair of helpers. A direct upload the listing shows but the
+            # manifest omits would render on screen and never reach the offline
+            # store — the tablet would go dark on it the moment it lost signal.
+            if is_site_device and not _visible_to_site(
+                _visibility_path_for_record(rec)
+            ):
                 continue
             rec_id = str(rec.get("_id", ""))
             if not rec_id:
@@ -21574,6 +21754,8 @@ async def upload_logbook_photo(
     project_id: str,
     activity_id: str = Form(...),
     photo_id: str = Form(...),
+    # OPTIONAL, AND THE REASON IS THE OFFLINE CREATE — see the docstring.
+    logbook_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
 ):
     """Store ONE activity photo in R2, at the moment it is TAKEN.
@@ -21603,11 +21785,71 @@ async def upload_logbook_photo(
     'this photo is unacceptable' (4xx, stop) from 'storage is unavailable'
     (5xx, keep trying). Unconfigured or failing R2 is therefore 503/502, never
     a 400 the client could reasonably read as a reason to give up.
+
+    ── WHICH LOG, AND WHETHER IT IS STILL OPEN ─────────────────────────────
+
+    THE GAP THIS CLOSES. This route used to take no logbook id and perform no
+    filed-state check of any kind. It was never a way INTO a filed record — it
+    writes no document, only bytes — but a route called
+    `upload_logbook_photo`, sitting beside one that DOES write into a filed
+    log, was not the gate any reader would assume it is, and "harmless by
+    accident" is not a property anyone can maintain.
+
+    `logbook_id` IS OPTIONAL, AND NOT AS A CONVENIENCE. There is a legitimate
+    caller with nothing to send, and it is the one this whole design exists
+    for: a photograph taken BEFORE the log has reached the server.
+    daily_jobsite's editor holds `existingLogId` null until the first push
+    lands, and draftSync.pushOne uploads a draft's photos ahead of the create
+    that would mint the id. That is the same fact the KEY encodes — it is a
+    pure function of (project_id, activity_id, photo_id) precisely because
+    "logbook_id does not exist at capture time". Making it required would
+    refuse the photograph that most needs keeping: one taken in a dead zone on
+    a log that does not exist yet.
+
+    SO IT IS CHECKED WHENEVER IT IS GIVEN, and every client that has one now
+    sends it. Three refusals, and each names a different fact:
+
+      404  the id names no ACTIVE logbook, or names one on a DIFFERENT
+           project. require_project_access authorised this caller for THIS
+           project; a photograph cannot claim to belong to a log outside it.
+           404 rather than 403 so no ids are confirmed to a prober.
+      409  FILED_LOG_PHOTO_CAPTURE_REFUSED — the log is filed or frozen. This
+           route writes no row, so bytes parked for a filed log are bytes
+           nothing will ever name: the ordinary save that would have written
+           the row is refused by FILED_LOG_DATA_IMMUTABLE. A photograph for a
+           filed log goes through POST /logbooks/{id}/activity-photo, which
+           appends the row itself and marks it as added after filing.
+
+    THE SAME PAIR isOpenForEditing ASKS — `status == "submitted"` OR
+    `is_locked` — not one or the other. An END_OF_DAY log is submitted and not
+    locked until the overnight sweep; an IMMEDIATE type is locked the moment it
+    is signed. Reading only one of them would let half the filed records
+    through.
+
+    AND IT RUNS BEFORE THE BYTES ARE READ, so a refusal costs no storage and no
+    transfer. That ordering is what makes "nothing is stored" true by
+    construction rather than by luck.
     """
     if not str(activity_id or "").strip() or not str(photo_id or "").strip():
         raise HTTPException(
             status_code=400, detail="activity_id and photo_id are required",
         )
+    logbook_id = str(logbook_id or "").strip()
+    if logbook_id:
+        # Absence and "" are ONE STATE. A client that appends the field
+        # unconditionally sends an empty string for a log with no id yet, and
+        # 404-ing that would refuse a photograph that is perfectly fine.
+        _lb = await db.logbooks.find_one(
+            {"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}},
+            {"project_id": 1, "status": 1, "is_locked": 1},
+        )
+        if not _lb or str(_lb.get("project_id") or "") != str(project_id):
+            raise HTTPException(status_code=404, detail={"code": "LOGBOOK_NOT_FOUND"})
+        if _lb.get("status") == "submitted" or _lb.get("is_locked"):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "FILED_LOG_PHOTO_CAPTURE_REFUSED"},
+            )
     try:
         file_bytes = await file.read()
     except Exception as e:
@@ -21712,13 +21954,38 @@ async def get_project_logbooks(
     current_user = Depends(get_current_user),
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
+    include_withdrawn: bool = False,
 ):
-    """Get all logbooks for a project, optionally filtered by type and date"""
+    """Get all logbooks for a project, optionally filtered by type and date.
+
+    ── WITHDRAWN AMENDMENTS ARE OUT BY DEFAULT, AND THIS IS THE LEVERAGE POINT ─
+    This is the read every editor and the CP home makes, and TWELVE client
+    pickers choose the document to open out of what it returns — three through
+    `chooseEditableLog`, one through `adoptAmendment`, and NINE that still
+    carry their own inline `arr.find((l) => !l.is_locked) || arr[0]`. A
+    withdrawn child would satisfy every one of them, so the CP would tap his
+    log and land in a correction he had just taken back, and the only thing
+    stopping him filing it would be a 409 from the server after he had already
+    done the work.
+
+    Excluding it HERE fixes all twelve at once. The client-side rules are
+    hardened too (amendmentChain / logbookEditable / amendmentAdopt), because a
+    bundle in the field reads a CACHED list that may predate the withdrawal and
+    because a two-week-old phone cannot take an OTA — but the fix that reaches
+    every screen is this clause.
+
+    NOTHING IS HIDDEN THAT ASKS TO SEE IT. `include_withdrawn=true` returns the
+    whole chain, and `GET /logbooks/{id}` never filtered by state at all: the
+    document survives and stays readable, which is the entire difference
+    between a withdrawal and a delete.
+    """
     company_id = get_user_company_id(current_user)
     query = {
         "project_id": project_id,
         "is_deleted": {"$ne": True}
     }
+    if not include_withdrawn:
+        query.update(WITHDRAWN_EXCLUDED)
     if company_id:
         query["company_id"] = company_id
     if log_type:
@@ -22454,10 +22721,27 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
 
     WHO THAT ALLOWS — admin/owner of the project's company, or anyone
     assigned to the project. Deliberately narrower than project_access_ok,
-    which also admits a site device: no screen under frontend/app/site calls
-    update, finalize, amend or delete, so a kiosk has no logbook write to
-    lose. A CP of the right company who is NOT assigned stays refused, which
-    is what create_logbook already does.
+    which also admits a site device and any member of the owning company. A CP
+    of the right company who is NOT assigned stays refused, which is what
+    create_logbook already does.
+
+    WHY A SITE DEVICE IS EXCLUDED, STATED CORRECTLY. It used to say "no screen
+    under frontend/app/site calls update, finalize, amend or delete, so a kiosk
+    has no logbook write to lose." That was an observation about the client,
+    and observations about the client expire: POST
+    /logbooks/{id}/activity-photo is now called from the tablet at the gate,
+    and the sentence would have read as permission to route it through here.
+    The real reason is about the ACT, not about which screen performs it —
+    update, finalize, amend and delete each change or destroy the statutory
+    content of a compliance record, and an unattended device in a public place
+    is not a principal that may do any of those. It is not a claim any future
+    screen can falsify.
+
+    THE FIFTH LOGBOOK WRITE DOES NOT USE THIS, AND SHOULD NOT.
+    _authorize_logbook_view below is the view-level rule for exactly one route:
+    appending a photograph, which the operator ruled is open to anyone who can
+    already see the log. This guard has four call sites and adding a fifth is a
+    decision about statutory content, not a formality.
 
     Reads the ACTIVE doc only, matching every call site's existing find_one —
     a soft-deleted logbook was already a 404 on all four.
@@ -22470,6 +22754,55 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
     project_id = str(logbook.get("project_id") or "")
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project or not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this logbook")
+    return logbook
+
+
+async def _authorize_logbook_view(logbook_id: str, current_user: dict) -> dict:
+    """ANYONE WHO CAN SEE THIS LOG. The view-level twin of the guard above.
+
+    THE RULING IT IMPLEMENTS. A photograph may be added to a filed log by
+    anyone who can already view it. The write guard is narrower on purpose and
+    stays that way; this exists so that one route can be as wide as the ruling
+    without any of the other four moving with it.
+
+    WHY project_access_ok AND NOT user_can_act_on_project. "Can view" is not a
+    hypothetical: the site device's ONLY logbook read is
+    GET /logbooks/project/{id}/submitted, which is
+    Depends(require_project_access) -> _assert_project_access ->
+    project_access_ok. A tablet at the gate could display a filed daily log to
+    a DOB inspector and could not add a photograph to the record it was
+    displaying, because the append route borrowed a guard whose whole purpose
+    is to keep that device away from the CP's attested content. Appending a
+    photograph does not touch that content — the route is field-scoped to
+    photos[] and mints every value it writes — so the narrow guard was refusing
+    on a rationale that does not apply to it.
+
+    THE WIDENING IS project_access_ok WHOLE, NOT A SITE-DEVICE SPECIAL CASE.
+    Branch 2 (same company, derived from auth) comes with it, so a member of
+    the owning company who is not personally assigned may append as well. That
+    is the same set the kiosk read already serves, and carving out branch 2
+    would mean this route's "can view" was a third rule nobody could name.
+
+    WHAT IS NOT WIDENED. `require_approved` still sits on the route (it spends
+    R2), a soft-deleted logbook is still a 404, and a logbook whose project row
+    is gone still fails CLOSED — the same three properties the write guard has.
+
+    THE PROJECT LOOKUP IS THE WRITE GUARD'S, deliberately: no
+    ACTIVE_PROJECT_FILTER. _assert_project_access applies one and would 404 a
+    log belonging to a project an admin has marked for deletion. Adding that
+    here would make appending a photograph refuse on a document the four WRITES
+    still accept, which is a rule nobody made and the wrong direction for the
+    one endpoint whose job is to be reachable.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project or not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Not authorized for this logbook")
     return logbook
 
@@ -22514,6 +22847,23 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     _lock_target = existing_lb
     if _lock_target and _lock_target.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
+
+    # ── A WITHDRAWN CORRECTION IS NOT A DRAFT ───────────────────────────────
+    #
+    # It is neither locked nor submitted, so both refusals around this one let
+    # it through — and `syncPendingDrafts` PUTs a stored draft at app startup
+    # with no user action in the path. A correction its author took back would
+    # be quietly rewritten, and then re-signable. Refused here rather than in
+    # `_authorize_logbook_write` because DELETE and WITHDRAW both legitimately
+    # act on a withdrawn document and share that gate.
+    #
+    # 409, matching the FILED_LOG_DATA_IMMUTABLE convention below: 423 says
+    # "locked", and this is not locked. The client's next move is to drop the
+    # local draft, not to amend.
+    if logbook_is_withdrawn(existing_lb):
+        raise HTTPException(
+            status_code=409, detail={"code": "LOGBOOK_WITHDRAWN"},
+        )
 
     # ── A FILED LOG'S CONTENT IS NOT REWRITABLE ─────────────────────────────
     #
@@ -22717,6 +23067,268 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     return serialize_id(updated)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  A PHOTOGRAPH MAY BE ADDED TO A FILED LOG. NOTHING ELSE MAY.
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# THE RULING, and why the 409 above does not apply to it. Photographs are not
+# DOB-required daily log content — BC 3301.2 does not ask for them. The
+# statutory content of the record is the crews, the headcounts, the work
+# performed and the weather, and every one of those stays immutable once the CP
+# has signed. A later photograph OF THAT SAME WORK is not a correction to what
+# he attested, so making him file an amendment to attach one treats evidence as
+# if it were a retraction.
+#
+# WHY IT CANNOT REUSE PUT /api/logbooks/{id}. That route refuses any `data`
+# write once the STORED status is "submitted", and that guard is correct —
+# two daily_jobsite records at 588 Thomas were silently overwritten through the
+# hole it closed. Loosening it to "allow the write if only the photos changed"
+# is not available either: the client's blob is NOT a faithful echo of the
+# stored document (hydrate reconciles crews on any submitted-but-unlocked log,
+# and photoForPayload is lossy and conditional), so a server-side diff cannot
+# tell a photo-only change from a rewrite that happens to agree in places.
+#
+# THE SHAPE THAT IS SAFE IS ALREADY IN THIS FILE, TWICE.
+# _purge_finalized_photo_base64 and _enhance_logbook_photos both write into
+# data.activities[].photos[] on a log that is submitted AND finalized, and both
+# are legitimate for three reasons this endpoint inherits whole:
+#
+#   FIELD-SCOPED        the update names ONE path under photos[]; `data` is
+#                       never $set, and neither is anything else beneath it
+#   SERVER-CONSTRUCTED  every value in the appended row is minted here
+#   NO CLIENT BLOB      the request carries image bytes and two ids. There is
+#                       no `data`, no photo object and no array index for a
+#                       caller to aim somewhere it should not go
+#
+# IDENTITY, NEVER POSITION. The push is keyed on `activity_id` through
+# arrayFilters. An index stops naming the same row the moment one is added,
+# removed or reordered — the same reason the capture-time R2 key is not
+# positional — and this endpoint is reached hours after the CP stopped looking
+# at the screen.
+#
+# THE ROWS IT CANNOT REACH ARE REFUSED BY NAME. A crew row saved by a build
+# older than 2026-08-10 carries no `activity_id`, and nothing backfills one, so
+# no id a client can send will ever match it. Those get 409
+# ACTIVITY_HAS_NO_IDENTITY rather than a push at a plausible index.
+#
+# WHO MAY DO IT: ANYONE WHO CAN SEE THE LOG. That is the operator's ruling and
+# it is _authorize_logbook_view, not the four writes' guard. The tablet at the
+# gate is the case that made the difference concrete — it is where a DOB
+# inspector reads a filed record, and it could show him the log and refuse to
+# add a photograph to it. See _authorize_logbook_view for the whole argument.
+#
+# STATUS IS READ, NOT GATED ON. The endpoint accepts a draft as readily as a
+# filed log: refusing one would be a rule nobody made, and the ordinary editor
+# already handles drafts. What the status decides is the STAMP — see below. A
+# draft appended to here can still have the push overwritten by the editor's
+# next PUT, which is why the client only reaches for this route when the
+# ordinary path is closed.
+@api_router.post(
+    "/logbooks/{logbook_id}/activity-photo",
+    dependencies=[Depends(require_approved)],
+)
+async def append_activity_photo(
+    logbook_id: str,
+    activity_id: str = Form(...),
+    photo_id: str = Form(...),
+    file: UploadFile = File(...),
+    current_user = Depends(get_current_user),
+):
+    """Append ONE photograph to one activity row of an existing logbook.
+
+    AUTH IS THE VIEW RULE, NOT THE WRITE RULE — _authorize_logbook_view, whose
+    docstring carries the reasoning. Anyone who can already see the log may add
+    a photograph to it: the project's admin or owner, anyone assigned to it,
+    any member of the owning company, and the SITE DEVICE provisioned for that
+    project. That last one is the point. The tablet at the gate is where a DOB
+    inspector reads a filed record, and it could display the log and not add a
+    photograph to it while this route borrowed update/finalize/amend/delete's
+    guard.
+
+    `require_approved` STAYS. It puts an object in R2 on the platform's bill,
+    and a site device bypasses that gate on its own terms (provisioned by an
+    approved admin, company derived server-side) exactly as it does at
+    check-in.
+
+    IDEMPOTENT ON BOTH SIDES. The R2 key is a pure function of (project_id,
+    activity_id, photo_id), so a retry after a dropped connection overwrites
+    the same object instead of orphaning one. The DOCUMENT is made idempotent
+    by the $elemMatch precondition: the row must not already carry a photo with
+    this key. Without that, a retry would leave two tiles of one photograph on
+    a signed record — which is exactly the kind of thing this feature must
+    never manufacture.
+
+    THE STATUS CODES ARE A CONTRACT, as on the capture route: a device must be
+    able to tell 'this photo is unacceptable' (4xx, stop) from 'storage is
+    unavailable' (5xx, keep trying).
+    """
+    activity_id = str(activity_id or "").strip()
+    photo_id = str(photo_id or "").strip()
+    if not activity_id or not photo_id:
+        raise HTTPException(
+            status_code=400, detail="activity_id and photo_id are required",
+        )
+
+    logbook = await _authorize_logbook_view(logbook_id, current_user)
+
+    # ── WHICH ROW, AND WHETHER THERE IS ONE ─────────────────────────────────
+    activities = ((logbook.get("data") or {}).get("activities") or [])
+    target_index = None
+    has_idless_row = False
+    for _i, _row in enumerate(activities):
+        if not isinstance(_row, dict):
+            continue
+        _rid = str(_row.get("activity_id") or "").strip()
+        if not _rid:
+            has_idless_row = True
+            continue
+        if _rid == activity_id and target_index is None:
+            target_index = _i
+    if target_index is None:
+        if has_idless_row:
+            # THE ONE REFUSAL THAT IS ABOUT THE RECORD, NOT THE REQUEST. There
+            # is nothing the caller can send that would work, so it says which
+            # fact is in the way instead of returning a bare 404 the client
+            # would read as "wrong id, try again".
+            #
+            # AND IT IS NO LONGER A DEAD END. It used to say only that a photo
+            # cannot be attached — true, and nothing a CP could act on. There
+            # is now a remedy: backend/scripts/backfill_activity_id.py stamps a
+            # deterministic identity onto a FILED log's id-less rows,
+            # server-side, and this route works on that log afterwards.
+            # `remediable` is the machine half of that fact, so a client can
+            # tell "ask your administrator, this is fixable" from a permanent
+            # refusal — the client still owns the wording.
+            raise HTTPException(status_code=409, detail={
+                "code": "ACTIVITY_HAS_NO_IDENTITY",
+                "remediable": True,
+                "remedy": "backfill_activity_id",
+                "message": (
+                    "This log's crew rows were saved before rows carried an "
+                    "identity, so a photo cannot be attached to one until an "
+                    "administrator runs the activity-identity backfill."
+                ),
+            })
+        raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})
+
+    # ── THE BYTES ───────────────────────────────────────────────────────────
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded photo: {e}")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded photo is empty.")
+    if len(file_bytes) > _LOGBOOK_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Photo too large. Maximum 15 MB.")
+    # By MAGIC NUMBER, never the multipart header: the header is client-owned,
+    # and this is a second place arbitrary bytes could be parked in the bucket
+    # under an image's name.
+    content_type = _logbook_photo_content_type(file_bytes)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise HTTPException(
+            status_code=503, detail="Photo storage (R2) is not configured",
+        )
+
+    project_id = str(logbook.get("project_id") or "")
+    r2_key = _logbook_capture_photo_r2_key(project_id, activity_id, photo_id)
+    try:
+        await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, content_type)
+    except Exception as e:
+        logger.error(
+            "[photo-append] logbook=%s R2 upload failed key=%s: %r",
+            logbook_id, r2_key, e,
+        )
+        raise HTTPException(status_code=502, detail="Photo storage upload failed")
+
+    # ── THE ROW, MINTED HERE ────────────────────────────────────────────────
+    #
+    # NO POINTER IS EVER INVENTED: the write below happens only after the PUT
+    # returned, so a row on the record never names an object R2 does not have.
+    #
+    # `added_after_filing` FOLLOWS base64_purged_at's PRECEDENT — a stamp the
+    # server writes recording what it did — and it is CONDITIONAL on the stored
+    # state, not on this route. A photograph appended to a log that has not
+    # been filed WAS present when the CP later attested, and marking it
+    # otherwise would be the same lie pointing the other way.
+    now = datetime.now(timezone.utc)
+    filed = logbook.get("status") == "submitted" or bool(logbook.get("is_locked"))
+    photo = {
+        "photo_id": photo_id,
+        "original_r2_key": r2_key,
+        "timestamp": now.isoformat(),
+        "added_at": now,
+        "added_by": str(current_user.get("id") or current_user.get("_id") or ""),
+    }
+    _who = str(
+        current_user.get("cp_name") or current_user.get("full_name")
+        or current_user.get("name") or ""
+    ).strip()
+    if _who:
+        photo["added_by_name"] = _who
+    if filed:
+        photo["added_after_filing"] = True
+
+    result = await db.logbooks.update_one(
+        {
+            "_id": to_query_id(logbook_id),
+            # The idempotency precondition AND the identity match, in one
+            # filter so the decision is the database's rather than a read the
+            # write could race.
+            "data.activities": {"$elemMatch": {
+                "activity_id": activity_id,
+                "photos.original_r2_key": {"$ne": r2_key},
+            }},
+        },
+        {
+            "$push": {"data.activities.$[act].photos": photo},
+            # `updated_at` MOVES, so a reader of the record knows something
+            # about it changed. It is the only field outside photos[] this
+            # endpoint is allowed to touch.
+            "$set": {"updated_at": now},
+        },
+        array_filters=[{"act.activity_id": activity_id}],
+    )
+
+    _existing = activities[target_index].get("photos") or []
+    _already = any(
+        isinstance(p, dict) and p.get("original_r2_key") == r2_key for p in _existing
+    )
+    if getattr(result, "matched_count", 0) == 0 and not _already:
+        # The row was there when it was read and is not there now. Nothing was
+        # written; say which fact is missing rather than reporting success.
+        raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})
+
+    # ── WHERE IT LANDED ─────────────────────────────────────────────────────
+    # Re-read rather than trusting the indexes from before the write: the
+    # report addresses photos POSITIONALLY (/api/reports/logbook-photo/{id}/
+    # {ai}/{pi}), so an index reported here has to be the one the document
+    # actually has, not the one it had a moment ago.
+    fresh = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}) or logbook
+    activity_index, photo_index, stored = target_index, len(_existing), photo
+    for _i, _row in enumerate(((fresh.get("data") or {}).get("activities") or [])):
+        if not isinstance(_row, dict) or _row.get("activity_id") != activity_id:
+            continue
+        for _pi, _p in enumerate(_row.get("photos") or []):
+            if isinstance(_p, dict) and _p.get("original_r2_key") == r2_key:
+                activity_index, photo_index, stored = _i, _pi, _p
+        break
+
+    logger.info(
+        "[photo-append] logbook=%s activity=%s photo=%s filed=%s by=%s",
+        logbook_id, activity_id, photo_id, filed, photo["added_by"],
+    )
+    return {
+        "original_r2_key": r2_key,
+        "bytes": len(file_bytes),
+        "activity_id": activity_id,
+        "activity_index": activity_index,
+        "photo_index": photo_index,
+        "photo": stored,
+    }
+
+
 async def _purge_finalized_photo_base64(logbook_id: str, doc: dict) -> int:
     """Drop the FULL-SIZE inline base64 from a finalized log's photos.
 
@@ -22853,6 +23465,22 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
+    # ── A WITHDRAWN CORRECTION CANNOT BE FILED ──────────────────────────────
+    #
+    # WITHOUT THIS, WITHDRAWAL IS COSMETIC. The draft still exists, the client
+    # still holds its id, and draftSync calls /finalize for any locally
+    # finalized draft with no user in the path — so a correction its author
+    # took back could be sealed into the record by a background sync on a phone
+    # that came back into signal. That is a filed amendment nobody chose to
+    # file, which is the exact harm withdrawal exists to prevent.
+    #
+    # AHEAD OF ensure_signature_ledger_row, deliberately: minting a ledger row
+    # for a withdrawn draft would put an attestation in the audit trail for a
+    # document that is never going to be a record.
+    if logbook_is_withdrawn(existing):
+        raise HTTPException(
+            status_code=409, detail={"code": "LOGBOOK_WITHDRAWN"},
+        )
     # ── THE DERIVED ROW IS WRITTEN BEFORE THE IDEMPOTENT RETURN, NOT AFTER ──
     #
     # AND THAT PLACEMENT IS THE WHOLE OFFLINE FIX FOR TEN OF THE TWELVE TYPES.
@@ -22997,22 +23625,33 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     # THE OPEN ONE IS RETURNED, not just refused. Dead-ending the CP is what
     # produced the five: he had a correction to make, the app kept accepting
     # new ones, and none of them told him the previous was still unsigned.
+    #
+    # WITHDRAWN CHILDREN ARE NOT READ AT ALL. `open_amendment_head` already
+    # refuses to call one open, so this clause is not what makes the rule
+    # correct — it is what keeps a parent whose CP has withdrawn a dozen taps
+    # from paying for them on every subsequent amend.
     _children = await db.logbooks.find({
         "parent_logbook_id": str(original["_id"]),
         "is_deleted": {"$ne": True},
+        **WITHDRAWN_EXCLUDED,
     }).to_list(200)
-    _open_head = open_amendment_head(_children)
-    if _open_head is not None:
-        raise HTTPException(
+    def _already_open(head):
+        """The 409, built in ONE place so the racing caller and the late one
+        get a response the client cannot tell apart."""
+        return HTTPException(
             status_code=409,
             detail={
                 "code": "AMENDMENT_ALREADY_OPEN",
-                "logbook_id": str(_open_head.get("_id")),
-                "created_at": (_open_head.get("created_at").isoformat()
-                               if isinstance(_open_head.get("created_at"), datetime)
+                "logbook_id": str(head.get("_id")),
+                "created_at": (head.get("created_at").isoformat()
+                               if isinstance(head.get("created_at"), datetime)
                                else None),
             },
         )
+
+    _open_head = open_amendment_head(_children)
+    if _open_head is not None:
+        raise _already_open(_open_head)
     # ROLES_SCOPED_TO_ASSIGNED_PROJECTS — see the note in update_logbook.
     if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
         assigned = current_user.get("assigned_projects", []) or []
@@ -23039,7 +23678,42 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
         "updated_at": now,
         "is_deleted": False,
     }
-    result = await db.logbooks.insert_one(child)
+    # ── THE READ ABOVE AND THIS INSERT ARE NOT ATOMIC ──────────────────────
+    #
+    # Two simultaneous taps both reach here having each read "no open child".
+    # `logbooks_one_open_amendment_per_parent` is what stops the second from
+    # landing, and this is what turns its refusal into an answer.
+    #
+    # THE LOSER GETS EXACTLY WHAT A LATE ARRIVAL GETS. Unhandled, a
+    # DuplicateKeyError is a 500 on a button the CP just tapped — and this
+    # whole area of the app exists because a man tapped a button that appeared
+    # to do nothing. He must get the same 409 that hands him the correction
+    # already open, so `amendmentAdopt` needs no second code path for the race.
+    #
+    # DuplicateKeyError SPECIFICALLY, never a bare `except`. A genuine write
+    # failure swallowed here would report an open correction that does not
+    # exist, and the CP would be sent to adopt a document that was never
+    # written.
+    from pymongo.errors import DuplicateKeyError
+    try:
+        result = await db.logbooks.insert_one(child)
+    except DuplicateKeyError:
+        _raced = await db.logbooks.find({
+            "parent_logbook_id": str(original["_id"]),
+            "is_deleted": {"$ne": True},
+            **WITHDRAWN_EXCLUDED,
+        }).to_list(200)
+        _winner = open_amendment_head(_raced)
+        if _winner is not None:
+            raise _already_open(_winner)
+        # THE INDEX SAID THERE WAS ONE AND THE RE-READ CANNOT FIND IT. Rather
+        # than invent a logbook_id the client would then fail to open, say what
+        # is true: the correction exists and this request did not create it.
+        logger.error(
+            f"[amend] duplicate key on {OPEN_AMENDMENT_INDEX_NAME} but no open "
+            f"child re-read for parent={str(original['_id'])!r}")
+        raise HTTPException(
+            status_code=409, detail={"code": "AMENDMENT_ALREADY_OPEN"})
     await audit_log("logbook_amend", str(current_user.get("id", "")), "logbook", str(result.inserted_id), {
         "parent_logbook_id": str(original["_id"]), "reason": str(reason).strip()[:200], "log_type": original.get("log_type"),
     })
@@ -23060,6 +23734,219 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     # quietly minting an attestation nobody made.
     await ensure_signature_ledger_row(created_child, written_by="amend_logbook")
     return serialize_id(created_child)
+
+
+@api_router.post("/logbooks/{logbook_id}/withdraw")
+async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = Depends(get_current_user)):
+    """Take back an UNSIGNED amendment. A state, not a delete.
+
+    ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+    Seven unsigned amendment drafts on one project's daily narrative, two of
+    them forks — one parent, two children, sixty and twenty-six seconds apart.
+    A superintendent tapped Amend, the screen did not visibly change, he tapped
+    again. Every one of those drafts warns on his compliance card and there was
+    no way to stop it: signing files a correction he may not intend (and on a
+    fork, one of two competing versions with nothing recording which he meant),
+    and deleting destroys a document.
+
+    THE DOCUMENT SURVIVES. Its data, its reason, its author, its parent link
+    and its timestamps are untouched. `status` becomes "withdrawn" and three
+    fields record who did it and when. Nothing is destroyed and nothing is
+    rewritten.
+
+    ── SIGNED FOR, AND ATTESTED IN TWO PLACES ─────────────────────────────────
+    OPERATOR RULING: "Signature required, as ruled. It is an attested act." A
+    withdrawal is a permanent statement about a compliance record — that a
+    proposed correction was abandoned, deliberately, by a named person — and it
+    is signed for like any other attested act. `_has_signature_ink` judges the
+    mark, because presence is not ink: `cp_signature: {}` satisfied every
+    presence gate in this app while the documents it signed printed UNAFFIRMED.
+
+    It is recorded in TWO places, and the pair is the point:
+
+      ON THE DOCUMENT   `withdrawn_by`, `withdrawn_by_name`, `withdrawn_at`
+                        and `withdrawal_attestation` (the ink, the sentence
+                        above it, and the server's stamp of who and when), all
+                        in the SAME update that sets the state. This is the
+                        DURABLE half, and it has to be: `audit_log` swallows
+                        its own exceptions (it logs and returns), so an audit
+                        row alone could silently not exist and leave a state
+                        change with nobody's name on it. A withdrawal that
+                        cannot say who made it is the defect this ruling is
+                        about.
+
+      IN audit_log      `logbook_withdraw`, beside the `logbook_amend` row this
+                        act answers. The ledger that already holds the taking
+                        of the action holds the taking-back of it, and the two
+                        rows read as one story. It records THAT the act was
+                        attested, never the ink — a base64 mark in a row read
+                        in bulk buys nothing the document does not already
+                        hold.
+
+    NOT A signature_event, even now that there IS a signature. The full
+    argument is in `withdrawal_attestation`, and it turns on what that
+    collection's `version` counts: the signings of one document's CONTENT. The
+    mark here is real, but what it attests to is the ABANDONMENT of the
+    content, so a row there would bump the amendment's signature version and
+    assert a signing act performed on something nobody signed — the fabricated
+    attestation `ensure_signature_ledger_row` exists to refuse.
+
+    THE SECOND TAP STILL ASKS FOR NOTHING. An already-withdrawn amendment
+    returns 200 without a signature. This feature exists because a man tapped a
+    button twice; putting a pad in front of the second tap is how an eighth
+    draft gets made.
+
+    A REASON IS ACCEPTED AND NEVER REQUIRED. `amendment_reason` is gated hard
+    (six characters and a word) because it explains a CHANGE to a signed
+    record; a withdrawal explains the absence of one, and the amendment's own
+    reason is still on the document saying what was attempted.
+
+    ── WHAT IT REFUSES ────────────────────────────────────────────────────────
+    400 WITHDRAW_NOT_AN_AMENDMENT — only a child created by /amend may be
+        withdrawn. An ORIGINAL is the day itself; letting this endpoint take
+        one back would be a delete wearing a softer word, and delete already
+        exists with its own rule.
+    423 WITHDRAW_FILED_AMENDMENT — a FILED correction is a record. `is_locked`
+        or `status == "submitted"`, the same two clauses `_filed_log` uses,
+        asked through the one predicate they now share. Only an unsigned draft
+        can be withdrawn; a filed one is corrected by amending it in turn.
+    400 WITHDRAW_SIGNATURE_REQUIRED — no ink, no withdrawal. Asked LAST, so a
+        pad is never raised to answer a question already settled above.
+    403 — ANY ADMIN OR CP WITH PROJECT ACCESS MAY WITHDRAW. Not just the filer.
+
+        OPERATOR RULING, and the author check that used to be here is gone.
+        The filer might be the platform operator: a correction filed on a CP's
+        behalf by whoever was helping him would, under an author-only rule, be
+        permanently un-withdrawable BY THE CP WHOSE CARD IT WARNS ON. Locking a
+        permanent warning behind the person who was helping is the defect, not
+        the control. The RECORD naming who withdrew it and when — now with his
+        signature beside it — is the accountability; the restriction never was.
+
+        The set is `_authorize_logbook_write`'s and nothing wider: admin/owner
+        of the project's company, or anyone assigned to the project. An
+        unassigned CP of the right company and an admin of another company are
+        both still refused, by the gate every other logbook writer shares.
+
+    ALREADY WITHDRAWN IS A NO-OP, RETURNED 200, and that is deliberate rather
+    than lazy. This feature exists because a man tapped a button twice; the
+    second tap on THIS one must not overwrite the first withdrawal's attested
+    author and timestamp with a second person's, and must not stack a second
+    audit row for one act.
+
+    THE ID READ IS `id` FIRST, AND THAT IS NOT A STYLE CHOICE.
+    `get_current_user` returns `serialize_id(user)`, which does
+    `obj['id'] = str(obj['_id']); del obj['_id']` — so a reader asking for
+    `current_user["_id"]` gets nothing. `delete_logbook` did exactly that, and
+    the effect was total: `user_id` was "" on every request, the author branch
+    could never match, and no CP could delete his own logbook. It also recorded
+    that empty string as the actor in the audit row. #371 fixed it with the
+    file's own idiom, used at ~17 authorization sites; this endpoint is written
+    on top of that rather than around it, so an attested act never records
+    nobody as its actor.
+    """
+    now = datetime.now(timezone.utc)
+    amendment = await _authorize_logbook_write(logbook_id, current_user)
+
+    # ROLES_SCOPED_TO_ASSIGNED_PROJECTS — see the note in update_logbook.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
+        assigned = current_user.get("assigned_projects", []) or []
+        if amendment.get("project_id") not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to this project")
+
+    if amendment.get("is_amendment") is not True:
+        raise HTTPException(
+            status_code=400, detail={"code": WITHDRAW_NOT_AN_AMENDMENT},
+        )
+
+    # THE FILED REFUSAL, BEFORE THE IDEMPOTENT RETURN AND BEFORE ANY QUESTION
+    # ABOUT THE ACTOR. A filed correction is a record whoever is asking, so the
+    # answer must not depend on who asks — an admin gets the 423 too, and so
+    # does the assigned CP the ruling above just admitted.
+    if logbook_is_filed(amendment):
+        raise HTTPException(
+            status_code=423,
+            detail={"code": WITHDRAW_FILED_AMENDMENT,
+                    "logbook_id": str(amendment.get("_id"))},
+        )
+
+    if logbook_is_withdrawn(amendment):
+        # The second tap. The first withdrawal's attestation stands, and no
+        # signature is asked for: demanding ink to change nothing would put a
+        # pad in front of the exact double-tap this feature exists to absorb.
+        return serialize_id(amendment)
+
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
+
+    # ── THE SIGNATURE, AND IT IS THE SERVER'S PREDICATES THAT JUDGE IT ──────
+    #
+    # Asked LAST of the refusals, deliberately. A filed amendment and a
+    # document that is not an amendment at all are refused whatever the caller
+    # sends, so asking for ink first would put a pad in front of a man to
+    # answer a question the server had already settled.
+    #
+    # PRESENCE IS NOT INK. `cp_signature: {}` satisfied every presence gate in
+    # this app while every document it signed printed UNAFFIRMED, which is why
+    # `_has_signature_ink` exists — an empty object, an empty `paths` list and
+    # an inkless `{"affirmed": True}` are each not a signature. This asks that
+    # one predicate rather than writing a fourth copy of the question.
+    _signature = (data or {}).get("signature")
+    if not _has_signature_ink(_signature):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": WITHDRAW_SIGNATURE_REQUIRED},
+        )
+
+    _reason = str((data or {}).get("reason") or "").strip()
+
+    # THE STATE AND THE ATTESTATION IN ONE UPDATE. A withdrawal whose author
+    # landed in a separate write could be interrupted between the two and leave
+    # a correction withdrawn by nobody.
+    #
+    # The guard on the filter is what makes two simultaneous taps safe: the
+    # second matches nothing and the first man's name is what stays on it.
+    _by_name = current_user.get("full_name") or current_user.get("name")
+    _set = {
+        "status": WITHDRAWN_STATUS,
+        "withdrawn_at": now,
+        "withdrawn_by": user_id,
+        "withdrawn_by_name": _by_name,
+        # THE INK, IN THE SAME WRITE AS THE STATE IT ATTESTS TO. A separate
+        # write could be interrupted and leave a withdrawal claiming to be
+        # attested with nothing attesting it — and `audit_log` swallows its own
+        # exceptions, so it cannot be the record that closes that gap.
+        "withdrawal_attestation": withdrawal_attestation(
+            _signature, by=user_id, by_name=_by_name, at=now),
+        "updated_at": now,
+    }
+    if _reason:
+        _set["withdrawal_reason"] = _reason
+    await db.logbooks.update_one(
+        {"_id": to_query_id(logbook_id),
+         "status": {"$ne": WITHDRAWN_STATUS}},
+        {"$set": _set},
+    )
+
+    await audit_log("logbook_withdraw", user_id, "logbook", logbook_id, {
+        "parent_logbook_id": amendment.get("parent_logbook_id"),
+        "log_type": amendment.get("log_type"),
+        "date": amendment.get("date"),
+        "project_id": amendment.get("project_id"),
+        # The amendment's OWN reason, so the ledger says what was proposed as
+        # well as that it was taken back.
+        "amendment_reason": str(amendment.get("amendment_reason") or "")[:200],
+        "withdrawal_reason": _reason[:200] or None,
+        # THAT it was signed for, never the ink itself. An audit row is read in
+        # bulk and a base64 signature in one would make the ledger unreadable
+        # for no gain — the mark itself is on the document, in the write above,
+        # which is the durable half either way.
+        "attested": True,
+    })
+
+    withdrawn = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    out = serialize_id(withdrawn)
+    # THE RECORD SAYS SO, in the response the client already has in hand.
+    out["withdrawal_sentence"] = withdrawal_sentence(withdrawal_state(withdrawn))
+    return out
 
 
 # ══ ACTIVITY CHIPS — the sequence engine's only consumer ═════════════════════
@@ -23414,11 +24301,23 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
                     "company": (_pairing or {}).get("company") or None,
                 })
 
-    # Count orientation docs that haven't been CP-signed yet
+    # Count orientation docs that haven't been CP-signed yet.
+    #
+    # `status: {$ne: "submitted"}` IS ALSO TRUE OF A WITHDRAWN CHILD, which is
+    # the whole reason WITHDRAWN_EXCLUDED is written once: a selector that hunts
+    # for unfinished work by asking what a document is NOT will pick up a state
+    # invented after it was written. This count drives both the badge and
+    # whether the as-needed orientation row appears at all on the CP's home.
+    #
+    # `$nin` AND NOT `**WITHDRAWN_EXCLUDED`, and the difference is silent: both
+    # clauses key on `status`, so spreading the constant in here would REPLACE
+    # the submitted test rather than add to it and this count would start
+    # including every filed orientation. The one selector in the file where the
+    # two collide, spelled out.
     unsigned_orientations = await db.logbooks.count_documents({
         "project_id": project_id,
         "log_type": "subcontractor_orientation",
-        "status": {"$ne": "submitted"},
+        "status": {"$nin": ["submitted", WITHDRAWN_STATUS]},
         "is_deleted": {"$ne": True},
     })
 
@@ -23474,6 +24373,12 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     #
     # END_OF_DAY ONLY. An immediate log froze when it was signed, so an
     # unsigned one is simply a draft nobody finished, not a day left open.
+    #
+    # AND NOT A WITHDRAWN CORRECTION. This is the selector the seven drafts
+    # were sitting in: an unsigned amendment child of an END_OF_DAY type on a
+    # past date matches every clause, and `_amend_meta` below reads THIS list
+    # raw to raise the `amendment_unsigned` gap. Withdrawing one has to make it
+    # leave here or the card is unchanged and the state means nothing.
     stale_unsigned_docs = await db.logbooks.find(
         {
             "project_id": project_id,
@@ -23481,6 +24386,7 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
             "date": {"$lt": eastern_date()},
             "is_locked": {"$ne": True},
             "is_deleted": {"$ne": True},
+            **WITHDRAWN_EXCLUDED,
         },
         {"log_type": 1, "date": 1, "cp_signature": 1, "is_amendment": 1,
          "amendment_reason": 1, "created_by_name": 1, "created_at": 1},
@@ -24984,6 +25890,233 @@ AMENDMENT_NO_REASON = "no_reason_recorded"
 AMENDMENT_NONE = "not_amended"
 
 
+# ══ WITHDRAWN — THE EXIT AN UNSIGNED CORRECTION NEVER HAD ═══════════════════
+#
+# THE PRODUCTION STATE THIS ANSWERS. Seven unsigned `daily_jobsite` amendment
+# drafts on one project, and on two of those days TWO drafts on ONE parent,
+# sixty and twenty-six seconds apart: a superintendent tapped Amend, nothing on
+# the screen changed, he tapped again. Every one of them warns on his
+# compliance card, forever, because the only two exits were both wrong:
+#
+#   SIGN IT     files a correction he may not intend — and on a fork, files one
+#               of two competing versions with nothing recording which he meant.
+#   DELETE IT   destroys a document. (It also refused him outright until #371:
+#               `delete_logbook` read `current_user["_id"]` on an object where
+#               `serialize_id` had deleted that key, so no CP could delete his
+#               own logbook. Even repaired, delete is the wrong answer here —
+#               the amendment is evidence of what was attempted.)
+#
+# A STATE, NOT A DELETE. The document survives untouched — its data, its
+# reason, its author, its parent link. What changes is what it CLAIMS to be: a
+# withdrawn amendment is no longer an open correction, so nothing counts it,
+# nothing offers it for editing, and no report can ever select it.
+#
+# ONE FIELD CARRIES THE STATE. `status` is the field every reader in this file
+# and in the client already consults to decide what a logbook is, and a second
+# boolean beside it would be a second writer of one fact — the failure mode
+# this codebase has spent its last month closing. `withdrawn_at` /
+# `withdrawn_by` / `withdrawn_by_name` are NOT that second writer: they are the
+# ATTESTATION, and they answer a different question (who, and when).
+WITHDRAWN_STATUS = "withdrawn"
+
+# The Mongo clause, written once. Every selector that hunts for unfinished work
+# keys on `is_locked: {$ne: True}` or `status: {$ne: "submitted"}`, and a
+# withdrawn child satisfies BOTH — so without this it stays on the CP's card
+# under a new name. `$ne` matches a missing field as well as a different value,
+# so it is correct against every document written before this existed.
+#
+# SPREAD IT ONLY INTO A SELECTOR THAT HAS NO `status` KEY. It is a dict, and
+# `{**q, **WITHDRAWN_EXCLUDED}` REPLACES an existing `status` clause instead of
+# narrowing it — silently, and in the widening direction. The one selector
+# where the two collide (`unsigned_orientations`) spells out a `$nin` instead
+# and says so on the line.
+WITHDRAWN_EXCLUDED = {"status": {"$ne": WITHDRAWN_STATUS}}
+
+WITHDRAW_NOT_AN_AMENDMENT = "WITHDRAW_NOT_AN_AMENDMENT"
+WITHDRAW_FILED_AMENDMENT = "WITHDRAW_FILED_AMENDMENT"
+WITHDRAW_SIGNATURE_REQUIRED = "WITHDRAW_SIGNATURE_REQUIRED"
+
+# THE SENTENCE ABOVE THE PAD, STORED WITH THE INK.
+#
+# `attach_attestation` exists in this file because a signature with no recorded
+# sentence above it attests to nothing nameable — you can prove a man drew a
+# mark and not what he was told it meant. A withdrawal is signed for under the
+# same rule, so the sentence is stored on the document beside the ink rather
+# than living only in the client that rendered it. The client renders THIS
+# string; if the two ever diverge the record still says what the server
+# believed the signer was shown.
+WITHDRAWAL_ATTESTATION_STATEMENT = (
+    "I am withdrawing this proposed correction. It was never filed, it is not "
+    "part of the record, and the log it proposed to correct is unchanged."
+)
+
+
+def withdrawal_attestation(signature, *, by: str, by_name, at: datetime) -> dict:
+    """The attested half of a withdrawal, in a shape that is NOT a signing act.
+
+    ── WHY THIS IS NOT A signature_events ROW ─────────────────────────────────
+
+    That collection's unique index is literally named
+    `signature_events_one_row_per_signing_act`, and its `version` is a count of
+    the signings OF ONE DOCUMENT'S CONTENT. A withdrawal row there would bump
+    the amendment's signature version and assert a signing act performed on
+    content nobody signed — the content is precisely what is being abandoned.
+    That is the fabricated attestation `ensure_signature_ledger_row` refuses to
+    mint, in its own words: "a row for a signature nobody made is a fabricated
+    attestation." The signature here is real; what it attests to is the
+    ABANDONMENT, and there is no collection whose readers mean that.
+
+    ── SO IT LANDS ON THE DOCUMENT, SHAPED SO NO LEDGER READER CAN CLAIM IT ───
+
+    Exactly two readers ask a LOGBOOK what its signature is, and both read one
+    field, `cp_signature`: `ensure_signature_ledger_row` and
+    `sweep_signature_ledger_gaps`. Neither is reachable from here:
+
+      * the withdrawal never writes `cp_signature` and never clears the null
+        that amend_logbook already put there, so the derivation returns None
+        at its first line (no ink, no affirmation);
+      * the nightly sweep selects `status: "submitted"`, and a withdrawn
+        document's status is "withdrawn", so it is not in the cursor at all.
+
+    The ink is therefore nested under ONE field with no top-level `*_signature`
+    sibling, and carries `kind: "withdrawal"` so a future reader that goes
+    looking has to actively decide to treat it as a content signing rather than
+    stumble into it. `document_type`, `document_id`, `event_type`, `version`,
+    `signer` and `content_hash` — every key a signature-ledger reader keys on —
+    are deliberately absent.
+
+    ── WHAT THE CLIENT IS TRUSTED FOR, WHICH IS THE INK AND NOTHING ELSE ──────
+
+    `by`, `by_name` and `at` are server-stamped by the caller. A device with a
+    wrong clock must not be able to date an attestation and a client must not
+    be able to name someone else as its signer — the same rule the
+    withdrawn_by / withdrawn_at trio already follows, and they are written in
+    the same update as this.
+    """
+    return {
+        # NEVER a content signing. Named, so it cannot be mistaken silently.
+        "kind": "withdrawal",
+        "statement": WITHDRAWAL_ATTESTATION_STATEMENT,
+        "ink": signature,
+        "by": by,
+        "by_name": by_name,
+        "at": at,
+    }
+
+
+# ══ ONE OPEN AMENDMENT PER PARENT, ENFORCED BY THE DATABASE ═════════════════
+#
+# `open_amendment_head` / AMENDMENT_ALREADY_OPEN keys correctly on the parent,
+# but amend_logbook READS the children and then INSERTS with nothing between.
+# Two genuinely simultaneous requests both read "no open child" and both
+# insert. That is the fork production is carrying twice over — Aug 10 and Aug
+# 14, two open children on one parent, sixty and twenty-six seconds apart.
+#
+# THE SAME SHAPE signature_events_one_row_per_signing_act ALREADY USES: a
+# PARTIAL UNIQUE INDEX. The application check stays — it is what produces the
+# helpful 409 that hands the CP the correction already open — but it is now the
+# fast path in front of a rule the database enforces, not the only rule.
+OPEN_AMENDMENT_INDEX_NAME = "logbooks_one_open_amendment_per_parent"
+OPEN_AMENDMENT_INDEX_KEYS = [("parent_logbook_id", 1)]
+
+# PARTIAL, AND EVERY CLAUSE IS ONE A partialFilterExpression MAY CONTAIN.
+# Mongo permits equality, `$exists: true`, the range operators and `$type`, and
+# nothing else — no `$ne`, no `$or`, no `$not`, no `$nin`. An index whose
+# filter uses a forbidden operator is REJECTED, and `_ensure_index_resilient`
+# logs and returns rather than raising, so the rejection would be silent and
+# the race would stay open behind a green suite. Hence the shape below, and
+# hence the by-hand script that fails loudly.
+#
+# IT SELF-MAINTAINS, WHICH IS WHY THERE IS NO SENTINEL FIELD. Every clause
+# reads a field the document already carries, so a child leaves the index the
+# moment it is withdrawn, filed, signed or soft-deleted — no closing path has
+# to remember to unset anything, and a path that forgot would otherwise hold a
+# parent's Amend button shut forever.
+#
+# `cp_signature: None` matches null OR MISSING, which is Mongo's rule for an
+# equality-to-null and is exactly the question "unsigned" means here.
+OPEN_AMENDMENT_PARTIAL_FILTER = {
+    "parent_logbook_id": {"$type": "string"},
+    "is_amendment": True,
+    "is_deleted": False,
+    "status": "draft",
+    "is_locked": False,
+    "cp_signature": None,
+}
+
+
+def logbook_is_withdrawn(log) -> bool:
+    """Has this amendment been withdrawn? The one predicate, for one field."""
+    return (isinstance(log, dict)
+            and str(log.get("status") or "") == WITHDRAWN_STATUS)
+
+
+def logbook_is_filed(log) -> bool:
+    """IS THIS DOCUMENT A RECORD? The rule, in one place at last.
+
+    FILED means `is_locked` (the finalize flag) or `status == "submitted"` (the
+    freeze for the immediate types). A `cp_signature` on an open draft is not a
+    filed record.
+
+    IT WAS WRITTEN TWICE, VERBATIM — `_filed_log._is_filed` on the server and
+    `isFiled` in frontend/src/utils/amendmentChain.js — and the withdraw
+    endpoint would have made a third. The client's copy stays, because it runs
+    on a device this server cannot reach and has to answer offline; the Python
+    one is now this, and `_filed_log` calls it.
+
+    `open_amendment_head` IS NOT A THIRD COPY AND IS DELIBERATELY LEFT ALONE.
+    It also treats a bare `cp_signature` as closing a child, which is BROADER
+    than filed and correct for the question it asks — "is there an INTENTION
+    still outstanding" — see its own note. Withdrawal asks the narrower legal
+    question, because a signature on an unfrozen draft is not yet a filed
+    correction, and folding the two together would start refusing to withdraw a
+    draft somebody signed but never submitted.
+    """
+    if not isinstance(log, dict):
+        return False
+    return bool(log.get("is_locked")) or log.get("status") == "submitted"
+
+
+def withdrawal_state(log) -> dict:
+    """Who withdrew this amendment, and when. Off the RECORD, never the clock.
+
+    Returns `{"withdrawn": bool, "by": str|None, "by_name": str|None,
+    "at": datetime|str|None}`. Absent parts stay absent rather than being
+    filled in — the same rule `amendment_state` follows, and for the same
+    reason: a withdrawal written by a script or a migration that recorded no
+    actor must READ as having recorded no actor.
+    """
+    if not logbook_is_withdrawn(log):
+        return {"withdrawn": False, "by": None, "by_name": None, "at": None}
+    return {
+        "withdrawn": True,
+        "by": str(log.get("withdrawn_by") or "").strip() or None,
+        "by_name": str(log.get("withdrawn_by_name") or "").strip() or None,
+        "at": log.get("withdrawn_at"),
+    }
+
+
+def withdrawal_sentence(state) -> str:
+    """One line saying the correction was taken back. Empty when it was not.
+
+    THE RECORD HAS TO BE ABLE TO SAY SO. A withdrawal of a proposed correction
+    to a compliance record is itself an act; a state flag that only makes a
+    warning disappear would let a correction vanish with nobody's name on it.
+    Same shape as `amendment_sentence`, which is the sentence this one answers.
+    """
+    if not (state or {}).get("withdrawn"):
+        return ""
+    who = (state or {}).get("by_name")
+    day = _amendment_day((state or {}).get("at"))
+    lead = "This proposed correction was withdrawn"
+    if who:
+        lead += f" by {who}"
+    if day:
+        lead += f" on {day}"
+    return (f"{lead}. It was never signed and never filed, so it is not part "
+            f"of the record; the log it proposed to correct is unchanged.")
+
+
 AMENDMENT_REASON_REQUIRED = "AMENDMENT_REASON_REQUIRED"
 AMENDMENT_REASON_NOT_A_SENTENCE = "AMENDMENT_REASON_NOT_A_SENTENCE"
 AMENDMENT_REASON_MIN_CHARS = 6
@@ -25044,9 +26177,17 @@ def open_amendment_head(children):
 
     A SIGNED child does not block: a correction that landed is part of the
     chain, and the next amendment amends it.
+
+    NEITHER DOES A WITHDRAWN ONE, and that is what makes withdrawal an EXIT
+    rather than a second trap. A withdrawn child that still counted as open
+    would hold this parent's amend button shut forever, and the refusal would
+    keep offering the CP a correction he has already taken back — which is
+    exactly the dead end that produced the forks this rule exists to stop.
     """
     def _open(c):
         if not isinstance(c, dict):
+            return False
+        if logbook_is_withdrawn(c):
             return False
         return not (c.get("is_locked") or c.get("status") == "submitted"
                     or c.get("cp_signature"))
@@ -26047,20 +27188,28 @@ def _filed_log(logbooks, log_type):
     NOTHING FILED YET falls back to the first match, which is exactly the old
     behaviour: a day with only an unfiled draft still renders that draft rather
     than a blank section.
+
+    A WITHDRAWN AMENDMENT IS NOT A CANDIDATE AT ALL, and the fallback is why
+    that clause sits on `same_type` rather than inside the filed test. A withdrawn
+    child can never be filed, so it could never win the `filed` branch — but on
+    a day whose original was never signed it is a plain member of `same_type`
+    and `same_type[0]` is insertion order, so the report could print a
+    correction its own author took back, to a lender, as the day's record.
     """
-    same_type = [l for l in logbooks if l.get("log_type") == log_type]
+    same_type = [l for l in logbooks
+                 if l.get("log_type") == log_type and not logbook_is_withdrawn(l)]
     if not same_type:
         return None
-
-    def _is_filed(l):
-        return bool(l.get("is_locked")) or l.get("status") == "submitted"
 
     def _order(l):
         created = l.get("created_at")
         return (created if isinstance(created, datetime) else datetime.min.replace(tzinfo=timezone.utc),
                 str(l.get("_id", "")))
 
-    filed = [l for l in same_type if _is_filed(l)]
+    # `logbook_is_filed` IS the `_is_filed` that used to be defined here — the
+    # same two clauses, lifted out so the withdraw endpoint asks this exact
+    # question rather than writing a fourth copy of it.
+    filed = [l for l in same_type if logbook_is_filed(l)]
     if filed:
         return max(filed, key=_order)
     return same_type[0]
@@ -26360,7 +27509,7 @@ async def generate_combined_report(
             _done = _photo.get("enhance_status") == "done"
             _thumb = f"{_orig}?v=thumb" if _done else _orig
             _full = f"{_orig}?v=enhanced" if _done else _orig
-            _shots += (
+            _tile = (
                 f'<a href="{_full}" target="_blank" '
                 'style="text-decoration:none;display:inline-block;">'
                 f'<img src="{_thumb}" width="160" height="120" '
@@ -26368,6 +27517,19 @@ async def generate_combined_report(
                 'border-radius:4px;border:1px solid #e2e8f0;'
                 'display:inline-block;margin:3px;" /></a>'
             )
+            # A PHOTOGRAPH ADDED AFTER THE CP SIGNED IS LABELLED AS ONE.
+            # Unlabelled photos are emitted exactly as before — the wrapper
+            # exists only where there is something to say, so the ordinary
+            # grid is untouched.
+            _added_note = _photo_added_after_filing_caption(_photo)
+            if _added_note:
+                _tile = (
+                    '<span style="display:inline-block;vertical-align:top;'
+                    'width:166px;margin:0 0 6px;">'
+                    f'{_tile}<span style="display:block;padding:0 3px;">'
+                    f'{_added_note}</span></span>'
+                )
+            _shots += _tile
         if not _shots:
             continue
         _cap = " - ".join(
@@ -40972,6 +42134,39 @@ async def startup_event():
         name="signature_events_one_row_per_signing_act",
         unique=True,
         partialFilterExpression={"signature_key": {"$type": "string"}},
+    )
+
+    # ── ONE OPEN AMENDMENT PER PARENT, ENFORCED BY THE DATABASE ────────────
+    #
+    # The definition, and the argument for every clause of the filter, is at
+    # OPEN_AMENDMENT_PARTIAL_FILTER. In short: amend_logbook reads the parent's
+    # children and then inserts, with nothing between, so two simultaneous taps
+    # both read "no open child" and both insert. That is the fork production
+    # carries twice over. The application check stays as the fast path that
+    # produces the helpful 409; this is what actually settles it.
+    #
+    # IT MAY LEGITIMATELY FAIL TO BUILD TODAY, AND THAT IS NOT A BUG HERE.
+    # Production HAS the duplicates this index forbids — Aug 10 and Aug 14, two
+    # open children on one parent each. A unique build over them is rejected,
+    # and _ensure_index_resilient logs and returns rather than raising, which
+    # is right: an index must never block app startup. It is also why
+    # backend/scripts/create_open_amendment_index.js exists and why it REFUSES
+    # to build over duplicates instead of failing quietly — the operator
+    # applies indexes by hand, and a silently absent index would leave this
+    # race open behind a green suite.
+    # THE KEY SPEC IS A LITERAL HERE, AND THAT IS NOT A STYLE CHOICE.
+    # find_unserved_sorts.py reads every index declaration in this file with an
+    # AST walk and can only resolve a literal `keys=`; handed a constant NAME it
+    # reports "key spec not literal" and stops covering the index, which is a
+    # sort silently dropping out of the sweep. OPEN_AMENDMENT_INDEX_KEYS stays
+    # as the value the tests and the by-hand script agree against, and
+    # test_amendment_withdraw asserts this literal still equals it.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("parent_logbook_id", 1)],
+        name=OPEN_AMENDMENT_INDEX_NAME,
+        unique=True,
+        partialFilterExpression=OPEN_AMENDMENT_PARTIAL_FILTER,
     )
 
     # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.

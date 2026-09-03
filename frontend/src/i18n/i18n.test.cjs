@@ -241,8 +241,14 @@ function usedKeys(src) {
 }
 const reviewUsed = usedKeys(reviewSrc);
 const padUsed = usedKeys(padSrc);
-ok(reviewUsed.length === 40,
-  `review.jsx calls 40 distinct literal keys (got ${reviewUsed.length})`);
+// `>=`, for the reason written out at the review-namespace count above: an
+// exact total additionally asserts that no key may ever be ADDED, which is not
+// a claim anyone meant to make, and it failed the moment review.jsx grew the
+// five queued-decision strings. What this line is actually for is proving that
+// usedKeys() FOUND the call sites — an empty list would make the resolution
+// loop below vacuously green. That is a floor, not an equality.
+ok(reviewUsed.length >= 40,
+  `review.jsx calls at least its 40 known literal keys (got ${reviewUsed.length})`);
 ok(padUsed.length === 5, `SignaturePad calls 5 distinct keys (got ${padUsed.length})`);
 
 // Presence is checked on the catalogue, NOT by comparing the result to the
@@ -408,7 +414,7 @@ function walk(dir, out = []) {
 }
 const allSource = [...walk(path.join(FRONTEND, 'app')), ...walk(path.join(FRONTEND, 'src'))];
 const renderSites = allSource.filter((p) => /<SignaturePad/.test(fs.readFileSync(p, 'utf8')));
-// FIFTEEN with the site superintendent log. The count is pinned so a NEW
+// SIXTEEN with the amendment-withdrawal pad. The count is pinned so a NEW
 // render site cannot appear without someone checking it against the rule below
 // — that no call site passes `lang`, which is the premise the whole
 // reconnection rests on. It is a checkpoint, not a ceiling.
@@ -417,8 +423,17 @@ const renderSites = allSource.filter((p) => /<SignaturePad/.test(fs.readFileSync
 // EN_ONLY_NAMESPACES) and still passes no `lang`, which is the point: the
 // screen's own copy not being translated yet is a content decision, and it
 // must not become a per-call-site locale override on the signature pad.
-ok(renderSites.length === 15,
-  `15 files render <SignaturePad> (got ${renderSites.length})`);
+//
+// THE SIXTEENTH IS AmendmentBanner, and it was checked against the rule rather
+// than counted past it. A withdrawal is an attested act (operator ruling), so
+// the banner presents this pad before it will send one. It passes NO `lang`,
+// which matters more here than anywhere else in the list: the banner renders
+// on TWELVE logbook editors, so a `lang` pinned at this one call site would
+// pin the pad's affirmation copy on all twelve at once — the exact app-wide
+// reach the reconnection removed. Unset means "follow the app-wide locale",
+// and that is what a CP switching the app to Spanish must get here too.
+ok(renderSites.length === 16,
+  `16 files render <SignaturePad> (got ${renderSites.length})`);
 const passLang = renderSites.filter((p) => /<SignaturePad[\s\S]{0,1200}?\blang=/.test(fs.readFileSync(p, 'utf8')));
 ok(passLang.length === 0,
   `zero render sites pass lang= — the app locale is the only path to Spanish${passLang.length ? ` — ${JSON.stringify(passLang)}` : ''}`);

@@ -123,6 +123,24 @@ const text = (node) => {
   return out.join(' | ');
 };
 
+// The same walk, collecting ELEMENT TYPES instead of text. A photo tile has no
+// text of its own, so `text()` cannot see one at all — an assertion about
+// photographs written against it would be a check that never reaches its
+// subject. Section 5 counts <Image> elements with this.
+function collectTypes(node, out) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { node.forEach((n) => collectTypes(n, out)); return; }
+  if (!node.__el) return;
+  const kids = node.children.length ? node.children : node.props.children;
+  if (typeof node.type === 'function') {
+    collectTypes(node.type({ ...node.props, children: kids }), out);
+    return;
+  }
+  out.push(String(node.type));
+  collectTypes(kids, out);
+}
+const elTypes = (node) => { const out = []; collectTypes(node, out); return out; };
+
 // ── The REAL headcount formatter, not a stub ───────────────────────────────
 // This renderer prints a crew row an INSPECTOR reads off the gate tablet, and
 // what it must print is the number AND who supplied it. Stubbing this would
@@ -151,6 +169,9 @@ const _csModel = new Function(
   `${_csSrc}; return { csLogItems, csItemState, csItemSummary };`)();
 
 // ── Stubs for everything the block closes over ──────────────────────────────
+// The photo-uri resolver the renderers call. Default OFF (no photo has a
+// copy to draw), flipped on by section 5.
+let PHOTO_URI = () => null;
 const styleProxy = new Proxy({}, { get: () => ({}) });
 const Icon = function IconStub() { return null; };
 const NAMES = ['View', 'Text', 'Image', 'React', 's', 't', 'tFp', 'colors', 'semantic',
@@ -170,7 +191,12 @@ const VALUES = {
   spacing: new Proxy({}, { get: () => 8 }),
   withAlpha: () => 'rgba(0,0,0,0.1)',
   rosterClock: (v) => (v ? String(v) : '—'),
-  logbookPhotoUri: () => null,
+  // SWITCHABLE, BECAUSE `null` MADE THE PHOTO STRIPS UNREACHABLE. Every
+  // renderer here drops a photo whose uri resolves to null (`if (!uri) return
+  // null`), so with a constant-null stub no assertion in this file could ever
+  // have reached a photo tile — a check that returns a well-formed answer and
+  // never touches its subject. Section 5 flips this on.
+  logbookPhotoUri: (...a) => PHOTO_URI(...a),
   headcountDisplay: _model.headcountDisplay,
   csLogItems: _csModel.csLogItems,
   csItemState: _csModel.csItemState,
@@ -183,6 +209,7 @@ const R = new Function(...NAMES, `${compiled}\n return { renderLogContent };`)(
   ...NAMES.map((n) => VALUES[n]),
 );
 const render = (log) => text(R.renderLogContent(log));
+const renderTypes = (log) => elTypes(R.renderLogContent(log));
 
 const doc = (log_type, data, extra) => ({
   id: 'lb1', log_type, date: '2026-08-07', status: 'submitted',
@@ -629,6 +656,149 @@ ok(/act\.crew_id/.test(src),
 // ════════════════════════════════════════════════════════════════════════════
 ok(render(doc('some_future_type', { a: 1 })).includes('No data available'),
   'an unknown log type still degrades to the fallback rather than throwing');
+
+// ════════════════════════════════════════════════════════════════════════════
+//  5 — A PHOTOGRAPH ADDED AFTER FILING SAYS SO, ON THE INSPECTOR'S SCREEN
+// ════════════════════════════════════════════════════════════════════════════
+//
+// THIS IS THE SURFACE WHERE THE DISTINCTION MATTERS MOST. POST
+// /api/logbooks/{id}/activity-photo lets a photograph be appended to a log the
+// CP has already signed, and the combined report and its PDF print "Added
+// after filing" under such a tile. This screen — the tablet a DOB inspector
+// actually reads on the site — printed it beside the photographs that WERE in
+// front of the CP at attestation with nothing to tell them apart. That makes
+// the record assert something nobody attested to, which is the single claim
+// the whole feature was built not to manufacture.
+//
+// THE MARKER IS READ FROM THE STORED FACT, not from anything this screen knows:
+// `added_after_filing`, plus `added_at` / `added_by_name` for the attribution,
+// exactly the three fields server.py's _photo_added_after_filing_caption reads.
+//
+// FIRST, THE POSITIVE CONTROL. With PHOTO_URI off, every tile is dropped before
+// it renders — so a "no label appears" assertion would pass on a screen that
+// draws no photographs at all. This asserts the strip is reachable before
+// anything asserts what is in it.
+PHOTO_URI = (photo, log, ai, pi) => `uri://${ai}/${pi}`;
+
+const ORIGINAL_PHOTO = { original_r2_key: 'logbook-photos/p/act_1/cap_1.jpg' };
+const APPENDED_PHOTO = {
+  original_r2_key: 'logbook-photos/p/act_1/cap_2.jpg',
+  added_after_filing: true,
+  added_at: '2026-08-14T18:30:00Z',
+  added_by_name: 'Casey CP',
+};
+const ADDED_LABEL = t('photoAddedAfterFiling');
+
+ok(ADDED_LABEL !== 'photoAddedAfterFiling',
+  'logbookView.photoAddedAfterFiling exists in the REAL catalogue — the marker '
+  + 'cannot be a key rendering its own name to an inspector');
+
+const ORIGINAL_ONLY = doc('daily_jobsite', {
+  weather: 'Clear',
+  activities: [{ ...DAILY_ACT, photos: [ORIGINAL_PHOTO] }],
+});
+const withOriginal = render(ORIGINAL_ONLY);
+ok(renderTypes(ORIGINAL_ONLY).filter((x) => x === 'Image').length === 1,
+  'POSITIVE CONTROL: with a resolvable uri the daily_jobsite photo strip really '
+  + 'renders a tile — every assertion below would otherwise pass on an empty tree');
+ok(!withOriginal.includes(ADDED_LABEL),
+  'a photograph present at signing carries no marker');
+
+const withAppended = render(doc('daily_jobsite', {
+  weather: 'Clear',
+  activities: [{ ...DAILY_ACT, photos: [ORIGINAL_PHOTO, APPENDED_PHOTO] }],
+}));
+ok((withAppended.match(new RegExp(ADDED_LABEL, 'g')) || []).length === 1,
+  'daily_jobsite: the appended photograph is marked, and ONLY it — one label '
+  + 'for two tiles');
+ok(withAppended.includes('Casey CP'),
+  'daily_jobsite: and it names who added it');
+ok(/Aug 14, 2026/.test(withAppended),
+  'daily_jobsite: ...and when, in the same form the report prints '
+  + "(server.py: f\"{when.strftime('%b')} {when.day}, {when.year}\")");
+
+// THE INSTANT IS RENDERED IN UTC, THE WAY THE REPORT RENDERS IT. server.py
+// stores an aware UTC datetime and prints %b/day/year straight off it, so a
+// tablet that localised the same stamp would show a different DATE for the same
+// photograph on an evening append — one record reading two ways across two
+// compliance surfaces, which is the defect the label exists to prevent.
+const NEAR_MIDNIGHT = '2026-08-14T03:30:00Z';
+const nearMidnight = render(doc('daily_jobsite', {
+  weather: 'Clear',
+  activities: [{ ...DAILY_ACT,
+    photos: [{ ...APPENDED_PHOTO, added_at: NEAR_MIDNIGHT }] }],
+}));
+const _localDay = new Date(NEAR_MIDNIGHT).getDate();
+const _utcDay = new Date(NEAR_MIDNIGHT).getUTCDate();
+if (_localDay === _utcDay) {
+  // Stated rather than counted as cover. On a machine whose offset does not
+  // move 03:30Z across midnight, this assertion cannot tell UTC from local and
+  // proves nothing about the decision it is written for.
+  console.log('  NOTE  the UTC/local check below is VACUOUS on this machine '
+    + `(TZ offset ${new Date().getTimezoneOffset()}; both readings are day ${_utcDay})`);
+}
+ok(/Aug 14, 2026/.test(nearMidnight),
+  `an instant near midnight UTC prints its UTC date, as the report does${
+    _localDay === _utcDay ? ' [VACUOUS on this machine — see NOTE]' : ''}`);
+
+// THE FLAG IS THE CLAIM, THE ATTRIBUTION IS A COURTESY — server.py's rule, and
+// this screen must not disagree with it. A row that somehow carries the flag
+// and no stamps is still labelled rather than silently passed through as an
+// original.
+const bare = render(doc('daily_jobsite', {
+  weather: 'Clear',
+  activities: [{ ...DAILY_ACT, photos: [{ original_r2_key: 'k', added_after_filing: true }] }],
+}));
+ok(bare.includes(ADDED_LABEL),
+  'a flagged photograph with no who and no when is STILL marked');
+
+// FALL PROTECTION RENDERS PHOTOS TOO, from the same photos[] on the same
+// activities[]. One surface, one rule — a marker on one renderer and not the
+// other is the shape this repo keeps rediscovering.
+const FP_ROW = {
+  worker_name: 'Dana Rivera', company: 'aaz', equipment_type: 'Harness',
+  equipment_id: 'H-12', result: 'Pass', impact_loaded: false,
+};
+const FP_DOC = doc('fall_protection', {
+  activities: [{ ...FP_ROW, photos: [ORIGINAL_PHOTO, APPENDED_PHOTO] }],
+});
+const fpAppended = render(FP_DOC);
+ok(renderTypes(FP_DOC).filter((x) => x === 'Image').length === 2,
+  'POSITIVE CONTROL: the fall_protection photo strip renders both tiles too');
+ok((fpAppended.match(new RegExp(ADDED_LABEL, 'g')) || []).length === 1,
+  'fall_protection: the appended photograph is marked there as well');
+
+// EVERY STYLE THE MARKER USES REALLY EXISTS IN buildStyles.
+//
+// THE HARNESS CANNOT SEE THIS AND THAT IS WHY IT IS ASSERTED SEPARATELY: `s`
+// is a Proxy returning {} for any key, so a marker styled with a name nobody
+// defined renders here exactly as one that is styled correctly — and on the
+// device it would be unstyled 14px text jammed into an 80px photo row. The
+// mount smoke cannot see it either: it proves no crash, and an undefined
+// StyleSheet key does not crash.
+{
+  const strip = src.slice(src.indexOf('const ActivityPhotoStrip'),
+    src.indexOf('const DocInfoRow'));
+  const used = [...new Set([...strip.matchAll(/style=\{s\.(\w+)\}/g)].map((m) => m[1]))];
+  ok(used.length >= 4,
+    `POSITIVE CONTROL: the strip's style names were extracted (${used.join(', ')})`);
+  const sheet = src.slice(src.indexOf('function buildStyles('));
+  const undefinedStyles = used.filter((n) => !new RegExp(`\\n\\s*${n}:`).test(sheet));
+  ok(undefinedStyles.length === 0,
+    `every style the photo strip uses is defined in buildStyles${
+      undefinedStyles.length ? ` — missing ${JSON.stringify(undefinedStyles)}` : ''}`);
+}
+
+// AND THE THREE SURFACES PRINT THE SAME WORDS. The report/PDF label lives in
+// server.py; the CP's own editor reads dailyJobsite.photoAddedAfterFiling; this
+// screen reads logbookView.photoAddedAfterFiling. A record must not read
+// differently depending on which one you are holding.
+const SERVER_LABEL = (SERVER_SRC.match(
+  /_PHOTO_ADDED_AFTER_FILING_LABEL = "([^"]+)"/) || [])[1];
+ok(SERVER_LABEL === ADDED_LABEL,
+  `the tablet prints the same words as the report and the PDF (${JSON.stringify(SERVER_LABEL)})`);
+ok(EN.dailyJobsite.photoAddedAfterFiling === ADDED_LABEL,
+  "...and the same words as the CP's own editor");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
