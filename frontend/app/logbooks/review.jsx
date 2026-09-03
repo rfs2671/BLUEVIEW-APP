@@ -52,6 +52,7 @@ import {
   ShieldAlert,
   Briefcase,
   RefreshCw,
+  CloudOff,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -62,9 +63,49 @@ import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError, failureDetail } from '../../src/utils/offlineState';
+// THE SAME QUEUE THE SITE DEVICE USES. An approve / send-home call is a
+// compliance record, and it was durable on the gate tablet
+// (app/site/checkins.jsx) and online-only here — on the screen the CP actually
+// uses, on a phone, in a cellar. Same decision, two surfaces, one durable.
+// Reused rather than re-invented: one storage key, one drain, one dedupe rule.
+import {
+  queueCheckInReview,
+  getQueuedCheckInReviews,
+  clearQueuedCheckInReview,
+} from '../../src/utils/offlineQueue';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useT } from '../../src/i18n';
+
+/**
+ * Overlay decisions recorded on this device but not yet posted, and clear the
+ * marker from anything the queue has since drained. Mirrors the helper of the
+ * same name in app/site/checkins.jsx.
+ *
+ * THIS MATTERS MORE HERE THAN ON THE KIOSK. get_flagged_project_checkins
+ * excludes rows that already carry a review_decision — but a decision sitting
+ * in the queue never reached the server, so the row comes back flagged. This
+ * screen refetches on focus, on pull-to-refresh and on every project change,
+ * so without this overlay each refetch would erase the pending marker and
+ * present a decided worker as undecided. The CP then decides the same man
+ * again, and the queue dedupes it to one action while he wonders why it keeps
+ * asking.
+ */
+const withPendingReviews = (list, pending) => list.map((c) => {
+  const queued = pending && pending[c._id || c.id];
+  if (queued) {
+    return {
+      ...c,
+      review_decision: queued.decision,
+      // No server attribution yet — reviewed_by is derived from the token when
+      // the queue drains, so claiming a name or a time here would invent one.
+      reviewed_by_name: null,
+      reviewed_at: null,
+      review_pending_sync: true,
+    };
+  }
+  return c.review_pending_sync ? { ...c, review_pending_sync: false } : c;
+});
 
 export default function CheckInReviewScreen() {
   const { colors } = useTheme();
@@ -143,7 +184,10 @@ export default function CheckInReviewScreen() {
     const r = await settleFetch(() => checkinsAPI.getFlagged(projectId));
     setFlaggedState(r.status);
     if (r.status === 'ok') {
-      setItems(r.data?.items || []);
+      // Re-apply anything still queued. The server answered without these rows'
+      // decisions because it never received them.
+      const pending = await getQueuedCheckInReviews();
+      setItems(withPendingReviews(r.data?.items || [], pending));
       setRoster(r.data?.trade_assignments || []);
     } else {
       // Clear the previous project's rows — but the render branches on
@@ -198,6 +242,9 @@ export default function CheckInReviewScreen() {
     setActingId(id);
     try {
       const res = await checkinsAPI.review(id, decision);
+      // The server has it — drop anything still queued for this check-in, or
+      // the drain would post the same decision a second time.
+      await clearQueuedCheckInReview(id);
       setItems((prev) => prev.map((c) =>
         (c._id || c.id) === id
           ? {
@@ -205,6 +252,7 @@ export default function CheckInReviewScreen() {
               review_decision: res.review_decision,
               reviewed_by_name: res.reviewed_by_name,
               reviewed_at: res.reviewed_at,
+              review_pending_sync: false,
             }
           : c,
       ));
@@ -213,13 +261,42 @@ export default function CheckInReviewScreen() {
         decision === 'approved' ? t('approvedToast') : t('sentHomeToast'),
       );
     } catch (e) {
-      // No write queue here (out of scope) — so the ONLY honest outcome is to
-      // leave the row untouched and say plainly that nothing was recorded.
+      // A COMPLIANCE DECISION IS NEVER DROPPED. If the request never reached a
+      // server (a cellar, a bad elevator, a dead zone on the sidewalk), or the
+      // server failed on its own side, record it on the device and let the
+      // existing queue post it on reconnect. This is the site device's rule,
+      // reused verbatim — see handleReview in app/site/checkins.jsx.
+      //
+      // A 4xx is NOT queued. It is a real refusal, and replaying it three times
+      // would never succeed; it still errors so the CP sees why.
+      const status = e?.response?.status;
+      if (isOfflineError(e) || status >= 500) {
+        await queueCheckInReview(id, decision);
+        setItems((prev) => prev.map((c) =>
+          (c._id || c.id) === id
+            ? {
+                ...c,
+                review_decision: decision,
+                // Attribution is derived server-side from the token on sync.
+                // There is no name or time to show yet, and inventing one is
+                // the thing this screen exists to avoid.
+                reviewed_by_name: null,
+                reviewed_at: null,
+                review_pending_sync: true,
+              }
+            : c,
+        ));
+        // WARNING, not success. The decision is recorded on this device; it is
+        // not yet on the record the DOB would read.
+        toast.warning(
+          t('queuedTitle'),
+          decision === 'approved' ? t('queuedApproved') : t('queuedSentHome'),
+        );
+        return;
+      }
       toast.error(
-        isOfflineError(e) ? t('offlineWrite') : t('reviewFailed'),
-        isOfflineError(e)
-          ? t('offlineWriteHint')
-          : (e?.response?.data?.detail || ''),
+        t('reviewFailed'),
+        e?.response?.data?.detail || '',
       );
     } finally {
       setActingId(null);
@@ -283,6 +360,11 @@ export default function CheckInReviewScreen() {
 
   const fmtDate = (v) => (v ? String(v).slice(0, 10) : '');
 
+  // Decisions taken here that the server has not confirmed yet. A decision that
+  // queues silently is a different defect, so it is stated per row AND counted
+  // at the top of the list — the CP may have walked away from the row.
+  const pendingCount = items.filter((c) => c.review_pending_sync).length;
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -311,6 +393,18 @@ export default function CheckInReviewScreen() {
           }
         >
           <Text style={s.subtitle}>{t('subtitle')}</Text>
+
+          {/* Decisions held on this device until the queue drains. */}
+          {!loading && pendingCount > 0 && (
+            <View style={s.pendingBanner}>
+              <CloudOff size={14} strokeWidth={1.8} color={semantic.attention} />
+              <Text style={s.pendingBannerText}>
+                {pendingCount === 1
+                  ? t('pendingBannerOne')
+                  : t('pendingBannerMany').replace('{n}', String(pendingCount))}
+              </Text>
+            </View>
+          )}
 
           {/* Project picker */}
           {projects.length === 0 && !loading && projectsState !== 'ok' ? (
@@ -488,6 +582,20 @@ export default function CheckInReviewScreen() {
                       decision), so the reviewed text says so explicitly. */}
                   {(isExpired || isUnknown) && (
                     reviewed ? (
+                      /* A decision the server has confirmed reads as filed,
+                         with attribution. One still in the queue must NOT —
+                         it is recorded on this device and nowhere else yet. */
+                      item.review_pending_sync ? (
+                        <View style={s.pendingRow}>
+                          <CloudOff size={13} strokeWidth={1.8} color={semantic.attention} />
+                          <Text style={s.pendingText}>
+                            {reviewed === 'approved'
+                              ? (isUnknown ? t('admittedUnverified') : t('approved'))
+                              : t('sentHome')}
+                            {t('pendingSuffix')}
+                          </Text>
+                        </View>
+                      ) : (
                       <Text style={s.reviewedText}>
                         {reviewed === 'approved'
                           ? (isUnknown ? t('admittedUnverified') : t('approved'))
@@ -496,6 +604,7 @@ export default function CheckInReviewScreen() {
                           ? ` ${t('by')} ${item.reviewed_by_name}` : ''}
                         {item.reviewed_at ? ` • ${fmt(item.reviewed_at)}` : ''}
                       </Text>
+                      )
                     ) : (
                       <View style={s.actions}>
                         <Pressable
@@ -604,6 +713,32 @@ function buildStyles(colors) {
     },
     reviewedText: {
       fontSize: 13, color: colors.text.secondary, marginTop: spacing.xs,
+    },
+    // Pending-sync markers. Attention-toned, not success-toned: the decision is
+    // on this device, not yet on the record. Same shape as the site twin.
+    pendingBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: semantic.attentionBorder,
+      backgroundColor: withAlpha(semantic.attention, 0.1),
+      marginBottom: spacing.md,
+    },
+    pendingBannerText: {
+      flex: 1, fontSize: 13, lineHeight: 18, color: colors.text.secondary,
+    },
+    pendingRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      marginTop: spacing.xs,
+    },
+    pendingText: {
+      flex: 1, fontSize: 13, color: semantic.attention,
     },
     actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
     actionBtn: {

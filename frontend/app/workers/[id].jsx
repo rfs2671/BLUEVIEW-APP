@@ -147,9 +147,13 @@ export default function WorkerDetailScreen() {
   const [newCertName, setNewCertName] = useState('');
   const [newCertExpiry, setNewCertExpiry] = useState('');
   
-  // Signature
+  // Signature — READ ONLY on this screen. A worker's signature is captured at
+  // the gate, from his own device, when he registers (register_and_checkin
+  // writes workers.signature). There is no write path here and there must not
+  // be one: PUT /workers/{id} filters through ALLOWED_WORKER_FIELDS, which
+  // does not contain `signature`, and an admin drawing a worker's mark on a
+  // detail screen would be a forged attestation rather than a captured one.
   const [signature, setSignature] = useState(null);
-  const [showSignaturePad, setShowSignaturePad] = useState(false);
 
   // OSHA & Safety Orientation (fetched from API)
   const [oshaCardImage, setOshaCardImage] = useState(null);
@@ -472,11 +476,16 @@ export default function WorkerDetailScreen() {
     }
   };
 
-  const handleUpdateSignature = () => {
-    setSignature({ data: 'signature_data', signed_at: new Date().toISOString() });
-    setShowSignaturePad(false);
-    toast.success('Updated', 'Signature saved');
-  };
+  // THERE IS NO handleUpdateSignature. What stood here set signature state to
+  // the literal string 'signature_data' with a freshly minted signed_at, closed
+  // the stub pad, and toasted "Signature saved" — with no API call, no draft
+  // write and no storage of any kind. An admin was told a signature was saved
+  // and shown one "on file", dated today, for a worker who had none.
+  //
+  // A stub must not manufacture evidence, and the missing piece here is not a
+  // write to be filled in later: PUT /workers/{id} does not accept `signature`,
+  // and a signature an admin draws is not the thing the record means. The
+  // affordance is gone rather than disabled, so nobody mistakes it for a to-do.
 
   if (authLoading || loading) {
     return (
@@ -975,45 +984,27 @@ export default function WorkerDetailScreen() {
                       ) : null;
                     })()}
                     <Text style={s.signatureText}>✍️ Signature on file</Text>
-                    <Text style={s.signatureDate}>
-                      Updated: {signature?.signed_at ? new Date(signature.signed_at).toLocaleDateString() : 'On file'}
-                    </Text>
+                    {/* No "Updated: <date>" row. A stored signature is a bare
+                        image carrying no timestamp of its own — server.py says
+                        so on _worker_signature_signed_at — and neither
+                        GET /workers/{id} nor /osha-card returns one. The date
+                        that used to render here could only ever be the one the
+                        removed stub minted a moment earlier. */}
                   </View>
                 </>
               ) : (
                 <>
                   <Text style={s.noSignatureText}>No signature on file</Text>
-                  {isAdmin && (
-                    <GlassButton
-                      title="Add Signature"
-                      icon={<Plus size={16} color={colors.text.primary} />}
-                      onPress={() => setShowSignaturePad(true)}
-                    />
-                  )}
+                  {/* Stated, not offered. A signature is captured at the gate
+                      on the worker's own device when he registers; it cannot
+                      be added from this screen, and an admin drawing it here
+                      would be signing for another man. */}
+                  <Text style={s.noSignatureHint}>
+                    Captured at the jobsite gate when the worker registers.
+                  </Text>
                 </>
               )}
             </GlassCard>
-
-            {showSignaturePad && (
-              <GlassCard style={s.signaturePad}>
-                <Text style={s.signaturePadTitle}>Draw Signature</Text>
-                <View style={s.signatureCanvas}>
-                  <Text style={s.signatureCanvasPlaceholder}>
-                    Signature pad would appear here
-                  </Text>
-                </View>
-                <div style={s.signaturePadActions}>
-                  <GlassButton
-                    title="Cancel"
-                    onPress={() => setShowSignaturePad(false)}
-                  />
-                  <GlassButton
-                    title="Save Signature"
-                    onPress={handleUpdateSignature}
-                  />
-                </div>
-              </GlassCard>
-            )}
           </View>
         </ScrollView>
 
@@ -1379,43 +1370,14 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },
-  signatureDate: {
-    fontSize: 12,
-    color: colors.text.muted,
-  },
   noSignatureText: {
     fontSize: 14,
     color: colors.text.muted,
-    marginBottom: spacing.md,
   },
-  signaturePad: {
-    marginTop: spacing.md,
-  },
-  signaturePadTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginBottom: spacing.md,
-  },
-  signatureCanvas: {
-    height: 150,
-    backgroundColor: withAlpha('#ffffff', 0.05),
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    borderStyle: 'dashed',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.md,
-  },
-  signatureCanvasPlaceholder: {
-    fontSize: 14,
+  noSignatureHint: {
+    fontSize: 12,
     color: colors.text.subtle,
-  },
-  signaturePadActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: spacing.sm,
+    textAlign: 'center',
   },
   modalOverlay: {
     flex: 1,

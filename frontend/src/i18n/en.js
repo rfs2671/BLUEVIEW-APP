@@ -21,8 +21,24 @@ export default {
     errorLoad: 'The flagged check-ins could not be read. Pull to refresh or try again.',
     offlineProjects: 'Your project list could not be loaded, so this screen has nothing to select. Reconnect and pull to refresh.',
     errorProjects: 'Your project list could not be read. Pull to refresh or try again.',
+    // STILL TRUE, AND STILL USED — by handleAssign. A trade assignment has no
+    // queue behind it, so offline it really does record nothing. Do not reuse
+    // these two for the approve / send-home path, which now DOES save.
     offlineWrite: 'Offline — nothing recorded',
     offlineWriteHint: 'The decision was NOT saved. Reconnect and try again.',
+    // The approve / send-home path, which is queued on this device and posted
+    // when the connection returns. The copy must not read as "filed": the
+    // decision is held here, and the record the DOB would read does not carry
+    // it yet.
+    queuedTitle: 'Saved on this device',
+    queuedApproved: 'Approval saved — it will sync when you are back online.',
+    queuedSentHome: 'Sent-home decision saved — it will sync when you are back online.',
+    pendingSuffix: ' — saved on this device, will sync',
+    // Two keys rather than one with "(s)". The site twin already pluralizes
+    // this sentence properly and a CP reading "1 decision(s)" on a compliance
+    // surface is being shown a template, not a sentence.
+    pendingBannerOne: '1 decision saved on this device — it will sync automatically.',
+    pendingBannerMany: '{n} decisions saved on this device — they will sync automatically.',
     expiredSst: 'Expired SST',
     expiredOn: 'expired',
     needsTrade: 'No trade assigned',

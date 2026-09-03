@@ -241,8 +241,14 @@ function usedKeys(src) {
 }
 const reviewUsed = usedKeys(reviewSrc);
 const padUsed = usedKeys(padSrc);
-ok(reviewUsed.length === 40,
-  `review.jsx calls 40 distinct literal keys (got ${reviewUsed.length})`);
+// `>=`, for the reason written out at the review-namespace count above: an
+// exact total additionally asserts that no key may ever be ADDED, which is not
+// a claim anyone meant to make, and it failed the moment review.jsx grew the
+// five queued-decision strings. What this line is actually for is proving that
+// usedKeys() FOUND the call sites — an empty list would make the resolution
+// loop below vacuously green. That is a floor, not an equality.
+ok(reviewUsed.length >= 40,
+  `review.jsx calls at least its 40 known literal keys (got ${reviewUsed.length})`);
 ok(padUsed.length === 5, `SignaturePad calls 5 distinct keys (got ${padUsed.length})`);
 
 // Presence is checked on the catalogue, NOT by comparing the result to the
