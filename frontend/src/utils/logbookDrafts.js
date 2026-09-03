@@ -368,6 +368,75 @@ export async function uploadCapturePhoto({ projectId, activityId, photoId, uri }
 }
 
 /**
+ * Add ONE photograph to a logbook that is already filed.
+ *
+ * A DIFFERENT ROUTE FROM uploadCapturePhoto ABOVE, AND THE DIFFERENCE IS THE
+ * POINT. That one parks bytes in R2 and writes no document at all — the row
+ * that names the object is written later, by the ordinary save. This one is
+ * addressed by LOGBOOK id and appends the row itself, because the ordinary
+ * save is refused on a filed log (409 FILED_LOG_DATA_IMMUTABLE) and should be:
+ * two daily_jobsite records at 588 Thomas were silently overwritten through
+ * the hole that guard closed.
+ *
+ * WHAT IS SENT IS EVERYTHING THE SERVER GETS: the bytes, the row's identity
+ * and the photo's. No `data`, no photo object, no array index — the server
+ * mints the row, stamps who added it and when, and pushes it by identity. So
+ * there is nothing in this request a caller could aim at the CP's attested
+ * content, and nothing the client can assert about the record.
+ *
+ * Returns the server's own response: { original_r2_key, activity_id,
+ * activity_index, photo_index, photo }. THROWS if the row is missing — a 200
+ * that confirms no stored row is not a photograph on the record, and showing
+ * a tile for one would be the app claiming evidence it does not have.
+ *
+ * On a refusal the server's machine code is re-thrown as `err.code`, because
+ * ACTIVITY_HAS_NO_IDENTITY is not a retry — it is a fact about the log (its
+ * crew rows predate `activity_id` and nothing backfills them) that the CP has
+ * to be told rather than shown as a generic failure.
+ */
+export async function appendPhotoToFiledLog({ logbookId, activityId, photoId, uri }) {
+  if (!logbookId || !activityId || !photoId || !uri) {
+    throw new Error(
+      'appendPhotoToFiledLog needs logbookId, activityId, photoId and uri',
+    );
+  }
+  const form = new FormData();
+  // NO `activityId || photoId` FALLBACK HERE, deliberately. On the capture
+  // route that fallback keeps an id-less row's photo addressable in R2. Here
+  // the id is what the server matches the ROW on, so substituting the photo id
+  // would aim the push at nothing — and the server refuses those rows by name,
+  // which is the answer the CP needs.
+  form.append('activity_id', String(activityId));
+  form.append('photo_id', String(photoId));
+  const isWeb = typeof window !== 'undefined' && !!window.document;
+  if (isWeb) {
+    const blob = await (await fetch(uri)).blob();
+    form.append('file', blob, `${photoId}.jpg`);
+  } else {
+    form.append('file', { uri, name: `${photoId}.jpg`, type: 'image/jpeg' });
+  }
+  let response;
+  try {
+    response = await apiClient.post(
+      `/api/logbooks/${logbookId}/activity-photo`, form,
+      {
+        timeout: 60000,
+        headers: isWeb ? { 'Content-Type': undefined } : { 'Content-Type': 'multipart/form-data' },
+        transformRequest: (d) => d,
+      },
+    );
+  } catch (e) {
+    const detail = e?.response?.data?.detail;
+    const code = (detail && typeof detail === 'object') ? detail.code : null;
+    if (code) e.code = code;
+    throw e;
+  }
+  const body = response?.data;
+  if (!body || !body.photo) throw new Error('append returned no photo row');
+  return body;
+}
+
+/**
  * Upload every photo in an activities array that still needs it.
  *
  * Returns { activities, uploaded, remaining, offline } and NEVER throws — a

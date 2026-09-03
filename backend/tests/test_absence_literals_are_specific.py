@@ -308,8 +308,14 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
         # A LOWER BOUND, stated. Most of these are dict / list membership,
         # which is exact and not this shape — but the count is asserted so a
         # sudden jump is visible rather than silent.
+        #
+        # 400 -> 410 with test_filed_log_photo_append.py, which asserts that a
+        # server-minted photo row carries no `base64` and no `enhance_status`
+        # key. That is dict membership — exact, and precisely the kind this
+        # bucket exists to hold. The ceiling moves; the shape of the rule does
+        # not.
         self.assertLess(
-            unclassified, 400,
+            unclassified, 410,
             f"{unclassified} assertNotIn haystacks could not be classified; "
             "if this has grown a lot, the classifier needs the new binding shape",
         )

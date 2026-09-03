@@ -313,15 +313,19 @@ class TheLegitimateWritesStillWork(Base):
 
 
 class AllFourGoThroughTheOneGuard(unittest.TestCase):
+    """FIVE, since append_activity_photo. The class name is left alone on
+    purpose — it names the RULE (one guard, every logbook write goes through
+    it), and the rule is what a new write has to join."""
+
     SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
-    def test_one_definition_and_four_call_sites(self):
-        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 5)
+    def test_one_definition_and_five_call_sites(self):
+        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 6)
 
     def test_none_of_them_kept_a_bare_unauthorized_fetch(self):
         """The exact shape that was there before: load the doc, check nothing."""
         for fn in ("update_logbook", "finalize_logbook", "amend_logbook",
-                   "delete_logbook"):
+                   "delete_logbook", "append_activity_photo"):
             body = self.SRC[self.SRC.index(f"async def {fn}("):]
             body = body[:2000]
             with self.subTest(endpoint=fn):

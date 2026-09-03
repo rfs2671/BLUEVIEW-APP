@@ -355,6 +355,67 @@ def _logbook_photo_is_renderable(photo: dict) -> bool:
     return bool(_logbook_photo_sources(photo))
 
 
+# ── A PHOTOGRAPH THAT WAS NOT THERE WHEN HE SIGNED SAYS SO ───────────────────
+#
+# append_activity_photo lets a photograph be added to a log that is already
+# filed, because a photograph is not DOB-required daily log content and
+# treating one as an amendment to a compliance record is wrong on the merits.
+# The corollary is this: a report that prints an appended photograph beside the
+# ones the CP had in front of him, with nothing to tell them apart, makes the
+# record assert that all of them were present at attestation. That assertion is
+# the only thing this feature could manufacture, and this is what stops it.
+#
+# THE FLAG IS THE CLAIM; THE ATTRIBUTION IS A COURTESY. `added_after_filing`
+# alone is enough to mark the photograph, so a row that somehow carries no
+# stamp of who or when is still labelled rather than silently passed through.
+#
+# NEVER THE RAW `added_by`. That is a user id. Printing one on a report tells a
+# reader nothing and looks like a redaction; the display name is printed when
+# there is one, and nothing when there is not.
+_PHOTO_ADDED_AFTER_FILING_LABEL = "Added after filing"
+
+
+def _photo_added_after_filing_caption(photo: dict) -> str:
+    """The caption HTML for an appended photograph, or '' for an original.
+
+    Two lines: the label, then the attribution. Inline styles and no flex, like
+    the rest of this report — the same string is emailed as HTML and rendered
+    to PDF by WeasyPrint, so it has to survive both.
+    """
+    if not isinstance(photo, dict) or not photo.get("added_after_filing"):
+        return ""
+    import html as _h
+
+    parts = []
+    when = photo.get("added_at")
+    if isinstance(when, str) and when:
+        try:
+            when = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except Exception:
+            when = None
+    if isinstance(when, datetime):
+        # NOT strftime('%b %-d'): '%-d' is a glibc extension and this module is
+        # imported on developer machines that do not have it.
+        parts.append(f"{when.strftime('%b')} {when.day}, {when.year}")
+    who = str(photo.get("added_by_name") or "").strip()
+    if who:
+        parts.append(who)
+    out = (
+        '<span style="display:block;font-size:9px;line-height:1.35;'
+        'font-weight:700;color:#b45309;">&#9888; '
+        f'{_h.escape(_PHOTO_ADDED_AFTER_FILING_LABEL)}</span>'
+    )
+    if parts:
+        # Each part escaped on its own, THEN joined with the raw entity —
+        # escaping the joined string would emit a literal "&middot;".
+        _joined = " &middot; ".join(_h.escape(p) for p in parts)
+        out += (
+            '<span style="display:block;font-size:9px;line-height:1.35;'
+            f'color:#94a3b8;">{_joined}</span>'
+        )
+    return out
+
+
 def _enhance_bytes_to_r2_sync(raw_bytes: bytes, enh_key: str, thumb_key: str,
                               retain_thumb_b64: bool) -> dict:
     """Blocking: enhance -> upload both derivatives -> return the photo patch.
@@ -22242,6 +22303,245 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     return serialize_id(updated)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  A PHOTOGRAPH MAY BE ADDED TO A FILED LOG. NOTHING ELSE MAY.
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# THE RULING, and why the 409 above does not apply to it. Photographs are not
+# DOB-required daily log content — BC 3301.2 does not ask for them. The
+# statutory content of the record is the crews, the headcounts, the work
+# performed and the weather, and every one of those stays immutable once the CP
+# has signed. A later photograph OF THAT SAME WORK is not a correction to what
+# he attested, so making him file an amendment to attach one treats evidence as
+# if it were a retraction.
+#
+# WHY IT CANNOT REUSE PUT /api/logbooks/{id}. That route refuses any `data`
+# write once the STORED status is "submitted", and that guard is correct —
+# two daily_jobsite records at 588 Thomas were silently overwritten through the
+# hole it closed. Loosening it to "allow the write if only the photos changed"
+# is not available either: the client's blob is NOT a faithful echo of the
+# stored document (hydrate reconciles crews on any submitted-but-unlocked log,
+# and photoForPayload is lossy and conditional), so a server-side diff cannot
+# tell a photo-only change from a rewrite that happens to agree in places.
+#
+# THE SHAPE THAT IS SAFE IS ALREADY IN THIS FILE, TWICE.
+# _purge_finalized_photo_base64 and _enhance_logbook_photos both write into
+# data.activities[].photos[] on a log that is submitted AND finalized, and both
+# are legitimate for three reasons this endpoint inherits whole:
+#
+#   FIELD-SCOPED        the update names ONE path under photos[]; `data` is
+#                       never $set, and neither is anything else beneath it
+#   SERVER-CONSTRUCTED  every value in the appended row is minted here
+#   NO CLIENT BLOB      the request carries image bytes and two ids. There is
+#                       no `data`, no photo object and no array index for a
+#                       caller to aim somewhere it should not go
+#
+# IDENTITY, NEVER POSITION. The push is keyed on `activity_id` through
+# arrayFilters. An index stops naming the same row the moment one is added,
+# removed or reordered — the same reason the capture-time R2 key is not
+# positional — and this endpoint is reached hours after the CP stopped looking
+# at the screen.
+#
+# THE ROWS IT CANNOT REACH ARE REFUSED BY NAME. A crew row saved by a build
+# older than 2026-08-10 carries no `activity_id`, and nothing backfills one, so
+# no id a client can send will ever match it. Those get 409
+# ACTIVITY_HAS_NO_IDENTITY rather than a push at a plausible index.
+#
+# NOTE, DELIBERATELY NOT FIXED HERE: upload_logbook_photo (the capture-time
+# route) takes no logbook_id and performs no filed-state check of any kind. It
+# only parks bytes in R2 — it writes no document — so it is not a way into a
+# filed record, but it is also not the gate anyone would assume it is.
+#
+# STATUS IS READ, NOT GATED ON. The endpoint accepts a draft as readily as a
+# filed log: refusing one would be a rule nobody made, and the ordinary editor
+# already handles drafts. What the status decides is the STAMP — see below. A
+# draft appended to here can still have the push overwritten by the editor's
+# next PUT, which is why the client only reaches for this route when the
+# ordinary path is closed.
+@api_router.post(
+    "/logbooks/{logbook_id}/activity-photo",
+    dependencies=[Depends(require_approved)],
+)
+async def append_activity_photo(
+    logbook_id: str,
+    activity_id: str = Form(...),
+    photo_id: str = Form(...),
+    file: UploadFile = File(...),
+    current_user = Depends(get_current_user),
+):
+    """Append ONE photograph to one activity row of an existing logbook.
+
+    AUTH is _authorize_logbook_write, the helper update / finalize / amend
+    already share, so no new authorization concept is introduced: the project's
+    admin or owner, or anyone assigned to the project.
+
+    IDEMPOTENT ON BOTH SIDES. The R2 key is a pure function of (project_id,
+    activity_id, photo_id), so a retry after a dropped connection overwrites
+    the same object instead of orphaning one. The DOCUMENT is made idempotent
+    by the $elemMatch precondition: the row must not already carry a photo with
+    this key. Without that, a retry would leave two tiles of one photograph on
+    a signed record — which is exactly the kind of thing this feature must
+    never manufacture.
+
+    THE STATUS CODES ARE A CONTRACT, as on the capture route: a device must be
+    able to tell 'this photo is unacceptable' (4xx, stop) from 'storage is
+    unavailable' (5xx, keep trying).
+    """
+    activity_id = str(activity_id or "").strip()
+    photo_id = str(photo_id or "").strip()
+    if not activity_id or not photo_id:
+        raise HTTPException(
+            status_code=400, detail="activity_id and photo_id are required",
+        )
+
+    logbook = await _authorize_logbook_write(logbook_id, current_user)
+
+    # ── WHICH ROW, AND WHETHER THERE IS ONE ─────────────────────────────────
+    activities = ((logbook.get("data") or {}).get("activities") or [])
+    target_index = None
+    has_idless_row = False
+    for _i, _row in enumerate(activities):
+        if not isinstance(_row, dict):
+            continue
+        _rid = str(_row.get("activity_id") or "").strip()
+        if not _rid:
+            has_idless_row = True
+            continue
+        if _rid == activity_id and target_index is None:
+            target_index = _i
+    if target_index is None:
+        if has_idless_row:
+            # THE ONE REFUSAL THAT IS ABOUT THE RECORD, NOT THE REQUEST. There
+            # is nothing the caller can send that would work, so it says which
+            # fact is in the way instead of returning a bare 404 the client
+            # would read as "wrong id, try again".
+            raise HTTPException(status_code=409, detail={
+                "code": "ACTIVITY_HAS_NO_IDENTITY",
+                "message": (
+                    "This log's crew rows were saved before rows carried an "
+                    "identity, so a photo cannot be attached to one."
+                ),
+            })
+        raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})
+
+    # ── THE BYTES ───────────────────────────────────────────────────────────
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded photo: {e}")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded photo is empty.")
+    if len(file_bytes) > _LOGBOOK_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Photo too large. Maximum 15 MB.")
+    # By MAGIC NUMBER, never the multipart header: the header is client-owned,
+    # and this is a second place arbitrary bytes could be parked in the bucket
+    # under an image's name.
+    content_type = _logbook_photo_content_type(file_bytes)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise HTTPException(
+            status_code=503, detail="Photo storage (R2) is not configured",
+        )
+
+    project_id = str(logbook.get("project_id") or "")
+    r2_key = _logbook_capture_photo_r2_key(project_id, activity_id, photo_id)
+    try:
+        await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, content_type)
+    except Exception as e:
+        logger.error(
+            "[photo-append] logbook=%s R2 upload failed key=%s: %r",
+            logbook_id, r2_key, e,
+        )
+        raise HTTPException(status_code=502, detail="Photo storage upload failed")
+
+    # ── THE ROW, MINTED HERE ────────────────────────────────────────────────
+    #
+    # NO POINTER IS EVER INVENTED: the write below happens only after the PUT
+    # returned, so a row on the record never names an object R2 does not have.
+    #
+    # `added_after_filing` FOLLOWS base64_purged_at's PRECEDENT — a stamp the
+    # server writes recording what it did — and it is CONDITIONAL on the stored
+    # state, not on this route. A photograph appended to a log that has not
+    # been filed WAS present when the CP later attested, and marking it
+    # otherwise would be the same lie pointing the other way.
+    now = datetime.now(timezone.utc)
+    filed = logbook.get("status") == "submitted" or bool(logbook.get("is_locked"))
+    photo = {
+        "photo_id": photo_id,
+        "original_r2_key": r2_key,
+        "timestamp": now.isoformat(),
+        "added_at": now,
+        "added_by": str(current_user.get("id") or current_user.get("_id") or ""),
+    }
+    _who = str(
+        current_user.get("cp_name") or current_user.get("full_name")
+        or current_user.get("name") or ""
+    ).strip()
+    if _who:
+        photo["added_by_name"] = _who
+    if filed:
+        photo["added_after_filing"] = True
+
+    result = await db.logbooks.update_one(
+        {
+            "_id": to_query_id(logbook_id),
+            # The idempotency precondition AND the identity match, in one
+            # filter so the decision is the database's rather than a read the
+            # write could race.
+            "data.activities": {"$elemMatch": {
+                "activity_id": activity_id,
+                "photos.original_r2_key": {"$ne": r2_key},
+            }},
+        },
+        {
+            "$push": {"data.activities.$[act].photos": photo},
+            # `updated_at` MOVES, so a reader of the record knows something
+            # about it changed. It is the only field outside photos[] this
+            # endpoint is allowed to touch.
+            "$set": {"updated_at": now},
+        },
+        array_filters=[{"act.activity_id": activity_id}],
+    )
+
+    _existing = activities[target_index].get("photos") or []
+    _already = any(
+        isinstance(p, dict) and p.get("original_r2_key") == r2_key for p in _existing
+    )
+    if getattr(result, "matched_count", 0) == 0 and not _already:
+        # The row was there when it was read and is not there now. Nothing was
+        # written; say which fact is missing rather than reporting success.
+        raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})
+
+    # ── WHERE IT LANDED ─────────────────────────────────────────────────────
+    # Re-read rather than trusting the indexes from before the write: the
+    # report addresses photos POSITIONALLY (/api/reports/logbook-photo/{id}/
+    # {ai}/{pi}), so an index reported here has to be the one the document
+    # actually has, not the one it had a moment ago.
+    fresh = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}) or logbook
+    activity_index, photo_index, stored = target_index, len(_existing), photo
+    for _i, _row in enumerate(((fresh.get("data") or {}).get("activities") or [])):
+        if not isinstance(_row, dict) or _row.get("activity_id") != activity_id:
+            continue
+        for _pi, _p in enumerate(_row.get("photos") or []):
+            if isinstance(_p, dict) and _p.get("original_r2_key") == r2_key:
+                activity_index, photo_index, stored = _i, _pi, _p
+        break
+
+    logger.info(
+        "[photo-append] logbook=%s activity=%s photo=%s filed=%s by=%s",
+        logbook_id, activity_id, photo_id, filed, photo["added_by"],
+    )
+    return {
+        "original_r2_key": r2_key,
+        "bytes": len(file_bytes),
+        "activity_id": activity_id,
+        "activity_index": activity_index,
+        "photo_index": photo_index,
+        "photo": stored,
+    }
+
+
 async def _purge_finalized_photo_base64(logbook_id: str, doc: dict) -> int:
     """Drop the FULL-SIZE inline base64 from a finalized log's photos.
 
@@ -25885,7 +26185,7 @@ async def generate_combined_report(
             _done = _photo.get("enhance_status") == "done"
             _thumb = f"{_orig}?v=thumb" if _done else _orig
             _full = f"{_orig}?v=enhanced" if _done else _orig
-            _shots += (
+            _tile = (
                 f'<a href="{_full}" target="_blank" '
                 'style="text-decoration:none;display:inline-block;">'
                 f'<img src="{_thumb}" width="160" height="120" '
@@ -25893,6 +26193,19 @@ async def generate_combined_report(
                 'border-radius:4px;border:1px solid #e2e8f0;'
                 'display:inline-block;margin:3px;" /></a>'
             )
+            # A PHOTOGRAPH ADDED AFTER THE CP SIGNED IS LABELLED AS ONE.
+            # Unlabelled photos are emitted exactly as before — the wrapper
+            # exists only where there is something to say, so the ordinary
+            # grid is untouched.
+            _added_note = _photo_added_after_filing_caption(_photo)
+            if _added_note:
+                _tile = (
+                    '<span style="display:inline-block;vertical-align:top;'
+                    'width:166px;margin:0 0 6px;">'
+                    f'{_tile}<span style="display:block;padding:0 3px;">'
+                    f'{_added_note}</span></span>'
+                )
+            _shots += _tile
         if not _shots:
             continue
         _cap = " - ".join(

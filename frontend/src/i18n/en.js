@@ -456,6 +456,26 @@ export default {
     // is stated rather than the button just being absent.
     cameraLockedHint: 'Choose the activity and location first — every photo is labelled with them.',
     photoTaggedWith: 'Photos will be labelled:',
+
+    // ── A PHOTOGRAPH MAY BE ADDED TO A FILED LOG ─────────────────────────
+    // Photographs are not DOB-required daily log content, so adding one is not
+    // an amendment to what the CP signed. The copy says exactly that, because
+    // he is reading it underneath a form he has just been told is read-only
+    // and the obvious inference — "so I can still edit this" — is wrong.
+    photoAppendTitle: 'Add a photo to this filed log',
+    photoAppendBody:
+      'Photos are not part of what you signed, so you can still add them. '
+      + 'Nothing else on this log can change — a correction needs an amendment.',
+    photoAppendAdd: 'Add Photo',
+    // NOT "try again". Nothing backfills activity_id, so no retry will ever
+    // reach this row and offering one would be the app pretending otherwise.
+    photoAppendLegacyRow:
+      'This crew was recorded before photos could be attached to it. '
+      + 'A photo for this crew has to go on an amendment.',
+    photoAppendFailedTitle: 'Photo Not Added',
+    photoAppendFailedBody: 'The photo did not reach the log. Try again.',
+    // The same words the report and the PDF print under the same photograph.
+    photoAddedAfterFiling: 'Added after filing',
     photosCount_one: '1 photo',
     photosCount_other: '{n} photos',
 
