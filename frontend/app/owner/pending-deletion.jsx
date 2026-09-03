@@ -221,16 +221,30 @@ export default function PendingDeletionScreen() {
                   </View>
                 ) : p.job_completion_date ? (
                   <Text style={s.retentionOk}>
-                    Completed {p.job_completion_date} · retention period ended
+                    Completed {p.job_completion_date}
+                    {p.job_completion_co_number
+                      ? ` · C of O ${p.job_completion_co_number}`
+                      : ''}
+                    {' · retention period ended'}
                     {p.purge_eligible_at ? ` ${p.purge_eligible_at}` : ''}
                   </Text>
+                ) : p.no_completion_attested ? (
+                  /* THE ONLY REASON THIS ROW IS UNBLOCKED, so it names the
+                     person who said so. An unblocked permanent-delete button
+                     with no attribution is an anonymous permission slip on the
+                     one action in this product that cannot be undone. */
+                  <Text style={s.retentionOk}>
+                    Attested never completed by{' '}
+                    {p.no_completion_attested_by || 'an admin'}
+                    {p.no_completion_reason ? ` — ${p.no_completion_reason}` : ''}
+                  </Text>
                 ) : (
-                  /* NOT a clearance. No completion date was ever recorded, so
-                     the seven-year period is not computable for this project
-                     and nothing here has checked it. Saying "no retention
-                     hold" would be a claim nobody verified. */
+                  /* Unreachable in practice — the server blocks this state, so
+                     the banner above renders instead. Kept as the honest
+                     fallback if a row ever arrives without purge_blocked
+                     computed, and it must NOT read as a clearance. */
                   <Text style={s.retentionUnknown}>
-                    No completion date recorded — retention period unknown
+                    No completion recorded — retention period unknown
                   </Text>
                 )}
 

@@ -119,9 +119,28 @@ class _DB:
 
 
 def _proj(_id, company, name):
+    """A project marked for deletion and cleared past the RETENTION brake.
+
+    `no_completion_attested` is fixture, not decoration. This file is about
+    TENANCY — who may purge whose project — and the retention brake
+    (lib/project_retention.py) refuses a hard delete on any project with no
+    recorded job completion. Without a way past it, the two "CAN still purge"
+    tests below would be asserting a 200 they could never get, and the "cannot
+    cross companies" tests would pass for the wrong reason entirely: refused by
+    retention rather than by the tenancy gate they exist to check.
+
+    The two rules stay separable and both directions are asserted: every
+    cross-tenant test below checks for 403 SPECIFICALLY, which retention's 409
+    cannot satisfy, and TheRetentionBrakeIsAlsoInThePath at the end of this
+    file checks that this fixture flag is still what lets the allowed purges
+    through.
+    """
     return {"_id": _id, "name": name, "company_id": company,
             "marked_for_deletion": True, "is_deleted": False,
-            "marked_at": "2026-08-01", "marked_by": "admin1"}
+            "marked_at": "2026-08-01", "marked_by": "admin1",
+            "no_completion_attested": True,
+            "no_completion_reason": "Fixture: never completed, cleared to purge.",
+            "no_completion_attested_by": "admin1"}
 
 
 def _owner(company, **extra):
@@ -326,6 +345,45 @@ class TheOperatorIsNeverInferredFromRole(unittest.TestCase):
                              if not l.strip().startswith("#"))
             with self.subTest(fn=fn):
                 self.assertNotIn('role") == "owner"', code)
+
+
+class TheRetentionBrakeIsAlsoInThePath(Base):
+    """THE FIXTURE CONTROL, and the ordering that keeps this file honest.
+
+    `_proj` carries `no_completion_attested` so the allowed purges can actually
+    complete. A fixture flag that quietly stops mattering is how a suite keeps
+    passing for a reason nobody chose, so its load-bearing-ness is asserted
+    rather than assumed.
+
+    The ORDER also matters and is asserted below: the tenancy gate runs before
+    the retention brake, so a cross-tenant caller gets 403 and not 409. If that
+    ever inverted, every cross-tenant test in this file would still see "an
+    exception" while checking the wrong rule — they all pin 403 specifically,
+    and this says why that is the right number."""
+
+    def test_without_the_attestation_an_allowed_purge_is_refused_409(self):
+        for p in self.db.projects.docs:
+            p.pop("no_completion_attested", None)
+        e = self.refused(self.purge, A_PROJECT, _owner("coA"))
+        self.assertEqual(e.status_code, 409)
+        self.assertIn("no recorded job completion", str(e.detail))
+
+    def test_with_it_the_same_purge_proceeds(self):
+        """Without this half, the test above would also pass against a purge
+        that refused everything."""
+        self.purge(A_PROJECT, _owner("coA"))
+        self.assertEqual([p["_id"] for p in self.db.projects.docs], [B_PROJECT])
+
+    def test_tenancy_is_decided_before_retention(self):
+        """A cross-tenant caller is told 403 — "not yours" — even against a
+        project that retention would also have refused. Answering 409 there
+        would leak that the other company's project exists and is unpurgeable,
+        and would send the caller off to satisfy a rule that is not the one
+        stopping them."""
+        for p in self.db.projects.docs:
+            p.pop("no_completion_attested", None)
+        e = self.refused(self.purge, B_PROJECT, _owner("coA"))
+        self.assertEqual(e.status_code, 403)
 
 
 if __name__ == "__main__":
