@@ -55,6 +55,7 @@ import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
 // redesign is verified, then deleted in a follow-up.
 import RiskScoreCircle from '../../src/components/RiskScoreCircle';
 import CompliancePanel from '../../src/components/CompliancePanel';
+import ProjectRetentionCard from '../../src/components/ProjectRetentionCard';
 import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
@@ -219,6 +220,11 @@ export default function ProjectDetailScreen() {
   const [notificationsUnreadCount, setNotificationsUnreadCount] = useState(0);
 
   const isAdmin = user?.role === 'admin';
+  // NOT `isAdmin`. That flag is role === "admin" exactly, so it excludes the
+  // OWNER — who is the only role that can purge, and therefore the one who
+  // most needs to be able to place a legal hold. This matches the server gate
+  // on PUT /projects/{id}, which is get_admin_user: role in {admin, owner}.
+  const canEditRetention = user?.role === 'admin' || user?.role === 'owner';
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -705,6 +711,12 @@ export default function ProjectDetailScreen() {
 
             <CompliancePanel projectId={projectId} />
 
+            <ProjectRetentionCard
+              project={project}
+              canEdit={canEditRetention}
+              onUpdated={setProject}
+            />
+
             <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>ON SITE</Text>
             <View style={deskStyles.tileRow}>
               {/* A read that never landed shows "—". Rendering 0 here would
@@ -874,6 +886,17 @@ export default function ProjectDetailScreen() {
               of "current state" (risk score) + "near-term forecast"
               (this panel). */}
           <CompliancePanel projectId={projectId} />
+
+          {/* Completion date + legal hold. These are the only two things that
+              stop the owner's irreversible purge, so they belong where the
+              project's state is read rather than buried in the deletion
+              queue — by the time a project reaches that queue, the person who
+              knows when the job actually finished is no longer looking. */}
+          <ProjectRetentionCard
+            project={project}
+            canEdit={canEditRetention}
+            onUpdated={setProject}
+          />
 
           {/* Stats Row */}
           <View style={s.statsRow}>

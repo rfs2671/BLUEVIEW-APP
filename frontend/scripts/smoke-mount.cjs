@@ -104,6 +104,13 @@ const ROUTES = [
   '/settings',
   '/checkin',
   '/owner',
+  // THE PURGE QUEUE. The only screen from which a project's entire compliance
+  // history can be destroyed, and it had no executed coverage — nothing else
+  // in CI renders it. It also now renders the retention brake (hold banner,
+  // blocked purge control) off GET /projects/pending-deletion, and a screen
+  // that silently failed to draw that would offer a live delete button on a
+  // project the server is going to refuse.
+  '/owner/pending-deletion',
   // THE SITE DEVICE — a fixed tablet at the gate, read by DOB inspectors, and
   // until now the only surface in the app with ZERO executed coverage. These
   // five need more than a URL: every one of them redirects away unless
@@ -135,7 +142,20 @@ const server = http.createServer((req, res) => {
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
 const JWT = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ exp: 4102444800, sub: 'u1' })}.x`;
 const USER = { id: 'u1', email: 'smoke@test.local', full_name: 'Smoke', name: 'Smoke', role: 'owner', company_name: 'Acme', company_id: 'c1', account_status: 'approved' };
-const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, Brooklyn', company_id: 'c1', status: 'active', nyc_bin: '2115914' };
+// job_completion_date / purge_eligible_at are present so the retention card on
+// /project/p1 mounts its POPULATED branch. Its empty branch is the default
+// everywhere else in this file, so both get executed across the run.
+const PROJECT = { id: 'p1', _id: 'p1', name: 'Smoke Site', address: '1 Test St, Brooklyn', company_id: 'c1', status: 'active', nyc_bin: '2115914', job_completion_date: '2020-03-01', completion_source: 'final_co', purge_eligible_at: '2027-03-01', legal_hold: false };
+// Two rows, deliberately: one BLOCKED by a legal hold and one clear. The
+// blocked row is the only way the hold banner and the disabled purge control
+// are ever executed — every other route in this list renders the clear branch.
+const PENDING_DELETION = {
+  count: 2,
+  items: [
+    { id: 'p9', name: 'Held Site', address: '9 Hold St', company_id: 'c1', nyc_bin: '2115915', marked_by: 'u1', marked_at: '2026-08-01T00:00:00Z', dob_logs_count: 12, checkins_count: 340, job_completion_date: '2025-06-01', completion_source: 'final_co', legal_hold: true, legal_hold_reason: 'Kaplan v. 588 Boyland', legal_hold_by: 'u1', legal_hold_at: '2026-08-02T00:00:00Z', purge_eligible_at: '2032-06-01', purge_blocked: true, purge_block_reason: 'A legal hold is in force on this project: Kaplan v. 588 Boyland. Records cannot be deleted while the hold stands. A hold does not expire; an admin must lift it.' },
+    { id: 'p8', name: 'Clear Site', address: '8 Clear St', company_id: 'c1', nyc_bin: '2115916', marked_by: 'u1', marked_at: '2026-08-01T00:00:00Z', dob_logs_count: 3, checkins_count: 11, job_completion_date: null, completion_source: null, legal_hold: false, legal_hold_reason: null, legal_hold_by: null, legal_hold_at: null, purge_eligible_at: null, purge_blocked: false, purge_block_reason: null },
+  ],
+};
 const WORKER = { id: 'w1', _id: 'w1', name: 'Test Worker', company_id: 'c1', trade: 'Carpenter', certifications: [] };
 // The gate tablet. AuthContext reads site_mode/project_id/project_name off
 // /api/auth/me to set siteMode + siteProject; a user without them makes every
@@ -154,6 +174,11 @@ function stub(page, me = USER) {
     if (url.includes('/api/auth/me')) body = me;
     else if (url.includes('feature-flags')) body = { flags: {} };
     else if (url.includes('dob-summary')) body = { by_project: {}, totals: {} };
+    // BEFORE the generic /api/projects match below, which would otherwise
+    // swallow this literal path and hand back an ARRAY — the screen reads
+    // `.items` off it, gets undefined, and renders "Nothing pending deletion".
+    // That mounts green while executing none of the retention branches.
+    else if (url.includes('/api/projects/pending-deletion')) body = PENDING_DELETION;
     else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
     else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
     else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;
