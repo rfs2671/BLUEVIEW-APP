@@ -142,6 +142,15 @@ const ROUTES = [
   // CI would ever execute it — and it is the page a man reads before he signs
   // a statutory record. The stub returns {} for /api/esra-consent, so this
   // mounts the OUTAGE branch; the agreement branch is verified separately.
+  //
+  // AND THIS ENTRY WAS GREEN THROUGH A TWO-DAY TOTAL SIGNING OUTAGE. Every CP
+  // signature on the platform was blocked from 2026-09-01 to 2026-09-03 because
+  // RouteGuard's CP allowlist did not carry /consent, and this job never saw
+  // it: it signs in as an OWNER, so the CP arm of the guard never runs, and it
+  // asks only "did anything throw", which a redirect does not. The two
+  // questions it cannot ask - does the agreement PAINT, and does the accept
+  // POST fire, for the role the guard actually confines - are answered by
+  // scripts/consent-paint.cjs.
   // THE CP'S DECISION SURFACE on flagged check-ins — approve, send home,
   // assign trade. It is not a logbook editor, so nothing above covers it, and
   // like every other screen here it is executed nowhere else in CI. It now

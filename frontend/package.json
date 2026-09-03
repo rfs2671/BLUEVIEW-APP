@@ -12,7 +12,8 @@
     "build:expo-only": "expo export --platform web --clear",
     "update": "eas update --auto",
     "postinstall": "patch-package",
-    "smoke": "node scripts/smoke-mount.cjs --dist dist"
+    "smoke": "node scripts/smoke-mount.cjs --dist dist",
+    "consent:paint": "node scripts/consent-paint.cjs --dist dist"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",

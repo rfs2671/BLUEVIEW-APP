@@ -324,16 +324,59 @@ class ReviewScreenRoutingTest(unittest.TestCase):
         self.assertTrue(screen.exists(), "review screen must be under app/logbooks")
 
     def test_cp_allowlist_not_widened(self):
+        """The rule MOVED; the concern did not.
+
+        This used to regex the `if (isCp) {` block out of app/_layout.jsx. That
+        block no longer exists: the rule was extracted to
+        frontend/src/utils/cpConfinement.js after `/consent` being absent from
+        it blocked every CP signature on the platform for two days. A pin on a
+        LOCATION fails when the code is reorganised, which is not a regression
+        and is not what this test is for.
+
+        What it is for survives intact: a screen a CP must reach belongs UNDER
+        /logbooks, and must not be made reachable by bolting its own path onto
+        the allowlist. That is still asserted, against the module that now owns
+        the list.
+
+        `/consent` IS on the list, deliberately, and is asserted to be. It is
+        the one route that legitimately cannot live under /logbooks -- it is a
+        cross-cutting gate every signing screen pushes to, and putting it under
+        the logbooks tree would make the gate a child of the thing it gates.
+        """
+        rule = (_BACKEND.parent / "frontend" / "src" / "utils"
+                / "cpConfinement.js").read_text(encoding="utf-8")
+
+        pat = r"CP_ALLOWED = \[(.*?)\]"
+        m = re.search(pat, rule, re.S)
+        self.assertIsNotNone(m, "CP_ALLOWED list not found in cpConfinement.js")
+
+        # THE ENTRIES, NOT THE PROSE. A previous form of this test asserted
+        # over the raw block and tripped on a COMMENT: the note explaining
+        # the /settings fix mentions /settings/notifications/project/<id>,
+        # and "/project" is on the forbidden list below. An assertion that
+        # can be failed by its own documentation is not testing the rule.
+        paths = re.findall(r"path: '([^']+)'", m.group(1))
+        self.assertTrue(paths, "no path entries parsed out of CP_ALLOWED")
+
+        self.assertIn("/logbooks", paths)
+
+        # The deliberate exception, pinned so a later tidy cannot quietly
+        # remove it and re-break every signature on the platform.
+        self.assertIn("/consent", paths,
+                      "/consent must stay reachable or no CP can sign")
+
+        # And the original refusals, unchanged.
+        for extra in ("/project", "/site", "/workers", "/review"):
+            self.assertNotIn(extra, paths, f"CP allowlist widened with {extra}")
+
+        # The layout must DELEGATE, not carry a second copy of the rule that
+        # could drift from this one.
         layout = (_BACKEND.parent / "frontend" / "app" / "_layout.jsx").read_text(
-            encoding="utf-8",
-        )
-        m = re.search(r"if \(isCp\) \{(.*?)\n    \}", layout, re.S)
-        self.assertIsNotNone(m, "CP guard block not found")
-        block = m.group(1)
-        # Still exactly the original four allowances.
-        self.assertIn("pathname.startsWith('/logbooks')", block)
-        for extra in ("/project", "/site", "/workers", "/review'"):
-            self.assertNotIn(extra, block, f"CP allowlist widened with {extra}")
+            encoding="utf-8")
+        self.assertIn("cpConfinement", layout,
+                      "the layout must use the shared rule, not an inline list")
+        self.assertNotIn("pathname.startsWith('/logbooks') ||", layout,
+                         "the inline allowlist is back beside the module")
 
     def test_review_screen_is_english_only(self):
         """Every review string exists in EN, and the namespace is absent from ES.
