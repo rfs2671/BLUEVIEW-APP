@@ -97,6 +97,12 @@ const ROUTES = [
   // CI would ever execute it — and it is the page a man reads before he signs
   // a statutory record. The stub returns {} for /api/esra-consent, so this
   // mounts the OUTAGE branch; the agreement branch is verified separately.
+  // THE CP'S DECISION SURFACE on flagged check-ins — approve, send home,
+  // assign trade. It is not a logbook editor, so nothing above covers it, and
+  // like every other screen here it is executed nowhere else in CI. It now
+  // holds a decision on the device when the server is unreachable and overlays
+  // the queue onto every refetch, so it has real work to do at mount.
+  '/logbooks/review?projectId=p1',
   '/consent',
   '/admin/site-devices',
   '/admin/users',
