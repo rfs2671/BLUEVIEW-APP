@@ -579,7 +579,13 @@ class TheAttestationOnTheDocument(unittest.TestCase):
         src = inspect.getsource(server.sweep_signature_ledger_gaps)
         self.assertIn('"status": "submitted"', src)
         self.assertIn('doc.get("cp_signature")', src)
-        self.assertNotIn("withdrawal_attestation", src)
+        # ANCHORED ON THE READ, not on the bare word. `assertNotIn` against a
+        # string bans a SUBSTRING, so a bare "withdrawal_attestation" would
+        # also be tripped by a comment mentioning it and would say nothing
+        # about whether the sweep READS the field. The sweep gets its fields
+        # with `doc.get(...)`, so that is the shape to forbid.
+        self.assertNotIn('doc.get("withdrawal_attestation")', src)
+        self.assertNotIn('["withdrawal_attestation"]', src)
 
     def test_no_signature_event_is_written(self):
         _, state = _run(SUPER, _child())
@@ -753,10 +759,25 @@ class AnyAdminOrCPWithProjectAccess(unittest.TestCase):
 
     def test_no_author_only_branch_survives_in_the_endpoint(self):
         """THE CODE, NOT THE PROSE -- the docstring discusses the author at
-        length. A `created_by` comparison anywhere in the body would be the
-        restriction growing back."""
+        length, so it is stripped before looking.
+
+        ANCHORED ON THE READ, and both shapes of it. A bare
+        `assertNotIn("created_by", ...)` bans a SUBSTRING: it would also fire
+        on `created_by_name`, which this endpoint may legitimately want one
+        day, and it would say nothing about whether the author is being
+        COMPARED. What must never come back is the endpoint reading the
+        document's author at all, and there are exactly two ways to write
+        that."""
         src = code_of(server.withdraw_amendment)
-        self.assertNotIn("created_by", src)
+        self.assertNotIn('.get("created_by")', src)
+        self.assertNotIn('["created_by"]', src)
+
+    def test_and_the_control_that_proves_those_anchors_can_FIRE(self):
+        """An anchored absence assertion that matches nothing anywhere is
+        indistinguishable from one that is simply misspelled. `amend_logbook`
+        writes the field, so the same two anchors must find it there."""
+        src = code_of(server.amend_logbook)
+        self.assertIn('"created_by"', src)
 
     def test_an_unassigned_superintendent_is_out_before_any_of_it(self):
         """A superintendent is scoped to his assigned projects, exactly as a CP

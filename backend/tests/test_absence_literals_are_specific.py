@@ -70,6 +70,15 @@ _ANCHORS = set(".()[]{}=:<>/\\\"'`;,|+*!?@#$%^&~ -\n\t")
 # A name is source text if it is BOUND to one of these in the same module.
 _STRING_CALLS = {
     "code_of", "read_text", "strip_python", "strip_js", "strip_css",
+    # inspect.getsource. THE BINDING SHAPE THIS FILE ASKED FOR: the
+    # unclassified floor below tripped at exactly 400 and says "if this has
+    # grown a lot, the classifier needs the new binding shape" — this is it.
+    # `getsource` returns a str unconditionally, and the suite reads raw source
+    # through it wherever a test wants the comments and docstring left IN
+    # (`code_of`, already here, is the same read with them stripped out).
+    # Teaching it moved 3 calls from unclassified to anchored and surfaced ZERO
+    # new bare literals, so it widens this guard's reach without relaxing it.
+    "getsource",
 }
 # ...or produced by one of the renderers, which return HTML strings.
 _RENDER_PREFIXES = ("render", "generate", "_render", "_generate", "build_html")
