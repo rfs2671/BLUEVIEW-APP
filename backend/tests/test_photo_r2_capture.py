@@ -953,5 +953,168 @@ class PurgeCoexistenceTest(unittest.TestCase):
         self.assertEqual(out["thumb_base64"], THUMB_B64)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  5. THE CAPTURE ROUTE KNOWS WHICH LOG IT IS SHOOTING FOR
+# ══════════════════════════════════════════════════════════════════════════
+#
+# WHAT WAS REPORTED, AND LEFT UNFIXED. `upload_logbook_photo` took no
+# logbook_id and performed no filed-state check of any kind. It only parks
+# bytes in R2 and writes no document, so it was never a way INTO a filed
+# record — that part of the note was right — but a route named
+# `upload_logbook_photo`, gated with require_approved and require_project_access
+# and sitting next to a route that DOES write into a filed log, is not the gate
+# any reader would assume it is. "It happens to be harmless" is not a check.
+#
+# WHY THE ID IS OPTIONAL AND NOT REQUIRED, stated here because the alternative
+# was the obvious first instinct. There is a LEGITIMATE caller with no logbook
+# id to give, and it is the one that matters most:
+#
+#   THE OFFLINE CREATE. A photo is taken before the log has ever reached the
+#   server. daily_jobsite's editor holds `existingLogId = null` until the first
+#   push lands, and draftSync.pushOne uploads the draft's photos BEFORE the
+#   create that would mint the id (`draft.backend_id` is null on that path).
+#   The whole capture design exists because "logbook_id does not exist at
+#   capture time" — CaptureKeyTest.test_it_does_not_depend_on_a_logbook_id
+#   above pins that in the KEY, and it is just as true of the request.
+#
+# Requiring it would refuse exactly the photograph that most needs to be kept:
+# one taken in a dead zone on a log that does not exist yet. So it is optional,
+# and CHECKED WHENEVER IT IS GIVEN — which is every caller that has one.
+
+class _LogbookLookup(_FakeCollection):
+    """A find_one that models the filter this route actually sends.
+
+    Not `return self.one`: the route's whole question is whether the id names
+    an ACTIVE logbook ON THIS PROJECT, and a double that answers the same
+    document to every query would let the project-mismatch and soft-delete
+    branches pass without ever being executed."""
+
+    def __init__(self, docs):
+        super().__init__()
+        self._by_id = {d["_id"]: d for d in docs}
+
+    async def find_one(self, query=None, *a, **k):
+        q = query or {}
+        doc = self._by_id.get(q.get("_id"))
+        if doc is None:
+            return None
+        if "is_deleted" in q and doc.get("is_deleted") is True:
+            return None
+        return dict(doc)
+
+
+DRAFT_LOG = {"_id": "lb_draft", "project_id": "proj1", "status": "draft",
+             "is_locked": False, "is_deleted": False}
+FILED_LOG = {"_id": "lb_filed", "project_id": "proj1", "status": "submitted",
+             "is_locked": False, "is_deleted": False}
+FROZEN_LOG = {"_id": "lb_frozen", "project_id": "proj1", "status": "draft",
+              "is_locked": True, "is_deleted": False}
+OTHER_PROJECT_LOG = {"_id": "lb_other", "project_id": "proj_elsewhere",
+                     "status": "draft", "is_locked": False, "is_deleted": False}
+DELETED_LOG = {"_id": "lb_gone", "project_id": "proj1", "status": "draft",
+               "is_locked": False, "is_deleted": True}
+
+_ALL_LOGS = [DRAFT_LOG, FILED_LOG, FROZEN_LOG, OTHER_PROJECT_LOG, DELETED_LOG]
+
+
+def _upload_for(logbook_id, r2=None, project_id="proj1"):
+    """The capture route, with a logbook_id in the form."""
+    r2 = _FakeR2() if r2 is None else r2
+    client, cleanup = _client(CP_USER)
+    data = {"activity_id": "act_7", "photo_id": "cap_3"}
+    if logbook_id is not None:
+        data["logbook_id"] = logbook_id
+    try:
+        with patch.object(server, "db", _FakeDb(logbooks=_LogbookLookup(_ALL_LOGS))), \
+             patch.object(server, "to_query_id", lambda x: x), \
+             patch.object(server, "_r2_client", r2), \
+             patch.object(server, "R2_BUCKET_NAME", "bv-bucket"):
+            return client.post(
+                f"/api/projects/{project_id}/logbook-photo",
+                data=data,
+                files={"file": ("shot.jpg", TINY_JPEG, "image/jpeg")},
+            ), r2
+    finally:
+        cleanup()
+
+
+class TheCaptureRouteChecksTheFiledState(unittest.TestCase):
+
+    def test_the_route_accepts_a_logbook_id(self):
+        """A signature fact, so the field cannot be silently dropped."""
+        import inspect
+        params = inspect.signature(server.upload_logbook_photo).parameters
+        self.assertIn("logbook_id", params)
+
+    def test_a_draft_still_accepts_a_capture(self):
+        """THE CONTROL. Without this, every refusal below would also pass on a
+        route that refused everyone."""
+        resp, r2 = _upload_for("lb_draft")
+        self.assertEqual(resp.status_code, 200, resp.text[:400])
+        self.assertEqual(len(r2.puts), 1)
+
+    def test_no_logbook_id_at_all_still_works(self):
+        """THE OFFLINE CREATE. The photo exists before the log does; refusing
+        it here would lose exactly the photograph that most needs keeping."""
+        resp, r2 = _upload_for(None)
+        self.assertEqual(resp.status_code, 200, resp.text[:400])
+        self.assertEqual(len(r2.puts), 1)
+
+    def test_a_blank_logbook_id_is_absence_not_a_value(self):
+        """A client that appends the field unconditionally would otherwise send
+        '' and be 404'd on a photo that is perfectly fine."""
+        resp, r2 = _upload_for("")
+        self.assertEqual(resp.status_code, 200, resp.text[:400])
+        self.assertEqual(len(r2.puts), 1)
+
+    def test_a_FILED_log_is_refused_and_nothing_is_stored(self):
+        """The check the route's name promised. A filed log's photograph goes
+        through POST /logbooks/{id}/activity-photo, which appends the row and
+        marks it as added after filing — this route writes no row at all, so a
+        capture aimed at a filed log would put bytes in the bucket that nothing
+        will ever name."""
+        resp, r2 = _upload_for("lb_filed")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["detail"]["code"],
+                         "FILED_LOG_PHOTO_CAPTURE_REFUSED")
+        self.assertEqual(r2.puts, [], "a refused capture must not spend storage")
+
+    def test_a_FROZEN_log_is_refused_too(self):
+        """is_locked without status submitted: an IMMEDIATE type freezes on
+        signature. Both halves, the same pair isOpenForEditing asks."""
+        resp, r2 = _upload_for("lb_frozen")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(r2.puts, [])
+
+    def test_a_logbook_on_ANOTHER_project_is_a_404(self):
+        """require_project_access authorised the caller for THIS project. An id
+        naming a log on a different one is not a photo this request may claim
+        to belong to — and 404, not 403, so it confirms no ids to a prober."""
+        resp, r2 = _upload_for("lb_other")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(r2.puts, [])
+
+    def test_a_soft_deleted_logbook_is_a_404(self):
+        resp, r2 = _upload_for("lb_gone")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(r2.puts, [])
+
+    def test_an_unknown_logbook_id_is_a_404(self):
+        resp, r2 = _upload_for("lb_nope")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(r2.puts, [])
+
+    def test_the_refusal_happens_before_the_bytes_are_read(self):
+        """Cheap, and it is the ordering that makes 'nothing is stored' true by
+        construction rather than by luck."""
+        src = (_BACKEND / "server.py").read_text(encoding="utf-8")
+        body = src[src.index("async def upload_logbook_photo("):]
+        body = body[:body.index("\n# ==================== CP PROFILE")]
+        self.assertLess(
+            body.index("FILED_LOG_PHOTO_CAPTURE_REFUSED"),
+            body.index("await file.read()"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

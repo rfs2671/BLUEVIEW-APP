@@ -42,6 +42,20 @@ export default function LogbookStepper({
   onStepChange,
   onExit,
   locked = false,
+  // ── THE ONE THING A LOCKED FORM MAY STILL OFFER ──────────────────────────
+  //
+  // Rendered only when `locked`, and OUTSIDE the pointerEvents wrapper below,
+  // which is why it can be interactive at all. That wrapper is deliberately
+  // absolute — "EVERY control below non-interactive — no per-field flags to
+  // miss" — and loosening it to let one control through would give that
+  // sentence up for the whole form.
+  //
+  // A SEPARATE SUBTREE KEEPS THE GUARANTEE STRUCTURAL. Whatever a form puts
+  // here is the complete set of what a filed record will accept from it, and
+  // it can be read in one place instead of audited across a 3,000-line render.
+  // Today that is exactly one thing: appending a photograph, which is not
+  // DOB-required log content and so is not an amendment to what the CP signed.
+  lockedExtra = null,
   // The loaded document's amendment facts, or null. Shape:
   // { reason, by, at, has_reason }. Read off the RECORD by the editor, never
   // derived here and never relative to today.
@@ -278,6 +292,10 @@ export default function LogbookStepper({
           <View pointerEvents={locked ? 'none' : 'auto'}>
             {current && current.render()}
           </View>
+
+          {/* OUTSIDE the wrapper, so it is reachable on a form where nothing
+              else is. See the prop's note: the wrapper does not move. */}
+          {locked && !!lockedExtra && lockedExtra}
 
           <LogbookLockBar
             logType={logType}
