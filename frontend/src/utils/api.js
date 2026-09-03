@@ -1094,6 +1094,20 @@ export const logbooksAPI = {
     return response.data;
   },
 
+  // Take back an UNSIGNED amendment. A STATE, NOT A DELETE — the document
+  // survives and nothing is destroyed; it simply stops being an open
+  // correction, so it leaves the compliance card and stops blocking the next
+  // amend. `reason` is optional (the amendment's own reason is still on the
+  // record saying what was attempted). The server refuses a FILED amendment
+  // (423 WITHDRAW_FILED_AMENDMENT) and an original that is not an amendment at
+  // all (400 WITHDRAW_NOT_AN_AMENDMENT); a second call is a 200 no-op that
+  // leaves the first withdrawal's attested author and timestamp alone.
+  withdraw: async (logbookId, reason = undefined) => {
+    const response = await apiClient.post(
+      `/api/logbooks/${logbookId}/withdraw`, { reason });
+    return response.data;
+  },
+
   getNotifications: async (projectId) => {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/notifications`);
     return response.data;

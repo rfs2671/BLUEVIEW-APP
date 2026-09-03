@@ -4198,6 +4198,15 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
             "date": {"$lt": today},
             "is_locked": {"$ne": True},
             "is_deleted": {"$ne": True},
+            # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
+            # this clause the nightly pass counts one as unsigned and
+            # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
+            # for it -- deduped on (project, log_type, date), so it is written
+            # once and then sits on the admin's alert list forever with no
+            # action that could ever clear it. The freeze branch cannot reach a
+            # withdrawn child either way (it has no affirmed signature), so
+            # this only ever removes a false alert.
+            **WITHDRAWN_EXCLUDED,
         })
         stale = await cursor.to_list(1000)
     except Exception as e:
@@ -21237,13 +21246,38 @@ async def get_project_logbooks(
     current_user = Depends(get_current_user),
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
+    include_withdrawn: bool = False,
 ):
-    """Get all logbooks for a project, optionally filtered by type and date"""
+    """Get all logbooks for a project, optionally filtered by type and date.
+
+    ── WITHDRAWN AMENDMENTS ARE OUT BY DEFAULT, AND THIS IS THE LEVERAGE POINT ─
+    This is the read every editor and the CP home makes, and TWELVE client
+    pickers choose the document to open out of what it returns — three through
+    `chooseEditableLog`, one through `adoptAmendment`, and NINE that still
+    carry their own inline `arr.find((l) => !l.is_locked) || arr[0]`. A
+    withdrawn child would satisfy every one of them, so the CP would tap his
+    log and land in a correction he had just taken back, and the only thing
+    stopping him filing it would be a 409 from the server after he had already
+    done the work.
+
+    Excluding it HERE fixes all twelve at once. The client-side rules are
+    hardened too (amendmentChain / logbookEditable / amendmentAdopt), because a
+    bundle in the field reads a CACHED list that may predate the withdrawal and
+    because a two-week-old phone cannot take an OTA — but the fix that reaches
+    every screen is this clause.
+
+    NOTHING IS HIDDEN THAT ASKS TO SEE IT. `include_withdrawn=true` returns the
+    whole chain, and `GET /logbooks/{id}` never filtered by state at all: the
+    document survives and stays readable, which is the entire difference
+    between a withdrawal and a delete.
+    """
     company_id = get_user_company_id(current_user)
     query = {
         "project_id": project_id,
         "is_deleted": {"$ne": True}
     }
+    if not include_withdrawn:
+        query.update(WITHDRAWN_EXCLUDED)
     if company_id:
         query["company_id"] = company_id
     if log_type:
@@ -22040,6 +22074,23 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if _lock_target and _lock_target.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
 
+    # ── A WITHDRAWN CORRECTION IS NOT A DRAFT ───────────────────────────────
+    #
+    # It is neither locked nor submitted, so both refusals around this one let
+    # it through — and `syncPendingDrafts` PUTs a stored draft at app startup
+    # with no user action in the path. A correction its author took back would
+    # be quietly rewritten, and then re-signable. Refused here rather than in
+    # `_authorize_logbook_write` because DELETE and WITHDRAW both legitimately
+    # act on a withdrawn document and share that gate.
+    #
+    # 409, matching the FILED_LOG_DATA_IMMUTABLE convention below: 423 says
+    # "locked", and this is not locked. The client's next move is to drop the
+    # local draft, not to amend.
+    if logbook_is_withdrawn(existing_lb):
+        raise HTTPException(
+            status_code=409, detail={"code": "LOGBOOK_WITHDRAWN"},
+        )
+
     # ── A FILED LOG'S CONTENT IS NOT REWRITABLE ─────────────────────────────
     #
     # THE 423 ABOVE CANNOT FIRE HERE. It keys on `is_locked`, and an END_OF_DAY
@@ -22378,6 +22429,22 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
+    # ── A WITHDRAWN CORRECTION CANNOT BE FILED ──────────────────────────────
+    #
+    # WITHOUT THIS, WITHDRAWAL IS COSMETIC. The draft still exists, the client
+    # still holds its id, and draftSync calls /finalize for any locally
+    # finalized draft with no user in the path — so a correction its author
+    # took back could be sealed into the record by a background sync on a phone
+    # that came back into signal. That is a filed amendment nobody chose to
+    # file, which is the exact harm withdrawal exists to prevent.
+    #
+    # AHEAD OF ensure_signature_ledger_row, deliberately: minting a ledger row
+    # for a withdrawn draft would put an attestation in the audit trail for a
+    # document that is never going to be a record.
+    if logbook_is_withdrawn(existing):
+        raise HTTPException(
+            status_code=409, detail={"code": "LOGBOOK_WITHDRAWN"},
+        )
     # ── THE DERIVED ROW IS WRITTEN BEFORE THE IDEMPOTENT RETURN, NOT AFTER ──
     #
     # AND THAT PLACEMENT IS THE WHOLE OFFLINE FIX FOR TEN OF THE TWELVE TYPES.
@@ -22522,9 +22589,15 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     # THE OPEN ONE IS RETURNED, not just refused. Dead-ending the CP is what
     # produced the five: he had a correction to make, the app kept accepting
     # new ones, and none of them told him the previous was still unsigned.
+    #
+    # WITHDRAWN CHILDREN ARE NOT READ AT ALL. `open_amendment_head` already
+    # refuses to call one open, so this clause is not what makes the rule
+    # correct — it is what keeps a parent whose CP has withdrawn a dozen taps
+    # from paying for them on every subsequent amend.
     _children = await db.logbooks.find({
         "parent_logbook_id": str(original["_id"]),
         "is_deleted": {"$ne": True},
+        **WITHDRAWN_EXCLUDED,
     }).to_list(200)
     _open_head = open_amendment_head(_children)
     if _open_head is not None:
@@ -22585,6 +22658,179 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     # quietly minting an attestation nobody made.
     await ensure_signature_ledger_row(created_child, written_by="amend_logbook")
     return serialize_id(created_child)
+
+
+@api_router.post("/logbooks/{logbook_id}/withdraw")
+async def withdraw_amendment(logbook_id: str, data: dict = None, current_user = Depends(get_current_user)):
+    """Take back an UNSIGNED amendment. A state, not a delete.
+
+    ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+    Seven unsigned amendment drafts on one project's daily narrative, two of
+    them forks — one parent, two children, sixty and twenty-six seconds apart.
+    A superintendent tapped Amend, the screen did not visibly change, he tapped
+    again. Every one of those drafts warns on his compliance card and there was
+    no way to stop it: signing files a correction he may not intend (and on a
+    fork, one of two competing versions with nothing recording which he meant),
+    and deleting destroys a document.
+
+    THE DOCUMENT SURVIVES. Its data, its reason, its author, its parent link
+    and its timestamps are untouched. `status` becomes "withdrawn" and three
+    fields record who did it and when. Nothing is destroyed and nothing is
+    rewritten.
+
+    ── ATTESTED, AND WHY NOT THROUGH signature_events ─────────────────────────
+    The operator's ruling is that a withdrawal of a proposed correction to a
+    compliance record is itself an act and must record who did it and when. It
+    is recorded in TWO places, and the pair is the point:
+
+      ON THE DOCUMENT   `withdrawn_by`, `withdrawn_by_name`, `withdrawn_at`,
+                        all server-stamped in the same update that sets the
+                        state. This is the DURABLE half, and it has to be:
+                        `audit_log` swallows its own exceptions (it logs and
+                        returns), so an audit row alone could silently not
+                        exist and leave a state change with nobody's name on
+                        it. A withdrawal that cannot say who made it is the
+                        defect this ruling is about.
+
+      IN audit_log      `logbook_withdraw`, beside the `logbook_amend` row this
+                        act answers. The ledger that already holds the taking
+                        of the action holds the taking-back of it, and the two
+                        rows read as one story.
+
+    NOT A signature_event, and the collection's own rules say why. Its unique
+    index is named `signature_events_one_row_per_signing_act`; its `version` is
+    a count of the signings of one document; `create_signature_event` requires
+    `signature_data` and a `content_snapshot`, and `attach_attestation` exists
+    to capture THE SENTENCE PRINTED ABOVE A SIGNATURE. A withdrawal has no
+    signature: nobody drew one, there is no sentence above one, and there is no
+    content being attested to — the content is precisely what is being
+    abandoned. Writing a row there would bump the document's signature version,
+    assert a signing act that did not happen, and store a content_hash of a
+    draft nobody stands behind. `ensure_signature_ledger_row` refuses to mint a
+    row for a document with no ink for exactly this reason: "a row for a
+    signature nobody made is a fabricated attestation."
+
+    DEMANDING A DRAWN SIGNATURE TO ABANDON A DRAFT WOULD ALSO BE THE BUG. The
+    seven drafts exist because a correction path had too much friction and no
+    feedback. Putting a signature pad between a man and the undo of his own
+    double-tap is how an eighth draft gets made.
+
+    A REASON IS ACCEPTED AND NEVER REQUIRED. `amendment_reason` is gated hard
+    (six characters and a word) because it explains a CHANGE to a signed
+    record; a withdrawal explains the absence of one, and the amendment's own
+    reason is still on the document saying what was attempted.
+
+    ── WHAT IT REFUSES ────────────────────────────────────────────────────────
+    400 WITHDRAW_NOT_AN_AMENDMENT — only a child created by /amend may be
+        withdrawn. An ORIGINAL is the day itself; letting this endpoint take
+        one back would be a delete wearing a softer word, and delete already
+        exists with its own rule.
+    423 WITHDRAW_FILED_AMENDMENT — a FILED correction is a record. `is_locked`
+        or `status == "submitted"`, the same two clauses `_filed_log` uses,
+        asked through the one predicate they now share. Only an unsigned draft
+        can be withdrawn; a filed one is corrected by amending it in turn.
+    403 — the author, or an admin/owner of the project's company. The refusal
+        NAMES the author, because a CP looking at another man's correction on
+        his own signed log needs to know who to ask, not a closed door.
+
+    ALREADY WITHDRAWN IS A NO-OP, RETURNED 200, and that is deliberate rather
+    than lazy. This feature exists because a man tapped a button twice; the
+    second tap on THIS one must not overwrite the first withdrawal's attested
+    author and timestamp with a second person's, and must not stack a second
+    audit row for one act.
+
+    THE ID READ IS `id` FIRST, AND THAT IS NOT A STYLE CHOICE.
+    `get_current_user` returns `serialize_id(user)`, which does
+    `obj['id'] = str(obj['_id']); del obj['_id']` — so a reader asking for
+    `current_user["_id"]` gets nothing. `delete_logbook` did exactly that, and
+    the effect was total: `user_id` was "" on every request, the author branch
+    could never match, and no CP could delete his own logbook. It also recorded
+    that empty string as the actor in the audit row. #371 fixed it with the
+    file's own idiom, used at ~17 authorization sites; this endpoint is written
+    on top of that rather than around it, so an attested act never records
+    nobody as its actor.
+    """
+    now = datetime.now(timezone.utc)
+    amendment = await _authorize_logbook_write(logbook_id, current_user)
+
+    # ROLES_SCOPED_TO_ASSIGNED_PROJECTS — see the note in update_logbook.
+    if str(current_user.get("role") or "").strip().lower() in ROLES_SCOPED_TO_ASSIGNED_PROJECTS:
+        assigned = current_user.get("assigned_projects", []) or []
+        if amendment.get("project_id") not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to this project")
+
+    if amendment.get("is_amendment") is not True:
+        raise HTTPException(
+            status_code=400, detail={"code": WITHDRAW_NOT_AN_AMENDMENT},
+        )
+
+    # THE FILED REFUSAL, BEFORE THE IDEMPOTENT RETURN AND BEFORE THE AUTHOR
+    # RULE. A filed correction is a record whoever is asking, so the answer
+    # must not depend on who asks — an admin gets the 423 too.
+    if logbook_is_filed(amendment):
+        raise HTTPException(
+            status_code=423,
+            detail={"code": WITHDRAW_FILED_AMENDMENT,
+                    "logbook_id": str(amendment.get("_id"))},
+        )
+
+    if logbook_is_withdrawn(amendment):
+        # The second tap. The first withdrawal's attestation stands.
+        return serialize_id(amendment)
+
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
+    user_role = str(current_user.get("role") or "")
+    if user_role not in ("admin", "owner") and amendment.get("created_by") != user_id:
+        _author = str(amendment.get("created_by_name") or "").strip()
+        raise HTTPException(
+            status_code=403,
+            detail=(f"This correction was filed by {_author}. "
+                    "Only its author or an admin can withdraw it."
+                    if _author else
+                    "Only the author of this correction or an admin can "
+                    "withdraw it."),
+        )
+
+    _reason = str((data or {}).get("reason") or "").strip()
+
+    # THE STATE AND THE ATTESTATION IN ONE UPDATE. A withdrawal whose author
+    # landed in a separate write could be interrupted between the two and leave
+    # a correction withdrawn by nobody.
+    #
+    # The guard on the filter is what makes two simultaneous taps safe: the
+    # second matches nothing and the first man's name is what stays on it.
+    _set = {
+        "status": WITHDRAWN_STATUS,
+        "withdrawn_at": now,
+        "withdrawn_by": user_id,
+        "withdrawn_by_name": (current_user.get("full_name")
+                              or current_user.get("name")),
+        "updated_at": now,
+    }
+    if _reason:
+        _set["withdrawal_reason"] = _reason
+    await db.logbooks.update_one(
+        {"_id": to_query_id(logbook_id),
+         "status": {"$ne": WITHDRAWN_STATUS}},
+        {"$set": _set},
+    )
+
+    await audit_log("logbook_withdraw", user_id, "logbook", logbook_id, {
+        "parent_logbook_id": amendment.get("parent_logbook_id"),
+        "log_type": amendment.get("log_type"),
+        "date": amendment.get("date"),
+        "project_id": amendment.get("project_id"),
+        # The amendment's OWN reason, so the ledger says what was proposed as
+        # well as that it was taken back.
+        "amendment_reason": str(amendment.get("amendment_reason") or "")[:200],
+        "withdrawal_reason": _reason[:200] or None,
+    })
+
+    withdrawn = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    out = serialize_id(withdrawn)
+    # THE RECORD SAYS SO, in the response the client already has in hand.
+    out["withdrawal_sentence"] = withdrawal_sentence(withdrawal_state(withdrawn))
+    return out
 
 
 # ══ ACTIVITY CHIPS — the sequence engine's only consumer ═════════════════════
@@ -22939,11 +23185,23 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
                     "company": (_pairing or {}).get("company") or None,
                 })
 
-    # Count orientation docs that haven't been CP-signed yet
+    # Count orientation docs that haven't been CP-signed yet.
+    #
+    # `status: {$ne: "submitted"}` IS ALSO TRUE OF A WITHDRAWN CHILD, which is
+    # the whole reason WITHDRAWN_EXCLUDED is written once: a selector that hunts
+    # for unfinished work by asking what a document is NOT will pick up a state
+    # invented after it was written. This count drives both the badge and
+    # whether the as-needed orientation row appears at all on the CP's home.
+    #
+    # `$nin` AND NOT `**WITHDRAWN_EXCLUDED`, and the difference is silent: both
+    # clauses key on `status`, so spreading the constant in here would REPLACE
+    # the submitted test rather than add to it and this count would start
+    # including every filed orientation. The one selector in the file where the
+    # two collide, spelled out.
     unsigned_orientations = await db.logbooks.count_documents({
         "project_id": project_id,
         "log_type": "subcontractor_orientation",
-        "status": {"$ne": "submitted"},
+        "status": {"$nin": ["submitted", WITHDRAWN_STATUS]},
         "is_deleted": {"$ne": True},
     })
 
@@ -22999,6 +23257,12 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     #
     # END_OF_DAY ONLY. An immediate log froze when it was signed, so an
     # unsigned one is simply a draft nobody finished, not a day left open.
+    #
+    # AND NOT A WITHDRAWN CORRECTION. This is the selector the seven drafts
+    # were sitting in: an unsigned amendment child of an END_OF_DAY type on a
+    # past date matches every clause, and `_amend_meta` below reads THIS list
+    # raw to raise the `amendment_unsigned` gap. Withdrawing one has to make it
+    # leave here or the card is unchanged and the state means nothing.
     stale_unsigned_docs = await db.logbooks.find(
         {
             "project_id": project_id,
@@ -23006,6 +23270,7 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
             "date": {"$lt": eastern_date()},
             "is_locked": {"$ne": True},
             "is_deleted": {"$ne": True},
+            **WITHDRAWN_EXCLUDED,
         },
         {"log_type": 1, "date": 1, "cp_signature": 1, "is_amendment": 1,
          "amendment_reason": 1, "created_by_name": 1, "created_at": 1},
@@ -24509,6 +24774,124 @@ AMENDMENT_NO_REASON = "no_reason_recorded"
 AMENDMENT_NONE = "not_amended"
 
 
+# ══ WITHDRAWN — THE EXIT AN UNSIGNED CORRECTION NEVER HAD ═══════════════════
+#
+# THE PRODUCTION STATE THIS ANSWERS. Seven unsigned `daily_jobsite` amendment
+# drafts on one project, and on two of those days TWO drafts on ONE parent,
+# sixty and twenty-six seconds apart: a superintendent tapped Amend, nothing on
+# the screen changed, he tapped again. Every one of them warns on his
+# compliance card, forever, because the only two exits were both wrong:
+#
+#   SIGN IT     files a correction he may not intend — and on a fork, files one
+#               of two competing versions with nothing recording which he meant.
+#   DELETE IT   destroys a document. (It also refused him outright until #371:
+#               `delete_logbook` read `current_user["_id"]` on an object where
+#               `serialize_id` had deleted that key, so no CP could delete his
+#               own logbook. Even repaired, delete is the wrong answer here —
+#               the amendment is evidence of what was attempted.)
+#
+# A STATE, NOT A DELETE. The document survives untouched — its data, its
+# reason, its author, its parent link. What changes is what it CLAIMS to be: a
+# withdrawn amendment is no longer an open correction, so nothing counts it,
+# nothing offers it for editing, and no report can ever select it.
+#
+# ONE FIELD CARRIES THE STATE. `status` is the field every reader in this file
+# and in the client already consults to decide what a logbook is, and a second
+# boolean beside it would be a second writer of one fact — the failure mode
+# this codebase has spent its last month closing. `withdrawn_at` /
+# `withdrawn_by` / `withdrawn_by_name` are NOT that second writer: they are the
+# ATTESTATION, and they answer a different question (who, and when).
+WITHDRAWN_STATUS = "withdrawn"
+
+# The Mongo clause, written once. Every selector that hunts for unfinished work
+# keys on `is_locked: {$ne: True}` or `status: {$ne: "submitted"}`, and a
+# withdrawn child satisfies BOTH — so without this it stays on the CP's card
+# under a new name. `$ne` matches a missing field as well as a different value,
+# so it is correct against every document written before this existed.
+#
+# SPREAD IT ONLY INTO A SELECTOR THAT HAS NO `status` KEY. It is a dict, and
+# `{**q, **WITHDRAWN_EXCLUDED}` REPLACES an existing `status` clause instead of
+# narrowing it — silently, and in the widening direction. The one selector
+# where the two collide (`unsigned_orientations`) spells out a `$nin` instead
+# and says so on the line.
+WITHDRAWN_EXCLUDED = {"status": {"$ne": WITHDRAWN_STATUS}}
+
+WITHDRAW_NOT_AN_AMENDMENT = "WITHDRAW_NOT_AN_AMENDMENT"
+WITHDRAW_FILED_AMENDMENT = "WITHDRAW_FILED_AMENDMENT"
+
+
+def logbook_is_withdrawn(log) -> bool:
+    """Has this amendment been withdrawn? The one predicate, for one field."""
+    return (isinstance(log, dict)
+            and str(log.get("status") or "") == WITHDRAWN_STATUS)
+
+
+def logbook_is_filed(log) -> bool:
+    """IS THIS DOCUMENT A RECORD? The rule, in one place at last.
+
+    FILED means `is_locked` (the finalize flag) or `status == "submitted"` (the
+    freeze for the immediate types). A `cp_signature` on an open draft is not a
+    filed record.
+
+    IT WAS WRITTEN TWICE, VERBATIM — `_filed_log._is_filed` on the server and
+    `isFiled` in frontend/src/utils/amendmentChain.js — and the withdraw
+    endpoint would have made a third. The client's copy stays, because it runs
+    on a device this server cannot reach and has to answer offline; the Python
+    one is now this, and `_filed_log` calls it.
+
+    `open_amendment_head` IS NOT A THIRD COPY AND IS DELIBERATELY LEFT ALONE.
+    It also treats a bare `cp_signature` as closing a child, which is BROADER
+    than filed and correct for the question it asks — "is there an INTENTION
+    still outstanding" — see its own note. Withdrawal asks the narrower legal
+    question, because a signature on an unfrozen draft is not yet a filed
+    correction, and folding the two together would start refusing to withdraw a
+    draft somebody signed but never submitted.
+    """
+    if not isinstance(log, dict):
+        return False
+    return bool(log.get("is_locked")) or log.get("status") == "submitted"
+
+
+def withdrawal_state(log) -> dict:
+    """Who withdrew this amendment, and when. Off the RECORD, never the clock.
+
+    Returns `{"withdrawn": bool, "by": str|None, "by_name": str|None,
+    "at": datetime|str|None}`. Absent parts stay absent rather than being
+    filled in — the same rule `amendment_state` follows, and for the same
+    reason: a withdrawal written by a script or a migration that recorded no
+    actor must READ as having recorded no actor.
+    """
+    if not logbook_is_withdrawn(log):
+        return {"withdrawn": False, "by": None, "by_name": None, "at": None}
+    return {
+        "withdrawn": True,
+        "by": str(log.get("withdrawn_by") or "").strip() or None,
+        "by_name": str(log.get("withdrawn_by_name") or "").strip() or None,
+        "at": log.get("withdrawn_at"),
+    }
+
+
+def withdrawal_sentence(state) -> str:
+    """One line saying the correction was taken back. Empty when it was not.
+
+    THE RECORD HAS TO BE ABLE TO SAY SO. A withdrawal of a proposed correction
+    to a compliance record is itself an act; a state flag that only makes a
+    warning disappear would let a correction vanish with nobody's name on it.
+    Same shape as `amendment_sentence`, which is the sentence this one answers.
+    """
+    if not (state or {}).get("withdrawn"):
+        return ""
+    who = (state or {}).get("by_name")
+    day = _amendment_day((state or {}).get("at"))
+    lead = "This proposed correction was withdrawn"
+    if who:
+        lead += f" by {who}"
+    if day:
+        lead += f" on {day}"
+    return (f"{lead}. It was never signed and never filed, so it is not part "
+            f"of the record; the log it proposed to correct is unchanged.")
+
+
 AMENDMENT_REASON_REQUIRED = "AMENDMENT_REASON_REQUIRED"
 AMENDMENT_REASON_NOT_A_SENTENCE = "AMENDMENT_REASON_NOT_A_SENTENCE"
 AMENDMENT_REASON_MIN_CHARS = 6
@@ -24569,9 +24952,17 @@ def open_amendment_head(children):
 
     A SIGNED child does not block: a correction that landed is part of the
     chain, and the next amendment amends it.
+
+    NEITHER DOES A WITHDRAWN ONE, and that is what makes withdrawal an EXIT
+    rather than a second trap. A withdrawn child that still counted as open
+    would hold this parent's amend button shut forever, and the refusal would
+    keep offering the CP a correction he has already taken back — which is
+    exactly the dead end that produced the forks this rule exists to stop.
     """
     def _open(c):
         if not isinstance(c, dict):
+            return False
+        if logbook_is_withdrawn(c):
             return False
         return not (c.get("is_locked") or c.get("status") == "submitted"
                     or c.get("cp_signature"))
@@ -25572,20 +25963,28 @@ def _filed_log(logbooks, log_type):
     NOTHING FILED YET falls back to the first match, which is exactly the old
     behaviour: a day with only an unfiled draft still renders that draft rather
     than a blank section.
+
+    A WITHDRAWN AMENDMENT IS NOT A CANDIDATE AT ALL, and the fallback is why
+    that clause sits on `same_type` rather than inside the filed test. A withdrawn
+    child can never be filed, so it could never win the `filed` branch — but on
+    a day whose original was never signed it is a plain member of `same_type`
+    and `same_type[0]` is insertion order, so the report could print a
+    correction its own author took back, to a lender, as the day's record.
     """
-    same_type = [l for l in logbooks if l.get("log_type") == log_type]
+    same_type = [l for l in logbooks
+                 if l.get("log_type") == log_type and not logbook_is_withdrawn(l)]
     if not same_type:
         return None
-
-    def _is_filed(l):
-        return bool(l.get("is_locked")) or l.get("status") == "submitted"
 
     def _order(l):
         created = l.get("created_at")
         return (created if isinstance(created, datetime) else datetime.min.replace(tzinfo=timezone.utc),
                 str(l.get("_id", "")))
 
-    filed = [l for l in same_type if _is_filed(l)]
+    # `logbook_is_filed` IS the `_is_filed` that used to be defined here — the
+    # same two clauses, lifted out so the withdraw endpoint asks this exact
+    # question rather than writing a fourth copy of it.
+    filed = [l for l in same_type if logbook_is_filed(l)]
     if filed:
         return max(filed, key=_order)
     return same_type[0]

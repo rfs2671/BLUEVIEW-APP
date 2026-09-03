@@ -273,7 +273,21 @@ export default function LogbookStepper({
               OUTSIDE the pointerEvents wrapper: a locked log makes everything
               inside non-interactive, and an explanation the CP cannot select or
               scroll to is not an explanation. */}
-          <AmendmentBanner amendment={amendment} />
+          {/* `logId` IS THE AMENDMENT'S OWN ID on this screen. The editors
+              prefer the editable child over its locked parent
+              (chooseEditableLog), so when the banner renders at all, the
+              document loaded IS the correction — which is exactly what the
+              withdraw endpoint has to be pointed at.
+
+              onWithdrawn REUSES onAmended, and that is not a shortcut: both
+              are "the set of documents for this day just changed on the
+              server, reload". The editors pass their fetchData to it. */}
+          <AmendmentBanner
+            amendment={amendment}
+            logId={logId}
+            draftKey={draftKeyValue}
+            onWithdrawn={onAmended}
+          />
 
           <View pointerEvents={locked ? 'none' : 'auto'}>
             {current && current.render()}

@@ -46,7 +46,14 @@ import { discardFinalizedDraft, setDraftBackendId, markPending } from './logbook
  * record and never something to adopt.
  */
 export function isEditableChild(doc) {
-  return !!(doc && typeof doc === 'object' && doc.is_locked !== true);
+  if (!doc || typeof doc !== 'object') return false;
+  // AND NEVER A WITHDRAWN ONE. Adoption DISCARDS the CP's local copy of the
+  // filed parent — that is the whole point of it — so adopting a correction
+  // its author took back would delete his offline record of a signed log in
+  // order to hand him a document the server will not let him save. The
+  // strongest reason of the three for this check to exist client-side.
+  if (doc.status === 'withdrawn') return false;
+  return doc.is_locked !== true;
 }
 
 /** The editable amendment among a day's documents, or null. */

@@ -1,4 +1,4 @@
-"""The four logbook endpoints that take a logbook_id, and the list that leaked
+"""The logbook endpoints that take a logbook_id, and the list that leaked
 the ids in the first place.
 
 THE GAP. #110 closed create_logbook, which takes a PROJECT id in the body.
@@ -312,18 +312,36 @@ class TheLegitimateWritesStillWork(Base):
         self.assertFalse(self.db.logbooks.docs[0]["is_deleted"])
 
 
-class AllFourGoThroughTheOneGuard(unittest.TestCase):
+class EveryLogbookIdWriterGoesThroughTheOneGuard(unittest.TestCase):
+    """WAS "AllFour", AND THE COUNT IS THE POINT OF THE TEST.
+
+    There are FIVE now: `withdraw_amendment` takes a logbook id in the path and
+    changes the state of a compliance document, so it is exactly the shape this
+    guard exists for. A new endpoint of that shape landing WITHOUT the guard is
+    the regression being watched for, and the way this file catches it is by
+    the census below failing until somebody comes here and says which writer
+    was added.
+    """
+
     SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
-    def test_one_definition_and_four_call_sites(self):
-        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 5)
+    def test_one_definition_and_five_call_sites(self):
+        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 6)
 
     def test_none_of_them_kept_a_bare_unauthorized_fetch(self):
         """The exact shape that was there before: load the doc, check nothing."""
         for fn in ("update_logbook", "finalize_logbook", "amend_logbook",
-                   "delete_logbook"):
+                   "delete_logbook", "withdraw_amendment"):
             body = self.SRC[self.SRC.index(f"async def {fn}("):]
-            body = body[:2000]
+            # FROM THE END OF THE DOCSTRING, not from the `def`. The window used
+            # to start at the signature, and `withdraw_amendment` -- which has
+            # to argue at length why a withdrawal is attested in audit_log
+            # rather than in signature_events -- pushed its first statement past
+            # 2000 characters. A guard that fails because an endpoint was
+            # explained is measuring prose, not code.
+            _open = body.index('"""')
+            _close = body.index('"""', _open + 3) + 3
+            body = body[_close:_close + 2000]
             with self.subTest(endpoint=fn):
                 self.assertIn("_authorize_logbook_write(logbook_id, current_user)", body)
 

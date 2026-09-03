@@ -45,6 +45,13 @@
  */
 export function isOpenForEditing(log) {
   if (!log || typeof log !== 'object') return false;
+  // A WITHDRAWN CORRECTION IS CLOSED, and neither of the two clauses below
+  // says so: `status` is 'withdrawn', not 'submitted', and nothing locked it.
+  // The server refuses a PUT to one (409 LOGBOOK_WITHDRAWN), so without this
+  // the CP would open a correction he took back, fill it in, and be refused at
+  // the save. Third value the rule has to know about, in the one place the
+  // rule is written.
+  if (log.status === 'withdrawn') return false;
   return log.status !== 'submitted' && !log.is_locked;
 }
 
