@@ -19354,24 +19354,93 @@ def _normalize_subfolder_names(names: List[str]) -> List[str]:
     return out
 
 
+# The name an app-uploaded file answers to. A file uploaded through the app
+# never went near Dropbox: upload_project_file writes `dropbox_path: ""` and an
+# r2_key, so it has no folder to be under and the subfolder rule -- keyed on a
+# path -- refused it for EVERY possible value of site_device_subfolders. That
+# is not a strict rule, it is an unsatisfiable one, and it hid every direct
+# upload on every project from every tablet.
+#
+# It is repaired by making such files ADDRESSABLE rather than by publishing
+# them. They are treated as living in one reserved folder, which an admin ticks
+# exactly as they tick a real Dropbox subfolder -- and until they do, the file
+# stays invisible. The operator's ruling is "no auto-publish"; reachable is not
+# published. See _visibility_path_for_record.
+APP_UPLOADS_VIRTUAL_FOLDER = "Uploaded in App"
+
+
+def _visibility_path_for_record(rec: dict) -> str:
+    """The path the site-device visibility rule is applied to for one
+    project_files row.
+
+    For a Dropbox-synced row that is its real `dropbox_path`. For a row with no
+    Dropbox path at all -- a direct upload -- it is a synthetic path under
+    APP_UPLOADS_VIRTUAL_FOLDER, deliberately NOT under the project's Dropbox
+    folder: an admin who ticks the Dropbox folder chose what is inside that
+    folder, and an app upload was never inside it. Ticking the uploads folder
+    by name is the only thing that reveals these files.
+
+    A row with neither a path nor an r2_key names no retrievable file and gets
+    "" -- it stays refused, rather than being conjured into the uploads folder
+    as an entry the tablet would fail to download.
+    """
+    path = str(rec.get("dropbox_path") or "").strip()
+    if path:
+        return path
+    if not str(rec.get("r2_key") or "").strip():
+        return ""
+    name = str(rec.get("name") or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not name:
+        name = str(rec.get("r2_key") or "").rsplit("/", 1)[-1].strip()
+    if not name:
+        return ""
+    return f"/{APP_UPLOADS_VIRTUAL_FOLDER}/{name}"
+
+
 def _path_is_under_allowed_subfolder(
     file_path: str, folder_path: str, allowed_subfolders: List[str]
 ) -> bool:
     """True iff file_path lives under any allowed subfolder of
     folder_path. Path comparison is case-insensitive because Dropbox
     preserves case in `name` but stores a lowercased `path_lower`; we
-    call this with either, so normalize both sides."""
+    call this with either, so normalize both sides.
+
+    THE BASE FOLDER SELECTED AS ITS OWN SUBFOLDER. The picker lists the base
+    folder's children, but an admin can and does tick the project folder itself
+    -- `dropbox_folder_path: '/588 plans'` with `site_device_subfolders:
+    ['588 plans']` is live production config. The base prefix is stripped
+    first, so `/588 plans/A-101.pdf` became the relative `A-101.pdf` and was
+    compared against `588 plans`, which matched nothing: the selection was read
+    as "a folder named 588 plans INSIDE /588 plans", which does not exist. Every
+    file on that project was hidden from the gate. A name that IS the base --
+    its leaf name or its full stored path -- now means everything under the
+    base, which is what ticking it plainly intends.
+
+    The base prefix is matched on a path SEGMENT boundary. A bare startswith
+    also matched `/588 plans archive/`, so a sibling folder that merely shared
+    the prefix had its contents measured against the selection as though they
+    were inside the project.
+    """
     if not file_path or not allowed_subfolders:
         return False
     fp = file_path.lower()
     base = (folder_path or "").lower().rstrip("/")
+    under_base = bool(base) and (fp == base or fp.startswith(base + "/"))
     # Strip the base project folder prefix so comparisons are relative.
-    rel = fp[len(base):] if base and fp.startswith(base) else fp
+    rel = fp[len(base):] if under_base else fp
     rel = rel.lstrip("/")
+    # The spellings that name the base folder itself rather than a child of it.
+    base_aliases = set()
+    if base:
+        base_aliases.add(base.strip("/"))
+        base_aliases.add(base.rsplit("/", 1)[-1])
+        base_aliases.discard("")
     for sub in allowed_subfolders:
         sub_low = sub.lower().strip("/").strip()
         if not sub_low:
             continue
+        if under_base and sub_low in base_aliases:
+            return True
         if rel == sub_low or rel.startswith(sub_low + "/"):
             return True
     return False
@@ -19397,8 +19466,31 @@ async def list_dropbox_subfolders(
         raise HTTPException(status_code=403, detail="Access denied to this project")
     company_id = company_id or project.get("company_id")
     folder_path = project.get("dropbox_folder_path") or ""
+
+    # Files uploaded through the app have no Dropbox path, so they appear in no
+    # Dropbox listing and this picker never offered a name that could reveal
+    # them. Offer the reserved one — but only where such files exist, so a
+    # project without them is not shown a folder holding nothing.
+    has_app_uploads = await db.project_files.count_documents({
+        "project_id": project_id,
+        "is_deleted": {"$ne": True},
+        "dropbox_path": {"$in": [None, ""]},
+        "r2_key": {"$nin": [None, ""]},
+    }) > 0
+
+    selected = _normalize_subfolder_names(
+        project.get("site_device_subfolders") or []
+    )
+
     if not folder_path:
-        return {"subfolders": [], "selected": [], "folder_path": ""}
+        # A project that has only ever had direct uploads has no linked folder.
+        # That early return used to answer with nothing selectable at all —
+        # precisely the project on which every file is invisible.
+        return {
+            "subfolders": [APP_UPLOADS_VIRTUAL_FOLDER] if has_app_uploads else [],
+            "selected": selected,
+            "folder_path": "",
+        }
 
     try:
         # Dropbox wants "" for root, not "/" — translate our stored sentinel.
@@ -19421,12 +19513,17 @@ async def list_dropbox_subfolders(
         )
         subfolders = []
 
+    # Appended after the sort so the reserved name sits at the end of the list
+    # rather than interleaved among the project's real Dropbox folders.
+    if has_app_uploads and not any(
+        s.lower() == APP_UPLOADS_VIRTUAL_FOLDER.lower() for s in subfolders
+    ):
+        subfolders.append(APP_UPLOADS_VIRTUAL_FOLDER)
+
     return {
         "folder_path": folder_path,
         "subfolders": subfolders,
-        "selected": _normalize_subfolder_names(
-            project.get("site_device_subfolders") or []
-        ),
+        "selected": selected,
     }
 
 
@@ -19622,7 +19719,14 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
         files = []
         for rec in cached_files:
             dropbox_path = rec.get("dropbox_path", "")
-            if is_site_device and not _visible_to_site(dropbox_path):
+            # The rule is applied to the record's VISIBILITY path, not to
+            # dropbox_path: a direct upload has none, and testing the raw ""
+            # refused it under every possible selection. The row still reports
+            # its real (empty) dropbox_path below — the synthetic one is a
+            # selection handle, not an address anything else may resolve.
+            if is_site_device and not _visible_to_site(
+                _visibility_path_for_record(rec)
+            ):
                 continue
             r2_key = rec.get("r2_key", "")
             stored_url = rec.get("r2_url", "")
@@ -19915,7 +20019,13 @@ async def get_project_manifest(
         ).to_list(limit)
         for rec in page:
             dropbox_path = rec.get("dropbox_path", "")
-            if is_site_device and not _visible_to_site(dropbox_path):
+            # Same visibility path the listing endpoint applies, via the same
+            # pair of helpers. A direct upload the listing shows but the
+            # manifest omits would render on screen and never reach the offline
+            # store — the tablet would go dark on it the moment it lost signal.
+            if is_site_device and not _visible_to_site(
+                _visibility_path_for_record(rec)
+            ):
                 continue
             rec_id = str(rec.get("_id", ""))
             if not rec_id:

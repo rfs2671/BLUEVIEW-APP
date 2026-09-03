@@ -932,12 +932,19 @@ export default function ProjectFilesScreen() {
               </GlassCard>
 
               {/* Site-device visibility. Lives beside the folder it scopes. */}
-              {isAdmin && linkedFolder && siteDeviceSubfolders.length > 0 && (
+              {/* NOT gated on linkedFolder. A project whose files all arrived
+                  through the app has no Dropbox folder, and the server now
+                  offers those files a folder to be ticked by — gating the card
+                  on a Dropbox link left that the one project where nothing
+                  could ever be made visible. The card renders whenever the
+                  server offers something selectable. */}
+              {isAdmin && siteDeviceSubfolders.length > 0 && (
                 <GlassCard style={s.linkCard}>
                   <Text style={s.cardLabel}>VISIBLE ON SITE DEVICES</Text>
                   <Text style={s.siteHint}>
                     Kiosks see only the folders ticked here. With none ticked they
-                    see no files from this project.
+                    see no files from this project. Files uploaded in the app are
+                    ticked as "Uploaded in App".
                   </Text>
                   {siteDeviceSubfolders.map((name) => {
                     const on = siteDeviceSelected.some(
