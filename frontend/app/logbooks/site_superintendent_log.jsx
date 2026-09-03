@@ -118,6 +118,144 @@ const nowHHMM = () => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
 }).format(new Date());
 
+// ── THE FIELD COMPONENTS LIVE HERE, AND THAT IS THE WHOLE POINT ─────────────
+//
+// THE BUG THIS PLACEMENT FIXES. `Field`, `CorrectionChoice` and `EntryList`
+// were declared INSIDE `SiteSuperintendentLog` and used as JSX element types
+// (`<Field ... />`). A function expression in a render body is a NEW function
+// object on every render, and React compares element types by REFERENCE — a
+// new type is a DIFFERENT component, so the old subtree is UNMOUNTED and a
+// fresh one mounted. The `TextInput` inside was destroyed and rebuilt, and a
+// destroyed input is not a focused input.
+//
+// Per keystroke: onChangeText -> setState -> re-render -> new `Field` identity
+// -> remount -> KEYBOARD DISMISSED. The site superintendent filled eleven
+// items of statutory prose one character at a time, tapping the field again
+// between each. The log was unfillable in practice.
+//
+// HOISTED RATHER THAN CALLED. Converting the call sites to plain function
+// calls — `Field({...})`, the way `stepPresence()` is called below — would
+// also inline the elements and also fix it. Module scope was chosen because it
+// makes the identity stable BY CONSTRUCTION: `Field` is created once, when the
+// module loads, and nothing a later editor does inside the screen body can
+// make it unstable again. The call-site convention would have to be noticed.
+//
+// EVERYTHING THEY USED TO CLOSE OVER IS NOW A PROP. `s` (the pinned stepper
+// styles), `locked` (read-only once the log is filed) and `t` (the translator)
+// were read from the enclosing scope. At module scope those names do not
+// exist, so each arrives explicitly — a dropped capture would be a silent
+// stale-closure bug worse than the one being fixed, and
+// siteSuperintendentStableFields.test.cjs asserts every call site passes them.
+//
+// THE REAL PROPERTY IS PROVED BY EXECUTION, not by that source guard:
+// `node scripts/focus-survives-keystroke.cjs --dist dist` types three
+// characters into the first field of this screen in a real browser and asserts
+// the same DOM node still holds focus and holds all three.
+
+/**
+ * One labelled text field. `locked` is what makes a filed log read-only, so it
+ * is required at every call site rather than defaulted — a default of `false`
+ * would render an editable input over a signed statutory record.
+ */
+const Field = ({ s, locked, label, value, onChangeText, placeholder, multiline }) => (
+  <View style={{ marginBottom: spacing.md }}>
+    <Text style={s.reviewLabel}>{label}</Text>
+    <TextInput
+      style={multiline ? s.input : s.input}
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      placeholderTextColor={outdoor.textDim}
+      multiline={!!multiline}
+      editable={!locked}
+    />
+  </View>
+);
+
+/**
+ * WAS IT CORRECTED — THREE POSITIVE ANSWERS, AND NO WAY BACK TO BLANK.
+ *
+ * This was a two-chip yes/no that returned to `null` when you tapped the
+ * selected chip again. Two things were wrong with it, and the second is the
+ * one that matters on a licensed record:
+ *
+ *   TWO ANSWERS ARE NOT ENOUGH. "Not corrected" and "not corrected YET" are
+ *   different statements about the same site — one says he found something
+ *   and left it standing, the other says the work is under way. With only
+ *   yes/no he has to assert whichever is less wrong.
+ *
+ *   AN UNTOGGLE PRODUCES A BLANK THAT LOOKS LIKE A NO. `null` renders as
+ *   three unselected chips, which is indistinguishable from "not corrected"
+ *   to anyone reading the filed document. That is the recurring defect here:
+ *   absence read as a claim.
+ *
+ * So the three states are declared in csFindings.js, every chip SETS one,
+ * none clears, and findingGaps refuses a row that has none of them.
+ */
+const CorrectionChoice = ({ s, locked, t, label, note, value, onChange }) => (
+  <View style={{ marginBottom: spacing.md }}>
+    <Text style={s.reviewLabel}>{label}</Text>
+    <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+      {[
+        [t('correctedYes'), CORRECTED],
+        [t('correctedNo'), NOT_CORRECTED],
+        [t('correctedNotYet'), NOT_YET],
+      ].map(([lbl, v]) => (
+        <Pressable
+          key={v}
+          disabled={locked}
+          // SETS, NEVER CLEARS. Tapping the chosen chip again is a no-op
+          // rather than a way back to unanswered.
+          onPress={() => onChange(v)}
+          style={[s.chip, value === v && s.chipSelected]}
+        >
+          {value === v ? <Check size={13} strokeWidth={2} /> : null}
+          <Text style={[s.chipText, value === v && s.chipTextSelected]}>{lbl}</Text>
+        </Pressable>
+      ))}
+    </View>
+    {note ? <Text style={s.noteText}>{note}</Text> : null}
+  </View>
+);
+
+/** A tickable list of typed entries — the DOB actions and the incidents. */
+const EntryList = ({
+  s, locked, t, heading, note, entries, setEntries, none, setNone, noneLabel,
+}) => (
+  <Card s={s}>
+    <StepHeaderBase s={s} title={heading} />
+    {note ? <Text style={s.noteText}>{note}</Text> : null}
+    {entries.map((e, i) => (
+      <View key={e.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <Pressable disabled={locked}
+          onPress={() => { setNone(false); setEntries((p) => p.map((x, j) => (j === i ? { ...x, included: !x.included } : x))); }}
+          style={[s.chip, e.included && s.chipSelected]}>
+          {e.included ? <Check size={13} strokeWidth={2} /> : <X size={13} strokeWidth={2} />}
+        </Pressable>
+        <TextInput
+          style={[s.input, { flex: 1 }]}
+          value={e.text}
+          editable={!locked}
+          onChangeText={(v) => setEntries((p) => p.map((x, j) => (j === i ? { ...x, text: v } : x)))}
+          placeholder={t('entryPlaceholder')}
+          placeholderTextColor={outdoor.textDim}
+        />
+      </View>
+    ))}
+    <Pressable disabled={locked}
+      onPress={() => { setNone(false); setEntries((p) => [...p, { id: `m_${Date.now()}`, text: '', source: 'manual', included: true }]); }}>
+      <Text style={s.secondaryBtnText}>{t('dobAddManual')}</Text>
+    </Pressable>
+    {entries.filter((e) => e.included && e.text.trim()).length === 0 ? (
+      <Pressable disabled={locked} onPress={() => setNone((v) => !v)}
+        style={[s.chip, none && s.chipSelected, { marginTop: spacing.sm }]}>
+        {none ? <Check size={13} strokeWidth={2} /> : null}
+        <Text style={[s.chipText, none && s.chipTextSelected]}>{noneLabel}</Text>
+      </Pressable>
+    ) : null}
+  </Card>
+);
+
 export default function SiteSuperintendentLog() {
   // THE PALETTE IS PINNED, NOT THEMED, and this screen does not get a choice.
   // LogbookStepper renders `<AnimatedBackground pinned>` unconditionally, so
@@ -933,85 +1071,24 @@ export default function SiteSuperintendentLog() {
   }, [flushDraft]);
 
   // ── steps ───────────────────────────────────────────────────────────────
-  const Field = ({ label, value, onChangeText, placeholder, multiline }) => (
-    <View style={{ marginBottom: spacing.md }}>
-      <Text style={s.reviewLabel}>{label}</Text>
-      <TextInput
-        style={multiline ? s.input : s.input}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={outdoor.textDim}
-        multiline={!!multiline}
-        editable={!locked}
-      />
-    </View>
-  );
-
-  /**
-   * WAS IT CORRECTED — THREE POSITIVE ANSWERS, AND NO WAY BACK TO BLANK.
-   *
-   * This was a two-chip yes/no that returned to `null` when you tapped the
-   * selected chip again. Two things were wrong with it, and the second is the
-   * one that matters on a licensed record:
-   *
-   *   TWO ANSWERS ARE NOT ENOUGH. "Not corrected" and "not corrected YET" are
-   *   different statements about the same site — one says he found something
-   *   and left it standing, the other says the work is under way. With only
-   *   yes/no he has to assert whichever is less wrong.
-   *
-   *   AN UNTOGGLE PRODUCES A BLANK THAT LOOKS LIKE A NO. `null` renders as
-   *   three unselected chips, which is indistinguishable from "not corrected"
-   *   to anyone reading the filed document. That is the recurring defect here:
-   *   absence read as a claim.
-   *
-   * So the three states are declared in csFindings.js, every chip SETS one,
-   * none clears, and findingGaps refuses a row that has none of them.
-   */
-  const CorrectionChoice = ({ label, note, value, onChange }) => (
-    <View style={{ marginBottom: spacing.md }}>
-      <Text style={s.reviewLabel}>{label}</Text>
-      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
-        {[
-          [t('correctedYes'), CORRECTED],
-          [t('correctedNo'), NOT_CORRECTED],
-          [t('correctedNotYet'), NOT_YET],
-        ].map(([lbl, v]) => (
-          <Pressable
-            key={v}
-            disabled={locked}
-            // SETS, NEVER CLEARS. Tapping the chosen chip again is a no-op
-            // rather than a way back to unanswered.
-            onPress={() => onChange(v)}
-            style={[s.chip, value === v && s.chipSelected]}
-          >
-            {value === v ? <Check size={13} strokeWidth={2} /> : null}
-            <Text style={[s.chipText, value === v && s.chipTextSelected]}>{lbl}</Text>
-          </Pressable>
-        ))}
-      </View>
-      {note ? <Text style={s.noteText}>{note}</Text> : null}
-    </View>
-  );
-
   const stepPresence = () => (
     <Card s={s}>
       <StepHeaderBase s={s} title={t('presenceHeading')} />
       <Text style={s.noteText}>{t('presenceNote')}</Text>
-      <Field label={t('printedName')} value={printedName} onChangeText={setPrintedName} />
-      <Field label={t('arrivedAt')} value={arrivedAt} onChangeText={setArrivedAt} placeholder="HH:MM" />
-      <Field label={t('departedAt')} value={departedAt} onChangeText={setDepartedAt} placeholder="HH:MM" />
+      <Field s={s} locked={locked} label={t('printedName')} value={printedName} onChangeText={setPrintedName} />
+      <Field s={s} locked={locked} label={t('arrivedAt')} value={arrivedAt} onChangeText={setArrivedAt} placeholder="HH:MM" />
+      <Field s={s} locked={locked} label={t('departedAt')} value={departedAt} onChangeText={setDepartedAt} placeholder="HH:MM" />
     </Card>
   );
 
   const stepWork = () => (
     <>
       <Card s={s}>
-        <Field label={t('progressLabel')} value={progress} onChangeText={setProgress}
+        <Field s={s} locked={locked} label={t('progressLabel')} value={progress} onChangeText={setProgress}
           placeholder={t('progressPlaceholder')} multiline />
-        <Field label={t('activitiesLabel')} value={activities} onChangeText={setActivities}
+        <Field s={s} locked={locked} label={t('activitiesLabel')} value={activities} onChangeText={setActivities}
           placeholder={t('activitiesPlaceholder')} multiline />
-        <Field label={t('locationsLabel')} value={locations} onChangeText={setLocations}
+        <Field s={s} locked={locked} label={t('locationsLabel')} value={locations} onChangeText={setLocations}
           placeholder={t('locationsPlaceholder')} />
       </Card>
       <Card s={s}>
@@ -1022,10 +1099,10 @@ export default function SiteSuperintendentLog() {
             and are their own piece of work — but the DATE and the LOCATION
             are not optional prose. */}
         <Text style={s.noteText}>{t('inspectionNote')}</Text>
-        <Field label={t('inspectedOn')} value={inspectedOn} onChangeText={setInspectedOn} />
-        <Field label={t('inspectionLocation')} value={inspectionLocation}
+        <Field s={s} locked={locked} label={t('inspectedOn')} value={inspectedOn} onChangeText={setInspectedOn} />
+        <Field s={s} locked={locked} label={t('inspectionLocation')} value={inspectionLocation}
           onChangeText={setInspectionLocation} />
-        <Field label={t('inspectionResult')} value={inspectionResult}
+        <Field s={s} locked={locked} label={t('inspectionResult')} value={inspectionResult}
           onChangeText={setInspectionResult}
           placeholder={t('inspectionResultPlaceholder')} multiline />
       </Card>
@@ -1039,17 +1116,17 @@ export default function SiteSuperintendentLog() {
 
       {findings.map((f, i) => (
         <View key={f.id} style={s.cardFill}>
-          <Field label={t('findingLocation')} value={f.location}
+          <Field s={s} locked={locked} label={t('findingLocation')} value={f.location}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, location: v } : x)))} />
-          <Field label={t('findingObservedAt')} value={f.observed_at} placeholder="HH:MM"
+          <Field s={s} locked={locked} label={t('findingObservedAt')} value={f.observed_at} placeholder="HH:MM"
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, observed_at: v } : x)))} />
-          <Field label={t('findingCondition')} multiline value={f.condition}
+          <Field s={s} locked={locked} label={t('findingCondition')} multiline value={f.condition}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, condition: v } : x)))} />
-          <Field label={t('findingOrder')} multiline value={f.order_given}
+          <Field s={s} locked={locked} label={t('findingOrder')} multiline value={f.order_given}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, order_given: v } : x)))} />
-          <Field label={t('findingOrderTo')} value={f.order_to}
+          <Field s={s} locked={locked} label={t('findingOrderTo')} value={f.order_to}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, order_to: v } : x)))} />
-          <CorrectionChoice label={t('findingCorrected')} value={f.corrected}
+          <CorrectionChoice s={s} locked={locked} t={t} label={t('findingCorrected')} value={f.corrected}
             onChange={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, corrected: v } : x)))} />
           {findingGaps(f).length > 0 && !findingIsEmpty(f) ? (
             <Text style={s.errorText}>{findingGaps(f).join(', ')}</Text>
@@ -1088,47 +1165,14 @@ export default function SiteSuperintendentLog() {
     </Card>
   );
 
-  const EntryList = ({ heading, note, entries, setEntries, none, setNone, noneLabel }) => (
-    <Card s={s}>
-      <StepHeaderBase s={s} title={heading} />
-      {note ? <Text style={s.noteText}>{note}</Text> : null}
-      {entries.map((e, i) => (
-        <View key={e.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <Pressable disabled={locked}
-            onPress={() => { setNone(false); setEntries((p) => p.map((x, j) => (j === i ? { ...x, included: !x.included } : x))); }}
-            style={[s.chip, e.included && s.chipSelected]}>
-            {e.included ? <Check size={13} strokeWidth={2} /> : <X size={13} strokeWidth={2} />}
-          </Pressable>
-          <TextInput
-            style={[s.input, { flex: 1 }]}
-            value={e.text}
-            editable={!locked}
-            onChangeText={(v) => setEntries((p) => p.map((x, j) => (j === i ? { ...x, text: v } : x)))}
-            placeholder={t('entryPlaceholder')}
-            placeholderTextColor={outdoor.textDim}
-          />
-        </View>
-      ))}
-      <Pressable disabled={locked}
-        onPress={() => { setNone(false); setEntries((p) => [...p, { id: `m_${Date.now()}`, text: '', source: 'manual', included: true }]); }}>
-        <Text style={s.secondaryBtnText}>{t('dobAddManual')}</Text>
-      </Pressable>
-      {entries.filter((e) => e.included && e.text.trim()).length === 0 ? (
-        <Pressable disabled={locked} onPress={() => setNone((v) => !v)}
-          style={[s.chip, none && s.chipSelected, { marginTop: spacing.sm }]}>
-          {none ? <Check size={13} strokeWidth={2} /> : null}
-          <Text style={[s.chipText, none && s.chipTextSelected]}>{noneLabel}</Text>
-        </Pressable>
-      ) : null}
-    </Card>
-  );
-
   const stepDob = () => (
     <>
-      <EntryList heading={t('dobHeading')} note={t('dobNote')}
+      <EntryList s={s} locked={locked} t={t}
+        heading={t('dobHeading')} note={t('dobNote')}
         entries={dobEntries} setEntries={setDobEntries}
         none={dobNone} setNone={setDobNone} noneLabel={t('dobNoneToReport')} />
-      <EntryList heading={t('incidentsHeading')} note={t('incidentsNote')}
+      <EntryList s={s} locked={locked} t={t}
+        heading={t('incidentsHeading')} note={t('incidentsNote')}
         entries={incidentEntries} setEntries={setIncidentEntries}
         none={incidentsNone} setNone={setIncidentsNone}
         noneLabel={t('incidentsNoneToReport')} />
@@ -1147,7 +1191,7 @@ export default function SiteSuperintendentLog() {
       <>
         <Card s={s}>
           <StepHeaderBase s={s} title={t('competentPersonHeading')} />
-          <Field label={t('competentPersonName')} value={competentPersonName}
+          <Field s={s} locked={locked} label={t('competentPersonName')} value={competentPersonName}
             onChangeText={setCompetentPersonName} />
           <Text style={s.noteText}>{t('competentPersonNote')}</Text>
         </Card>
