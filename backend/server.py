@@ -29732,6 +29732,48 @@ def _determine_severity(rec: dict, record_type: str) -> str:
             return "Action"
         return "Good"
 
+    if record_type == "cofo":
+        # A certificate of occupancy is never an alert.
+        #
+        # This branch changes no behavior — cofo already reached the
+        # terminal `return "Good"` below. It reached it by ACCIDENT, the
+        # same way an unknown record_type does, and the point of writing
+        # it down is that the next person to touch this function should
+        # have to argue with a decision instead of inheriting a
+        # fallthrough.
+        #
+        # The argument. `severity` is a strict binary. "Action" is the
+        # ONLY input to _send_critical_dob_alert_throttled (see the two
+        # call sites in run_dob_sync_for_project) and renders as a red
+        # "Action Needed" dot on the DOB logs card
+        # (frontend/app/project/[id]/dob-logs.jsx getSevConfig). There is
+        # no "notable but not urgent" value to reach for, so the choice
+        # is: page the operator, or don't.
+        #
+        # Don't. Every one of pkdm-hqz6's 81,264 rows is a certificate
+        # that WAS issued — c_of_o_status is the constant 'CO Issued',
+        # there is no pending, expired or revoked state in this dataset.
+        # Nothing in it asks the GC to do anything, and a final CO is
+        # good news; labelling a completion "Action Needed" would be a
+        # false statement on the card as well as an unwanted email.
+        #
+        # The one CofO event that WOULD be actionable — a temporary CO
+        # about to lapse, after which the building may not be occupied —
+        # cannot be detected from here at all: the dataset has no
+        # expiration column, which is why 7c4f983 dropped
+        # `expiration_date` rather than persisting a permanent None.
+        # Inventing an "Action" we cannot substantiate would be worse
+        # than declining to raise one.
+        #
+        # A completion is surfaced through `signal_kind`, which exists to
+        # say what happened (now correctly cofo_final vs cofo_temporary —
+        # see lib/dob_signal_classifier._classify_cofo). `severity` exists
+        # to wake someone up. Reported, not fixed:
+        # frontend/src/constants/signalKinds.js gives cofo_final
+        # defaultSeverity 'critical', which disagrees with the backend
+        # template's SEVERITY_INFO.
+        return "Good"
+
     if record_type == "complaint":
         result = classify_complaint(rec)
         return result["severity"]
