@@ -26,7 +26,10 @@ The full set of signal_kind values produced:
     inspection_scheduled, inspection_passed, inspection_failed,
     final_signoff
   cofo (Certificate of Occupancy):
-    cofo_temporary, cofo_final, cofo_pending
+    cofo_temporary, cofo_final
+    (cofo_pending is a known kind but NOT produced here — the only
+     dataset feeding record_type='cofo' publishes issued certificates
+     only. See _classify_cofo.)
   facade_fisp / boiler / elevator (compliance filings):
     facade_fisp, boiler_inspection, elevator_inspection
   license_renewal_due (filing rep + GC license):
@@ -197,16 +200,72 @@ def _classify_inspection(log: dict) -> str:
 
 
 def _classify_cofo(log: dict) -> str:
-    """CofO can be temporary (TCO — partial occupancy granted while
-    work continues) or final. Pending = filed but not yet issued."""
-    status = (log.get("current_status") or "").upper()
-    cofo_type = (log.get("cofo_type") or "").upper()
-    if "TEMP" in cofo_type or "TEMPORARY" in status or "TCO" in status:
+    """A CofO renewal is not a completion.
+
+    Classified from `cofo_type` — which the ingest extractor fills from
+    the dataset's `c_of_o_filing_type` (server.py `_extract_cofo_fields`)
+    — and NEVER from `current_status`.
+
+    WHY NOT STATUS. On the live dataset (pkdm-hqz6, 81,264 rows verified
+    2026-09-02) `c_of_o_status` is the CONSTANT string 'CO Issued'. Every
+    row. The ingest path uppercases it to 'CO ISSUED', so the old first
+    branch here — `"ISSUED" in status` — matched all 81,264 and labelled
+    every certificate `cofo_final`, i.e. "the project is officially
+    complete". 46,842 of those are renewals of a temporary CO, which is
+    the opposite of complete. `cofo_temporary` and `cofo_pending` were
+    unreachable. Nobody noticed because the CofO query answered HTTP 400
+    on every call from the day the feature shipped until 7c4f983, so no
+    cofo row was ever ingested to be misclassified.
+
+    THE LIVE FILING TYPES, and their counts:
+        Renewal Without Change  46,842  → cofo_temporary
+        Final                   18,922  → cofo_final
+        Initial                  8,869  → cofo_temporary
+        Renewal With Change      6,607  → cofo_temporary
+        (column absent)             24  → cofo  (see below)
+
+    WHY THOSE THREE ARE "TEMPORARY". The dataset has no column that says
+    "temporary" and the string "TCO" appears nowhere in it, so this is
+    read off the lifecycle rather than off a label:
+      • BIN 2092338 in c_of_o_sequence order is
+        `Initial > Renewal Without Change > Final`. A certificate that is
+        renewed and then superseded by one marked Final was not final.
+      • BIN 3335884 carries 64 rows, all renewals, 2021-04 → 2026-08 at a
+        30-90 day cadence, no Final. That is the TCO renewal treadmill; a
+        final CO is not renewed 64 times.
+
+    ORDER MATTERS, and the direction of the fail-safe is deliberate:
+    non-final is checked FIRST. If DOB ever ships a filing type naming
+    both (a "Renewal — Final"), under-claiming completion is the harmless
+    error and over-claiming it is the one that just cost us 46,842 rows.
+
+    THE FALLBACK IS REACHABLE, not decoration: 24 live rows have no
+    `c_of_o_filing_type` at all. They are ordinary issued certificates
+    with real numbers and dates (e.g. BIN 4220272, '4220272-0000007'),
+    so they must not be dropped — but nothing in them says final, so we
+    return the generic `cofo` and claim neither way.
+
+    NO `cofo_pending` BRANCH. There cannot be one. pkdm-hqz6 publishes
+    only certificates that have been ISSUED — `c_of_o_status` has exactly
+    one distinct value across the whole dataset — so a "filed but not yet
+    issued" row does not exist here to classify. The old branch tested
+    status text that no row can carry. The kind is kept in
+    KNOWN_SIGNAL_KINDS (it has a template and a notification policy, and
+    a different dataset could legitimately feed it), but this classifier
+    can no longer pretend to produce it.
+    """
+    filing_type = (log.get("cofo_type") or "").upper().strip()
+
+    # Temporary: the initial TCO and every renewal of it.
+    if filing_type.startswith("RENEWAL") or filing_type == "INITIAL":
         return "cofo_temporary"
-    if "FINAL" in cofo_type or "FINAL" in status or "ISSUED" in status:
+
+    # The one filing type that means the project is done.
+    if filing_type == "FINAL":
         return "cofo_final"
-    if "PENDING" in status or "IN PROGRESS" in status or "REVIEW" in status:
-        return "cofo_pending"
+
+    # Absent or unrecognised filing type — a real certificate whose
+    # finality the dataset does not state. Say nothing rather than guess.
     return "cofo"
 
 

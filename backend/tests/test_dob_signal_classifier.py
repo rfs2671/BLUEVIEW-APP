@@ -240,25 +240,48 @@ class TestClassifyInspection(unittest.TestCase):
 
 class TestClassifyCofo(unittest.TestCase):
 
-    def test_temporary(self):
+    # 2026-09-02: these four cases were rewritten. They asserted on
+    # strings pkdm-hqz6 does not contain — cofo_type "TEMP", and the
+    # statuses "TCO ISSUED" and "PENDING" — so they passed while the
+    # classifier mislabelled every real row. `c_of_o_status` is the
+    # constant 'CO Issued' and `c_of_o_filing_type` has exactly four
+    # values. The real strings are used below. Full live distribution
+    # and the temporary-vs-final evidence live in
+    # tests/test_cofo_classification_from_filing_type.py.
+
+    def test_temporary_initial(self):
         from lib.dob_signal_classifier import classify_signal_kind
-        log = {"record_type": "cofo", "cofo_type": "TEMP"}
+        log = {"record_type": "cofo", "cofo_type": "Initial"}
         self.assertEqual(classify_signal_kind(log), "cofo_temporary")
 
-    def test_temporary_via_status_TCO(self):
+    def test_temporary_renewal_without_change(self):
+        """46,842 live rows — the largest group in the dataset, and the
+        one the old status-based classifier called a completion."""
         from lib.dob_signal_classifier import classify_signal_kind
-        log = {"record_type": "cofo", "current_status": "TCO ISSUED"}
+        log = {
+            "record_type": "cofo",
+            "cofo_type": "Renewal Without Change",
+            "current_status": "CO ISSUED",
+        }
+        self.assertEqual(classify_signal_kind(log), "cofo_temporary")
+
+    def test_temporary_renewal_with_change(self):
+        from lib.dob_signal_classifier import classify_signal_kind
+        log = {"record_type": "cofo", "cofo_type": "Renewal With Change"}
         self.assertEqual(classify_signal_kind(log), "cofo_temporary")
 
     def test_final(self):
         from lib.dob_signal_classifier import classify_signal_kind
-        log = {"record_type": "cofo", "cofo_type": "FINAL"}
+        log = {"record_type": "cofo", "cofo_type": "Final"}
         self.assertEqual(classify_signal_kind(log), "cofo_final")
 
-    def test_pending(self):
+    def test_absent_filing_type_falls_back_without_claiming_final(self):
+        """24 live rows carry no c_of_o_filing_type. Replaces the old
+        `test_pending`: no pkdm-hqz6 row can be pending, so that case
+        was asserting on an input production cannot produce."""
         from lib.dob_signal_classifier import classify_signal_kind
-        log = {"record_type": "cofo", "current_status": "PENDING"}
-        self.assertEqual(classify_signal_kind(log), "cofo_pending")
+        log = {"record_type": "cofo", "current_status": "CO ISSUED"}
+        self.assertEqual(classify_signal_kind(log), "cofo")
 
 
 # ── Compliance & license ──────────────────────────────────────────
@@ -330,9 +353,12 @@ class TestClassifierFallbackAndCoverage(unittest.TestCase):
             classify_signal_kind({"record_type": "inspection", "current_status": "PASSED"}),
             classify_signal_kind({"record_type": "inspection", "current_status": "FAILED"}),
             classify_signal_kind({"record_type": "inspection", "inspection_type": "Final"}),
-            classify_signal_kind({"record_type": "cofo", "cofo_type": "TEMP"}),
-            classify_signal_kind({"record_type": "cofo", "cofo_type": "FINAL"}),
-            classify_signal_kind({"record_type": "cofo", "current_status": "PENDING"}),
+            # Real c_of_o_filing_type values; "cofo" is the fallback for
+            # the 24 live rows that carry no filing type at all.
+            classify_signal_kind({"record_type": "cofo", "cofo_type": "Initial"}),
+            classify_signal_kind({"record_type": "cofo", "cofo_type": "Renewal Without Change"}),
+            classify_signal_kind({"record_type": "cofo", "cofo_type": "Final"}),
+            classify_signal_kind({"record_type": "cofo"}),
             classify_signal_kind({"record_type": "facade_fisp"}),
             classify_signal_kind({"record_type": "boiler"}),
             classify_signal_kind({"record_type": "elevator"}),
