@@ -4,6 +4,59 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-03 — a tradeoff paying full price for a guarantee its other half stopped delivering
+
+The PDF viewer rasterises pages at up to 16 megapixels, oversampled ~3x on a
+dpr-2 device, across a window spanning four viewport heights. On a 25-31 MB
+architectural set that is 20-30 seconds to open.
+
+The cost is deliberate and the reason is written down in `pdfjsViewer.js`:
+*"Render above CSS size so pinch-zoom stays legible without a re-render."* Nine
+times the pixels, bought to make zoom free.
+
+**Zoom is not free. It reloads the WebView and drops the reader back to page
+one.** So the product pays the whole cost of the tradeoff and receives none of
+the benefit. Not a slow feature and a separate bug — one bargain, half of which
+stopped being honoured, with the payment still going out.
+
+### Why nothing surfaced it
+
+Both halves still "work" in the sense each was written to. The oversample
+renders exactly as designed. The reload is a correct consequence of a
+dependency array. **Neither is a defect on its own terms, and no test relates
+them,** because the relationship is an intention that lives in a comment. A
+comment cannot fail.
+
+There is even a memo guarding part of it — `webViewSource` is memoised
+specifically so unrelated state updates do not force a reload, and that memo
+works. It protects against changes INSIDE the component and not against a new
+`file` prop from the parent, so the guarantee holds in the cases somebody
+thought of and silently lapses in the one that matters.
+
+### The shape
+
+When a cost is paid to buy a property, **the property is the thing to test, not
+the mechanism that pays for it.** Here the assertion worth having is "zoom does
+not reload", which is cheap to state and would have failed the day it broke.
+Instead there is an oversample multiplier nobody can evaluate without knowing
+what it was for, and a reader who finds it later sees only an expensive constant.
+
+Same family as the rest of this log — something ran, did exactly what it was
+written to do, and the answer meant nothing because the thing it was for had
+moved. Here the thing it was for was another part of the same feature.
+
+### The rule
+
+A performance constant bought to guarantee a behaviour should name the
+behaviour in a test, not only in a comment. And when a screen is slow, ask what
+the slowness was purchasing before optimising it — removing the cost is right
+only if the benefit is genuinely gone, and here the correct order is to restore
+the benefit first and then re-measure whether the cost is still worth paying.
+Measuring the oversample while reloads are still happening would confound the
+two and produce a number that argues for the wrong change.
+
+---
+
 ## RULED — 2026-09-03 — the two dead plan-page indexes: do NOT build, decide later against real numbers
 
 Operator ruling. Neither is a correctness problem and both are cheap to add
