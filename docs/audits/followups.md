@@ -4,6 +4,72 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-03 — an index that cannot serve its query looks identical, from inside, to one that works
+
+`run_whatsapp_startup_migrations` creates four indexes on `document_page_index`
+— the plan-page search collection, which has nothing to do with WhatsApp. Asked
+what each one buys, the answers were not what the names suggest.
+
+**`document_page_by_floor` serves no query.** `floor` is READ — the scheduling
+aggregator does `p.get("floor")` and the engine groups by it — but it is never a
+query key. The aggregator loads every row for a project with
+`find({"project_id": project_id})` and groups in Python. The index exists for a
+filter nobody applies.
+
+**`document_page_by_sheet_number` cannot serve the query it was built for.** The
+lookup is `{"$regex": pattern, "$options": "i"}`. The pattern IS anchored, which
+would normally be indexable — but the case-insensitive option defeats it,
+because the index stores keys in case-sensitive order. Mongo uses the
+`project_id` prefix and scans the rest. The index was created for a query shape
+that cannot use it.
+
+**`document_page_unique` is correctness, not performance,** and was described as
+performance. Unique on `(file_id, page_number)`, it stops one page of one file
+being indexed twice. It is also the one with a trap: absent, duplicates
+accumulate, and then it can never be built without cleaning them first.
+
+### The shape
+
+**Nothing in this system can tell a working index from a useless one.**
+`getIndexes()` shows all four. They build, they occupy space, they are
+maintained on every write, and two of them do nothing. There is no measurement
+anywhere of whether an index is USED — no `$indexStats` check, no test, no
+alert. An index is assumed to be doing its job because it exists.
+
+That is the same family this log keeps recording: the sweep whose keep-set could
+see one of two shapes, the grep whose pattern could not match its own output,
+the CofO query that 400'd 96 times a day for months, the mutation control that
+patched the wrong occurrence. **Something ran, produced a well-formed result,
+and never reached its subject** — and the well-formed result is exactly what
+made it invisible.
+
+### The rule
+
+An index is a claim that a specific query will use it. Write the query beside
+it, or the index is decoration with a maintenance cost. Before adding one, name
+the query; after adding one, prove the query uses it — `$indexStats` or an
+`explain()` assertion, not the fact that `create_index` returned.
+
+**And case-insensitive matching needs a collation, not an index and a hope.**
+`$options: "i"` and a plain index are mutually exclusive; either the field is
+normalised on write or the index carries the collation.
+
+### Related, and not the same
+
+These four sit inside a single `try`/`except` covering six unrelated migrations,
+so a failure in an earlier one strands the later ones into one `logger.warning`.
+That is a separate defect, recorded in the entry above on `startup_event`'s two
+failure contracts, and it was already half-fixed once — `ensure_dropbox_sync_indexes`
+was extracted from this very function for exactly that reason, and
+`document_page_index` was left behind.
+
+Note for anyone reading a claim that these never ran: the call is
+`await run_whatsapp_startup_migrations()` at the top level of `startup_event`,
+indent 4, **with no conditional above it**. It executes on every boot whether or
+not WhatsApp is configured. They are not gated and not pending.
+
+---
+
 ## OPEN — 2026-09-03 — startup_event has two eras of failure semantics and nothing marks the boundary
 
 `startup_event` is **1,589 lines** and performs **77 index creations**. It is
