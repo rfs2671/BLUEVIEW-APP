@@ -207,6 +207,42 @@ const tileKey = (photo, ai, pi) => String(
   photo?.original_r2_key || photo?.id || `${ai}-${pi}`,
 );
 
+// WHERE A PHOTO SITS IN THE DOCUMENT THE SERVER HOLDS.
+//
+// The served photo url addresses data.activities[ai].photos[pi] on the SERVER
+// document (server.py get_logbook_activity_photo walks those two indexes and
+// nothing else). The tile was handing it the index of the row IN THIS SCREEN'S
+// LIST, and the two are not the same list: reconcileCrewsWithRoster lifts every
+// unassigned-worker row out of its stored position and re-appends it at the
+// tail (dailyJobsiteModel.js, `if (isUnassignedWorkerRow(row)) continue`), and
+// commitAddCrew appends a hand-added crew AFTER those rows. So a sub the CP
+// typed in himself moves UP by one on the next load, its tiles request whatever
+// now stands at that index, and nothing has been re-saved — the server is still
+// holding the old order. A wrong index is a 404 at best and ANOTHER CREW'S
+// PHOTO at worst, on a document that gets signed.
+//
+// KEYED ON THE R2 KEY, which is the photo's only stable identity here: it is a
+// pure function of (project_id, activity_id, photo_id), it is read off the
+// photo document and never recomputed (server.py:158, "BOTH SCHEMES COEXIST"),
+// and photoForPayload strips `id` before the row is ever written.
+const photoServeKey = (photo) => String(
+  photo?.original_r2_key || photo?.enhanced_r2_key || photo?.thumb_r2_key || '',
+);
+
+// The map, built from an activities array AS THE SERVER HOLDS IT. A photo with
+// no key is absent from it on purpose: it has no object to serve, so there is
+// nothing for a coordinate to address.
+const servedPhotoCoords = (activities) => {
+  const m = new Map();
+  (Array.isArray(activities) ? activities : []).forEach((a, ai) => (
+    ((a && a.photos) || []).forEach((p, pi) => {
+      const k = photoServeKey(p);
+      if (k && !m.has(k)) m.set(k, [ai, pi]);
+    })
+  ));
+  return m;
+};
+
 const dropPhoto = (rows, photoId) => (rows || []).map((a) => (
   ((a.photos || []).some((p) => p.id === photoId))
     ? { ...a, photos: a.photos.filter((p) => p.id !== photoId) }
@@ -557,10 +593,51 @@ export default function DailyJobsiteLog() {
         // is rebuilt and nothing is reconciled — the stored list stands
         // exactly as he left it, which is also what was already on screen.
         let _resolved = _storedCrews;
-        const [_roster, _headcount] = await Promise.all([
+        const [_roster, _headcount, _serverLogs] = await Promise.all([
           logbooksAPI.getCheckinsRoster(projectId, date).catch(() => null),
           logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
+          // THE DAY'S SERVER ROW, FOR ITS ID AND ITS PHOTO LAYOUT ONLY.
+          //
+          // THE DEFECT THIS CLOSES. This branch set the id from one place —
+          // `draft.backend_id || null` above — and daily_jobsite writes
+          // backend_id in one place: setDraftBackendId, after THIS DEVICE
+          // pushes. A CP who OPENS the superintendent's filed log pushes
+          // nothing. The 800ms autosave then writes a draft holding the
+          // server's activities with `backend_id: null`, and every later open
+          // lands here with existingLogId null.
+          //
+          // WHICH BLANKS EVERY PHOTO HE DID NOT TAKE. getLogbookPhotoUrl
+          // returns null without an id, and a photo captured on another phone
+          // has no `uri` on the record (photoForPayload strips it once the R2
+          // key exists) and no `base64` (it would blow the 16MB ceiling). So
+          // photoTileUri resolves to `undefined` — no request, which means no
+          // onError, which means the retry built for exactly this never runs.
+          // A blank square, permanently, on every crew the super photographed.
+          // cpForeignPhotoResolution.test.cjs prints the resolved value.
+          //
+          // ONLY THE ID AND THE LAYOUT. The draft still wins on CONTENT — that
+          // is this branch's whole purpose, and an offline CP's local work
+          // depends on it. Nothing below hydrates from this response.
+          //
+          // OFFLINE IS UNCHANGED: the read fails, this is null, the id stays
+          // exactly what the draft said and the screen is what it was.
+          logbooksAPI.getByProject(projectId, 'daily_jobsite', date).catch(() => null),
         ]);
+        if (Array.isArray(_serverLogs) && _serverLogs.length > 0) {
+          const { log: _serverLog } = chooseEditableLog(_serverLogs);
+          const _serverId = _serverLog && (_serverLog.id || _serverLog._id);
+          if (_serverId) {
+            // Adopted even when the draft already names one: they are the same
+            // day's row, and the server is the authority on which document is
+            // current after an amendment.
+            setExistingLogId(_serverId);
+            // Bound so the NEXT open does not have to ask again — and so a save
+            // from this device PUTs to the row that exists instead of POSTing a
+            // create that upserts over it (api.js:949).
+            setDraftBackendId(_key, String(_serverId)).catch(() => {});
+            servedCoordsRef.current = servedPhotoCoords(_serverLog.data?.activities);
+          }
+        }
         if (_roster) {
           rosterIdsRef.current = rosterIdIndex(_headcount);
           const _fresh = buildCrewsFromRoster(_roster.workers || [], _headcount);
@@ -643,6 +720,14 @@ export default function DailyJobsiteLog() {
 
       if (existing) {
         setExistingLogId(existing.id || existing._id);
+        // AND THE DRAFT LEARNS IT. Without this the id is known only for the
+        // life of this mount: the autosave 800ms from now writes a draft with
+        // backend_id null, and the next open takes the draft branch above with
+        // no server id — which is what blanked every photo the CP did not take.
+        setDraftBackendId(_key, String(existing.id || existing._id)).catch(() => {});
+        // The photo url is addressed by position in THIS document, and the
+        // reconcile below is about to move rows relative to it.
+        servedCoordsRef.current = servedPhotoCoords(existing.data?.activities);
         // AND THE REFUSAL COMES DOWN. A create the drain gave up on records
         // its refusal against the DRAFT KEY, because there was no logbook id
         // to hang it on. Finding the day on the server is the proof that the
@@ -1338,6 +1423,20 @@ export default function DailyJobsiteLog() {
   // a falsy value, which is the whole reason this defect existed.
   const [tileRetry, setTileRetry] = useState({});
 
+  // WHAT THE SERVER'S COPY OF THIS LOG LOOKS LIKE, for the one purpose of
+  // addressing a photo in it. Rebuilt every time this screen learns that —
+  // both load paths, and after a successful push, which is when the server's
+  // order becomes this list's order. A ref, not state: every write is
+  // immediately followed by a setActivities that drives the render.
+  const servedCoordsRef = useRef(new Map());
+
+  // The (ai, pi) the url must carry. A photo this map cannot place keeps the
+  // LIVE position — that is what it had before, and it is the honest answer
+  // for a photo the server has never seen: it is only on this device.
+  const servedIndex = (photo, ai, pi) => (
+    servedCoordsRef.current.get(photoServeKey(photo)) || [ai, pi]
+  );
+
   // WHY THIS LOG IS A DIFFERENT SHAPE THAN HE LEFT IT.
   //
   // The load kept `id`, `data`, `cp_signature` and `cp_name` and DISCARDED
@@ -1382,8 +1481,11 @@ export default function DailyJobsiteLog() {
         || undefined)
   );
 
-  const openPhotoLightbox = (photo, ai, pi) => {
+  const openPhotoLightbox = (photo, uiAi, uiPi) => {
     if (!photo || photo.pending) return;
+    // Same correction as the tile: the full-size view is served by POSITION in
+    // the server's document, so it must be given the server's position.
+    const [ai, pi] = servedIndex(photo, uiAi, uiPi);
     const done = photo.enhance_status === 'done';
     if (existingLogId && photo.enhance_status) {
       setPhotoLightbox({
@@ -1482,6 +1584,11 @@ export default function DailyJobsiteLog() {
         savedId = created.id || created._id;
         setExistingLogId(savedId);
       }
+      // THE SERVER NOW HOLDS THIS ORDER. Both writes above $set the whole
+      // activities array from payloadActivities, so the coordinates the tiles
+      // address are that array's — and photoForPayload's .filter(Boolean) can
+      // drop a row, which moves every photo after it.
+      servedCoordsRef.current = servedPhotoCoords(payloadActivities);
       await setDraftBackendId(_key, savedId);
       await clearPending(_key);
       // A PUSH THAT LANDED CLEARS A REFUSAL ON RECORD. The banner LogbookLockBar
@@ -2289,7 +2396,12 @@ export default function DailyJobsiteLog() {
                         ) : (
                           <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
                             <Image
-                              source={{ uri: photoTileUri(photo, i, pi, tileRetry[tileKey(photo, i, pi)]) }}
+                              // servedIndex, NOT (i, pi): the url addresses the
+                              // SERVER's activities array and this list has
+                              // been reconciled since that document was
+                              // written. tileKey stays on the live position —
+                              // it identifies a TILE, not a stored photo.
+                              source={{ uri: photoTileUri(photo, ...servedIndex(photo, i, pi), tileRetry[tileKey(photo, i, pi)]) }}
                               // The preferred copy did not load. Flip THIS tile
                               // to the other one rather than showing a blank
                               // square: offline with an uploaded photo falls
