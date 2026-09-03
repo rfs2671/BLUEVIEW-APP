@@ -1264,7 +1264,7 @@ export default function DailyJobsiteLog() {
     }
     if (localUri !== photo.uri) setActivities((prev) => patchPhoto(prev, id, { uri: localUri }));
     try {
-      const key = await uploadCapturePhoto({ projectId, activityId, photoId: id, uri: localUri });
+      const key = await uploadCapturePhoto({ projectId, logbookId: existingLogId, activityId, photoId: id, uri: localUri });
       setActivities((prev) => patchPhoto(prev, id, { original_r2_key: key, upload_pending: false }));
     } catch (_e) {
       // DEFERRED, NOT LOST. The file is in documentDirectory and its uri is in
@@ -1273,7 +1273,13 @@ export default function DailyJobsiteLog() {
       // reconnect drain both retry it.
       setActivities((prev) => patchPhoto(prev, id, { upload_pending: true }));
     }
-  }, [projectId, toast, t]);
+    // `existingLogId` IS IN THE DEPS, and it has to be. It arrives partway
+    // through a session — null until the first push lands — so a callback that
+    // closed over the null forever would keep telling the capture route it has
+    // no log to check, on a screen that does. It cannot cause a re-upload:
+    // uploadAttemptedRef holds one attempt per photo per session and the
+    // effect below reads it before calling this.
+  }, [projectId, existingLogId, toast, t]);
 
   useEffect(() => {
     if (loading || locked || !projectId) return;
@@ -1685,7 +1691,7 @@ export default function DailyJobsiteLog() {
     // catches the stragglers. Bounded: uploadPendingActivityPhotos abandons
     // the loop on the first offline failure or 5xx rather than making the CP
     // wait out a hundred identical timeouts.
-    const _uploaded = await uploadPendingActivityPhotos(projectId, persisted);
+    const _uploaded = await uploadPendingActivityPhotos(projectId, persisted, existingLogId);
     if (_uploaded.uploaded > 0) {
       const keyById = new Map();
       _uploaded.activities.forEach((a) => (a.photos || []).forEach((p) => {

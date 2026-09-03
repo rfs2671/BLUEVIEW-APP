@@ -251,6 +251,32 @@ class AForeignCallerTouchesNothing(Base):
                 for leak in ("coA", "588 Boyland", "company A's real record"):
                     self.assertNotIn(leak, str(e.detail), name)
 
+    def test_a_site_device_still_cannot_update_finalize_amend_or_delete(self):
+        """THE HALF THAT MUST NOT MOVE.
+
+        POST /logbooks/{id}/activity-photo now authorizes at VIEW level
+        (project_access_ok), so a tablet at the gate can add a photograph to the
+        filed record it is displaying. That widening is scoped to that one
+        route. These four keep the narrow guard, and a device on the RIGHT
+        project — the one that would pass project_access_ok branch 1 — is
+        refused by every one of them.
+
+        The device is shaped as get_current_user builds it: role site_device,
+        site_mode, a server-derived project_id, and NO assigned_projects."""
+        device = {"role": "site_device", "site_mode": True,
+                  "project_id": A_PROJECT, "company_id": "coA",
+                  "id": "dev_1", "_id": "dev_1", "assigned_projects": []}
+        # It really is the device the widened gate admits — otherwise this
+        # asserts nothing about the exclusion.
+        self.assertTrue(server.project_access_ok(
+            self.db.projects.docs[0], A_PROJECT, device))
+        for name, fn in self.all_four():
+            with self.subTest(endpoint=name):
+                self.db.logbooks.docs[:] = [copy.deepcopy(self.before)]
+                e = self.refused(fn, device)
+                self.assertEqual(e.status_code, 403)
+                self.assert_untouched()
+
     def test_a_missing_project_is_refused_rather_than_defaulting_open(self):
         """A logbook whose project row is gone must not become writable by
         anyone. Fails closed."""
@@ -313,32 +339,50 @@ class TheLegitimateWritesStillWork(Base):
 
 
 class AllFourGoThroughTheOneGuard(unittest.TestCase):
-    """FIVE, since append_activity_photo. The class name is left alone on
-    purpose — it names the RULE (one guard, every logbook write goes through
-    it), and the rule is what a new write has to join."""
+    """FOUR, and it went back to four.
+
+    append_activity_photo briefly made it five. It does not belong: the
+    operator ruled that a photograph may be added by anyone who can VIEW the
+    log, which is project_access_ok — a rule that admits the site device this
+    guard exists to exclude. It has its own guard, `_authorize_logbook_view`,
+    asserted below, and the rule this class names is unchanged: every logbook
+    WRITE goes through the one write guard."""
 
     SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
-    def test_one_definition_and_five_call_sites(self):
-        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 6)
+    def test_one_definition_and_four_call_sites(self):
+        self.assertEqual(self.SRC.count("_authorize_logbook_write("), 5)
 
     def test_none_of_them_kept_a_bare_unauthorized_fetch(self):
         """The exact shape that was there before: load the doc, check nothing."""
         for fn in ("update_logbook", "finalize_logbook", "amend_logbook",
-                   "delete_logbook", "append_activity_photo"):
+                   "delete_logbook"):
             body = self.SRC[self.SRC.index(f"async def {fn}("):]
             body = body[:2000]
             with self.subTest(endpoint=fn):
                 self.assertIn("_authorize_logbook_write(logbook_id, current_user)", body)
 
+    def test_the_photo_append_uses_the_view_guard_and_only_it(self):
+        """And it is the ONLY route that does — a second call site would be a
+        write that quietly acquired the wider rule."""
+        # 2000 is the window the four writes use; this one's docstring is
+        # longer than that, and a slice that stopped short of the call would
+        # have been a check that never reached its subject.
+        body = self.SRC[self.SRC.index("async def append_activity_photo("):]
+        body = body[:body.index("    # ── THE BYTES ")]
+        self.assertIn("_authorize_logbook_view(logbook_id, current_user)", body)
+        self.assertNotIn("_authorize_logbook_write(", body)
+        self.assertEqual(self.SRC.count("_authorize_logbook_view("), 2,
+                         "one definition, one call site")
+
     def test_it_uses_get_logbooks_guard_not_create_logbooks(self):
         body = self.SRC[self.SRC.index("async def _authorize_logbook_write"):]
-        body = body[:body.index("async def update_logbook")]
+        body = body[:body.index("async def _authorize_logbook_view")]
         code = "\n".join(l for l in body.splitlines()
                          if not l.strip().startswith("#") and '"""' not in l)
         self.assertIn("user_can_act_on_project(project, project_id, current_user)", code)
         self.assertNotIn("project_access_ok(", code,
-                         "a site device has no logbook write to lose")
+                         "the four writes stay narrow; only the photo append widened")
 
 
 class TheProjectListNoLongerLeaksIds(unittest.TestCase):

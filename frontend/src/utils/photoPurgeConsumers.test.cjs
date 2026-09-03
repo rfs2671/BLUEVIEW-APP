@@ -87,8 +87,26 @@ ok(kiosk({ uri: 'file:///x.jpg' }, {}, 0, 0) === 'file:///x.jpg',
   'kiosk: an unsaved photo with no logbook id still falls back to its uri');
 ok(kiosk({}, {}, 0, 0) === null && kiosk(null, LOG, 0, 0) === null,
   'kiosk: a photo with no copies at all yields null (caller renders nothing)');
-ok(/logbookPhotoUri\(photo, log, i, pi\)/.test(kioskSrc),
-  'kiosk: the activity photo row actually calls it (not dead code)');
+// THE CALL MOVED, AND THIS ASSERTION MOVED WITH IT — honestly, not by
+// loosening. It used to read `logbookPhotoUri(photo, log, i, pi)`, matching two
+// hand-copied photo strips (daily_jobsite's and fall_protection's) that had
+// drifted into existing twice. They are now ONE component,
+// `ActivityPhotoStrip`, because a photograph appended after the CP signed has
+// to be marked as one on this screen and a marker on one renderer and not the
+// other is the shape this repo keeps rediscovering.
+//
+// So the check is in two halves now, and together they say strictly more than
+// the old one: the resolver is really called, AND both renderers really go
+// through the component that calls it. The row index is still what the served
+// url is keyed on — `activityIndex` is the caller's `i`, the row's position in
+// the UNFILTERED data.activities.
+ok(/logbookPhotoUri\(photo, log, activityIndex, pi\)/.test(kioskSrc),
+  'kiosk: the shared activity photo strip actually calls it (not dead code)');
+ok((kioskSrc.match(/<ActivityPhotoStrip\s/g) || []).length === 2,
+  'kiosk: and BOTH photo-bearing renderers (daily_jobsite, fall_protection) go '
+  + 'through it — neither kept a private copy of the strip');
+ok(/activityIndex=\{i\}/.test(kioskSrc),
+  'kiosk: ...and each passes the row position the served url is keyed on');
 
 // ════════════════════════════════════════════════════════════════════════════
 //  CP EDITOR — app/logbooks/daily_jobsite.jsx

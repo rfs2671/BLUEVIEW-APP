@@ -332,12 +332,31 @@ export const photoNeedsUpload = (p) => Boolean(
  * The server derives the object key from (project_id, activity_id, photo_id),
  * so this is idempotent: a retry after a dropped connection overwrites the
  * same object with the same bytes.
+ *
+ * `logbookId` IS OPTIONAL, AND ITS ABSENCE IS A REAL STATE — not a caller
+ * being lazy. A photo can be taken before the log has ever reached the server:
+ * the editor holds `existingLogId` null until the first push lands, and the
+ * drain uploads a draft's photos AHEAD of the create that would mint the id.
+ * That is the same fact the key encodes, which is why the key does not contain
+ * one. So it is sent when there is one and OMITTED ENTIRELY when there is not
+ * — never as an empty string, which the server would have to treat as a value.
+ *
+ * WHAT SENDING IT BUYS. The server then checks that the id names an active log
+ * on this project and that the log is not already filed. This route writes no
+ * row, so bytes parked against a filed log are bytes nothing will ever name:
+ * the ordinary save that would have written the row is refused
+ * (FILED_LOG_DATA_IMMUTABLE), and a photograph for a filed log belongs on
+ * appendPhotoToFiledLog below. A 409 here is therefore a 4xx in the strict
+ * sense the contract means — this photo cannot be accepted on this route, stop
+ * retrying — and uploadPendingActivityPhotos marks it `upload_rejected`
+ * accordingly.
  */
-export async function uploadCapturePhoto({ projectId, activityId, photoId, uri }) {
+export async function uploadCapturePhoto({ projectId, logbookId, activityId, photoId, uri }) {
   if (!projectId || !photoId || !uri) {
     throw new Error('uploadCapturePhoto needs projectId, photoId and uri');
   }
   const form = new FormData();
+  if (logbookId) form.append('logbook_id', String(logbookId));
   // A row created before `activity_id` existed has none. The photo id is the
   // fallback rather than the row's INDEX: an index stops naming the same row
   // the moment one is added, removed or reordered, which is the whole reason
@@ -449,8 +468,12 @@ export async function appendPhotoToFiledLog({ logbookId, activityId, photoId, ur
  * the CP is waiting on his own save. An individual 4xx does NOT stop the loop
  * — that photo is being refused on its own merits, so it is marked
  * `upload_rejected` and never retried, and its siblings still go.
+ *
+ * `logbookId` is THIRD AND OPTIONAL so the two-argument call still means what
+ * it meant. It is passed straight down to uploadCapturePhoto — see the note
+ * there for why an absent id is a legitimate state and not a missing argument.
  */
-export async function uploadPendingActivityPhotos(projectId, activities) {
+export async function uploadPendingActivityPhotos(projectId, activities, logbookId) {
   const out = { activities, uploaded: 0, remaining: 0, offline: false };
   if (!projectId || !Array.isArray(activities)) return out;
 
@@ -476,6 +499,7 @@ export async function uploadPendingActivityPhotos(projectId, activities) {
       try {
         const key = await uploadCapturePhoto({
           projectId,
+          logbookId,
           activityId: activity.activity_id,
           photoId: photo.id || photo.photo_id,
           uri: photo.uri,

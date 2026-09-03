@@ -365,6 +365,34 @@ const SERVER_ROW = {
     'the tile label matches the one the report prints, so the CP and the '
     + 'reader of the PDF are looking at the same fact');
 
+  // ── AND THE LEGACY REFUSAL IS NO LONGER A DEAD END ──────────────────────
+  //
+  // It used to say only that a photo has to go on an amendment. That is true
+  // and it is a dead end: an amendment costs the CP a full re-attestation of a
+  // record he has already signed, to attach a photograph that is not part of
+  // what he signed. backend/scripts/backfill_activity_id.py is the thing that
+  // actually resolves it, so the copy has to name a remedy the CP can ask for.
+  const legacyCopy = (dj.match(/photoAppendLegacyRow:\s*([\s\S]*?),\n/) || [])[1] || '';
+  ok(legacyCopy.length > 0,
+    'POSITIVE CONTROL: the legacy-row copy was actually extracted from en.js — '
+    + 'an empty match would satisfy the "no retry" assertion below by saying '
+    + 'nothing at all');
+  ok(/administrator/i.test(legacyCopy),
+    'the refusal tells the CP what to actually do: there is a remedy and it is '
+    + 'somebody he can ask, not a script name he cannot run');
+  ok(/amendment/i.test(legacyCopy),
+    '...and keeps the amendment as the fallback rather than dropping it');
+  ok(!/try again/i.test(legacyCopy),
+    'and STILL never offers a retry — no id the client can send will reach '
+    + 'that row until the backfill has run');
+
+  const serverSrc = fs.readFileSync(
+    path.join(FRONTEND, '..', 'backend', 'server.py'), 'utf8');
+  ok(/"remediable": True/.test(serverSrc)
+    && /"remedy": "backfill_activity_id"/.test(serverSrc),
+    'and the SERVER says it is remediable as a machine fact, so a client can '
+    + 'branch on it rather than on English');
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed > 0) process.exit(1);
   console.log('ALL PASSED');

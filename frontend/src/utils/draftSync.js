@@ -238,7 +238,12 @@ async function pushOne(key) {
   let data = draft.data || {};
   let photosStillPending = false;
   if (Array.isArray(data.activities)) {
-    const shipped = await uploadPendingActivityPhotos(parsed.projectId, data.activities);
+    // `draft.backend_id` is NULL on an offline create — the log has not
+    // reached the server yet — and that is exactly the case the capture route
+    // treats as absence. Passing it unconditionally is right: when there IS an
+    // id the server checks the log is still open before spending storage on a
+    // photo whose row the content push below could never write.
+    const shipped = await uploadPendingActivityPhotos(parsed.projectId, data.activities, draft.backend_id);
     if (shipped.uploaded > 0) {
       data = { ...data, activities: shipped.activities };
       await writeDraft(key, { data });

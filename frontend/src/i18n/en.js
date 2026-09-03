@@ -467,11 +467,23 @@ export default {
       'Photos are not part of what you signed, so you can still add them. '
       + 'Nothing else on this log can change — a correction needs an amendment.',
     photoAppendAdd: 'Add Photo',
-    // NOT "try again". Nothing backfills activity_id, so no retry will ever
-    // reach this row and offering one would be the app pretending otherwise.
+    // NOT "try again": no retry will ever reach this row, and offering one
+    // would be the app pretending otherwise.
+    //
+    // BUT NOT A DEAD END EITHER, WHICH IS WHAT IT USED TO BE. The old copy
+    // said only that a photo has to go on an amendment — true, and it costs
+    // the CP a whole re-attestation of a record he already signed, to attach a
+    // photograph that is not part of what he signed. There IS a fix now
+    // (backend/scripts/backfill_activity_id.py, run by an administrator), so
+    // the copy names the thing that actually resolves it FIRST and keeps the
+    // amendment as the fallback rather than the only answer.
+    //
+    // "Ask your administrator", not the script's name: the CP does not run
+    // scripts, and copy that names one teaches him nothing he can act on.
     photoAppendLegacyRow:
       'This crew was recorded before photos could be attached to it. '
-      + 'A photo for this crew has to go on an amendment.',
+      + 'Ask your administrator to restore this log\'s crew identities and a '
+      + 'photo can be added here. Until then it has to go on an amendment.',
     photoAppendFailedTitle: 'Photo Not Added',
     photoAppendFailedBody: 'The photo did not reach the log. Try again.',
     // The same words the report and the PDF print under the same photograph.
@@ -1512,6 +1524,16 @@ export default {
     // generate_combined_report), so one record reads the same on both. A blank
     // would be ambiguous — never asked, or asked and unanswered?
     fNotRecorded: '— Not recorded',
+
+    // A PHOTOGRAPH APPENDED AFTER THE CP SIGNED, on the surface where the
+    // distinction matters most: this is the tablet a DOB inspector reads
+    // standing on the site. THE SAME WORDS the report and the PDF print
+    // (server.py _PHOTO_ADDED_AFTER_FILING_LABEL) and the same words the CP's
+    // own editor shows (dailyJobsite.photoAddedAfterFiling) — three surfaces,
+    // one record, one sentence. logbookViewRenderers.test.cjs holds all three
+    // equal, so a reword here fails there rather than making one record read
+    // two ways.
+    photoAddedAfterFiling: 'Added after filing',
 
     // Hot work
     hwWorkType: 'Work Type',

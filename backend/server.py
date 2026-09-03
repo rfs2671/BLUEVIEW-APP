@@ -21160,6 +21160,8 @@ async def upload_logbook_photo(
     project_id: str,
     activity_id: str = Form(...),
     photo_id: str = Form(...),
+    # OPTIONAL, AND THE REASON IS THE OFFLINE CREATE — see the docstring.
+    logbook_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
 ):
     """Store ONE activity photo in R2, at the moment it is TAKEN.
@@ -21189,11 +21191,71 @@ async def upload_logbook_photo(
     'this photo is unacceptable' (4xx, stop) from 'storage is unavailable'
     (5xx, keep trying). Unconfigured or failing R2 is therefore 503/502, never
     a 400 the client could reasonably read as a reason to give up.
+
+    ── WHICH LOG, AND WHETHER IT IS STILL OPEN ─────────────────────────────
+
+    THE GAP THIS CLOSES. This route used to take no logbook id and perform no
+    filed-state check of any kind. It was never a way INTO a filed record — it
+    writes no document, only bytes — but a route called
+    `upload_logbook_photo`, sitting beside one that DOES write into a filed
+    log, was not the gate any reader would assume it is, and "harmless by
+    accident" is not a property anyone can maintain.
+
+    `logbook_id` IS OPTIONAL, AND NOT AS A CONVENIENCE. There is a legitimate
+    caller with nothing to send, and it is the one this whole design exists
+    for: a photograph taken BEFORE the log has reached the server.
+    daily_jobsite's editor holds `existingLogId` null until the first push
+    lands, and draftSync.pushOne uploads a draft's photos ahead of the create
+    that would mint the id. That is the same fact the KEY encodes — it is a
+    pure function of (project_id, activity_id, photo_id) precisely because
+    "logbook_id does not exist at capture time". Making it required would
+    refuse the photograph that most needs keeping: one taken in a dead zone on
+    a log that does not exist yet.
+
+    SO IT IS CHECKED WHENEVER IT IS GIVEN, and every client that has one now
+    sends it. Three refusals, and each names a different fact:
+
+      404  the id names no ACTIVE logbook, or names one on a DIFFERENT
+           project. require_project_access authorised this caller for THIS
+           project; a photograph cannot claim to belong to a log outside it.
+           404 rather than 403 so no ids are confirmed to a prober.
+      409  FILED_LOG_PHOTO_CAPTURE_REFUSED — the log is filed or frozen. This
+           route writes no row, so bytes parked for a filed log are bytes
+           nothing will ever name: the ordinary save that would have written
+           the row is refused by FILED_LOG_DATA_IMMUTABLE. A photograph for a
+           filed log goes through POST /logbooks/{id}/activity-photo, which
+           appends the row itself and marks it as added after filing.
+
+    THE SAME PAIR isOpenForEditing ASKS — `status == "submitted"` OR
+    `is_locked` — not one or the other. An END_OF_DAY log is submitted and not
+    locked until the overnight sweep; an IMMEDIATE type is locked the moment it
+    is signed. Reading only one of them would let half the filed records
+    through.
+
+    AND IT RUNS BEFORE THE BYTES ARE READ, so a refusal costs no storage and no
+    transfer. That ordering is what makes "nothing is stored" true by
+    construction rather than by luck.
     """
     if not str(activity_id or "").strip() or not str(photo_id or "").strip():
         raise HTTPException(
             status_code=400, detail="activity_id and photo_id are required",
         )
+    logbook_id = str(logbook_id or "").strip()
+    if logbook_id:
+        # Absence and "" are ONE STATE. A client that appends the field
+        # unconditionally sends an empty string for a log with no id yet, and
+        # 404-ing that would refuse a photograph that is perfectly fine.
+        _lb = await db.logbooks.find_one(
+            {"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}},
+            {"project_id": 1, "status": 1, "is_locked": 1},
+        )
+        if not _lb or str(_lb.get("project_id") or "") != str(project_id):
+            raise HTTPException(status_code=404, detail={"code": "LOGBOOK_NOT_FOUND"})
+        if _lb.get("status") == "submitted" or _lb.get("is_locked"):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "FILED_LOG_PHOTO_CAPTURE_REFUSED"},
+            )
     try:
         file_bytes = await file.read()
     except Exception as e:
@@ -22040,10 +22102,27 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
 
     WHO THAT ALLOWS — admin/owner of the project's company, or anyone
     assigned to the project. Deliberately narrower than project_access_ok,
-    which also admits a site device: no screen under frontend/app/site calls
-    update, finalize, amend or delete, so a kiosk has no logbook write to
-    lose. A CP of the right company who is NOT assigned stays refused, which
-    is what create_logbook already does.
+    which also admits a site device and any member of the owning company. A CP
+    of the right company who is NOT assigned stays refused, which is what
+    create_logbook already does.
+
+    WHY A SITE DEVICE IS EXCLUDED, STATED CORRECTLY. It used to say "no screen
+    under frontend/app/site calls update, finalize, amend or delete, so a kiosk
+    has no logbook write to lose." That was an observation about the client,
+    and observations about the client expire: POST
+    /logbooks/{id}/activity-photo is now called from the tablet at the gate,
+    and the sentence would have read as permission to route it through here.
+    The real reason is about the ACT, not about which screen performs it —
+    update, finalize, amend and delete each change or destroy the statutory
+    content of a compliance record, and an unattended device in a public place
+    is not a principal that may do any of those. It is not a claim any future
+    screen can falsify.
+
+    THE FIFTH LOGBOOK WRITE DOES NOT USE THIS, AND SHOULD NOT.
+    _authorize_logbook_view below is the view-level rule for exactly one route:
+    appending a photograph, which the operator ruled is open to anyone who can
+    already see the log. This guard has four call sites and adding a fifth is a
+    decision about statutory content, not a formality.
 
     Reads the ACTIVE doc only, matching every call site's existing find_one —
     a soft-deleted logbook was already a 404 on all four.
@@ -22056,6 +22135,55 @@ async def _authorize_logbook_write(logbook_id: str, current_user: dict) -> dict:
     project_id = str(logbook.get("project_id") or "")
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project or not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this logbook")
+    return logbook
+
+
+async def _authorize_logbook_view(logbook_id: str, current_user: dict) -> dict:
+    """ANYONE WHO CAN SEE THIS LOG. The view-level twin of the guard above.
+
+    THE RULING IT IMPLEMENTS. A photograph may be added to a filed log by
+    anyone who can already view it. The write guard is narrower on purpose and
+    stays that way; this exists so that one route can be as wide as the ruling
+    without any of the other four moving with it.
+
+    WHY project_access_ok AND NOT user_can_act_on_project. "Can view" is not a
+    hypothetical: the site device's ONLY logbook read is
+    GET /logbooks/project/{id}/submitted, which is
+    Depends(require_project_access) -> _assert_project_access ->
+    project_access_ok. A tablet at the gate could display a filed daily log to
+    a DOB inspector and could not add a photograph to the record it was
+    displaying, because the append route borrowed a guard whose whole purpose
+    is to keep that device away from the CP's attested content. Appending a
+    photograph does not touch that content — the route is field-scoped to
+    photos[] and mints every value it writes — so the narrow guard was refusing
+    on a rationale that does not apply to it.
+
+    THE WIDENING IS project_access_ok WHOLE, NOT A SITE-DEVICE SPECIAL CASE.
+    Branch 2 (same company, derived from auth) comes with it, so a member of
+    the owning company who is not personally assigned may append as well. That
+    is the same set the kiosk read already serves, and carving out branch 2
+    would mean this route's "can view" was a third rule nobody could name.
+
+    WHAT IS NOT WIDENED. `require_approved` still sits on the route (it spends
+    R2), a soft-deleted logbook is still a 404, and a logbook whose project row
+    is gone still fails CLOSED — the same three properties the write guard has.
+
+    THE PROJECT LOOKUP IS THE WRITE GUARD'S, deliberately: no
+    ACTIVE_PROJECT_FILTER. _assert_project_access applies one and would 404 a
+    log belonging to a project an admin has marked for deletion. Adding that
+    here would make appending a photograph refuse on a document the four WRITES
+    still accept, which is a rule nobody made and the wrong direction for the
+    one endpoint whose job is to be reachable.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project or not project_access_ok(project, project_id, current_user):
         raise HTTPException(status_code=403, detail="Not authorized for this logbook")
     return logbook
 
@@ -22347,10 +22475,11 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
 # no id a client can send will ever match it. Those get 409
 # ACTIVITY_HAS_NO_IDENTITY rather than a push at a plausible index.
 #
-# NOTE, DELIBERATELY NOT FIXED HERE: upload_logbook_photo (the capture-time
-# route) takes no logbook_id and performs no filed-state check of any kind. It
-# only parks bytes in R2 — it writes no document — so it is not a way into a
-# filed record, but it is also not the gate anyone would assume it is.
+# WHO MAY DO IT: ANYONE WHO CAN SEE THE LOG. That is the operator's ruling and
+# it is _authorize_logbook_view, not the four writes' guard. The tablet at the
+# gate is the case that made the difference concrete — it is where a DOB
+# inspector reads a filed record, and it could show him the log and refuse to
+# add a photograph to it. See _authorize_logbook_view for the whole argument.
 #
 # STATUS IS READ, NOT GATED ON. The endpoint accepts a draft as readily as a
 # filed log: refusing one would be a rule nobody made, and the ordinary editor
@@ -22371,9 +22500,19 @@ async def append_activity_photo(
 ):
     """Append ONE photograph to one activity row of an existing logbook.
 
-    AUTH is _authorize_logbook_write, the helper update / finalize / amend
-    already share, so no new authorization concept is introduced: the project's
-    admin or owner, or anyone assigned to the project.
+    AUTH IS THE VIEW RULE, NOT THE WRITE RULE — _authorize_logbook_view, whose
+    docstring carries the reasoning. Anyone who can already see the log may add
+    a photograph to it: the project's admin or owner, anyone assigned to it,
+    any member of the owning company, and the SITE DEVICE provisioned for that
+    project. That last one is the point. The tablet at the gate is where a DOB
+    inspector reads a filed record, and it could display the log and not add a
+    photograph to it while this route borrowed update/finalize/amend/delete's
+    guard.
+
+    `require_approved` STAYS. It puts an object in R2 on the platform's bill,
+    and a site device bypasses that gate on its own terms (provisioned by an
+    approved admin, company derived server-side) exactly as it does at
+    check-in.
 
     IDEMPOTENT ON BOTH SIDES. The R2 key is a pure function of (project_id,
     activity_id, photo_id), so a retry after a dropped connection overwrites
@@ -22394,7 +22533,7 @@ async def append_activity_photo(
             status_code=400, detail="activity_id and photo_id are required",
         )
 
-    logbook = await _authorize_logbook_write(logbook_id, current_user)
+    logbook = await _authorize_logbook_view(logbook_id, current_user)
 
     # ── WHICH ROW, AND WHETHER THERE IS ONE ─────────────────────────────────
     activities = ((logbook.get("data") or {}).get("activities") or [])
@@ -22415,11 +22554,23 @@ async def append_activity_photo(
             # is nothing the caller can send that would work, so it says which
             # fact is in the way instead of returning a bare 404 the client
             # would read as "wrong id, try again".
+            #
+            # AND IT IS NO LONGER A DEAD END. It used to say only that a photo
+            # cannot be attached — true, and nothing a CP could act on. There
+            # is now a remedy: backend/scripts/backfill_activity_id.py stamps a
+            # deterministic identity onto a FILED log's id-less rows,
+            # server-side, and this route works on that log afterwards.
+            # `remediable` is the machine half of that fact, so a client can
+            # tell "ask your administrator, this is fixable" from a permanent
+            # refusal — the client still owns the wording.
             raise HTTPException(status_code=409, detail={
                 "code": "ACTIVITY_HAS_NO_IDENTITY",
+                "remediable": True,
+                "remedy": "backfill_activity_id",
                 "message": (
                     "This log's crew rows were saved before rows carried an "
-                    "identity, so a photo cannot be attached to one."
+                    "identity, so a photo cannot be attached to one until an "
+                    "administrator runs the activity-identity backfill."
                 ),
             })
         raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})

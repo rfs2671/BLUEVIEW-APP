@@ -101,6 +101,21 @@ CP_USER = {"_id": "cp_1", "id": "cp_1", "role": "cp", "company_id": "co_test",
            "account_status": "approved", "full_name": "Casey CP",
            "assigned_projects": ["proj1"]}
 
+# THE TABLET AT THE GATE. get_current_user resolves a site_mode token to its
+# site_devices row and derives BOTH `project_id` and `company_id` from that
+# device's project document server-side, so neither is client-asserted. It has
+# no assigned_projects and no account_status at all — which is exactly why
+# user_can_act_on_project refuses it and project_access_ok admits it.
+SITE_DEVICE = {"_id": "dev_1", "id": "dev_1", "role": "site_device",
+               "site_mode": True, "project_id": "proj1",
+               "company_id": "co_test", "assigned_projects": []}
+
+# Same company, no assignment, no admin. project_access_ok branch 2 admits
+# this caller to the kiosk read; user_can_act_on_project refuses it.
+SAME_COMPANY_WORKER = {"_id": "w_1", "id": "w_1", "role": "user",
+                       "company_id": "co_test", "account_status": "approved",
+                       "full_name": "Wendy Worker", "assigned_projects": []}
+
 AID = "act_1754500000000_0"
 PID = "cap_1754500000000_0_9"
 KEY = f"logbook-photos/proj1/{AID}/{PID}.jpg"
@@ -499,6 +514,61 @@ class ALegacyRowIsRefused(unittest.TestCase):
         self.assertEqual(resp.json()["detail"]["code"], "ACTIVITY_HAS_NO_IDENTITY")
         self.assertEqual(lb.updates, [])
 
+    def test_the_refusal_NAMES_A_REMEDY_AND_IS_NOT_A_DEAD_END(self):
+        """IT USED TO BE ONE, AND THAT IS THE DEFECT.
+
+        The old refusal said, correctly, that a photo cannot be attached to a
+        row with no identity — and stopped there. The only path it left was an
+        amendment, which costs the CP a full re-attestation of a record he has
+        already signed, to attach a photograph that is not part of what he
+        signed. On a real historical record that is a dead end dressed as
+        honesty.
+
+        There IS a remedy now: backend/scripts/backfill_activity_id.py stamps a
+        deterministic identity onto a FILED log's id-less rows, server-side,
+        and this route works on that log afterwards. The refusal carries that
+        as a MACHINE fact — `remediable` — so a client can tell "ask your
+        administrator, this is fixable" from a permanent no. The English still
+        belongs to the client; the field is what it branches on."""
+        doc = _filed_log()
+        for row in doc["data"]["activities"]:
+            row.pop("activity_id")
+        detail = _post(doc)[0].json()["detail"]
+        self.assertIs(detail.get("remediable"), True)
+        self.assertEqual(detail.get("remedy"), "backfill_activity_id")
+        self.assertTrue(
+            (_BACKEND / "scripts" / "backfill_activity_id.py").exists(),
+            "the refusal names a remedy that does not exist",
+        )
+
+    def test_the_remedy_the_refusal_names_can_actually_reach_this_row(self):
+        """THE POSITIVE CONTROL FOR THE WHOLE OF ITEM 4. Naming a script is
+        worth nothing unless running it makes the append succeed. This plans
+        the backfill over the very document that was just refused, applies its
+        stamps, and posts again."""
+        import sys as _sys
+        _sys.path.insert(0, str(_BACKEND / "scripts"))
+        import backfill_activity_id as _M
+
+        doc = _filed_log()
+        for row in doc["data"]["activities"]:
+            row.pop("activity_id")
+        self.assertEqual(_post(doc)[0].status_code, 409)
+
+        plan = _M.plan_for_document(doc)
+        self.assertIsNone(plan["refusal"])
+        self.assertEqual(len(plan["stamps"]), 2)
+        for s in plan["stamps"]:
+            doc["data"]["activities"][s["index"]]["activity_id"] = s["activity_id"]
+
+        target = plan["stamps"][1]["activity_id"]
+        resp, lb = _post(doc, activity_id=target)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(_photos(lb)), 2)
+        # ...and it landed on the row the CP was looking at, not the other one.
+        self.assertEqual(_photos(lb, 0)[0]["original_r2_key"], "old/a.jpg")
+        self.assertEqual(len(_photos(lb, 0)), 1)
+
     def test_that_refusal_stores_nothing_at_all(self):
         doc = _filed_log()
         for row in doc["data"]["activities"]:
@@ -651,13 +721,81 @@ class TheGuards(unittest.TestCase):
 
         self.assertIn("require_approved", _names(route.dependant))
 
-    def test_it_authorizes_through_authorize_logbook_write(self):
-        """The same helper update / finalize / amend use, so this route
-        introduces no new authorization concept."""
+    def test_it_authorizes_at_VIEW_level_not_write_level(self):
+        """ANYONE WHO CAN VIEW THE LOG CAN ADD A PHOTOGRAPH TO IT — the ruling,
+        and the reason this route does NOT share update/finalize/amend/delete's
+        guard.
+
+        _authorize_logbook_write is deliberately narrower than project_access_ok
+        and its docstring said why: "no screen under frontend/app/site calls
+        update, finalize, amend or delete, so a kiosk has no logbook write to
+        lose." This endpoint is the thing that made that premise false. A tablet
+        at the gate can read a filed log (GET /logbooks/project/{id}/submitted,
+        Depends(require_project_access) -> project_access_ok) and could not add
+        a photograph to the record it was displaying.
+
+        The write guard is NOT loosened — its four call sites keep it. This one
+        route gets the view-level guard, and nothing else does."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         body = src[src.index('@api_router.post(\n    "/logbooks/{logbook_id}/activity-photo"'):]
         body = body[:body.index("\n@api_router.")]
-        self.assertIn("_authorize_logbook_write(logbook_id, current_user)", body)
+        self.assertIn("_authorize_logbook_view(logbook_id, current_user)", body)
+        self.assertNotIn("_authorize_logbook_write(", body)
+
+    def test_the_view_guard_really_is_the_view_rule(self):
+        """A helper that merely renamed the write rule would pass the check
+        above and change nothing. This reads the definition."""
+        src = (_BACKEND / "server.py").read_text(encoding="utf-8")
+        body = src[src.index("async def _authorize_logbook_view"):]
+        body = body[:body.index("\n@api_router.")]
+        code = "\n".join(l for l in body.splitlines()
+                         if not l.strip().startswith("#") and '"""' not in l)
+        self.assertIn("project_access_ok(project, project_id, current_user)", code)
+        self.assertNotIn("user_can_act_on_project(", code)
+
+    def test_a_site_device_may_append_to_the_log_it_can_already_read(self):
+        """THE DEFECT THIS FIXES. An inspector's tablet at the gate showed the
+        filed log and could not add a photograph to it."""
+        resp, lb = _post(_filed_log(), user=SITE_DEVICE)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(len(_photos(lb)), 2)
+        self.assertEqual(_photos(lb)[1]["original_r2_key"], KEY)
+
+    def test_a_site_device_provisioned_for_ANOTHER_project_is_refused(self):
+        """project_access_ok branch 1 scopes a device to the ONE project it was
+        provisioned for, and this route inherits that whole.
+
+        VACUOUS BEFORE THE WIDENING, and stated so rather than counted as
+        cover: under the write guard EVERY site device was refused, so this
+        assertion passed for a reason that had nothing to do with the project
+        id. It only starts testing its own subject once the sibling test above
+        (a device on the RIGHT project) passes."""
+        other = {**SITE_DEVICE, "project_id": "proj_elsewhere"}
+        r2 = _FakeR2()
+        resp, lb = _post(_filed_log(), r2=r2, user=other)
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(r2.puts, [])
+        self.assertEqual(lb.updates, [])
+
+    def test_a_same_company_caller_who_is_not_assigned_may_append(self):
+        """"Anyone who can view" is project_access_ok, whole — branch 2 as well
+        as branch 1. This caller reads the log through
+        /logbooks/project/{id}/submitted today."""
+        resp, _ = _post(_filed_log(), user=SAME_COMPANY_WORKER)
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_the_write_guards_docstring_no_longer_claims_what_is_untrue(self):
+        """The premise this endpoint falsified, quoted from where it lived.
+
+        Not prose-policing: the sentence was the STATED JUSTIFICATION for
+        excluding a site device from every logbook write, and a reader deciding
+        whether a sixth write may join that guard would have been reading a
+        claim about the product that stopped being true."""
+        src = (_BACKEND / "server.py").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "no screen under frontend/app/site calls\n    update, finalize, "
+            "amend or delete", src,
+        )
 
     def test_a_cross_company_caller_is_refused_and_nothing_is_stored(self):
         outsider = {**CP_USER, "_id": "cp_x", "id": "cp_x",

@@ -319,7 +319,7 @@ export default function FallProtectionLog() {
     }
     setAutosaveFailed(!localSaved);
 
-    const uploaded = await uploadPendingActivityPhotos(projectId, filed);
+    const uploaded = await uploadPendingActivityPhotos(projectId, filed, existingLogId);
     if (uploaded.uploaded > 0) setRows(uploaded.activities);
     const data = draftBody(uploaded.activities);
     await writeDraft(_key, { data });
