@@ -27818,6 +27818,61 @@ def _parse_address_components(project_address: str) -> tuple:
     return house_num, street_name
 
 
+# Borough labels as they appear in the `borough` column of pkdm-hqz6
+# (DOB NOW: CofO) — verified live 2026-09-02 against
+#   $select=borough,count(1)&$group=borough
+# which returns exactly these five values and no others.
+_COFO_BOROUGH_BY_BIN_PREFIX = {
+    "1": "MANHATTAN",
+    "2": "BRONX",
+    "3": "BROOKLYN",
+    "4": "QUEENS",
+    "5": "STATEN ISLAND",
+}
+_COFO_BOROUGH_ALIASES = {
+    "MANHATTAN": "MANHATTAN", "NEW YORK": "MANHATTAN", "NY": "MANHATTAN",
+    "BRONX": "BRONX", "THE BRONX": "BRONX",
+    "BROOKLYN": "BROOKLYN", "KINGS": "BROOKLYN",
+    "QUEENS": "QUEENS",
+    "STATEN ISLAND": "STATEN ISLAND", "RICHMOND": "STATEN ISLAND",
+}
+
+
+def _cofo_borough_label(nyc_bin: str, project_address: str = "") -> Optional[str]:
+    """Uppercase borough label for the CofO address-fallback query, or
+    None when the borough genuinely cannot be derived.
+
+    The fallback matches on house_no + street_name, which is NOT unique
+    across NYC: "55 WATER STREET" resolves to 48 CofO rows split
+    Manhattan 31 / Brooklyn 17 (verified live 2026-09-02), so without a
+    borough constraint roughly a third of them belong to a different
+    building. Two independent sources make the borough derivable in
+    almost every case:
+
+      1. The leading digit of the BIN. This works even for the
+         placeholder BINs (``X000000``) that make ``bin_usable`` False —
+         i.e. precisely the case where the address fallback is doing the
+         real work rather than backstopping a BIN query.
+      2. The borough named in the address itself. ``_parse_address_components``
+         throws away everything after the first comma, but the raw
+         address is still in hand here.
+
+    Returns None only when the BIN is empty/short AND the address names
+    no recognizable borough — a genuinely unlocatable project. Callers
+    must then run the fallback unconstrained and treat its results as
+    borough-ambiguous.
+    """
+    prefix = (nyc_bin or "").strip()[:1]
+    if prefix in _COFO_BOROUGH_BY_BIN_PREFIX:
+        return _COFO_BOROUGH_BY_BIN_PREFIX[prefix]
+    # Fall back to the borough named in the address tail.
+    for part in (project_address or "").upper().split(",")[1:]:
+        cleaned = re.sub(r"[^A-Z ]", "", part).strip()
+        if cleaned in _COFO_BOROUGH_ALIASES:
+            return _COFO_BOROUGH_ALIASES[cleaned]
+    return None
+
+
 async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     """Query NYC Open Data Socrata endpoints by BIN and/or address."""
     all_records = []
@@ -28019,24 +28074,84 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     # ── CERTIFICATE OF OCCUPANCY (pkdm-hqz6) - DOB NOW: CofO ──
     # Per operator F3, replaces the unverified bs9k-acwn candidate
     # with the live DOB NOW: Certificate of Occupancy dataset.
+    #
+    # 2026-09-02: this block previously named SIX columns that
+    # pkdm-hqz6 does not have. `$order: issuance_date` alone made
+    # Socrata reject the whole request —
+    #   HTTP 400 query.soql.no-such-column; No such column: issuance_date
+    # — on every call since the feature shipped, 96×/day, so zero CofO
+    # records were ever ingested. `id_field: co_number` and the
+    # `house_number` filter param were wrong the same way. Real column
+    # names verified live against the dataset schema; pinned offline in
+    # tests/test_cofo_query_matches_dataset_schema.py.
+    #
+    # ORDERING: NOT c_of_o_issuance_date. That column is typed `text`
+    # and holds "MM/DD/YY HH:MM:SS AM" strings, so DESC on it sorts
+    # lexicographically — "12/02/24" ranks above "09/25/25". We sort on
+    # c_of_o_sequence, a `number` column that is never null (0 of 81,264
+    # rows) and tracks application_number ("CO-000100309" ⇔ 100309), so
+    # it is monotonic in filing order. This matters: one BIN in the
+    # dataset carries 64 CofO rows against a $limit of 50, so which 50
+    # we take is a real choice, not a formality.
+    #
+    # NULL ISSUANCE: excluded server-side. A CofO row with no issuance
+    # date is not evidence a building was completed, and Socrata sorts
+    # nulls FIRST under DESC, so such a row silently consumes a slot in
+    # the 50-row window ahead of every real certificate. This feeds the
+    # seven-year records-retention clock, so an un-issued certificate
+    # must not start it.
+    _COFO_ISSUED_ONLY = "c_of_o_issuance_date IS NOT NULL"
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/pkdm-hqz6.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "issuance_date DESC"},
+            "params": {
+                "bin": nyc_bin,
+                "$where": _COFO_ISSUED_ONLY,
+                "$limit": "50",
+                "$order": "c_of_o_sequence DESC",
+            },
             "record_type": "cofo",
-            "id_field": "co_number",
+            "id_field": "c_of_o_number",
         })
     if house_num and street_name:
+        # Left-anchored LIKE, not '%…%'. The leading wildcard matched
+        # any street CONTAINING the name: '%BROADWAY%' also pulls WEST
+        # BROADWAY (119 rows), EAST BROADWAY (49), E/W BROADWAY.
+        # Anchoring keeps the suffix tolerance the wildcard was there
+        # for (ST vs STREET) and drops the prefix bleed.
+        #
+        # street_name and house_num are sanitized by
+        # _parse_address_components to [A-Z0-9 ] only, which removes the
+        # quote, the LIKE metacharacters % and _, and comment syntax
+        # before they reach this f-string.
+        _cofo_where = [
+            f"upper(street_name) like '{street_name}%'",
+            _COFO_ISSUED_ONLY,
+        ]
+        _cofo_borough = _cofo_borough_label(nyc_bin, project_address)
+        if _cofo_borough:
+            _cofo_where.insert(1, f"upper(borough) = '{_cofo_borough}'")
+        else:
+            # Unlocatable project: no BIN digit and no borough in the
+            # address. The fallback still runs, but house_no + street
+            # repeats across boroughs, so these results are
+            # borough-ambiguous and may attribute another building's
+            # certificate to this project.
+            logger.warning(
+                "CofO address fallback for %r has no derivable borough; "
+                "results are borough-ambiguous",
+                project_address,
+            )
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/pkdm-hqz6.json",
             "params": {
-                "house_number": house_num,
-                "$where": f"upper(street_name) like '%{street_name}%'",
+                "house_no": house_num,
+                "$where": " AND ".join(_cofo_where),
                 "$limit": "50",
-                "$order": "issuance_date DESC",
+                "$order": "c_of_o_sequence DESC",
             },
             "record_type": "cofo",
-            "id_field": "co_number",
+            "id_field": "c_of_o_number",
         })
 
     # ── FAÇADE FISP (xubg-57si) - DOB NOW: Safety Façades ──
@@ -29113,14 +29228,54 @@ def _extract_swo_fields(rec: dict) -> dict:
 
 
 def _extract_cofo_fields(rec: dict) -> dict:
-    """MR.14 (commit 2b) — extract from pkdm-hqz6 (DOB NOW: CofO)."""
+    """MR.14 (commit 2b) — extract from pkdm-hqz6 (DOB NOW: CofO).
+
+    2026-09-02: every source name here was wrong. `co_number`,
+    `co_type`, `co_status`, `issuance_date`, `expiration_date`,
+    `job_filing_number` and their `or` fallbacks (`type`, `status`,
+    `issued_date`, `job_number`, `certificate_of_occupancy_number`) are
+    none of them columns of pkdm-hqz6, so every extracted field would
+    have been None even if the query had not been 400ing. Real column
+    names verified against the live schema and pinned offline in
+    tests/test_cofo_query_matches_dataset_schema.py.
+
+    The KEYS are LeveLog's dob_logs schema and are deliberately
+    unchanged; only the source columns on the right-hand side moved.
+    `cofo_type` has a live consumer —
+    lib/dob_signal_classifier.py:203 `_classify_cofo` reads it via
+    `_signal_kind_for` at write time.
+
+    The others are currently write-only, and fixing that is outside
+    this change. A cofo row renders through `renderGenericCard`
+    (frontend/app/project/[id]/dob-logs.jsx:821), which reads
+    `log.status` and `log.description` — neither of which any extractor
+    here writes — so the card's detail body is empty apart from
+    ai_summary / next_action. `issuance_date` and `expiration_date` are
+    read only by `renderPermitCard` (:455, :475-476), which a cofo row
+    never reaches. Reported, not fixed: the UI is out of scope here.
+
+    No `or` fallbacks survive: each of these values has exactly one
+    real column in this dataset, and a fallback to a name that does not
+    exist is decoration, not defensiveness. `or None` is kept to
+    normalize the empty string, which Socrata does emit.
+
+    `expiration_date` is DROPPED rather than kept as a permanent None.
+    pkdm-hqz6 has no expiration column at all, and the dob-logs card
+    renders `expiration_date` when truthy — persisting None would let a
+    Temporary CofO, which really does expire, read as having no
+    expiration. An absent key is an honest "unknown"; a stored None is
+    a claim of "none".
+
+    Note `job_filing_name` holds the job filing NUMBER (e.g.
+    '220480209') despite its name; that is the dataset's naming, not a
+    mistake here.
+    """
     return {
-        "co_number": rec.get("co_number") or rec.get("certificate_of_occupancy_number") or None,
-        "cofo_type": rec.get("co_type") or rec.get("type") or None,
-        "current_status": rec.get("co_status") or rec.get("status") or None,
-        "issuance_date": rec.get("issuance_date") or rec.get("issued_date") or None,
-        "expiration_date": rec.get("expiration_date") or None,
-        "job_filing_number": rec.get("job_filing_number") or rec.get("job_number") or None,
+        "co_number": rec.get("c_of_o_number") or None,
+        "cofo_type": rec.get("c_of_o_filing_type") or None,
+        "current_status": rec.get("c_of_o_status") or None,
+        "issuance_date": rec.get("c_of_o_issuance_date") or None,
+        "job_filing_number": rec.get("job_filing_name") or None,
     }
 
 
