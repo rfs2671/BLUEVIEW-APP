@@ -387,6 +387,22 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     // persistAndPush pulls the audit recorder in with require(); there is no
     // module loader inside new Function.
     require: () => ({ recordSignatureEvent: async () => {} }),
+    // THE SERVER-NEWER GUARD'S INPUT, and null is the case this file is about.
+    //
+    // persistAndPush now refuses outright when the load found a server document
+    // newer than the local draft (src/utils/draftFreshness.js) — pushing from
+    // there is the wholesale $set that reverts a correction. Declared here
+    // because this harness injects every free name explicitly: without it the
+    // guard read an undeclared identifier and the whole function threw before
+    // it reached the refusal path, which is precisely what this suite exists to
+    // exercise.
+    //
+    // NULL, deliberately. Every assertion below is about a FINALIZE_* refusal
+    // from the server on a log with no conflict; setting a conflict here would
+    // stop the push before it was ever attempted and quietly turn this suite
+    // into a test of the guard instead. The guard has its own coverage in
+    // draftFreshness.test.cjs.
+    draftConflict: null,
   };
   // `persistAndPush` is the thing being BUILT here; leaving it in the env
   // would declare the same name twice inside the generated function.

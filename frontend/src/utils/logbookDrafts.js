@@ -149,6 +149,17 @@ export async function readDraft(key) {
       // silently ALWAYS FALSE and the offline finalize-lock never engaged (only
       // the server's is_locked did). Returning it makes the offline lock real.
       finalized: p.finalized ?? false,
+      // THE SAME BUG, THE SAME SHAPE, ONE FIELD OVER. writeDraft has stamped
+      // `updated_at: Date.now()` on every single write since this module was
+      // written — and readDraft dropped it, so the one value that says WHEN
+      // this draft last changed was written by everything and read by nothing.
+      //
+      // It is read now because the editors' local-first branch has to answer a
+      // question it never used to ask: the server document is fetched even when
+      // a draft exists (src/utils/draftFreshness.js), and "which of these two is
+      // newer" is unanswerable without this. `null` for a draft written before
+      // the stamp existed — and null must be treated as UNKNOWN, never as old.
+      updated_at: typeof p.updated_at === 'number' ? p.updated_at : null,
     };
   } catch (_e) {
     return null;

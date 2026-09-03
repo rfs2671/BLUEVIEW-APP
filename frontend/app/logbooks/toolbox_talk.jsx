@@ -16,6 +16,7 @@ import {
   draftKey, readDraft, writeDraft, setDraftBackendId,
   markPending, clearPending, markFinalized,
 } from '../../src/utils/logbookDrafts';
+import { compareDraftToServer } from '../../src/utils/draftFreshness';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 // finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
 // axios error (and the one place that guarantees the server's English `detail`
@@ -101,6 +102,10 @@ export default function ToolboxTalkLog() {
   // write succeeds, never on the next keystroke, because a warning that
   // decays is one he can miss by typing.
   const [autosaveFailed, setAutosaveFailed] = useState(false);
+  // THE SERVER DISAGREES WITH THIS DRAFT — null when it does not, or when
+  // no comparison was possible (offline). Set on the local-first branch
+  // below, which until now returned without ever asking the server.
+  const [draftConflict, setDraftConflict] = useState(null);
   const [existingLogId, setExistingLogId] = useState(null);
 
   const [location, setLocation] = useState('');
@@ -202,6 +207,9 @@ export default function ToolboxTalkLog() {
     // this is what lets the screen show it without the CP backing out and
     // re-entering. Everything below decides locked-ness from what it loads.
     setLocked(false);
+    // AND SO IS THE CONFLICT, for the same reason the lock above it is:
+    // a verdict reached on the previous load is not evidence about this one.
+    setDraftConflict(null);
     try {
       // LOCAL-FIRST. A local draft wins over the server copy, so an offline CP
       // reopens to exactly what he filled.
@@ -221,6 +229,28 @@ export default function ToolboxTalkLog() {
           // The frozen parent is discarded; fall through to the server
           // path, which already prefers the unlocked document.
         } else {
+          // ── ALWAYS ASK THE SERVER, EVEN THOUGH A DRAFT IS IN HAND ──────────
+          //
+          // Until this line the branch below returned with the server NEVER
+          // fetched. Device content and the filed record were pixel-identical
+          // on screen, and Submit PUT the whole draft into update_logbook,
+          // which applies `data` as a wholesale $set — so a server-side
+          // correction was reverted by a CP who did nothing but open his log.
+          //
+          // OFFLINE IS UNCHANGED, and that is a requirement rather than a
+          // side effect: compareDraftToServer never throws, and it reads a
+          // failed fetch as "no comparison possible" rather than "the server
+          // wins", so a CP with no signal opens exactly the screen he did
+          // before. Only a CONFLICT is stored — a clean comparison and an
+          // unreachable server are both null, and null blocks nothing.
+          //
+          // THE DRAFT IS STILL WHAT IS HYDRATED BELOW. Nothing here applies
+          // the server document, discards the draft, or chooses between them;
+          // choosing is the conflict UI and it is not built.
+          const _cmp = await compareDraftToServer({
+            draft, projectId, logType: LOG_TYPE, date,
+          });
+          setDraftConflict(_cmp.conflict ? _cmp : null);
         if (draft.finalized) { setLocked(true); markFinalized(_key); }
         setExistingLogId(draft.backend_id || null);
         hydrate(draft.data);
@@ -341,6 +371,20 @@ export default function ToolboxTalkLog() {
 
   // ── Save ──────────────────────────────────────────────────────────────
   const persistAndPush = async (submitStatus) => {
+    // NO SILENT OVERWRITE. The server holds a document newer than this
+    // draft, and this function PUTs `data` as a wholesale $set — pushing
+    // from here is exactly the act that reverts the correction. The Submit
+    // button is already dead for the same reason; this is the guard for
+    // every other caller, now and later.
+    //
+    // THE WHOLE CALL IS REFUSED, not just the push. A local write here
+    // would bind a backend_id and a status against a document this device
+    // has been told it is behind, which is a half-state nothing later
+    // reads correctly. HIS WORK IS NOT AT RISK: the debounced autosave is a
+    // separate effect and keeps writing the draft to this device.
+    //
+    // A REFUSAL, NOT A RESOLUTION — no merge, no diff, no pick-a-side.
+    if (draftConflict) return;
     // `forFiling` drops the nameless rows on a SUBMIT and keeps them on a
     // draft. What he signed is what he sees: the trimmed roster is written
     // back to state, so the screen never shows a row the filed sheet lacks.
@@ -897,6 +941,7 @@ export default function ToolboxTalkLog() {
       onFinalized={() => setLocked(true)}
       onAmended={fetchData}
       submitWarning={autosaveFailed ? tFinalize('autosaveFailedWarning') : ''}
+      draftConflict={draftConflict}
       autosaveNote={t('savedAutomatically')}
     />
   );

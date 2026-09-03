@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ArrowLeft, ArrowRight, Check } from 'lucide-react-native';
 import AnimatedBackground from '../AnimatedBackground';
 import AmendmentBanner from '../AmendmentBanner';
+import DraftConflictNotice from '../DraftConflictNotice';
 import LogbookLockBar from '../LogbookLockBar';
 import { outdoor } from '../../styles/theme';
 
@@ -96,6 +97,26 @@ export default function LogbookStepper({
   // disabled-reason so the two can be on screen together without the warning
   // pushing the reason off the button it belongs to.
   submitWarning = '',
+  // ── THE DRAFT ON SCREEN IS NOT THE RECORD ────────────────────────────────
+  //
+  // The verdict from src/utils/draftFreshness.js compareDraftToServer, passed
+  // straight through. Ten editors share this one banner and this one gate; the
+  // eleventh (preshift_signin) owns no stepper and renders the same component
+  // itself.
+  //
+  // AND THIS ONE *IS* A GATE, unlike submitWarning directly above it. The rule
+  // there — a warning must never disable Submit — holds because a broken local
+  // store does not stop the log reaching the server, so blocking would turn a
+  // storage fault into an inability to file at all. THE OPPOSITE IS TRUE HERE:
+  // submitting is precisely the act that does the damage. `persistAndPush` PUTs
+  // the whole draft into update_logbook, which applies `data` as a wholesale
+  // `$set`, so pressing Submit over a newer server document is what reverts the
+  // correction. A dead button is the point.
+  //
+  // REFUSAL, NOT RESOLUTION. Nothing here picks a side, merges, or discards —
+  // the conflict UI is a separate design and is not built. The draft stays on
+  // the device, on screen, and editable; only the push is refused.
+  draftConflict = null,
   onSubmit,
   // Lock bar.
   logType,
@@ -123,6 +144,10 @@ export default function LogbookStepper({
   unavailable = null,
 }) {
   const total = steps.length;
+  // Named once, so the gate and the grey fill can never disagree about what a
+  // conflict is. A verdict object with `conflict: false` — the ordinary clean
+  // comparison, and every offline read — is NOT a conflict and blocks nothing.
+  const conflictBlocked = !!(draftConflict && draftConflict.conflict);
 
   if (loading) {
     // PINNED, like the tree below: this branch tints its spinner
@@ -275,6 +300,15 @@ export default function LogbookStepper({
               scroll to is not an explanation. */}
           <AmendmentBanner amendment={amendment} />
 
+          {/* THE SAME PLACEMENT ARGUMENT AS THE BANNER ABOVE, for the same
+              reason: this answers "why is what I am looking at not the filed
+              log" before he touches anything, so it cannot sit below the step
+              content, and it is outside the pointerEvents wrapper so it stays
+              selectable on a locked log. Renders on EVERY step, not just the
+              submit step — the false inference it prevents is available to him
+              the moment the screen opens, not only when he goes to sign. */}
+          <DraftConflictNotice conflict={draftConflict} />
+
           <View pointerEvents={locked ? 'none' : 'auto'}>
             {current && current.render()}
           </View>
@@ -301,6 +335,18 @@ export default function LogbookStepper({
                 nowhere to live here and the CP met a dead grey button. Shown
                 only on the submit step: a reason to finish is not a reason to
                 stop paging. */}
+            {/* THE DEAD SUBMIT SAYS WHY, right where the button is. The full
+                explanation is in the banner at the top of the form; this is the
+                one line that belongs next to the control it disables, because a
+                CP who has paged to the end and met a grey button will not scroll
+                back up to find out. */}
+            {step === total && !!draftConflict && !!draftConflict.conflict && (
+              <Text style={s.submitWarning}>
+                Submitting is blocked — the log on the server is newer than this
+                draft, and filing this would replace it. Your draft is still
+                saved on this device.
+              </Text>
+            )}
             {step === total && !!submitWarning && (
               <Text style={s.submitWarning}>{submitWarning}</Text>
             )}
@@ -324,11 +370,11 @@ export default function LogbookStepper({
               </Pressable>
             ) : (
               <Pressable
-                style={[s.primaryBtn, submitDisabled && s.primaryBtnDisabled]}
+                style={[s.primaryBtn, (submitDisabled || conflictBlocked) && s.primaryBtnDisabled]}
                 accessibilityRole="button"
                 accessibilityLabel={submitLabel}
-                accessibilityState={{ disabled: submitting || submitDisabled }}
-                disabled={submitting || submitDisabled}
+                accessibilityState={{ disabled: submitting || submitDisabled || conflictBlocked }}
+                disabled={submitting || submitDisabled || conflictBlocked}
                 onPress={onSubmit}
               >
                 {submitting
