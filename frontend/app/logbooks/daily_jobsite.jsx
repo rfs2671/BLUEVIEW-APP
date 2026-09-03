@@ -2934,7 +2934,15 @@ export default function DailyJobsiteLog() {
           <CameraCaptureModal
             visible={cameraVisible}
             shots={cameraShots}
-            onClose={() => { setCameraVisible(false); setAppendTargetId(null); }}
+            /* CLOSING IS THE ONLY THING THIS DOES NOW. It used to also clear
+               appendTargetId, the camera's filed-log target — that whole path
+               moved to app/logbooks/photos.jsx and the state went with it, but
+               this reset was left behind pointing at a binding that no longer
+               exists. cameraTargetIndex is deliberately NOT cleared here: it is
+               re-set on every open (see openCamera) and the capture effect
+               keys off `cameraVisible`, so blanking it on close would only
+               race the compress queue that is still draining. */
+            onClose={() => setCameraVisible(false)}
             onCapture={handleCameraCapture}
             onDeleteShot={handleDeleteShot}
           />
