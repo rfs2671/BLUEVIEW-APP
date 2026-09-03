@@ -679,6 +679,23 @@ export const checkinsAPI = {
     );
     return response.data;
   },
+
+  // POST /api/checkins/{id}/card-check — the CP attests he has SEEN this
+  // worker's physical SST card. The ONLY thing that clears `needs_review` on
+  // the certification; approve/send-home above writes a different field on a
+  // different collection and never touched it.
+  //
+  // `cardNumber` is the number the SCREEN SHOWED, posted back so the server can
+  // refuse (409) if the record has moved on since — a clearance is keyed to a
+  // card number and does not carry when that number changes. Attribution
+  // (checked_by) is server-derived and is never sent.
+  cardCheck: async (checkinId, cardNumber) => {
+    const response = await apiClient.post(
+      `/api/checkins/${checkinId}/card-check`,
+      { card_number: cardNumber },
+    );
+    return response.data;
+  },
 };
 
 /**

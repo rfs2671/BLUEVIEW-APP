@@ -2506,6 +2506,18 @@ class WorkerCertification(BaseModel):
     # Deterministic 0..1 fraction of expected fields cleanly extracted. Replaces
     # the uncalibrated model self-`confidence` that was structurally null.
     extraction_completeness: Optional[float] = None
+    # THE HUMAN THE REVIEW FLAG WAS ASKING FOR. Written by
+    # POST /checkins/{id}/card-check when a CP attests he has seen the physical
+    # card: {card_number, checked_by, checked_by_name, checked_at}. It is the
+    # ONLY thing in this backend that sets needs_review False on an existing
+    # record -- before it, `needs_review: bool = False` on this model was the
+    # single False in the file and nothing could ever clear a raised flag.
+    #
+    # KEYED TO A CARD NUMBER, and read through card_check_covers() rather than
+    # trusted as a stored boolean: a clearance keyed to a card number is
+    # orphaned by any later correction to that number, the same join the OSHA
+    # register's Review column makes.
+    card_check: Optional[dict] = None
 
 # ==================== CERTIFICATION GATE LOGIC ====================
 
@@ -2838,6 +2850,41 @@ def _map_osha_level(raw) -> str:
     return "OSHA_UNSPECIFIED"
 
 
+def card_check_covers(cert: dict) -> bool:
+    """True when a CP's card check stands against the card this cert HOLDS NOW.
+
+    A JOIN, NOT A BOOLEAN, and evaluated at read time on purpose. The
+    attestation records that a human saw a SPECIFIC physical card -- name, card
+    number and class -- so it is only evidence about the record while the record
+    still names that card. Correct the card number and the clearance is about a
+    card nobody has looked at.
+
+    That is the same rule the OSHA register's Review column makes on
+    (worker_id, card_number), and the same hazard `card_number_finding` refuses
+    to create by storing anything: a stored flag keyed to a card number is
+    orphaned by any later correction to that number. Here the flag IS stored --
+    an attestation is a fact about a person and a moment and has to be -- so the
+    JOIN is what is evaluated fresh, and a stale attestation simply stops
+    covering rather than having to be found and deleted.
+
+    NO CARD NUMBER, NO COVERAGE, in either position. A clearance keyed on null
+    would match every future card this worker is ever issued, which is precisely
+    the thing the card-number key exists to prevent.
+    """
+    if not isinstance(cert, dict):
+        return False
+    check = cert.get("card_check")
+    if not isinstance(check, dict):
+        return False
+    if not check.get("checked_at"):
+        return False          # an unattested block attests nothing
+    stored = str(cert.get("card_number") or "").strip()
+    against = str(check.get("card_number") or "").strip()
+    if not stored or not against:
+        return False
+    return stored == against
+
+
 def _sst_cert_state(cert: dict, now: datetime) -> str:
     """Three-state verdict for ONE SST cert: 'valid' | 'unknown' | 'expired'.
 
@@ -2882,7 +2929,24 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
         #
         # `class_source` absent means the row predates this work entirely and
         # keeps the old behaviour for the same reason.
-        if cert.get("class_source") in ("color_only", "conflict"):
+        #
+        # AND THIS IS WHERE THE HUMAN ARRIVES. The demotion above exists for
+        # exactly one want: nobody has looked at the card. A CP card check IS
+        # that look -- he attests he has seen the physical card and that its
+        # name, number and class match this record -- so once one stands
+        # against this card number the demotion has nothing left to withhold.
+        #
+        # THE ONLY DEMOTION IT LIFTS, deliberately. An unread class, a dead
+        # scheme and a missing expiry are all handled ABOVE this line and are
+        # untouched by it, because they are gaps in the RECORD rather than a
+        # missing human: no amount of looking at a card turns "the class could
+        # not be read" into a class, and the CP was never asked to attest to an
+        # expiry. Without this the clearance would be cosmetic -- `sst_status`
+        # is frozen onto each check-in row from this function, so a card check
+        # that did not change what this returns would be undone by tomorrow's
+        # first scan of the same unchanged card.
+        if (cert.get("class_source") in ("color_only", "conflict")
+                and not card_check_covers(cert)):
             return "unknown"
         return "valid"
     return "unknown"                           # missing / suppressed / unparseable
@@ -16235,6 +16299,169 @@ async def review_checkin(checkin_id: str, data: dict, current_user = Depends(get
         "reviewed_by_name": reviewer_name,
         "reviewed_at": now.isoformat(),
     }
+
+
+@api_router.post("/checkins/{checkin_id}/card-check")
+async def record_sst_card_check(checkin_id: str, data: dict, current_user = Depends(get_current_user)):
+    """The CP attests he has SEEN this worker's physical SST card.
+
+    THE DEFECT THIS CLOSES. `needs_review` could be raised and never lowered.
+    The only False in the backend was the Pydantic model default; every other
+    write was the literal True or the extraction-completeness computation at
+    scan time, and one of those forces review on any class derived from the
+    card's COLOUR even when name, number, class and expiry are all good --
+    "A COLOUR-DERIVED CLASS ALWAYS NEEDS A HUMAN". The design demanded a human
+    confirmation and provided no way to give one. Meanwhile the endpoint
+    directly above this one -- the CP's approve / send-home -- writes to
+    `db.checkins`, and `needs_review` lives on a certification inside
+    `db.workers`, so approving a check-in never touched it. Twenty workers
+    carried the flag and the number could only rise.
+
+    IT IS THE CP, BY RULING, and not an admin: he is the man on site who can
+    look at the card in the worker's hand. A warning raised at a gate that only
+    somebody away from the gate can resolve is a warning that does not get
+    resolved.
+
+    IT IS AN ATTESTATION, NOT A DISMISSAL. What is recorded is WHO, WHEN, and
+    AGAINST WHICH CARD NUMBER. The client sends back the card number the screen
+    actually displayed and it must still be the number on the record; if the
+    card was re-scanned or corrected in between, the CP was looking at a
+    different card from the one this would clear, so the write is refused
+    (409) rather than landing on whatever is there now.
+
+    A NULL CARD NUMBER IS REFUSED OUTRIGHT (400). There is nothing to attest
+    against, and a clearance keyed on null would carry to every future card this
+    worker is ever issued. The screen does not offer the control at all in that
+    case; this is the same rule enforced at the write.
+
+    WHAT IT CHANGES, AND WHAT IT DOES NOT.
+      * `needs_review` on the matched cert goes False. That flag asks whether a
+        human must look at this card. One has.
+      * `review_reason` IS LEFT ALONE. The CP attested to name, number and
+        class -- he was not asked about the expiry, and an unread expiry is
+        still an unread expiry. Erasing the reason would make an incomplete
+        record indistinguishable from a complete one.
+      * Through `card_check_covers`, it lifts exactly one demotion in
+        `_sst_cert_state` -- the colour-derived/conflicted class -- which is
+        what stops the flag regenerating on tomorrow's check-in. It does not
+        invent a class OCR could not read, revive a dead scheme, or supply a
+        missing expiry: those keep saying so, correctly, every morning.
+      * It is NOT a review decision. `review_decision` / `reviewed_by` belong to
+        approve / send-home and are not written here: "I checked this card" and
+        "this worker may work today" are different claims by different rules.
+    """
+    card_number = str((data or {}).get("card_number") or "").strip()
+    if not card_number:
+        raise HTTPException(
+            status_code=400,
+            detail="card_number is required — a card check must name the card "
+                   "it was made against.",
+        )
+
+    checkin = await db.checkins.find_one({
+        "_id": to_query_id(checkin_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not checkin:
+        raise HTTPException(status_code=404, detail="Check-in record not found")
+
+    project_id_str = str(checkin.get("project_id") or "")
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id_str),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Same per-project gate as review / assign-trade, so the people who are
+    # alerted are exactly the people who can answer.
+    if not user_can_act_on_project(project, project_id_str, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to check cards on this check-in",
+        )
+
+    worker_id = str(checkin.get("worker_id") or "")
+    worker = await db.workers.find_one({
+        "_id": to_query_id(worker_id), "is_deleted": {"$ne": True},
+    }) if worker_id else None
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker record not found")
+
+    # THE INDEX MATTERS. Written by position rather than by rewriting the whole
+    # certifications array: a read-modify-write of the array would carry back
+    # every other cert as this request happened to read it, and OSHA rows sit
+    # beside SST rows on the same worker.
+    idx = next(
+        (i for i, c in enumerate(worker.get("certifications") or [])
+         if isinstance(c, dict)
+         and str(c.get("type", "")) in RECOGNIZED_SST_TYPES
+         and str(c.get("card_number") or "").strip() == card_number),
+        None,
+    )
+    if idx is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No SST card numbered {card_number} on this worker's record "
+                   "any more. The card was re-scanned or corrected since this "
+                   "screen loaded — reload and check the card again.",
+        )
+
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    checker_name = (
+        current_user.get("full_name")
+        or current_user.get("name")
+        or current_user.get("email")
+        or ""
+    )
+    now = datetime.now(timezone.utc)
+    # SERVER-DERIVED ATTRIBUTION, like review and assign-trade. An attestation
+    # the client can address to somebody else is not an attestation.
+    _path = f"certifications.{idx}"
+    await db.workers.update_one(
+        {"_id": to_query_id(worker_id)},
+        {"$set": {
+            f"{_path}.needs_review": False,
+            f"{_path}.card_check": {
+                "card_number": card_number,
+                "checked_by": user_id,
+                "checked_by_name": checker_name,
+                "checked_at": now,
+            },
+            "updated_at": now,
+        }},
+    )
+
+    # Copied onto the check-in row as well, so the screen the CP is standing on
+    # can show what he just recorded without re-reading the worker document.
+    # DISPLAY ONLY: `card_check` on the cert is the record, and the read-time
+    # join is made there.
+    await db.checkins.update_one(
+        {"_id": to_query_id(checkin_id)},
+        {"$set": {
+            "sst_card_checked_number": card_number,
+            "sst_card_checked_by": user_id,
+            "sst_card_checked_by_name": checker_name,
+            "sst_card_checked_at": now,
+            "updated_at": now,
+        }},
+    )
+
+    await audit_log(
+        "sst_card_check", user_id, "checkin", checkin_id,
+        {"card_number": card_number},
+    )
+
+    return {
+        "success": True,
+        "checkin_id": checkin_id,
+        "worker_id": worker_id,
+        "card_number": card_number,
+        "checked_by": user_id,
+        "checked_by_name": checker_name,
+        "checked_at": now.isoformat(),
+    }
+
 
 @api_router.get("/checkins/project/{project_id}")
 async def get_project_checkins(
