@@ -132,9 +132,22 @@ const chromeSrc = fs.readFileSync(
   path.join(SRC, 'components', 'logbookStepper', 'LogbookStepper.jsx'), 'utf8');
 ok(/submitDisabled = false,/.test(chromeSrc),
   'stepper: submitDisabled is a declared prop, defaulting to enabled');
-ok(/disabled=\{submitting \|\| submitDisabled\}/.test(chromeSrc),
+// OPEN-ENDED ON PURPOSE, and it was not always. The assertion pinned the whole
+// expression — `disabled={submitting || submitDisabled}` — which asserted more
+// than it meant: the claim is that the stepper HONOURS submitDisabled, not that
+// nothing else may ever also disable Submit. A second gate has since landed
+// beside it (`conflictBlocked`, when the server holds a document newer than the
+// local draft — src/utils/draftFreshness.js), and pinning the closing brace
+// made adding it look like a regression in the signature gate, which it is not.
+// What must never happen is submitDisabled being DROPPED from that expression,
+// and that is exactly what this still catches.
+ok(/disabled=\{submitting \|\| submitDisabled\b/.test(chromeSrc),
   'stepper: the submit button is disabled when the form says so');
-ok(/accessibilityState=\{\{ disabled: submitting \|\| submitDisabled \}\}/.test(chromeSrc),
+// Same relaxation, same reason as the line above: the claim is that the
+// screen reader is told what the sighted CP is shown, not that the expression
+// is frozen. It must keep MATCHING the visual disabled state — so if a new gate
+// is added to one it belongs in the other, and the two lines are read together.
+ok(/accessibilityState=\{\{ disabled: submitting \|\| submitDisabled\b/.test(chromeSrc),
   'stepper: and it says so to a screen reader, not only in the styling');
 // The gate must sit on the SUBMIT branch, never on Next — a CP with no
 // signature must still be able to walk the form.

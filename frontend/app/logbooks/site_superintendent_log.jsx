@@ -52,6 +52,9 @@ import { useT } from '../../src/i18n';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import { logbooksAPI, dobAPI } from '../../src/utils/api';
+// THE SERVER IS ASKED EVEN WHEN A DRAFT EXISTS — the same one call the other
+// eleven editors make, not a twelfth copy of the reasoning. See draftFreshness.
+import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshness';
 import { scratchKey, stash, take, drop } from '../../src/utils/logbookScratch';
 // ── THE LOCAL-FIRST STORE, AND WHY IT IS THE SHARED ONE ────────────────────
 //
@@ -144,6 +147,13 @@ export default function SiteSuperintendentLog() {
   // it clears only when a later write succeeds, never on the next keystroke,
   // because a warning that decays is one he can miss by typing.
   const [autosaveFailed, setAutosaveFailed] = useState(false);
+  // THE SERVER DISAGREES WITH THIS DRAFT — null when it does not, or when no
+  // comparison was possible (offline). Set on the local-first branch below,
+  // which until now returned without ever asking the server. The eleven
+  // sibling editors carry this identically; this screen grew its local-first
+  // branch in #363, AFTER they were fixed, so it arrived with the same defect
+  // already solved next door.
+  const [draftConflict, setDraftConflict] = useState(null);
 
   // THE DRAFT KEY — (project, log type, date), the same identity the server
   // dedups on and the same one draftSync's parseDraftKey reads back out. Built
@@ -224,6 +234,11 @@ export default function SiteSuperintendentLog() {
     setLoading(true);
     // Re-derived every load, so an amendment can unlock the screen.
     setLocked(false);
+    // AND SO IS THE CONFLICT, for the same reason the lock above it is: a
+    // verdict reached on the previous load is not evidence about this one. This
+    // also re-arms the acknowledgement, which rides ON the verdict — a CP who
+    // agreed to overwrite one server change must be asked again about the next.
+    setDraftConflict(null);
     if (!projectId) { setLoading(false); return; }
     try {
       const draft = await readDraft(_key);
@@ -253,6 +268,28 @@ export default function SiteSuperintendentLog() {
       });
 
       if (!amended && hasLocalContent) {
+        // ── ALWAYS ASK THE SERVER, EVEN THOUGH A DRAFT IS IN HAND ──────────
+        //
+        // Until this line the branch below returned with the server NEVER
+        // fetched. Device content and the filed record were pixel-identical on
+        // screen, and the sign path then PUT the whole draft into
+        // update_logbook, which applies `data` as a wholesale $set — so a
+        // server-side correction was reverted by a superintendent who did
+        // nothing but open his log.
+        //
+        // OFFLINE IS UNCHANGED, and that is a requirement rather than a side
+        // effect: compareDraftToServer never throws, and it reads a failed
+        // fetch as "no comparison possible" rather than "the server wins", so a
+        // superintendent with no signal opens exactly the screen he did before.
+        // Only a CONFLICT is stored — a clean comparison and an unreachable
+        // server are both null, and null blocks nothing.
+        //
+        // THE DRAFT IS STILL WHAT IS HYDRATED BELOW. Nothing here applies the
+        // server document or discards the draft; the CP chooses, in the banner.
+        const _cmp = await compareDraftToServer({
+          draft, projectId, logType: LOG_TYPE, date: logDate,
+        });
+        setDraftConflict(_cmp.conflict ? _cmp : null);
         if (draft.finalized) { setLocked(true); markFinalized(_key); }
         setExistingLogId(draft.backend_id || null);
         hydrate(draft.data);
@@ -492,6 +529,23 @@ export default function SiteSuperintendentLog() {
 
   const handleSubmit = async () => {
     if (signing || locked) return;
+    // NO SILENT OVERWRITE — WHICH IS NOT THE SAME AS NO OVERWRITE.
+    //
+    // This path PUTs `data` as a wholesale $set, so pushing over a changed
+    // server document really does revert it. THE SUPERINTENDENT'S DRAFT WINS
+    // anyway: it is the most recent authorship and he is the one who made it.
+    // What `submitRefused` withholds is the SILENT case — it stays true until
+    // he has been shown the server change and taken the override in the banner,
+    // and then it opens.
+    //
+    // AND IT NEVER OPENS FOR A FILED OR FINALIZED SERVER DOCUMENT. That is a
+    // signed compliance record, not a competing draft; the server refuses the
+    // write (423 / 409) and Amend is the route that corrects one.
+    //
+    // THE SAME PREDICATE THE SUBMIT BUTTON ASKS, so a live button and a
+    // refusing save path cannot disagree — and the SAME predicate the other
+    // eleven editors ask, so a CP does not learn this twelve ways.
+    if (submitRefused(draftConflict)) return;
     // DEPARTURE IS PREFILLED AT SIGN AND IS STILL HIS. Same rule as arrival —
     // the app suggests the moment he signed; if he is filing from the truck
     // ten minutes later, the field is his to correct before he taps.
@@ -1170,6 +1224,13 @@ export default function SiteSuperintendentLog() {
          SUBMIT_UNATTESTED_ITEMS is the authority; this stops him arriving at
          a refusal he cannot read. */
       submitDisabled={!isAffirmedSignature(cpSignature) || unanswered.length > 0}
+      draftConflict={draftConflict}
+      // HE TOOK THE OVERRIDE. Stored ON the verdict rather than beside it, so
+      // the load that clears the verdict clears the acknowledgement with it and
+      // a NEW server change is never covered by an answer he gave to an old one.
+      onConflictAcknowledge={() => setDraftConflict(
+        (c) => (c ? { ...c, acknowledged: true } : c),
+      )}
       submitHint={
         !isAffirmedSignature(cpSignature)
           ? t('signatureHint')

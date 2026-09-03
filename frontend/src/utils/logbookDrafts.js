@@ -149,6 +149,17 @@ export async function readDraft(key) {
       // silently ALWAYS FALSE and the offline finalize-lock never engaged (only
       // the server's is_locked did). Returning it makes the offline lock real.
       finalized: p.finalized ?? false,
+      // THE SAME BUG, THE SAME SHAPE, ONE FIELD OVER. writeDraft has stamped
+      // `updated_at: Date.now()` on every single write since this module was
+      // written — and readDraft dropped it, so the one value that says WHEN
+      // this draft last changed was written by everything and read by nothing.
+      //
+      // It is read now because the editors' local-first branch has to answer a
+      // question it never used to ask: the server document is fetched even when
+      // a draft exists (src/utils/draftFreshness.js), and "which of these two is
+      // newer" is unanswerable without this. `null` for a draft written before
+      // the stamp existed — and null must be treated as UNKNOWN, never as old.
+      updated_at: typeof p.updated_at === 'number' ? p.updated_at : null,
     };
   } catch (_e) {
     return null;
@@ -332,12 +343,31 @@ export const photoNeedsUpload = (p) => Boolean(
  * The server derives the object key from (project_id, activity_id, photo_id),
  * so this is idempotent: a retry after a dropped connection overwrites the
  * same object with the same bytes.
+ *
+ * `logbookId` IS OPTIONAL, AND ITS ABSENCE IS A REAL STATE — not a caller
+ * being lazy. A photo can be taken before the log has ever reached the server:
+ * the editor holds `existingLogId` null until the first push lands, and the
+ * drain uploads a draft's photos AHEAD of the create that would mint the id.
+ * That is the same fact the key encodes, which is why the key does not contain
+ * one. So it is sent when there is one and OMITTED ENTIRELY when there is not
+ * — never as an empty string, which the server would have to treat as a value.
+ *
+ * WHAT SENDING IT BUYS. The server then checks that the id names an active log
+ * on this project and that the log is not already filed. This route writes no
+ * row, so bytes parked against a filed log are bytes nothing will ever name:
+ * the ordinary save that would have written the row is refused
+ * (FILED_LOG_DATA_IMMUTABLE), and a photograph for a filed log belongs on
+ * appendPhotoToFiledLog below. A 409 here is therefore a 4xx in the strict
+ * sense the contract means — this photo cannot be accepted on this route, stop
+ * retrying — and uploadPendingActivityPhotos marks it `upload_rejected`
+ * accordingly.
  */
-export async function uploadCapturePhoto({ projectId, activityId, photoId, uri }) {
+export async function uploadCapturePhoto({ projectId, logbookId, activityId, photoId, uri }) {
   if (!projectId || !photoId || !uri) {
     throw new Error('uploadCapturePhoto needs projectId, photoId and uri');
   }
   const form = new FormData();
+  if (logbookId) form.append('logbook_id', String(logbookId));
   // A row created before `activity_id` existed has none. The photo id is the
   // fallback rather than the row's INDEX: an index stops naming the same row
   // the moment one is added, removed or reordered, which is the whole reason
@@ -368,6 +398,75 @@ export async function uploadCapturePhoto({ projectId, activityId, photoId, uri }
 }
 
 /**
+ * Add ONE photograph to a logbook that is already filed.
+ *
+ * A DIFFERENT ROUTE FROM uploadCapturePhoto ABOVE, AND THE DIFFERENCE IS THE
+ * POINT. That one parks bytes in R2 and writes no document at all — the row
+ * that names the object is written later, by the ordinary save. This one is
+ * addressed by LOGBOOK id and appends the row itself, because the ordinary
+ * save is refused on a filed log (409 FILED_LOG_DATA_IMMUTABLE) and should be:
+ * two daily_jobsite records at 588 Thomas were silently overwritten through
+ * the hole that guard closed.
+ *
+ * WHAT IS SENT IS EVERYTHING THE SERVER GETS: the bytes, the row's identity
+ * and the photo's. No `data`, no photo object, no array index — the server
+ * mints the row, stamps who added it and when, and pushes it by identity. So
+ * there is nothing in this request a caller could aim at the CP's attested
+ * content, and nothing the client can assert about the record.
+ *
+ * Returns the server's own response: { original_r2_key, activity_id,
+ * activity_index, photo_index, photo }. THROWS if the row is missing — a 200
+ * that confirms no stored row is not a photograph on the record, and showing
+ * a tile for one would be the app claiming evidence it does not have.
+ *
+ * On a refusal the server's machine code is re-thrown as `err.code`, because
+ * ACTIVITY_HAS_NO_IDENTITY is not a retry — it is a fact about the log (its
+ * crew rows predate `activity_id` and nothing backfills them) that the CP has
+ * to be told rather than shown as a generic failure.
+ */
+export async function appendPhotoToFiledLog({ logbookId, activityId, photoId, uri }) {
+  if (!logbookId || !activityId || !photoId || !uri) {
+    throw new Error(
+      'appendPhotoToFiledLog needs logbookId, activityId, photoId and uri',
+    );
+  }
+  const form = new FormData();
+  // NO `activityId || photoId` FALLBACK HERE, deliberately. On the capture
+  // route that fallback keeps an id-less row's photo addressable in R2. Here
+  // the id is what the server matches the ROW on, so substituting the photo id
+  // would aim the push at nothing — and the server refuses those rows by name,
+  // which is the answer the CP needs.
+  form.append('activity_id', String(activityId));
+  form.append('photo_id', String(photoId));
+  const isWeb = typeof window !== 'undefined' && !!window.document;
+  if (isWeb) {
+    const blob = await (await fetch(uri)).blob();
+    form.append('file', blob, `${photoId}.jpg`);
+  } else {
+    form.append('file', { uri, name: `${photoId}.jpg`, type: 'image/jpeg' });
+  }
+  let response;
+  try {
+    response = await apiClient.post(
+      `/api/logbooks/${logbookId}/activity-photo`, form,
+      {
+        timeout: 60000,
+        headers: isWeb ? { 'Content-Type': undefined } : { 'Content-Type': 'multipart/form-data' },
+        transformRequest: (d) => d,
+      },
+    );
+  } catch (e) {
+    const detail = e?.response?.data?.detail;
+    const code = (detail && typeof detail === 'object') ? detail.code : null;
+    if (code) e.code = code;
+    throw e;
+  }
+  const body = response?.data;
+  if (!body || !body.photo) throw new Error('append returned no photo row');
+  return body;
+}
+
+/**
  * Upload every photo in an activities array that still needs it.
  *
  * Returns { activities, uploaded, remaining, offline } and NEVER throws — a
@@ -380,8 +479,12 @@ export async function uploadCapturePhoto({ projectId, activityId, photoId, uri }
  * the CP is waiting on his own save. An individual 4xx does NOT stop the loop
  * — that photo is being refused on its own merits, so it is marked
  * `upload_rejected` and never retried, and its siblings still go.
+ *
+ * `logbookId` is THIRD AND OPTIONAL so the two-argument call still means what
+ * it meant. It is passed straight down to uploadCapturePhoto — see the note
+ * there for why an absent id is a legitimate state and not a missing argument.
  */
-export async function uploadPendingActivityPhotos(projectId, activities) {
+export async function uploadPendingActivityPhotos(projectId, activities, logbookId) {
   const out = { activities, uploaded: 0, remaining: 0, offline: false };
   if (!projectId || !Array.isArray(activities)) return out;
 
@@ -407,6 +510,7 @@ export async function uploadPendingActivityPhotos(projectId, activities) {
       try {
         const key = await uploadCapturePhoto({
           projectId,
+          logbookId,
           activityId: activity.activity_id,
           photoId: photo.id || photo.photo_id,
           uri: photo.uri,

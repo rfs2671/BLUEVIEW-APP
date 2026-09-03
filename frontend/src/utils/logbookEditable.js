@@ -56,6 +56,32 @@ export function isOpenForEditing(log) {
 }
 
 /**
+ * True when a PHOTOGRAPH may still be added to a log that is closed to editing.
+ *
+ * THE ONE EXCEPTION TO THE RULE ABOVE, AND IT IS WRITTEN HERE SO THE TWO ARE
+ * READ TOGETHER. A photograph is not DOB-required daily log content — BC
+ * 3301.2 does not ask for one — so treating a photo addition as an amendment
+ * to a filed compliance record is wrong on the merits. The statutory content
+ * the CP attested to does not move; a later photograph of that same work is
+ * appended in place.
+ *
+ * IT IS THE COMPLEMENT, NOT A WIDENING. A log is open for editing or open for
+ * photo append, never both, and never neither once it exists. On a DRAFT this
+ * is false on purpose: the ordinary camera is right there, and the append route
+ * writes straight into the stored document, so a draft appended to that way
+ * would be overwritten by the editor's own next PUT.
+ *
+ * The affordance it gates renders OUTSIDE LogbookStepper's pointerEvents='none'
+ * wrapper. That wrapper is untouched — this is why the exception is a separate
+ * subtree rather than a hole in the wrapper: "no per-field flags to miss" stays
+ * true by construction.
+ */
+export function isOpenForPhotoAppend(log) {
+  if (!log || typeof log !== 'object') return false;
+  return !isOpenForEditing(log);
+}
+
+/**
  * Pick the log the editor should load, and say whether it is read-only.
  *
  * Returns `{ log, readOnly }`. `log` is the first still-open log, or the day's
