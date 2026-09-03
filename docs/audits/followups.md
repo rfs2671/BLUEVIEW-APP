@@ -4,6 +4,67 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## RULED — 2026-09-03 — the two dead plan-page indexes: do NOT build, decide later against real numbers
+
+Operator ruling. Neither is a correctness problem and both are cheap to add
+later against measured queries, so nothing is being built now. Recorded so the
+next person does not rediscover them and "fix" them blind.
+
+### `document_page_by_sheet_number` — what it would serve
+
+The sheet lookup in `server.py`: a CP asks for a drawing by number ("A-301",
+"ME-401"), `_is_sheet_number_query` recognises the token, and the search runs
+
+    fq["sheet_number"] = {"$regex": pattern, "$options": "i"}
+    hits = await db.document_page_index.find(fq).to_list(10)
+
+against a `project_id` base filter. The pattern is anchored
+(`^(PFX1|PFX2)(\.\d+)?$`), so it WOULD be indexable — except `$options: "i"`
+defeats it. A case-insensitive regex cannot use a case-sensitively ordered
+index, so Mongo takes the `project_id` prefix and scans within it.
+
+**Building the index alone changes nothing.** The fix is either a collation on
+the index or normalising `sheet_number` on write and dropping the `i` — and the
+second is the one worth measuring, because it also makes the query cheaper for
+every project regardless of index.
+
+### `document_page_by_floor` — what it would serve
+
+Nothing, as the code stands. `floor` is READ (the scheduling aggregator's
+`p.get("floor")`, the engine's grouping) but is never a query key. The
+aggregator loads every row for a project with `find({"project_id": project_id})`
+and groups in Python. An index on `(project_id, floor)` serves a filter no
+caller applies.
+
+It becomes worth having the day someone queries by floor rather than grouping
+after a full load — which is a different change, and would be the thing to
+measure first.
+
+### Why this is a ruling and not a TODO
+
+Both indexes exist in the code and are created on every boot. Neither is
+absent, broken, or blocking. What they lack is a caller that benefits, and that
+is a measurement question rather than a build question. **Adding an index to
+make a report look tidy is how a collection acquires write cost nobody can
+attribute later.**
+
+Contrast `document_page_unique`, which is NOT in this ruling: it is a
+correctness constraint, not a performance one, and its absence would let
+duplicate `(file_id, page_number)` rows accumulate to the point where it can
+never be built.
+
+### One thing checked and found NOT to be a defect
+
+`dob_logs_summary_dedup` was suspected of having been created by hand rather
+than by the code that intended it — a divergence between what the code declares
+and what production runs. It is not. `server.py:42989` creates it at indent 4
+inside `startup_event`, unconditionally, on every boot. Recorded because the
+suspicion was reasonable and the answer is worth not re-deriving: an index
+present in production AND declared unconditionally in startup code is the system
+working, not a hand-made stand-in.
+
+---
+
 ## OPEN — 2026-09-03 — an index that cannot serve its query looks identical, from inside, to one that works
 
 `run_whatsapp_startup_migrations` creates four indexes on `document_page_index`
