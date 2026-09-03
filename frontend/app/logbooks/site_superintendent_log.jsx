@@ -35,7 +35,9 @@
  * lib/logbook/superintendent_log.py. This screen renders them; it does not
  * restate them.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback, useEffect, useMemo, useRef, useState,
+} from 'react';
 import { View, Text, TextInput, Pressable, ScrollView } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Plus, Trash2, Check, X } from 'lucide-react-native';
@@ -51,6 +53,31 @@ import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import { logbooksAPI, dobAPI } from '../../src/utils/api';
 import { scratchKey, stash, take, drop } from '../../src/utils/logbookScratch';
+// ── THE LOCAL-FIRST STORE, AND WHY IT IS THE SHARED ONE ────────────────────
+//
+// This screen's load handler used to say "let him work offline; the draft is
+// local-first like every other editor" while importing nothing from here. It
+// was not. Nothing was written anywhere: a five-step 3301.13.13 log lived in
+// React state, the push threw with no signal, a toast said so, and the log was
+// gone when he left the screen. It is the WORST log to lose that way — the
+// statute requires it completed before he departs, and cellars and shafts are
+// exactly where there is no signal.
+//
+// NOT A NEW MECHANISM. The nine siblings write through logbookDrafts and are
+// drained by draftSync on the next NetInfo transition; `site_superintendent_log`
+// is deliberately NOT in that drain's SKIP_LOG_TYPES, and the payload it
+// rebuilds from a key — {project_id, log_type, date, data, cp_signature,
+// cp_name, status} — is exactly what handleSubmit posts. So the draft goes in
+// the same store, under the same key shape, and the existing drain sends it.
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId,
+  markPending, clearPending, markFinalized,
+} from '../../src/utils/logbookDrafts';
+import { adoptAmendment } from '../../src/utils/amendmentAdopt';
+import {
+  finalizeErrorCode, recordFinalizeError, clearFinalizeError,
+} from '../../src/utils/draftSync';
+import { isOfflineError } from '../../src/utils/offlineState';
 // TWO MODULES, AND THEY ARE NOT INTERCHANGEABLE. `signatureAudit` is the
 // LEDGER (recordSignatureEvent, device fingerprint, integrity); the predicate
 // that says whether a signature was affirmed lives in `signatureAffirmed`.
@@ -61,7 +88,7 @@ import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { isAffirmedSignature } from '../../src/utils/signatureAffirmed';
 import { useAuth } from '../../src/context/AuthContext';
 import {
-  csLogItems, csItemState, csUnanswered, CS_LOG_ITEMS,
+  csLogItems, csItemState, csUnanswered, csItemLabels,
 } from '../../src/utils/superintendentLogModel';
 import {
   emptyFinding, findingIsEmpty, findingGaps, deriveConditionAndOrderBlocks,
@@ -70,6 +97,15 @@ import {
 
 const LOG_TYPE = 'site_superintendent_log';
 const TOTAL_STEPS = 5;
+
+/**
+ * The write answered, and answered with nothing that names a record.
+ *
+ * A CONSTANT BECAUSE IT IS A PAIR. It is thrown at the one place that can
+ * detect it and read at the one place that reports it, and a literal at each
+ * end is how the two drift into a machine string reaching a jobsite.
+ */
+const NO_RECORD_RETURNED = 'LOG_NOT_FILED';
 
 const todayISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
   .format(new Date());
@@ -91,6 +127,7 @@ export default function SiteSuperintendentLog() {
   const router = useRouter();
   const toast = useToast();
   const t = useT('siteSuperintendent');
+  const tFinalize = useT('finalize');
   const { user } = useAuth();
   const { projectId, date } = useLocalSearchParams();
   const logDate = String(date || todayISO());
@@ -103,6 +140,31 @@ export default function SiteSuperintendentLog() {
   const [locked, setLocked] = useState(false);
   const [signing, setSigning] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // The last autosave did not land. Sticky, exactly as the siblings keep it:
+  // it clears only when a later write succeeds, never on the next keystroke,
+  // because a warning that decays is one he can miss by typing.
+  const [autosaveFailed, setAutosaveFailed] = useState(false);
+
+  // THE DRAFT KEY — (project, log type, date), the same identity the server
+  // dedups on and the same one draftSync's parseDraftKey reads back out. Built
+  // from LOG_TYPE rather than a literal so the two can never drift.
+  const _key = useMemo(
+    () => draftKey({ projectId, logType: LOG_TYPE, date: logDate }),
+    [projectId, logDate],
+  );
+
+  // The in-memory stash key, declared HERE rather than beside snapshot/restore
+  // below because the load effect's applyHeld lists it as a dependency and a
+  // dependency array is evaluated during render. See the note down there.
+  const scratchId = scratchKey(LOG_TYPE, projectId, logDate);
+
+  /** The server names the condition, the client owns the wording. */
+  const gateCopy = useCallback((code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  }, [tFinalize]);
 
   // ── item state ──────────────────────────────────────────────────────────
   // ARRIVAL IS PREFILLED AND IS HIS TO CHANGE. He may open the app in his
@@ -137,45 +199,101 @@ export default function SiteSuperintendentLog() {
   useEffect(() => { if (cpName && !printedName) setPrintedName(cpName); }, [cpName]);
 
   // ── load ────────────────────────────────────────────────────────────────
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      if (!projectId) { setLoading(false); return; }
-      try {
-        const arr = await logbooksAPI.getByProject(projectId, LOG_TYPE, logDate);
-        const list = Array.isArray(arr) ? arr : (arr?.items || []);
-        // Prefer the EDITABLE document — an amendment child over its locked
-        // parent — the same rule every other editor's load applies.
-        const existing = list.find((l) => l.is_locked !== true) || list[0] || null;
-        if (!alive) return;
-        if (existing) {
-          setExistingLogId(existing.id || existing._id);
-          setLocked(existing.is_locked === true);
-          hydrate(existing.data || {});
-          if (existing.cp_signature) setCpSignature(existing.cp_signature);
-          if (existing.cp_name) setCpName(existing.cp_name);
-        }
-        // ── AND ANYTHING HE HAD TYPED, ON TOP ────────────────────────────
-        //
-        // AFTER the server hydrate, deliberately: the stash is NEWER. It is
-        // what he had on screen a moment ago and has not saved, so it wins
-        // over the stored document rather than being overwritten by it.
-        //
-        // NEVER ONTO A FROZEN DOCUMENT. A log that came back locked is
-        // read-only, and restoring edits onto it would put text on screen
-        // that no longer corresponds to anything writable. `take` still
-        // clears the stash, so it cannot resurface later either.
-        const held = take(scratchId);
-        if (held && !(existing && existing.is_locked === true)) restore(held);
-      } catch (_e) {
-        // A failed read is not an empty log. Leave the form as it is and let
-        // him work offline; the draft is local-first like every other editor.
-      } finally {
-        if (alive) setLoading(false);
+  //
+  // THE DEVICE IS ASKED FIRST. That ordering IS local-first: a superintendent
+  // opening his log in a cellar gets the log, not a spinner and an empty form.
+  // The server is consulted only when this device holds nothing for the day.
+  //
+  // ANYTHING HE HAD TYPED GOES ON TOP OF EITHER ANSWER. The scratch stash is
+  // NEWER than both, and RICHER than the draft: the draft stores the DOCUMENT
+  // shape, which is lossy on purpose (deriveConditionAndOrderBlocks drops a
+  // finding row with a location typed and no condition yet; unticked DOB
+  // suggestions never reach it; the step he was on is not in it). So the draft
+  // is not a replacement for the stash and does not become one.
+  //
+  // NEVER ONTO A FROZEN DOCUMENT, from either source. A log that came back
+  // locked is read-only, and restoring edits onto it would put text on screen
+  // that corresponds to nothing writable. `take` still clears the stash, so it
+  // cannot resurface onto a later visit either.
+  const applyHeld = useCallback((isLocked) => {
+    const held = take(scratchId);
+    if (held && !isLocked) restore(held);
+  }, [scratchId]);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    // Re-derived every load, so an amendment can unlock the screen.
+    setLocked(false);
+    if (!projectId) { setLoading(false); return; }
+    try {
+      const draft = await readDraft(_key);
+      const hasLocalContent = !!(draft && draft.data
+        && Object.keys(draft.data).length > 0);
+
+      // ── A FROZEN LOCAL RECORD IS ASKED ABOUT FIRST, EMPTY OR NOT ─────────
+      //
+      // Parent and amendment collide on ONE key — amend_logbook copies
+      // project, type and date onto the child — so a screen that trusted a
+      // finalized local draft would show the filed parent forever and the
+      // correction the superintendent was handed would be unreachable.
+      // adoptAmendment discards the local record only when the SERVER confirms
+      // an unlocked child exists, and offline it does nothing at all.
+      //
+      // ASKED BEFORE THE CONTENT CHECK, and that ordering is the whole point.
+      // The branch below writes an EMPTY finalized draft whenever this screen
+      // opens a log the server has already locked — that is how the offline
+      // lock gets recorded for a log filed from another session. It holds no
+      // data, so a content-gated amendment check skips straight past it, and
+      // then every autosave on the amendment is silently refused by
+      // writeDraft's finalize lock while the screen looks perfectly fine and
+      // the "this device is not saving your draft" warning is the only clue.
+      // Same trap as the one above, in its quietest form.
+      const amended = !!(draft && draft.finalized) && await adoptAmendment({
+        key: _key, projectId, logType: LOG_TYPE, date: logDate,
+      });
+
+      if (!amended && hasLocalContent) {
+        if (draft.finalized) { setLocked(true); markFinalized(_key); }
+        setExistingLogId(draft.backend_id || null);
+        hydrate(draft.data);
+        if (draft.cp_signature) setCpSignature(draft.cp_signature);
+        if (draft.cp_name) setCpName(draft.cp_name);
+        applyHeld(draft.finalized === true);
+        setLoading(false);
+        return;
       }
-    })();
-    return () => { alive = false; };
-  }, [projectId, logDate]);
+      // Nothing usable on the device, or the amendment was adopted: ask the
+      // server, whose load already prefers the unlocked child.
+
+      const arr = await logbooksAPI.getByProject(projectId, LOG_TYPE, logDate);
+      const list = Array.isArray(arr) ? arr : (arr?.items || []);
+      // Prefer the EDITABLE document — an amendment child over its locked
+      // parent — the same rule every other editor's load applies.
+      const existing = list.find((l) => l.is_locked !== true) || list[0] || null;
+      if (existing) {
+        setExistingLogId(existing.id || existing._id);
+        setLocked(existing.is_locked === true);
+        // AND THE LOCK IS RECORDED ON THE DEVICE. Without this the offline
+        // finalize lock never engages for a log frozen on the server by
+        // someone else's session, and a reopen with no signal would offer an
+        // editable form over a filed statutory record.
+        if (existing.is_locked === true) markFinalized(_key);
+        hydrate(existing.data || {});
+        if (existing.cp_signature) setCpSignature(existing.cp_signature);
+        if (existing.cp_name) setCpName(existing.cp_name);
+      }
+      applyHeld(existing?.is_locked === true);
+    } catch (_e) {
+      // A failed read is not an empty log. Leave the form as it is and let him
+      // work offline — which now means something, because the draft above is
+      // real. His entry is still restored if he had any held.
+      applyHeld(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [_key, projectId, logDate, applyHeld]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   // ── DOB autofill ────────────────────────────────────────────────────────
   // HE SHOULD NOT TYPE A VIOLATION NUMBER THE SYSTEM ALREADY HOLDS. These are
@@ -257,7 +375,12 @@ export default function SiteSuperintendentLog() {
   // See logbookScratch.js for why this exists at all: the consent screen is a
   // route, and the claim that the navigator keeps this screen mounted beneath
   // it could not be verified. Correct under either answer.
-  const scratchId = scratchKey(LOG_TYPE, projectId, logDate);
+  //
+  // `scratchId` ITSELF IS DECLARED WITH `_key`, ABOVE. It has to be: the load
+  // effect's applyHeld names it in a dependency array, and a dependency array
+  // is evaluated during render — a `const` declared here would be in its
+  // temporal dead zone and the screen would crash to the error boundary on
+  // mount, which is exactly the class the mount smoke exists to catch.
 
   const snapshot = () => ({
     arrivedAt, departedAt, printedName, progress, activities, locations,
@@ -323,6 +446,45 @@ export default function SiteSuperintendentLog() {
     printedName, arrivedAt, departedAt, progress, activities, locations,
     inspectedOn, inspectionLocation, inspectionResult, competentPersonName]);
 
+  // ── AUTOSAVE ────────────────────────────────────────────────────────────
+  //
+  // NO `status`, AND THAT IS THE POINT. writeDraft preserves any field left
+  // undefined, so an autosave that never names `status` cannot promote a
+  // half-typed log to `submitted` — and it must not be able to, because the
+  // reconnect drain replays whatever it finds in the draft. Naming it here
+  // would be a way for a log nobody signed to file itself behind him.
+  //
+  // NOT A TOAST WHEN IT FAILS. A superintendent saving every few seconds does
+  // not need a message each time, and one that fires constantly is one he
+  // stops reading. It drives the SUBMIT WARNING instead — he is told once, at
+  // the last moment it can still matter.
+  useEffect(() => {
+    if (loading || locked) return undefined;
+    const h = setTimeout(() => {
+      writeDraft(_key, {
+        data: buildData(),
+        cp_signature: cpSignature,
+        cp_name: printedName.trim() || cpName,
+      })
+        .then((_ok) => setAutosaveFailed(!_ok))
+        .catch(() => setAutosaveFailed(true));
+    }, 800);
+    return () => clearTimeout(h);
+  }, [loading, locked, _key, buildData, cpSignature, cpName, printedName]);
+
+  /** Write what is on screen right now — used when he changes step. */
+  const flushDraft = useCallback(async () => {
+    if (locked) return;
+    try {
+      const _ok = await writeDraft(_key, {
+        data: buildData(),
+        cp_signature: cpSignature,
+        cp_name: printedName.trim() || cpName,
+      });
+      setAutosaveFailed(!_ok);
+    } catch (_e) { setAutosaveFailed(true); }
+  }, [locked, _key, buildData, cpSignature, cpName, printedName]);
+
   // THE SUBMIT GATE MIRRORS THE SERVER, WHICH REMAINS THE AUTHORITY.
   // create_logbook raises SUBMIT_UNATTESTED_ITEMS; this only decides whether
   // the button is reachable and names the items so he is not guessing.
@@ -370,42 +532,174 @@ export default function SiteSuperintendentLog() {
     drop(scratchId);
 
     setSigning(true);
+    const data = buildData(departure);
+    const signerName = printedName.trim() || cpName;
+
+    // ── THE LOCAL SAVE, BEFORE THE PUSH, AND ITS ANSWER IS NOT DISCARDABLE ──
+    //
+    // This is the offline record. Everything below that promises a later sync
+    // — the pending key, the "saved on this device" banner, the on-device
+    // freeze — rests on this write having happened, so its BOOLEAN is carried
+    // down to every one of those branches. writeDraft returns false for a
+    // refused write and catches its own storage errors; the try covers a throw
+    // anyway, because a caller that handles one failure mode and not the other
+    // has fixed half of this.
+    //
+    // When it fails, what he has just signed exists only in React state, and
+    // queueing the key would be worse than not queueing it: the drain would
+    // read the last autosave — unsigned content, filed under this key — or
+    // find nothing and clear the key as `no-draft`.
+    let localSaved = false;
+    try {
+      localSaved = await writeDraft(_key, {
+        data, cp_signature: cpSignature, cp_name: signerName, status: 'submitted',
+      });
+    } catch (_e) {
+      localSaved = false;
+    }
+    setAutosaveFailed(!localSaved);
+
+    /**
+     * FREEZE ON THIS DEVICE — and never on a signature that did not earn it.
+     *
+     * markFinalized makes the draft IMMUTABLE: writeDraft refuses every later
+     * content edit. The drain, in turn, refuses to push a `submitted` draft
+     * whose signature is not AFFIRMED (`{}` is truthy, and production held
+     * exactly that shape). Freeze one of those and the log can never be
+     * corrected and can never be sent, while the screen shows it as filed —
+     * a trap with no exit but a reinstall. The guard at the top of this
+     * handler already refuses an unaffirmed submit; this says so again at the
+     * point where the damage would be permanent.
+     */
+    const freezeLocally = async () => {
+      if (!isAffirmedSignature(cpSignature)) return;
+      await markFinalized(_key);
+    };
+
+    /** Offline, but the device holds it: announce that, freeze here, queue it. */
+    const reportHeldOnDevice = async (handle) => {
+      await freezeLocally();
+      await markPending(_key);
+      // ON THIS DEVICE ONLY — durable, not a toast. He is attesting to a legal
+      // record and a toast is gone in four seconds, so LogbookLockBar renders
+      // this on his next visit and draftSync takes it down when the push
+      // lands. Recorded against the log id when one exists and against the
+      // DRAFT KEY when it does not — an offline create has no server id, which
+      // is exactly the case that most needs the banner.
+      await recordFinalizeError(handle, 'NOT_ON_SERVER', _key, 'unsynced');
+      setLocked(true);
+      toast.success(t('savedLocallyTitle'), t('savedLocally'));
+      router.push('/logbooks');
+    };
+
+    /** The local write failed too, so nothing anywhere holds this log. */
+    const reportNothingSaved = async (handle) => {
+      await recordFinalizeError(handle, 'LOCAL_SAVE_FAILED', _key, 'local');
+      toast.error(tFinalize('localSaveFailedTitle'), tFinalize('localSaveFailed'));
+    };
+
     try {
       const payload = {
         project_id: projectId,
         log_type: LOG_TYPE,
         date: logDate,
-        data: buildData(departure),
+        data,
         cp_signature: cpSignature,
-        cp_name: printedName.trim() || cpName,
+        cp_name: signerName,
         status: 'submitted',
       };
       const saved = existingLogId
         ? await logbooksAPI.update(existingLogId, payload)
         : await logbooksAPI.create(payload);
       const savedId = saved?.id || saved?._id || existingLogId;
+
+      // ── NO ID, NO RECORD ───────────────────────────────────────────────
+      //
+      // ABSENCE OF AN EXCEPTION IS NOT PROOF OF A WRITE. `create` resolving
+      // proves only that a response arrived; the id is the one thing in it
+      // that proves a document exists — and it is also the only way to name
+      // the document that has to be sealed.
+      //
+      // THIS IS WHERE THE LOG WAS LOST. The two calls that NEED an id were
+      // guarded (`if (savedId)`) and the three lines that REPORT one were
+      // not, so a response with no id skipped the ledger event, skipped the
+      // finalize, and still said "Log filed and locked" — copy that asserts
+      // the seal by name — then navigated away from the screen holding the
+      // only copy of what he had typed. Nothing threw, so nothing was
+      // reported.
+      //
+      // AND THE SERVER HAS THAT PATH. create_logbook re-reads the row it just
+      // inserted and returns serialize_id(that read); a read that does not see
+      // its own write makes it None, which FastAPI renders as 200 `null`. The
+      // server half is fixed too (backend/tests/test_superintendent_log_files
+      // .py), and this guard must hold regardless of it: a client that
+      // believes a body it did not check is one bad deploy from doing this
+      // again.
+      //
+      // THROWN, NOT RETURNED, so it lands in the one place this handler
+      // reports a failure to file. That is also what makes it compose with
+      // fix/superintendent-local-first: its catch sorts a push failure into
+      // refused / offline / unsynced and holds the entry on the device, and a
+      // throw here is routed by that sort like any other failed push.
+      if (!savedId) throw new Error(NO_RECORD_RETURNED);
+
       setExistingLogId(savedId);
+      // BIND THE SERVER ID ONTO THE DRAFT. Without it a later drain would take
+      // this key for a create and the server would refuse it as already filed.
+      //
+      // UNCONDITIONAL, like the two below it. The guard above is what makes
+      // that safe, and setDraftBackendId(_key, undefined) is precisely the
+      // write that would have made this binding a lie.
+      await setDraftBackendId(_key, savedId);
 
       // ── THE SIGNATURE EVENT ────────────────────────────────────────────
       // `superintendent_sign`, NEVER `cp_sign`. See the note at the top of
       // this file: deriveActingCapacity reads the event type first, and the
       // wrong one records this log as signed by a Competent Person.
-      if (savedId) {
-        // Non-blocking, exactly as every other editor treats it: the log is
-        // filed and must not be refused over an audit write.
-        recordSignatureEvent({
-          documentType: 'logbook',
-          documentId: savedId,
-          eventType: 'superintendent_sign',
-          signerName: printedName.trim() || cpName,
-          signerRole: user?.role || 'cp',
-          signatureData: cpSignature,
-          contentSnapshot: {
-            log_type: LOG_TYPE, date: logDate, project_id: projectId,
-            data: payload.data, status: 'submitted',
-          },
-          user,
-        }).catch((e) => console.warn('Signature audit failed (non-blocking):', e?.message));
+      //
+      // ── AWAITED HERE, AND ONLY HERE ──────────────────────────────────────
+      //
+      // THIS IS THE ONE EDITOR THAT SEALS IN THE SAME BREATH IT SIGNS. The
+      // finalize a few lines below makes the record immutable, and the server
+      // now asks the ledger at that moment whether an event exists for this
+      // document. Fired and forgotten, this POST races that seal: the server
+      // would report a gap for a row that is merely in flight, and a detector
+      // that cries wolf is a detector nobody reads. Awaiting orders the two,
+      // so a gap reported at finalize is a real one.
+      //
+      // NON-BLOCKING IS UNCHANGED. recordSignatureEvent catches its own error
+      // and resolves with null; it has never rejected, which is why the
+      // `.catch` that used to sit here had never once run. Awaiting a promise
+      // that cannot reject cannot refuse the log — it only costs the round
+      // trip, which this handler is already paying for twice.
+      //
+      // AND THE null IS READ. It is the function's whole failure report; the
+      // caller that is about to seal the record is the last one that may throw
+      // it away.
+      //
+      // NO LONGER `if (savedId)`. The guard above already refused the case
+      // this was written for, and a condition that can no longer be false
+      // reads as though the caller is still unsure — which is the shape the
+      // whole defect had.
+      const _evtId = await recordSignatureEvent({
+        documentType: 'logbook',
+        documentId: savedId,
+        eventType: 'superintendent_sign',
+        signerName: printedName.trim() || cpName,
+        signerRole: user?.role || 'cp',
+        signatureData: cpSignature,
+        contentSnapshot: {
+          log_type: LOG_TYPE, date: logDate, project_id: projectId,
+          data: payload.data, status: 'submitted',
+        },
+        user,
+      });
+      if (!_evtId) {
+        console.error(
+          '[signature-ledger] the superintendent log is about to be sealed '
+          + 'with no audit row.',
+          { documentId: savedId, projectId, date: logDate, logType: LOG_TYPE },
+        );
       }
 
       // ── THE FREEZE, AND WHY IT IS AN EXPLICIT CALL ─────────────────────
@@ -433,18 +727,156 @@ export default function SiteSuperintendentLog() {
       // (superintendent_log_deadline). That governs how late he may sign, not
       // what signing does — signing early is never a violation — so the
       // freeze is the same act on every project.
-      if (savedId) await logbooksAPI.finalize(savedId);
+      //
+      // AND IT IS THE ONE CALL THAT CAN FAIL AFTER THE CONTENT LANDED, which
+      // is why it has its own catch. The document is on the server and
+      // UNLOCKED; the two ways that can happen are not the same thing and must
+      // not read the same to him.
+      //
+      // UNCONDITIONAL, for the reason the guard above gives. `if (savedId)`
+      // wrapped this whole block until the guard made it dead: the seal was
+      // quietly opting out beside a success message that says "filed and
+      // LOCKED" — and there is no second actor to notice, because
+      // sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES, so a log this
+      // screen does not finalize is never finalized by anything. The catch
+      // stays; it is about a finalize that FAILED, which is a different
+      // question from a finalize that was never attempted.
+      try {
+        await logbooksAPI.finalize(savedId);
+      } catch (freezeErr) {
+        const status = freezeErr?.response?.status;
+        if (typeof status === 'number' && status >= 400 && status < 500) {
+          // A JUDGEMENT. The server looked at the log and refused to freeze
+          // it, and it will keep refusing until the log changes. Never
+          // frozen locally: the device must not claim a lock the record
+          // does not have.
+          const code = finalizeErrorCode(freezeErr);
+          await recordFinalizeError(savedId, code, _key, 'editor');
+          toast.error(tFinalize('errorTitle'), gateCopy(code));
+          return;
+        }
+        // NOT A JUDGEMENT — it never arrived. The content is filed, the
+        // freeze is owed, and draftSync's applyRemoteFreeze re-applies it on
+        // reconnect precisely because the draft says finalized.
+        if (localSaved) { await reportHeldOnDevice(savedId); return; }
+        await reportNothingSaved(savedId);
+        return;
+      }
+
+      // The server holds it and it is locked. Record the same freeze here, so
+      // a reopen with no signal shows the filed log as filed.
+      await freezeLocally();
+      await clearPending(_key);
+      // BOTH HANDLES. A banner raised while offline was recorded against the
+      // DRAFT KEY, because there was no server id yet; clearing only by id
+      // would leave it up permanently, and a banner that cannot come down is
+      // how a superintendent learns to read past all of them.
+      //
+      // THE SECOND IS NO LONGER CONDITIONAL EITHER. It was written
+      // `if (savedId)` for the same reason the wrapper above was, and the
+      // guard has retired that reason: leaving the test in would say the
+      // handler is still unsure whether it has an id, which is the exact
+      // shape of the defect this branch exists to remove.
+      await clearFinalizeError(_key);
+      await clearFinalizeError(savedId);
 
       setLocked(true);
       toast.success(t('filed'));
       router.push('/logbooks');
-    } catch (e) {
-      toast.error(t('couldNotFile'),
-        e?.response?.data?.detail?.code || e?.message || '');
+    } catch (pushErr) {
+      // ── WHAT WAS DONE, AND WHAT HE IS TOLD, ARE TWO QUESTIONS ──────────
+      //
+      // The SORT below decides what HAPPENS — queue the key, freeze on the
+      // device, raise a durable banner, or stay put and let him fix it.
+      // `reasonFor` decides what he READS. They are computed separately
+      // because they do not partition the same way: SUBMIT_UNATTESTED_ITEMS
+      // and a FINALIZE_* refusal are both 4xx and take the same branch, but
+      // only one of them can name the items he left blank. Folding the
+      // wording into the sort is what would force one to be dropped for the
+      // other, and both halves of this merge are load-bearing.
+      //
+      // SUBMIT_UNATTESTED_ITEMS carries `items` precisely so the client can
+      // point at the items he has not answered. This printed the bare machine
+      // code and threw the useful half away, leaving a man on a jobsite to
+      // read "SUBMIT_UNATTESTED_ITEMS" and guess which of the four it meant.
+      //
+      // SAME WORDING AS THE HINT on the disabled button, through the same
+      // labels: one condition must not be described two ways depending on
+      // whether the client or the server noticed it.
+      const detail = pushErr?.response?.data?.detail;
+      const items = Array.isArray(detail?.items) ? detail.items : [];
+
+      /** The most specific sentence this failure can be given. */
+      const reasonFor = (code) => {
+        if (items.length) {
+          return t('unansweredHint').replace('{items}', csItemLabels(items).join(', '));
+        }
+        // NOT A CODE. This one is not the server refusing him anything he can
+        // correct — it is the app declining to claim a filing it cannot
+        // prove, and what he needs to know is that nothing was confirmed and
+        // his entry is still here.
+        if (pushErr?.message === NO_RECORD_RETURNED) return t('noRecordReturned');
+        // gateCopy, NOT the raw code: the server names the condition, this
+        // screen owns the wording. It is the reason `couldNotFile` stopped
+        // printing `detail.code` at him in the first place.
+        return gateCopy(code);
+      };
+
+      // REFUSAL IS NOT OFFLINE, and neither is a 5xx. Three outcomes, and the
+      // superintendent is told a different thing in each.
+      const handle = existingLogId || _key;
+      const status = pushErr?.response?.status;
+      const refused = typeof status === 'number' && status >= 400 && status < 500;
+
+      if (refused) {
+        // The server judged the log. The draft is untouched and still
+        // editable, so fixing it and submitting again is the remedy — the key
+        // is deliberately NOT queued for a replay of a write it just refused.
+        // This is the branch SUBMIT_UNATTESTED_ITEMS arrives on, and the one
+        // where naming the items is the whole difference between a refusal he
+        // can act on and a machine string.
+        const code = finalizeErrorCode(pushErr);
+        await recordFinalizeError(handle, code, _key, 'editor');
+        toast.error(t('couldNotFile'), reasonFor(code));
+        return;
+      }
+
+      if (!localSaved) {
+        // Nothing to defer to. Offline is the one failing path that still
+        // reports success, and it does so on the strength of a local draft the
+        // drain will send later. With no such draft there is no record
+        // anywhere, so nothing is queued and nothing is announced.
+        await reportNothingSaved(handle);
+        return;
+      }
+
+      if (!isOfflineError(pushErr)) {
+        // A 5xx reached a server that then failed — OR the write answered 200
+        // with nothing that names a record (NO_RECORD_RETURNED, thrown above).
+        // THE SAME THING IS TRUE OF BOTH: a server was reached, the document's
+        // fate is unknown, and the work is on this device. So both are queued
+        // and neither may claim the log was filed. It is deliberately NOT
+        // reportHeldOnDevice — that freezes the draft, announces a success and
+        // navigates away, and none of the three is honest about a filing this
+        // handler could not confirm. He stays on the screen and can retry,
+        // which is what `noRecordReturned` tells him to do.
+        await markPending(_key);
+        await recordFinalizeError(handle, 'NOT_ON_SERVER', _key, 'unsynced');
+        toast.error(t('couldNotFile'), reasonFor(null));
+        return;
+      }
+
+      await reportHeldOnDevice(handle);
     } finally {
       setSigning(false);
     }
   };
+
+  // Moving between steps is never BLOCKED — it just writes what he has first.
+  const onStepChange = useCallback(async (next) => {
+    await flushDraft();
+    setStep(Math.max(1, Math.min(TOTAL_STEPS, next)));
+  }, [flushDraft]);
 
   // ── steps ───────────────────────────────────────────────────────────────
   const Field = ({ label, value, onChangeText, placeholder, multiline }) => (
@@ -698,9 +1130,10 @@ export default function SiteSuperintendentLog() {
     { key: 5, label: t('stepSign'), render: stepSign },
   ];
 
-  const unansweredLabels = unanswered
-    .map((k) => (CS_LOG_ITEMS.find((i) => i.key === k) || {}).label || k)
-    .join(', ');
+  // THE SAME LABELS THE REFUSAL RENDERS. csItemLabels is what handleSubmit's
+  // catch uses on the server's `items` list, so the hint on the disabled
+  // button and the message from a 400 cannot come to name one item two ways.
+  const unansweredLabels = csItemLabels(unanswered).join(', ');
 
   return (
     <LogbookStepper
@@ -710,11 +1143,24 @@ export default function SiteSuperintendentLog() {
       subtitle={t('screenSub')}
       step={step}
       steps={STEPS}
-      onStepChange={setStep}
+      onStepChange={onStepChange}
       onExit={() => router.push('/logbooks')}
       locked={locked}
       logType={LOG_TYPE}
       logId={existingLogId}
+      /* THE LOCK BAR NEEDS BOTH HANDLES. A log filed with no signal has no
+         server id, so its "on this device only" record is keyed by the DRAFT
+         KEY; without this prop the bar could never look it up and the banner
+         would be unreachable on the one case that most needs it. It is also
+         what lets an adopted amendment discard the frozen local draft. */
+      draftKey={_key}
+      onFinalized={() => setLocked(true)}
+      onAmended={fetchData}
+      /* A WARNING IS NOT A GATE. The device having stopped storing the draft
+         must not stop him filing a log the statute requires before he leaves —
+         it tells him once, at the last moment it can still matter. */
+      submitWarning={autosaveFailed ? tFinalize('autosaveFailedWarning') : ''}
+      autosaveNote={t('savedAutomatically')}
       a11yProgressLabel={`Step ${step} of ${TOTAL_STEPS}`}
       nextLabel="Next"
       submitLabel="Sign & complete"

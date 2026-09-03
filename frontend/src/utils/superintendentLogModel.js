@@ -113,6 +113,27 @@ export function csUnanswered(data, logDate) {
     .map((i) => i.key);
 }
 
+/**
+ * Item keys as the labels a superintendent reads.
+ *
+ * THE SERVER NAMES THE ITEMS, THE CLIENT NAMES THEM IN WORDS. A 400 carrying
+ * `{"code": "SUBMIT_UNATTESTED_ITEMS", "items": ["orders_given"]}` holds
+ * everything he needs to fix it, and "orders_given" printed at a man on a
+ * jobsite throws that away. Both the hint on the disabled button and the
+ * refusal from the server render through here, so the two cannot come to say
+ * different things about the same condition.
+ *
+ * AN UNKNOWN KEY FALLS BACK TO THE KEY. A server ahead of this build can name
+ * an item this build does not declare, and the place that would happen is
+ * inside the catch that reports a failure to file. Throwing there would replace
+ * a legible refusal with a blank screen at the exact moment he is about to lose
+ * the log — so an unrecognised key is shown raw rather than not shown at all.
+ */
+export function csItemLabels(keys) {
+  return (Array.isArray(keys) ? keys : [])
+    .map((k) => (CS_LOG_ITEMS.find((i) => i.key === k) || {}).label || k);
+}
+
 /** A one-line summary of an item that HAS content. */
 export function csItemSummary(item, block) {
   if (!item || !block || typeof block !== 'object') return '';
@@ -141,5 +162,5 @@ export function csItemSummary(item, block) {
 
 export default {
   CS_LOG_ITEMS, COMPETENT_PERSON_SUNSET, csItemApplies, csLogItems,
-  csItemState, csUnanswered, csItemSummary,
+  csItemState, csUnanswered, csItemLabels, csItemSummary,
 };

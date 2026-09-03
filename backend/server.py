@@ -46,6 +46,17 @@ from lib.logbook.attestations import (  # noqa: E402
     NONE_ON_DOCUMENT as ATTESTATION_NONE_ON_DOCUMENT,
     PREDATES_CAPTURE as ATTESTATION_PREDATES_CAPTURE,
 )
+# WHO WROTE A LEDGER ROW AND WHAT IT CAN VOUCH FOR. Same shape, and for the
+# same reason: a row the SERVER derived from an accepted document cannot record
+# the signing device or the signing IP, and a row that does not SAY so is
+# indistinguishable from one the signing device wrote itself.
+from lib.logbook.signature_provenance import (  # noqa: E402
+    contemporaneous_provenance, derived_provenance, undetermined_provenance,
+    provenance_of, provenance_sentence,
+    EVENT_KEY as PROVENANCE_EVENT_KEY,
+    SIGNED_AT_AFFIRMED_AT as PROVENANCE_SIGNED_AT_AFFIRMED_AT,
+    SIGNED_AT_TIMESTAMP as PROVENANCE_SIGNED_AT_TIMESTAMP,
+)
 import re
 import hashlib
 from urllib.parse import quote_plus
@@ -511,6 +522,29 @@ if not JWT_SECRET:
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 720
 
+# ── THE SESSION SLIDES, BECAUSE NOTHING ELSE EVER MOVED IT ─────────────────
+#
+# 720 hours is thirty days, and there is no refresh route: create_token is
+# called from POST /api/auth/login and nowhere else. So the clock on a gate
+# tablet started at the one moment an admin typed the kiosk password into it
+# and was never touched again. Day 31 the tablet has to be visited in person.
+#
+# Any authenticated request whose token has aged past this now carries a fresh
+# one back in a response header (see _reissue_token_if_stale). A device that
+# talks to the API at all -- once a month is enough -- never reaches day 30.
+#
+# 24 HOURS, NOT ZERO. Re-issuing on every request would re-sign on every read
+# in the product and make each device rewrite its credentials to disk hundreds
+# of times a day, for a clock that only needs moving once. And not something
+# near the far end either: a threshold of 700 hours would mean a device has to
+# be online during one specific hour a month or be stranded anyway.
+JWT_REISSUE_AFTER_HOURS = 24
+
+# Not a cookie and not a body field. A header rides on the request the client
+# was already making, so there is no new route to call, nothing for an offline
+# device to miss, and no endpoint's response shape changes.
+REISSUED_TOKEN_HEADER = "X-Refreshed-Token"
+
 DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
 DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
 DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://api.levelog.com/api/dropbox/callback')
@@ -906,7 +940,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
-    expose_headers=["Content-Disposition"],
+    # X-Refreshed-Token IS ON THIS LIST BECAUSE THE BROWSER HIDES WHAT IS NOT.
+    # The web build reads response headers through fetch/XHR, which expose only
+    # the CORS-safelisted set plus whatever is named here. Ship the re-issue
+    # without this line and it works on native, silently never lands on web,
+    # and the failure looks like "the token just expired" a month later.
+    expose_headers=["Content-Disposition", REISSUED_TOKEN_HEADER],
 )
 
 # Create a router with the /api prefix
@@ -4240,6 +4279,133 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
         logger.error(f"[eod-freeze] could not flag {doc.get('_id')}: {e!r}")
 
 
+# How far back the nightly reconciliation looks. Bounded on purpose: an
+# UNBOUNDED pass would re-report the same historical gaps every night forever,
+# and a detector whose output is mostly last year's known problems is a
+# detector nobody reads. Seven nights is long enough that a gap survives a
+# weekend and a holiday before it stops being announced; the full historical
+# count is a one-off audit query (see the backfill note), not a nightly line.
+SIGNATURE_LEDGER_LOOKBACK_DAYS = 7
+
+
+async def sweep_signature_ledger_gaps(database, now=None) -> dict:
+    """ASK THE LEDGER THE QUESTION THE AUDITOR WILL ASK, THE NIGHT AFTER.
+
+    ── WHAT THIS STILL FINDS NOW THAT THE ROW IS DERIVED SERVER-SIDE ─────────
+
+    ensure_signature_ledger_row writes a row for a signed document at
+    /finalize, which draftSync reaches for every signed draft it drains — so
+    the offline gap this was built to see should now be close to empty. THAT IS
+    NOT THE SAME AS THIS BEING VACUOUS, and it is deliberately left alone
+    rather than narrowed to suit its own fix. Four things still land here:
+
+      * THE 33. They are not backfilled and never will be — a reconstructed
+        content_snapshot would attest to content the signer never saw. They are
+        an honest absence, and this is what keeps them countable.
+      * A DERIVATION THAT COULD NOT WRITE. ensure_signature_ledger_row never
+        raises, by design; when the ledger is unreachable it logs and returns
+        None, and this is the second look.
+      * A SIGNED, SUBMITTED LOG THAT NEVER FINALIZES AND IS NEVER TOUCHED
+        AGAIN, whose online client's own post-save write also failed. Both
+        halves have to fail, which is why it is rare and why it is still worth
+        detecting.
+      * A SIGNATURE SHAPE THE DERIVATION REFUSES. It writes nothing for a
+        document with no ink and no affirmation, on purpose: a row for a
+        signature nobody made is a fabricated attestation. This sweep asks the
+        SAME breadth question, so the two agree about what counts as signed and
+        a document that is signed-but-underivable is reported rather than lost
+        between them.
+
+    A detector kept honest about its own fix. If this ever reports zero for a
+    week that is a finding, not a formality.
+
+    THE OFFLINE GAP IS VISIBLE FROM NOWHERE ELSE. A CP signs at a jobsite with
+    no signal. The draft drains later through frontend/src/utils/draftSync.js,
+    which pushes `cp_signature` and `status: 'submitted'` and has never called
+    recordSignatureEvent -- so the log is filed, signed, and the ledger never
+    hears about it. Nothing FAILED on the device, so the device reported
+    nothing; there is no error anywhere to find. The same is true of every
+    caller's `if (docId)` guard, which skips the ledger write outright when the
+    save had no server id to record against -- which is precisely the offline
+    case. Only a server-side question about the FILED RECORD finds these.
+
+    WHY NOT AT WRITE TIME. The client posts its ledger event moments AFTER the
+    save returns, so a check inside that request would manufacture a gap for
+    every honest signature in the system. Asked a day later, with the client
+    long since done, a gap is a gap. That is also why today's logs are excluded
+    and not merely deprioritised.
+
+    WHAT COUNTS AS SIGNED here is INK OR AFFIRMATION, deliberately broader than
+    the freeze sweep's affirmed-only rule. The freeze is deciding whether to
+    SEAL a record, where erring toward not-sealing is safe. This is deciding
+    whether a signature exists that the ledger should know about, and a legacy
+    pre-affirmation signature is still a person's mark on a compliance record.
+
+    LOGS, NOT ALERTS. No compliance_alerts row and no CP-facing surface: this
+    reports an engineering defect in the audit trail, not an obligation the CP
+    can discharge. There is nothing he could do about it, and a banner telling
+    him his signed log has no audit row would be the third exception treatment
+    on that screen.
+
+    Returns counts for the caller to log. Never raises: it shares the 3am tick
+    with two other detectors and the end-of-day freeze.
+    """
+    today = eastern_date(now)
+    try:
+        _floor = (datetime.strptime(today, "%Y-%m-%d")
+                  - timedelta(days=SIGNATURE_LEDGER_LOOKBACK_DAYS)
+                  ).strftime("%Y-%m-%d")
+    except Exception:  # pragma: no cover — today is always a valid date string
+        _floor = ""
+    out = {"checked": 0, "gaps": 0}
+    try:
+        cursor = database.logbooks.find({
+            "status": "submitted",
+            "date": {"$lt": today, "$gte": _floor},
+            "is_deleted": {"$ne": True},
+        })
+        filed = await cursor.to_list(2000)
+    except Exception as e:
+        logger.error(f"[signature-ledger] could not read filed logs: {e!r}")
+        return out
+
+    for doc in filed:
+        try:
+            sig = doc.get("cp_signature")
+            if not (_has_signature_ink(sig) or _is_affirmed_signature(sig)):
+                # No signature, no ledger row, nothing missing. Reporting these
+                # would bury the real gaps under every unsigned draft.
+                continue
+            out["checked"] += 1
+            if await signature_event_count(database, "logbook", doc["_id"]):
+                continue
+            out["gaps"] += 1
+            # EVERYTHING THE DETECTOR ALREADY HAS IN HAND goes in the line. It
+            # is holding the whole document; making the reader go back to Mongo
+            # for the project or the date is how a log line becomes a lead
+            # instead of a finding.
+            logger.error(
+                f"[signature-ledger] NO LEDGER ROW for a filed, signed logbook "
+                f"— the signature is on the document and the audit trail has "
+                f"nothing. document_type='logbook' "
+                f"document_id={str(doc['_id'])!r} "
+                f"log_type={doc.get('log_type')!r} "
+                f"project_id={doc.get('project_id')!r} "
+                f"company_id={doc.get('company_id')!r} "
+                f"date={doc.get('date')!r} "
+                f"signer={doc.get('cp_name')!r} "
+                f"created_by={doc.get('created_by')!r} "
+                f"finalized_by={doc.get('finalized_by')!r} "
+                f"is_locked={bool(doc.get('is_locked'))}",
+            )
+        except Exception as e:
+            # One unreadable document must not stop the reconciliation for
+            # every other project.
+            logger.error(
+                f"[signature-ledger] check failed for {doc.get('_id')}: {e!r}")
+    return out
+
+
 def superintendent_unanswered(data, log_date=None):
     """Attestable items with neither content nor a nothing-to-report.
 
@@ -4447,6 +4613,57 @@ def create_token(user_id: str, email: str, role: str, site_mode: bool = False, p
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+
+def _reissue_token_if_stale(payload) -> Optional[str]:
+    """A fresh full-term token for a session that has started to age, or None.
+
+    THE POINT IS A GATE TABLET THAT SURVIVES. It is offline for weeks at a
+    time by design -- a construction site is a dead zone -- and its password
+    lives in an admin's head, not on the jobsite. Under a 30-day token and no
+    refresh route, the only cure for day 31 was somebody driving out there.
+    Now any authenticated request it manages to make resets the clock.
+
+    NONE IS THE SAFE ANSWER AND IT IS THE ANSWER TO EVERYTHING UNCERTAIN. No
+    iat, an iat that is not a number, an iat in the future (a device with a
+    wrong clock), a vanished sub, a signing call that raises -- every one of
+    them returns None, which means "no header", which is byte-for-byte what
+    every deploy did before this function existed. A re-issue that cannot
+    happen must never be able to turn a working request into a failed one:
+    the request it would break is a CP filing his statutory day.
+
+    THE CLAIMS ARE COPIED, NOT RECOMPUTED. Re-reading the user document to
+    rebuild them would add a query to every aging request and, worse, would
+    silently hand a device a DIFFERENT session than the one it presented. The
+    token is already proven authentic by the decode above; this extends it and
+    changes nothing else. Note the payload is passed through create_token's
+    own _jwt_claim, so a null company_id stays null rather than becoming the
+    string "None" -- the trap that helper already documents.
+    """
+    try:
+        if not isinstance(payload, dict):
+            return None
+        iat = payload.get("iat")
+        if not isinstance(iat, (int, float)) or isinstance(iat, bool):
+            return None
+        age = datetime.now(timezone.utc) - datetime.fromtimestamp(iat, tz=timezone.utc)
+        if age < timedelta(hours=JWT_REISSUE_AFTER_HOURS):
+            return None
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        return create_token(
+            user_id,
+            payload.get("email"),
+            payload.get("role"),
+            site_mode=bool(payload.get("site_mode", False)),
+            project_id=payload.get("project_id"),
+            company_id=payload.get("company_id"),
+        )
+    except Exception as e:  # pragma: no cover - defensive; see the docstring
+        logger.warning(f"token re-issue skipped: {e!r}")
+        return None
+
+
 async def _record_client_version(user_id, version: str) -> None:
     """Stamp the version this user's app last reported. Fire-and-forget."""
     try:
@@ -4482,6 +4699,14 @@ async def get_current_user(
     request: Request = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     token: Optional[str] = None,
+    # FastAPI injects the outgoing Response into a dependency that asks for
+    # one, which is the whole re-issue mechanism: no middleware, no new route,
+    # no change to any endpoint's body. Defaults to None because the direct
+    # get_current_user(token=...) call paths pass nothing, and because a route
+    # that returns its own Response object (the PDF and R2 streams) never
+    # merges these headers -- in which case the device simply does not get a
+    # re-issue on that request, and gets one on the next JSON call it makes.
+    response: Response = None,
 ):
     raw_token = None
     if credentials:
@@ -4501,6 +4726,20 @@ async def get_current_user(
         if not user_id:
             logger.error("❌ AUTH FAIL: No user_id in token")
             raise HTTPException(status_code=401, detail="Invalid token")
+
+        # THE ONE CHANCE THIS DEVICE GETS. The token is authentic and not yet
+        # expired -- that is everything needed to extend it, and the branches
+        # below can still refuse the request for other reasons (deleted user,
+        # deactivated device) without this having granted anything: a header
+        # on a 401 response is never read, because the client only adopts a
+        # token off the success path.
+        if response is not None:
+            try:
+                fresh = _reissue_token_if_stale(payload)
+                if fresh:
+                    response.headers[REISSUED_TOKEN_HEADER] = fresh
+            except Exception as e:  # pragma: no cover - never fail the request
+                logger.warning(f"token re-issue header not set: {e!r}")
 
         if site_mode:
             device = await db.site_devices.find_one({"_id": to_query_id(user_id)})
@@ -13486,11 +13725,38 @@ async def register_and_checkin(data: dict, request: Request):
                 ip_address=client_ip,
                 acting_capacity="Worker - signature affirmation",
                 authenticated_role="worker",
+                # CONTEMPORANEOUS BY CONSTRUCTION. This request IS the act:
+                # the worker tapped Affirm at the turnstile and the device
+                # fingerprint, the user agent and the IP above are the gate's
+                # own, read from the request that carried the tap. Nothing
+                # derives affirmation rows, so this can never be the fallback.
+                provenance=contemporaneous_provenance(written_by="gate"),
+                # NO signature_key, AND THAT IS DELIBERATE — see the note on
+                # signature_ledger_key. This event's `signature_data` is a
+                # REFERENCE to the stroke on the worker document, not the
+                # stroke itself: no ink, no client timestamp. And the document
+                # id here is (project, date), shared by EVERY worker who
+                # affirms that day, so a key computed over what is left would
+                # be identical for all of them and the first row would swallow
+                # the rest. An event with nothing of its own to key on gets no
+                # key, and the idempotency it does not need is not applied.
             )
         except Exception as _e:  # pragma: no cover
-            logger.warning(
-                f"[gate] affirmation signature event failed for "
-                f"{worker.get('name')!r}: {_e!r}")
+            # ERROR, NOT WARNING, AND NAMED. The fail-soft above is deliberate
+            # and stays -- the turnstile is not a compliance gate -- but it
+            # means this line IS the record of the affirmation. A warning that
+            # gives only a worker's name cannot be reconciled to anything: the
+            # ledger is queried by document, and the document id for an
+            # affirmation is (project, eastern date), so both go in the line.
+            logger.error(
+                f"[signature-ledger] AFFIRMATION NOT RECORDED — the worker "
+                f"affirmed at the gate and no ledger row was written. "
+                f"document_type={PRESHIFT_AFFIRMATION_DOC_TYPE!r} "
+                f"document_id="
+                f"{preshift_affirmation_document_id(project_id, eastern_date(now))!r} "
+                f"project_id={str(project_id)!r} date={eastern_date(now)!r} "
+                f"worker={worker.get('name')!r} worker_id={str(worker['_id'])!r} "
+                f"lang={_sig_lang!r}: {_e!r}")
 
     # FIRST check-in on this project with a resolved trade — store the pairing
     # so every later visit HERE reads it instead of re-prompting. Skipped when
@@ -16073,8 +16339,72 @@ def compute_content_hash(content: dict) -> str:
     import json
     canonical = json.dumps(content, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
- 
- 
+
+
+# ── THE IDENTITY OF A SIGNING ACT ───────────────────────────────────────────
+#
+# WHAT THIS IS FOR. Two independent writers now describe the same signature:
+# the signing client's own POST /signature-events (which holds the real device
+# and IP) and the server's derivation from an accepted document (which is what
+# makes an OFFLINE signature durable at all). Both must be able to recognise
+# the other's row, or one signing act ends up in the ledger twice.
+#
+# KEYED ON THE ACT, NEVER ON ARRIVAL ORDER OR ON A COUNTER. `version` is a
+# count of existing rows, so it depends entirely on who got there first and is
+# useless as an identity. What identifies a signing act is the document it was
+# made on, the capacity it was made in, WHEN the signer made it, and the mark
+# itself.
+#
+# THE SERVER'S OWN STAMPS ARE DELIBERATELY EXCLUDED. _finalize_cp_signature
+# adds `affirmed_received_at` and sometimes `affirmation_flag` to the signature
+# before storing it, and the client posts the UNSTAMPED object it holds. If
+# either field entered this hash the two writers would compute different
+# identities for one signature and every online signature would be recorded
+# twice. Only fields the CLIENT authored are read.
+_SIGNATURE_IDENTITY_FIELDS = ("affirmedAt", "timestamp", "signerName")
+
+
+def signature_ledger_key(document_type, document_id, event_type,
+                         signature_data):
+    """A stable fingerprint of one signing act, computable by either writer.
+
+    RETURNS None WHEN THE SIGNATURE HAS NO IDENTITY OF ITS OWN, and that answer
+    is load-bearing rather than a failure. The gate's affirmation event carries
+    a REFERENCE to the stroke on the worker document — no ink, no client
+    timestamp — and its document id is (project, eastern date), which EVERY
+    worker who affirms that day shares. A key computed over what is left would
+    be byte-identical for all of them, and the first row inserted would then
+    swallow every other worker's affirmation as a duplicate.
+
+    So an event with nothing distinctive of its own gets no key and no
+    deduplication. It does not need any: nothing derives those rows, so there
+    is no second writer to collide with. Only the paths where two writers
+    genuinely describe one act are keyed.
+    """
+    sig = signature_data if isinstance(signature_data, dict) else {}
+    ink = sig.get("paths")
+    if ink is None:
+        # A bare base64 string is a signature too — render_signature_html
+        # treats `isinstance(sig, str)` as an image, and _has_signature_ink
+        # accepts both shapes. Read the same two the predicate reads.
+        ink = sig.get("data") if isinstance(signature_data, dict) else signature_data
+    _stamp = (sig.get("affirmedAt") or sig.get("timestamp")) if isinstance(sig, dict) else None
+    if not ink and not _stamp:
+        return None
+    parts = {
+        "document_type": str(document_type or ""),
+        "document_id": str(document_id or ""),
+        "event_type": str(event_type or ""),
+        "ink": hashlib.sha256(
+            json.dumps(ink, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest(),
+    }
+    for f in _SIGNATURE_IDENTITY_FIELDS:
+        parts[f] = str(sig.get(f) or "") if isinstance(sig, dict) else ""
+    canonical = json.dumps(parts, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 async def create_signature_event(
     document_type: str,
     document_id: str,
@@ -16088,21 +16418,48 @@ async def create_signature_event(
     ip_address: str = None,
     acting_capacity: str = None,
     authenticated_role: str = None,
+    signature_key: str = None,
+    provenance: dict = None,
+    event_timestamp: datetime = None,
 ) -> str:
     """Create a signature event in the audit ledger.
-    Returns the inserted event_id as a string."""
-    
+    Returns the inserted event_id as a string.
+
+    IDEMPOTENT ON THE SIGNING ACT when a `signature_key` is supplied. Two
+    writers now describe the same signature — the signing client's own POST and
+    the server's derivation from the accepted document — and without this the
+    ledger would carry one signing act twice. The row that already exists WINS,
+    whichever writer put it there: an audit ledger is append-only, so a row is
+    never upgraded, replaced or annotated after the fact. That is why the
+    online client's row is worth preserving and why the derived one is marked.
+    """
+
     now = datetime.now(timezone.utc)
-    
+
+    # ── THE ROW THAT IS ALREADY THERE WINS ──────────────────────────────────
+    #
+    # Checked BEFORE the version count, because the count is what makes a
+    # duplicate look legitimate: a second row for one signature would be handed
+    # version 2 and read as a second signing.
+    if signature_key:
+        _already = await db.signature_events.find_one({
+            "document_type": document_type,
+            "document_id": str(document_id),
+            "signature_key": signature_key,
+            "is_deleted": {"$ne": True},
+        })
+        if _already is not None:
+            return str(_already["_id"])
+
     # Determine version: count existing events for this document
     existing_count = await db.signature_events.count_documents({
         "document_type": document_type,
         "document_id": document_id,
     })
     version = existing_count + 1
-    
+
     content_hash = compute_content_hash(content_snapshot)
-    
+
     event_doc = {
         "document_type": document_type,
         "document_id": document_id,
@@ -16121,15 +16478,293 @@ async def create_signature_event(
         "content_snapshot": content_snapshot,
         "content_hash": content_hash,
         "signature_data": signature_data,
-        "timestamp": now,
+        # THE MOMENT THE SIGNATURE WAS MADE, not the moment the row was
+        # written, whenever the two can differ. For a contemporaneous row they
+        # are the same instant and `now` is right. For a DERIVED row they are
+        # hours apart, and stamping the sync time here would put a time on the
+        # record that nobody signed at — so the caller passes the signer's own
+        # stamp and `provenance.derived_at` keeps the sync instant.
+        "timestamp": event_timestamp or now,
         "ip_address": ip_address,
+        # THE IDENTITY OF THE SIGNING ACT, so the other writer can recognise
+        # this row. Absent on every row written before this existed, which is
+        # what provenance_of reports as PREDATES_MARKING.
+        "signature_key": signature_key,
+        # UNDETERMINED, NEVER None, WHEN A CALLER DID NOT SAY. A missing key is
+        # what provenance_of reads as PREDATES_MARKING — the state reserved for
+        # rows written before this existed — so leaving it off a row written
+        # TODAY would make a new record claim to be an old one, which is the
+        # same lie the public endpoint refuses a logbook over. A caller that
+        # did not answer is recorded as not having answered.
+        PROVENANCE_EVENT_KEY: provenance or undetermined_provenance(),
         "is_deleted": False,
     }
-    
-    result = await db.signature_events.insert_one(event_doc)
+
+    # ── THE ONE PLACE THAT KNOWS THE WRITE FAILED ───────────────────────────
+    #
+    # BOTH CALLERS SWALLOW, AND BOTH ARE RIGHT TO. The endpoint's 500 lands in
+    # a client whose recordSignatureEvent catches its own error and returns
+    # null; the gate catches deliberately, because a ledger write must never
+    # cost a man his check-in. So if the failure is not recorded HERE it is
+    # recorded nowhere, and the resulting state -- a signature on the document,
+    # no row in the ledger -- is INDISTINGUISHABLE FROM A SIGNATURE THAT WAS
+    # NEVER MADE. That is the whole defect: not that writes fail, but that a
+    # failed one leaves the ledger looking exactly like an honest absence.
+    #
+    # Re-raised, not converted. The callers' handling is unchanged; this only
+    # ensures the attempt is on the record before their handling runs.
+    from pymongo.errors import DuplicateKeyError
+
+    try:
+        result = await db.signature_events.insert_one(event_doc)
+    except DuplicateKeyError:
+        # THE CHECK ABOVE IS NOT ATOMIC, AND THE RACE IS REAL: daily_jobsite
+        # fires recordSignatureEvent WITHOUT awaiting it and then calls
+        # /finalize, so the client's POST and the server's derivation can be
+        # in flight at the same instant. The partial unique index on
+        # (document_type, document_id, signature_key) is what actually settles
+        # it; this converts the loser's exception into the winner's row, which
+        # is the same answer the pre-check gives when it is not raced.
+        _won = await db.signature_events.find_one({
+            "document_type": document_type,
+            "document_id": str(document_id),
+            "signature_key": signature_key,
+            "is_deleted": {"$ne": True},
+        })
+        if _won is not None:
+            return str(_won["_id"])
+        raise
+    except Exception as e:
+        logger.error(
+            f"[signature-ledger] INSERT FAILED — no ledger row exists for a "
+            f"signature that was made. document_type={document_type!r} "
+            f"document_id={document_id!r} event_type={event_type!r} "
+            f"signer={signer_name!r} signer_user_id={signer_user_id!r} "
+            f"acting_capacity={acting_capacity!r} content_hash={content_hash} "
+            f"at={now.isoformat()}: {e!r}",
+        )
+        raise
     return str(result.inserted_id)
- 
- 
+
+
+# ── IS THERE A LEDGER ROW FOR THIS DOCUMENT? ────────────────────────────────
+#
+# The question an auditor asks, asked by the system itself. Kept as one helper
+# because it is asked from three places (the finalize seal, the nightly
+# reconciliation, and any future reader) and a selector written three times is
+# a selector that will disagree with itself.
+async def signature_event_count(database, document_type: str, document_id: str) -> int:
+    return await database.signature_events.count_documents({
+        "document_type": document_type,
+        "document_id": str(document_id),
+        "is_deleted": {"$ne": True},
+    })
+
+
+# ── THE EVENT TYPE A LOG'S CP SIGNATURE IS ─────────────────────────────────
+#
+# The client sends this explicitly and it is not guessed for it. The derivation
+# has no client to ask, so it resolves the same thing from the log type — and
+# it must agree with the editors, because deriveActingCapacity (signatureAudit
+# .js) reads the event type FIRST and the wrong one records a superintendent's
+# statutory log as signed by a Competent Person.
+_SIGNATURE_EVENT_TYPE_BY_LOG_TYPE = {
+    "site_superintendent_log": "superintendent_sign",
+    "ssc_daily_safety_log": "cp_sign",
+}
+
+
+def signature_event_type_for(log_type) -> str:
+    return _SIGNATURE_EVENT_TYPE_BY_LOG_TYPE.get(
+        str(log_type or "").strip(), "cp_sign")
+
+
+async def ensure_signature_ledger_row(logbook, written_by: str) -> str:
+    """DERIVE THE LEDGER ROW FROM THE DOCUMENT THE SERVER JUST ACCEPTED.
+
+    ── WHY DERIVED AND NOT QUEUED ─────────────────────────────────────────────
+
+    A signature made with no signal produced NO LEDGER ROW AT ALL, and nothing
+    failed to report it. All thirteen recordSignatureEvent call sites guard on
+    `if (docId)`; offline there is no server id, so the call is SKIPPED. The
+    draft drains later through draftSync, which pushes `cp_signature` and
+    `status: 'submitted'` and has never written a signature event. Thirty-three
+    signatures on the live project are in that state, and
+    subcontractor_orientation.jsx:556 has a comment claiming they are audited
+    when they sync.
+
+    The obvious fix is a retry queue on the device. It is the wrong one: a
+    device queue is lost with the device, which is the same failure one layer
+    down. The DOCUMENT is already durable — logbookDrafts writes it, draftSync
+    delivers it, and both are proven — so a row derived FROM the document
+    cannot go missing separately from the thing it describes.
+
+    ── WHEN IT FIRES, AND WHY THAT IS NOT A RACE ──────────────────────────────
+
+    THE ONLINE CLIENT'S ROW IS THE PRIMARY AND MUST BE ALLOWED TO WIN. It is
+    the only row that can carry the real signing device and the real signing IP,
+    and it is written moments after the save returns. So the derivation must
+    never fire on the request that is CARRYING the signature to the server —
+    that request is the client's own signing round trip, and its ledger POST is
+    in flight behind it.
+
+    Callers therefore pass `written_by` from a point where the signature is
+    ALREADY STORED and the request did not bring it: /finalize, or a later
+    update. draftSync reaches such a point on every signed draft it drains —
+    applyRemoteFreeze calls /finalize for any locally-finalized draft, and
+    every signed draft is locally finalized (freezeIfImmediate -> markFinalized
+    for the ten immediate types, an explicit markFinalized in the two
+    end-of-day editors). The online path reaches it too, and finds the client's
+    row already there.
+
+    This is deliberately NOT a time-based guess. `_finalize_cp_signature`'s own
+    docstring records that a CP may affirm hours before the log files while
+    perfectly online ("draft-all-day"), so lag says nothing about connectivity.
+
+    ── WHAT IT REFUSES TO DO ──────────────────────────────────────────────────
+
+    IT NEVER FABRICATES. An unsigned document derives nothing: the row would be
+    an attestation nobody made, which is worse than the absence it replaces.
+    The 33 existing gaps are NOT backfilled for the same reason one step
+    further on — their content_snapshot would have to be reconstructed from a
+    document that has since been edited, and /signature-events/verify would
+    then assert a hash over content the signer never saw.
+
+    Returns the event id when a row exists or was written, else None. NEVER
+    RAISES: every caller has already committed the CP's document, and an audit
+    write must not be able to fail a filing that succeeded.
+    """
+    try:
+        sig = (logbook or {}).get("cp_signature")
+        # INK OR AFFIRMATION — the same breadth sweep_signature_ledger_gaps
+        # uses, and for its stated reason: a legacy pre-affirmation signature
+        # is still a person's mark on a compliance record. An EMPTY DICT is
+        # neither, and that is the shape production actually held.
+        if not (_has_signature_ink(sig) or _is_affirmed_signature(sig)):
+            return None
+
+        # `id` AS WELL AS `_id`, BECAUSE serialize_id MUTATES IN PLACE. It pops
+        # `_id` and writes `id` onto the very dict it is handed, so a caller
+        # that serialized before calling this would hand over a document with
+        # no `_id` — and the derivation would silently do nothing, which is the
+        # exact failure mode this whole change exists to remove.
+        doc_id = str((logbook or {}).get("_id")
+                     or (logbook or {}).get("id") or "")
+        if not doc_id:
+            return None
+        log_type = (logbook or {}).get("log_type")
+        event_type = signature_event_type_for(log_type)
+        key = signature_ledger_key("logbook", doc_id, event_type, sig)
+
+        # ── A SIGNATURE WITH NO IDENTITY STILL MUST NOT BE WRITTEN TWICE ────
+        #
+        # signature_ledger_key returns None for a signature carrying neither
+        # ink nor a client stamp, and without a key create_signature_event has
+        # nothing to deduplicate on — so a second /finalize would mint a second
+        # row for one signature. That shape is rare here (the derivation
+        # already refuses anything with no ink and no affirmation) but it is
+        # reachable: an affirmed credential whose stamps were stripped.
+        #
+        # The fallback is the DOCUMENT-level question, which is the one the
+        # nightly sweep and the finalize check both ask: does this document
+        # have any ledger row at all. Coarser than the key deliberately — for a
+        # signature that cannot be identified, "the ledger already knows about
+        # this document" is the strongest true statement available, and
+        # erring toward not writing is right when the alternative is two rows
+        # claiming to be two signings.
+        if not key:
+            if await signature_event_count(db, "logbook", doc_id):
+                return None
+
+        # THE SIGNING INSTANT SURVIVES THE SYNC. SignaturePad stamps
+        # `timestamp`, `affirmed`, `affirmedAt` and `affirmedLang` INSIDE the
+        # signature object at the moment of the stroke, and the object travels
+        # with the document — so the one thing a sync-time row would otherwise
+        # get wrong, the WHEN, is recoverable. `affirmedAt` first, matching
+        # _finalize_cp_signature, which treats it as the real attestation
+        # moment and validates it. A signature with neither stamp is a real
+        # shape (a legacy base64 credential) and the source is recorded as
+        # absent rather than silently filled in with the sync time.
+        _signed_at = None
+        _source = None
+        if isinstance(sig, dict):
+            if sig.get("affirmedAt"):
+                _signed_at = _parse_iso_dt(sig.get("affirmedAt"))
+                _source = PROVENANCE_SIGNED_AT_AFFIRMED_AT
+            if _signed_at is None and sig.get("timestamp"):
+                _signed_at = _parse_iso_dt(sig.get("timestamp"))
+                _source = PROVENANCE_SIGNED_AT_TIMESTAMP
+        if _signed_at is None:
+            _source = None
+
+        now = datetime.now(timezone.utc)
+        # THE SNAPSHOT IS THE DOCUMENT AS STORED, which is what makes this
+        # honest and is exactly what makes a BACKFILL of the 33 dishonest: here
+        # the server is holding the record it has just accepted, in the state
+        # the signature was applied to. A backfill would be reading a document
+        # that has moved on since.
+        snapshot = attach_attestation({
+            "log_type": log_type,
+            "date": (logbook or {}).get("date"),
+            "project_id": (logbook or {}).get("project_id"),
+            "data": (logbook or {}).get("data"),
+            "status": (logbook or {}).get("status"),
+        }, log_type)
+
+        return await create_signature_event(
+            document_type="logbook",
+            document_id=doc_id,
+            event_type=event_type,
+            signer_name=(logbook or {}).get("cp_name")
+            or (sig.get("signerName") if isinstance(sig, dict) else None),
+            signer_role="cp",
+            # THE AUTHOR OF THE DOCUMENT, NOT THE ACCOUNT THAT SYNCED IT.
+            # `created_by` is who wrote the log; the authenticated caller on a
+            # drain is whoever's session the drain ran under, and on /finalize
+            # can be a different person entirely. Recording the caller here
+            # would name the wrong signer.
+            signer_user_id=(logbook or {}).get("created_by"),
+            signature_data=sig,
+            content_snapshot=snapshot,
+            # ── THE TWO THINGS DERIVING REALLY DOES COST ────────────────────
+            # Left EMPTY, deliberately and visibly. The device and the network
+            # available here belong to whatever had signal LATER — possibly the
+            # same phone on a different network, possibly a different phone
+            # after a reinstall. Writing them would be a fabrication of exactly
+            # the kind this ledger exists to prevent, and it would be an
+            # invisible one.
+            device_info={},
+            ip_address=None,
+            acting_capacity=None,
+            authenticated_role=None,
+            signature_key=key,
+            provenance=derived_provenance(
+                written_by=written_by,
+                derived_at=now,
+                signed_at=_signed_at,
+                signed_at_source=_source,
+            ),
+            event_timestamp=_signed_at,
+        )
+    except Exception as e:
+        # THE CP'S DOCUMENT IS ALREADY SAVED. Every call site is past its own
+        # commit, and refusing a filed log over an audit write is the trade
+        # this whole change exists to avoid. Logged under the tag the rest of
+        # the ledger uses so one grep spans all of it.
+        logger.error(
+            f"[signature-ledger] DERIVATION FAILED — a signed document was "
+            f"accepted and no ledger row could be derived for it. "
+            f"document_type='logbook' "
+            f"document_id={str((logbook or {}).get('_id'))!r} "
+            f"log_type={(logbook or {}).get('log_type')!r} "
+            f"project_id={(logbook or {}).get('project_id')!r} "
+            f"date={(logbook or {}).get('date')!r} "
+            f"signer={(logbook or {}).get('cp_name')!r} "
+            f"written_by={written_by!r}: {e!r}",
+        )
+        return None
+
+
 # ==================== SIGNATURE EVENT ENDPOINTS ====================
  
 @api_router.post("/signature-events")
@@ -16156,32 +16791,73 @@ async def record_signature_event(
     # explicitly rather than omitting the key: an absent key cannot be told
     # apart from an event nobody captured one for, which is the permanent and
     # unrepairable state of every event written before this existed.
+    # THE PROJECT AND THE DATE COME OUT OF THE SAME READ. They cost nothing
+    # here -- the document is already being fetched -- and they are the two
+    # fields a gap is reconciled by. Without them a failure line names a Mongo
+    # id and an auditor still has to go back to the database to learn which
+    # jobsite and which day he is looking at.
     _log_type = None
+    _project_id = None
+    _date = None
     if str(data.document_type or "") == "logbook" and data.document_id:
         try:
             _doc = await db.logbooks.find_one(
-                {"_id": to_query_id(data.document_id)}, {"log_type": 1})
+                {"_id": to_query_id(data.document_id)},
+                {"log_type": 1, "project_id": 1, "date": 1})
             _log_type = (_doc or {}).get("log_type")
+            _project_id = (_doc or {}).get("project_id")
+            _date = (_doc or {}).get("date")
         except Exception as _e:  # pragma: no cover
             logger.warning(f"[signature] log type lookup failed: {_e!r}")
     _snapshot = attach_attestation(data.content_snapshot, _log_type)
 
-    event_id = await create_signature_event(
-        document_type=data.document_type,
-        document_id=data.document_id,
-        event_type=data.event_type,
-        signer_name=data.signer_name,
-        signer_role=data.signer_role,
-        signer_user_id=user_id,
-        signature_data=data.signature_data,
-        content_snapshot=_snapshot,
-        device_info=data.device_info,
-        ip_address=ip_address,
-        acting_capacity=data.acting_capacity,
-        # Tier 1 (4): the server-verified role of the authenticated signer — the
-        # trustworthy counterpart to the client-claimed signer_role.
-        authenticated_role=current_user.get("role"),
-    )
+    # ── THE ACTOR IS KNOWN HERE AND NOWHERE BELOW ───────────────────────────
+    #
+    # create_signature_event logs the document; this logs the PERSON, which is
+    # the one identity the client cannot forge and the only one an operator can
+    # go and ask. The 500 this re-raises reaches a client that discards it (see
+    # recordSignatureEvent), so this line is the server's whole record of the
+    # request having happened at all.
+    try:
+        event_id = await create_signature_event(
+            document_type=data.document_type,
+            document_id=data.document_id,
+            event_type=data.event_type,
+            signer_name=data.signer_name,
+            signer_role=data.signer_role,
+            signer_user_id=user_id,
+            signature_data=data.signature_data,
+            content_snapshot=_snapshot,
+            device_info=data.device_info,
+            ip_address=ip_address,
+            acting_capacity=data.acting_capacity,
+            # Tier 1 (4): the server-verified role of the authenticated signer —
+            # the trustworthy counterpart to the client-claimed signer_role.
+            authenticated_role=current_user.get("role"),
+            # ── THIS ROW IS THE PRIMARY, AND IT SAYS SO ─────────────────────
+            #
+            # The signing device wrote it, over its own connection, moments
+            # after the save returned: `device_info` and `ip_address` here are
+            # the SIGNER'S, which is the one thing a server-derived row can
+            # never claim. The key lets the derivation recognise this row and
+            # stand down; the provenance lets an auditor tell the two apart
+            # without having to know which code path ran.
+            signature_key=signature_ledger_key(
+                data.document_type, data.document_id, data.event_type,
+                data.signature_data),
+            provenance=contemporaneous_provenance(written_by="signing_client"),
+        )
+    except Exception as _e:
+        logger.error(
+            f"[signature-ledger] REQUEST FAILED — a client reported a signature "
+            f"and no ledger row was written. document_type="
+            f"{data.document_type!r} document_id={data.document_id!r} "
+            f"event_type={data.event_type!r} log_type={_log_type!r} "
+            f"project_id={_project_id!r} date={_date!r} "
+            f"signer={data.signer_name!r} actor_user_id={user_id!r} "
+            f"actor_role={current_user.get('role')!r} ip={ip_address!r}: {_e!r}",
+        )
+        raise
 
     return {"event_id": event_id, "message": "Signature event recorded"}
  
@@ -16270,8 +16946,16 @@ async def record_public_signature_event(data: dict, request: Request):
         content_snapshot=data["content_snapshot"],
         device_info=data.get("device_info"),
         ip_address=ip_address,
+        # The gate's own device and IP, at the turnstile, at the moment the
+        # worker affirmed. Contemporaneous by construction — this endpoint has
+        # no offline path and no derivation can reach it (a logbook is refused
+        # above), so the marker is not a claim it has to earn.
+        signature_key=signature_ledger_key(
+            data["document_type"], data["document_id"], data["event_type"],
+            data["signature_data"]),
+        provenance=contemporaneous_provenance(written_by="gate"),
     )
-    
+
     return {"event_id": event_id}
  
  
@@ -16339,6 +17023,21 @@ async def verify_signature_integrity(
         recomputed_hash = compute_content_hash(evt.get("content_snapshot", {}))
         is_valid = stored_hash == recomputed_hash
         
+        # ── HOW THIS ROW CAME TO BE WRITTEN, REPORTED ALONGSIDE THE HASH ────
+        #
+        # THE HASH ANSWERS A DIFFERENT QUESTION. `integrity_valid` says the
+        # snapshot has not been altered since it was stored; it says nothing
+        # about whether the device and IP on the row are the SIGNER'S. A row
+        # the server derived from an accepted document carries neither, and
+        # without this an auditor reading `device: {}` cannot tell that from a
+        # capture that failed.
+        #
+        # A row written before provenance marking existed reports
+        # PREDATES_MARKING, which is a statement about the RECORD and not about
+        # the signature — the same honest non-answer attestation_of gives, and
+        # unrepairable for the same reason: writing provenance onto an existing
+        # audit event would be altering the ledger.
+        _prov = provenance_of(evt)
         results.append({
             "event_id": str(evt["_id"]),
             "version": evt.get("version"),
@@ -16348,6 +17047,8 @@ async def verify_signature_integrity(
             "stored_hash": stored_hash,
             "recomputed_hash": recomputed_hash,
             "integrity_valid": is_valid,
+            "provenance": _prov,
+            "provenance_sentence": provenance_sentence(_prov),
         })
     
     all_valid = all(r["integrity_valid"] for r in results)
@@ -19025,6 +19726,259 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 
     return files
 
+
+# ══ SITE MANIFEST ═══════════════════════════════════════════════════════════
+#
+# WHAT IT IS FOR. A fixed Android tablet is bolted to the gate. It has to hold
+# everything the project has approved it to see -- plans, documents AND
+# submitted logbooks -- fill itself on first connection with nobody preparing
+# it, and still open all of it after a cold boot with no network. To do that the
+# client needs ONE cheap read that names the COMPLETE approved set, so it can
+# work out what is missing, what has changed version, and what is no longer
+# approved.
+#
+# WHY THE ROWS ARE THREE LETTERS WIDE. This is polled, not browsed. The client
+# needs an identity and a version per record and nothing else; `name`, `path`,
+# `modified`, `source` and the proxy url are all things the LISTING endpoints
+# already serve to the screens that render them. A manifest row that carried
+# them would be four times the bytes for no decision the client can make with
+# them. `s` (size) earns its place because the store budgets disk before it
+# starts pulling; `e` (extension) earns its place because the tablet can render
+# PDFs and nothing else, and a compact row carries no filename to infer it from.
+#
+# ── THE 500 CAP, WHICH IS THE WHOLE REASON THIS IS PAGINATED ────────────────
+#
+# The read this replaces for logbooks is
+#
+#     GET /logbooks/project/{id}/submitted   ->  .to_list(500)
+#
+# 500 is a SILENT ceiling. A project past it returns its first 500 rows with
+# nothing in the response saying so; no caller can tell a 500-row project from a
+# truncated 1300-row one. Against the screens that exist today that is a display
+# bug. Against a diff-and-delete client it is a cache shredder: the client's
+# rule is "an id the manifest does not name is deleted locally", so every
+# logbook past the cap reads as withdrawn and the tablet deletes the compliance
+# record a DOB inspector asks for -- offline, where it cannot be fetched back.
+#
+# So this endpoint does two separate things, and it needs both:
+#
+#   1. IT PAGES, so the whole set is actually obtainable. Each section carries
+#      its own skip and its own has_more, and the client walks to the end.
+#      Paging alone is not enough: a client that stops early still holds a
+#      partial set and cannot tell.
+#
+#   2. IT DECLARES `complete`, which is true ONLY when this single response IS
+#      the entire approved set -- both sections exhausted AND both skips zero.
+#      Deliberately not derivable from the rows: a client cannot tell a short
+#      page from a complete one by counting, which is precisely how the 500 cap
+#      stayed invisible. The client refuses to delete anything unless it holds a
+#      complete assembly, so a paging bug, a dropped page or a mid-walk network
+#      failure all degrade to "download but never remove" -- stale, never lost.
+#
+# The last page of a walk is NOT `complete`, because it is not the whole set. A
+# client that fetched only page 2 of 2 would otherwise be told it holds
+# everything and delete page 1.
+#
+# ── SKIP/LIMIT, NOT A CURSOR ────────────────────────────────────────────────
+#
+# `_id` is ObjectId on some rows and a plain string on others (to_query_id falls
+# back), and BSON orders those as different TYPES -- so a `_id > cursor` range
+# scan silently skips whole classes of row. Skip/limit over a fixed `_id` sort
+# has no such trap. Its known weakness is that a row deleted mid-walk shifts the
+# rows behind it back by one and one can be missed; that row is then absent from
+# the assembly, is dropped locally and re-downloads on the next poll. Churn,
+# self-healing, and never a loss of anything the server still holds.
+#
+# ── THE FILE FILTER STAYS IN PYTHON ─────────────────────────────────────────
+#
+# Which files a site device may see is `projects.site_device_subfolders`,
+# applied per record by _path_is_under_allowed_subfolder. It cannot be pushed
+# into the Mongo query: the comparison is case-insensitive, it is relative to a
+# base prefix stored on a DIFFERENT document, and the list is normalised at read
+# time. So the page is taken from Mongo and filtered afterwards, exactly as the
+# listing endpoint does, calling the SAME helper -- a second copy of that rule
+# would be a second thing to get wrong and the two would drift in silence.
+#
+# One consequence is deliberate and is not a bug: `total` and `has_more` for the
+# files section describe the RAW page walk, so a page may return fewer rows than
+# its limit, or none at all, while has_more is still true. The walk still covers
+# every row exactly once, which is the property that matters. Counting the
+# filtered set instead would mean filtering the entire collection on every page.
+
+# One page of manifest rows. Large because the point is to need few round trips
+# on a tablet that has just been switched on, bounded because an unbounded limit
+# is the same silent-ceiling defect with the number chosen by the caller.
+MANIFEST_PAGE_DEFAULT = 1000
+MANIFEST_PAGE_MAX = 2000
+
+
+def _manifest_version(rec: dict):
+    """The version half of the client's on-disk name `{id}.{version}.{ext}`.
+
+    NOT A FREE CHOICE. docCache keys a logbook PDF on
+    `updated_at || submitted_at || created_at`, and the site logbooks screen
+    writes files under exactly that name. A manifest that picked a different
+    field -- or a different precedence -- would name the same file differently,
+    so every logbook would download a second time and both copies would sit on
+    the tablet for ever.
+
+    Naive datetimes are marked UTC for the same reason serialize_id marks them:
+    the value is rendered into a filename by `new Date()` on the client, and an
+    unmarked one is read as local time and produces a second on-disk copy.
+    """
+    for field in ("updated_at", "submitted_at", "created_at"):
+        v = rec.get(field)
+        if v is None or v == "":
+            continue
+        if isinstance(v, datetime) and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+    return "0"
+
+
+def _manifest_ext(name: str) -> str:
+    """Lowercased extension, or "" — the store pulls bytes only for what the
+    tablet can actually open offline."""
+    base = str(name or "").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[-1].lower() if "." in base else ""
+
+
+@api_router.get(
+    "/projects/{project_id}/manifest",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def get_project_manifest(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    limit: int = Query(MANIFEST_PAGE_DEFAULT, ge=1, le=MANIFEST_PAGE_MAX),
+    files_skip: int = Query(0, ge=0),
+    logbooks_skip: int = Query(0, ge=0),
+):
+    """The complete set this caller is approved to hold offline, as compact rows.
+
+    Response:
+
+        {
+          "project_id": str,
+          "generated_at": datetime,
+          "limit": int,
+          "files":    {"rows": [{"id","v","s","e"}], "skip", "total", "has_more"},
+          "logbooks": {"rows": [{"id","v"}],         "skip", "total", "has_more"},
+          "complete": bool
+        }
+
+    `complete` means THIS RESPONSE IS THE WHOLE APPROVED SET. It is false on a
+    page with more behind it and false on any page reached with a non-zero skip.
+    A client may only delete local records against a complete assembly; see the
+    block above this handler for why that rule is what makes the endpoint safe.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_id = get_user_company_id(current_user) or project.get("company_id")
+    folder_path = project.get("dropbox_folder_path") or ""
+
+    is_site_device = (
+        current_user.get("site_mode")
+        or current_user.get("role") == "site_device"
+    )
+    allowed_subfolders = _normalize_subfolder_names(
+        project.get("site_device_subfolders") or []
+    )
+
+    def _visible_to_site(path: str) -> bool:
+        return _path_is_under_allowed_subfolder(
+            path, folder_path, allowed_subfolders
+        )
+
+    # ── files ──────────────────────────────────────────────────────────────
+    #
+    # A site device with nothing configured sees nothing, and the short-circuit
+    # is here rather than left to the filter so the query is never issued. Same
+    # safe default the listing endpoint applies: a device approved for no
+    # subfolder must not enumerate -- let alone download -- a project's Dropbox.
+    file_rows = []
+    files_total = 0
+    if not (is_site_device and not allowed_subfolders):
+        file_query = {
+            "project_id": project_id,
+            "company_id": company_id,
+            "is_deleted": {"$ne": True},
+        }
+        files_total = await db.project_files.count_documents(file_query)
+        page = await (
+            db.project_files.find(file_query)
+            .sort("_id", 1)
+            .skip(files_skip)
+            .limit(limit)
+        ).to_list(limit)
+        for rec in page:
+            dropbox_path = rec.get("dropbox_path", "")
+            if is_site_device and not _visible_to_site(dropbox_path):
+                continue
+            rec_id = str(rec.get("_id", ""))
+            if not rec_id:
+                continue
+            file_rows.append({
+                "id": rec_id,
+                # `?? 0` is the client's default for a record with no
+                # cache_version, and the on-disk name is built from it.
+                "v": rec.get("cache_version", 0) or 0,
+                "s": rec.get("size", 0) or 0,
+                "e": _manifest_ext(rec.get("name") or dropbox_path),
+            })
+
+    # ── submitted logbooks ─────────────────────────────────────────────────
+    #
+    # SUBMITTED ONLY. A draft is not a filed record and must never be pulled
+    # onto the device an inspector reads from.
+    log_query = {
+        "project_id": project_id,
+        "status": "submitted",
+        "is_deleted": {"$ne": True},
+    }
+    logs_total = await db.logbooks.count_documents(log_query)
+    log_page = await (
+        db.logbooks.find(log_query)
+        .sort("_id", 1)
+        .skip(logbooks_skip)
+        .limit(limit)
+    ).to_list(limit)
+    log_rows = [
+        {"id": str(rec.get("_id", "")), "v": _manifest_version(rec)}
+        for rec in log_page
+        if rec.get("_id")
+    ]
+
+    files_has_more = (files_skip + limit) < files_total
+    logs_has_more = (logbooks_skip + limit) < logs_total
+
+    return {
+        "project_id": project_id,
+        "generated_at": datetime.now(timezone.utc),
+        "limit": limit,
+        "files": {
+            "rows": file_rows,
+            "skip": files_skip,
+            "total": files_total,
+            "has_more": files_has_more,
+        },
+        "logbooks": {
+            "rows": log_rows,
+            "skip": logbooks_skip,
+            "total": logs_total,
+            "has_more": logs_has_more,
+        },
+        # Both sections exhausted AND both walks started at zero. Anything less
+        # is a fragment, and a fragment must never authorise a deletion.
+        "complete": (
+            not files_has_more and not logs_has_more
+            and files_skip == 0 and logbooks_skip == 0
+        ),
+    }
+
+
 # ══ DROPBOX SYNC RUN RECORD ═════════════════════════════════════════════════
 #
 # WHY THIS EXISTS. The plans screen caches its file list for offline use, and it
@@ -20903,25 +21857,37 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             )
 
         # Update existing
-        await db.logbooks.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {
-                "data": data.data,
-                "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
-                "cp_name": data.cp_name,
-                "status": data.status,
-                # Tier 1 (2): an immediate/pre-shift log freezes on submit
-                # (sign-now-and-lock). No-op until counsel classifies a log.
-                "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
-                "updated_at": now,
-            }}
-        )
+        _set_ops = {
+            "data": data.data,
+            "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
+            "cp_name": data.cp_name,
+            "status": data.status,
+            # Tier 1 (2): an immediate/pre-shift log freezes on submit
+            # (sign-now-and-lock). No-op until counsel classifies a log.
+            "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
+            "updated_at": now,
+        }
+        await db.logbooks.update_one({"_id": existing["_id"]}, {"$set": _set_ops})
+        # SAME READ-BACK, SAME MISS, SAME FIX as the insert below — see the
+        # long note there. This branch is the one a CLIENT WITH NO LOG ID takes
+        # (it POSTs because it could not see the row), so `saved?.id ||
+        # saved?._id || existingLogId` has no third fallback here and a null
+        # body leaves the caller unable to name a row it has just rewritten.
         updated = await db.logbooks.find_one({"_id": existing["_id"]})
+        if updated is None:
+            updated = {**existing, **_set_ops}
         # Enhancement is fire-and-forget: the CP never waits on it. New photos
         # in this save get picked up; already-enhanced ones are skipped.
         asyncio.create_task(
             _enhance_logbook_photos(str(existing["_id"]), data.project_id)
         )
+        # SAME CONDITION AS update_logbook, and see the note there. A POST that
+        # carries no signature onto a row that already holds one is not the
+        # client's signing round trip, so the ledger is asked. A POST that
+        # carries the signature IS that round trip and is left alone — its own
+        # write is in flight and holds the device and IP this could not.
+        if data.cp_signature is None and (updated or {}).get("status") == "submitted":
+            await ensure_signature_ledger_row(updated, written_by="create_logbook")
         await _remember_other_activities(data.project_id, data.data)
         return serialize_id(updated)
 
@@ -20956,7 +21922,33 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "is_deleted": False,
     }
     result = await db.logbooks.insert_one(doc)
+    # ── THE ANSWER NAMES THE ROW, EVEN IF THE READ-BACK DOES NOT ────────────
+    #
+    # THIS RE-READ IS ALLOWED TO MISS. A read that does not see its own write
+    # — a secondary that has not caught up is the ordinary way to get one —
+    # returns None, `serialize_id(None)` is None, and FastAPI renders that as
+    # HTTP 200 with the body `null`. The row is on disk and the client is told
+    # nothing about it.
+    #
+    # WHAT THAT COSTS, ON THIS LOG TYPE, IS A STATUTORY RECORD. Every logbook
+    # editor reads `saved?.id || saved?._id` off this body. On `null` that is
+    # undefined, and site_superintendent_log.jsx then skipped the signature
+    # ledger event, skipped POST /finalize — and still said "Log filed and
+    # locked". A visit log is excluded from sweep_stale_end_of_day_logs, so
+    # there is no second actor: the document would stay submitted-and-unlocked
+    # forever while every screen showed it as sealed.
+    #
+    # SO THE MISS IS ANSWERED FROM THE DOCUMENT THIS FUNCTION JUST WROTE. Not a
+    # retry and not a read-concern change: `doc` is in hand, `inserted_id`
+    # names it, and the two together are exactly what the successful read would
+    # have returned. The client half is fixed too — it now refuses to report a
+    # filing it cannot name — and both halves are wanted: a 200 carrying no id
+    # is a broken contract whether or not a given caller happens to check.
+    #
+    # backend/tests/test_superintendent_log_files.py
     created = await db.logbooks.find_one({"_id": result.inserted_id})
+    if created is None:
+        created = {**doc, "_id": result.inserted_id}
 
     await audit_log("logbook_create", str(current_user.get("_id", current_user.get("id", ""))), "logbook", str(result.inserted_id), {
         "log_type": data.log_type, "project_id": data.project_id, "date": data.date,
@@ -21222,6 +22214,29 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         },
     )
 
+    # ── AND THE LEDGER, WHEN THIS REQUEST DID NOT BRING THE SIGNATURE ───────
+    #
+    # THE CONDITION IS `data.cp_signature is None`, AND IT IS NOT A PROXY FOR
+    # OFFLINE. It is the exact question that matters: did the CLIENT'S OWN
+    # SIGNING ROUND TRIP arrive in this request? If it did, its ledger POST is
+    # in flight behind the response, it carries the real device and the real
+    # IP, and deriving here would beat it to the row and downgrade it. If it
+    # did not -- a submit that patches only `status`, the shape the ordinary
+    # create-then-submit flow actually walks -- then the signature was accepted
+    # by an EARLIER request, that request's client has long since finished, and
+    # a missing row is a real gap rather than one in flight.
+    #
+    # NOT A TIME COMPARISON, deliberately. _finalize_cp_signature's own
+    # docstring records that a CP may affirm hours before the log files while
+    # perfectly online ("draft-all-day"), so the lag between the signature's
+    # stamp and its arrival says nothing at all about connectivity.
+    #
+    # BELT AND BRACES: /finalize is the path that catches the drain, and every
+    # signed offline draft reaches it. This catches a submitted log that never
+    # finalizes.
+    if data.cp_signature is None and (updated or {}).get("status") == "submitted":
+        await ensure_signature_ledger_row(updated, written_by="update_logbook")
+
     if data.data is not None:
         await _remember_other_activities((updated or {}).get("project_id"), data.data)
     return serialize_id(updated)
@@ -21363,6 +22378,28 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
         assigned = current_user.get("assigned_projects", []) or []
         if existing.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
+    # ── THE DERIVED ROW IS WRITTEN BEFORE THE IDEMPOTENT RETURN, NOT AFTER ──
+    #
+    # AND THAT PLACEMENT IS THE WHOLE OFFLINE FIX FOR TEN OF THE TWELVE TYPES.
+    # An immediate log LOCKS on `status: submitted`, so when draftSync drains
+    # one it is already `is_locked` by the time applyRemoteFreeze calls this —
+    # and the early return below is taken. Everything the base branch added at
+    # the bottom of this function (the presence check) is unreachable on
+    # exactly the path that produced the 33.
+    #
+    # WHY HERE AND NOT IN create/update. Those are the requests that CARRY the
+    # signature, which is the online client's own signing round trip: its
+    # ledger POST is in flight behind the response and it holds the real device
+    # and the real IP. Deriving there would beat it to the row every time and
+    # silently downgrade every online signature. This request carries no
+    # signature — it acts on one already stored — so the client's window has
+    # closed and a missing row is a real gap, not one in flight.
+    #
+    # draftSync reaches this line for every signed draft it drains: a signed
+    # draft is always locally finalized (freezeIfImmediate -> markFinalized for
+    # the ten immediate types, an explicit markFinalized in the two end-of-day
+    # editors), and applyRemoteFreeze calls /finalize for any finalized draft.
+    await ensure_signature_ledger_row(existing, written_by="finalize_logbook")
     if existing.get("is_locked"):
         return serialize_id(existing)  # idempotent — already finalized
     # Sits AFTER the is_locked early-return so re-finalizing an already-locked
@@ -21404,6 +22441,50 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     await audit_log("logbook_finalize", str(current_user.get("id", "")), "logbook", logbook_id, {
         "log_type": existing.get("log_type"), "project_id": existing.get("project_id"), "date": existing.get("date"),
     })
+
+    # ── THE LEDGER IS ASKED AT THE MOMENT THE RECORD IS SEALED ──────────────
+    #
+    # THE COMPLETENESS GATE ABOVE HAS ALREADY REFUSED AN UNSIGNED LOG, so by
+    # this line the document carries a CP signature by construction. If the
+    # ledger holds nothing for it, that is not an ambiguity to be resolved
+    # later -- it is the 33 happening again, and this is the last moment at
+    # which anything about it can still be reconstructed. After the lock, the
+    # only surviving evidence of who signed and what they saw is whatever was
+    # written down while it was happening.
+    #
+    # THIS IS DETECTIVE, NEVER PREVENTIVE. The finalize has ALREADY committed
+    # above and is not reconsidered: refusing to seal a signed record over a
+    # missing audit row would take a CP's filed log away from him to protect an
+    # observability property, which is the trade this change exists to avoid.
+    #
+    # THE DRAIN IS NO LONGER THE CASE THIS CATCHES, AND THAT IS THE POINT.
+    # ensure_signature_ledger_row now runs at the top of this function and
+    # DERIVES a row for exactly that case, so a gap reaching this line means
+    # the derivation itself could not write one -- the ledger was unreachable,
+    # or the signature was a shape the derivation refuses (an empty dict, which
+    # is what production actually held). Narrower than it was, and for that
+    # reason a stronger signal: it now reports what the fix could not fix.
+    try:
+        _ledger_rows = await signature_event_count(db, "logbook", logbook_id)
+        if not _ledger_rows:
+            logger.error(
+                f"[signature-ledger] SEALED WITH NO LEDGER ROW — a logbook was "
+                f"finalized carrying a CP signature and the ledger holds no "
+                f"event for it. document_type='logbook' "
+                f"document_id={str(logbook_id)!r} "
+                f"log_type={existing.get('log_type')!r} "
+                f"project_id={existing.get('project_id')!r} "
+                f"date={existing.get('date')!r} "
+                f"signer={existing.get('cp_name')!r} "
+                f"finalized_by={str(current_user.get('id', ''))!r} "
+                f"at={now.isoformat()}",
+            )
+    except Exception as _e:
+        # A presence CHECK must never be able to fail a finalize that already
+        # committed — the same rule the photo purge above follows.
+        logger.warning(
+            f"[signature-ledger] presence check failed for "
+            f"logbook={logbook_id}: {_e!r}")
     return serialize_id(await db.logbooks.find_one({"_id": to_query_id(logbook_id)}))
 
 
@@ -21487,7 +22568,23 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     await audit_log("logbook_amend", str(current_user.get("id", "")), "logbook", str(result.inserted_id), {
         "parent_logbook_id": str(original["_id"]), "reason": str(reason).strip()[:200], "log_type": original.get("log_type"),
     })
-    return serialize_id(await db.logbooks.find_one({"_id": result.inserted_id}))
+    created_child = await db.logbooks.find_one({"_id": result.inserted_id})
+    # ── WIRED, AND TODAY IT CAN ONLY EVER BE A NO-OP ───────────────────────
+    #
+    # `cp_signature` is reset to None four lines up: an amendment MUST be
+    # re-signed, so there is no signing act here to record and
+    # ensure_signature_ledger_row returns immediately. It is called anyway
+    # because the thing that would make it necessary is a one-line change —
+    # copying the parent's signature onto the child, which is what "start from
+    # the original's data" already does for `data` — and that change would
+    # otherwise mint a signed compliance record with no ledger row on a path
+    # nobody thought to look at. The child's own signature, when the CP applies
+    # it, is recorded by the ordinary update/finalize paths.
+    # test_signature_ledger_offline_durability asserts the no-op, so if the
+    # child ever does inherit a signature that test fails rather than this
+    # quietly minting an attestation nobody made.
+    await ensure_signature_ledger_row(created_child, written_by="amend_logbook")
+    return serialize_id(created_child)
 
 
 # ══ ACTIVITY CHIPS — the sequence engine's only consumer ═════════════════════
@@ -21754,7 +22851,16 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
 
     # Authorization: admin/owner can delete any on this project, others only their own
     user_role = current_user.get("role", "")
-    user_id = str(current_user.get("_id", ""))
+    # `_id` ALONE WAS ALWAYS EMPTY. get_current_user returns serialize_id(user),
+    # which does `obj['id'] = str(obj['_id']); del obj['_id']` — so the key this
+    # read for does not exist on current_user and `user_id` was "" on every
+    # request. `created_by` is stamped `current_user.get("id")` by
+    # create_logbook, so the comparison could never match and every non-admin
+    # was refused, INCLUDING the author this branch exists to permit. The same
+    # empty string was then recorded as the actor in the audit row below.
+    # This is the file's own accessor (9489, 14437, 15459, 30884, 36822, ...),
+    # id first because that is the key that is actually there.
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
     if user_role not in ("admin", "owner") and logbook.get("created_by") != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this logbook")
 
@@ -26366,21 +27472,193 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
     }
 
 
+# ══ THE GATE TABLET'S ONLY LOGBOOK READ ══════════════════════════════════════
+#
+# frontend/app/site/logbooks.jsx is the SINGLE caller of the endpoint below
+# (logbooksAPI.getSubmitted, src/utils/api.js:1011) and the only way an
+# inspector standing on the site reaches a filed compliance record. It served
+# whole documents, unprojected, capped at 500 logs. Three consequences, and
+# they compound.
+#
+# ── WHY A PROJECTION AT ALL: THE TABLET COULD NOT CACHE ITS OWN RECORDS ──────
+#
+# That screen is cache-first by design — `writeListThrough` stores the list
+# under ONE AsyncStorage key so a dead zone still shows records. Android
+# AsyncStorage is SQLite with `PRAGMA max_page_count` derived from a 6MB
+# default (ReactDatabaseSupplier), DATABASE-WIDE, and nothing here overrides it:
+# the app is CNG/prebuild with no android/ directory. A write over that ceiling
+# is REJECTED. A 60-date window of a photo-and-signature-heavy job measured
+# 21,171,731 bytes unprojected — 3.4x the ceiling — so the write failed, and a
+# failed write does not mean a missing photo, it means the offline screen has
+# NOTHING on it for the one person who is there to read the record. (The
+# screen's own rescue, `stripPhotoBlobs`, removes `base64` and nothing else, so
+# on a finalized log — where the purge already took `base64` — the second
+# attempt was byte-for-byte the first and failed identically.)
+#
+# ── DERIVED FROM THE CONSUMER, NOT GUESSED ──────────────────────────────────
+#
+# Everything logbooks.jsx reads off a returned log was enumerated before a
+# field was named here. Two blobs, and only two, are provably UNRENDERABLE by
+# that screen:
+#
+#   cp_signature.paths   SignatureBlock (logbooks.jsx:430) resolves
+#                        `signature.data || signature.paths` and then draws it
+#                        only `if typeof base64Data === 'string'`. `paths` is an
+#                        ARRAY of stroke point arrays — SignaturePad.js:247
+#                        appends one {x, y} per PanResponder move with no
+#                        simplification — so the image branch is unreachable
+#                        for it. The strokes crossed the wire and drew nothing.
+#                        THE OBJECT STAYS: the screen asks whether a signature
+#                        EXISTS (`log.cp_name && !log.cp_signature`), and the
+#                        affirmation metadata on it is itself the record. Only
+#                        the polyline goes. The PDF renderers keep reading it
+#                        through their own reads (_signature_paths_to_svg).
+#
+#   data.activities[].photos[].base64
+#                        the FULL-SIZE original, drawn into an 80x60 view
+#                        (styles.activityPhoto). `logbookPhotoUri` is a ladder —
+#                        base64, then thumb_base64, then the served-thumb URL —
+#                        and the full-size copy is served on demand by
+#                        get_logbook_activity_photo, an endpoint of its own.
+#                        It is detail content, not list content.
+#
+# WHAT DELIBERATELY STAYS, because the renderers DRAW it:
+#
+#   thumb_base64         the retained ~400px copy, and the LAST inline one.
+#                        logbookPhotoUri is inline-first on purpose: an
+#                        inspector in a dead zone must still see the photo. The
+#                        finalize purge is forbidden to remove this copy; this
+#                        read may not remove it either.
+#   worker_signature     drawn into an <Image> by renderPreshiftSignin and
+#                        renderToolboxTalk. Removing it would not merely blank a
+#                        picture: the same renderer keys "Not Signed:" off its
+#                        ABSENCE, so a projection that dropped it would tell a
+#                        DOB inspector that every worker who signed at the kiosk
+#                        was unsigned. A record that lies is worse than one that
+#                        is large.
+#
+# EXCLUSION, NOT INCLUSION, and the difference is which way the mistake falls.
+# Naming one field to REMOVE cannot break a reader that starts reading a second
+# field tomorrow — that field simply arrives. Naming twenty to KEEP breaks it
+# silently, and on this screen "silently" means a compliance record renders
+# blank to an inspector with nothing anywhere saying why. The same call, for the
+# same reason, as WORKER_LIST_FIELDS above (server.py:14138) — that one is an
+# inclusion list because its consumers were three known reads of a flat row;
+# this payload is thirteen log types deep and every one of them is a `data`
+# shape this file does not own.
+SUBMITTED_LOGBOOK_EXCLUDED_FIELDS = {
+    "cp_signature.paths": 0,
+    "data.activities.photos.base64": 0,
+}
+
+# ── THE CAP, AND WHY IT COUNTS DATES ────────────────────────────────────────
+#
+# `.to_list(500)` returned the 500 most recent logs and said nothing about it.
+# At thirteen registered log types that is roughly five WEEKS on a busy job,
+# after which older filed records were simply unreachable through the tablet's
+# only logbook screen. The operator has ruled the tablet must hold everything it
+# is approved to see.
+#
+# A TRUNCATED RESPONSE CAN MAKE THIS CLIENT DELETE FILES. `datesToList` names
+# each day's full-day-report PDF onto the cached entry, and `sweepDocCache`
+# (src/utils/docCache.js:261) deletes every cached document that no stored list
+# names. So a response that quietly dropped dates made the next sweep delete the
+# offline PDFs for those dates. That is why the PARAMETER-FREE response is the
+# complete set: an installed device cannot be upgraded to read a `complete`
+# flag, so the request it already sends must never come back silently short.
+# Only a caller that opts into paging — by sending `limit` — can receive a
+# partial set, and it is told so in the body.
+#
+# THE CEILING COUNTS DATES BECAUSE THE CALENDAR BOUNDS IT. A project cannot
+# file on more days than it has run; 4000 dates is eleven years of daily
+# filing. A cap on LOGS has no such bound and was the defect. If this one is
+# ever reached the response says `complete: false` and names its cursor, which
+# is the honest failure the old cap could not express.
+MAX_SUBMITTED_DATES = 4000
+
+
+def _submitted_date_key(value) -> str:
+    """The grouping key for one filed log.
+
+    Matches the client's own bucketing: it groups on `date` and sorts the keys
+    with `b.date.localeCompare(a.date)`, so an undated log lands under
+    "unknown" and — 'u' sorting above any '2' — appears first, exactly where it
+    did before. Kept as its own function so the page cursor and the grouping
+    below cannot disagree about what one date key is.
+    """
+    return value if isinstance(value, str) and value.strip() else "unknown"
+
+
 @api_router.get("/logbooks/project/{project_id}/submitted")
-async def get_submitted_logbooks(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
-    """Get all submitted logbook entries grouped by date. For site device inspector view."""
-    logbooks = await db.logbooks.find({
+async def get_submitted_logbooks(
+    project_id: str,
+    before: Optional[str] = Query(
+        None, max_length=32,
+        description="Return only dates strictly older than this key (cursor).",
+    ),
+    limit: Optional[int] = Query(
+        None, ge=1, le=MAX_SUBMITTED_DATES,
+        description="Dates per page. Omit for the complete set.",
+    ),
+    current_user = Depends(get_current_user),
+    _proj = Depends(require_project_access),
+):
+    """Submitted logbook entries grouped by date. The site device's only read.
+
+    Returns {dates, complete, next_before, date_count, log_count}. `dates` is
+    unchanged in shape and stays first for the installed clients that read
+    nothing else.
+
+    PAGES BY DATE, NEVER BY LOG. The client caches [{date, logs}] entries and
+    renders a day as a unit; half a day in one page and half in the next would
+    cache a date that is missing filed records with nothing saying so. So the
+    page boundary is always a date boundary: the distinct dates are ordered
+    first, the page is cut there, and only then are that page's logs read.
+    """
+    query = {
         "project_id": project_id,
         "status": "submitted",
         "is_deleted": {"$ne": True},
-    }).sort("date", -1).to_list(500)
-    by_date = {}
+    }
+
+    # Step 1 — the ordered date index. Cheap: one key per calendar day the
+    # project filed on, never per log.
+    raw_by_key: Dict[str, List] = {}
+    for value in await db.logbooks.distinct("date", query):
+        raw_by_key.setdefault(_submitted_date_key(value), []).append(value)
+    keys = sorted(raw_by_key.keys(), reverse=True)
+
+    # Step 2 — cut the page on a date boundary. The cursor is a date key and the
+    # order is descending, so "older than the cursor" is "sorts below it".
+    remaining = [k for k in keys if k < before] if before else keys
+    page = remaining[:(limit or MAX_SUBMITTED_DATES)]
+    # COMPLETE means: this body is the whole submitted history of this project.
+    # A cursor was given, or a page was cut -> it is not, and it says so.
+    complete = before is None and len(page) == len(keys)
+    next_before = page[-1] if page and len(page) < len(remaining) else None
+
+    # Step 3 — the logs for exactly those dates. The raw stored values are
+    # replayed rather than the keys, so an undated log (null, missing, or "")
+    # is fetched by what is actually on the document; `$in: [None]` matches a
+    # missing field as well as a null one.
+    wanted = [v for k in page for v in raw_by_key[k]]
+    logbooks = []
+    if wanted:
+        logbooks = await db.logbooks.find(
+            {**query, "date": {"$in": wanted}},
+            SUBMITTED_LOGBOOK_EXCLUDED_FIELDS,
+        ).sort("date", -1).to_list(None)
+
+    by_date: Dict[str, List] = {k: [] for k in page}
     for log in logbooks:
-        d = log.get("date", "unknown")
-        if d not in by_date:
-            by_date[d] = []
-        by_date[d].append(serialize_id(dict(log)))
-    return {"dates": by_date}
+        by_date[_submitted_date_key(log.get("date"))].append(serialize_id(dict(log)))
+    return {
+        "dates": by_date,
+        "complete": complete,
+        "next_before": next_before,
+        "date_count": len(by_date),
+        "log_count": len(logbooks),
+    }
 
 @api_router.put("/projects/{project_id}/report-settings", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):
@@ -38470,7 +39748,95 @@ async def startup_event():
         partialFilterExpression={"is_deleted": {"$eq": False}},
         name="checkins_active_by_project"
     )
-	
+
+    # ── UNSERVED SORTS ON BASE64-BEARING COLLECTIONS ────────────────────────
+    #
+    # The same shape as workers_by_company_name above, found by sweeping for it
+    # rather than by waiting for the next 500: backend/scripts/
+    # find_unserved_sorts.py, ratcheted by tests/test_sorts_are_indexed.py.
+    #
+    # Every one of these applies the SAME ESR reasoning written out above —
+    # equality fields first, then the sort field in the sort's direction — and
+    # the SAME exclusion: `is_deleted: {"$ne": True}` is not in any key. A $ne
+    # over a two-valued field is a range scan, and a range key sitting between
+    # the equality prefix and the sort key destroys the ordering the sort
+    # depends on. It is applied to the documents the index scan returns.
+
+    # GET /logbooks/project/{id}/submitted — THE ENDPOINT THAT FAILED IN FRONT
+    # OF A DOB INSPECTOR, and GET /logbooks/project/{id}/logs, which filters
+    # identically. Both match (project_id, status) by equality and sort `date`
+    # descending. The nearest existing index is
+    # (project_id, log_type, date) — `log_type` is unpinned by that filter, so
+    # it cannot walk `date` in order and Mongo fell back to an in-memory sort
+    # over documents carrying photo base64 under data.activities[].photos[].
+    #
+    # THIS INDEX ALREADY EXISTS ON PRODUCTION. It was created by hand in the
+    # Atlas UI to stop the outage, with no deploy — which means it lives on
+    # exactly one cluster, in no version control, and would not exist in the
+    # next environment anyone builds. Declaring it here is the actual fix;
+    # _ensure_index_resilient is idempotent, so the running cluster no-ops.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("project_id", 1), ("status", 1), ("date", -1)],
+        name="logbooks_project_status_date",
+    )
+
+    # The same collection, sorted the same way, by the callers that DO NOT pin
+    # `status`: GET /logbooks/project/{id} (status is never in that filter) and
+    # the stale-unsigned scan in the notifications endpoint, which constrains
+    # log_type with `$in` and date with `$lt` — both ranges, neither an
+    # equality pin. logbooks_project_status_date above cannot serve them for
+    # precisely the reason (project_id, log_type, date) could not serve the
+    # endpoint that failed: an unpinned key sits before `date`.
+    #
+    # So this is a second index, not a duplicate. It is the two-key prefix that
+    # covers every project-scoped `date` sort regardless of what else the
+    # caller filters on.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("project_id", 1), ("date", -1)],
+        name="logbooks_project_date",
+    )
+
+    # GET /annotations/{project_id}/{document_path} matches both of those by
+    # equality and sorts `created_at` descending, to_list(500). The existing
+    # (project_id, document_path) index stops one key short of the sort.
+    #
+    # SAME PAYLOAD PROBLEM, DIFFERENT FIELD: _generate_annotation_screenshot
+    # writes a full JPEG data URL onto `screenshot` on the annotation document
+    # itself, so 500 annotations on a busy drawing is the 32MB budget. This is
+    # the third collection with the workers/logbooks shape and it has not
+    # failed yet only because no single drawing has enough threads on it.
+    #
+    # This SUPERSEDES the unnamed (project_id, document_path) index created
+    # above — that one is now a strict prefix of this one. Dropping it is a
+    # separate change; a redundant prefix index costs write amplification, not
+    # correctness.
+    await _ensure_index_resilient(
+        db.document_annotations,
+        keys=[("project_id", 1), ("document_path", 1), ("created_at", -1)],
+        name="annotations_project_document_created",
+    )
+
+    # GET /admin/users sorts every user by `name`. `company_id` is added to the
+    # filter only when the caller is not an owner, so this serves the
+    # company-scoped call — the one that grows with the tenant.
+    #
+    # NOT A COMPLETE FIX, and for the same reason workers_by_company_name is
+    # not: the OWNER call carries no company_id at all, so no index led by
+    # company_id can serve its sort. What rescued the workers path was the
+    # projection, and this endpoint's projection is `{"password": 0}` — an
+    # EXCLUSION, so every document it sorts still carries the CP's
+    # `cp_signature` base64. An inclusion projection naming the fields the list
+    # row actually renders is the fix for that call; it changes a response
+    # shape, so it is deliberately not in this change. The gap is recorded as
+    # the single allowlist entry in tests/test_sorts_are_indexed.py.
+    await _ensure_index_resilient(
+        db.users,
+        keys=[("company_id", 1), ("name", 1)],
+        name="users_by_company_name",
+    )
+
     # COI expiration tracking (Phase 3 prep)
     await db.certificates_of_insurance.create_index(
         [("company_id", 1), ("expiration_date", 1)],
@@ -38729,6 +40095,18 @@ async def startup_event():
                 logger.info(
                     "[eod-freeze] froze %s stale signed log(s); flagged %s unsigned",
                     _swept["frozen"], _swept["unsigned"],
+                )
+            # THE AUDIT-TRAIL RECONCILIATION, in the same tick and AFTER the
+            # freeze: a log the freeze just sealed is one whose ledger row had
+            # better exist, and this is the hour at which asking is free of the
+            # race with the client's own post-save write.
+            _ledger = await sweep_signature_ledger_gaps(db)
+            if _ledger["gaps"]:
+                logger.error(
+                    "[signature-ledger] %s of %s signed log(s) filed in the "
+                    "last %s day(s) have NO ledger row",
+                    _ledger["gaps"], _ledger["checked"],
+                    SIGNATURE_LEDGER_LOOKBACK_DAYS,
                 )
         except Exception as e:
             logger.error(f"[v2_logbook] nightly tick failed: {e!r}", exc_info=True)
@@ -39096,6 +40474,30 @@ async def startup_event():
         logger.info("📧 Renewal digest scheduled (daily 7am ET)")
     except Exception as _e:
         logger.error(f"renewal_digest_daily scheduler wire failed: {_e!r}")
+
+    # ── ONE LEDGER ROW PER SIGNING ACT, ENFORCED BY THE DATABASE ───────────
+    #
+    # Two writers now describe the same signature: the signing client's POST
+    # /signature-events and the server's derivation from an accepted document.
+    # create_signature_event checks before it inserts, but check-then-insert is
+    # not atomic and the race is REAL — daily_jobsite fires its ledger write
+    # without awaiting it and then calls /finalize, so both can be in flight at
+    # once. This is what actually settles it; the pre-check only keeps the
+    # common case off the error path.
+    #
+    # PARTIAL, AND THAT IS LOAD-BEARING. Every row written before this existed
+    # has no `signature_key` at all. A plain unique index would read them all
+    # as null, collide on the second one, and fail to build — on a collection
+    # that must never be rewritten to suit an index. The filter restricts it to
+    # rows that carry a key, so it starts empty and only ever governs rows
+    # written from here on.
+    await _ensure_index_resilient(
+        db.signature_events,
+        keys=[("document_type", 1), ("document_id", 1), ("signature_key", 1)],
+        name="signature_events_one_row_per_signing_act",
+        unique=True,
+        partialFilterExpression={"signature_key": {"$type": "string"}},
+    )
 
     # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.
     await _ensure_index_resilient(

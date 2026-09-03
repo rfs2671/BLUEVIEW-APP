@@ -1,6 +1,9 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
+import {
+  refreshedTokenFrom, unauthorizedVerdict, KEEP, VERIFY, REJECTED,
+} from './sessionSurvival';
 
 // The NATIVE build's version, which is what eligibility for an OTA is keyed on.
 // Not the bundle id and not its age: an ineligible device can hold a perfectly
@@ -162,13 +165,111 @@ export const parseRateLimitError = (err) => {
   };
 };
 
+// ── THE SLIDING SESSION ────────────────────────────────────────────────────
+//
+// JWT_EXPIRATION_HOURS is 720 — thirty days — and there is no refresh route:
+// create_token is called from POST /api/auth/login and nowhere else. So the
+// clock on a gate tablet starts at the one moment an admin typed the kiosk
+// password into it, and until now nothing in the product ever moved it again.
+//
+// The server now hands a fresh token back in a response header on any
+// authenticated request whose token has started to age (server.py
+// REISSUED_TOKEN_HEADER). This is the half that stores it. Registered as its
+// OWN interceptor, ahead of the error handler below, so the success path stays
+// a plain pass-through and this cannot change what any caller receives.
+//
+// FAIL SAFE IN BOTH DIRECTIONS. A server that sends no header (every deploy
+// before this one) leaves the device exactly as it was, and refreshedTokenFrom
+// refuses anything that is not a live JWT rather than writing it over a token
+// that is currently working.
+apiClient.interceptors.response.use(
+  (response) => {
+    try {
+      const fresh = refreshedTokenFrom(response);
+      // Not awaited: this is a housekeeping write, and making every response
+      // in the app wait on AsyncStorage to satisfy it would be a poor trade.
+      if (fresh) setToken(fresh);
+    } catch (_e) { /* never let the success path throw */ }
+    return response;
+  },
+);
+
+// ── WHO IS TOLD WHEN A SESSION IS GENUINELY OVER ───────────────────────────
+//
+// The 401 arm below has always carried the comment "Navigation will be handled
+// by AuthContext", and it was not: AuthContext re-validates on mount and never
+// again. So a mid-session 401 deleted the token off the disk while the screen
+// carried on looking perfectly fine, and the device only revealed it at the
+// next cold boot — as a login screen, with no explanation and, on a site
+// device, no password. This is the missing wire that makes the comment true.
+let _onAuthRejected = null;
+export const registerAuthRejectedHandler = (fn) => {
+  _onAuthRejected = typeof fn === 'function' ? fn : null;
+};
+
+// De-dupes the corroborating call: a screen that fires six requests at once
+// gets one verification, not six.
+let _verifyInFlight = null;
+const verifySession = () => {
+  if (!_verifyInFlight) {
+    _verifyInFlight = apiClient
+      .get('/api/auth/me')
+      // Alive, or an answer we cannot read (offline, 500, timeout). Both mean
+      // "no evidence against the session", and no evidence never clears it.
+      .then(() => true)
+      .catch((e) => e?.response?.status !== 401)
+      .finally(() => { _verifyInFlight = null; });
+  }
+  return _verifyInFlight;
+};
+
+const endSession = async () => {
+  await clearAuth();
+  try {
+    if (_onAuthRejected) _onAuthRejected();
+  } catch (_e) { /* the logout must complete even if a listener throws */ }
+};
+
+/**
+ * ONE 401 IS NOT A VERDICT — see sessionSurvival.js for why this is not the
+ * one-liner it used to be. In short: /api/projects/{id}/dropbox-files answers
+ * 401 "No refresh token. Please reconnect Dropbox." That is a statement about
+ * Dropbox's token, and `if (401) clearAuth()` deleted the user's own.
+ *
+ * A GENUINE 401 STILL LOGS OUT, and now does it on time rather than at the
+ * next restart: a token that is live by its own clock and refused by
+ * /api/auth/me is a real revocation — a soft-deleted user, a deactivated
+ * device, a rotated secret — and it is cleared and announced immediately.
+ */
+export const handleUnauthorized = async (error) => {
+  try {
+    const url = error?.config?.url || '';
+    const token = await getToken();
+    const verdict = unauthorizedVerdict({ url, token });
+
+    if (verdict === KEEP) return;
+    if (verdict === REJECTED) { await endSession(); return; }
+
+    if (verdict === VERIFY) {
+      // NO RECURSION PAST ONE HOP: the corroborating call is itself an
+      // identity request, so a 401 on it comes back here as REJECTED and
+      // stops above rather than asking again.
+      const alive = await verifySession();
+      if (!alive) await endSession();
+    }
+  } catch (_e) {
+    // A failure to DECIDE must never itself destroy credentials. Doing
+    // nothing leaves the device exactly as it was, which is survivable; the
+    // next request re-runs this.
+  }
+};
+
 // Response interceptor for error handling
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      await clearAuth();
-      // Navigation will be handled by AuthContext
+      await handleUnauthorized(error);
     } else if (error.response?.status === 429) {
       const info = parseRateLimitError(error);
       if (info && _onRateLimitedToast) {

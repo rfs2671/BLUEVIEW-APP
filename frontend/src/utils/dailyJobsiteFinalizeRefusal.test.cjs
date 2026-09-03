@@ -370,6 +370,20 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     photoForPayload: (x) => x,
     draftBody: (rows) => ({ activities: rows }),
     writeDraft: D.writeDraft,
+    // WHERE EACH PHOTO SITS IN THE DOCUMENT THE SERVER NOW HOLDS. The push
+    // rebuilds this from the payload it just sent, because that write is the
+    // moment the server's activity order becomes this list's order. The real
+    // helper, sliced out of the screen — it is pure, and a stub returning an
+    // empty map would let the rebuild rot unnoticed.
+    servedCoordsRef: { current: new Map() },
+    // One slice, not two: photoServeKey's body carries no brace of its own, so
+    // `decl` from its anchor runs to the end of servedPhotoCoords and takes
+    // both declarations — which is exactly the pair needed here.
+    // eslint-disable-next-line no-new-func
+    servedPhotoCoords: new Function(`
+      ${decl(screenSrc, 'const photoServeKey = (photo) => String(')}
+      return servedPhotoCoords;
+    `)(),
     setDraftBackendId: async () => {},
     clearPending: async () => {},
     markPending: async (k) => { calls.pending.push(k); },
