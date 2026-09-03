@@ -6,7 +6,7 @@ import { finalizeErrorCode, readFinalizeError, clearFinalizeError } from '../uti
 import { discardFinalizedDraft } from '../utils/logbookDrafts';
 import { isImmediateLog } from '../utils/logbookTiming';
 import { useT } from '../i18n';
-import { useToast } from './Toast';
+import { useToast, ToastHost } from './Toast';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { spacing, borderRadius } from '../styles/theme';
 
@@ -239,6 +239,20 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
 
         <Modal visible={amendOpen} transparent animationType="fade" onRequestClose={() => setAmendOpen(false)}>
           <View style={s.modalOverlay}>
+            {/* THE REFUSAL HAS TO REACH HIM INSIDE THIS SHEET.
+                Every outcome on this path is a toast, and two of them —
+                AMENDMENT_REASON_REQUIRED and AMENDMENT_REASON_NOT_A_SENTENCE —
+                are raised DELIBERATELY WITHOUT CLOSING THE SHEET, so he can
+                extend the reason he already typed instead of starting again.
+                A native Modal is its own OS window, so the app-wide toast
+                stack painted behind this card and the refusal was invisible:
+                he tapped Create Amendment, the sheet sat there, and nothing
+                said why. The gate itself is right — it exists because a CP
+                once filed five corrections reading "1","1","1","1","0" — so
+                what had to change is that the refusal be readable, not that
+                it be relaxed. Same stack, same component, rendered in this
+                window. */}
+            <ToastHost />
             <View style={s.modalCard}>
               <View style={s.modalHeader}>
                 <Text style={s.modalTitle}>Reason for Amendment</Text>
