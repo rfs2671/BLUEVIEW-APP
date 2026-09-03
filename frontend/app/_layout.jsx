@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
@@ -10,6 +10,7 @@ import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider, useToast } from '../src/components/Toast';
 import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { InspectorLockProvider, useInspectorLock } from '../src/context/InspectorLockContext';
+import { siteDeviceTarget } from '../src/utils/inspectorConfinement';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
@@ -167,9 +168,18 @@ function RouteGuard() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, siteMode, isAuthenticated, isLoading } = useAuth();
-  const { isLocked: inspectorLocked } = useInspectorLock();
+  // `loading` IS LOAD-BEARING AND WAS NOT READ. InspectorLockProvider starts
+  // isLocked=false / loading=true and then reads the persisted flag off
+  // AsyncStorage. Without `loading` this guard could not tell "not locked"
+  // from "not read yet", and it ACTED on the difference — the site arm below
+  // is the thing that puts a tablet on the full dashboard. See
+  // src/utils/inspectorConfinement.js.
+  const { isLocked: inspectorLocked, loading: inspectorLoading } = useInspectorLock();
   const toast = useToast();
   const [isMounted, setIsMounted] = useState(false);
+  // Set when THIS guard parked a device on the read-only tab because the lock
+  // state was still unknown, so the hold can be released once it is known.
+  const heldForLockRef = useRef(false);
 
   useEffect(() => {
     setIsMounted(true);
@@ -200,27 +210,29 @@ function RouteGuard() {
       return;
     }
 
-    // Site device: can ONLY be on /site/*, /login
+    // Site device: can ONLY be on /site/*, /login — and, while Tier 1 ③
+    // "Inspector Mode" is engaged, only on the read-only /site/logbooks tab.
+    // /login stays reachable throughout so a logout is still possible. The
+    // super releases the lock with the "Exit Inspector Mode" control on the
+    // logbooks screen; unlocking flips inspectorLocked and re-runs this
+    // effect, restoring normal navigation.
+    //
+    // BOTH RULES ARE ONE DECISION NOW, in src/utils/inspectorConfinement.js.
+    // They used to be two sequential ifs, which meant a locked device was
+    // first sent TO the dashboard and then bounced off it — and, before the
+    // hydration state was read at all, sometimes only the first half ran.
     if (isSiteDevice) {
-      const allowed = pathname.startsWith('/site') || pathname === '/login';
-      if (!allowed) {
-        router.replace('/site');
+      const { target, heldForLock } = siteDeviceTarget({
+        pathname,
+        isLocked: inspectorLocked,
+        lockLoading: inspectorLoading,
+        heldForLock: heldForLockRef.current,
+      });
+      heldForLockRef.current = heldForLock;
+      if (target && target !== pathname) {
+        router.replace(target);
       }
-
-      // Tier 1 ③ "Inspector Mode": while the device-local lock is
-      // engaged, a site_device is confined to the read-only
-      // /site/logbooks tab. Any other in-site path (/site,
-      // /site/daily-logs, /site/checkins, /site/documents, …) — and
-      // anything else that slipped past the gate above — redirects
-      // back to logbooks. /login stays reachable so a logout is still
-      // possible. The super releases the lock with the "Exit Inspector
-      // Mode" control on the logbooks screen; unlocking flips
-      // inspectorLocked and re-runs this effect, restoring normal
-      // navigation.
-      if (inspectorLocked && pathname !== '/site/logbooks' && pathname !== '/login') {
-        router.replace('/site/logbooks');
-        return;
-      }
+      return;
     }
 
     // CP: can be on /logbooks/*, /documents, /settings, /login — NOT admin routes
@@ -258,7 +270,8 @@ function RouteGuard() {
         }
       }
     }
-  }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname, inspectorLocked]);
+  }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname,
+    inspectorLocked, inspectorLoading]);
 
   return null;
 }

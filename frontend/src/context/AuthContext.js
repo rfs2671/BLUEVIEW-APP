@@ -1,24 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { authAPI, getToken, getStoredUser, setStoredUser, clearAuth } from '../utils/api';
+import {
+  authAPI, getToken, getStoredUser, setStoredUser, clearAuth,
+  registerAuthRejectedHandler,
+} from '../utils/api';
+import { isTokenExpired } from '../utils/sessionSurvival';
 import { setSentryUser, clearSentryUser } from '../lib/sentry';
 
 const AuthContext = createContext(null);
-
-const decodeToken = (token) => {
-  try {
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split('')
-        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
-    return JSON.parse(jsonPayload);
-  } catch (e) {
-    return null;
-  }
-};
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -26,6 +14,11 @@ export const AuthProvider = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [siteMode, setSiteMode] = useState(false);
   const [siteProject, setSiteProject] = useState(null);
+  // READ-ONLY CACHED MODE. True when the token on disk has run out and the
+  // device is running off what it already downloaded. Authenticated against
+  // its own cache and nothing else — a screen that wants to refuse a WRITE
+  // has to be able to tell that from a live session.
+  const [isSessionExpired, setIsSessionExpired] = useState(false);
 
   // Guard: when true, the 401 interceptor should NOT wipe auth
   const isValidatingRef = useRef(false);
@@ -33,6 +26,45 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     validateSession();
   }, []);
+
+  // A GENUINE 401 NOW ARRIVES HERE INSTEAD OF WAITING FOR A RESTART. api.js
+  // has always said "Navigation will be handled by AuthContext" on its 401
+  // arm; it was not, because this provider re-validates on mount and never
+  // again. The token came off the disk mid-session and the screen carried on
+  // looking fine until the next cold boot. This is that missing wire.
+  useEffect(() => {
+    registerAuthRejectedHandler(() => {
+      setUser(null);
+      setIsAuthenticated(false);
+      setSiteMode(false);
+      setSiteProject(null);
+      setIsSessionExpired(false);
+      clearSentryUser();
+    });
+    return () => registerAuthRejectedHandler(null);
+  }, []);
+
+  /**
+   * Adopt the principal already on disk. Used by both offline paths: the
+   * network-error fallback that has always existed, and the expired-token
+   * path below that could never reach it.
+   */
+  const adoptStoredUser = (storedUser) => {
+    const normalizedUser = {
+      ...storedUser,
+      full_name: storedUser.full_name || storedUser.name,
+    };
+    setUser(normalizedUser);
+    setIsAuthenticated(true);
+
+    if (storedUser?.site_mode) {
+      setSiteMode(true);
+      setSiteProject({
+        id: storedUser.project_id,
+        name: storedUser.project_name,
+      });
+    }
+  };
 
   const validateSession = async () => {
     isValidatingRef.current = true;
@@ -44,10 +76,36 @@ export const AuthProvider = ({ children }) => {
         throw new Error('Invalid or missing token format');
       }
 
-      const payload = decodeToken(token);
-      if (payload && payload.exp && payload.exp * 1000 < Date.now()) {
-        console.log('Session expired - performing auto-cleanup');
-        throw new Error('Token expired');
+      // ── AN EXPIRY IS A REASON TO STOP FETCHING, NOT TO STOP READING ─────
+      //
+      // This check runs BEFORE any network call, so being offline never
+      // protected it. It used to `throw new Error('Token expired')`, the
+      // throw reached the outer catch, and the outer catch calls clearAuth().
+      // A gate tablet 30 days offline therefore deleted its own credentials
+      // — the password lives in an admin's head, not on the jobsite — and
+      // then could not reach a single one of the submitted logbooks, plans
+      // and documents still sitting on its disk. That is the moment a DOB
+      // inspector walks in.
+      //
+      // The content was approved and downloaded long ago; the session running
+      // out does not unapprove it. So the device stays authenticated against
+      // its cache, keeps its site mode and its project, and every /site/*
+      // screen — each of which redirects on `!isAuthenticated` — renders what
+      // it has. `isSessionExpired` names the state so nothing mistakes it for
+      // a live session.
+      //
+      // NO REQUEST IS MADE. A token we already know is dead can only earn a
+      // 401, and a 401 is one more thing that used to end with clearAuth().
+      if (isTokenExpired(token)) {
+        if (!storedUser) {
+          // Nothing cached: nothing to preserve and nothing to render. This
+          // one really does belong at the login screen.
+          throw new Error('Session expired with nothing cached');
+        }
+        console.log('Session expired - serving the device cache read-only');
+        adoptStoredUser(storedUser);
+        setIsSessionExpired(true);
+        return;
       }
 
       if (token && storedUser) {
@@ -61,6 +119,10 @@ export const AuthProvider = ({ children }) => {
           setUser(normalizedUser);
           await setStoredUser(normalizedUser);
           setIsAuthenticated(true);
+          // The server answered, so this is a live session however it got
+          // here — including a device that woke up in cached mode and then
+          // found signal.
+          setIsSessionExpired(false);
           // Phase C1: tag Sentry events with user_email + company.
           // No-op when Sentry isn't initialized (no DSN) — safe in dev.
           setSentryUser({
@@ -92,33 +154,29 @@ export const AuthProvider = ({ children }) => {
             throw new Error('Token rejected by server');
           }
 
-          // Network / 500 / timeout → trust stored user for offline use
+          // Network / 500 / timeout → trust stored user for offline use.
+          // OFFLINE IS NOT EXPIRED: the token here is live by its own clock,
+          // so the device is not put into read-only cached mode for it.
           console.log('Network error during validation, using stored user:', apiError.message);
-          const normalizedUser = {
-            ...storedUser,
-            full_name: storedUser.full_name || storedUser.name,
-          };
-          setUser(normalizedUser);
-          setIsAuthenticated(true);
-
-          if (storedUser?.site_mode) {
-            setSiteMode(true);
-            setSiteProject({
-              id: storedUser.project_id,
-              name: storedUser.project_name,
-            });
-          }
+          adoptStoredUser(storedUser);
+          setIsSessionExpired(false);
         }
       } else {
         throw new Error('No stored session');
       }
     } catch (error) {
+      // ONLY THREE THINGS REACH HERE NOW, and all three are cases where the
+      // device has nothing it could show: no token, a token that is not a
+      // token, and an expired token with an empty cache behind it. A local
+      // expiry on a device that HAS a cache no longer throws, which is the
+      // whole point — that throw is what deleted the credentials.
       console.error('Auth cleanup triggered:', error.message);
       await clearAuth();
       setUser(null);
       setIsAuthenticated(false);
       setSiteMode(false);
       setSiteProject(null);
+      setIsSessionExpired(false);
     } finally {
       isValidatingRef.current = false;
       setIsLoading(false);
@@ -137,6 +195,7 @@ export const AuthProvider = ({ children }) => {
     setUser(normalizedUser);
     await setStoredUser(normalizedUser);
     setIsAuthenticated(true);
+    setIsSessionExpired(false);
     // Phase C1: tag Sentry on explicit login too (validateSession
     // covers re-loads, login covers fresh sign-ins).
     setSentryUser({
@@ -171,6 +230,7 @@ export const AuthProvider = ({ children }) => {
       setIsAuthenticated(false);
       setSiteMode(false);
       setSiteProject(null);
+      setIsSessionExpired(false);
       // Phase C1: clear Sentry user tagging on logout so events
       // captured before the next login aren't attributed to the
       // previous user.
@@ -191,6 +251,9 @@ export const AuthProvider = ({ children }) => {
         isLoading,
         isAuthenticated,
         isPending,
+        // Authenticated against the device cache only: the token has run out
+        // and nothing on screen came from the server this session.
+        isSessionExpired,
         siteMode,
         siteProject,
         login,
