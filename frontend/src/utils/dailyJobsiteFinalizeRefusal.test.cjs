@@ -403,6 +403,18 @@ async function run({ pushError, savedId = 'log123', saveFailed = false, locale =
     // into a test of the guard instead. The guard has its own coverage in
     // draftFreshness.test.cjs.
     draftConflict: null,
+    // AND THE PREDICATE THAT READS IT — THE REAL ONE, NOT A STUB.
+    //
+    // The guard is `if (submitRefused(draftConflict)) return;`, so the harness
+    // owes this name for the same reason it owes `draftConflict` itself. It is
+    // the SHIPPED function rather than `() => false`: a stub here would keep
+    // this suite green while the real policy changed underneath it, and the
+    // whole point of moving the rule into draftFreshness was that thirteen call
+    // sites ask ONE predicate. A copy kept in step by hand is the shape this
+    // change exists to delete.
+    submitRefused: loadEsm('src/utils/draftFreshness.js', {
+      stubs: { './api': { logbooksAPI: { getByProject: async () => [] } } },
+    }).submitRefused,
   };
   // `persistAndPush` is the thing being BUILT here; leaving it in the env
   // would declare the same name twice inside the generated function.

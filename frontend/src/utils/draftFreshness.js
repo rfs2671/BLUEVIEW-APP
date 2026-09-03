@@ -57,6 +57,180 @@ import { settleFetch } from './offlineState';
 import { chooseEditableLog } from './logbookEditable';
 
 /**
+ * ── THE RESOLUTION HALF, AND THE RULING BEHIND IT ─────────────────────────
+ *
+ * The header above was written when this module was only the detection half,
+ * and it says the conflict UI "awaits its own design". IT HAS ONE NOW, and it
+ * is one sentence: THE CP'S DRAFT WINS. It is the most recent authorship and
+ * he is the one who made it. He is SHOWN that the server copy changed, and
+ * then he is allowed to file his own work over it.
+ *
+ * That replaces a placeholder, not a safety property. `Submit is dead` and
+ * `persistAndPush refuses` were never the decision — they were the absence of
+ * one, held in place until somebody chose. Leaving a CP with a red banner, a
+ * grey button and an instruction to email his safety admin is not a policy; it
+ * is an outage with prose around it.
+ *
+ * ── WHAT DID NOT CHANGE: NEVER SILENTLY ───────────────────────────────────
+ *
+ * `update_logbook` applies `data` as a wholesale `$set`, so filing his draft
+ * genuinely reverts the server's change. The ruling permits that. It does NOT
+ * permit it happening as a side effect of pressing the same button he always
+ * presses. So the override is a SEPARATE, DELIBERATE ACT: the banner states
+ * the fact, names the fields that differ where it can, and Submit stays dead
+ * until he acknowledges it. One press cannot both learn the fact and act on
+ * it.
+ *
+ * THE ACKNOWLEDGEMENT RIDES ON THE VERDICT OBJECT, and that is load-bearing
+ * rather than convenient. Every editor already holds the verdict in one piece
+ * of state and already clears it at the top of each load — so an acknowledgement
+ * stored on it is re-armed by the code that re-runs the comparison, and there
+ * is no second flag anywhere that can be left true across a fresh fetch. A CP
+ * who acknowledges a conflict, backgrounds the app, and comes back to a
+ * DIFFERENT server change must be shown that one too.
+ */
+
+/**
+ * WHICH VERDICTS HE MAY OVERRIDE — AND WHY THE OTHER TWO ARE NOT ON THIS LIST.
+ *
+ * The ruling is about an UNFILED server change: someone edited a draft-state
+ * document out from under him, and between two unfiled versions the most recent
+ * author wins. `server-newer` is exactly that case and it is the only one.
+ *
+ * `server-locked` and `server-filed` are not a newer draft — they are a
+ * COMPLIANCE RECORD. A filed log is a statutory artifact that has been signed;
+ * overwriting it with a stale local draft is the 588 Thomas overwrite of
+ * 2026-08-25 that this whole line of work exists to stop, and it is what
+ * FILED_LOG_DATA_IMMUTABLE was added to refuse. Extending "the CP's draft wins"
+ * to them would not be applying the ruling, it would be reversing the fix.
+ *
+ * AND THE SERVER REFUSES THEM ANYWAY — 423 on a finalized log, 409
+ * FILED_LOG_DATA_IMMUTABLE on a filed one. Re-enabling Submit for those two
+ * would not give him his log; it would give him a button that fails, after he
+ * signed, with an error code instead of an explanation. The honest screen is
+ * the one that says so BEFORE he signs and points him at Amend, which is the
+ * mechanism that exists for correcting a filed record and preserves both
+ * versions instead of destroying one.
+ */
+export const OVERRIDABLE_REASONS = Object.freeze(['server-newer']);
+
+/**
+ * May this conflict be overridden by the CP at all?
+ *
+ * Anything that is not a conflict is trivially not blocking. A conflict whose
+ * reason is unrecognised is treated as NOT overridable — an unknown verdict is
+ * the one case where guessing in the permissive direction risks the overwrite
+ * this module exists to prevent, so a fourth reason added later is refused by
+ * default until somebody decides about it here.
+ */
+export function isOverridable(verdict) {
+  if (!verdict || !verdict.conflict) return false;
+  return OVERRIDABLE_REASONS.indexOf(verdict.reason) !== -1;
+}
+
+/**
+ * THE ONE GATE. Should the save path refuse this push?
+ *
+ * Used by both the Submit button and by `persistAndPush` itself, so a dead
+ * button and a refused save can never disagree about what is permitted. The
+ * button is the affordance; this is the guard, and the guard is the one that
+ * matters — every editor keeps its own call so a future caller that is not a
+ * button is covered too.
+ *
+ *   no conflict          -> false. The ordinary case, and every offline read.
+ *   not overridable      -> true, always. server-locked / server-filed.
+ *   overridable, unacked -> true. He has not been shown the fact yet, or has
+ *                          been shown it and not answered.
+ *   overridable, acked   -> FALSE. The ruling. His draft is filed and the
+ *                          server change is replaced, because he said so.
+ */
+export function submitRefused(verdict) {
+  if (!verdict || !verdict.conflict) return false;
+  if (!isOverridable(verdict)) return true;
+  return verdict.acknowledged !== true;
+}
+
+/**
+ * Is this value "nothing"? Used only by the field comparison below.
+ *
+ * A draft is JSON on the device and the server document is JSON off the wire,
+ * and the two round-trips disagree about absence in ways that mean nothing to
+ * a CP: a key the draft never wrote is `undefined`, the same key cleared in the
+ * UI is `''`, and Mongo may hand back `null`. Reporting "Notes changed" because
+ * one side spelled empty differently would bury the one field that really did
+ * change under a list of noise, which is the same failure as not listing
+ * anything at all.
+ */
+function isEmptyValue(v) {
+  if (v === null || v === undefined || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') return Object.keys(v).length === 0;
+  return false;
+}
+
+/**
+ * Deep value equality, depth-bounded.
+ *
+ * Object keys are compared as a SET, because neither JSON round-trip promises
+ * an order and a reordered key is not a change the CP made. Beyond the depth
+ * cap the values are reported as DIFFERENT rather than equal: this list is
+ * informational and over-reporting one deeply-nested field is recoverable,
+ * while a silent "equal" on unexamined data is the class of bug this whole
+ * change is about. The cap also means no input can make this run away — draft
+ * data is JSON and cannot hold a cycle, but nothing here depends on that.
+ */
+function sameValue(a, b, depth = 0) {
+  if (a === b) return true;
+  if (isEmptyValue(a) && isEmptyValue(b)) return true;
+  if (depth > 6) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((x, i) => sameValue(x, b[i], depth + 1));
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a).filter((k) => !isEmptyValue(a[k])).sort();
+    const kb = Object.keys(b).filter((k) => !isEmptyValue(b[k])).sort();
+    if (ka.length !== kb.length) return false;
+    if (ka.some((k, i) => k !== kb[i])) return false;
+    return ka.every((k) => sameValue(a[k], b[k], depth + 1));
+  }
+  return false;
+}
+
+/**
+ * WHICH FIELDS DIFFER — and it costs nothing, because both documents are here.
+ *
+ * This is not a diff tool and it is not the conflict UI. It is the cheap half
+ * of "show him what changed": `compareDraftToServer` already holds the draft it
+ * was handed and the server document it fetched, so naming the top-level keys
+ * that disagree is a loop, not a design. The two sides ARE the same shape —
+ * the save path PUTs `draft.data` straight into `update_logbook` as a wholesale
+ * `$set`, which is the very defect being managed here, so `serverLog.data` is
+ * the same object the draft would have overwritten it with.
+ *
+ * NULL IS NOT AN EMPTY LIST, and the caller must keep them apart. `null` means
+ * NO COMPARISON WAS POSSIBLE — one side carried no `data` at all — and the
+ * banner must fall back to the plain statement of the fact. `[]` means the two
+ * were compared and no top-level field differs, which is a real and reachable
+ * answer: the server document may have been touched in a way that moved
+ * `updated_at` without changing `data`.
+ *
+ * AND THE FACT NEVER DEPENDS ON THIS. The verdict comes from the stamps and
+ * the status flags; this only decorates it. A null list, an empty list and a
+ * long list all produce the same warning, because "the server copy changed" is
+ * true in all three.
+ */
+export function changedFields(draft, serverLog) {
+  const a = draft && draft.data;
+  const b = serverLog && serverLog.data;
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return null;
+  const keys = Array.from(new Set([...Object.keys(a), ...Object.keys(b)])).sort();
+  return keys.filter((k) => !sameValue(a[k], b[k]));
+}
+
+/**
  * How far apart two clocks may be before a gap counts as evidence.
  *
  * THIS COMPARISON SPANS TWO CLOCKS. The draft stamp is `Date.now()` on the
@@ -217,6 +391,11 @@ const NO_COMPARISON = (fetchState) => ({
   serverReadOnly: false,
   draftAt: null,
   serverAt: null,
+  // No documents to compare, so no field list — null, not []. See changedFields.
+  changed: null,
+  // Nothing to acknowledge. Present on every shape this module returns so a
+  // caller never has to distinguish "not acknowledged" from "no such field".
+  acknowledged: false,
 });
 
 /**
@@ -273,6 +452,12 @@ export async function compareDraftToServer({
     serverReadOnly: readOnly,
     draftAt: verdict.draftAt,
     serverAt: verdict.serverAt,
+    // COMPUTED ONLY WHEN THERE IS SOMETHING TO SAY. On a clean comparison the
+    // banner never renders, so the field list would be work nobody reads.
+    changed: verdict.conflict ? changedFields(draft, log) : null,
+    // He has not been shown anything yet. Set to true only by the editor, in
+    // response to the CP's own press, and cleared with the verdict on reload.
+    acknowledged: false,
   };
 }
 

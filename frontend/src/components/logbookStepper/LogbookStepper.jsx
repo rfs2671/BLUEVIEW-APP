@@ -10,6 +10,7 @@ import AmendmentBanner from '../AmendmentBanner';
 import DraftConflictNotice from '../DraftConflictNotice';
 import LogbookLockBar from '../LogbookLockBar';
 import { outdoor } from '../../styles/theme';
+import { submitRefused, isOverridable } from '../../utils/draftFreshness';
 
 /**
  * The chrome every logbook form wears.
@@ -111,12 +112,23 @@ export default function LogbookStepper({
   // submitting is precisely the act that does the damage. `persistAndPush` PUTs
   // the whole draft into update_logbook, which applies `data` as a wholesale
   // `$set`, so pressing Submit over a newer server document is what reverts the
-  // correction. A dead button is the point.
+  // correction.
   //
-  // REFUSAL, NOT RESOLUTION. Nothing here picks a side, merges, or discards —
-  // the conflict UI is a separate design and is not built. The draft stays on
-  // the device, on screen, and editable; only the push is refused.
+  // BUT IT IS NO LONGER A DEAD END. THE CP'S DRAFT WINS — it is the most recent
+  // authorship and he is the one who made it. The gate now holds only until he
+  // has been SHOWN the server change and taken the override in the banner; then
+  // it opens and he files his own work. What it never does is let that happen
+  // quietly, which is why acknowledging and submitting are two presses.
+  //
+  // A FILED SERVER DOCUMENT IS NOT COVERED BY THAT RULING and stays refused for
+  // good — see OVERRIDABLE_REASONS in draftFreshness. `submitRefused` is the one
+  // place that distinction is made, and both this button and every editor's
+  // `persistAndPush` ask it, so the affordance and the guard cannot drift.
   draftConflict = null,
+  // Called when the CP takes the override in the banner. The editor owns the
+  // verdict state, so it owns the acknowledgement that rides on it — and clears
+  // both together on the next load.
+  onConflictAcknowledge,
   onSubmit,
   // Lock bar.
   logType,
@@ -147,7 +159,12 @@ export default function LogbookStepper({
   // Named once, so the gate and the grey fill can never disagree about what a
   // conflict is. A verdict object with `conflict: false` — the ordinary clean
   // comparison, and every offline read — is NOT a conflict and blocks nothing.
-  const conflictBlocked = !!(draftConflict && draftConflict.conflict);
+  //
+  // THE SAME PREDICATE THE SAVE PATH USES. Asking draftFreshness rather than
+  // re-deriving the rule here is what keeps a live button from meeting a
+  // refusing `persistAndPush`, and what makes "an acknowledged server-newer is
+  // submittable, a filed log never is" one decision instead of thirteen.
+  const conflictBlocked = submitRefused(draftConflict);
 
   if (loading) {
     // PINNED, like the tree below: this branch tints its spinner
@@ -307,7 +324,10 @@ export default function LogbookStepper({
               selectable on a locked log. Renders on EVERY step, not just the
               submit step — the false inference it prevents is available to him
               the moment the screen opens, not only when he goes to sign. */}
-          <DraftConflictNotice conflict={draftConflict} />
+          <DraftConflictNotice
+            conflict={draftConflict}
+            onAcknowledge={onConflictAcknowledge}
+          />
 
           <View pointerEvents={locked ? 'none' : 'auto'}>
             {current && current.render()}
@@ -340,11 +360,32 @@ export default function LogbookStepper({
                 one line that belongs next to the control it disables, because a
                 CP who has paged to the end and met a grey button will not scroll
                 back up to find out. */}
-            {step === total && !!draftConflict && !!draftConflict.conflict && (
+            {/* THREE STATES, AND THEY MUST NOT BE COLLAPSED. A CP who has paged
+                to the end meets one of: a button he can press after taking the
+                override above, a button that is live and about to replace the
+                server copy, or a button that will never open on this log. Saying
+                "blocked" for all three — which is what this line used to do —
+                was wrong in two of them, and it is the last thing he reads
+                before signing. */}
+            {step === total && conflictBlocked && isOverridable(draftConflict) && (
               <Text style={s.submitWarning}>
-                Submitting is blocked — the log on the server is newer than this
-                draft, and filing this would replace it. Your draft is still
-                saved on this device.
+                Submitting is held until you confirm the change above. Your draft
+                is the newer work and you may file it — the notice at the top of
+                this form says what filing it will replace.
+              </Text>
+            )}
+            {step === total && conflictBlocked && !isOverridable(draftConflict) && (
+              <Text style={s.submitWarning}>
+                This log is already filed on the server and cannot be replaced.
+                Your draft is still saved on this device — use Amend on the filed
+                log to correct it.
+              </Text>
+            )}
+            {step === total && !conflictBlocked && !!draftConflict
+              && !!draftConflict.conflict && (
+              <Text style={s.submitWarning}>
+                Submitting will REPLACE the server copy of this log with this
+                draft. You confirmed this in the notice at the top of the form.
               </Text>
             )}
             {step === total && !!submitWarning && (

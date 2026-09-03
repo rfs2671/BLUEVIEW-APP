@@ -18,7 +18,7 @@ import {
   markPending, clearPending, markFinalized,
   persistActivityPhotos, uploadPendingActivityPhotos, hasPendingPhotoUploads,
 } from '../../src/utils/logbookDrafts';
-import { compareDraftToServer } from '../../src/utils/draftFreshness';
+import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshness';
 import compressUnderCap from '../../src/utils/compressPhoto';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
@@ -309,11 +309,20 @@ export default function FallProtectionLog() {
 
   // ── Save ──────────────────────────────────────────────────────────────
   const persistAndPush = async (submitStatus) => {
-    // NO SILENT OVERWRITE. The server holds a document newer than this
-    // draft, and this function PUTs `data` as a wholesale $set — pushing
-    // from here is exactly the act that reverts the correction. The Submit
-    // button is already dead for the same reason; this is the guard for
-    // every other caller, now and later.
+    // NO SILENT OVERWRITE — WHICH IS NOT THE SAME AS NO OVERWRITE.
+    //
+    // This function PUTs `data` as a wholesale $set, so pushing over a
+    // changed server document really does revert it. THE CP'S DRAFT WINS
+    // anyway: it is the most recent authorship and he is the one who made
+    // it. What `submitRefused` withholds is the SILENT case — it stays true
+    // until he has been shown the server change and taken the override in
+    // the banner, and then it opens.
+    //
+    // AND IT NEVER OPENS FOR A FILED OR FINALIZED SERVER DOCUMENT. That is
+    // a signed compliance record, not a competing draft; the ruling does not
+    // reach it, the server refuses the write (423 / 409), and Amend is the
+    // route that corrects one. draftFreshness.OVERRIDABLE_REASONS is the
+    // single place that line is drawn.
     //
     // THE WHOLE CALL IS REFUSED, not just the push. A local write here
     // would bind a backend_id and a status against a document this device
@@ -321,8 +330,10 @@ export default function FallProtectionLog() {
     // reads correctly. HIS WORK IS NOT AT RISK: the debounced autosave is a
     // separate effect and keeps writing the draft to this device.
     //
-    // A REFUSAL, NOT A RESOLUTION — no merge, no diff, no pick-a-side.
-    if (draftConflict) return;
+    // THE SAME PREDICATE THE SUBMIT BUTTON ASKS, so a live button and a
+    // refusing save path cannot disagree. This is the guard for every other
+    // caller, now and later.
+    if (submitRefused(draftConflict)) return;
     const current = rowsRef.current?.length ? rowsRef.current : rows;
     // Photos into documentDirectory first, so a row survives an app kill with
     // its evidence attached.
@@ -853,6 +864,12 @@ export default function FallProtectionLog() {
       onAmended={fetchData}
       submitWarning={autosaveFailed ? tFinalize('autosaveFailedWarning') : ''}
       draftConflict={draftConflict}
+      // HE TOOK THE OVERRIDE. Stored ON the verdict rather than beside it, so
+      // the load that clears the verdict clears the acknowledgement with it and
+      // a NEW server change is never covered by an answer he gave to an old one.
+      onConflictAcknowledge={() => setDraftConflict(
+        (c) => (c ? { ...c, acknowledged: true } : c),
+      )}
       autosaveNote={t('savedAutomatically')}
     />
   );

@@ -59,18 +59,25 @@ const read = (p) => fs.readFileSync(p, 'utf8');
 const screen = (n) => read(path.join(FRONTEND, 'app', 'logbooks', `${n}.jsx`));
 
 /**
- * The eleven editors this change covers.
+ * The TWELVE editors this change covers.
  *
- * site_superintendent_log is EXCLUDED and stays excluded here: it is being
- * edited on two open branches (#363 fix/superintendent-local-first, #364
- * fix/superintendent-log-submit) and a twelfth simultaneous edit to the same
- * function is how a merge silently drops one of the three.
+ * site_superintendent_log used to be excluded here, because #363 and #364 were
+ * both editing it and a third simultaneous edit to the same function is how a
+ * merge silently drops one of the three. #363 HAS LANDED, and what it landed is
+ * the very defect this file exists to catch: it gave the superintendent log a
+ * local-first `readDraft` short-circuit that returns before the server is ever
+ * fetched — the eleven-file bug, reintroduced in a twelfth file, after the
+ * eleven were fixed.
+ *
+ * SO THE EXCLUSION IS LIFTED RATHER THAN RENEWED. Leaving it out would have let
+ * the sweep below report twelve-for-twelve health on eleven files while the
+ * newest copy of the bug sat in the one file nobody was allowed to look at.
  */
 const EDITORS = [
   'toolbox_talk', 'crane_operations', 'concrete_operations',
   'excavation_monitoring', 'hot_work', 'daily_jobsite', 'osha_log',
   'fall_protection', 'scaffold_maintenance', 'ssc_daily_safety_log',
-  'preshift_signin',
+  'preshift_signin', 'site_superintendent_log',
 ];
 /** The ten of those that render through the shared stepper. */
 const STEPPER_EDITORS = EDITORS.filter((n) => n !== 'preshift_signin');
@@ -318,8 +325,17 @@ const KEY = 'logbook_draft:proj1:toolbox_talk:2026-08-28';
 
     // THE ORDERING IS THE FIX. The call has to happen BEFORE the early return,
     // or it is a fetch nobody waited for.
+    //
+    // MATCHED ON THE TWO-LINE SHAPE, not on a bare `setLoading(false);`. The
+    // naive form of this passed for eleven files by luck and was WRONG for the
+    // twelfth: site_superintendent_log opens with a single-line
+    // `if (!projectId) { setLoading(false); return; }` guard, so a whole-file
+    // indexOf found that instead of the local-first return and reported the
+    // call as too late. The claim is unchanged — it is now asked about the
+    // return it was always describing.
     const call = src.indexOf('await compareDraftToServer(');
-    const ret = src.indexOf('setLoading(false);');
+    const m = /setLoading\(false\);\s*\n\s*return;/.exec(src);
+    const ret = m ? m.index : -1;
     ok(call !== -1 && ret !== -1 && call < ret,
       `${name}: the server is asked BEFORE the draft path returns`);
 
@@ -328,19 +344,25 @@ const KEY = 'logbook_draft:proj1:toolbox_talk:2026-08-28';
     ok(/const \[draftConflict, setDraftConflict\] = useState\(null\);/.test(src),
       `${name}: and it owns the flag it reports`);
 
-    // REFUSING THE SILENT OVERWRITE, and nothing richer. This is the whole of
-    // the save-path change: no merge, no diff, no pick-a-side.
-    ok(/if \(draftConflict\) return;/.test(src),
-      `${name}: the save path refuses to PUT over a demonstrably newer server document`);
-  }
+    // THE SAVE PATH ASKS THE SHARED PREDICATE, and asks it BY NAME.
+    //
+    // This used to pin `if (draftConflict) return;` — a flat refusal, which was
+    // the placeholder standing in for a decision nobody had made. The decision
+    // is made (the CP's draft wins on server-newer; a filed log is never
+    // overwritten), and `submitRefused` is the single place it lives. Pinning
+    // the CALL rather than the rule is the point: the rule may move again, and
+    // when it does it must move in one file rather than thirteen.
+    ok(/if \(submitRefused\(draftConflict\)\) return;/.test(src),
+      `${name}: the save path asks the shared gate before it PUTs`);
+    ok(/import \{[^}]*submitRefused[^}]*\} from '\.\.\/\.\.\/src\/utils\/draftFreshness'/.test(src),
+      `${name}: and imports it rather than re-deriving the rule locally`);
 
-  {
-    // THE EXCLUSION IS ASSERTED, not merely intended. site_superintendent_log
-    // is on two open PRs; a change to it here is a merge conflict waiting to
-    // be resolved in the wrong direction.
-    const src = screen('site_superintendent_log');
-    ok(!/compareDraftToServer/.test(src),
-      'site_superintendent_log is UNTOUCHED — it belongs to #363/#364');
+    // AND NOBODY KEPT A PRIVATE COPY OF THE OLD FLAT REFUSAL. A leftover bare
+    // `if (draftConflict) return;` would silently reinstate the dead end in
+    // that one editor while the other eleven honoured the ruling — which is
+    // precisely the eleven-way drift this module was built to end.
+    ok(!/if \(draftConflict\) return;/.test(src),
+      `${name}: the old flat refusal is gone — no editor keeps a private policy`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -366,8 +388,8 @@ const KEY = 'logbook_draft:proj1:toolbox_talk:2026-08-28';
   const footerStart = stepper.indexOf('{!locked && (');
   const footerEnd = stepper.indexOf('</SafeAreaView>', footerStart);
   const footer = (footerStart !== -1 && footerEnd > footerStart) ? stepper.slice(footerStart, footerEnd) : '';
-  ok(/draftConflict/.test(footer),
-    'Submit is blocked while the server is newer — the one save-path change in scope');
+  ok(/conflictBlocked/.test(footer),
+    'Submit is gated on the conflict — the save-path change this work is about');
 
   for (const name of STEPPER_EDITORS) {
     ok(/draftConflict=\{draftConflict\}/.test(screen(name)),
@@ -375,6 +397,152 @@ const KEY = 'logbook_draft:proj1:toolbox_talk:2026-08-28';
   }
   ok(/<DraftConflictNotice/.test(screen('preshift_signin')),
     'preshift_signin owns no stepper, so it renders the same notice itself');
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Q5: THE RESOLUTION HALF. The CP's draft wins — after he is shown what
+  // changed, and never over a filed record.
+  //
+  // Everything above is detection. This section is the ruling: Submit stopped
+  // being dead, the fact is put in front of him first, and the two verdicts the
+  // ruling does NOT reach stay refused.
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log('\n── Q5: he is shown the change, then his draft wins ──');
+
+  const F = loadFreshness(async () => []);
+
+  {
+    // THE GATE, AS A FUNCTION. Six cases, and they are the whole policy.
+    ok(F.submitRefused(null) === false,
+      'no verdict is not a refusal — the ordinary case, and every offline read');
+    ok(F.submitRefused({ conflict: false, reason: null }) === false,
+      'a clean comparison is not a refusal either');
+
+    const newer = { conflict: true, reason: 'server-newer', acknowledged: false };
+    ok(F.submitRefused(newer) === true,
+      'server-newer is HELD before he has been shown it — no silent overwrite');
+    ok(F.submitRefused({ ...newer, acknowledged: true }) === false,
+      'THE RULING: acknowledged, his draft may be filed over the server change');
+
+    // AND THE TWO THE RULING DOES NOT REACH. A filed log is a signed compliance
+    // record, not a competing draft; this is the 588 Thomas overwrite, and the
+    // server answers 423/409 regardless.
+    for (const reason of ['server-locked', 'server-filed']) {
+      ok(F.submitRefused({ conflict: true, reason, acknowledged: false }) === true,
+        `${reason}: refused — a filed record is not a draft that lost a race`);
+      ok(F.submitRefused({ conflict: true, reason, acknowledged: true }) === true,
+        `${reason}: STILL refused even acknowledged — there is no override to take`);
+      ok(F.isOverridable({ conflict: true, reason }) === false,
+        `${reason}: is not overridable, so no override is ever offered for it`);
+    }
+    ok(F.isOverridable(newer) === true,
+      'server-newer is the one overridable verdict');
+
+    // AN UNKNOWN VERDICT FAILS CLOSED. A fourth reason added later must be
+    // decided about deliberately, not inherit the permissive branch.
+    ok(F.isOverridable({ conflict: true, reason: 'server-something-new' }) === false,
+      'an unrecognised reason is NOT overridable — a new signal fails closed');
+    ok(F.submitRefused({ conflict: true, reason: 'server-something-new', acknowledged: true }) === true,
+      'and cannot be acknowledged past');
+  }
+
+  {
+    // WHICH FIELDS DIFFER — free, because both documents are already in hand.
+    const draft = { data: { location: 'Deck 3', crew: 4, notes: 'x' } };
+    const srv = { data: { location: 'Deck 9', crew: 4, notes: 'x' } };
+    const ch = F.changedFields(draft, srv);
+    ok(Array.isArray(ch) && ch.length === 1 && ch[0] === 'location',
+      'the changed field is named, and the unchanged ones are not');
+
+    // NULL IS NOT AN EMPTY LIST. "could not compare" and "nothing differs" are
+    // different statements, and collapsing them is the original defect's shape.
+    ok(F.changedFields({ data: null }, srv) === null,
+      'no draft data: null — no comparison was possible, NOT "nothing changed"');
+    ok(F.changedFields(draft, { data: undefined }) === null,
+      'no server data: null for the same reason');
+    ok(Array.isArray(F.changedFields(draft, { data: { ...draft.data } }))
+      && F.changedFields(draft, { data: { ...draft.data } }).length === 0,
+      'identical documents: [] — compared, and nothing differs');
+
+    // SERIALISATION NOISE IS NOT A CHANGE. A key the draft never wrote, the
+    // same key cleared to '', and Mongo's null are the same "empty" to a CP,
+    // and listing them would bury the field that really moved.
+    ok(F.changedFields({ data: { a: 1 } }, { data: { a: 1, b: '' } }).length === 0,
+      'missing vs empty-string is not reported as a change');
+    ok(F.changedFields({ data: { a: 1, b: null } }, { data: { a: 1, b: [] } }).length === 0,
+      'null vs empty array is not reported either');
+
+    // KEY ORDER IS NOT A CHANGE, and nested content still is.
+    ok(F.changedFields(
+      { data: { o: { x: 1, y: 2 } } }, { data: { o: { y: 2, x: 1 } } },
+    ).length === 0, 'reordered object keys are not a change');
+    ok(F.changedFields(
+      { data: { o: { x: 1 } } }, { data: { o: { x: 2 } } },
+    ).length === 1, 'but a nested value that really moved is');
+  }
+
+  {
+    // AND THE VERDICT CARRIES IT, so the banner costs no second fetch.
+    const G = loadFreshness(async () => [{
+      id: 'srv1', status: 'draft', is_locked: false,
+      updated_at: iso(NOW + 3600000), data: { location: 'Deck 9' },
+    }]);
+    const r = await G.compareDraftToServer({
+      draft: { data: { location: 'Deck 3' }, status: 'draft', updated_at: NOW },
+      projectId: 'p1', logType: 'toolbox_talk', date: '2026-08-28',
+    });
+    ok(r.conflict === true && r.reason === 'server-newer',
+      'the essential case still detects, unchanged by the resolution half');
+    ok(Array.isArray(r.changed) && r.changed.indexOf('location') !== -1,
+      'and the verdict names the field that differs — both documents were in hand');
+    ok(r.acknowledged === false,
+      'a fresh verdict is NEVER pre-acknowledged — he has been shown nothing yet');
+    ok(F.submitRefused(r) === true,
+      'so the save path holds until he answers');
+  }
+
+  {
+    // THE OFFLINE GUARANTEE SURVIVES THE RESOLUTION HALF. A dead radio must
+    // still not block a CP out of his own paperwork.
+    const G = loadFreshness(async () => { throw offlineErr(); });
+    const r = await G.compareDraftToServer({
+      draft: { data: { a: 1 }, updated_at: NOW },
+      projectId: 'p1', logType: 'toolbox_talk', date: '2026-08-28',
+    });
+    ok(r.conflict === false && r.fetchState === 'offline',
+      'offline is still not a conflict');
+    ok(r.changed === null,
+      'and no field list is invented for a comparison that never happened');
+    ok(F.submitRefused(r) === false,
+      'AND SUBMIT STILL WORKS OFFLINE — the gate never closes on a failed fetch');
+  }
+
+  {
+    // ONE WORDING, ALL TWELVE. The component is shared, so the sentence that
+    // prevents the false inference is literally one string; what is asserted
+    // here is that it says the three things a CP is owed, on every branch.
+    ok(/SPINE/.test(notice),
+      'the notice keeps ONE shared sentence across the verdicts, not three near-copies');
+    for (const reason of ['server-locked', 'server-filed', 'server-newer']) {
+      ok(new RegExp(`'${reason}'`).test(notice) || /server-newer/.test(notice),
+        `the notice has copy for ${reason}`);
+    }
+    ok(/REPLACE the server copy/.test(notice),
+      'the overridable branch says, in plain words, that filing REPLACES the server copy');
+    ok(/Amend/.test(notice),
+      'and the filed branches point him at Amend, which keeps both versions');
+    ok(/onAcknowledge/.test(notice),
+      'the override is an explicit act he takes, not a side effect of Submit');
+    ok(/isOverridable/.test(notice),
+      'and it is offered ONLY where the ruling reaches — never on a filed log');
+
+    // THE ACKNOWLEDGEMENT RIDES ON THE VERDICT, in all twelve, so the load that
+    // clears the verdict re-arms it. A separate flag is the thing that would
+    // let an answer about one server change cover the next one.
+    for (const name of EDITORS) {
+      ok(/acknowledged: true/.test(screen(name)),
+        `${name}: acknowledges by updating the verdict it already owns`);
+    }
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);
