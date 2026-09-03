@@ -199,11 +199,43 @@ if (dupes.length > 0) {
 
 print("No parent holds more than one open amendment. Building.");
 
-coll.createIndex(KEYS, {
-  name: INDEX_NAME,
-  unique: true,
-  partialFilterExpression: PARTIAL_FILTER,
-});
+// THE ONE FAILURE MODE THAT CANNOT BE CHECKED ANYWHERE ELSE.
+//
+// A partialFilterExpression may contain ONLY equality, $exists:true, the range
+// operators and $type. Every clause above is one of those, but the server that
+// decides is Atlas and nothing in the test suite can ask it -- the backend
+// tests run against mocks, and the application's own bootstrap calls this
+// index through _ensure_index_resilient, which LOGS AND RETURNS on failure.
+//
+// So this script is the only place a rejection is ever seen by a person, and
+// it must say WHICH kind of rejection it was rather than printing a stack.
+try {
+  coll.createIndex(KEYS, {
+    name: INDEX_NAME,
+    unique: true,
+    partialFilterExpression: PARTIAL_FILTER,
+  });
+} catch (e) {
+  const msg = String((e && e.message) || e);
+  print("");
+  print("createIndex FAILED: " + msg);
+  print("");
+  if (/partialFilterExpression|partial|filter/i.test(msg)) {
+    print("THE FILTER WAS REJECTED, not the data. A partialFilterExpression");
+    print("accepts only equality, $exists:true, $gt/$gte/$lt/$lte and $type.");
+    print("Report this with the message above — server.py's");
+    print("OPEN_AMENDMENT_PARTIAL_FILTER has to change with it, or the two");
+    print("definitions drift and the app believes in an index that is not");
+    print("there. Do NOT hand-edit one of them to get past this.");
+  } else if (/E11000|duplicate/i.test(msg)) {
+    print("DUPLICATES EXIST that the check above did not find. That means the");
+    print("filter here and the data disagree — report it rather than");
+    print("deleting rows to make the build pass.");
+  } else {
+    print("Neither a filter rejection nor a duplicate. Report the message.");
+  }
+  quit(1);
+}
 
 // ── VERIFY IT ACTUALLY EXISTS, AND THAT IT IS THE RIGHT ONE ─────────────────
 //
