@@ -673,20 +673,21 @@ class SourcePinTest(unittest.TestCase):
     def test_the_project_access_gate_is_still_declared(self):
         self.assertIn("require_project_access", self._handler())
 
-    def test_stripPhotoBlobs_is_still_the_screens_own_fallback(self):
-        """NOT DELETED HERE, deliberately. This change makes it a permanent
-        no-op — it removes only `base64`, which no longer arrives — but the
-        screen owns its own cache fallback and its replacement (dropping
-        `thumb_base64` on the second attempt) is that owner's change.
-        """
-        screen = (_BACKEND.parent / "frontend" / "app" / "site" / "logbooks.jsx")
-        text = screen.read_text(encoding="utf-8")
-        self.assertIn("stripPhotoBlobs", text)
-        self.assertTrue(
-            re.search(r"map\(\(\{\s*base64,\s*\.\.\.rest\s*\}\)\s*=>\s*rest\)", text),
-            "the fallback changed shape; re-read whether it is still a no-op",
-        )
-
+    # test_stripPhotoBlobs_is_still_the_screens_own_fallback WAS HERE.
+    #
+    # It grepped frontend/app/site/logbooks.jsx for the name stripPhotoBlobs.
+    # That screen no longer stores its list at all -- siteLogbookHistory does,
+    # as identity rows -- so the pin named a deleted function in a file that had
+    # stopped being the owner, and failed for a move rather than for a
+    # regression.
+    #
+    # The concern outlived the function and is asserted where it can be RUN:
+    # siteLogbookHistory.test.cjs section H feeds identityRow a log carrying
+    # base64, thumb_base64, a photos[] array and data, and asserts none of the
+    # bytes come out. That is stronger than the pin -- identityRow is an
+    # allow-list, so a photo field invented tomorrow is excluded without anyone
+    # remembering to exclude it, where stripPhotoBlobs was a blacklist already
+    # admitted to be a no-op.
 
 if __name__ == "__main__":
     unittest.main()

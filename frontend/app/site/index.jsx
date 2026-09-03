@@ -18,6 +18,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
 import OfflineNotice from '../../src/components/OfflineNotice';
+import SiteReadinessNotice, { useSiteReadiness } from '../../src/components/SiteReadinessNotice';
 import { settleFetch } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -40,6 +41,13 @@ export default function SiteDeviceHomeScreen() {
   // 'ok' | 'offline' | 'error', tracked per fetch.
   const [logsState, setLogsState] = useState('ok');
   const [workersState, setWorkersState] = useState('ok');
+
+  // A SECOND, ORTHOGONAL AXIS. The two states above answer "did the network
+  // answer just now". This answers "does this tablet hold the complete
+  // approved set" — a question nothing on any /site screen used to ask, and
+  // the one that matters before somebody walks away from the signal with it.
+  // Both can be true at once, and this screen states both.
+  const readiness = useSiteReadiness(siteProject?.id);
 
   // Redirect if not authenticated or not in site mode
   useEffect(() => {
@@ -139,6 +147,13 @@ export default function SiteDeviceHomeScreen() {
 
         {/* Main Content */}
         <View style={s.content}>
+          {/* WHAT THIS TABLET CAN BE TRUSTED TO HOLD, said first and said here.
+              This is the screen somebody is on when he decides whether to take
+              the device off the wifi, so the device-level fact goes above the
+              tiles rather than being discovered inside one of them. Silent
+              whenever the tablet is complete and current. */}
+          <SiteReadinessNotice readiness={readiness} style={s.offlineBanner} />
+
           {/* One explicit banner when either count could not be read. The tiles
               still open — only the NUMBERS are unknown, and they say so. */}
           {!loading && (logsState !== 'ok' || workersState !== 'ok') && (

@@ -3,7 +3,9 @@ import { AppState } from 'react-native';
 import apiClient from './api';
 import {
   cacheDocList,
-  readCachedDocList,
+  readCachedDocListOrNull,
+  listDocListScopes,
+  removeDocList,
   ensureCachedDocFile,
   listCachedDocs,
   cachedDocName,
@@ -134,6 +136,282 @@ function toStoredRow(row) {
 
 const rowKey = (r) => `${r.id}|${String(r.cache_version)}`;
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * CHUNKED STORAGE — three states, because two is what loses the records.
+ *
+ * ── WHAT THE CEILING ACTUALLY IS ─────────────────────────────────────────
+ *
+ * AsyncStorage on Android is SQLite. The library sets a maximum database size
+ * of 6 MB (android/config.gradle getDatabaseSize; nothing in this app raises
+ * it) via SQLiteDatabase.setMaximumSize, and that ceiling is DATABASE-WIDE,
+ * not per entry — every key in the app draws on the same 6 MB. Overflow is a
+ * REJECTION, never a truncation: multiSet catches the SQLiteException and
+ * hands JS an error, AsyncStorage.setItem turns it into a rejected promise,
+ * and cacheDocList turns that into `false`. There is no silent-short-write
+ * mode; a write either lands whole or does not land.
+ *
+ * A second, quieter ceiling applies to READS: Android's CursorWindow is 2 MB
+ * PER ROW, so one enormous value can be written and then be unreadable.
+ *
+ * MEASURED, AND THE ANSWER IS "NOT YET". A stored manifest row is 74-110 B
+ * (files are `{id, cache_version:<int>, s, e}`; logbooks carry an ISO
+ * timestamp as their version, which is the fat one). Ten thousand rows is
+ * 0.72-1.05 MB — about 18% of the database ceiling and half of one
+ * CursorWindow. This store would need ~19,000 rows in a single scope to hit
+ * the read ceiling and ~57,000 across all of them to hit the write ceiling.
+ *
+ * So this is not a fix for a fire. It is a bound: it keeps any single value
+ * small regardless of how large a project grows, and it takes the failure of
+ * a big write from "the whole list is lost" to "the previous list is still
+ * there". The binding constraint on this device is somewhere else entirely —
+ * app/site/logbooks.jsx caches whole submitted-logbook documents, inline
+ * photo thumbnails and signature blobs and all, and that list runs 19-50 MB
+ * for a 200-log project. See the note at the foot of this file.
+ *
+ * ── THE THREE STATES ─────────────────────────────────────────────────────
+ *
+ * Rows go into indexed chunk keys; a single final write COMMITS them by
+ * naming the chunk count and the generation. That produces three states and
+ * the reader has to tell them apart:
+ *
+ *   COMPLETE  a commit exists and every chunk it names is present.
+ *   ABSENT    nothing is stored for this scope.
+ *   PARTIAL   chunks exist that no commit names, or a commit names chunks
+ *             that are not all there.
+ *
+ * PARTIAL IS THE STATE THIS EXISTS FOR. Returning the chunks that happen to
+ * be present would hand back a SHORT list that reads as complete, and a short
+ * list here is not a display bug — it is the cache shredder this module was
+ * built to prevent, reached through a half-finished WRITE instead of a
+ * truncated FETCH. sweepDocCache's keep-set is the union of every cached list
+ * and OTHER SCREENS CALL IT; the plans screen sweeps on every successful list
+ * load. So PARTIAL is reported as its own state and treated exactly like
+ * ABSENT wherever a decision is made: it can never authorise a shrink.
+ *
+ * ── WHY CHUNKS ARE PLAIN ROW ARRAYS UNDER THE DOCLIST PREFIX ─────────────
+ *
+ * LOAD-BEARING, and the reason the interrupted-write case is safe at all.
+ * sweepDocCache does not consult this reader; it walks the raw `bv_doclist:`
+ * keys and unions every id it finds. Storing chunks as ordinary row arrays
+ * under that prefix puts every id they hold into the keep-set WHETHER OR NOT
+ * ANY COMMIT NAMES THEM. An orphaned half-written generation therefore keeps
+ * its files alive, and a foreign sweep landing between the chunks and the
+ * commit deletes nothing. Had the chunks been wrapped in an envelope object,
+ * collectKeepNames would have skipped them (it ignores non-array values) and
+ * the sweep would have deleted exactly the records a partial write is most
+ * likely to be carrying.
+ *
+ * The commit record is an array too, holding one marker object with no `id`,
+ * so it contributes nothing to the keep-set and cannot be mistaken for a row.
+ *
+ * ── ORDERING, AND WHY IT SURVIVES BEING INTERRUPTED AT ANY POINT ─────────
+ *
+ *   1. write the new generation's chunks     old generation still committed
+ *   2. write the commit  (ONE write)         the switch-over, atomic
+ *   3. remove other generations' chunks      housekeeping
+ *
+ * Interrupted in (1): no commit moved, so the reader still assembles the OLD
+ * generation, whole. The new chunks are orphans — ignored by the reader
+ * because their generation is not the committed one, and honoured by the
+ * sweep because they are row arrays. Nothing shrinks.
+ *
+ * Interrupted in (3): the new generation is committed and complete; leftover
+ * old chunks are ignored by generation and merely take space. The next
+ * successful write purges every generation that is not the committed one, so
+ * the leftovers are collected then. Each removal is independent, so stopping
+ * anywhere is a legal state — cleanup is idempotent and resumable.
+ *
+ * THE GENERATION IS STAMPED INTO THE KEY, not just recorded in the commit.
+ * If chunk keys were reused between writes, a half-finished SHORT write over
+ * a long one would leave chunks 0-1 new and chunk 2 old, and the reader would
+ * assemble a list that never existed on any server. Distinct keys per
+ * generation make that unrepresentable rather than merely unlikely.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+// ~55 KB per chunk at the fattest row shape — two orders of magnitude under
+// the 2 MB CursorWindow, while keeping the chunk count (and so the number of
+// getItem calls a read costs) small: 10,000 rows is 20 chunks.
+const CHUNK_ROWS = 500;
+
+const COMMIT_MARK = '__manifest_gen';
+
+/** The scope key one chunk is stored under. Exported so a test can plant a
+ *  half-written generation without hard-coding the format. */
+export function manifestChunkKey(scopeKey, gen, index) {
+  return `${scopeKey}#g${gen}#${index}`;
+}
+
+// A generation only ever has to be UNIQUE, never ordered: the commit names the
+// exact one to read, and cleanup compares for equality. So a clock that jumps
+// backwards cannot cause a mix-up. The counter covers two writes inside one
+// millisecond; the random tail covers a process restart inside one.
+let genCounter = 0;
+function nextGeneration() {
+  genCounter += 1;
+  return `${Date.now().toString(36)}${genCounter.toString(36)}`
+    + `${Math.floor(Math.random() * 1296).toString(36)}`;
+}
+
+const isCommit = (v) =>
+  Array.isArray(v) && v.length === 1 && v[0] && typeof v[0] === 'object'
+  && typeof v[0][COMMIT_MARK] === 'string';
+
+/**
+ * Read a manifest scope. Returns {state, rows, gen, chunks, at}, where state is
+ * 'complete' | 'partial' | 'absent'. `rows` is EMPTY for anything but
+ * 'complete' — a fragment is never handed out, because every caller that
+ * receives rows is entitled to treat them as the whole stored list.
+ *
+ * `at` is the moment a COMPLETE assembly became this device's set, or null when
+ * that is not recorded (a list committed by a build older than the stamp).
+ * NULL IS NOT ZERO AND IS NOT NOW: a caller that wants to show an age has to
+ * handle "not recorded" as its own case, because a tablet off the network since
+ * that build could be months out of date and reporting it as current would be a
+ * claim made out of an absence.
+ */
+export async function readManifestList(scopeKey) {
+  const head = await readCachedDocListOrNull(scopeKey);
+  if (head === null) {
+    // Nothing committed. But a half-written generation may still be sitting
+    // there, and saying 'absent' when chunks exist would hide the reason.
+    const orphans = await chunkKeysFor(scopeKey);
+    return orphans.length > 0
+      ? { state: 'partial', rows: [], gen: null, chunks: 0, at: null, reason: 'uncommitted-chunks' }
+      : { state: 'absent', rows: [], gen: null, chunks: 0, at: null, reason: 'nothing-stored' };
+  }
+
+  // A LIST FROM THE PREVIOUS BUILD IS A COMPLETE LIST. Reading it as absent
+  // would make the first incomplete poll after an upgrade decline to union
+  // against it, and the tablet would report a shrink it did not need to.
+  if (!isCommit(head)) {
+    return { state: 'complete', rows: head, gen: null, chunks: 0, at: null, reason: 'unchunked' };
+  }
+
+  const gen = head[0][COMMIT_MARK];
+  const chunks = head[0].__manifest_chunks;
+  const declared = head[0].__manifest_rows;
+  const stamped = head[0].__manifest_at;
+  const at = Number.isFinite(stamped) ? stamped : null;
+  if (!Number.isInteger(chunks) || chunks < 0) {
+    return { state: 'partial', rows: [], gen, chunks: 0, at, reason: 'bad-commit' };
+  }
+
+  const rows = [];
+  for (let i = 0; i < chunks; i += 1) {
+    const part = await readCachedDocListOrNull(manifestChunkKey(scopeKey, gen, i));
+    // A CHUNK THE COMMIT NAMES AND THE DEVICE DOES NOT HAVE. This is the
+    // whole point: return the fragment and it reads as a complete short list.
+    if (part === null) {
+      return { state: 'partial', rows: [], gen, chunks, at, reason: `missing-chunk-${i}` };
+    }
+    for (const r of part) rows.push(r);
+  }
+  // The row count is recorded at commit time, so a chunk that was rewritten
+  // shorter by something else is caught even though every key is present.
+  if (Number.isInteger(declared) && declared !== rows.length) {
+    return { state: 'partial', rows: [], gen, chunks, at, reason: 'row-count-mismatch' };
+  }
+  return { state: 'complete', rows, gen, chunks, at, reason: null };
+}
+
+/** Every chunk scope key currently stored for this manifest scope, with the
+ *  generation each belongs to. */
+async function chunkKeysFor(scopeKey) {
+  const prefix = `${scopeKey}#g`;
+  const all = await listDocListScopes();
+  const out = [];
+  for (const k of all) {
+    // The `#g` separator is what keeps `...:P1` from matching `...:P11`.
+    if (!k.startsWith(prefix)) continue;
+    out.push({ key: k, gen: k.slice(prefix.length).split('#')[0] });
+  }
+  return out;
+}
+
+/**
+ * Remove the chunk keys of every generation `shouldRemove(gen)` accepts.
+ *
+ * SAFE TO INTERRUPT AND SAFE TO REPEAT. Each removal is independent, so
+ * stopping anywhere leaves a legal state: extra chunks the reader ignores by
+ * generation and the sweep honours as row arrays. It NEVER reports failure —
+ * a manifest that was written correctly must not be lost because tidying up
+ * after it went wrong.
+ */
+async function purgeGenerations(scopeKey, shouldRemove) {
+  let removed = 0;
+  try {
+    for (const { key, gen } of await chunkKeysFor(scopeKey)) {
+      if (!shouldRemove(gen)) continue;
+      if (await removeDocList(key)) removed += 1;
+    }
+  } catch (_e) { /* housekeeping only */ }
+  return removed;
+}
+
+/**
+ * Write a manifest scope as chunks plus one commit.
+ *
+ * Returns {ok, gen, chunks, reason}. On failure NOTHING is committed, so the
+ * previously committed generation — if there was one — is still what the
+ * reader returns, whole.
+ *
+ * `opts.at` IS THE AGE THE SCREENS SHOW, so it is a parameter rather than a
+ * `Date.now()` taken here. This function is also called for a write that came
+ * out of an INCOMPLETE walk — a union against a complete previous list, which
+ * is right, because a dropped page must never shrink anything — and stamping
+ * the clock on that write would make a tablet on a flaky link report itself
+ * current for ever while never once seeing the whole approved set. The caller
+ * passes the moment a COMPLETE assembly landed, or carries the previous one
+ * forward so the age keeps growing. `null` means "not recorded".
+ */
+export async function writeManifestList(scopeKey, rows, opts = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const size = opts.chunkRows || CHUNK_ROWS;
+  const gen = nextGeneration();
+  const chunks = Math.max(1, Math.ceil(list.length / size));
+
+  // 1. CHUNKS FIRST. Until the commit lands these are orphans: invisible to
+  //    the reader, visible to the sweep, and therefore harmless.
+  for (let i = 0; i < chunks; i += 1) {
+    const slice = list.slice(i * size, (i + 1) * size);
+    if (!(await cacheDocList(manifestChunkKey(scopeKey, gen, i), slice))) {
+      // ABORT WITHOUT COMMITTING, and roll back ONLY WHAT THIS RUN WROTE.
+      // Not "everything except the committed generation": an older orphan is
+      // still naming ids in the sweep's keep-set, and a failed write is the
+      // worst possible moment to take names out of it. If the rollback cannot
+      // run either, the leftovers are orphans of a generation nothing names —
+      // a state the reader already reports as partial and the sweep already
+      // honours.
+      await purgeGenerations(scopeKey, (g) => g === gen);
+      return { ok: false, gen, chunks, reason: 'chunk-write-failed' };
+    }
+  }
+
+  // 2. THE COMMIT — ONE write, and the only one that changes what a reader
+  //    sees. Everything before it was invisible; everything after it is
+  //    housekeeping.
+  const commit = [{
+    [COMMIT_MARK]: gen,
+    __manifest_chunks: chunks,
+    __manifest_rows: list.length,
+    // Still no `id`, so this record contributes nothing to the sweep's
+    // keep-set and cannot be mistaken for a row.
+    __manifest_at: opts.at === undefined ? Date.now()
+      : (Number.isFinite(opts.at) ? opts.at : null),
+  }];
+  if (!(await cacheDocList(scopeKey, commit))) {
+    await purgeGenerations(scopeKey, (g) => g === gen);
+    return { ok: false, gen, chunks, reason: 'commit-write-failed' };
+  }
+
+  // 3. HOUSEKEEPING. Superseded generations are reclaimed — not merely
+  //    ignored, because the ceiling is database-wide and every generation left
+  //    behind is spent against the same 6 MB every other key draws on. This
+  //    also collects orphans from earlier runs that were interrupted.
+  await purgeGenerations(scopeKey, (g) => g !== gen);
+  return { ok: true, gen, chunks, reason: null };
+}
+
 /**
  * What to store for a scope, given what is already stored and what the manifest
  * named. THE ONLY PLACE THE LIST IS ALLOWED TO SHRINK, so the only place the
@@ -262,17 +540,59 @@ export async function syncSiteManifest(projectId, opts = {}) {
       return { ok: false, complete: false, reason: 'unreachable', swept: false, downloaded: 0 };
     }
 
-    const prevFiles = await readCachedDocList(scopes.files);
-    const prevLogs = await readCachedDocList(scopes.logbooks);
-    const nextFiles = mergeRows(prevFiles, manifest.files, manifest.complete);
-    const nextLogs = mergeRows(prevLogs, manifest.logbooks, manifest.complete);
-    await cacheDocList(scopes.files, nextFiles);
-    await cacheDocList(scopes.logbooks, nextLogs);
+    const prevFiles = await readManifestList(scopes.files);
+    const prevLogs = await readManifestList(scopes.logbooks);
+    const nextFiles = mergeRows(prevFiles.rows, manifest.files, manifest.complete);
+    const nextLogs = mergeRows(prevLogs.rows, manifest.logbooks, manifest.complete);
+
+    /**
+     * THE SHRINK RULE, NOW APPLIED TO THE STORED LIST AS WELL AS THE FETCH.
+     *
+     * mergeRows already honours an incomplete FETCH by unioning instead of
+     * replacing. That union is only safe if `prev` really is everything this
+     * device had. When the previous write was interrupted, prev reads as
+     * PARTIAL and its rows are empty — and unioning against an empty prev
+     * quietly drops every id in the chunks that are missing. The stored list
+     * would shrink, this module would decline to sweep, and the next screen to
+     * call sweepDocCache would delete the records anyway. That is precisely
+     * the failure the incomplete-fetch rule exists to prevent, reached by a
+     * different road.
+     *
+     * So: a replace needs a complete FETCH, and a union needs a complete PREV.
+     * With neither, the right move is the one every ambiguity in this cache
+     * resolves to — write nothing, leave the orphaned chunks where they are
+     * (they are still naming their ids in the sweep's keep-set), and try again
+     * on the next poll.
+     */
+    // AND THE AGE IS CARRIED, NOT REFRESHED, ON AN INCOMPLETE WALK. The union
+    // write below is a legitimate write — it is how a dropped page stops being
+    // able to shrink anything — but it is NOT evidence that this device has
+    // seen the whole approved set. Stamping it would reset the age the site
+    // screens show, and a tablet on a flaky link would then report itself
+    // current for ever while quietly falling months behind. So a complete walk
+    // stamps now, and an incomplete one carries the previous stamp forward so
+    // the age keeps growing.
+    const stampedAt = Date.now();
+    const commitScope = async (scopeKey, prev, next) => {
+      if (manifest.complete) return writeManifestList(scopeKey, next, { at: stampedAt });
+      if (prev.state !== 'complete') {
+        return { ok: false, skipped: true, reason: `partial-store:${prev.reason}` };
+      }
+      return writeManifestList(scopeKey, next, { at: prev.at === undefined ? null : prev.at });
+    };
+    const wroteFiles = await commitScope(scopes.files, prevFiles, nextFiles);
+    const wroteLogs = await commitScope(scopes.logbooks, prevLogs, nextLogs);
 
     // ONLY A COMPLETE ASSEMBLY MAY SWEEP. And even then the sweep is the union
     // one — it never learns which project asked.
+    //
+    // AND ONLY IF BOTH COMMITS LANDED. A run whose commit failed left the
+    // PREVIOUS generation as the one on the device, so the keep-set is no
+    // longer the list this run computed. Sweeping against it would delete
+    // files the new complete manifest still names — deleting against a list
+    // you did not manage to write is deleting against a guess.
     let swept = false;
-    if (manifest.complete) {
+    if (manifest.complete && wroteFiles.ok && wroteLogs.ok) {
       const r = await sweepDocCache();
       swept = !(r && r.skipped);
     }
@@ -321,7 +641,13 @@ export async function syncSiteManifest(projectId, opts = {}) {
     return {
       ok: true, complete: manifest.complete, swept, downloaded,
       files: nextFiles.length, logbooks: nextLogs.length,
-      reason: null,
+      // WHETHER THE LISTS ACTUALLY LANDED, reported rather than assumed. A run
+      // that downloaded everything and stored no list is not a successful run,
+      // and a caller reading only `ok` would never learn the difference.
+      stored: wroteFiles.ok === true && wroteLogs.ok === true,
+      reason: wroteFiles.ok && wroteLogs.ok
+        ? null
+        : (wroteFiles.reason || wroteLogs.reason || 'store-failed'),
     };
   } finally {
     inFlight = false;
@@ -374,3 +700,69 @@ export function setupSiteManifestSync(getProjectId, opts = {}) {
     if (timer) clearInterval(timer);
   };
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * THE NOTE PROMISED ABOVE: THIS STORE IS NOT THE BINDING CONSTRAINT.
+ *
+ * The chunking was built after measuring, and the measurement says these
+ * compact rows were never close to the ceiling. Recorded here so the next
+ * person does not re-derive it, and so the real problem keeps a name.
+ *
+ * WHAT THE CEILING IS. AsyncStorage 2.2.0 on Android is SQLite with
+ * setMaximumSize(6 MB) — android/config.gradle getDatabaseSize — and this app
+ * sets no AsyncStorage_db_size_in_MB anywhere. There is no android/ directory
+ * at all: the project is CNG/prebuild, and app.json's expo-build-properties
+ * block sets only SDK levels. useNextStorage defaults false and newArchEnabled
+ * is false, so it is the legacy SQLite module, not the Room one.
+ *
+ * The ceiling is DATABASE-WIDE, not per entry: every key in the app draws on
+ * the same 6 MB. Overflow REJECTS — AsyncStorageModule.multiSet catches the
+ * SQLiteException, the JS setItem rejects, cacheDocList turns that into false.
+ * It never truncates, so there is no silent-short-write mode to defend
+ * against. A second ceiling applies only to READS: Android's CursorWindow is
+ * ~2 MB per row, so one oversized value can be written and then be unreadable.
+ *
+ * WHAT THIS STORE WEIGHS. A stored row is 74 B (files, whose version is an
+ * integer) to 110 B (logbooks, whose version is an ISO-8601 string, with UUID
+ * rather than ObjectId ids):
+ *
+ *      500 rows   36-54 KB          3,000 rows   217-322 KB
+ *    1,500 rows  108-161 KB        10,000 rows   723 KB-1.05 MB
+ *
+ * Ten thousand rows is ~18% of the database ceiling. It takes ~19,000 rows in
+ * ONE scope to reach the CursorWindow and ~57,000 across all of them to reach
+ * the database ceiling. No project is near either. What the chunking buys is
+ * therefore a BOUND, not a rescue: no single value grows without limit, and a
+ * failed write costs the new list rather than the old one.
+ *
+ * WHAT IS BINDING. app/site/logbooks.jsx caches the WHOLE submitted-logbook
+ * response. GET /logbooks/project/{id}/submitted applies no projection, so
+ * every inline blob in every document comes down and goes into ONE AsyncStorage
+ * value. For 200 submitted logs carrying 100 photos that list measures 19 MB at
+ * the low end of every estimate and 50 MB at the high end — 3x to 8x the entire
+ * database ceiling, in a single key.
+ *
+ * AND ITS FALLBACK DOES NOT HELP. writeListThrough tries the full list, then
+ * retries with stripPhotoBlobs — which removes `base64` ONLY. On a finalized
+ * project the backend has already purged `base64` itself
+ * (_purge_finalized_photo_base64), so the retry is byte-for-byte the same write
+ * and fails identically: the tablet caches NOTHING, and an inspector offline
+ * gets an empty screen. What dominates is not the photos anyway:
+ *
+ *   worker_signature   a 600x200 canvas.toDataURL('image/png') from
+ *                      backend/checkin.html, ~5-16 KB per worker, inline on
+ *                      every pre-shift sign-in log. stripPhotoBlobs does not
+ *                      touch it. On a 14-worker crew this alone crosses 6 MB
+ *                      at 27-73 submitted logs.
+ *   thumb_base64       ~25-40 KB per photo, and server.py says plainly that it
+ *                      is NEVER removed. Crosses 6 MB at ~231 logs on its own.
+ *   cp_signature       {paths:[{x,y}...]} vector — SignaturePad appends a point
+ *                      per PanResponder move event with no throttling and no
+ *                      simplification. 47 B a point: 3.8 KB for a short
+ *                      signature, 33 KB for a long one.
+ *
+ * With none of those three, 200 logs of pure compliance text is 888 KB and fits
+ * comfortably. The blobs are the whole problem, and the fix belongs there — a
+ * projection on the submitted endpoint, or a cached shape that stores ids
+ * instead of inline images — not in this module.
+ * ═══════════════════════════════════════════════════════════════════════ */

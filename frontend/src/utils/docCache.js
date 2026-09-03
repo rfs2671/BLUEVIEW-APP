@@ -46,6 +46,52 @@ export async function readCachedDocList(scopeKey) {
   } catch (_e) { return []; }
 }
 
+/**
+ * The same read, but ABSENT IS DISTINGUISHABLE FROM EMPTY.
+ *
+ * readCachedDocList above answers `[]` to both "no such key" and "a list that
+ * really is empty", which is right for a screen — it has nothing to enumerate
+ * either way. It is exactly wrong for a reader assembling a list out of
+ * indexed chunks: a missing chunk is a BROKEN manifest and an empty one is a
+ * legitimate (if odd) part of a whole one, and collapsing them is how a
+ * half-written manifest comes back looking complete and short.
+ *
+ * Returns null for absent, unparseable, or not-an-array.
+ */
+export async function readCachedDocListOrNull(scopeKey) {
+  if (!scopeKey) return null;
+  try {
+    const raw = await AsyncStorage.getItem(LIST_PREFIX + scopeKey);
+    if (raw === null || raw === undefined) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (_e) { return null; }
+}
+
+/** Every stored scope key, prefix stripped. The prefix stays private to this
+ *  module — collectKeepNames below is keyed on it, so a caller inventing its
+ *  own keys outside it would write lists the sweep cannot see, and the sweep
+ *  would delete the files those lists were keeping. */
+export async function listDocListScopes() {
+  try {
+    const keys = (await AsyncStorage.getAllKeys()) || [];
+    return keys
+      .filter((k) => String(k).startsWith(LIST_PREFIX))
+      .map((k) => String(k).slice(LIST_PREFIX.length));
+  } catch (_e) { return []; }
+}
+
+/** Drop a stored list. Returns whether it went. Never throws: this is only
+ *  ever housekeeping, and housekeeping that can throw becomes a caller that
+ *  abandons a correctly written manifest halfway through tidying up after it. */
+export async function removeDocList(scopeKey) {
+  if (!scopeKey) return false;
+  try {
+    await AsyncStorage.removeItem(LIST_PREFIX + scopeKey);
+    return true;
+  } catch (_e) { return false; }
+}
+
 // ── BYTES half ─────────────────────────────────────────────────────────────
 function safeName(fileId, cacheVersion, ext = 'pdf') {
   const id = String(fileId || 'file').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -222,6 +268,21 @@ export async function listCachedDocs() {
  *  above without knowing how the name is built. */
 export function cachedDocName(fileId, cacheVersion, ext = 'pdf') {
   return safeName(fileId, cacheVersion, ext);
+}
+
+/**
+ * Can this platform hold files at all?
+ *
+ * listCachedDocs() returns an EMPTY SET both for "the directory is empty" and
+ * for "there is no directory on this platform" — correct for its own callers,
+ * which only ever ask whether a specific name is present, and wrong for a
+ * caller that wants to COUNT. On web the empty set would read as "nothing is
+ * saved", and a screen would print "0 of 15 saved" about a device that has no
+ * such thing as saving. This separates the two so a count can be withheld
+ * rather than fabricated.
+ */
+export function canCacheDocs() {
+  return canUseFs();
 }
 
 /** Free bytes on the device, or null if it cannot be determined.
