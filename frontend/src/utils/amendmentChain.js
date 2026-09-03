@@ -20,6 +20,25 @@
  */
 
 /** The stored id for a row, whichever shape the caller has. */
+/**
+ * THE SENTENCE PRINTED ABOVE THE WITHDRAWAL PAD.
+ *
+ * MIRRORS server.py's WITHDRAWAL_ATTESTATION_STATEMENT, word for word, and
+ * amendmentWithdrawn.test.cjs asserts the two are identical. The server stores
+ * this string on the document beside the ink, because a signature with no
+ * recorded sentence above it attests to nothing nameable — you can prove a man
+ * drew a mark and not what he was told it meant. If the client showed a
+ * DIFFERENT sentence, the record would say a man was told something he was
+ * never told, which is worse than storing no sentence at all.
+ *
+ * It lives here rather than in the banner because the server owns the copy of
+ * record and this file is already where the client's half of the amendment
+ * vocabulary lives (isFiled, isWithdrawn, amendmentSentence).
+ */
+export const WITHDRAWAL_ATTESTATION_STATEMENT =
+  'I am withdrawing this proposed correction. It was never filed, it is not '
+  + 'part of the record, and the log it proposed to correct is unchanged.';
+
 export const rowId = (o) => (o && (o.id || o._id)) || null;
 
 /**
@@ -47,6 +66,26 @@ export const chainKey = (o) => {
 
 const isFiled = (o) => !!(o && (o.is_locked || o.status === 'submitted'));
 
+/**
+ * A CORRECTION ITS AUTHOR TOOK BACK.
+ *
+ * `POST /logbooks/{id}/withdraw` sets `status: 'withdrawn'` on an unsigned
+ * amendment child. The document survives — data, reason, author, parent link
+ * all intact — but it is no longer a correction anybody is proposing.
+ *
+ * WHY THE CLIENT CHECKS AT ALL when the list endpoint already excludes them.
+ * Two reasons, and both are live on this project:
+ *
+ *   THE CACHE. subcontractor_orientation.jsx runs `collapseChains` over a
+ *   CACHED roster when it is offline. That cache can be older than the
+ *   withdrawal, and a CP with no signal would be told he has a competing
+ *   correction open on a record nobody is correcting.
+ *
+ *   THE BUNDLE. A phone in the field cannot take an OTA for weeks, and this
+ *   module is what its screens read. The rule has to be in both halves.
+ */
+const isWithdrawn = (o) => !!(o && o.status === 'withdrawn');
+
 const newestFirst = (a, b) => {
   const ta = Date.parse((a && a.created_at) || '') || 0;
   const tb = Date.parse((b && b.created_at) || '') || 0;
@@ -66,8 +105,23 @@ const newestFirst = (a, b) => {
  *                        be picking a winner silently.
  */
 export function chainHead(rows) {
-  const list = (rows || []).filter(Boolean);
-  if (list.length === 0) return null;
+  const all = (rows || []).filter(Boolean);
+  if (all.length === 0) return null;
+
+  // WITHDRAWN LINKS LEAVE THE CHAIN ENTIRELY, not just `_open_corrections`.
+  // `_chain_length` is what tells a reader "this record was corrected N
+  // times", and a correction that was taken back corrected nothing — counting
+  // it would say the record changed shape when it never did.
+  //
+  // THE FALLBACK IS NOT DECORATIVE. If every row were withdrawn this would
+  // return null and `collapseChains` would DROP the worker from the list — an
+  // orientation vanishing off a compliance screen. The endpoint only ever
+  // withdraws amendment children, so a parent is always present in practice;
+  // this is what makes that a fact about the data rather than a dependency.
+  const list = all.filter((o) => !isWithdrawn(o));
+  if (list.length === 0) {
+    return { ...all[0], _chain_length: all.length, _open_corrections: [] };
+  }
 
   const filed = list.filter(isFiled).sort(newestFirst);
   const open = list.filter((r) => !isFiled(r)).sort(newestFirst);
