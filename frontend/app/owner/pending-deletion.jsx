@@ -32,6 +32,7 @@ import {
   AlertTriangle,
   ShieldAlert,
   Building2,
+  Lock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -105,6 +106,16 @@ export default function PendingDeletionScreen() {
       // means NOTHING was deleted, and must not read as an ambiguous error.
       if (isOfflineError(e)) {
         toast.error('Offline', 'Permanent deletion needs a connection. Nothing was deleted.');
+      } else if (e?.response?.status === 409) {
+        // THE RETENTION BRAKE, from a list this screen loaded earlier. A hold
+        // placed since the last refresh means the button was still live here
+        // while the server had already stopped allowing it. Say what the
+        // server said and re-read, rather than reporting a generic failure on
+        // a record that is legally protected.
+        toast.error('Deletion blocked', e?.response?.data?.detail || '');
+        setConfirmTarget(null);
+        setConfirmText('');
+        fetchItems();
       } else {
         toast.error('Delete failed', e?.response?.data?.detail || '');
       }
@@ -198,12 +209,67 @@ export default function PendingDeletionScreen() {
                   {p.dob_logs_count} DOB records · {p.checkins_count} check-ins
                 </Text>
 
+                {/* RETENTION. The counts above say how much a purge destroys;
+                    this says whether the law still wants it kept. Rendered
+                    off purge_blocked / purge_block_reason, which the server
+                    computes with the SAME function the purge endpoint calls
+                    — so this can never offer a button the server refuses. */}
+                {p.purge_blocked ? (
+                  <View style={s.holdBanner}>
+                    <Lock size={14} strokeWidth={2} color={semantic.attention} />
+                    <Text style={s.holdText}>{p.purge_block_reason}</Text>
+                  </View>
+                ) : p.job_completion_date ? (
+                  <Text style={s.retentionOk}>
+                    Completed {p.job_completion_date}
+                    {p.job_completion_co_number
+                      ? ` · C of O ${p.job_completion_co_number}`
+                      : ''}
+                    {' · retention period ended'}
+                    {p.purge_eligible_at ? ` ${p.purge_eligible_at}` : ''}
+                  </Text>
+                ) : p.no_completion_attested ? (
+                  /* THE ONLY REASON THIS ROW IS UNBLOCKED, so it names the
+                     person who said so. An unblocked permanent-delete button
+                     with no attribution is an anonymous permission slip on the
+                     one action in this product that cannot be undone. */
+                  <Text style={s.retentionOk}>
+                    Attested never completed by{' '}
+                    {p.no_completion_attested_by || 'an admin'}
+                    {p.no_completion_reason ? ` — ${p.no_completion_reason}` : ''}
+                  </Text>
+                ) : (
+                  /* Unreachable in practice — the server blocks this state, so
+                     the banner above renders instead. Kept as the honest
+                     fallback if a row ever arrives without purge_blocked
+                     computed, and it must NOT read as a clearance. */
+                  <Text style={s.retentionUnknown}>
+                    No completion recorded — retention period unknown
+                  </Text>
+                )}
+
                 <Pressable
-                  onPress={() => { setConfirmTarget(p); setConfirmText(''); }}
-                  style={s.purgeBtn}
+                  onPress={() => {
+                    if (p.purge_blocked) return;
+                    setConfirmTarget(p);
+                    setConfirmText('');
+                  }}
+                  disabled={!!p.purge_blocked}
+                  style={[s.purgeBtn, p.purge_blocked && s.purgeBtnBlocked]}
                 >
-                  <Trash2 size={15} strokeWidth={2} color="#f87171" />
-                  <Text style={s.purgeText}>Permanently Delete</Text>
+                  <Trash2
+                    size={15}
+                    strokeWidth={2}
+                    color={p.purge_blocked ? colors.text.subtle : '#f87171'}
+                  />
+                  <Text
+                    style={[
+                      s.purgeText,
+                      p.purge_blocked && { color: colors.text.subtle },
+                    ]}
+                  >
+                    {p.purge_blocked ? 'Deletion blocked' : 'Permanently Delete'}
+                  </Text>
                 </Pressable>
               </GlassCard>
             ))
@@ -296,6 +362,23 @@ function buildStyles(colors) {
     counts: {
       fontSize: 12, color: colors.text.muted, marginTop: 2,
     },
+    holdBanner: {
+      flexDirection: 'row', alignItems: 'flex-start', gap: spacing.xs,
+      marginTop: spacing.sm, padding: spacing.sm,
+      borderRadius: borderRadius.md,
+      backgroundColor: semantic.attentionBg,
+      borderWidth: 1, borderColor: semantic.attentionBorder,
+    },
+    holdText: {
+      flex: 1, fontSize: 12, lineHeight: 17, color: semantic.attention,
+    },
+    retentionOk: {
+      fontSize: 12, color: colors.text.muted, marginTop: spacing.xs,
+    },
+    retentionUnknown: {
+      fontSize: 12, color: colors.text.subtle, marginTop: spacing.xs,
+      fontStyle: 'italic',
+    },
     purgeBtn: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: spacing.xs, marginTop: spacing.sm,
@@ -304,6 +387,13 @@ function buildStyles(colors) {
       backgroundColor: semantic.criticalBg,
     },
     purgeText: { fontSize: 13, fontWeight: '600', color: '#f87171' },
+    // Blocked reads as INERT, not as a red button that failed. The red
+    // affordance is removed entirely so the control does not invite a tap
+    // the server is going to refuse.
+    purgeBtnBlocked: {
+      borderColor: colors.border?.subtle || 'transparent',
+      backgroundColor: 'transparent',
+    },
     modalBackdrop: {
       flex: 1, backgroundColor: withAlpha('#000000', 0.7),
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,

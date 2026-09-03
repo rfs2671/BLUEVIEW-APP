@@ -70,15 +70,22 @@ _ANCHORS = set(".()[]{}=:<>/\\\"'`;,|+*!?@#$%^&~ -\n\t")
 # A name is source text if it is BOUND to one of these in the same module.
 _STRING_CALLS = {
     "code_of", "read_text", "strip_python", "strip_js", "strip_css",
-    # inspect.getsource. THE BINDING SHAPE THIS FILE ASKED FOR: the
-    # unclassified floor below tripped at exactly 400 and says "if this has
-    # grown a lot, the classifier needs the new binding shape" — this is it.
-    # `getsource` returns a str unconditionally, and the suite reads raw source
-    # through it wherever a test wants the comments and docstring left IN
-    # (`code_of`, already here, is the same read with them stripped out).
-    # Teaching it moved 3 calls from unclassified to anchored and surfaced ZERO
-    # new bare literals, so it widens this guard's reach without relaxing it.
-    "getsource",
+    # The OTHER way this suite gets source text: round-tripping a live object
+    # through inspect/ast/textwrap instead of reading the file off disk. All
+    # four return `str` by contract, and assertions written against them were
+    # going unaudited purely because the classifier only knew the file-reading
+    # spelling. `unparse` in particular is how the role-gate tests read a
+    # function body without hard-coding its formatting.
+    #
+    # TWO BRANCHES ARRIVED AT THIS INDEPENDENTLY, which is the argument for it.
+    # Each tripped the unclassified floor at exactly 400 -- the message that
+    # says "if this has grown a lot, the classifier needs the new binding
+    # shape" -- and each answered by teaching it rather than raising the
+    # ceiling. One reached `getsource` alone, the other all four; this is the
+    # union. Between them the floor fell to the 380s and ZERO new bare literals
+    # surfaced, so this widens the guard's reach without relaxing it by a
+    # single assertion.
+    "unparse", "getsource", "dedent", "getdoc",
 }
 # ...or produced by one of the renderers, which return HTML strings.
 _RENDER_PREFIXES = ("render", "generate", "_render", "_generate", "build_html")
@@ -147,6 +154,32 @@ def _string_names(tree: ast.AST) -> set[str]:
     return out
 
 
+def _haystack_is_string(hay: ast.AST, names: set[str]) -> bool:
+    """Whether this assertNotIn haystack is provably source text.
+
+    `_produces_string` alone cannot answer for a NAME — that needs the module's
+    bindings — so the two are combined here, at the one place both are in hand.
+
+    SLICING A STRING YIELDS A STRING, and that is the shape this helper was
+    extracted to add. `SRC[i:nxt]` — a window cut out of a source file so an
+    assertion can be about one function rather than the whole module — is a
+    common haystack in this suite, and the classifier could not see through the
+    subscript, so every assertion written that way went UNAUDITED. Three did.
+
+    A SLICE ONLY. `docs[0]` and `d["key"]` are indexing, not slicing: the first
+    is a list element and the second a dict value, and neither says anything
+    about the type. Requiring `ast.Slice` keeps the proof honest — this
+    recognises "a piece of a string", not "a piece of something".
+    """
+    if _produces_string(hay):
+        return True
+    if isinstance(hay, ast.Name):
+        return hay.id in names
+    if isinstance(hay, ast.Subscript) and isinstance(hay.slice, ast.Slice):
+        return _haystack_is_string(hay.value, names)
+    return False
+
+
 class _Finding:
     __slots__ = ("file", "line", "literal")
 
@@ -178,10 +211,7 @@ def _scan() -> tuple[list[_Finding], int, int]:
             needle, hay = node.args[0], node.args[1]
             if not (isinstance(needle, ast.Constant) and isinstance(needle.value, str)):
                 continue
-            hay_is_string = _produces_string(hay) or (
-                isinstance(hay, ast.Name) and hay.id in names
-            )
-            if not hay_is_string:
+            if not _haystack_is_string(hay, names):
                 unclassified += 1
                 continue
             literal = needle.value
@@ -265,6 +295,75 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     # IT WAS CAUGHT LATE because the fix was pushed straight to main during the
     # outage, which skipped CI. CI would have flagged it on the way in.
     ("test_client_version_floor.py", "_read_client_minimum_supported"),
+
+    # ── SURFACED BY THE SLICE CLASSIFIER ─────────────────────────────────────
+    # Both were already written this way and both were UNAUDITED until
+    # _haystack_is_string learned to see through `SRC[i:nxt]`. Neither is a
+    # defect; both are the "symbol banned from a window" shape above, and they
+    # are recorded here rather than anchored because the word is the unit.
+    #
+    #   _is_affirmed_signature   amend_logbook's body must not gate on the
+    #                            ORIGINAL log's affirmation — the child carries
+    #                            its own signature. A wrapper, a rename keeping
+    #                            the stem, or a call through a helper are all
+    #                            the same violation, not false alarms.
+    #   with_transaction         the instance_seq count-then-insert is asserted
+    #                            NON-atomic by reading the code. That test's own
+    #                            message says "if this ever gains a transaction,
+    #                            delete this test", so ANY spelling appearing in
+    #                            the window is exactly the intended trigger.
+    ("test_affirmation_enforced_on_submit.py", "_is_affirmed_signature"),
+    ("test_instance_seq.py", "with_transaction"),
+
+    # ── SURFACED BY THE inspect/ast SOURCE-TEXT SPELLING ─────────────────────
+    # Twelve assertions of ONE shape, previously unaudited because the
+    # classifier only knew `Path.read_text()` and not the other way this suite
+    # reads code:
+    #
+    #     code = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(fn))))
+    #     self.assertNotIn("<symbol>", code)
+    #
+    # Every one bans a SYMBOL from one function's body — the category already
+    # documented above under "a symbol that must not exist in a module, under
+    # any spelling". The word is the right unit in each: a rename keeping the
+    # stem, a call through a wrapper, or a longer identifier containing it are
+    # the same violation, not false alarms. And each sits beside an assertIn on
+    # the same `code`, which is the positive control that the haystack really is
+    # that function's source.
+    #
+    #   ROLES_SCOPED_TO_ASSIGNED_PROJECTS / is_superintendent
+    #        project_access_ok is the three-branch security rule; the
+    #        create_logbook fix must not have widened it.
+    #   _card_number_shape
+    #        neither reader may re-implement the card rule it already had to
+    #        scope to SST types once.
+    #   to_query_id
+    #        _record_client_version filters on the RAW id; a conversion
+    #        appearing would make the test above stop being load-bearing.
+    #   raise / HTTPException
+    #        the CS attribution module describes and never blocks. Any raising
+    #        at all is the finding.
+    #   daily_jobsite / activities
+    #        item_provenance must read only what was STORED, never compare
+    #        against a CP log that can change afterwards.
+    #   class_by_key
+    #        osha_review_index must not rebuild the classification map.
+    #   LOGBOOK_SIGNATURE_REQUIRES_AUTH
+    #        the authenticated path injects rather than consulting the flag.
+    #   unsafe_conditions / cs_applicable_items
+    #        neither renderer may build its own item list.
+    ("test_assigned_project_gate_roles.py", "ROLES_SCOPED_TO_ASSIGNED_PROJECTS"),
+    ("test_assigned_project_gate_roles.py", "is_superintendent"),
+    ("test_card_finding_both_reads.py", "_card_number_shape"),
+    ("test_client_version_stamp.py", "to_query_id"),
+    ("test_cs_attribution.py", "raise"),
+    ("test_cs_attribution.py", "HTTPException"),
+    ("test_cs_attribution.py", "daily_jobsite"),
+    ("test_cs_attribution.py", "activities"),
+    ("test_osha_cert_type_is_stored.py", "class_by_key"),
+    ("test_public_signature_guard.py", "LOGBOOK_SIGNATURE_REQUIRES_AUTH"),
+    ("test_superintendent_log.py", "unsafe_conditions"),
+    ("test_superintendent_log.py", "cs_applicable_items"),
 }
 
 
@@ -333,6 +432,34 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
         """The control: the rule must be able to tell the two apart."""
         self.assertTrue(any(c in _ANCHORS for c in 'render_pass_cell('))
         self.assertTrue(any(c in _ANCHORS for c in '>Pass<'))
+
+    def test_a_slice_of_a_string_is_classified_as_a_string(self):
+        """The control for the shape _haystack_is_string was extended to see.
+
+        Without this the extension is invisible: it would silently stop
+        recognising slices again and the only symptom would be `unclassified`
+        drifting back up, which is exactly the kind of quiet emptying-out
+        test_the_scanner_is_still_finding_things exists to prevent.
+
+        The negative half matters as much as the positive: INDEXING must stay
+        unclassified. `docs[0]` is a list element and `d["k"]` a dict value,
+        and treating either as a string would flag correct exact-membership
+        assertions as substring bans.
+        """
+        tree = ast.parse(
+            "SRC = read_text()\n"
+            "i = 0\n"
+            "sliced = SRC[i:9]\n"
+            "indexed = SRC[0]\n"
+        )
+        names = _string_names(tree)
+        self.assertIn("SRC", names)
+        body = {t.targets[0].id: t.value for t in tree.body}
+        self.assertTrue(_haystack_is_string(body["sliced"], names))
+        self.assertFalse(_haystack_is_string(body["indexed"], names))
+        # A slice of something NOT known to be a string stays unclassified.
+        other = ast.parse("x = unknown[1:2]\n").body[0].value
+        self.assertFalse(_haystack_is_string(other, names))
         self.assertTrue(any(c in _ANCHORS for c in 'db.logbooks'))
         self.assertTrue(any(c in _ANCHORS for c in 'OSHA 40hr'))
         self.assertFalse(any(c in _ANCHORS for c in 'Pass'))

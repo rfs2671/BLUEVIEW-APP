@@ -167,13 +167,33 @@ def _client(role="admin", company_id="co_a", uid="u1"):
     return TestClient(server.app), lambda: server.app.dependency_overrides.clear()
 
 
-def _db_with_project(marked=False):
+def _db_with_project(marked=False, **over):
+    """A project the Tier 2 purge is allowed to proceed on.
+
+    `no_completion_attested` IS PART OF THE FIXTURE, NOT NOISE. The retention
+    brake (lib/project_retention.py) refuses a hard delete on any project with
+    no recorded job completion, so without a way through it every cascade
+    assertion below would pass vacuously against a purge that never ran — the
+    tests would be green and testing nothing. This fixture states the way
+    through explicitly: an admin attested the project was never completed.
+
+    That is deliberately the fixture rather than a completion date, because it
+    is the state EVERY project in production is in. The brake itself is not
+    tested here; it is tested in test_project_completion_and_legal_hold.py, and
+    TheBrakeIsWhatThisFixtureGetsPast below asserts these tests are actually
+    passing through it rather than around it.
+    """
     db = _Db()
-    db.projects.set_find_one({
+    doc = {
         "_id": _PID, "name": "Test Tower", "company_id": "co_a",
         "nyc_bin": "3048298",
         "marked_for_deletion": marked,
-    })
+        "no_completion_attested": True,
+        "no_completion_reason": "Fixture: never completed, cleared to purge.",
+        "no_completion_attested_by": "u1",
+    }
+    doc.update(over)
+    db.projects.set_find_one(doc)
     return db
 
 
@@ -453,6 +473,36 @@ class LandmineTest(unittest.TestCase):
         self.assertIn("ContinuationToken", src)
         self.assertIn('f"plans/{project_id}/"', src)
         self.assertIn("CARD_AUDIT_BUCKET_NAME", src)
+
+
+class TheBrakeIsWhatThisFixtureGetsPast(unittest.TestCase):
+    """THE POSITIVE CONTROL FOR THE FIXTURE ABOVE.
+
+    Every cascade assertion in this file runs against a project whose document
+    carries `no_completion_attested`. That flag is the ONLY reason the purge
+    proceeds — and a fixture detail that silently stops mattering is exactly how
+    a suite goes green while testing nothing. If the retention brake is ever
+    removed, these two tests fail and say so, rather than the rest of the file
+    quietly continuing to pass for a new reason.
+
+    The brake's own behaviour is covered in
+    test_project_completion_and_legal_hold.py. This is only about whether THIS
+    file's fixture is still load-bearing.
+    """
+
+    def test_without_the_attestation_the_purge_is_refused(self):
+        db = _db_for_hard_delete()
+        doc = db.projects._find_one
+        doc.pop("no_completion_attested", None)
+        doc.pop("no_completion_reason", None)
+        resp = _hard_delete(db)
+        self.assertEqual(resp.status_code, 409, resp.text)
+        self.assertIn("no recorded job completion", resp.text)
+
+    def test_with_it_the_purge_proceeds(self):
+        """The other half. Without this the test above would also pass against
+        an endpoint that refuses unconditionally."""
+        self.assertEqual(_hard_delete(_db_for_hard_delete()).status_code, 200)
 
 
 if __name__ == "__main__":

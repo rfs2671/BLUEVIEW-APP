@@ -1612,6 +1612,26 @@ def _lift_project_list_defaults(project: dict) -> dict:
     return project
 
 
+def _lift_project_retention_view(project: dict) -> dict:
+    """Attach the COMPUTED `purge_eligible_at` for the response. In place.
+
+    Called immediately before every ProjectResponse construction, and NOWHERE
+    that writes. The value is derived from `job_completion_date` on each read
+    and never persisted: a stored eligibility date would go stale the moment a
+    completion date is corrected, and — worse — a stored date is something a
+    future query can sort on, which is the first step toward the automated
+    purge this feature deliberately does not have.
+
+    Mirrors _lift_project_list_defaults above: mutate and return, so call sites
+    can chain. Safe on a document that has no completion date — the helper
+    reports None, which means "not computable", forever.
+    """
+    if project is None:
+        return project
+    project["purge_eligible_at"] = purge_eligible_at(project)
+    return project
+
+
 def classify_project(stories, footprint_sqft, full_demo, demo_stories, building_height=None):
     """NYC Building Code §3310 classification.
     Major Building = 10+ stories OR 125+ ft OR 100,000+ sqft footprint.
@@ -2241,6 +2261,35 @@ class ProjectUpdate(BaseModel):
     lng: Optional[float] = None
     geofence_radius_m: Optional[int] = None
     gates: Optional[List[ProjectGate]] = None
+    # ── Completion, legal hold, and the no-completion attestation ─────────
+    #
+    # THE COMPLETION IS A PAIR AND ONLY EVER A PAIR. A claim about a legal
+    # event carries the event's identifier, so the CO number and the date are
+    # accepted together or not at all; update_project refuses a half entry
+    # rather than storing one. "YYYY-MM-DD", asserted by a human — see
+    # lib/project_retention.py for why it is never inferred from updated_at,
+    # last_dob_sync_at or status, and why it is a calendar-date string rather
+    # than a tz-aware datetime.
+    job_completion_date: Optional[str] = None
+    job_completion_co_number: Optional[str] = None
+    # `completed_by` and `completion_source` are NOT declared here, so a client
+    # that sends them has them DROPPED rather than honoured — pydantic ignores
+    # undeclared fields. Both are stamped by the server from the authenticated
+    # caller, and the source is always the weakest value: nothing in this app
+    # verifies a CO number, so every completion it holds is an attestation and
+    # is recorded as one. See VALID_COMPLETION_SOURCES.
+    #
+    # The hold is a plain bool so that FALSE survives update_project's
+    # drop-the-Nones filter and can therefore be LIFTED through this path.
+    # `legal_hold_by` / `legal_hold_at` are server-stamped, like completed_by.
+    legal_hold: Optional[bool] = None
+    legal_hold_reason: Optional[str] = None
+    # The other statement a named person can make about whether these records
+    # may be destroyed: that this project was never completed, so there is no
+    # completion to wait seven years from. Same bool-plus-reason shape as the
+    # hold, and liftable for the same reason. `_by` / `_at` are server-stamped.
+    no_completion_attested: Optional[bool] = None
+    no_completion_reason: Optional[str] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -2357,6 +2406,57 @@ class ProjectResponse(BaseModel):
     lng: Optional[float] = None
     geofence_radius_m: int = 150
     gates: List[Dict[str, Any]] = []
+
+    # ── Completion, legal hold, and the retention brake ───────────────────
+    #
+    # DECLARED, DELIBERATELY AND COMPLETELY. This model is an ALLOW-LIST:
+    # pydantic drops every field it does not declare, with no error anywhere.
+    # That has already cost one outage — dropbox_folder_path, dropbox_sync and
+    # dropbox_last_synced were written by the backend and undeclared here, so
+    # the Sync control was unreachable on every linked project. The same
+    # omission here would show "no legal hold" on a project that is under one,
+    # to the exact person deciding whether to purge it.
+    #
+    # job_completion_date is "YYYY-MM-DD" — the ssp_expiration_date convention.
+    # See lib/project_retention.py for the dob_logs TTL incident that dictates
+    # it is asserted by a human and inferred from nothing.
+    job_completion_date: Optional[str] = None
+    # The certificate's own number, stored as attested. NOT format-checked —
+    # project_retention.co_number_problem() carries the argument, and the short
+    # version is that this repo reads the DOB CO column under three different
+    # spellings across two files, so it is in no position to rule on the shape
+    # of the value inside it.
+    job_completion_co_number: Optional[str] = None
+    completed_by: Optional[str] = None
+    completion_source: Optional[str] = None
+
+    # THE NO-COMPLETION ATTESTATION. Declared for the same allow-list reason as
+    # everything else here, and it matters more than most: this is the single
+    # field that distinguishes "nobody has looked into this project's
+    # completion" from "a named person stated it has none and may be purged".
+    # Dropping it would show the second as the first, on the screen of the
+    # person deciding whether to destroy the records.
+    no_completion_attested: bool = False
+    no_completion_reason: Optional[str] = None
+    no_completion_attested_by: Optional[str] = None
+    no_completion_attested_at: Optional[Any] = None
+
+    # A hold NEVER EXPIRES. Default False so a legacy document with no key
+    # reads as "not held" rather than None — the screen renders a badge off
+    # this, and None would be a third state nothing handles.
+    legal_hold: bool = False
+    legal_hold_reason: Optional[str] = None
+    legal_hold_by: Optional[str] = None
+    # str | datetime: server-stamped as a UTC instant, but legacy or seeded
+    # documents may carry a string. Typed permissively so a malformed stamp
+    # cannot 500 the whole project read.
+    legal_hold_at: Optional[Any] = None
+
+    # COMPUTED ON EVERY READ, STORED NEVER, ACTED ON NEVER. The first day the
+    # retention brake stops objecting — not a deadline, not a trigger. None
+    # means "not computable", which for a project with no asserted completion
+    # is the answer forever, NOT "eligible now". Nothing schedules off this.
+    purge_eligible_at: Optional[str] = None
 
 # ==================== CERTIFICATION MODELS ====================
 
@@ -4900,6 +5000,45 @@ async def get_owner_user(current_user = Depends(get_current_user)):
 # deletion. A constant whose whole job is "every background scan agrees on this"
 # cannot live where a scan outside this file has to copy it.
 from lib.project_state import ACTIVE_PROJECT_FILTER  # noqa: E402
+# The ONE definition of "may these records be destroyed yet?". Imported for the
+# same reason as the filter above: the purge endpoint, the project response and
+# the owner's review screen all ask it, and three copies would drift into three
+# answers. Pure functions with no database handle — see the module docstring on
+# why nothing here schedules or deletes.
+from lib.project_retention import (  # noqa: E402
+    co_number_problem,
+    has_recorded_completion,
+    legal_hold_view,
+    no_completion_attestation_view,
+    normalize_co_number,
+    parse_calendar_date,
+    purge_eligible_at,
+    retention_refusal,
+)
+
+# Provenance for `job_completion_date`, beside the value — the `bbl_source` /
+# `classification_source` pattern.
+#
+# EVERY COMPLETION THIS APP HOLDS IS AN ATTESTATION, AND THE SOURCE SAYS SO.
+# `completion_source` is stamped by the server and is NOT accepted from the
+# request body. It is always the weakest value below, because that is the only
+# one that is true: an admin types a CO number and a date, and nothing in this
+# application checks either against anything. The app DOES ingest DOB
+# certificate-of-occupancy rows (NYC Open Data pkdm-hqz6, into dob_logs as
+# record_type "cofo"), but no code path compares an ingested CO against this
+# field — see docs/design/completion-co-reconciliation.md. Until something
+# does, writing "final_co" here would record a verification that did not
+# happen, on the field that governs when records may be destroyed.
+#
+# The stronger values are retained as READ vocabulary: a document may carry
+# them, and the response and the screen must render them. Nothing writes them.
+VALID_COMPLETION_SOURCES = {
+    "final_co",        # a final Certificate of Occupancy was issued
+    "final_signoff",   # DOB final sign-off / job status closed out
+    "admin_attested",  # an admin asserted it; no external record cited
+}
+# The ONLY value this server writes. See above.
+DEFAULT_COMPLETION_SOURCE = "admin_attested"
 # The ONE definition of the filed daily record. Imported here so the report
 # preview panel and the compliance detectors read the same document (#291).
 from lib.logbook.daily_jobsite_source import (  # noqa: E402
@@ -11402,6 +11541,9 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     # None back into project_dict (e.g. a future migration helper),
     # we'd still want the response to construct cleanly.
     _lift_project_list_defaults(project_dict)
+    # Safe here specifically because the insert above has already happened —
+    # this only ever decorates the outgoing response, never the stored document.
+    _lift_project_retention_view(project_dict)
 
     return ProjectResponse(**project_dict)
 
@@ -11441,9 +11583,15 @@ async def list_pending_deletion_projects(owner = Depends(get_owner_user)):
             _q["_id"] = None
     projects = await db.projects.find(_q).sort("marked_at", -1).to_list(500)
 
+    _today = eastern_today()
     items = []
     for p in projects:
         pid = str(p["_id"])
+        # The SAME function the purge endpoint calls, deliberately — this
+        # screen must never offer a button that the server will refuse, nor
+        # grey one out that the server would have allowed. One definition,
+        # asked twice.
+        _refusal = retention_refusal(p, today=_today)
         items.append({
             "id": pid,
             "name": p.get("name"),
@@ -11455,6 +11603,22 @@ async def list_pending_deletion_projects(owner = Depends(get_owner_user)):
             # Rough scale indicator so the owner sees what a purge destroys.
             "dob_logs_count": await db.dob_logs.count_documents({"project_id": pid}),
             "checkins_count": await db.checkins.count_documents({"project_id": pid}),
+            # ── What the law still wants, beside the scale of the loss.
+            # The counts above tell the owner HOW MUCH a purge destroys; these
+            # tell them whether they are ALLOWED to, and until when.
+            "job_completion_date": p.get("job_completion_date"),
+            "job_completion_co_number": p.get("job_completion_co_number"),
+            "completion_source": p.get("completion_source"),
+            **legal_hold_view(p),
+            # The other named statement about whether these records may go.
+            # Carried here so the owner about to purge sees WHO said this
+            # project was never completed, rather than just an unblocked
+            # button — this attestation is the only reason the button is live.
+            **no_completion_attestation_view(p),
+            # Computed here as everywhere else, stored nowhere.
+            "purge_eligible_at": purge_eligible_at(p),
+            "purge_blocked": _refusal is not None,
+            "purge_block_reason": _refusal,
         })
     return {"items": items, "count": len(items)}
 
@@ -11482,6 +11646,9 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
     # operator's failed create attempts before this commit landed);
     # without this lift, GET on any of them 500s.
     _lift_project_list_defaults(project)
+    # Computed for this response only. `project` here is a find_one result and
+    # is not written back, so nothing persists.
+    _lift_project_retention_view(project)
 
     return ProjectResponse(**serialize_id(project))
 
@@ -11489,6 +11656,202 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
+
+    # ── COMPLETION AND LEGAL HOLD ───────────────────────────────────────────
+    #
+    # Both go through THIS path rather than getting endpoints of their own, so
+    # they inherit the gates already on it: require_approved, require_project_access,
+    # and get_admin_user (role in {"admin", "owner"}).
+    #
+    # Everything here either validates or STAMPS. `completed_by`, `legal_hold_by`
+    # and the timestamps are taken from the authenticated caller and are not
+    # accepted from the request body — ProjectUpdate does not declare them, so a
+    # client that sends them has them dropped rather than honoured.
+    _admin_id = str(admin.get("_id", admin.get("id", "")))
+    _now = update_data["updated_at"]
+    _touches_retention = (
+        "job_completion_date" in update_data
+        or "job_completion_co_number" in update_data
+        or "legal_hold" in update_data
+        or "legal_hold_reason" in update_data
+        or "no_completion_attested" in update_data
+        or "no_completion_reason" in update_data
+    )
+    _prev = None
+    if _touches_retention:
+        _prev = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not _prev:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+    # ── THE COMPLETION IS A PAIR: NUMBER AND DATE, OR NOTHING ───────────────
+    #
+    # Refused BEFORE either half is looked at, so a partial entry is never
+    # stored and never half-validated. A claim about a legal event carries the
+    # event's identifier: a date on its own says some job finished some day and
+    # attributes it to no document, and that lone date is what starts — and
+    # seven years later ends — the retention period.
+    #
+    # This also holds for a CORRECTION. Moving the date without restating the
+    # number would leave a certificate number describing a day it no longer
+    # describes, which is precisely the "a wrong number lives here forever"
+    # failure the pair is meant to prevent. Re-attesting both is one extra
+    # field on a form an admin fills out approximately once per project.
+    _has_date = "job_completion_date" in update_data
+    _has_co = "job_completion_co_number" in update_data
+    if _has_date != _has_co:
+        raise HTTPException(
+            status_code=400,
+            detail="Recording a job completion requires BOTH the certificate "
+                   "of occupancy number and the completion date. Neither is "
+                   "accepted without the other.",
+        )
+
+    if _has_date:
+        _raw = update_data["job_completion_date"]
+        _parsed = parse_calendar_date(_raw)
+        if _parsed is None:
+            # Strict, and NOT coerced. A coerced date is an invented one, and
+            # this value decides when records may be destroyed.
+            raise HTTPException(
+                status_code=400,
+                detail="job_completion_date must be a real calendar date "
+                       "formatted YYYY-MM-DD",
+            )
+        # A completion is an event that ALREADY HAPPENED. A future date is a
+        # typo or a schedule, and either way it would move the seven-year
+        # period out with it — the one direction that loses records.
+        # eastern_date() because NYC DOB compliance runs on the New York
+        # calendar day; the UTC day is already tomorrow here from 20:00 EDT.
+        if _raw > eastern_date(_now):
+            raise HTTPException(
+                status_code=400,
+                detail="job_completion_date cannot be in the future",
+            )
+        # ATTESTED, NOT FORMAT-CHECKED. co_number_problem() rejects only what
+        # is not storable text — blank, oversized, or multi-line. It invents no
+        # pattern, because a guessed pattern's failure mode is an admin holding
+        # a real certificate that the app will not accept. The full argument,
+        # including why this repo is in no position to rule on the format, is
+        # in lib/project_retention.py.
+        _co_problem = co_number_problem(update_data["job_completion_co_number"])
+        if _co_problem:
+            raise HTTPException(status_code=400, detail=_co_problem)
+        update_data["job_completion_co_number"] = normalize_co_number(
+            update_data["job_completion_co_number"])
+        # Provenance beside the value — the bbl_source pattern. STAMPED, never
+        # taken from the body: nothing here verified the number against DOB, so
+        # the only honest source is the attestation that it is.
+        update_data["completion_source"] = DEFAULT_COMPLETION_SOURCE
+        update_data["completed_by"] = _admin_id
+
+    if "no_completion_attested" in update_data:
+        # `False` reaches here because it is not None — same mechanism that
+        # makes the legal hold liftable. An attestation must be withdrawable:
+        # it is a statement of fact, and facts get corrected.
+        if update_data["no_completion_attested"]:
+            # NEVER ALONGSIDE A COMPLETION, in the same request or already on
+            # record. This is the direction that would look like it releases
+            # the brake, so it is refused rather than reconciled. (It would not
+            # in fact release anything — retention_refusal reads the recorded
+            # completion first — but a document asserting both "completed
+            # 2024-03-01" and "never completed" is a record nobody can rely on,
+            # and the reader who most needs to rely on it is deciding whether
+            # to destroy the project's history.)
+            if _has_date:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A job completion and a never-completed attestation "
+                           "cannot be recorded in the same request.",
+                )
+            if has_recorded_completion(_prev or {}):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This project has a recorded job completion, so it "
+                           "cannot be attested as never completed. Correct the "
+                           "completion record instead.",
+                )
+            _nc_reason = (update_data.get("no_completion_reason")
+                          or (_prev or {}).get("no_completion_reason") or "").strip()
+            if not _nc_reason:
+                # This attestation is the ONLY thing that unblocks the purge of
+                # a project with no completion on record, so it is the sentence
+                # a regulator would be shown to explain why the records are
+                # gone. An unexplained one cannot serve that purpose, and a
+                # bare boolean is indistinguishable from a mis-click.
+                raise HTTPException(
+                    status_code=400,
+                    detail="Attesting that a project was never completed "
+                           "requires a reason — it is what permits the "
+                           "permanent deletion of its records.",
+                )
+            update_data["no_completion_reason"] = _nc_reason
+            update_data["no_completion_attested_by"] = _admin_id
+            update_data["no_completion_attested_at"] = _now
+        else:
+            # WITHDRAWN. Who attested and why is deliberately left in place,
+            # exactly as the hold's placement fields survive its lifting — the
+            # trail of a statement that was made and retracted is the part
+            # worth keeping. Only the withdrawal is added.
+            update_data.pop("no_completion_reason", None)
+            update_data["no_completion_withdrawn_by"] = _admin_id
+            update_data["no_completion_withdrawn_at"] = _now
+    elif ("no_completion_reason" in update_data
+          and not (_prev or {}).get("no_completion_attested")):
+        raise HTTPException(
+            status_code=400,
+            detail="no_completion_reason needs an active attestation to describe",
+        )
+
+    # A RECORDED COMPLETION SUPERSEDES A STANDING "NEVER COMPLETED".
+    #
+    # Applied HERE, after the attestation branch above, so the two can never
+    # write the same keys in one request — an earlier draft cleared the flag
+    # inside the completion branch and then fell into the withdrawal branch,
+    # stamping the document as both superseded and withdrawn by the same call.
+    #
+    # This is the safe direction to resolve the contradiction in: the
+    # attestation refused nothing, the completion starts a seven-year refusal,
+    # so retiring the former can only ever TIGHTEN the brake. The reverse
+    # direction is refused outright above rather than reconciled here.
+    # `_has_date` implies the pair, and the pair implies the request did not
+    # also carry an attestation — that combination raised.
+    if _has_date and (_prev or {}).get("no_completion_attested"):
+        update_data["no_completion_attested"] = False
+        update_data["no_completion_superseded_by"] = _admin_id
+        update_data["no_completion_superseded_at"] = _now
+
+    if "legal_hold" in update_data:
+        # `False` reaches here because it is not None — that is what makes a
+        # hold LIFTABLE through this path. If this ever becomes an
+        # Optional[bool] filtered like the rest, a hold could be placed and
+        # never removed.
+        if update_data["legal_hold"]:
+            _reason = (update_data.get("legal_hold_reason")
+                       or (_prev or {}).get("legal_hold_reason") or "").strip()
+            if not _reason:
+                # A hold never expires on its own, so an unexplained one is
+                # indistinguishable from a mistake that nothing will ever
+                # correct. The reason is the only thing that lets a later
+                # reader decide whether it still applies.
+                raise HTTPException(
+                    status_code=400,
+                    detail="A legal hold requires a reason",
+                )
+            update_data["legal_hold_reason"] = _reason
+            update_data["legal_hold_by"] = _admin_id
+            update_data["legal_hold_at"] = _now
+        else:
+            # The placement fields are deliberately LEFT IN PLACE — who placed
+            # a hold and why survives its lifting, or the trail ends exactly
+            # where it matters. Only the release is added.
+            update_data.pop("legal_hold_reason", None)
+            update_data["legal_hold_released_by"] = _admin_id
+            update_data["legal_hold_released_at"] = _now
+    elif "legal_hold_reason" in update_data and not (_prev or {}).get("legal_hold"):
+        raise HTTPException(
+            status_code=400,
+            detail="legal_hold_reason needs an active legal hold to describe",
+        )
 
     # Roster rows carry a STABLE, SERVER-MINTED id. The $set below replaces
     # the whole array, so the ids cannot come from the client — they are
@@ -11543,6 +11906,84 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # ── AUDIT, WITH THE PREVIOUS VALUE ──────────────────────────────────────
+    # These two fields decide whether a purge is refused, so a change to either
+    # is a compliance-relevant mutation. The PREVIOUS value is recorded beside
+    # the new one because the interesting question afterwards is never "what is
+    # it now" — the document says that — but "what was it before, and who moved
+    # it". Shortening a retention period is the abuse this makes visible.
+    #
+    # Written AFTER the $set commits, so an audit entry never claims a change
+    # that did not land. audit_log swallows its own failures, so this cannot
+    # fail the update.
+    if _touches_retention:
+        _before = _prev or {}
+        if "job_completion_date" in update_data:
+            await audit_log(
+                "project_completion_set", _admin_id, "project", project_id,
+                {
+                    "job_completion_date": update_data["job_completion_date"],
+                    # THE NUMBER IS AUDITED LIKE THE DATE, and for a sharper
+                    # reason. Nothing in this app verifies a CO number, so the
+                    # audit trail is the ONLY record of what was claimed and by
+                    # whom. If a real certificate later contradicts this entry,
+                    # this is the only place that says what the entry was
+                    # before someone corrected it.
+                    "job_completion_co_number":
+                        update_data.get("job_completion_co_number"),
+                    "completion_source": update_data.get("completion_source"),
+                    "previous": {
+                        "job_completion_date": _before.get("job_completion_date"),
+                        "job_completion_co_number":
+                            _before.get("job_completion_co_number"),
+                        "completion_source": _before.get("completion_source"),
+                        "completed_by": _before.get("completed_by"),
+                    },
+                },
+            )
+        if "no_completion_attested" in update_data:
+            # THE MOST CONSEQUENTIAL ENTRY IN THIS BLOCK. A standing attestation
+            # is the single thing that lets a project with no completion on
+            # record be permanently destroyed, so who stated it, why, and what
+            # the document said beforehand is the whole account of why the
+            # records are gone.
+            await audit_log(
+                "project_no_completion_attestation", _admin_id, "project",
+                project_id,
+                {
+                    "no_completion_attested":
+                        bool(update_data["no_completion_attested"]),
+                    "no_completion_reason": update_data.get("no_completion_reason")
+                                            or _before.get("no_completion_reason"),
+                    # Set when a recorded completion retired the attestation,
+                    # so the trail distinguishes a withdrawal from a supersede.
+                    "superseded_by_completion":
+                        update_data.get("job_completion_date"),
+                    "previous": {
+                        "no_completion_attested":
+                            bool(_before.get("no_completion_attested")),
+                        "no_completion_reason":
+                            _before.get("no_completion_reason"),
+                        "no_completion_attested_by":
+                            _before.get("no_completion_attested_by"),
+                    },
+                },
+            )
+        if "legal_hold" in update_data:
+            await audit_log(
+                "project_legal_hold", _admin_id, "project", project_id,
+                {
+                    "legal_hold": bool(update_data["legal_hold"]),
+                    "legal_hold_reason": update_data.get("legal_hold_reason")
+                                         or _before.get("legal_hold_reason"),
+                    "previous": {
+                        "legal_hold": bool(_before.get("legal_hold")),
+                        "legal_hold_reason": _before.get("legal_hold_reason"),
+                        "legal_hold_by": _before.get("legal_hold_by"),
+                    },
+                },
+            )
+
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     # MR.5+ — same defensive lift as get_project. Update endpoints
     # don't currently set list fields to None (the existing code
@@ -11550,6 +11991,9 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     # but the read-back can still pull a legacy doc whose pre-update
     # state had None lists.
     _lift_project_list_defaults(project)
+    # Read-back only. The $set above is already committed and does not include
+    # this key — the eligibility date is never a stored field.
+    _lift_project_retention_view(project)
     return ProjectResponse(**serialize_id(project))
 
 @api_router.get("/projects/{project_id}/required-logbooks")
@@ -11744,6 +12188,37 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
             raise HTTPException(
                 status_code=403, detail="Not authorized to delete this project",
             )
+
+    # ── RETENTION BRAKE ─────────────────────────────────────────────────────
+    #
+    # BEFORE ANY DESTRUCTION, AND THAT PLACEMENT IS THE POINT. Everything below
+    # this line is irreversible and some of it is unrecoverable even in
+    # principle: the R2 sweeps delete by PREFIX, and those objects have no
+    # database rows to rebuild from. A refusal that arrived after the sweep
+    # would be a refusal that had already destroyed the photographs.
+    #
+    # This is the one code path in the product that can destroy statutory
+    # records today, and until now nothing asked whether the law still required
+    # them. ESRA BB2024-007 §V.4 wants seven years past job completion; the
+    # compliance doc records the gap as "Not computable. No job-completion date
+    # exists." It exists now, and this is what it is for.
+    #
+    # NO OPERATOR EXEMPTION, unlike the tenant gate above. Cross-tenant scoping
+    # protects a customer from another customer, so the platform operator is
+    # reasonably outside it. Retention is owed to a regulator, and the operator
+    # is not the party it is owed to.
+    #
+    # 409, not 403: the caller is authorised and the request is well-formed.
+    # The PROJECT's state is what refuses, and it is a state that changes —
+    # a hold gets lifted, a retention period elapses. A 403 would read as "you
+    # personally may not", which would send an owner looking for a bigger role.
+    _refusal = retention_refusal(project, today=eastern_today())
+    if _refusal:
+        logger.warning(
+            "[hard_delete] REFUSED project %s (%s) for owner %s: %s",
+            project_id, project.get("name"), owner.get("email"), _refusal,
+        )
+        raise HTTPException(status_code=409, detail=_refusal)
 
     owner_id = str(owner.get("_id", owner.get("id", "")))
     company_id = str(project.get("company_id") or "")
