@@ -4,6 +4,74 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-02 — `git stash` is ONE ref shared by every worktree, and two agents traded trees through it
+
+Roughly forty-five agent worktrees hang off this repository. `refs/stash` lives
+in the common git dir, so every one of them pushes and pops the SAME stack.
+
+Two agents ran `git stash` inside the same window. The second one's `pop`
+restored the FIRST one's work into its tree, and its own changes went to the
+top of a stack it did not own. One agent found conflict markers in server.py
+that no merge it performed had produced; the other found its working tree
+emptied mid-run. Both recovered in full, but only because each noticed and
+neither assumed the tree it was looking at was its own.
+
+**`stash@{n}` is a POSITION, not an identity.** A concurrent push shifts every
+index, so even an agent that recorded "mine is stash@{0}" pops somebody else's a
+minute later. This is the same defect class as an index-keyed anything under
+concurrency, and it destroys uncommitted work rather than merely confusing a
+read.
+
+**The rule: no agent uses `git stash` in this repository.** To set work aside,
+make a temporary WIP commit and reset it afterwards, or copy the file to the
+scratchpad and copy it back. Both are private to the worktree.
+
+If a stash is genuinely unavoidable, it must be `git stash push -u -m
+"<unique-tag>"`, its SHA captured immediately from `git stash list
+--format='%H %gs'`, restored with `git stash apply <sha>` and NEVER `pop`, and
+dropped only after re-finding its current index by tag. That is four rules to
+remember correctly under concurrency, which is why the answer is simply not to.
+
+**The wider point.** Worktrees isolate the working tree and the index. They do
+NOT isolate the stash, the reflog, refs, hooks, or config. An agent reasoning
+"my worktree is mine" is right about files and wrong about everything that
+lives in the common git dir, and the failure is silent until it is destructive.
+
+---
+
+## PRACTICE — 2026-09-02 — a mutation control that patches the wrong occurrence reports a pass and means nothing
+
+A control broke `except DuplicateKeyError:` to prove the tests could see it
+missing. **106 tests passed against the supposedly broken code.** The string
+appears twice in server.py; the patch hit the first, six thousand lines away in
+an unrelated function, and never touched the code under test.
+
+The test suite was fine. The CONTROL was broken, and a broken control reports
+exactly what a well-covered change reports.
+
+This is the second instance recorded here. The first was a mutation whose anchor
+did not match because the file was CRLF and the patch was LF: it applied to
+nothing, the suite passed, and the pass was read as coverage.
+
+**A mutation control has TWO claims, and only one is usually checked.** The
+loud one is "the tests fail when the code is broken." The silent one is "the
+code was actually broken." A control that skips the second measures nothing, and
+it fails in the reassuring direction — toward a green suite and a confident
+report.
+
+**The rule: verify the mutation LANDED before believing the result.** Diff the
+file, or print the patched line, or assert the occurrence count changed. Where
+a symbol appears more than once, target it by enclosing function and not by
+first match. When a mutation produces NO failures, the first hypothesis is a
+control that did not apply — not a gap in coverage — because the former is far
+more common and is invisible in the output.
+
+Related: the tab-blind grep and the empty-set `executionSuccess`. Same family
+throughout — a check ran, produced a well-formed answer, and never reached its
+subject. Here the subject was the mutation itself.
+
+---
+
 ## PRACTICE — 2026-09-02 — squashing the base of a stack breaks every branch above it
 
 Three PRs were verified to merge clean, then all three went CONFLICTING without
