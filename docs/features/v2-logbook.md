@@ -27,7 +27,11 @@ All driven by a new collection `logbook_entries` populated by:
   2. **Deficiency detector** — rules engine flagging daily logs
      with missing required fields.
   3. **LL196 attestation generator** — monthly SST-card attestation
-     PDF, uploaded to R2, recorded in the logbook.
+     PDF, uploaded to R2, recorded in the logbook. **On demand only.**
+     Nothing schedules it: `generate_ll196_attestation` has one caller
+     in the repo (`POST …/logbook/attestations/generate`), and no client
+     calls that endpoint. Every attestation that exists was produced by
+     an operator running the curl in `docs/operations/runbook.md` §14.5.
 
 ---
 
@@ -54,6 +58,24 @@ fall-protection + supervisor-specific training totalling
 40+ hours. GCs are responsible for verifying every worker on
 their site has a current card and must produce written
 attestations on demand.
+
+**Who is on the filing.** Every worker with a check-in on that
+project inside the attestation month, in Eastern time. `checkins`
+is the only record written unconditionally for every worker on
+every visit, which is what "every worker on their site" needs.
+The two other joins were considered and rejected:
+`safety_orientations[].project_id` records onboarding rather than
+presence and is written on only one of the two gate paths;
+`worker_project_trades` refuses to store a pairing for an
+`UNASSIGNED` trade, so it omits exactly the men whose paperwork is
+least complete. See `lib/logbook/ll196.py::_roster_for_period`.
+
+Until this was fixed the roster query was
+`db.workers.find({"project_id": …})`, and `workers` documents
+carry no top-level `project_id` — so it matched nothing and every
+generated attestation read "All 0 workers in good standing".
+A month with genuinely nobody on site now files as
+`no_site_activity`, not `complete`.
 
 LeveLog's `validate_worker_certifications` already classifies
 SST cards (`SST_FULL` / `SST_LIMITED` / `SST_SUPERVISOR`).

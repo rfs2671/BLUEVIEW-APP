@@ -617,16 +617,34 @@ class TestLL196R2Key(unittest.TestCase):
 class TestLL196Orchestrator(unittest.TestCase):
     """End-to-end: stub out R2 + PDF render so the test runs
     without weasyprint native deps or network. Asserts the
-    logbook_entries upsert happens with the right shape."""
+    logbook_entries upsert happens with the right shape.
+
+    THIS TEST USED TO PROVE NOTHING ABOUT THE ROSTER. `db.workers.find` was a
+    MagicMock that IGNORED its filter and returned a fixed worker, so it was
+    green against the query the orchestrator actually ran --
+
+        db.workers.find({"project_id": project_id, ...})
+
+    -- which matched zero rows in production, because `workers` documents have
+    no top-level `project_id` (server.py:12293: "workers are NOT
+    project-scoped"). The population now comes from `checkins`, so the stub
+    does too, and the roster is asserted rather than assumed. The filter-
+    honouring version of this fake, with the boundary cases, is
+    tests/test_ll196_population.py."""
 
     def test_full_pipeline_writes_entry_and_uploads(self):
         db = MagicMock()
         project_doc = {"_id": "p1", "name": "X", "company_id": "co_a"}
         db.projects = MagicMock()
         db.projects.find_one = AsyncMock(return_value=project_doc)
+        db.checkins = MagicMock()
+        db.checkins.find = MagicMock(return_value=_AsyncCursor([
+            {"worker_id": "w1", "worker_trade": "C",
+             "check_in_time": datetime(2026, 5, 14, 12, tzinfo=timezone.utc)},
+        ]))
         db.workers = MagicMock()
         db.workers.find = MagicMock(return_value=_AsyncCursor([
-            {"name": "A", "trade": "C",
+            {"_id": "w1", "name": "A",
              "certifications": [{"type": "SST_FULL",
                                  "expiration_date": "2027-01-01"}]},
         ]))
@@ -665,6 +683,12 @@ class TestLL196Orchestrator(unittest.TestCase):
         self.assertEqual(filter_arg["category"], logbook.CATEGORY_LL196)
         self.assertEqual(entry["category"], logbook.CATEGORY_LL196)
         self.assertEqual(entry["status"], logbook.STATUS_COMPLETE)
+        # The man who checked in is ON the filing, with his per-project trade.
+        roster = entry["attestation_data"]["roster"]
+        self.assertEqual([r["name"] for r in roster], ["A"])
+        self.assertEqual(roster[0]["trade"], "C")
+        self.assertEqual(entry["attestation_data"]["worker_count"], 1)
+        self.assertIn("A", render_calls[0])
 
 
 # ──────────────────────────────────────────────────────────────────
