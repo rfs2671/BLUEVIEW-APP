@@ -21503,20 +21503,25 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             )
 
         # Update existing
-        await db.logbooks.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {
-                "data": data.data,
-                "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
-                "cp_name": data.cp_name,
-                "status": data.status,
-                # Tier 1 (2): an immediate/pre-shift log freezes on submit
-                # (sign-now-and-lock). No-op until counsel classifies a log.
-                "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
-                "updated_at": now,
-            }}
-        )
+        _set_ops = {
+            "data": data.data,
+            "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
+            "cp_name": data.cp_name,
+            "status": data.status,
+            # Tier 1 (2): an immediate/pre-shift log freezes on submit
+            # (sign-now-and-lock). No-op until counsel classifies a log.
+            "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
+            "updated_at": now,
+        }
+        await db.logbooks.update_one({"_id": existing["_id"]}, {"$set": _set_ops})
+        # SAME READ-BACK, SAME MISS, SAME FIX as the insert below — see the
+        # long note there. This branch is the one a CLIENT WITH NO LOG ID takes
+        # (it POSTs because it could not see the row), so `saved?.id ||
+        # saved?._id || existingLogId` has no third fallback here and a null
+        # body leaves the caller unable to name a row it has just rewritten.
         updated = await db.logbooks.find_one({"_id": existing["_id"]})
+        if updated is None:
+            updated = {**existing, **_set_ops}
         # Enhancement is fire-and-forget: the CP never waits on it. New photos
         # in this save get picked up; already-enhanced ones are skipped.
         asyncio.create_task(
@@ -21563,7 +21568,33 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "is_deleted": False,
     }
     result = await db.logbooks.insert_one(doc)
+    # ── THE ANSWER NAMES THE ROW, EVEN IF THE READ-BACK DOES NOT ────────────
+    #
+    # THIS RE-READ IS ALLOWED TO MISS. A read that does not see its own write
+    # — a secondary that has not caught up is the ordinary way to get one —
+    # returns None, `serialize_id(None)` is None, and FastAPI renders that as
+    # HTTP 200 with the body `null`. The row is on disk and the client is told
+    # nothing about it.
+    #
+    # WHAT THAT COSTS, ON THIS LOG TYPE, IS A STATUTORY RECORD. Every logbook
+    # editor reads `saved?.id || saved?._id` off this body. On `null` that is
+    # undefined, and site_superintendent_log.jsx then skipped the signature
+    # ledger event, skipped POST /finalize — and still said "Log filed and
+    # locked". A visit log is excluded from sweep_stale_end_of_day_logs, so
+    # there is no second actor: the document would stay submitted-and-unlocked
+    # forever while every screen showed it as sealed.
+    #
+    # SO THE MISS IS ANSWERED FROM THE DOCUMENT THIS FUNCTION JUST WROTE. Not a
+    # retry and not a read-concern change: `doc` is in hand, `inserted_id`
+    # names it, and the two together are exactly what the successful read would
+    # have returned. The client half is fixed too — it now refuses to report a
+    # filing it cannot name — and both halves are wanted: a 200 carrying no id
+    # is a broken contract whether or not a given caller happens to check.
+    #
+    # backend/tests/test_superintendent_log_files.py
     created = await db.logbooks.find_one({"_id": result.inserted_id})
+    if created is None:
+        created = {**doc, "_id": result.inserted_id}
 
     await audit_log("logbook_create", str(current_user.get("_id", current_user.get("id", ""))), "logbook", str(result.inserted_id), {
         "log_type": data.log_type, "project_id": data.project_id, "date": data.date,
