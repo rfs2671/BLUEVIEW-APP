@@ -16,6 +16,7 @@ import {
   draftKey, readDraft, writeDraft, setDraftBackendId,
   markPending, clearPending, markFinalized,
 } from '../../src/utils/logbookDrafts';
+import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshness';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 // finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
 // axios error (and the one place that guarantees the server's English `detail`
@@ -97,6 +98,10 @@ export default function HotWorkPermitLog() {
   // write succeeds, never on the next keystroke, because a warning that
   // decays is one he can miss by typing.
   const [autosaveFailed, setAutosaveFailed] = useState(false);
+  // THE SERVER DISAGREES WITH THIS DRAFT — null when it does not, or when
+  // no comparison was possible (offline). Set on the local-first branch
+  // below, which until now returned without ever asking the server.
+  const [draftConflict, setDraftConflict] = useState(null);
   const [existingLogId, setExistingLogId] = useState(null);
   // 'ok' | 'offline' | 'error' — how the LAST server hydrate went. Only used
   // when there is no local draft: a failed load must not masquerade as a blank
@@ -182,6 +187,9 @@ export default function HotWorkPermitLog() {
     // the screen stayed read-only for the life of the mount. After an amendment
     // that is exactly wrong.
     setLocked(false);
+    // AND SO IS THE CONFLICT, for the same reason the lock above it is:
+    // a verdict reached on the previous load is not evidence about this one.
+    setDraftConflict(null);
     try {
       // LOCAL-FIRST. A local draft wins over the server copy, so an offline CP
       // reopens to exactly what he filled and unsynced edits are never
@@ -202,6 +210,28 @@ export default function HotWorkPermitLog() {
           // The frozen parent is discarded; fall through to the server path,
           // which already prefers the unlocked document.
         } else {
+          // ── ALWAYS ASK THE SERVER, EVEN THOUGH A DRAFT IS IN HAND ──────────
+          //
+          // Until this line the branch below returned with the server NEVER
+          // fetched. Device content and the filed record were pixel-identical
+          // on screen, and Submit PUT the whole draft into update_logbook,
+          // which applies `data` as a wholesale $set — so a server-side
+          // correction was reverted by a CP who did nothing but open his log.
+          //
+          // OFFLINE IS UNCHANGED, and that is a requirement rather than a
+          // side effect: compareDraftToServer never throws, and it reads a
+          // failed fetch as "no comparison possible" rather than "the server
+          // wins", so a CP with no signal opens exactly the screen he did
+          // before. Only a CONFLICT is stored — a clean comparison and an
+          // unreachable server are both null, and null blocks nothing.
+          //
+          // THE DRAFT IS STILL WHAT IS HYDRATED BELOW. Nothing here applies
+          // the server document, discards the draft, or chooses between them;
+          // choosing is the conflict UI and it is not built.
+          const _cmp = await compareDraftToServer({
+            draft, projectId, logType: LOG_TYPE, date,
+          });
+          setDraftConflict(_cmp.conflict ? _cmp : null);
           setFetchState('ok');
           if (draft.finalized) { setLocked(true); markFinalized(_key); }
           setExistingLogId(draft.backend_id || null);
@@ -257,6 +287,31 @@ export default function HotWorkPermitLog() {
    * freeze.
    */
   const persistAndPush = async (submitStatus) => {
+    // NO SILENT OVERWRITE — WHICH IS NOT THE SAME AS NO OVERWRITE.
+    //
+    // This function PUTs `data` as a wholesale $set, so pushing over a
+    // changed server document really does revert it. THE CP'S DRAFT WINS
+    // anyway: it is the most recent authorship and he is the one who made
+    // it. What `submitRefused` withholds is the SILENT case — it stays true
+    // until he has been shown the server change and taken the override in
+    // the banner, and then it opens.
+    //
+    // AND IT NEVER OPENS FOR A FILED OR FINALIZED SERVER DOCUMENT. That is
+    // a signed compliance record, not a competing draft; the ruling does not
+    // reach it, the server refuses the write (423 / 409), and Amend is the
+    // route that corrects one. draftFreshness.OVERRIDABLE_REASONS is the
+    // single place that line is drawn.
+    //
+    // THE WHOLE CALL IS REFUSED, not just the push. A local write here
+    // would bind a backend_id and a status against a document this device
+    // has been told it is behind, which is a half-state nothing later
+    // reads correctly. HIS WORK IS NOT AT RISK: the debounced autosave is a
+    // separate effect and keeps writing the draft to this device.
+    //
+    // THE SAME PREDICATE THE SUBMIT BUTTON ASKS, so a live button and a
+    // refusing save path cannot disagree. This is the guard for every other
+    // caller, now and later.
+    if (submitRefused(draftConflict)) return;
     const b = bodyRef.current;
     const data = draftBody(b.details, b.precautions);
 
@@ -714,6 +769,13 @@ export default function HotWorkPermitLog() {
       onFinalized={() => setLocked(true)}
       onAmended={fetchData}
       submitWarning={autosaveFailed ? tFinalize('autosaveFailedWarning') : ''}
+      draftConflict={draftConflict}
+      // HE TOOK THE OVERRIDE. Stored ON the verdict rather than beside it, so
+      // the load that clears the verdict clears the acknowledgement with it and
+      // a NEW server change is never covered by an answer he gave to an old one.
+      onConflictAcknowledge={() => setDraftConflict(
+        (c) => (c ? { ...c, acknowledged: true } : c),
+      )}
       autosaveNote={t('savedAutomatically')}
     />
   );
