@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -78,6 +78,18 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 import ConfirmDialog from '../../../src/components/ConfirmDialog';
 
 const DROPBOX_BLUE = '#0061FF';
+
+/* ─── PINCH-RELOAD PROBE (parent half) ───────────────────────────────────
+ *
+ * KEEP IN STEP WITH THE SAME-NAMED FLAG IN src/components/PDFViewer.native.jsx.
+ * Both halves must be on together or the log answers nothing: the viewer's
+ * half says "my `file` prop is a different object now", and only this half can
+ * say whether THIS SCREEN minted that object or whether it appeared without
+ * anyone here asking for one.
+ *
+ * Ships `false`. With it off nothing below runs.
+ */
+const PDF_RELOAD_PROBE = false;
 
 const extOf = (filename) => String(filename || '').split('.').pop()?.toLowerCase() || '';
 // PDFs are the only type with an offline story — everything else is handed to
@@ -206,6 +218,47 @@ export default function ProjectFilesScreen() {
   const linkedFolder = project?.dropbox_folder_path || null;
 
   const scopeKey = `plans:${projectId}`;
+
+  /* ─── PROBE: did this screen mint a new file object, or just re-render? ──
+   *
+   * THE DISTINCTION IS THE WHOLE QUESTION. `selectedPdfFile` is state set only
+   * inside handleViewFile, so its identity SHOULD survive every re-render of
+   * this screen — and this screen re-renders plenty on its own (the disk
+   * re-read after a background warm, a sweep completing, a sync finishing).
+   * If the viewer reports a new `file` id and no mint is logged here in the
+   * same breath, the object did not come from a tap and the fault is not a
+   * stale dependency array.
+   *
+   * A sequence number rather than a render index: the mint happens during an
+   * event, the render it causes lands after, and comparing "minted" against
+   * "seen" survives batching.
+   */
+  const probeRenderCount = useRef(0);
+  const probeMintSeq = useRef(0);
+  const probeSeenSeq = useRef(0);
+  useEffect(() => {
+    if (!PDF_RELOAD_PROBE) return;
+    probeRenderCount.current += 1;
+    const minted = probeMintSeq.current !== probeSeenSeq.current;
+    probeSeenSeq.current = probeMintSeq.current;
+    console.log(
+      `[pdfprobe][files] r${probeRenderCount.current} `
+      + (minted
+        ? `AFTER setSelectedPdfFile(#${probeMintSeq.current})`
+        : 're-render, no new selectedPdfFile')
+      + ` visible=${pdfViewerVisible} selected=${selectedPdfFile ? (selectedPdfFile.name || '(unnamed)') : 'null'}`,
+    );
+  });
+
+  /** Announce every object handed to the viewer, and say which branch made it. */
+  const probeMint = (where, f) => {
+    if (!PDF_RELOAD_PROBE) return;
+    probeMintSeq.current += 1;
+    console.log(
+      `[pdfprobe][files] setSelectedPdfFile(#${probeMintSeq.current}) via ${where}`
+      + ` name=${f?.name || '(none)'}`,
+    );
+  };
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -653,6 +706,7 @@ export default function ProjectFilesScreen() {
       // if this has not — so handing it the cached uri only saves a round
       // trip it would otherwise make.
       if (local) {
+        probeMint('cached-local', file);
         setSelectedPdfFile({ ...file, directUrl: local });
         setPdfViewerVisible(true);
         return;
@@ -667,6 +721,14 @@ export default function ProjectFilesScreen() {
       }
 
       // If file has r2_url, pass it directly instead of calling getFileUrl
+      //
+      // NOTE FOR THE PROBE READER: the else-branch here passes the ROW OBJECT
+      // ITSELF, not a copy. Its identity is then the identity of an element of
+      // `files`, which adoptFiles replaces wholesale on every list refresh —
+      // so a `file` id change reported by the viewer means something different
+      // depending on which of these two branches opened the document. The log
+      // says which.
+      probeMint(file.r2_url ? 'remote-r2 (fresh object)' : 'remote (ROW OBJECT, not a copy)', file);
       setSelectedPdfFile(file.r2_url ? { ...file, directUrl: file.r2_url } : file);
       setPdfViewerVisible(true);
       return;

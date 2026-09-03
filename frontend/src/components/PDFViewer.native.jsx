@@ -26,6 +26,58 @@ import {
 
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
+/* ─── PINCH-RELOAD PROBE ─────────────────────────────────────────────────
+ *
+ * MEASUREMENT, NOT A FIX. Flip to `true`, build to the tablet, reproduce the
+ * pinch, read logcat. Ships `false`: with it off nothing below runs and the
+ * component behaves exactly as it does today.
+ *
+ * WHAT IT IS FOR. Opening a 25-31 MB plan takes 20-30 s (settled: pdf.js
+ * rasterising at MAX_CANVAS_PX over a four-viewport window — deliberate, and
+ * not what this probe is about) and then every pinch-zoom reloads the WebView
+ * and drops the operator back to page 1.
+ *
+ * TWO CANDIDATE MECHANISMS, AND THE LOG HAS TO TELL THEM APART:
+ *
+ *   A. REACT REBUILT THE SOURCE. `loadPdf` is keyed on the whole `file`
+ *      object and opens with setUrl(null); a new `file` REFERENCE with
+ *      identical fields therefore tears the url down, rebuilds
+ *      `webViewSource`, and reloads. If this is it, a render is logged with
+ *      `file` changing id, immediately before the reload.
+ *
+ *   B. NOTHING IN REACT MOVED. A pinch happens inside the WebView and
+ *      delivers no touch event to React at all, so it is entirely possible
+ *      the reload arrives with NO render logged — meaning the page reloaded
+ *      itself, most likely because Android killed the renderer process under
+ *      the canvas load. That is why `onRenderProcessGone` and `onLoadStart`
+ *      are wired below: without them the log cannot separate A from B and the
+ *      trip to the tablet has to be made twice.
+ *
+ * Read the two halves together. `viewer r<n>` lines are React; `webview` lines
+ * are the page. A `webview loadStart` with no `viewer` line above it is B.
+ */
+const PDF_RELOAD_PROBE = false;
+
+/**
+ * IDENTITY, NOT VALUE — this is the entire point of the probe.
+ *
+ * The thing being hunted is a NEW OBJECT WITH THE SAME FIELDS. JSON.stringify
+ * would report that as unchanged and hide it; so would printing the object.
+ * A WeakMap keyed on the reference gives each distinct object a stable id for
+ * as long as it lives, and a replacement gets a different one. Weak so the
+ * probe never keeps a 30 MB-backed record alive.
+ */
+const probeIds = new WeakMap();
+let probeNextId = 1;
+function probeIdOf(v) {
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  if (typeof v !== 'object' && typeof v !== 'function') return `=${String(v)}`;
+  let id = probeIds.get(v);
+  if (id === undefined) { id = probeNextId; probeNextId += 1; probeIds.set(v, id); }
+  return `#${id}`;
+}
+
 /**
  * Turn whatever url the backend handed us into something THIS platform can
  * render, without ever letting the JWT off our own origin.
@@ -197,6 +249,49 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
       setLoading(false);
     }
   }, [projectId, file]);
+
+  /* ─── PROBE: one line per render of this component ───────────────────
+   *
+   * Reports the identity of everything on the path from a prop to a WebView
+   * reload — `file` -> `loadPdf` -> `url` -> `webViewSource` -> reload — and
+   * names which of them moved since the previous render. Read the `changed=`
+   * list first; it is the answer.
+   *
+   * IN AN EFFECT, NOT IN THE RENDER BODY, for two reasons: logging in render
+   * is a side effect in a function React may call speculatively, and under a
+   * double-invoking dev mode it would print every line twice and invite the
+   * reader to see a re-render that never happened. No dep array, so it runs
+   * after every commit — which is exactly the event being counted.
+   */
+  const probeRender = useRef(0);
+  const probePrev = useRef(null);
+  useEffect(() => {
+    if (!PDF_RELOAD_PROBE) return;
+    probeRender.current += 1;
+    const probeNow = {
+      file: probeIdOf(file),
+      loadPdf: probeIdOf(loadPdf),
+      webViewSource: probeIdOf(webViewSource),
+      url: url === null || url === undefined ? String(url) : `…${String(url).slice(-28)}`,
+      localViewerUri: localViewerUri === null || localViewerUri === undefined
+        ? String(localViewerUri) : `…${String(localViewerUri).slice(-28)}`,
+      visible: String(visible),
+      projectId: probeIdOf(projectId),
+      containerLayout: probeIdOf(containerLayout),
+      loading: String(loading),
+    };
+    const prev = probePrev.current;
+    const changed = prev
+      ? Object.keys(probeNow).filter((k) => probeNow[k] !== prev[k])
+      : ['FIRST-RENDER'];
+    probePrev.current = probeNow;
+    console.log(
+      `[pdfprobe][viewer] r${probeRender.current} changed=[${changed.join(' ')}]`
+      + ` file=${probeNow.file} loadPdf=${probeNow.loadPdf} src=${probeNow.webViewSource}`
+      + ` url=${probeNow.url} viewerUri=${probeNow.localViewerUri}`
+      + ` visible=${probeNow.visible} layout=${probeNow.containerLayout}`,
+    );
+  });
 
   useEffect(() => {
     if (visible) loadPdf();
@@ -452,6 +547,33 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                     setError(true);
                   }
                 },
+                /* ─── PROBE: the OTHER half of the question ────────────
+                 * `onLoadStart` is the reload itself — ground truth that the
+                 * page went back to the beginning, independent of anything
+                 * React believes. `onRenderProcessGone` is the discriminator:
+                 * if Android killed the renderer under the canvas load, the
+                 * WebView comes back on its own and no dependency array had
+                 * anything to do with it.
+                 *
+                 * Neither prop changes behaviour. react-native-webview always
+                 * installs its own internal handler for both events and merely
+                 * forwards to these when present, so with the flag off (they
+                 * are not spread at all) and on (they only log), what the
+                 * WebView does is identical.
+                 */
+                ...(PDF_RELOAD_PROBE ? {
+                  onLoadStart: (e) => {
+                    const u = String(e?.nativeEvent?.url || '');
+                    console.log(`[pdfprobe][webview] loadStart url=…${u.slice(-40)}`);
+                  },
+                  onRenderProcessGone: (e) => {
+                    console.log(
+                      '[pdfprobe][webview] RENDER PROCESS GONE'
+                      + ` didCrash=${String(e?.nativeEvent?.didCrash)}`
+                      + ' — Android killed the page. NOT a React re-render.',
+                    );
+                  },
+                } : {}),
                 startInLoadingState: true,
                 renderLoading: () => (
                   <View style={[styles.center, { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }]}>
