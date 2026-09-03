@@ -22851,7 +22851,16 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
 
     # Authorization: admin/owner can delete any on this project, others only their own
     user_role = current_user.get("role", "")
-    user_id = str(current_user.get("_id", ""))
+    # `_id` ALONE WAS ALWAYS EMPTY. get_current_user returns serialize_id(user),
+    # which does `obj['id'] = str(obj['_id']); del obj['_id']` — so the key this
+    # read for does not exist on current_user and `user_id` was "" on every
+    # request. `created_by` is stamped `current_user.get("id")` by
+    # create_logbook, so the comparison could never match and every non-admin
+    # was refused, INCLUDING the author this branch exists to permit. The same
+    # empty string was then recorded as the actor in the audit row below.
+    # This is the file's own accessor (9489, 14437, 15459, 30884, 36822, ...),
+    # id first because that is the key that is actually there.
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
     if user_role not in ("admin", "owner") and logbook.get("created_by") != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this logbook")
 
