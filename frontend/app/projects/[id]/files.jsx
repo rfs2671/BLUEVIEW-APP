@@ -285,6 +285,9 @@ export default function ProjectFilesScreen() {
         fileId: f.id || f._id,
         cacheVersion: f.cache_version ?? 0,
         remoteUrl: f.r2_url || f.directUrl,
+        // The length the listing already gave us, so a transfer cut short on
+        // site wifi is rejected instead of saved as a plan that opens blank.
+        expectedSize: f?.size,
       });
       if (got) done += 1; else failed += 1;
       setSaveProgress({ done, total: queue.length, failed });
@@ -630,6 +633,7 @@ export default function ProjectFilesScreen() {
         fileId: file?.id || file?._id,
         cacheVersion: file?.cache_version ?? 0,
         remoteUrl: file?.r2_url || file?.directUrl,
+        expectedSize: file?.size,
       });
 
       // THE BYTES ON DISK WIN, ON EVERY PLATFORM. This used to read

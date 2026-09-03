@@ -222,6 +222,10 @@ export default function SiteDocumentsScreen() {
       fileId: file?.id,
       cacheVersion: file?.cache_version ?? 0,
       remoteUrl: file?.r2_url || file?.directUrl,
+      // A gate tablet never reaches sweepDocCache, so a fragment left by the
+      // old download path would be served here for ever. The listed length is
+      // what refuses it.
+      expectedSize: file?.size,
     });
 
     // THE BYTES ON DISK WIN, ON EVERY PLATFORM. This used to read

@@ -90,10 +90,24 @@ function makeDevice(opts) {
       getFreeDiskStorageAsync: async () => (o.freeBytes === undefined ? 1e10 : o.freeBytes),
       downloadAsync: async (url, dest) => {
         const name = dest.split('/').pop();
-        downloaded.push({ url, name });
+        // The downloader writes to a .part path and renames on success, so the
+        // name recorded here is the file the run is PULLING, not the temp path
+        // it lands in first. Nothing is hidden by stripping it: the promotion
+        // itself is asserted through `disk`, which only ever holds the final
+        // name if moveAsync actually ran.
+        downloaded.push({ url, name: name.replace(/\.part$/, '') });
         if (o.failDownload) return { status: 500, uri: null };
         disk.add(name);
         return { status: 200, uri: dest };
+      },
+      // REAL expo-file-system/legacy HAS moveAsync. A double that omits it does
+      // not test a downloader that renames — it makes one look broken.
+      moveAsync: async ({ from, to }) => {
+        const src = from.split('/').pop();
+        const dst = to.split('/').pop();
+        if (!disk.has(src)) throw new Error('ENOENT: ' + src);
+        disk.delete(src);
+        disk.add(dst);
       },
     },
     // Unsubscribing REALLY removes the listener — a fake whose remover is a
