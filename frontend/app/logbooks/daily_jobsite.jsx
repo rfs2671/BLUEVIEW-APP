@@ -72,10 +72,6 @@ import {
   // is a regression, not a simplification.
   persistPhoto, uploadCapturePhoto, uploadPendingActivityPhotos,
   photoNeedsUpload, hasPendingPhotoUploads,
-  // The filed-log exception. A DIFFERENT ROUTE from uploadCapturePhoto: that
-  // one parks bytes and writes no document, this one appends the row itself,
-  // because the ordinary save is 409 FILED_LOG_DATA_IMMUTABLE on a filed log.
-  appendPhotoToFiledLog,
 } from '../../src/utils/logbookDrafts';
 import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshness';
 // finalizeErrorCode is the ONE place a FINALIZE_* code is pulled out of an
@@ -85,7 +81,7 @@ import { compareDraftToServer, submitRefused } from '../../src/utils/draftFreshn
 // recordFinalizeError RAISES that same banner, so a refusal taken here in the
 // foreground leaves the identical durable trace a background one does.
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
-import { chooseEditableLog, isOpenForPhotoAppend } from '../../src/utils/logbookEditable';
+import { chooseEditableLog } from '../../src/utils/logbookEditable';
 // The app-wide OFFLINE discriminator — the same one settleFetch is built on.
 // "Offline" here has to mean what it means everywhere else: no response at all.
 import { isOfflineError, settleFetch, failureDetail } from '../../src/utils/offlineState';
@@ -467,12 +463,6 @@ export default function DailyJobsiteLog() {
   // could reach. Reading the loaded document keeps the panel honest about which
   // rows exist and which of them can take a photo at all.
   const [filedLog, setFiledLog] = useState(null);
-  // activity_id -> the rows the server minted this session, each carrying the
-  // LOCAL uri as well so the tile paints from this phone's own file rather
-  // than waiting on a round trip.
-  const [appendedPhotos, setAppendedPhotos] = useState({});
-  const [appendBusy, setAppendBusy] = useState(null);      // activity_id in flight
-  const [appendTargetId, setAppendTargetId] = useState(null);  // camera target
 
   // ── Modals ────────────────────────────────────────────────────────────
   const [addingCrew, setAddingCrew] = useState(null);      // {company, trade, num}
@@ -772,10 +762,11 @@ export default function DailyJobsiteLog() {
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
       const { log: existing, readOnly } = chooseEditableLog(arr);
       if (readOnly) { setLocked(true); markFinalized(_key); }
-      // Kept whether or not it is read-only, so the panel's gate is
-      // isOpenForPhotoAppend and not a second copy of the same rule.
+      // THE SERVER'S DOCUMENT, kept whether or not it is read-only. When it
+      // IS read-only this is what LogbookStepper hands FiledLogView, so the
+      // filed record renders from what the server holds rather than from the
+      // roster-reconciled local list.
       setFiledLog(existing || null);
-      setAppendedPhotos({});
 
       if (existing) {
         setExistingLogId(existing.id || existing._id);
@@ -1412,19 +1403,6 @@ export default function DailyJobsiteLog() {
    */
   const handleCameraCapture = (uri, report) => {
     const tIn = Date.now();
-    // ── THE FILED-LOG BRANCH: ONE SHOT, THEN OUT ────────────────────────────
-    // Deliberately NOT the multi-shot session below. That one appends into the
-    // local draft and lets a background effect drain the uploads; this one
-    // writes straight to a signed record, so each photograph is a discrete act
-    // with its own result the CP is shown.
-    if (appendTargetId) {
-      const appendTo = appendTargetId;
-      setAppendTargetId(null);
-      setCameraVisible(false);
-      report?.('paint', Date.now() - tIn);
-      if (uri) appendCapturedPhoto(appendTo, uri);
-      return;
-    }
     if (cameraTargetIndex == null || !uri) return;
     const target = cameraTargetIndex;
     if (bucketRemaining(activitiesRef.current, target) <= 0) {
@@ -1461,105 +1439,6 @@ export default function DailyJobsiteLog() {
         pendingCompressRef.current = pendingCompressRef.current.filter((j) => j !== job);
       });
     pendingCompressRef.current.push(job);
-  };
-
-  /**
-   * ONE PHOTOGRAPH, ONTO A LOG THAT IS ALREADY FILED.
-   *
-   * NOT A SAVE, AND IT MUST NEVER BECOME ONE. It builds no payload, reads no
-   * draft body and calls no update — the ordinary route is refused on this
-   * document (409 FILED_LOG_DATA_IMMUTABLE) and should be: re-entry through it
-   * is what overwrote two daily_jobsite records at 588 Thomas. What goes over
-   * the wire is image bytes and two ids, so there is nothing in the request
-   * that could reach the crews, headcounts, work or weather he attested to.
-   *
-   * THE ROW THAT LANDS ON THE RECORD IS THE SERVER'S, not this one's. It is
-   * kept here only so the tile can paint, and it is kept WITH the local uri:
-   * the R2 object exists by the time this resolves, but the report's photo URL
-   * is positional and this screen's list is not the server's, so painting from
-   * the file on this phone is the only copy it can honestly point at.
-   *
-   * NO REASON IS ASKED FOR and no cap is consulted. A photograph is not an
-   * assertion, and the per-subcontractor limit is a capture ergonomic rather
-   * than a rule about how much evidence a filed record may carry.
-   */
-  const appendCapturedPhoto = async (activityId, rawUri) => {
-    const logId = existingLogId;
-    if (!logId || !activityId || !rawUri || appendBusy) return;
-    setAppendBusy(activityId);
-    const photoId = newPhotoId();
-    try {
-      let uri = rawUri;
-      try {
-        uri = (await compressUnderCap(rawUri)) || rawUri;
-      } catch (_e) {
-        // A full-size photo is worse than a small one and infinitely better
-        // than a lost one — the same trade the capture path makes.
-      }
-      try {
-        uri = await persistPhoto(uri, photoId);
-      } catch (_e) {
-        // persistPhoto THROWS on a failed copy, and that throw is the whole
-        // offline guarantee. Nothing is uploaded from a file the app cannot
-        // prove it owns.
-        toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
-        return;
-      }
-      const res = await appendPhotoToFiledLog({
-        logbookId: logId, activityId, photoId, uri,
-      });
-      // APPEARS IMMEDIATELY — on this frame, filed under the row's IDENTITY.
-      // An index would move under it: the panel reads the server's list and
-      // nothing here controls that order.
-      setAppendedPhotos((prev) => ({
-        ...prev,
-        [activityId]: [...(prev[activityId] || []), { ...res.photo, uri }],
-      }));
-    } catch (e) {
-      // A LEGACY ROW IS TOLD THE TRUTH. Nothing backfills `activity_id`, so
-      // this is not a retry — it is a fact about the log, and offering "try
-      // again" for it would be the app pretending otherwise.
-      toast.error(
-        t('photoAppendFailedTitle'),
-        e?.code === 'ACTIVITY_HAS_NO_IDENTITY'
-          ? t('photoAppendLegacyRow') : t('photoAppendFailedBody'),
-      );
-    } finally {
-      setAppendBusy(null);
-    }
-  };
-
-  const takeAppendPhoto = async (activityId) => {
-    if (!activityId || appendBusy) return;
-    if (Platform.OS === 'web') {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.6, base64: false,
-      });
-      if (!result || result.canceled) return;
-      const asset = result.assets?.[0];
-      if (asset) appendCapturedPhoto(activityId, asset.uri);
-      return;
-    }
-    // The same pre-warmed in-process overlay the capture path reveals, so the
-    // app is never backgrounded and killed by the OS camera handoff.
-    setAppendTargetId(activityId);
-    setSessionShotIds([]);
-    setCameraVisible(true);
-  };
-
-  const pickAppendPhoto = async (activityId) => {
-    if (!activityId || appendBusy) return;
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      toast.error(t('permissionDeniedTitle'), t('permissionDeniedBody'));
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.6, base64: false,
-    });
-    if (result.canceled) return;
-    const asset = (result.assets || [])[0];
-    if (asset) appendCapturedPhoto(activityId, asset.uri);
   };
 
   const cameraShots = useMemo(() => {
@@ -2965,96 +2844,6 @@ export default function DailyJobsiteLog() {
     </View>
   );
 
-  /**
-   * THE ONE THING A FILED LOG STILL ACCEPTS.
-   *
-   * Handed to LogbookStepper as `lockedExtra` and rendered OUTSIDE its
-   * pointerEvents wrapper — which is why anything in here is tappable at all
-   * on a form where nothing else is. The wrapper's promise ("EVERY control
-   * below non-interactive — no per-field flags to miss") is untouched; this is
-   * a separate subtree, and what is in it is the complete list of what a filed
-   * record will take from this screen.
-   *
-   * APPEND-ONLY, ON PURPOSE. There is no remove control here. Deleting a
-   * photograph from a filed record IS an amendment, and the lock bar below
-   * already offers that path.
-   *
-   * THE ROWS ARE THE SERVER'S. `filedLog.data.activities` rather than
-   * `activities`: a filed-but-unlocked log has been reconciled against the
-   * roster in local state and withActivityIds has minted ids for rows that
-   * never had one, and a photo aimed at an invented id reaches nothing. A row
-   * the server stored WITHOUT an identity says so and offers no button —
-   * nothing backfills that field, so there is no retry to offer.
-   */
-  const renderPhotoAppendPanel = () => {
-    const rows = (filedLog?.data?.activities) || [];
-    return (
-      <Card style={s.appendCard}>
-        <Text style={s.appendTitle}>{t('photoAppendTitle')}</Text>
-        <Text style={s.appendBody}>{t('photoAppendBody')}</Text>
-        {rows.map((a, i) => {
-          const rowId = String(a?.activity_id || '').trim();
-          // crewName falls back to 'No crew assigned', so the first part is
-          // never blank and this line never renders as an empty label.
-          const label = [
-            crewName(a || {}), a?.work_description, a?.work_locations,
-          ].map((x) => String(x || '').trim()).filter(Boolean).join(' · ');
-          const shots = appendedPhotos[rowId] || [];
-          const busy = appendBusy === rowId;
-          return (
-            <View key={rowId || `filed_row_${i}`} style={s.appendRow}>
-              <Text style={s.appendRowLabel}>{label}</Text>
-              {!rowId ? (
-                <Text style={s.lockedHint}>{t('photoAppendLegacyRow')}</Text>
-              ) : (
-                <>
-                  {shots.length > 0 && (
-                    <View style={s.photoGrid}>
-                      {shots.map((p, pi) => (
-                        <View key={p.original_r2_key || p.photo_id || pi} style={s.photoThumb}>
-                          <Image source={{ uri: p.uri }} style={s.photoImage} />
-                          {!!p.added_after_filing && (
-                            <Text style={s.appendBadge}>{t('photoAddedAfterFiling')}</Text>
-                          )}
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                  <View style={s.photoActions}>
-                    <Pressable
-                      style={s.photoBtn}
-                      accessibilityRole="button"
-                      accessibilityState={{ disabled: busy }}
-                      disabled={busy}
-                      onPress={() => takeAppendPhoto(rowId)}
-                    >
-                      {busy ? (
-                        <ActivityIndicator size="small" color={outdoor.textOnSelected} />
-                      ) : (
-                        <Camera size={22} strokeWidth={2} color={outdoor.textOnSelected} />
-                      )}
-                      <Text style={s.photoBtnText}>{t('photoAppendAdd')}</Text>
-                    </Pressable>
-                    <Pressable
-                      style={s.photoBtnGhost}
-                      accessibilityRole="button"
-                      accessibilityState={{ disabled: busy }}
-                      disabled={busy}
-                      onPress={() => pickAppendPhoto(rowId)}
-                    >
-                      <ImageIcon size={22} strokeWidth={2} color={outdoor.text} />
-                      <Text style={s.photoBtnGhostText}>{t('photoGallery')}</Text>
-                    </Pressable>
-                  </View>
-                </>
-              )}
-            </View>
-          );
-        })}
-      </Card>
-    );
-  };
-
   // The step contract the reference settled on, unchanged: an ordered list,
   // one rendered at a time, 1-indexed.
   const STEPS = [
@@ -3091,13 +2880,13 @@ export default function DailyJobsiteLog() {
       nextHint={crewGaps.length > 0 ? crewGapSentence(crewGaps) : ''}
       onExit={() => router.push('/logbooks')}
       locked={locked}
-      /* THE PHOTO-ONLY EXCEPTION. Gated on the named predicate rather than on
-         `locked` again, so the rule and its one exception are read together in
-         logbookEditable.js instead of drifting apart here. `existingLogId` is
-         required because the append is addressed by logbook id — there is no
-         document to append to until the day has been pushed. */
-      lockedExtra={(existingLogId && isOpenForPhotoAppend(filedLog))
-        ? renderPhotoAppendPanel() : null}
+      /* THE SERVER'S DOCUMENT, handed straight to the filed view.
+         `filedLog`, never `activities`: the local list has been reconciled
+         against the roster and withActivityIds has minted ids for rows that
+         never had one, and a photograph aimed at one of those reaches
+         nothing. Passing it also spares FiledLogView the refetch it would
+         otherwise do for the eleven editors that hold no such state. */
+      filedLog={filedLog}
       amendment={amendment}
       incompleteSteps={stepsLeftIncomplete}
       a11yProgressLabel={
@@ -3145,7 +2934,15 @@ export default function DailyJobsiteLog() {
           <CameraCaptureModal
             visible={cameraVisible}
             shots={cameraShots}
-            onClose={() => { setCameraVisible(false); setAppendTargetId(null); }}
+            /* CLOSING IS THE ONLY THING THIS DOES NOW. It used to also clear
+               appendTargetId, the camera's filed-log target — that whole path
+               moved to app/logbooks/photos.jsx and the state went with it, but
+               this reset was left behind pointing at a binding that no longer
+               exists. cameraTargetIndex is deliberately NOT cleared here: it is
+               re-set on every open (see openCamera) and the capture effect
+               keys off `cameraVisible`, so blanking it on close would only
+               race the compress queue that is still draining. */
+            onClose={() => setCameraVisible(false)}
             onCapture={handleCameraCapture}
             onDeleteShot={handleDeleteShot}
           />

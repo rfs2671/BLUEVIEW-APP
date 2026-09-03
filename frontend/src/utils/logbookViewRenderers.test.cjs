@@ -790,15 +790,25 @@ ok((fpAppended.match(new RegExp(ADDED_LABEL, 'g')) || []).length === 1,
 }
 
 // AND THE THREE SURFACES PRINT THE SAME WORDS. The report/PDF label lives in
-// server.py; the CP's own editor reads dailyJobsite.photoAddedAfterFiling; this
-// screen reads logbookView.photoAddedAfterFiling. A record must not read
+// server.py; this screen reads logbookView.photoAddedAfterFiling; and the CP's
+// own surface reads logbookPhotos.addedAfterFiling. A record must not read
 // differently depending on which one you are holding.
+//
+// THE CP'S SURFACE MOVED, AND THE KEY MOVED WITH IT. It used to be
+// dailyJobsite.photoAddedAfterFiling, for an inline camera panel rendered over
+// a filed log's own read-only form. That panel is gone: a filed log renders a
+// FILED VIEW now (FiledLogView) and photographs are added on their own screen
+// (app/logbooks/photos.jsx), and both read en.logbookPhotos. The equality is
+// the same equality; only which catalogue holds the CP's half has changed.
 const SERVER_LABEL = (SERVER_SRC.match(
   /_PHOTO_ADDED_AFTER_FILING_LABEL = "([^"]+)"/) || [])[1];
 ok(SERVER_LABEL === ADDED_LABEL,
   `the tablet prints the same words as the report and the PDF (${JSON.stringify(SERVER_LABEL)})`);
-ok(EN.dailyJobsite.photoAddedAfterFiling === ADDED_LABEL,
-  "...and the same words as the CP's own editor");
+ok(EN.logbookPhotos.addedAfterFiling === ADDED_LABEL,
+  "...and the same words as the CP's own filed view and photographs screen");
+ok(EN.dailyJobsite.photoAddedAfterFiling === undefined,
+  'and the key it MOVED FROM is gone rather than left behind: a second copy '
+  + 'nothing renders is a reword away from making one record read two ways');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

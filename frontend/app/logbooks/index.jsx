@@ -8,7 +8,8 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { logTypeStatus, amendmentSentence } from '../../src/utils/amendmentChain';
+import { logTypeStatus, amendmentSentence, collapseChains } from '../../src/utils/amendmentChain';
+import { typeCarriesActivityPhotos } from '../../src/utils/filedLogSummary';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -25,6 +26,7 @@ import {
   Bell,
   ShieldAlert,
   AlertTriangle,
+  Camera,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -412,6 +414,29 @@ export default function LogBooksScreen() {
   // the record is filed and the stale-unsigned card is what surfaces the
   // correction; see logTypeStatus.
   const getLogStatus = (logTypeKey) => logTypeStatus(todayLogs[logTypeKey]);
+
+  /**
+   * THE FILED DOCUMENT A PHOTOGRAPH COULD BE ADDED TO, or null.
+   *
+   * TWO CONDITIONS AND BOTH ARE NECESSARY. The TYPE has to be one whose rows
+   * carry photographs at all — that is a schema fact, asked of
+   * typeCarriesActivityPhotos and never inferred from whether `data.activities`
+   * happens to be present — and the day's record has to be FILED, because on
+   * an open log the ordinary camera in the editor is the way in and the append
+   * route would be overwritten by that editor's own next PUT.
+   *
+   * CHAIN HEADS, the same rule the pill uses, so the row and its badge cannot
+   * disagree about which document is current. An amendment supersedes its
+   * parent, and the photograph belongs on the record that is in force.
+   */
+  const filedPhotoTarget = (logTypeKey) => {
+    if (!typeCarriesActivityPhotos(logTypeKey)) return null;
+    const heads = collapseChains(todayLogs[logTypeKey]);
+    const filed = heads.find((h) => h && (h.is_locked || h.status === 'submitted'));
+    if (!filed) return null;
+    const id = filed.id || filed._id;
+    return id ? String(id) : null;
+  };
 
   /**
    * Switch one conditional logbook on or off.
@@ -891,9 +916,10 @@ export default function LogBooksScreen() {
                 visibleLogs.map((logType) => {
                   const Icon = typeof logType.icon === 'string' ? (ICON_MAP[logType.icon] || ClipboardList) : logType.icon;
                   const status = getLogStatus(logType.key);
+                  const photoTarget = filedPhotoTarget(logType.key);
                   return (
+                    <React.Fragment key={logType.key}>
                     <Pressable
-                      key={logType.key}
                       onPress={() => handleOpenLog(logType.key)}
                       style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
                     >
@@ -909,6 +935,26 @@ export default function LogBooksScreen() {
                         <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
                       </View>
                     </Pressable>
+                    {/* A SECOND ROW, NOT A BUTTON INSIDE THE FIRST.
+                        Every other route on this screen goes to the editor,
+                        and this is the one that does not — so it is its own
+                        target rather than a nested Pressable whose press a
+                        parent Pressable may swallow. It appears only on a
+                        FILED log of a type that carries photographs, which is
+                        exactly the population the append route serves. */}
+                    {!!photoTarget && (
+                      <Pressable
+                        onPress={() => router.push(`/logbooks/photos?logbookId=${photoTarget}`)}
+                        style={({ pressed }) => [styles.photosLink, pressed && styles.logCardPressed]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Add photographs to ${logType.label}`}
+                      >
+                        <Camera size={16} strokeWidth={1.75} color={colors.text.muted} />
+                        <Text style={styles.photosLinkText}>Photographs</Text>
+                        <ChevronRight size={14} strokeWidth={1.5} color={colors.text.muted} />
+                      </Pressable>
+                    )}
+                    </React.Fragment>
                   );
                 })
               )}
@@ -1101,6 +1147,14 @@ function buildStyles(colors, isDark) {
     logLabel: { fontSize: 15, fontWeight: '500', color: colors.text.primary, marginBottom: 2 },
     logSubtitle: { fontSize: 12, color: colors.text.muted },
     logRight: { alignItems: 'flex-end', gap: spacing.xs },
+    photosLink: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      marginTop: -spacing.xs, marginLeft: spacing.lg,
+      paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: colors.glass.border,
+    },
+    photosLinkText: { flex: 1, fontSize: 13, color: colors.text.muted },
 
     badge: {
       flexDirection: 'row', alignItems: 'center', gap: 4,

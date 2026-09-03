@@ -9,6 +9,7 @@ import AnimatedBackground from '../AnimatedBackground';
 import AmendmentBanner from '../AmendmentBanner';
 import DraftConflictNotice from '../DraftConflictNotice';
 import LogbookLockBar from '../LogbookLockBar';
+import FiledLogView from './FiledLogView';
 import { outdoor } from '../../styles/theme';
 import { submitRefused, isOverridable } from '../../utils/draftFreshness';
 
@@ -44,20 +45,27 @@ export default function LogbookStepper({
   onStepChange,
   onExit,
   locked = false,
-  // ── THE ONE THING A LOCKED FORM MAY STILL OFFER ──────────────────────────
+  // ── WHAT A LOCKED FORM USED TO OFFER, AND WHY THE SLOT IS GONE ───────────
   //
-  // Rendered only when `locked`, and OUTSIDE the pointerEvents wrapper below,
-  // which is why it can be interactive at all. That wrapper is deliberately
-  // absolute — "EVERY control below non-interactive — no per-field flags to
-  // miss" — and loosening it to let one control through would give that
-  // sentence up for the whole form.
+  // There was a `lockedExtra` prop here: a subtree rendered outside the
+  // pointerEvents wrapper so that ONE control — appending a photograph —
+  // could be interactive on a form where nothing else was. daily_jobsite was
+  // its only caller and it held an inline camera panel.
   //
-  // A SEPARATE SUBTREE KEEPS THE GUARANTEE STRUCTURAL. Whatever a form puts
-  // here is the complete set of what a filed record will accept from it, and
-  // it can be read in one place instead of audited across a 3,000-line render.
-  // Today that is exactly one thing: appending a photograph, which is not
-  // DOB-required log content and so is not an amendment to what the CP signed.
-  lockedExtra = null,
+  // IT IS REMOVED BECAUSE THE THING IT WORKED AROUND IS GONE. A locked log no
+  // longer renders a disabled form at all (see the FiledLogView branch
+  // below), so there is no inert subtree to poke a hole in. Photographs are
+  // added on their own screen, /logbooks/photos, which is the operator's
+  // ruling: adding a photograph is not editing a log, and a filed log must
+  // offer photographs without walking the CP through a five-step form he
+  // cannot edit.
+  // THE SERVER'S DOCUMENT, when the editor already holds one. OPTIONAL — and
+  // its absence is the ordinary case, not a caller being lazy: eleven of the
+  // twelve editors keep no such state, and FiledLogView fetches it by `logId`
+  // rather than making this a twelve-file change. Never pass reconciled
+  // editor state here: withActivityIds has minted row ids the server has
+  // never seen, and a photograph aimed at one reaches nothing.
+  filedLog = null,
   // The loaded document's amendment facts, or null. Shape:
   // { reason, by, at, has_reason }. Read off the RECORD by the editor, never
   // derived here and never relative to today.
@@ -249,7 +257,7 @@ export default function LogbookStepper({
             style={s.headerBack}
             accessibilityRole="button"
             accessibilityLabel={a11yProgressLabel ? undefined : 'Back'}
-            onPress={() => (step === 1 ? onExit() : onStepChange(step - 1))}
+            onPress={() => ((locked || step === 1) ? onExit() : onStepChange(step - 1))}
           >
             <ArrowLeft size={24} strokeWidth={2} color={outdoor.text} />
           </Pressable>
@@ -272,6 +280,11 @@ export default function LogbookStepper({
             Amber is for a step he has MOVED PAST. The step he is standing on
             is not marked incomplete while he is filling it in — that would
             scold him for work in progress. */}
+        {/* GONE ON A FILED LOG. "STEP 3 OF 5" over a record nobody is
+            composing is precisely the disabled-form reading this change
+            removes. `locked ? null :` rather than `!locked && (`, so the
+            branch is unmistakable next to the footer's below. */}
+        {locked ? null : (
         <View
           style={s.progressRow}
           accessibilityRole="progressbar"
@@ -291,6 +304,7 @@ export default function LogbookStepper({
             );
           })}
         </View>
+        )}
 
         {/* THE KEYBOARD MUST NOT SIT ON THE FIELD BEING TYPED INTO.
             Device round 4, finding 10: the general description on the daily
@@ -357,13 +371,34 @@ export default function LogbookStepper({
             onAcknowledge={onConflictAcknowledge}
           />
 
-          <View pointerEvents={locked ? 'none' : 'auto'}>
-            {current && current.render()}
-          </View>
+          {/* ── A FILED RECORD IS NOT BEING COMPOSED ───────────────────────
+              Operator ruling. A locked log used to render its five paginated
+              steps behind the pointerEvents wrapper below — a form with
+              "STEP 3 OF 5" over the top, every field greyed, and no way to
+              tell a finished record from an abandoned draft. Reading a filed
+              record as a disabled form is also what made the photograph panel
+              read as an exception bolted onto an editor.
 
-          {/* OUTSIDE the wrapper, so it is reachable on a form where nothing
-              else is. See the prop's note: the wrapper does not move. */}
-          {locked && !!lockedExtra && lockedExtra}
+              THE WRAPPER IS UNTOUCHED and still absolute for the branch it
+              governs: an UNLOCKED form is never made read-only field by
+              field. This is a branch ABOVE it, not a hole in it.
+
+              ALL TWELVE TYPES, deliberately. FiledLogView reads the SERVER's
+              document — fetching it itself when the editor holds none — so
+              this is one change rather than twelve, and no editor can render
+              a filed view of reconciled local state. */}
+          {locked ? (
+            <FiledLogView
+              s={s}
+              filedLog={filedLog}
+              logId={logId}
+              logType={logType}
+            />
+          ) : (
+            <View pointerEvents={locked ? 'none' : 'auto'}>
+              {current && current.render()}
+            </View>
+          )}
 
           <LogbookLockBar
             logType={logType}

@@ -473,37 +473,17 @@ export default {
     cameraLockedHint: 'Choose the activity and location first — every photo is labelled with them.',
     photoTaggedWith: 'Photos will be labelled:',
 
-    // ── A PHOTOGRAPH MAY BE ADDED TO A FILED LOG ─────────────────────────
-    // Photographs are not DOB-required daily log content, so adding one is not
-    // an amendment to what the CP signed. The copy says exactly that, because
-    // he is reading it underneath a form he has just been told is read-only
-    // and the obvious inference — "so I can still edit this" — is wrong.
-    photoAppendTitle: 'Add a photo to this filed log',
-    photoAppendBody:
-      'Photos are not part of what you signed, so you can still add them. '
-      + 'Nothing else on this log can change — a correction needs an amendment.',
-    photoAppendAdd: 'Add Photo',
-    // NOT "try again": no retry will ever reach this row, and offering one
-    // would be the app pretending otherwise.
+    // ── A PHOTOGRAPH MAY BE ADDED TO A FILED LOG — AND NOT FROM HERE ─────
+    // Seven keys stood here — photoAppendTitle/Body/Add/LegacyRow/FailedTitle/
+    // FailedBody and photoAddedAfterFiling — for an inline camera panel this
+    // screen rendered over its own read-only form.
     //
-    // BUT NOT A DEAD END EITHER, WHICH IS WHAT IT USED TO BE. The old copy
-    // said only that a photo has to go on an amendment — true, and it costs
-    // the CP a whole re-attestation of a record he already signed, to attach a
-    // photograph that is not part of what he signed. There IS a fix now
-    // (backend/scripts/backfill_activity_id.py, run by an administrator), so
-    // the copy names the thing that actually resolves it FIRST and keeps the
-    // amendment as the fallback rather than the only answer.
-    //
-    // "Ask your administrator", not the script's name: the CP does not run
-    // scripts, and copy that names one teaches him nothing he can act on.
-    photoAppendLegacyRow:
-      'This crew was recorded before photos could be attached to it. '
-      + 'Ask your administrator to restore this log\'s crew identities and a '
-      + 'photo can be added here. Until then it has to go on an amendment.',
-    photoAppendFailedTitle: 'Photo Not Added',
-    photoAppendFailedBody: 'The photo did not reach the log. Try again.',
-    // The same words the report and the PDF print under the same photograph.
-    photoAddedAfterFiling: 'Added after filing',
+    // THE PANEL IS GONE AND SO ARE THEY. A filed log no longer renders as a
+    // disabled form at all, and adding a photograph is its own screen
+    // (app/logbooks/photos.jsx). Its copy, and the filed view's, live in
+    // en.logbookPhotos — ONE catalogue, because two catalogues for one
+    // affordance is how a legacy crew row comes to be described one way here
+    // and another way there.
     photosCount_one: '1 photo',
     photosCount_other: '{n} photos',
 
@@ -1738,6 +1718,101 @@ export default {
   },
 
   // ── app/reports.jsx — the admin-only report preview panel ─────────────────
+  // ── app/logbooks/photos.jsx — photographs for a log that is already filed ──
+  //
+  // ENGLISH ONLY, on the same rule as dailyJobsite and logbookView: this is a
+  // DOB compliance record and the CP who signs it and the inspector who reads
+  // it both read English. Listed in EN_ONLY_NAMESPACES with that reasoning.
+  //
+  // THE ONE SENTENCE TO READ TWICE is `queuedBody`. It says what is true about
+  // the DEVICE — the photograph is held here and will upload — and never that
+  // it is on the record, because the server has not been told about it. The
+  // screen pairs it with toast.warning for the same reason.
+  logbookPhotos: {
+    screenTitle: 'Photographs',
+    back: 'Back',
+
+    // ── THE FILED VIEW (src/components/logbookStepper/FiledLogView.jsx) ────
+    // The same catalogue as the photographs screen on purpose: they are two
+    // halves of one affordance, and two catalogues are how they come to say
+    // different things about the same record.
+    filedTitle: 'Filed record',
+    filedIntro:
+      'This log has been filed. What follows is the record as it stands on the '
+      + 'server.',
+    filedReadOnly: 'This log is filed and read-only.',
+    filedUnreadable:
+      'This log is filed. Its contents could not be read on this device right '
+      + 'now — the record itself is unchanged.',
+    signedBy: 'Signed by',
+    signedNoName: 'Signed',
+    // NOT "signed by <name>". cp_name is prefilled from the CP's profile long
+    // before anybody signs anything, so reading it as a signature would print
+    // a fabricated attestation onto a compliance record.
+    filedUnsigned: 'Filed without a recorded signature.',
+    amendmentLabel: 'Amendment',
+    sectionTitle: 'Photographs',
+    noneAttached: 'No photographs are attached to this log.',
+    addPhotographs: 'Add photographs',
+    intro:
+      'Photographs may be added to a filed log. Nothing else about the record '
+      + 'changes — what was attested to stays exactly as it was filed.',
+    takePhoto: 'Take Photo',
+    choosePhoto: 'Gallery',
+    dismiss: 'Dismiss',
+    retry: 'Try again',
+    unnamedRow: 'Unnamed row',
+    noRows: 'This log has no rows a photograph can be attached to.',
+    addedAfterFiling: 'Added after filing',
+    heldBadge: 'Waiting to upload',
+
+    addedTitle: 'Photograph added',
+    addedBody: 'It is on the record and visible to anyone who can read this log.',
+
+    // HELD, NOT FILED.
+    queuedTitle: 'Saved on this device',
+    queuedBody:
+      'There is no connection right now. The photograph is saved on this device '
+      + 'and will upload by itself when there is a connection. You can leave '
+      + 'this screen and close the app.',
+
+    failedTitle: 'Photograph not added',
+    failedBody: 'The server refused this photograph. Nothing was changed on the record.',
+    legacyRow:
+      'This log\'s rows were saved before rows carried an identity, so a '
+      + 'photograph cannot be attached to one until an administrator runs the '
+      + 'activity-identity backfill. An amendment is the alternative.',
+    refusedTitle: 'A photograph was refused',
+    refusedBody:
+      'This photograph was refused by the server and is no longer waiting to '
+      + 'upload. It is still in your camera roll.',
+
+    notSavedTitle: 'Photograph not saved',
+    notSavedBody:
+      'This device could not store the photograph, so nothing was sent. Try '
+      + 'again, and check the device has free space.',
+    permissionTitle: 'Permission needed',
+    permissionBody: 'Allow camera and photo access to add a photograph.',
+
+    unavailableTitle: 'Log unavailable',
+    unavailableBody:
+      'This log could not be read on this device right now. The record itself '
+      + 'is unchanged.',
+    noLogBody: 'No log was named.',
+    // A DRAFT REACHED BY URL. It is not refused because anything is wrong —
+    // it is refused because the ordinary camera is the right way in, and a
+    // photograph appended to a draft through the filed-log route is
+    // overwritten by that editor's own next save.
+    notFiledTitle: 'This log is still open',
+    notFiledBody:
+      'Photographs are added here only once a log has been filed. While it is '
+      + 'still open, use the camera in the log itself.',
+    noPhotosTypeTitle: 'No photographs on this log type',
+    noPhotosTypeBody:
+      'This kind of log does not carry photographs. Its record is complete '
+      + 'without them.',
+  },
+
   // {n} is substituted by the caller (this layer has no interpolation).
   reportPreview: {
     failedPhotos: '{n} photo(s) failed processing — they may be missing from this report.',

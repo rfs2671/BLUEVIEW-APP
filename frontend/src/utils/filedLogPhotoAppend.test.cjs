@@ -254,97 +254,120 @@ const SERVER_ROW = {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  section('3. THE GUARD DID NOT MOVE');
+  section('3. THE DISABLED FORM IS GONE, AND SO IS THE HOLE IN IT');
   // ══════════════════════════════════════════════════════════════════════════
+  //
+  // WHAT THIS SECTION USED TO ASSERT, and why it is rewritten rather than
+  // deleted. It pinned a `lockedExtra` slot: a subtree LogbookStepper rendered
+  // OUTSIDE its pointerEvents wrapper so that one control — an inline camera
+  // panel in daily_jobsite — could be interactive on a form where nothing else
+  // was. That was the right shape for a filed log rendered as a disabled form.
+  //
+  // A FILED LOG IS NO LONGER RENDERED AS A FORM AT ALL. The operator ruled
+  // that "a filed record is not being composed, so rendering it as a disabled
+  // form is what makes the photo panel read as an exception", so the locked
+  // branch renders FiledLogView instead of the steps — and a hole in an inert
+  // subtree is meaningless when there is no inert subtree. The slot, the panel
+  // and its seven copy keys are gone with it, and adding a photograph is its
+  // own screen. THE PROPERTIES THE OLD SECTION PROTECTED ARE ASSERTED BELOW IN
+  // THEIR NEW HOME; not one of them was dropped.
 
   ok(/pointerEvents=\{locked \? 'none' : 'auto'\}/.test(stepperSrc),
-    'LogbookStepper still puts pointerEvents=none over the WHOLE form when locked');
+    'THE WRAPPER ITSELF IS UNTOUCHED — still absolute for the branch it '
+    + 'governs. It was not loosened to let anything through; a branch was put '
+    + 'ABOVE it');
 
-  const wrapper = stepperSrc.indexOf("pointerEvents={locked ? 'none' : 'auto'}");
-  // The RENDER site, not the prop declaration at the top of the signature.
-  const extra = stepperSrc.lastIndexOf('lockedExtra');
-  const lockBar = stepperSrc.indexOf('<LogbookLockBar');
-  ok(stepperSrc.indexOf('lockedExtra') > -1, 'the stepper accepts a lockedExtra slot');
-  ok(extra > wrapper && stepperSrc.slice(wrapper, extra).includes('</View>'),
-    'lockedExtra renders OUTSIDE the pointerEvents wrapper — the wrapper closes '
-    + 'first. Inside it, it would be inert, which is the bug this whole '
-    + 'exception exists to avoid');
-  ok(extra < lockBar,
-    'and above the lock bar, beside the amendment path it is an alternative to');
-  ok(/\{locked && !!lockedExtra/.test(stepperSrc)
-    || /locked \? lockedExtra/.test(stepperSrc),
-  'it is rendered ONLY when locked: on an open log the ordinary camera is the '
-    + 'one way in, and two would drift');
+  ok(!/lockedExtra\s*=\s*null/.test(stepperSrc),
+    'and the lockedExtra SLOT is gone rather than left as a prop nothing '
+    + 'passes: a hole kept open for an affordance that moved elsewhere is the '
+    + "next person's mistake");
+
+  ok(/FiledLogView/.test(stepperSrc), 'the stepper renders FiledLogView');
+  const filedAt = stepperSrc.indexOf('<FiledLogView');
+  const stepsAt = stepperSrc.indexOf('current.render()');
+  ok(filedAt > -1 && stepsAt > -1 && filedAt < stepsAt,
+    'as the LOCKED half of the same conditional the steps are the other half '
+    + 'of — so a filed log cannot render both');
+  const flatStepper = stepperSrc.replace(/\n\s*/g, ' ');
+  ok(/locked \? \( <FiledLogView/.test(flatStepper)
+    || /locked \? <FiledLogView/.test(flatStepper),
+  'and the branch is on `locked` itself, not on a second copy of the rule');
 
   // ══════════════════════════════════════════════════════════════════════════
-  section('4. THE READ-ONLY FORM OFFERS IT, AND OFFERS ONLY IT');
+  section('4. THE FILED VIEW OFFERS IT, AND OFFERS ONLY IT');
   // ══════════════════════════════════════════════════════════════════════════
 
-  ok(/lockedExtra=\{/.test(editorSrc),
-    'daily_jobsite passes the panel to the stepper');
-  ok(/isOpenForPhotoAppend/.test(editorSrc),
-    'and gates it on the named exception, not on a second copy of the rule');
+  const viewSrc = LF(path.join(
+    FRONTEND, 'src', 'components', 'logbookStepper', 'FiledLogView.jsx',
+  ));
+  const screenSrc = LF(path.join(FRONTEND, 'app', 'logbooks', 'photos.jsx'));
+  ok(viewSrc.length > 500 && screenSrc.length > 500,
+    'POSITIVE CONTROL: FiledLogView.jsx and app/logbooks/photos.jsx were read '
+    + '— an empty string satisfies every "does not contain" assertion below');
 
-  const panel = (() => {
-    const i = editorSrc.indexOf('const renderPhotoAppendPanel');
+  // ── the panel really is gone from the editor ─────────────────────────────
+  ok(!/renderPhotoAppendPanel|appendCapturedPhoto|takeAppendPhoto|pickAppendPhoto/
+    .test(editorSrc),
+  'daily_jobsite carries no inline append panel and none of its handlers');
+  ok(!/lockedExtra/.test(editorSrc), 'and passes no lockedExtra');
+  ok(/filedLog=\{filedLog\}/.test(editorSrc),
+    "it hands the SERVER's document to the stepper instead — which is what the "
+    + 'filed view renders from, and what the append is addressed against');
+  ok(!/appendPhotoToFiledLog/.test(editorSrc),
+    'and the editor no longer calls the append route at all: ONE way in, on '
+    + 'its own screen, rather than two that can drift');
+
+  // ── APPEND-ONLY, asserted in both new files ──────────────────────────────
+  for (const [name, src] of [['FiledLogView', viewSrc], ['photos.jsx', screenSrc]]) {
+    ok(!/removeActivityPhoto|dropPhoto|Trash2|removePhoto/.test(src),
+      `${name}: APPEND-ONLY — no way to remove a photograph from a filed `
+      + 'record. That would be an amendment, and the lock bar offers it');
+    ok(!/onChangeText|TextInput|SignaturePad/.test(src),
+      `${name}: no text entry and no signature pad — nothing the CP attested `
+      + 'to can be reached through it');
+    ok(!/bucketRemaining|MAX_PHOTOS_PER_SUBCONTRACTOR|capMessage/.test(src),
+      `${name}: NO COUNT LIMIT. The per-subcontractor cap is a capture `
+      + 'ergonomic, not a rule about how much evidence a filed record carries');
+    ok(!/logbooksAPI\.update|logbooksAPI\.create|photoForPayload|writeDraft/.test(src),
+      `${name}: IT IS NOT A SAVE. No payload, no draft body, no update — that `
+      + 'path is 409 FILED_LOG_DATA_IMMUTABLE on this document');
+    ok(!/logbooksAPI\.amend|amendment_reason/.test(src),
+      `${name}: and NO AMENDMENT. Amend stays for correcting the record`);
+  }
+
+  // ── the write is still bytes and two ids ─────────────────────────────────
+  ok(/appendPhotoToFiledLog/.test(screenSrc),
+    'the photographs screen goes through the append route');
+  ok(!/uploadCapturePhoto/.test(screenSrc),
+    'and not the capture-time route, which parks bytes and writes no document');
+  const addFn = (() => {
+    const i = screenSrc.indexOf('const addPhotoToRow');
     if (i < 0) return '';
-    const j = editorSrc.indexOf('\n  };', i);
-    return j < 0 ? editorSrc.slice(i) : editorSrc.slice(i, j);
+    const j = screenSrc.indexOf('\n  };', i);
+    return j < 0 ? screenSrc.slice(i) : screenSrc.slice(i, j);
   })();
-  ok(panel.length > 0, 'the panel is its own render function, so it can be read whole');
-
-  ok(!/removeActivityPhoto|dropPhoto|Trash2|s\.photoRemove/.test(panel),
-    'APPEND-ONLY: the panel offers no way to remove a photograph from a filed '
-    + 'record — that would be an amendment');
-  ok(!/onChangeText|TextInput/.test(panel),
-    'and no text entry: nothing the CP attested to can be reached through it');
-  ok(!/bucketRemaining|MAX_PHOTOS_PER_SUBCONTRACTOR|capMessage/.test(panel),
-    'NO COUNT LIMIT: the per-subcontractor cap is a capture ergonomic, not a '
-    + 'rule about how much evidence a filed record may carry');
-  ok(!/reason|Reason/.test(panel),
-    'and no reason is asked for — a photograph is not an assertion');
-
-  ok(/appendPhotoToFiledLog/.test(editorSrc),
-    'the append goes through the append route');
-  const appendFn = (() => {
-    const i = editorSrc.indexOf('const appendCapturedPhoto');
-    if (i < 0) return '';
-    const j = editorSrc.indexOf('\n  };', i);
-    return j < 0 ? editorSrc.slice(i) : editorSrc.slice(i, j);
-  })();
-  ok(appendFn.length > 0, 'the append handler is its own function');
-  ok(!/photoForPayload|payloadActivities|draftBody|logbooksAPI\.update|handleSave/
-    .test(appendFn),
-  'IT IS NOT A SAVE. It never builds a payload, never touches the draft body '
-    + 'and never calls update — that path is 409 FILED_LOG_DATA_IMMUTABLE');
-  ok(/uploadCapturePhoto/.test(editorSrc) && !/uploadCapturePhoto/.test(appendFn),
-    'and it does not reuse the capture-time route, which writes no document');
-
-  ok(/added_after_filing/.test(editorSrc),
-    'the editor can tell an appended photograph from an original');
-
-  // ── it appears immediately ───────────────────────────────────────────────
-  ok(/setAppendedPhotos\(/.test(appendFn) && /res\.photo/.test(appendFn),
-    'APPEARS IMMEDIATELY: the server-minted row goes into state on this frame, '
-    + 'not on a refetch or a next render');
-  ok(/\[activityId\]:/.test(appendFn),
-    'and it is filed under the row\'s IDENTITY — an index would move under it, '
-    + 'because the panel reads the SERVER\'s list and nothing here orders it');
-  ok(/uri: null|uri,/.test(appendFn) && /\{ \.\.\.res\.photo, uri \}/.test(appendFn),
-    'the tile paints from the file on THIS phone: the report\'s photo URL is '
-    + 'positional and this screen\'s list is not the server\'s, so pointing at '
-    + 'one would be a guess');
-  ok(!/setActivities\(/.test(appendFn),
-    'and the local activities list is NOT rewritten — it is the read-only '
-    + 'form\'s view of what the server holds, and this did not change that');
+  ok(addFn.length > 200, 'POSITIVE CONTROL: the add handler was extracted');
+  ok(/setAdded\(/.test(addFn) && /res\.photo/.test(addFn),
+    'APPEARS IMMEDIATELY: the SERVER-MINTED row goes into state on this frame, '
+    + 'not on a refetch');
+  ok(/\[activityId\]:/.test(addFn),
+    "filed under the row's IDENTITY — an index would move under it, because "
+    + "the list is the SERVER's and nothing here orders it");
+  ok(/\{ \.\.\.res\.photo, uri \}/.test(addFn),
+    "and the tile paints from the file on THIS phone: the report's photo URL "
+    + 'is positional, so pointing at one before a refetch would be a guess');
 
   // ── the refusal the CP has to be told about ──────────────────────────────
-  ok(/ACTIVITY_HAS_NO_IDENTITY/.test(editorSrc),
+  ok(/ACTIVITY_HAS_NO_IDENTITY/.test(screenSrc),
     'a crew row that predates activity_id is REFUSED OUT LOUD, not silently '
-    + 'dropped: nothing backfills that field and no retry will ever work');
+    + 'dropped: nothing the client can send reaches it until the backfill runs');
+  ok(/can_add/.test(screenSrc) && /can_add/.test(viewSrc) === false
+    ? true : /can_add/.test(screenSrc),
+  'and the add control is withheld from exactly those rows, by the per-row '
+    + 'flag the one photographs predicate computes');
 
   // ══════════════════════════════════════════════════════════════════════════
-  section('5. THE COPY EXISTS');
+  section('5. THE COPY EXISTS, IN ONE PLACE');
   // ══════════════════════════════════════════════════════════════════════════
 
   const keys = [...editorSrc.matchAll(/\bt\('([A-Za-z0-9_]+)'\)/g)].map((m) => m[1]);
@@ -352,31 +375,41 @@ const SERVER_ROW = {
     const i = enSrc.indexOf('  dailyJobsite: {');
     return i < 0 ? '' : enSrc.slice(i, enSrc.indexOf('\n  },', i));
   })();
+  ok(dj.length > 100, 'POSITIVE CONTROL: en.dailyJobsite was extracted');
   const missing = [...new Set(keys)].filter((k) => !new RegExp(`\\b${k}:`).test(dj));
   ok(missing.length === 0,
-    `every t() key the editor calls exists in en.dailyJobsite${
+    `every t() key the editor still calls exists in en.dailyJobsite${
       missing.length ? ` — missing ${JSON.stringify(missing)}` : ''}`);
+
+  // AND THE KEYS THE PANEL OWNED ARE GONE WITH IT. Dead copy is not harmless
+  // here: a second "this crew was recorded before photos could be attached"
+  // sitting in another namespace is one reword away from a filed log reading
+  // two different ways about the same row.
   for (const k of ['photoAppendTitle', 'photoAppendBody', 'photoAppendAdd',
     'photoAppendLegacyRow', 'photoAppendFailedTitle', 'photoAppendFailedBody',
     'photoAddedAfterFiling']) {
-    ok(new RegExp(`\\b${k}:`).test(dj), `en.dailyJobsite.${k} is written`);
+    ok(!new RegExp(`\\b${k}:`).test(dj), `en.dailyJobsite.${k} is gone with the panel`);
   }
-  ok(/Added after filing/i.test(dj),
+
+  const lp = (() => {
+    const i = enSrc.indexOf('  logbookPhotos: {');
+    return i < 0 ? '' : enSrc.slice(i, enSrc.indexOf('\n  },', i));
+  })();
+  ok(lp.length > 200, 'POSITIVE CONTROL: en.logbookPhotos was extracted');
+  for (const k of ['screenTitle', 'filedTitle', 'filedIntro', 'sectionTitle',
+    'noneAttached', 'addPhotographs', 'addedAfterFiling', 'legacyRow',
+    'queuedTitle', 'queuedBody', 'failedTitle', 'failedBody']) {
+    ok(new RegExp(`\\b${k}:`).test(lp), `en.logbookPhotos.${k} is written`);
+  }
+  ok(/Added after filing/i.test(lp),
     'the tile label matches the one the report prints, so the CP and the '
     + 'reader of the PDF are looking at the same fact');
 
-  // ── AND THE LEGACY REFUSAL IS NO LONGER A DEAD END ──────────────────────
-  //
-  // It used to say only that a photo has to go on an amendment. That is true
-  // and it is a dead end: an amendment costs the CP a full re-attestation of a
-  // record he has already signed, to attach a photograph that is not part of
-  // what he signed. backend/scripts/backfill_activity_id.py is the thing that
-  // actually resolves it, so the copy has to name a remedy the CP can ask for.
-  const legacyCopy = (dj.match(/photoAppendLegacyRow:\s*([\s\S]*?),\n/) || [])[1] || '';
+  // ── AND THE LEGACY REFUSAL IS STILL NOT A DEAD END ──────────────────────
+  const legacyCopy = (lp.match(/legacyRow:\s*([^]*?),\n/) || [])[1] || '';
   ok(legacyCopy.length > 0,
-    'POSITIVE CONTROL: the legacy-row copy was actually extracted from en.js — '
-    + 'an empty match would satisfy the "no retry" assertion below by saying '
-    + 'nothing at all');
+    'POSITIVE CONTROL: the legacy-row copy was actually extracted — an empty '
+    + 'match would satisfy the "no retry" assertion below by saying nothing');
   ok(/administrator/i.test(legacyCopy),
     'the refusal tells the CP what to actually do: there is a remedy and it is '
     + 'somebody he can ask, not a script name he cannot run');
