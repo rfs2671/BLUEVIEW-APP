@@ -169,7 +169,15 @@ const sum = (m) => [...m.values()].reduce((a, b) => a + b, 0);
 // changed to spacing.md and spacing.sm rather than the scale being widened to
 // admit them: a measured scale that grows every time someone eyeballs a gap
 // is no longer a claim about anything.
-ok(FILES.length === 18, `scanner reads 18 CP screens (found ${FILES.length})`);
+//
+// EIGHTEEN -> NINETEEN: app/logbooks/photos.jsx, the screen that adds
+// photographs to a log that is already FILED. It is a new CP screen, so the
+// scanner genuinely has one more file to read — and, on the rule the paragraph
+// above states, the SCALES DID NOT MOVE TO ADMIT IT: every space, radius and
+// border width it uses came out of the existing measured scale, and the run
+// that raised this number changed no other assertion in this file. If a future
+// screen makes one of them fail, change the screen, not the scale.
+ok(FILES.length === 19, `scanner reads 19 CP screens (found ${FILES.length})`);
 // SCANNER-IS-ALIVE guards, not debt ceilings. Every assertion below is
 // vacuously true against an empty measurement, so these exist to fail loudly
 // if a regex silently stops matching. The thresholds track the migration

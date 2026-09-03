@@ -115,8 +115,16 @@ console.log('\n-- and the eleven pinned editors still route through the stepper 
   const dir = path.join(FRONTEND, 'app', 'logbooks');
   const LIVE = new Set(['index.jsx', 'preshift_signin.jsx', 'review.jsx',
     'subcontractor_orientation.jsx']);
+  // PINNED, AND DELIBERATELY NOT AN EDITOR. photos.jsx adds photographs to a
+  // log that is already FILED — the operator's ruling that adding a photo is
+  // not editing a log — so it composes nothing, mounts no stepper, and has no
+  // steps to route through one. It is held to the pinning rules directly
+  // below instead of being counted as a twelfth editor, because "every pinned
+  // EDITOR routes through the stepper" is a claim about editors and widening
+  // it to mean "every pinned file" would make it stop saying anything.
+  const PINNED_NON_EDITORS = new Set(['photos.jsx']);
   const pinned = fs.readdirSync(dir)
-    .filter((f) => f.endsWith('.jsx') && !LIVE.has(f));
+    .filter((f) => f.endsWith('.jsx') && !LIVE.has(f) && !PINNED_NON_EDITORS.has(f));
   // TEN BECAME ELEVEN: site_superintendent_log.jsx, the BC 3301.13.13 log.
   //
   // THE ANCHOR EARNED ITS KEEP HERE. That screen was written reaching for
@@ -147,6 +155,24 @@ console.log('\n-- and the eleven pinned editors still route through the stepper 
   ok(live.length === 0,
     'and none of them mixes a live palette in, so with the canvas pinned every '
     + `pixel they own comes from outdoor. Found: ${JSON.stringify(live)}`);
+
+  // THE NON-EDITORS ARE NOT EXEMPT, THEY ARE ASKED A DIFFERENT QUESTION. The
+  // stepper is what pins the canvas for the eleven above; a screen that owns
+  // its own AnimatedBackground has to pin it itself, and a screen drawing
+  // outdoor ink on an unpinned canvas is invisible in dark mode — which is the
+  // exact defect this whole file documents.
+  for (const f of PINNED_NON_EDITORS) {
+    const raw = read(path.join('app', 'logbooks', f));
+    const src = code(raw);
+    ok(/<AnimatedBackground[^>]*\bpinned\b/.test(raw),
+      `${f} pins its own canvas — it owns the wrap rather than inheriting the `
+      + "stepper's");
+    ok(/\boutdoor\./.test(src),
+      `POSITIVE CONTROL: ${f} really does draw from the pinned palette (a `
+      + 'screen that referenced none would satisfy the next line vacuously)');
+    ok(!/(?<![a-zA-Z_$])colors\./.test(src) && !/useTheme\s*\(/.test(src),
+      `${f} mixes no live palette in, so every pixel it owns comes from outdoor`);
+  }
 }
 
 console.log('\n-- SignaturePad renders its LIGHT-MODE self on the pinned eleven --');

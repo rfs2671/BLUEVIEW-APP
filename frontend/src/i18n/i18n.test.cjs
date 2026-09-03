@@ -101,6 +101,11 @@ const EN_ONLY_NAMESPACES = [
   // placeholders, photo/permission errors, save+submit toasts, activity-chip
   // band labels. All CP-facing; the CP signs this log, no worker does.
   'dailyJobsite',
+  // app/logbooks/photos.jsx — photographs for a log that is already filed.
+  // Same population and same rule as dailyJobsite: the CP who signs the record
+  // and the DOB inspector who reads it both read English, and no worker sees
+  // this screen at all.
+  'logbookPhotos',
   // app/site/logbooks.jsx — the filed-log viewer. Read by a CP or a DOB
   // inspector, and a DOB inspector reads English.
   'logbookView',

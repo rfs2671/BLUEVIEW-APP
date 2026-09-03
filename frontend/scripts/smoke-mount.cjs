@@ -74,6 +74,28 @@ const ROUTES = [
   '/workers/w1',                        // worker detail — cert/OSHA expiry
   '/logbooks',
   '/logbooks/daily_jobsite?projectId=p1',
+  // ── THE FILED VIEW, WHICH IS A DIFFERENT SCREEN FROM THE EDITOR ───────────
+  //
+  // A locked log no longer renders its steps behind pointerEvents='none'; it
+  // renders FiledLogView. Every route above mounts an UNFILED day (the stub
+  // answers [] for the by-project read), so none of them executes that branch
+  // at all — the filed view would have had zero executed coverage and this
+  // job's whole claim is that it is the only thing that executes a screen.
+  //
+  // TWO TYPES, DELIBERATELY, because the branch that matters most is the one
+  // that differs between them: daily_jobsite CARRIES activities[].photos and
+  // must render the photographs section; toolbox_talk cannot and must render
+  // NO such section. A single fixture would execute one side of that rule and
+  // report clean while the other was broken.
+  //
+  // `filed=daily_jobsite` / `filed=toolbox_talk` is read by the stub below,
+  // which answers the by-project read with a FILED document instead of [].
+  '/logbooks/daily_jobsite?projectId=p1&filed=daily_jobsite',
+  '/logbooks/toolbox_talk?projectId=p1&filed=toolbox_talk',
+  // AND THE PHOTOGRAPHS SCREEN ITSELF — the dedicated screen a filed log
+  // routes to. Nothing else in CI renders it, and it owns a camera, an
+  // offline queue and the per-row refusal for a crew row with no identity.
+  '/logbooks/photos?logbookId=lb1',
   // The two forms ported onto the shared stepper. They are here for the same
   // reason daily_jobsite is: this job is the ONLY thing that executes a logbook
   // screen, and the port moved every one of their constants into a model and
@@ -200,6 +222,50 @@ const PENDING_DELETION = {
   ],
 };
 const WORKER = { id: 'w1', _id: 'w1', name: 'Test Worker', company_id: 'c1', trade: 'Carpenter', certifications: [] };
+
+// ── FILED LOGS, so the filed view has something to render ───────────────────
+//
+// Both are `status: 'submitted'` + `is_locked` — which is what makes the
+// editors set `locked` and the stepper take the FiledLogView branch instead of
+// rendering steps.
+//
+// THE DAILY JOBSITE ONE CARRIES ROWS OF THREE KINDS ON PURPOSE, because each
+// draws a different part of the photographs section and nothing else executes
+// any of them: a row with a photograph (the thumbnail + the added-after-filing
+// badge), a row with an identity and no photograph (the Add control), and a
+// row with NO activity_id at all (the refusal, and the `remediable` sentence
+// naming the backfill).
+const FILED_DAILY = {
+  id: 'lb1', _id: 'lb1', project_id: 'p1', log_type: 'daily_jobsite',
+  date: '2026-08-25', status: 'submitted', is_locked: true,
+  cp_name: 'Smoke CP', cp_signature: { ink: 'AAAA', affirmed: true },
+  updated_at: '2026-08-25T22:10:00Z',
+  data: {
+    weather: 'Clear, 78F',
+    general_description: 'Formwork on levels 3 and 4.',
+    permits_posted: true,
+    site_safety_orange: false,
+    activities: [
+      {
+        activity_id: 'act_1', company: 'Acme Concrete', trade: 'Concrete',
+        worker_count: 6, work_description: 'Deck pour',
+        photos: [{ photo_id: 'p1', original_r2_key: 'k1', added_after_filing: true }],
+      },
+      { activity_id: 'act_2', company: 'Beta Steel', trade: 'Ironwork', photos: [] },
+      { company: 'Legacy Co', trade: 'Demolition', photos: [] },
+    ],
+  },
+};
+// THE OTHER SIDE OF THE RULE. A toolbox talk has no activities[].photos
+// concept, so the filed view must render NO photographs section — not an
+// empty one. Mounting it is what executes that branch.
+const FILED_TOOLBOX = {
+  id: 'lb2', _id: 'lb2', project_id: 'p1', log_type: 'toolbox_talk',
+  date: '2026-08-25', status: 'submitted', is_locked: true,
+  cp_name: 'Smoke CP', cp_signature: { ink: 'AAAA', affirmed: true },
+  updated_at: '2026-08-25T22:10:00Z',
+  data: { topic: 'Ladder safety', location: 'Level 3', attendees_count: 12 },
+};
 // The gate tablet. AuthContext reads site_mode/project_id/project_name off
 // /api/auth/me to set siteMode + siteProject; a user without them makes every
 // /site/* screen router.replace() away before it renders anything.
@@ -208,7 +274,7 @@ const SITE_USER = { ...USER, id: 'sd1', email: 'site@test.local', full_name: 'Ga
 const siteRoute = (r) => r === '/site' || r.startsWith('/site/');
 
 // Every API call resolves to a benign shape. The point is mounting, not data.
-function stub(page, me = USER) {
+function stub(page, me = USER, filed = null) {
   return page.route('**://api.levelog.com/**', (route) => {
     const url = route.request().url();
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*', 'Content-Type': 'application/json' };
@@ -226,6 +292,14 @@ function stub(page, me = USER) {
     else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
     else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;
     else if (url.match(/\/api\/workers(\?|$)/)) body = [WORKER];
+    // THE FILED READS, BEFORE the generic /logbooks match below — which would
+    // otherwise swallow them and hand back [], mounting the UNFILED branch and
+    // reporting green while executing none of the filed view.
+    else if (/\/api\/logbooks\/lb2(\?|$)/.test(url)) body = FILED_TOOLBOX;
+    else if (/\/api\/logbooks\/lb[0-9]+(\?|$)/.test(url)) body = FILED_DAILY;
+    else if (filed && /\/api\/logbooks\/project\//.test(url)) {
+      body = filed === 'toolbox_talk' ? [FILED_TOOLBOX] : [FILED_DAILY];
+    }
     else if (/\/(logbooks|checkins|nfc|site-devices|documents|reports|notifications|annotations|admins|companies)/.test(url)) body = [];
     return route.fulfill({ status: 200, headers: cors, body: JSON.stringify(body) });
   });
@@ -266,7 +340,11 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
       // Page-level init scripts run after the context one, so this overwrites
       // the stored user for the gate tablet without disturbing the other routes.
       if (me !== USER) await page.addInitScript((u) => localStorage.setItem('blueview_user', u), JSON.stringify(me));
-      await stub(page, me);
+      // The route says whether this mount is of a FILED log; the stub answers
+      // the by-project read accordingly. Without it every logbook route mounts
+      // an empty editable day and the filed view is never executed.
+      const filed = (route.match(/[?&]filed=([a-z_]+)/) || [])[1] || null;
+      await stub(page, me, filed);
       const errors = [];
       page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
       page.on('console', (m) => {

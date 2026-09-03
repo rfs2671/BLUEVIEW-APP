@@ -14,6 +14,7 @@ import { siteDeviceTarget } from '../src/utils/inspectorConfinement';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
+import { setupFiledPhotoAutoDrain } from '../src/utils/filedPhotoQueue';
 import { setupSiteManifestSync } from '../src/utils/siteManifestStore';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
@@ -334,6 +335,18 @@ function AppShell() {
   // the drain. It only re-sends pushes the user already initiated.
   useEffect(() => {
     const unsubscribe = setupDraftAutoSync();
+    return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
+
+  // A PHOTOGRAPH FOR A FILED LOG, TAKEN IN A CELLAR. Same shape as the draft
+  // drain above and here for the same reason: photographs are taken where
+  // there is no signal, so the upload is held on the device and something has
+  // to send it. THIS IS THAT SOMETHING — startup, reconnect and foreground,
+  // all three inside setupFiledPhotoAutoDrain. `sendPendingSignatures` is why
+  // this line is written down rather than assumed: it existed, it was correct,
+  // and nothing ever called it, so nothing ever drained.
+  useEffect(() => {
+    const unsubscribe = setupFiledPhotoAutoDrain();
     return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
   }, []);
 
