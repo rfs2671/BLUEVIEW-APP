@@ -23331,6 +23331,87 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  THE PHOTO SET CLOSES AT THE END OF THAT LOG'S DAY
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# THE RULING, and it is a CLOCK RATHER THAN A PERMISSION MODEL. A photograph may
+# be added to or removed from a log until the end of that log's day. After that
+# the set is closed: no removal, no append, no exceptions. There is no per-photo
+# rule, no `added_after_filing` predicate, no chain-walk and no tombstone. WHO
+# is asking and WHETHER THE LOG IS SIGNED do not enter into it — those are
+# questions the authorization and immutability guards already answer, and mixing
+# them into this one is how a clock turns into a policy.
+#
+# END OF DAY IS THE SWEEP'S OWN BOUNDARY: 03:00 America/New_York on the day
+# AFTER the log's `date`. Not midnight, and the difference is not a rounding
+# choice. `sweep_stale_end_of_day_logs` is the thing that already decides a
+# daily narrative is over, and it runs at CronTrigger(hour=3, minute=0,
+# timezone="America/New_York"). So 03:00 is the instant the record actually
+# stops being live. Choosing midnight would invent a SECOND end-of-day three
+# hours before the one the system observes, and a CP would have to carry two of
+# them in his head for one document.
+#
+# IT ALSO ANSWERS THE TWO CASES THE BOUNDARY IS JUDGED ON. A log filed at 23:00
+# gets four hours instead of one. And the night-shift CP who files at 02:00 for
+# the shift that ended last night — `date` is YESTERDAY — gets an hour, where a
+# midnight rule would have shut his window BEFORE HE PRESSED SUBMIT: a log he
+# could never attach a photograph to, with no action available that could
+# change it.
+#
+# WHAT IT IS NOT ANCHORED TO: THE FILING. There is no filing instant on this
+# document to anchor to — no `filed_at`, and `submitted_at` is not written on
+# every path. Three further objections, any one fatal: a log that is NEVER
+# filed would never close, and those exist in production precisely because the
+# sweep declines to freeze a stale unsigned narrative; two logs for the same day
+# would close at different times, so there is no sentence a CP can learn; and a
+# window that is a function of an actor's behaviour is a permission model
+# wearing a clock's clothes.
+#
+# THE ARITHMETIC IS A STRING COMPARISON, ON PURPOSE. Subtracting three hours is
+# a pure UTC subtraction and `eastern_date` is the only timezone call; after
+# that it is 'YYYY-MM-DD' against 'YYYY-MM-DD'. So there is no offset anywhere
+# to be wrong about, DST cannot move the answer, and the device's mirror of this
+# rule (frontend/src/utils/logbookEditable.js, which computes the SAME shift
+# from the SAME field) cannot drift from it by arithmetic — only by edit, which
+# test_photo_window_rule.py pins.
+_PHOTO_WINDOW_GRACE_HOURS = 3
+
+
+def logbook_photo_window_day(now=None) -> str:
+    """The last New York day whose photo sets are still open.
+
+    `eastern_date(now - 3h)`. At 02:59 Eastern on D+1 that is still D; at 03:00
+    it becomes D+1, which is the moment sweep_stale_end_of_day_logs runs and
+    evaluates its own `date < eastern_date(now)`. The two are the same instant
+    by construction rather than by two constants that happen to agree.
+    """
+    now = now or datetime.now(timezone.utc)
+    return eastern_date(now - timedelta(hours=_PHOTO_WINDOW_GRACE_HOURS))
+
+
+def logbook_photo_window_is_open(logbook, now=None) -> bool:
+    """May this log's photo set still change?
+
+    FAILS CLOSED on a log with no usable `date`. A logbook without one is not
+    something the create path can produce — it is the dedupe key — so this is a
+    malformed record rather than an ordinary case. Of the two ways to be wrong,
+    refusing a photograph is recoverable by a conversation and appending one to
+    a closed compliance record is not.
+
+    A DATETIME IN `date` IS READ, NOT REFUSED. Some legacy rows carry one
+    instead of the string. Its first ten characters are the ISO calendar date,
+    and failing those closed would refuse a photograph for a log that is plainly
+    today's.
+    """
+    if not isinstance(logbook, dict):
+        return False
+    day = str(logbook.get("date") or "").strip()[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        return False
+    return day >= logbook_photo_window_day(now)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  A PHOTOGRAPH MAY BE ADDED TO A FILED LOG. NOTHING ELSE MAY.
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -23473,6 +23554,50 @@ async def append_activity_photo(
                 ),
             })
         raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})
+
+    # ── THE DAY IS OVER ─────────────────────────────────────────────────────
+    #
+    # THE ONE GATE THIS ROUTE DID NOT HAVE. Every neighbour has one — the
+    # capture route 409s FILED_LOG_PHOTO_CAPTURE_REFUSED, update and create 409
+    # FILED_LOG_DATA_IMMUTABLE — and this endpoint deliberately had none, on the
+    # reasoning that a photograph is not an amendment. That reasoning survives;
+    # what it never carried was an END. It accepted a photograph onto a log
+    # frozen by the sweep two years ago, which made it the only way to change
+    # the content of a closed compliance record.
+    #
+    # AFTER THE AUTHORIZATION AND IDENTITY REFUSALS, BEFORE THE BYTES.
+    #
+    #   AFTER, because this refusal NAMES THE LOG'S DATE, and that is a fact
+    #   about the record. A caller who may not see the log must not learn it
+    #   from here — _authorize_logbook_view has already refused him, and
+    #   ACTIVITY_NOT_FOUND has already refused a row that does not exist.
+    #
+    #   BEFORE, because a refusal must cost no storage and no transfer. That is
+    #   the ordering principle upload_logbook_photo states for itself, and it
+    #   binds harder here: NOTHING IN THIS SYSTEM EVER RECLAIMS AN ORPHANED R2
+    #   OBJECT (docs/audits/photo-window-rule.md), so bytes uploaded before a
+    #   refusal would be permanent, billed, and named by no document.
+    #
+    # 409, NOT 423. 423 says "locked" and this log frequently is not: the sweep
+    # declines to freeze a stale UNSIGNED narrative, so those sit
+    # `is_locked: false` forever and are exactly the case this gate exists for.
+    # 409 follows the convention its neighbours set — the server names the
+    # condition, the client owns the wording.
+    #
+    # AND 4xx IS LOAD-BEARING, not merely correct. filedPhotoQueue's
+    # `shouldQueueError` retains a held photograph on 5xx or a network failure
+    # and DROPS it on any 4xx, recording the code for the CP to read. A 5xx here
+    # would make a phone retry a photograph for a permanently closed log at
+    # every app launch, forever.
+    if not logbook_photo_window_is_open(logbook):
+        raise HTTPException(status_code=409, detail={
+            "code": "PHOTO_WINDOW_CLOSED",
+            "closed_after": str(logbook.get("date") or "")[:10] or None,
+            "message": (
+                "This log's day is over, so its photographs can no longer be "
+                "changed."
+            ),
+        })
 
     # ── THE BYTES ───────────────────────────────────────────────────────────
     try:

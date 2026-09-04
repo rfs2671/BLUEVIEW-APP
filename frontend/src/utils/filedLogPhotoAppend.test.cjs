@@ -59,8 +59,13 @@ const stepperSrc = LF(STEPPER);
 const draftsSrc = LF(path.join(UTILS, 'logbookDrafts.js'));
 const enSrc = LF(path.join(FRONTEND, 'src', 'i18n', 'en.js'));
 
-function loadModule(rel) {
-  const file = path.join(FRONTEND, rel);
+// Relative imports are followed and transpiled too, rather than handed to
+// node's require: logbookEditable now takes its ONE Eastern conversion from
+// ./dates, and a bare require would hit that file's raw `export`. Packages
+// still resolve through node.
+const _modCache = new Map();
+function loadFile(file) {
+  if (_modCache.has(file)) return _modCache.get(file);
   const { code } = babel.transformSync(fs.readFileSync(file, 'utf8'), {
     filename: file,
     plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
@@ -68,8 +73,22 @@ function loadModule(rel) {
     babelrc: false,
   });
   const mod = { exports: {} };
-  new Function('module', 'exports', 'require', code)(mod, mod.exports, require);
+  _modCache.set(file, mod.exports);
+  const localRequire = (spec) => {
+    if (!spec.startsWith('.')) return require(spec);
+    const base = path.resolve(path.dirname(file), spec);
+    const hit = [base, `${base}.js`, `${base}.jsx`, path.join(base, 'index.js')]
+      .find((p) => fs.existsSync(p) && fs.statSync(p).isFile());
+    if (!hit) throw new Error(`cannot resolve ${spec} from ${file}`);
+    return loadFile(hit);
+  };
+  new Function('module', 'exports', 'require', code)(mod, mod.exports, localRequire);
+  _modCache.set(file, mod.exports);
   return mod.exports;
+}
+
+function loadModule(rel) {
+  return loadFile(path.join(FRONTEND, rel));
 }
 
 const strip = (src) => src
@@ -82,10 +101,20 @@ section('1. THE PREDICATE — an exception, not a removal');
 
 const E = loadModule('src/utils/logbookEditable.js');
 
-const DRAFT = { id: 'd', status: 'draft', is_locked: false };
-const FILED_UNLOCKED = { id: 'f', status: 'submitted', is_locked: false };
-const LOCKED = { id: 'l', status: 'submitted', is_locked: true };
-const FROZEN_DRAFT = { id: 'x', status: 'draft', is_locked: true };
+// EVERY FIXTURE CARRIES TODAY'S DATE, and it has to be computed rather than
+// written down. The photo set closes at the end of the log's day — 03:00
+// America/New_York on the day after `date`, see photoWindow.test.cjs — so a log
+// with no date, or a hardcoded past one, is CLOSED and every assertion in this
+// section would be about the clock instead of about the predicate it names.
+// Today's date is inside the window at every hour, which is the state these
+// tests mean by "a filed log". The boundary itself is exercised next door.
+const TODAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
+  .format(new Date());
+
+const DRAFT = { id: 'd', status: 'draft', is_locked: false, date: TODAY };
+const FILED_UNLOCKED = { id: 'f', status: 'submitted', is_locked: false, date: TODAY };
+const LOCKED = { id: 'l', status: 'submitted', is_locked: true, date: TODAY };
+const FROZEN_DRAFT = { id: 'x', status: 'draft', is_locked: true, date: TODAY };
 
 ok(typeof E.isOpenForPhotoAppend === 'function',
   'logbookEditable exports isOpenForPhotoAppend, beside the rule it excepts');
@@ -102,7 +131,7 @@ ok(E.isOpenForPhotoAppend(DRAFT) === false,
   + 'be overwritten by the editor\'s own next PUT');
 ok(E.isOpenForPhotoAppend(null) === false && E.isOpenForPhotoAppend(undefined) === false,
   'nothing is not a log');
-ok(E.isOpenForPhotoAppend({ status: 'submitted' }) === true
+ok(E.isOpenForPhotoAppend({ status: 'submitted', date: TODAY }) === true
   && E.isOpenForPhotoAppend('submitted') === false,
   'a non-object is refused rather than coerced');
 

@@ -36,6 +36,8 @@
  * next instance.
  */
 
+import { easternDate } from './dates';
+
 /**
  * True when a log may still be edited in place.
  *
@@ -53,6 +55,54 @@ export function isOpenForEditing(log) {
   // rule is written.
   if (log.status === 'withdrawn') return false;
   return log.status !== 'submitted' && !log.is_locked;
+}
+
+/**
+ * THE LAST NEW YORK DAY WHOSE PHOTO SETS ARE STILL OPEN.
+ *
+ * `easternDate(now - 3h)`. This is the AFFORDANCE HALF of a rule the server
+ * owns — logbook_photo_window_is_open in backend/server.py, which is evaluated
+ * against the STORED document and is the only thing that decides anything. This
+ * copy exists so the controls DISAPPEAR instead of failing on tap: a button that
+ * throws an error when pressed is worse than a button that is not there.
+ *
+ * WHY 03:00 AND NOT MIDNIGHT: it is the instant the end-of-day sweep runs, so
+ * "the photo set closed" and "the record froze" are one event with one
+ * explanation rather than two boundaries three hours apart. The server comment
+ * carries the whole argument; this is deliberately a mirror and not a second
+ * derivation of it.
+ *
+ * IT WORKS WITH NO NETWORK, which is the reason the boundary is derived from
+ * `date` rather than from a filing instant. `date` is a 'YYYY-MM-DD' string on
+ * every logbook object the client already holds and caches, so a phone that has
+ * been in a cellar for two days still answers correctly. Nothing is asked of the
+ * server, and the server's clock is never needed.
+ *
+ * THE ARITHMETIC IS A UTC SUBTRACTION AND THEN A STRING COMPARE. easternDate
+ * from utils/dates.js is the ONE zone conversion — an inline Intl call here
+ * would be a second copy of the boundary, and two copies of a rule are two
+ * rules the moment one is edited.
+ */
+const PHOTO_WINDOW_GRACE_MS = 3 * 60 * 60 * 1000;
+
+export function photoWindowDay(now = new Date()) {
+  return easternDate(new Date(now.getTime() - PHOTO_WINDOW_GRACE_MS));
+}
+
+/**
+ * True while this log's photographs may still be added to or removed.
+ *
+ * FAILS CLOSED on a log with no usable `date`, matching the server exactly. The
+ * operator's requirement is that a control never fails on tap, and an absent
+ * date is the only case where the device cannot answer — hiding the control is
+ * the failure mode that honours the requirement, and the server would refuse
+ * anyway.
+ */
+export function isPhotoWindowOpen(log, now = new Date()) {
+  if (!log || typeof log !== 'object') return false;
+  const day = String(log.date || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+  return day >= photoWindowDay(now);
 }
 
 /**
@@ -76,8 +126,15 @@ export function isOpenForEditing(log) {
  * subtree rather than a hole in the wrapper: "no per-field flags to miss" stays
  * true by construction.
  */
-export function isOpenForPhotoAppend(log) {
+export function isOpenForPhotoAppend(log, now = new Date()) {
   if (!log || typeof log !== 'object') return false;
+  // AND THE DAY MUST NOT BE OVER. The exception above says a photograph is not
+  // an amendment; it never said the set stays open forever. The clock is the
+  // other half of that sentence, and it is asked HERE so the four screens that
+  // gate on this predicate — the entry row on logbooks/index, the photos screen
+  // guard, its per-row add buttons, and FiledLogView's button — all lose the
+  // affordance together, without any of them learning about dates.
+  if (!isPhotoWindowOpen(log, now)) return false;
   return !isOpenForEditing(log);
 }
 
