@@ -34,6 +34,7 @@ const TOAST = read(path.join('src', 'components', 'Toast.js'));
 const LAYOUT = read(path.join('app', '_layout.jsx'));
 const SETTINGS = read(path.join('app', 'settings.jsx'));
 const PROJECT = read(path.join('app', 'project', '[id].jsx'));
+const LOCKBAR = read(path.join('src', 'components', 'LogbookLockBar.jsx'));
 
 let passed = 0; let failed = 0;
 function ok(cond, label) {
@@ -94,6 +95,50 @@ console.log('\n-- mounted where an unseen error costs something --');
     PROJECT.indexOf('visible={showAddNfcModal}') + 1400);
   ok(nfc.length > 200, 'ANCHOR: the NFC sheet slice is non-empty');
   ok(/<ToastHost \/>/.test(nfc), 'and mounts it inside the NFC programming sheet');
+
+  // ── THE CORRECTION SHEET, AND WHY IT IS THE WORST PLACE FOR THIS ─────────
+  //
+  // A CP types a Reason for Amendment the server refuses — "photo", "pic",
+  // "9/2/26": under six trimmed characters, or with no three-letter run.
+  // doAmend catches AMENDMENT_REASON_REQUIRED and
+  // AMENDMENT_REASON_NOT_A_SENTENCE and raises a toast that teaches what a
+  // reason IS, then DELIBERATELY LEAVES THE SHEET OPEN so he can extend the
+  // text he already typed. That is the right behaviour and it is exactly what
+  // made the refusal unreadable: the sheet is a native Modal, the toast is
+  // raised from the provider's tree, and nothing in the app's tree paints
+  // above a Modal.
+  //
+  // The result on the device is a correction path that refuses silently. The
+  // gate is NOT the defect and must not be loosened — it exists because a CP
+  // once filed five corrections reading "1","1","1","1","0". A refusal he
+  // cannot see is.
+  ok(/import \{ useToast, ToastHost \}/.test(LOCKBAR),
+    'the lock bar imports it');
+  const amendSheet = LOCKBAR.slice(LOCKBAR.indexOf('<Modal visible={amendOpen}'),
+    LOCKBAR.indexOf('</Modal>'));
+  ok(amendSheet.length > 200, 'ANCHOR: the amendment sheet slice is non-empty');
+  ok(/<ToastHost \/>/.test(amendSheet),
+    'and mounts it inside the Reason for Amendment sheet — every refusal on '
+    + 'that path is raised while this Modal is up');
+}
+
+console.log('\n-- the refusal that keeps the sheet open still has to be legible --');
+{
+  // If someone "fixes" the silent refusal by closing the sheet instead, his
+  // typed reason is thrown away and he starts again from nothing — which is
+  // the dead-end that produced five amendments in eight minutes. The branch
+  // must keep the sheet open AND be readable, which is what the host is for.
+  const doAmend = LOCKBAR.slice(LOCKBAR.indexOf('const doAmend'),
+    LOCKBAR.indexOf('if (locked)'));
+  ok(doAmend.length > 200, 'ANCHOR: the doAmend slice is non-empty');
+  ok(/AMENDMENT_REASON_NOT_A_SENTENCE/.test(doAmend)
+    && /AMENDMENT_REASON_REQUIRED/.test(doAmend),
+    'ANCHOR: doAmend still recognises both reason refusals');
+  const reasonBranch = doAmend.slice(doAmend.indexOf('AMENDMENT_REASON_NOT_A_SENTENCE'),
+    doAmend.indexOf('AMENDMENT_ALREADY_OPEN'));
+  ok(!/setAmendOpen\(false\)/.test(reasonBranch),
+    'the reason refusal does NOT close the sheet — his text stays in front of '
+    + 'him to extend, which is why the toast has to reach that window');
 }
 
 console.log('\n-- the two non-fixes stay refused --');
