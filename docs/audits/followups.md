@@ -86,6 +86,33 @@ written the same day by the person recording this, one in the same hour as the
 paragraph warning against it. Nobody re-reads a test they wrote an hour ago
 looking for this.
 
+### Three of them were caught by their own author, in one session
+
+That number is the argument, and it points the opposite way from reassurance.
+
+  1. `test_card_image_correction` asserted a route's dependencies out of a
+     3,242-character `repr()`. Passed locally, failed in CI on identical code.
+  2. `test_the_gate_actually_asks_the_predicate` — the FIRST control run passed,
+     which meant ten tests were driving a predicate directly and none of them
+     noticed the call site had been reverted.
+  3. `test_an_unresolved_request_is_refused_and_a_resolved_one_is_not` checked
+     for the substrings "rate", "quota", "ceiling" in a function's source, and
+     failed on the word **sepa-rate** in a comment written minutes earlier.
+
+Each was written by someone who had just finished writing THIS ENTRY. Each felt
+like being thorough at the moment it was typed.
+
+**So the class is not rare; it is the DEFAULT.** The structural version is
+always more work than the version that greps, and the version that greps always
+passes first. Catching it is not a matter of remembering that the class exists —
+all three of those were written by someone who demonstrably remembered. It is a
+matter of asking, of each assertion, at the moment of writing it: **what am I
+actually asserting, and would it still hold if the thing I named moved?**
+
+A useful forcing question, because it is answerable in seconds: **what is the
+smallest edit that breaks this test without breaking the behaviour?** If one
+exists, the test is pinned to a location.
+
 ### What to do instead
 
 Ask of the assertion you are writing **right now**: would this still hold if
