@@ -88,7 +88,32 @@ const API_PORT = Number(arg('api-port', 5899));
 
 function serverAllowHeaders() {
   const src = fs.readFileSync(SERVER_PY, 'utf8');
-  const block = src.match(/allow_headers=\[([^\]]*)\]/);
+  // TWO SPELLINGS, because this change introduced the second one and the
+  // resolver only knew the first — so the branch broke its own gate.
+  //
+  //   allow_headers=["Authorization", ...]      the original inline list
+  //   allow_headers=CORS_ALLOW_HEADERS          a named constant, now that the
+  //                                             refusal counter reports the
+  //                                             same list back over the wire
+  //
+  // Resolving the NAME rather than accepting either shape blindly keeps the
+  // guarantee this function exists for: the browser is preflighted against the
+  // list the middleware actually receives, not against a copy of it.
+  let block = src.match(/allow_headers=\[([^\]]*)\]/);
+  if (!block) {
+    const named = src.match(/allow_headers=([A-Z][A-Z0-9_]*)/);
+    if (named) {
+      block = src.match(
+        new RegExp(`^${named[1]}\\s*=\\s*\\[([^\\]]*)\\]`, 'm'),
+      );
+      if (!block) {
+        throw new Error(
+          `allow_headers=${named[1]} but no \`${named[1]} = [...]\` definition ` +
+          `found in ${SERVER_PY}`,
+        );
+      }
+    }
+  }
   if (!block) throw new Error(`no allow_headers=[...] found in ${SERVER_PY}`);
   // Entries are string literals or module constants (CLIENT_REQUEST_ID_HEADER,
   // CLIENT_VERSION_HEADER). Resolve the constants out of the same file.
