@@ -1256,6 +1256,7 @@ const CRANE_SCREEN = screenSrc('crane_operations');
 const EXC_SCREEN = screenSrc('excavation_monitoring');
 const HW_SCREEN = screenSrc('hot_work');
 const SSC_SCREEN = screenSrc('ssc_daily_safety_log');
+const CS_SCREEN = screenSrc('site_superintendent_log');
 ok(/LogbookStepper/.test(CONC_SCREEN) && !/THE PAYLOAD IS UNCHANGED/.test(CONC_SCREEN),
   'the comment stripper removes prose but keeps code');
 
@@ -1273,6 +1274,15 @@ ok(END_OF_DAY_TYPES.length === 2
   && END_OF_DAY_TYPES.includes('daily_jobsite')
   && END_OF_DAY_TYPES.includes('ssc_daily_safety_log'),
   `exactly two logs are daily narratives (${END_OF_DAY_TYPES.join(', ')})`);
+// THE THIRD CLASS, read the same way and for the same reason. It is not a
+// rename of either of the other two: IMMEDIATE freezes the instant a signature
+// lands, END_OF_DAY is swept shut at 3am, and a VISIT is frozen by an explicit
+// finalize when its author signs on departure — with nothing else that will
+// ever do it, because sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES.
+const VISIT_TYPES = [...TIMING_TABLE.matchAll(/"([a-z_]+)":\s*"visit"/g)]
+  .map((m) => m[1]);
+ok(VISIT_TYPES.length === 1 && VISIT_TYPES.includes('site_superintendent_log'),
+  `exactly one log is a visit (${VISIT_TYPES.join(', ')})`);
 
 const PORTED_SCREENS = [
   ['concrete_operations', CONC_SCREEN],
@@ -1280,6 +1290,7 @@ const PORTED_SCREENS = [
   ['excavation_monitoring', EXC_SCREEN],
   ['hot_work', HW_SCREEN],
   ['ssc_daily_safety_log', SSC_SCREEN],
+  ['site_superintendent_log', CS_SCREEN],
 ];
 
 for (const [name, src] of PORTED_SCREENS) {
@@ -1324,10 +1335,36 @@ for (const [name, src] of PORTED_SCREENS) {
   // He signs once, the record stays open, and sweep_stale_end_of_day_logs
   // closes it at 3am ET once the day is actually over. So the assertion
   // inverts: an END_OF_DAY form must freeze NOTHING on a signature.
+  //
+  // ── AND A SIXTH SCREEN JOINED, WITH A THIRD CLASS ────────────────────────
+  //
+  // site_superintendent_log is class `visit`. It is on this list for the
+  // picker guard at the bottom of the loop — the rule that a time of day is
+  // TAPPED, not typed, which already covered four screens and simply never
+  // covered the one whose two statutory times were free-text boxes. Adding it
+  // meant the loop had to learn the class it is, rather than the loop's two
+  // classes being widened until they fitted it. Where its wiring is spelled
+  // differently from the five ports, the SAME claim is asked of the spelling
+  // it uses; where it is spelled the same, it takes the same assertion.
   const endOfDay = name === 'ssc_daily_safety_log';
-  ok(END_OF_DAY_TYPES.includes(name) === endOfDay,
-    `${name}: the backend agrees this is ${endOfDay ? 'END_OF_DAY' : 'IMMEDIATE'}`);
-  if (endOfDay) {
+  const visit = name === 'site_superintendent_log';
+  const expectedClass = endOfDay ? 'END_OF_DAY' : (visit ? 'VISIT' : 'IMMEDIATE');
+  ok(END_OF_DAY_TYPES.includes(name) === endOfDay
+     && VISIT_TYPES.includes(name) === visit,
+  `${name}: the backend agrees this is ${expectedClass}`);
+  if (visit) {
+    // 3301.13.13 "complete such log prior to departing the job site", and
+    // logbook_timing_meta for class `visit` says freeze_on_sign FALSE,
+    // freeze_on_finalize TRUE. So the signature is not the freeze — the
+    // author's finalize is — and this is the ONE screen that must call
+    // /finalize, because sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES
+    // and there is no second actor to close it.
+    ok(!/freezeIfImmediate/.test(src),
+      `${name}: does NOT freeze on signature — freeze_on_sign is false for a visit`);
+    ok(/logbooksAPI\.finalize\(savedId\)/.test(body),
+      `${name}: it FINALIZES explicitly, and nothing else ever will — the 3am `
+      + 'sweep excludes VISIT_LOG_TYPES on purpose');
+  } else if (endOfDay) {
     ok(!/freezeIfImmediate/.test(src),
       `${name}: does NOT freeze on signature — it is a daily narrative`);
     // SCOPED TO THE SIGNATURE PATH. markFinalized still appears in fetchData,
@@ -1349,16 +1386,73 @@ for (const [name, src] of PORTED_SCREENS) {
   // renderers gate whole sections on.
   ok(!/data: \{/.test(body),
     `${name}: no path hand-builds a data object — draftBody decides the shape`);
-  // The affirmation gate — this is an IMMEDIATE type, so submit must be
-  // UNREACHABLE without one, not merely warned about.
-  ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\)\}/.test(src),
-    `${name}: an unaffirmed signature makes Submit unreachable`);
-  ok(/submitHint=\{affirmationHintKey\(cpSignature, profileLoaded\)/.test(src),
-    `${name}: and the dead button says why`);
+  // The affirmation gate — submit must be UNREACHABLE without one, not merely
+  // warned about.
+  if (visit) {
+    // SAME CLAIM, MORE CONDITIONS. This screen disables Submit on the
+    // affirmation AND on two gaps the five ports do not have: the unattested
+    // statutory items, and — because item 1 is `attestable: false` and
+    // csUnanswered structurally cannot name it — a blank arrival or departure.
+    // Asserted as a conjunct rather than as the whole expression, so the exact
+    // string is not frozen while the requirement still is.
+    // READ OUT OF THE `submitDisabled` EXPRESSION ITSELF, not off the whole
+    // file. A whole-file search for `presenceMissing.length > 0` is satisfied
+    // by the submitHint a few lines below — which is a message, not a gate —
+    // so a screen that dropped the conjunct from the gate and kept explaining
+    // it in the hint would report green. A mutation walked straight through
+    // exactly that.
+    const gateExpr = (() => {
+      const at = src.indexOf('submitDisabled={');
+      if (at < 0) return '';
+      let depth = 0;
+      for (let i = src.indexOf('{', at); i < src.length; i += 1) {
+        if (src[i] === '{') depth += 1;
+        else if (src[i] === '}') { depth -= 1; if (depth === 0) return src.slice(at, i + 1); }
+      }
+      return '';
+    })();
+    ok(/^submitDisabled=\{!isAffirmedSignature\(cpSignature\)/.test(gateExpr),
+      `${name}: an unaffirmed signature makes Submit unreachable`);
+    ok(/presenceMissing\.length > 0/.test(gateExpr)
+       && /unanswered\.length > 0/.test(gateExpr),
+    `${name}: and so does a blank ARRIVED/DEPARTED or an unattested item`);
+    // The dead button says why, through this screen's own copy rather than
+    // affirmationHintKey: it has three reasons to be dead and has to pick one.
+    ok(/submitHint=\{[\s\S]{0,600}?t\('signatureHint'\)/.test(src)
+       && /submitHint=\{[\s\S]{0,600}?t\('presenceHint'\)/.test(src),
+    `${name}: and the dead button says why — naming the missing field, not `
+      + 'just refusing');
+  } else {
+    ok(/submitDisabled=\{!isAffirmedSignature\(cpSignature\)\}/.test(src),
+      `${name}: an unaffirmed signature makes Submit unreachable`);
+    ok(/submitHint=\{affirmationHintKey\(cpSignature, profileLoaded\)/.test(src),
+      `${name}: and the dead button says why`);
+  }
   // The refusal split: a 4xx is a JUDGEMENT and must not freeze.
-  ok(/refused && submitStatus === 'submitted'/.test(src)
-    && /if \(savedId === undefined\) return;/.test(src),
-    `${name}: a server REFUSAL is not offline — it reports and does not freeze`);
+  if (visit) {
+    // SAME SPLIT, DIFFERENT SPELLING. This screen has no `submitStatus` (it
+    // has no draft submit at all) and its no-id guard THROWS rather than
+    // returning, so the refusal is sorted in the push catch. What is asserted
+    // is the property: the 4xx branch reports and returns without freezing
+    // anything, locally or otherwise.
+    ok(/const refused = typeof status === 'number' && status >= 400 && status < 500;/
+      .test(body),
+    `${name}: a 4xx is classified as a refusal, separately from offline`);
+    const refusedBranch = (() => {
+      const at = body.indexOf('if (refused) {');
+      return at < 0 ? '' : body.slice(at, body.indexOf('if (!localSaved)', at));
+    })();
+    ok(refusedBranch.includes('toast.error') && /\breturn;/.test(refusedBranch),
+      `${name}: the refusal branch was located and it reports and returns`);
+    ok(!/markFinalized|freezeLocally|markPending/.test(refusedBranch),
+      `${name}: a server REFUSAL is not offline — it reports and does not freeze`);
+    ok(/if \(!savedId\) throw new Error\(NO_RECORD_RETURNED\);/.test(body),
+      `${name}: and a 200 that names no record is not a filing either`);
+  } else {
+    ok(/refused && submitStatus === 'submitted'/.test(src)
+      && /if \(savedId === undefined\) return;/.test(src),
+      `${name}: a server REFUSAL is not offline — it reports and does not freeze`);
+  }
   // gateCopy — the server's English `detail` never renders.
   ok(/const key = `code_\$\{code\}`/.test(src) && /tFinalize\('genericError'\)/.test(src),
     `${name}: the client owns the wording; an unmapped code falls back`);
@@ -1377,6 +1471,16 @@ for (const [name, src] of PORTED_SCREENS) {
   } else {
     ok(/<TimeField/.test(src) && !/placeholder="HH:MM"/.test(src),
       `${name}: times are chosen with TimeField, not typed into a free-text box`);
+  }
+  if (visit) {
+    // THREE OF THEM, COUNTED. This screen is the reason it joined the list:
+    // `presence.arrived_at`, `presence.departed_at` and a finding's
+    // `observed_at` were all `<Field placeholder="HH:MM">` — free text boxes
+    // in which "7", "0730" and "seven" were equally acceptable, on the fields
+    // BC 3301.13.13 exists to record. A count, because converting two of the
+    // three and leaving one would satisfy the rule above.
+    ok((src.match(/<TimeField/g) || []).length === 3,
+      `${name}: all THREE times are pickers, not two of three`);
   }
 }
 

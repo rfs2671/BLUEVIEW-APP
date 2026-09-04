@@ -1394,6 +1394,25 @@ export default {
     arrivedAt: 'ARRIVED',
     departedAt: 'DEPARTED',
     printedName: 'PRINTED NAME',
+    // The picker's own three strings, worded exactly as the four editors that
+    // already render TimeField word them. One control must not read four ways.
+    phTime: 'Tap to choose a time',
+    dateClear: 'Clear',
+    dateDone: 'Done',
+    // THE MARK ON THE FIELD ITSELF, same words the other editors use so one
+    // app does not mark a missing answer two ways.
+    requiredField: 'Required field',
+    // WHY THE SUBMIT BUTTON IS DEAD, AND WHICH FIELD TO GO AND FILL.
+    // {fields} is the labels printed above the controls — ARRIVED, DEPARTED —
+    // not the item name: "presence" is not something he can go and fill in.
+    // The step number is in the sentence because the fields are four steps
+    // behind the button he just tapped.
+    presenceHint: 'Go back to step 1 and choose {fields}. BC 3301.13.13 records when you were on the site, so this log cannot be filed without those times.',
+    // HE LEFT AFTER MIDNIGHT. Never derived from the two times — see the note
+    // in the screen. The label states the calendar day, not "overnight",
+    // because that is the fact a reader of the filed log needs.
+    departedNextDay: 'I left after midnight, on the following day',
+    departedNextDayNote: 'Tick this only if your departure time falls on the day AFTER this log’s date. Nothing works it out from the two times — a 20:00 arrival and a 20:30 departure the next evening look the same either way.',
 
     progressLabel: 'GENERAL PROGRESS OF WORK',
     progressPlaceholder: 'What the job advanced today',

@@ -221,7 +221,22 @@ console.log('\n4. NOTHING THE HOISTED COMPONENTS READ IS LEFT TO A CLOSURE');
     });
   });
 
-  ok(callSites('Field').length === 15, `Field is used at 15 call sites (found ${callSites('Field').length})`);
+  // TWELVE, NOT FIFTEEN, AND THE THREE THAT LEFT ARE NAMED BELOW.
+  //
+  // The count is here to notice a call site that quietly stops passing `s` or
+  // `locked` by disappearing, so it has to move whenever the screen's field
+  // list really changes — and it just did: `arrived_at`, `departed_at` and a
+  // finding's `observed_at` are TimeField pickers now, not free-text `Field`s.
+  // Lowering the number without the assertion under it would let a Field that
+  // was deleted for some other reason ride in on this change.
+  ok(callSites('Field').length === 12, `Field is used at 12 call sites (found ${callSites('Field').length})`);
+  ok(callSites('TimeField').length === 3,
+    `and the three that left are TimeField pickers (found ${callSites('TimeField').length})`);
+  // NOT A FREE-TEXT BOX ANYWHERE NEAR A TIME. `placeholder="HH:MM"` was the
+  // tell: a text input asking a superintendent to type a clock time, on the
+  // two fields BC 3301.13.13 exists to record.
+  ok(!/placeholder="HH:MM"/.test(CODE),
+    'no field on this screen still asks him to TYPE a time');
 }
 
 console.log(

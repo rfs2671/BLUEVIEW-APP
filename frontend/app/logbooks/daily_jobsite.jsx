@@ -414,8 +414,23 @@ export default function DailyJobsiteLog() {
   const [checklistItems, setChecklistItems] = useState({});
   const [observations, setObservations] = useState([]);
   const [visitorsDeliveries, setVisitorsDeliveries] = useState('');
-  const [timeIn, setTimeIn] = useState('');
-  const [timeOut, setTimeOut] = useState('');
+  // `timeIn` / `timeOut` WERE HERE, AND THEY ARE GONE. Two useState pairs, two
+  // payload keys and two hydrate lines, with no control anywhere in the app
+  // that ever set either one — so every daily jobsite log since the U1 rebuild
+  // filed `time_in: ""` and both PDF renderers printed a row that said N/A
+  // forever. A field that is always N/A on a compliance record teaches its
+  // reader to skip the row, which is worse than not printing it.
+  //
+  // NOT REPLACED BY A PICKER HERE. The CP's own hours are not what 3301-02
+  // asks this log for; they are item 1 of the SUPERINTENDENT log, where they
+  // are now `presence.arrived_at` / `presence.departed_at`, chosen from a
+  // clock and required before it will file.
+  //
+  // THE READERS ARE LEFT STANDING ON PURPOSE. app/site/logbooks.jsx and
+  // generate_combined_report both print these keys only when a stored log
+  // carries them, so a record filed before the U1 rebuild still shows what it
+  // said. Deleting the writer is forward-only; deleting the reader would
+  // change what an already-signed document looks like.
   const [areasVisited, setAreasVisited] = useState('');
 
   // ── Roster integrity ──────────────────────────────────────────────────
@@ -492,12 +507,12 @@ export default function DailyJobsiteLog() {
     checklist_items: checklistItems,
     observations,
     visitors_deliveries: visitorsDeliveries,
-    time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
+    areas_visited: areasVisited,
   }), [
     projectAddress, weather, weatherTemp, weatherWind, weatherFetchState,
     generalDescription,
     equipmentOnSite, checklistItems, observations, visitorsDeliveries,
-    timeIn, timeOut, areasVisited,
+    areasVisited,
   ]);
 
   // ── AUTOSAVE ──────────────────────────────────────────────────────────
@@ -936,8 +951,9 @@ export default function DailyJobsiteLog() {
     if (d.checklist_items) setChecklistItems(d.checklist_items);
     if (d.observations) setObservations(d.observations);
     if (d.visitors_deliveries) setVisitorsDeliveries(d.visitors_deliveries);
-    if (d.time_in) setTimeIn(d.time_in);
-    if (d.time_out) setTimeOut(d.time_out);
+    // NO time_in / time_out HYDRATION. There is no state to hydrate into, and
+    // reading a key nothing writes back is how a deleted state block leaves a
+    // live call site behind.
     if (d.areas_visited) setAreasVisited(d.areas_visited);
   };
 
