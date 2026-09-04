@@ -4,7 +4,257 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-04 — file deletion was not the only unaudited destructive operation: 14 of 23 DELETE routes write no record
+
+Asked after `delete_project_file` was found to leak orphans AND leave no trace:
+was it the only one? No. Measured against `cf4e8f00`.
+
+**23 `DELETE` routes. 9 write an audit record. 14 do not.**
+
+### First, the sweep's own false positive, because it changes the shape
+
+A scan for `audit_log(` reported `admin_delete_feature_flag` as unaudited. **It
+is the best-audited destructive endpoint in the codebase.** It writes through
+`_write_flag_audit()` into a SEPARATE collection, `feature_flag_audit_log`, and
+stores the complete before/after document so the deletion can be reversed by
+re-creating the flag from the row. Verified: 4 rows in production, full
+documents present.
+
+So the audit surface is **fragmented across collections** — `audit_logs` (559
+rows, 16 actions), `feature_flag_audit_log` (4 rows), and `card_audit_log`
+(0 rows, consistent with that path being a decoy). Any coverage question asked
+of one collection under-reports, and "is this audited?" has no single place to
+look. That is worth more than any individual gap below.
+
+### The unaudited 14, ranked by what is lost
+
+**Compliance evidence:**
+
+| route | what goes | measured |
+|---|---|---|
+| `DELETE /workers/{id}/certifications/{i}` | **an OSHA/SST certification** | 60 workers hold 61 certifications |
+| `DELETE /workers/{id}` | a worker (soft) | 0 of 61 deleted so far |
+| `DELETE /annotations/{id}` | plan markup (soft) | collection does not exist |
+| `DELETE /admin/cs-registrations/{id}` | a CS registration (soft) | 1 row, 0 deleted |
+
+**Access and identity:**
+
+| route | measured |
+|---|---|
+| `DELETE /owner/admins/{id}` | 8 users, 1 deleted |
+| `DELETE /admin/site-devices/{id}` | **5 devices, 3 already deleted — unaudited, and it has happened** |
+| `DELETE /owner/companies/{id}/filing-reps/{id}` | no such collection |
+
+**Configuration and derived state** (`nfc-tags`, `checkin-points`, `checklists`
+— 1 of 1 already deleted — `dropbox/disconnect`, `notification-preferences`,
+`whatsapp/groups`), plus `POST` paths that destroy without being DELETEs:
+`reset-resync`, `reindex-document`, `reindex-all`, `repair-file-names` (renames
+R2 objects).
+
+`DELETE /projects/{id}/files/{file_id}` still counts as unaudited here because
+the fix that adds `project_file_delete` is on a branch and not merged.
+
+### The certification one is the worst, and not because of the audit
+
+`remove_worker_certification` pops an entry out of an array and returns it:
+
+```python
+removed = certs.pop(cert_index)
+await db.workers.update_one({...}, {"$set": {"certifications": certs, ...}})
+return {"message": "Certification removed", "removed": removed}
+```
+
+Every other unaudited deletion in this list sets `is_deleted: True`, so however
+poor the record, **the damage can at least be counted afterwards** — that is how
+the numbers in the tables above exist. An array pop leaves nothing. There is no
+flag, no tombstone, no count, and no audit row. It is the one destructive
+operation in the system whose past use is **unmeasurable by construction**, and
+what it destroys is a compliance credential on a DOB app.
+
+### The pair 200 lines apart that decides the argument
+
+`DELETE /workers/{id}/osha-card-image` — the PICTURE of the card — is audited,
+and carries this comment:
+
+> RECORDED EVEN WHEN THERE WAS NOTHING TO REMOVE. "I asked and it was already
+> gone" and "I never asked" are different facts.
+
+`DELETE /workers/{id}/certifications/{i}` — the certification RECORD itself —
+is not audited at all. Same worker, same screen, adjacent handlers. Somebody
+reasoned carefully about the weaker of the two and never looked at the stronger.
+
+Same shape at `DELETE /owner/admins/{id}` and `DELETE /admin/users/{id}`: both
+soft-delete a user through the same `_mark_user_deleted` writer — deliberately
+unified, with a comment pointing from one to the other — and only one writes
+`user_delete`. **The write was unified and the record was not.** An audit that
+is added per-endpoint rather than at the writer diverges exactly where two
+endpoints were made to agree.
+
+### Two things production says that the code does not
+
+**1. The audited check-in path does not run.** `checkin_create` and `checkout`
+are declared in `server.py` and have **zero rows** in `audit_logs`, against
+**301 check-ins** in the database. The admin-side actions on the same feature do
+fire (`checkin_review` 80, `checkin_assign_trade` 13), so the collection is
+reachable and the feature is live — it is the CREATION path that is audited in
+code nothing executes. Consistent with the gate being served outside these
+handlers; the exact route needs confirming before this is stated as cause.
+
+**2. A renamed action silently partitioned the history.** `project_delete` holds
+32 rows from 2026-04-10 to 2026-07-20 and **is not a literal anywhere in the
+current code**. `project_mark_delete` holds 1 row, 2026-08-10 onward. The action
+was renamed and nothing migrated. Ask "how many projects were deleted" under
+either name and get a confident wrong number — 32 or 1 — with no indication the
+other era exists. 17 of the 32 actions declared in code have never appeared in
+production at all; this is the inverse, a name in production the code can no
+longer produce.
+
+### What this is not
+
+Not an argument for auditing everything. Deleting an NFC tag or a notification
+preference is configuration, and a log full of it is a log nobody reads. The
+line worth drawing is **evidence versus configuration**, and the four rows in
+the first table are on the wrong side of it.
+
+Nothing here has been built. `project_file_delete` on
+`fix/file-delete-leaves-no-orphans` is the only change made.
+
+---
+
+## PRACTICE — 2026-09-04 — an empty result proves nothing until you prove the query reached its subject
+
+About to publish "file deletion was never audited — the audit log holds zero
+rows for it" as a finding. The query was `db.audit_log.count_documents(...)`.
+
+**The collection is `db.audit_logs`.** A nonexistent collection returns zero to
+every query, cheerfully, with no error. The finding happened to be true, and the
+evidence for it was worthless: the same zero would have come back if the log
+held ten thousand file-deletion rows.
+
+Re-run against the real collection: 559 rows, 16 distinct actions, most recent
+that same afternoon. The conclusion survived — there genuinely is no file-level
+action — but it now rests on *enumerating the actions and reading them*, which
+is a different act from counting a filter's matches.
+
+### The class
+
+This is the third form of the same defect this log has recorded:
+
+| where | the empty set | why it looked like an answer |
+|---|---|---|
+| `db.workers.find({project_id})` | no writer sets `project_id` on workers | query well-formed, collection real, field never populated |
+| Query D | compared 0 to 0 on 27 of 35 groups | both sides empty, so "they match" was vacuous |
+| `db.audit_log` (this one) | collection does not exist | name off by one character |
+
+Each returns a clean, confident, well-formed nothing. **A zero is a measurement
+of the query at least as much as of the data**, and nothing in the result says
+which.
+
+### The rule
+
+Before reporting an absence, prove the query reaches its subject: assert the
+collection is in `list_collection_names()`, or that an unfiltered count is
+non-zero, or that a deliberately-matching probe returns rows. `inserted_doc_keys`
+already does the committed-code version of this — it RAISES rather than
+returning an empty set when it finds no matching call. Ad-hoc queries need the
+same discipline and have nothing enforcing it.
+
+Cheapest habit that would have caught all three: **run the query once with the
+filter removed.** If that is also zero, the filter was never the question.
+
+---
+
+## PRACTICE — 2026-09-04 — the substring class, now outside committed code: `/file/i` matched `profile_phone_change`
+
+Having fixed the collection name above, the next query asked which audited
+actions concern files:
+
+```
+db.audit_logs.count_documents({"action": {"$regex": "file", "$options": "i"}})  ->  2
+```
+
+Two hits. Both `profile_phone_change`. **"pro-file" contains "file".**
+
+Had that run first, or alone, it would have produced the exact opposite of the
+truth — "file operations ARE audited, here are two" — with a real collection, a
+real count, and real rows to point at. The right answer came only from
+enumerating `distinct("action")` and reading all 16 by eye: no file-level action
+exists.
+
+### Why this instance is worth its own entry
+
+The substring-standing-in-for-structure class is well represented in this log
+and every prior instance was in COMMITTED CODE, where a test or a review can
+eventually catch it:
+
+- `fall_protection` matching `fall_protection_required`, overstating logbook
+  type coverage
+- source pins grepping a LOCATION instead of a BEHAVIOUR
+- absence assertions on bare words rather than anchored constructs
+- a grep whose pattern did not match its own output, reporting a red PR green
+
+**This one was in an ad-hoc diagnostic query, and that is a different risk.** A
+throwaway query has no test, no review, no second reader, and no second run. It
+executes once, its output becomes a sentence in a report, and the query is
+discarded. There is no artefact left for anyone to find the bug in — only the
+wrong conclusion, now sourced and confident.
+
+### The rule
+
+A regex over an enumerable field is the wrong instrument. `distinct()` first,
+read the values, then match exactly. When a substring filter must be used,
+anchor it (`^file_`) or verify each hit — and treat a small hit count as a
+reason to print the matches, not as a reason to trust them.
+
+The general form, which covers both of today's entries: **a diagnostic query
+that produces a number for a report deserves the same scepticism as a test
+assertion, and gets less, because nothing runs it twice.**
+
+---
+
+## PRACTICE — 2026-09-04 — deleting dead code deleted a latent defect nobody had attributed to it
+
+`get_subcontractors()` was one of five subcontractor routes removed in #404 for
+being unreachable: no wrapper in `api.js`, zero references under `frontend/`,
+nothing in `checkin.html`, `scripts/` or `lib/`. The case for removal was
+entirely "nothing calls this".
+
+It was ALSO carrying an unserved sort. The unserved-sort sweep had rated it
+`exclusion of ['password']` — the same shape as the two endpoints that returned
+500s under `Sort exceeded memory limit` — and rated it SLOW ONLY because nothing
+stores base64 on `subcontractors` yet. One inline blob added to that collection
+would have promoted it to tier 1.
+
+**Two independent pieces of work, each blind to the other.** The sweep did not
+know the route was dead; the removal did not know the route was a latent
+outage. The defect went away as a side effect, and nothing in either record
+connected them — the sort entry still listed it as live until re-measured today.
+
+### What to take from it
+
+Not "delete dead code, you might get lucky". The useful form is narrower:
+
+**Unreachable code is not inert — it is unmaintained code holding live
+liabilities.** It sits in the same file, inherits every schema change, and is
+skipped by exactly the attention that would notice it degrading. A handler
+nobody calls still carries whatever was true when it was written, and the
+database grows underneath it.
+
+And a smaller, sharper one: **a risk register goes stale in the direction of
+overstating risk, too.** This log carried `get_subcontractors` as a live tier-1
+promotion candidate for two days after the function ceased to exist. A finding
+that is never re-measured is not conservative; it is just wrong in a direction
+nobody checks.
+
+---
+
 ## OPEN — 2026-09-04 — a guard reading a field its projection does not carry never fires and never fails
+
+**A missing field is always falsy, so this mistake can only ever turn a
+protection OFF. There is no version of it that surfaces as a false refusal
+somebody would report.** That asymmetry is the whole danger: every other way of
+breaking a guard produces something a user complains about, and this one
+produces silence.
 
 `page_rec.get("is_spec_page") is True` is a refusal that stops an endpoint
 re-rendering a 250-DPI image of a wall of text. It was written against a row
@@ -50,11 +300,9 @@ Here the input is the document itself, narrowed by a decision made elsewhere
 for an unrelated reason — projections get tightened for bytes, not for logic,
 and the person tightening one is not thinking about a branch further down.
 
-Note the asymmetry that makes it silent. A projection that omits a field a
-guard needs produces `None`, which is falsy, which means **the failure mode is
-always "the guard does not fire"** — never "the guard fires when it should
-not". Tightening a projection can only ever turn protections OFF. There is no
-version of this mistake that surfaces as a false refusal somebody would report.
+And it is silent for the reason stated at the top: the omitted field arrives as
+`None`, so the failure mode is always "the guard does not fire" and never "the
+guard fires when it should not".
 
 ### The same coupling, in the other direction
 
