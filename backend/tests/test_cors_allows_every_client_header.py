@@ -23,12 +23,18 @@ WHY NOTHING CAUGHT IT.
   * /api/version is 200 with correct CORS headers, because a GET carrying no
     unsafe header needs no preflight at all.
 
-WHY THE HEADER SET IS DERIVED AND NOT WRITTEN DOWN HERE. A hand-written list
-is a second copy of the client's behaviour that agrees with itself forever
-while the client moves -- the same failure as a merge test that reimplements
-the merge. This reads the header names out of the client source, so the day
-somebody adds `X-Whatever` to the interceptor without touching allow_headers,
-this goes red on the commit that adds it rather than in production.
+WHY THE HEADER SET IS DERIVED AND NOT WRITTEN DOWN HERE. A hand-written list is
+a second copy of the client's behaviour that agrees with itself forever while
+the client moves -- the same failure as a merge test that reimplements the
+merge. This reads the header names out of the client source, so the day
+somebody adds `X-Whatever` to a request without touching allow_headers, this
+goes red on the commit that adds it rather than in production.
+
+AND IT SCANS THE WHOLE CLIENT, not just api.js. Scoping the scan to the one
+file that happened to break would be the hand-written subset again, one level
+up: `offlineQueue.js` builds its own header dict and calls bare `fetch`,
+precisely because it does NOT go through the axios interceptor. Any file that
+can originate a request is read.
 
 Run:  python -m pytest backend/tests/test_cors_allows_every_client_header.py
 """
@@ -52,7 +58,10 @@ sys.path.insert(0, str(_BACKEND))
 import server  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-API_JS = _REPO / "frontend" / "src" / "utils" / "api.js"
+CLIENT_ROOTS = (
+    _REPO / "frontend" / "src",
+    _REPO / "frontend" / "app",
+)
 
 # A real route, not a synthetic one: the preflight has to pass for the call the
 # user is actually making. This is the one that was failing.
@@ -62,66 +71,135 @@ PREFLIGHT_PATH = "/api/auth/login"
 # them to the allow list itself; they are never the thing that breaks.
 SAFELISTED = {"accept", "accept-language", "content-language", "content-type"}
 
+# `const REQUEST_ID_HEADER = 'X-Request-Id';`
+_CONST_RE = re.compile(r"const\s+([A-Z][A-Z0-9_]*)\s*=\s*['\"]([A-Za-z0-9-]+)['\"]")
 
-def client_headers_from_source(src):
-    """Every header name the client attaches to an outbound request.
+# The four shapes a header name is written in across this client. A fifth
+# arriving later shows up as a header these do NOT return, which is what
+# test_the_extractor_still_reads_the_client guards against.
+_OBJECT_LITERAL_RE = re.compile(r"headers\s*[:=]\s*\{([^}]*)\}")
+_OBJECT_KEY_RE = re.compile(r"['\"]([A-Za-z0-9-]+)['\"]\s*:")
+_SUBSCRIPT_LITERAL_RE = re.compile(r"headers\[\s*['\"]([A-Za-z0-9-]+)['\"]\s*\]")
+_SUBSCRIPT_CONST_RE = re.compile(r"headers\[\s*([A-Z][A-Z0-9_]*)\s*\]")
+_DOTTED_RE = re.compile(r"\.headers\.([A-Za-z][A-Za-z0-9-]*)\s*=")
 
-    Reads api.js rather than restating it. Four forms appear there and all four
-    are parsed; a fifth form arriving later shows up as a header this function
-    fails to return, which is why `test_the_extractor_still_reads_the_file`
-    exists below.
+
+def client_sources():
+    """Every non-test client file that could originate a request."""
+    out = []
+    for root in CLIENT_ROOTS:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.suffix not in (".js", ".jsx", ".ts", ".tsx"):
+                continue
+            if ".test." in path.name or "node_modules" in path.parts:
+                continue
+            out.append(path)
+    return out
+
+
+def header_symbols(sources):
+    """Header-name constants, gathered across ALL files before extraction.
+
+    offlineQueue.js writes `headers[REQUEST_ID_HEADER]` but IMPORTS that name
+    from api.js, so a per-file symbol table resolves it to nothing and silently
+    drops the header. The table has to be global to the client.
     """
-    # `const REQUEST_ID_HEADER = 'X-Request-Id';` -- names used indirectly.
     consts = {}
-    for m in re.finditer(
-        r"const\s+([A-Z][A-Z0-9_]*)\s*=\s*['\"]([A-Za-z0-9-]+)['\"]", src
-    ):
-        consts[m.group(1)] = m.group(2)
+    for path in sources:
+        for m in _CONST_RE.finditer(path.read_text(encoding="utf-8", errors="replace")):
+            consts[m.group(1)] = m.group(2)
+    return consts
 
+
+def headers_in(src, consts):
+    """Header names this one file attaches to an outbound request."""
     found = set()
 
-    # 1. axios.create({ headers: { 'Content-Type': ... } }) -- the instance
-    #    defaults, which ride on every request just like the interceptor's.
-    for block in re.finditer(r"headers:\s*\{([^}]*)\}", src):
-        for key in re.finditer(r"['\"]([A-Za-z0-9-]+)['\"]\s*:", block.group(1)):
+    # 1. axios.create({ headers: {...} }) and `const headers = {...}` before a
+    #    bare fetch -- both ride on a real request.
+    for block in _OBJECT_LITERAL_RE.finditer(src):
+        for key in _OBJECT_KEY_RE.finditer(block.group(1)):
             found.add(key.group(1))
 
-    # 2. config.headers['X-Client-Version'] = ...   (literal subscript)
-    for m in re.finditer(r"\.headers\[\s*['\"]([A-Za-z0-9-]+)['\"]\s*\]", src):
+    # 2. config.headers['X-Client-Version'] = ...      (literal subscript)
+    for m in _SUBSCRIPT_LITERAL_RE.finditer(src):
         found.add(m.group(1))
 
-    # 3. config.headers[REQUEST_ID_HEADER] = ...    (subscript via a const)
-    for m in re.finditer(r"\.headers\[\s*([A-Z][A-Z0-9_]*)\s*\]", src):
+    # 3. headers[REQUEST_ID_HEADER] = ...              (subscript via a const)
+    for m in _SUBSCRIPT_CONST_RE.finditer(src):
         if m.group(1) in consts:
             found.add(consts[m.group(1)])
 
-    # 4. config.headers.Authorization = ...          (dotted)
-    for m in re.finditer(r"\.headers\.([A-Za-z][A-Za-z0-9-]*)\s*=", src):
+    # 4. config.headers.Authorization = ...            (dotted)
+    for m in _DOTTED_RE.finditer(src):
         found.add(m.group(1))
 
     return found
 
 
-class ClientHeadersAreExtractable(unittest.TestCase):
-    """The derivation itself, because a silently-empty extractor would make
-    every assertion below pass while proving nothing."""
+def headers_by_file():
+    """{path: {header, ...}} across the whole client."""
+    sources = client_sources()
+    consts = header_symbols(sources)
+    out = {}
+    for path in sources:
+        found = headers_in(path.read_text(encoding="utf-8", errors="replace"), consts)
+        if found:
+            out[path] = found
+    return out
 
-    def test_the_extractor_still_reads_the_file(self):
-        self.assertTrue(API_JS.is_file(), "client source moved: %s" % API_JS)
-        found = client_headers_from_source(API_JS.read_text(encoding="utf-8"))
+
+def client_headers():
+    """The union: everything any client file can put on a request."""
+    found = set()
+    for names in headers_by_file().values():
+        found |= names
+    return found
+
+
+class TheDerivationItself(unittest.TestCase):
+    """A silently-empty extractor would make every assertion below pass while
+    proving nothing, which is the exact failure mode this file exists to avoid
+    committing a second time."""
+
+    def test_the_client_source_is_where_we_think_it_is(self):
+        for root in CLIENT_ROOTS:
+            self.assertTrue(root.is_dir(), "client source moved: %s" % root)
+        self.assertTrue(client_sources(), "found no client files to scan")
+
+    def test_the_extractor_still_reads_the_client(self):
+        by_file = headers_by_file()
         self.assertTrue(
-            found,
-            "extracted NO headers from api.js -- the interceptor was rewritten "
-            "in a shape this function does not parse, and every CORS assertion "
-            "below is now vacuous",
+            by_file,
+            "extracted NO headers from any client file -- the request paths "
+            "were rewritten in a shape these regexes do not parse, and every "
+            "CORS assertion below is now vacuous",
         )
-        # A canary on the parse, not a substitute for it: this is the header
-        # the outage was about, set through the literal-subscript form.
-        self.assertIn(
-            "X-Client-Version", found,
-            "api.js no longer sets X-Client-Version the way this test reads it "
-            "-- fix the extractor, do not delete this",
-        )
+        found = client_headers()
+        # Canaries on the parse, not a substitute for it. Each covers a
+        # DIFFERENT one of the four shapes, so a regex that rots is caught:
+        #   literal subscript  ->  config.headers['X-Client-Version']
+        #   const subscript    ->  headers[REQUEST_ID_HEADER]  (imported name)
+        #   dotted             ->  config.headers.Authorization
+        #   object literal     ->  headers: { 'Content-Type': ... }
+        for name in ("X-Client-Version", "X-Request-Id",
+                     "Authorization", "Content-Type"):
+            with self.subTest(shape=name):
+                self.assertIn(
+                    name, found,
+                    "the client no longer sets %s in a shape this test can "
+                    "read -- fix the extractor, do not delete this" % name,
+                )
+
+    def test_the_bare_fetch_path_is_scanned_too(self):
+        """offlineQueue.js does NOT go through the axios interceptor. Scoping
+        this test to api.js would be the hand-written subset one level up."""
+        by_file = headers_by_file()
+        names = {p.name for p in by_file}
+        self.assertIn("api.js", names)
+        self.assertIn("offlineQueue.js", names)
 
 
 class PreflightAcceptsTheRealHeaderSet(unittest.TestCase):
@@ -130,9 +208,7 @@ class PreflightAcceptsTheRealHeaderSet(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(server.app)
-        cls.headers = sorted(
-            client_headers_from_source(API_JS.read_text(encoding="utf-8"))
-        )
+        cls.headers = sorted(client_headers())
         cls.origin = "https://www.levelog.com"
         assert cls.origin in server.ALLOWED_ORIGINS, (
             "%s is not in ALLOWED_ORIGINS -- this test would be asserting "
@@ -174,9 +250,9 @@ class PreflightAcceptsTheRealHeaderSet(unittest.TestCase):
             with self.subTest(header=name):
                 self.assertIn(
                     name.lower(), allowed | SAFELISTED,
-                    "the client sends %s on every request and the server does "
-                    "not allow it -- add it to allow_headers in server.py or "
-                    "the web build cannot call this API" % name,
+                    "the client sends %s on a request and the server does not "
+                    "allow it -- add it to allow_headers in server.py or the "
+                    "web build cannot call this API" % name,
                 )
 
 
