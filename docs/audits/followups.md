@@ -424,6 +424,226 @@ from the document that prompted it.
 
 ---
 
+## PRACTICE — 2026-09-02 — the parallel run, and why the correction was the valuable half
+
+*The partitioning half of this is recorded separately, at `PRACTICE — 2026-09-01 — file ownership has to follow the change, not the
+ticket`. What is unique here is the second half: where the ticket's LOCATION was
+wrong.*
+
+Six streams ran concurrently in isolated worktrees, and that is the only reason
+one night covered the offline store, the ledger loss, the sort-index class, the
+orientation render path, retention, deletion and the Dropbox key collision.
+Partitioned by FILE after reading, not by ticket - the earlier split by intent
+produced three conflicts.
+
+**But throughput was not the finding. This was:** C1 was filed as
+"`created_by` absent on 50 subcontractor_orientation documents - name the
+writer, then fix." The endpoint everyone assumed was responsible,
+`create_logbook`, **already sets it correctly** from the authenticated
+principal. The fifty came from `register_and_checkin`, the unauthenticated gate,
+which cannot know an identity at all - a worker taps a tag with his own phone.
+
+Every available substitute would have been wrong rather than merely imperfect:
+the project's `admin_id` is fabricated attribution, `worker["_id"]` is a
+`db.workers` row in a field consumed as a `db.users` id, and IP and device
+fingerprint are presence evidence, not principals.
+
+**So the correct output was a report and an empty branch.** A fast pass would
+have "fixed" the innocent endpoint, closed the ticket, and left the population
+growing.
+
+The same shape appeared twice more the same night: D2's ticket named a broken
+deeplink anchor, and the real finding was that expo-router never matched
+fragments at all, so the mechanism had never worked for any notification; and
+`get_company_roster` was recorded in THIS FILE as protected by an inclusion
+projection when its projection is `{"password": 0, "name": 1, ...}`, which
+MongoDB rejects outright.
+
+**The rule: a ticket reports a symptom and asserts a location. The location is
+the part to distrust.** Enumerate every writer into the affected space before
+starting from the one the ticket names.
+
+---
+
+## OPEN — 2026-09-02 — sorts that are safe only because of a projection, and widening one is silent
+
+Two endpoints returned 500 in one day with `Sort exceeded memory limit of
+33554432 bytes` (code 292): an unindexed sort over documents carrying inline
+base64. `backend/scripts/find_unserved_sorts.py` now sweeps for that shape.
+
+*Line numbers in this entry are as of `effd24dc` (2026-09-04). `server.py` is
+41k lines and they move; the FUNCTION NAMES are the durable handle, and the
+sweep above finds the shape without needing either.*
+
+### RE-MEASURED ON 2026-09-04 AGAINST `effd24dc`, AND THE TABLE CHANGED
+
+This entry was written against a branch that did not carry `005587e6` (#359),
+which DECLARES `logbooks_project_status_date` = `{project_id:1, status:1,
+date:-1}` — the emergency index from the first outage, created in Atlas with no
+deploy and only later written into `server.py`. A sweep that cannot see an index
+declaration reports the sort it serves as unserved. **So two of the original four
+rows were never protected by a projection at all; they were protected by an
+index, and the entry did not know it.**
+
+Re-running `find_unserved_sorts.py` on `effd24dc` gives:
+
+| where | function | sort | status today |
+|---|---|---|---|
+| `server.py:15429` | `get_workers` | `name:1` | defused by `WORKER_LIST_FIELDS` (inclusion) |
+| `server.py:34837` | `get_company_roster` | `name:1` | **claims a projection it does not have — see below** |
+| ~~`get_logbook_notifications` (`unaffirmed_docs`)~~ | | `date:-1` | **SERVED** by `logbooks_project_status_date` |
+| ~~`get_logbook_notifications` (`inkless_filed_docs`)~~ | | `date:-1` | **SERVED** by `logbooks_project_status_date` |
+
+**Two remain defused only by a projection, and the warning below applies to those
+two.** The two struck rows are genuinely indexed and need nothing.
+
+### AND THE SWEEP NOW NAMES A TIER-1 ROW THIS ENTRY NEVER HAD
+
+    users  sort {name: 1}
+        server.py:8448  get_admin_users()  [paginated_query()]
+        projection:    exclusion of ['password'] — base64 still carried
+        3 index(es) declared on `users`, none serves this sort
+
+`db.users` carries `cp_signature` inline. `{"password": 0}` is an EXCLUSION, so
+it removes one field and leaves every blob in the sorted set — the opposite of
+what the two defused rows do. The broad call passes no `company_id`, so nothing
+pins an index key, and **the broad call is the big one.** This is the same shape
+as the two 500s, live, today, with no projection standing in front of it.
+
+`get_subcontractors()` at `server.py:8721` has the identical
+`exclusion of ['password']` shape and is rated SLOW ONLY for one reason: nothing
+stores base64 on `subcontractors` yet. One inline blob added to that collection
+promotes it to tier 1 with no change at the call site.
+
+### Correction - `get_company_roster` is not protected, and may not run at all
+
+The sweep classified this row as protected by an inclusion projection. It is not.
+The projection at `server.py:34839` reads:
+
+```python
+{"password": 0, "_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1}
+```
+
+**That mixes an exclusion (`password: 0`) with inclusions, which MongoDB rejects**
+- the only field allowed to be excluded inside an inclusion projection is `_id`.
+So this endpoint does not have a protective projection; it has an invalid one,
+and should raise before it ever reaches the sort.
+
+Two things follow. The endpoint is a live defect worth its own look - it is
+either erroring on every call or behaving in some way nobody has characterised.
+And the sweep pattern-matched a projection's SHAPE without validating it, then
+that classification was copied into this file as fact. A tool that reports
+"protected" must be able to say protected BY WHAT, and be wrong loudly when the
+protection is malformed.
+
+### The warning, stated plainly
+
+**Adding one field to any of these projections moves it to tier 1, and nothing
+would catch it.** Not a type checker, not a review that reads the diff as "we
+now also return the signature", not any existing test. The endpoint keeps
+working in every environment small enough to fit under 32MB, and fails later, in
+production, on whichever project grew first - with no code change in the blast
+radius to blame, because the change that caused it shipped months earlier.
+
+`WORKER_LIST_FIELDS` is the sharpest case: it is the FIX for the first outage.
+The remedy for one incident is the only thing standing between that endpoint and
+a repeat of it.
+
+`get_logbook_notifications` is still worth reading, for a different reason than
+this entry first gave. **The same function holds three `date:-1` sorts and they
+are not equally safe.** `stale_unsigned_docs` at `server.py:25070` projects
+`cp_signature: 1` INTO the sorted set; the two beside it project only
+`{log_type, date}`. All three are served by `logbooks_project_status_date` today,
+so none is at risk — but anyone reading that handler for a pattern to copy will
+find two, and the wrong one is easier to copy. An index is a weaker guarantee than
+a projection here: it can be dropped in Atlas by someone who never opens this
+file, and `_ensure_index_resilient` will not rebuild what it cannot name.
+
+### What would actually catch it
+
+`backend/tests/test_sorts_are_indexed.py` classifies a row as protected when its
+projection is an inclusion that omits every base64 field. Widening a projection
+to include one of those fields therefore flips the row to AT RISK and the ratchet
+fails - **provided the base64 field is one the sweep knows about.** The known set
+is `base64`, `thumb_base64`, `worker_signature`, `cp_signature`, `signature`,
+`selfie_image`, `osha_card_image`, `screenshot`. A NEW inline-blob field added to
+any of these collections is invisible to it until that list is updated, and
+nothing enforces that either.
+
+So the ratchet covers the likely mistake and not the general one. Recorded rather
+than solved, because solving it properly means not storing base64 inline at all -
+which is the standing recommendation for `worker_signature` and
+`osha_card_image` and is tracked separately.
+
+---
+
+## PRACTICE — 2026-09-02 — a check whose subject is a result set must prove the set is non-empty first
+
+Recorded because it happened in the VERIFICATION OF AN EMERGENCY FIX, with a DOB
+inspector on site, and it returned a clean green.
+
+The site device could not show submitted logbooks. Railway named the cause
+exactly: `GET /api/logbooks/project/{id}/submitted` returning 500 with
+`OperationFailure ... Sort exceeded memory limit of 33554432 bytes` (code 292,
+`QueryExceededMemoryLimitNoDiskUseAllowed`) at `server.py:26372`. The sort field
+sat outside any index prefix, the documents carry inline base64, and the matched
+set had simply grown past 32MB. Creating
+`{project_id:1, status:1, date:-1}` restored it with no deploy.
+
+**The verification then read:**
+
+```
+db.logbooks.find({projecproject_id:"...", status:"submitted", ...})
+  .sort({date:-1}).limit(500).explain("executionStats").executionStats.executionSuccess
+true
+```
+
+`projecproject_id`. The filter named a field no document carries, so it matched
+NOTHING - and **a sort over zero documents cannot exceed a memory limit.** The
+`true` was real, correctly computed, and about nothing. Had it been trusted, the
+conclusion "the fix works" would have rested on a query that never touched the
+data.
+
+### The rule
+
+**Any check whose subject is a RESULT SET must assert the set is non-empty
+before asserting anything about it.** `executionSuccess` alone is not evidence;
+`nReturned > 0` is what makes it evidence. The same applies to a count that
+could be zero, a test fixture list that could be empty, a grep whose glob could
+match no files, and a sweep whose walk could reach nothing.
+
+An empty set satisfies almost every property you can name. That is what makes it
+dangerous: it does not error, it does not look wrong, and every universally
+quantified assertion over it is vacuously true.
+
+### Why this belongs with the rest of the week
+
+It is the same defect as the sweep blind to 96 `.cjs` files, the local glob that
+ran 85 of CI's 93, the `sort()` that did nothing and still satisfied a
+determinism assertion, the keep-set that could not see one of the two shapes it
+protected, and the ratchet script whose scan root was `Path(__file__).parent`
+so a "control run" against a different tree silently re-measured its own.
+**Each ran, returned a well-formed answer, and never reached its subject.**
+
+Four more surfaced in one night's work, and all four were caught by the person
+who wrote them, which is the only reason they are recorded rather than shipped:
+a mutation control whose patches did not apply against CRLF (an inert mutation
+reads exactly like a caught one); a test that satisfied itself because its own
+prose contained the string it searched for; a foreign-sweep test seeded with
+files no list had ever named, so the sweep deleting them was correct behaviour
+rather than the bug; and an assertion that matched the comment explaining why
+the code does not do the thing.
+
+### The cheap tells
+
+- A boolean read off an aggregate (`executionSuccess`, `all()`, `every()`) with
+  no cardinality assertion beside it.
+- A control run that produces the SAME answer as the treatment run - that is not
+  a passing control, it is a signal that neither touched the subject.
+- Any assertion of the form "nothing matched / nothing failed / nothing was
+  found" where "the search did not run" is an equally good explanation.
+
+---
 ## PRACTICE — 2026-09-02 — `git stash` is ONE ref shared by every worktree, and two agents traded trees through it
 
 Roughly forty-five agent worktrees hang off this repository. `refs/stash` lives
