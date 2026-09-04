@@ -44,6 +44,7 @@ not the answer for that call.
 
 import os
 import sys
+import ast
 import unittest
 from pathlib import Path
 
@@ -72,25 +73,19 @@ def _key(row) -> tuple:
 # Every unserved sort on a base64-bearing collection as of 2026-09-02, AFTER
 # the indexes this change added. Each entry states why an index is not the
 # answer, because an allowlist without reasons is just a suppression list.
-ALLOWLIST = {
-    # GET /admin/users. Sorts every user by `name`; `company_id` is added only
-    # when the caller is NOT an owner, so the OWNER call — the one that spans
-    # every tenant and therefore matches the most rows — has no equality
-    # predicate at all. `users_by_company_name` (added here) serves the
-    # company-scoped call; nothing can serve the owner call except an index
-    # led by `name` alone, and a whole second index to rescue one owner-tier
-    # admin screen is not the right trade.
+    # EMPTY, AND THAT IS THE STATE TO DEFEND. Its one entry was
+    # ("users", "get_admin_users", "name:1"), carrying the note "the actual fix
+    # is a projection ... Remove this line when it lands." It landed:
+    # get_admin_users now passes USER_LIST_FIELDS, an inclusion projection, so
+    # the sort buffer holds a few hundred bytes per user instead of every CP's
+    # cp_signature. The sweep reports AT RISK (none).
     #
-    # THE ACTUAL FIX IS A PROJECTION, exactly as it was for GET /workers: this
-    # endpoint passes `{"password": 0}`, which is an EXCLUSION, so every
-    # document it sorts still carries the CP's `cp_signature` base64. An
-    # inclusion projection naming the fields the list row renders would cap
-    # the sort at a few hundred bytes per user and take the 32MB ceiling off
-    # the table for both calls. That changes a response shape, which is a
-    # separate and riskier edit than adding an index, so it is not in this
-    # change. Remove this line when it lands.
-    ("users", "get_admin_users", "name:1"),
-}
+    # An entry added here needs the same thing that one had: not "this is
+    # known" but WHY an index is not the answer, and what is.
+# `set()`, not `{}` -- an empty brace pair is a DICT, and `keys - {}` is a
+# TypeError rather than a passing ratchet.
+ALLOWLIST: set = set()
+
 
 
 class TheRatchet(unittest.TestCase):
@@ -205,13 +200,36 @@ class TheSweepStillWorks(unittest.TestCase):
 
     def test_an_exclusion_projection_is_not_treated_as_protection(self):
         """`{"password": 0}` hides one field and ships every other, base64
-        included. Counting it as protection would have cleared GET
-        /admin/users, which is the one entry on the allowlist."""
-        hit = next((r for r in self.rows
-                    if r["function"] == "get_admin_users"), None)
-        self.assertIsNotNone(hit)
-        self.assertFalse(hit["defused_by_projection"])
-        self.assertIn("base64 still carried", hit["projection"])
+        included. Counting it as protection would clear an endpoint that is
+        still one document away from a 500.
+
+        ITS FIXTURE WAS THE BUG. This read the live `get_admin_users` row, so
+        the moment that endpoint was fixed the test lost its specimen and
+        failed -- not because the sweep regressed, but because the last example
+        of the shape it checks for stopped existing. A check whose subject is
+        production code stops working the day production is correct, which is
+        the day you most want it still working.
+
+        It is driven on a SYNTHETIC projection now. The rule survives having no
+        live instance left, which is the whole point of a rule.
+        """
+        b64 = {"cp_signature"}
+        verdict = sweep.projection_verdict(
+            ast.parse('{"password": 0}', mode="eval").body, b64,
+        )
+        self.assertIn("base64 still carried", verdict)
+
+        # And the positive half, so this cannot pass by rejecting everything.
+        ok = sweep.projection_verdict(
+            ast.parse('{"name": 1, "email": 1}', mode="eval").body, b64,
+        )
+        self.assertEqual(ok, "inclusion, base64 excluded")
+
+        # An inclusion that names a blob is NOT protection either.
+        leaky = sweep.projection_verdict(
+            ast.parse('{"name": 1, "cp_signature": 1}', mode="eval").body, b64,
+        )
+        self.assertIn("still carries", leaky)
 
     def test_it_resolves_paginated_query_at_the_call_site(self):
         """The helper takes sort_field from its caller, so analysing the body
