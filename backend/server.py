@@ -2855,6 +2855,10 @@ from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
     OSHA_TYPES,
 )
 
+# The same rule the COI path has always had, now with one address so the two
+# OCR paths cannot disagree about what "null" means. See lib/ocr_text.py.
+from lib.ocr_text import norm_ocr_str  # noqa: E402
+
 
 
 # ══ COLOUR-FIRST CARD CLASSIFICATION ════════════════════════════════════════
@@ -3214,6 +3218,63 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
             return "unknown"
         return "valid"
     return "unknown"                           # missing / suppressed / unparseable
+
+
+def card_image_may_be_replaced(worker, new_image) -> bool:
+    """May a re-scan overwrite the OSHA/SST card image already on this worker?
+
+    THE GUARD THIS REPLACES WAS `if osha_card_image and not worker.get(
+    "osha_card_image")` -- write-once, forever. The FIRST image a worker ever
+    uploaded was the one his record kept, and a later scan of the correct card
+    could not displace it because the field was already populated.
+
+    That is how a worker who photographed HIS OWN FACE instead of his SST card
+    ended up with a photograph of a face stored under a certification key,
+    served inline to the flagged-review screen as the credential being judged,
+    permanently -- `workers` is on SOFT_DELETE_NEVER_PURGE, so nothing ever
+    removes it -- and unfixable by the obvious remedy of scanning the real card,
+    because the write-once guard refused the correction. His record could not
+    hold his actual credential.
+
+    THE RULE: THE IMAGE FOLLOWS THE CERTIFICATION. `build_worker_certifications`
+    already decides when a re-scan may overwrite STORED CERT FIELDS -- never on
+    a `verified` row ("admin-confirmed -- a re-scan may never modify it"), and
+    otherwise only when the stored row is flagged or carries no expiry. This
+    asks the same question about the image the certification was read FROM,
+    because the alternative is a record showing card B's data beside card A's
+    photograph, which is worse than either alone.
+
+    Four cases, in order:
+
+      * NO NEW IMAGE -- nothing to do. A quick returning-worker check-in sends
+        no card evidence at all and must not blank what is on file.
+      * NOTHING STORED -- write it. This is the original write-once case and it
+        is unchanged.
+      * A VERIFIED SST ON FILE -- refuse. Somebody looked at that card and
+        confirmed it; a drive-by re-scan does not get to replace the evidence.
+      * ANYTHING ELSE -- replace. No SST cert at all (which is what a face
+        produces), a flagged one, or one with no expiry. Exactly the states
+        `old_flagged` already treats as correctable.
+
+    A FACE IS ALWAYS REPLACEABLE UNDER THIS RULE and a confirmed card never is,
+    which is the whole intent. It does NOT remove the stored bytes -- that is
+    DELETE /workers/{id}/osha-card-image, and it is a separate, audited,
+    admin-only action, because overwriting is a correction and deleting is not.
+    """
+    if not new_image:
+        return False
+    if not worker.get("osha_card_image"):
+        return True
+    sst = [c for c in (worker.get("certifications") or [])
+           if str(c.get("type") or "") in RECOGNIZED_SST_TYPES]
+    if any(c.get("verified") for c in sst):
+        return False
+    if not sst:
+        return True
+    return any(
+        bool(c.get("needs_review")) or c.get("expiration_date") is None
+        for c in sst
+    )
 
 
 def build_worker_certifications(existing_certs, osha_data, osha_number, osha_card_image, now):
@@ -8444,8 +8505,54 @@ async def get_admin_users(
     query = {"is_deleted": {"$ne": True}}
     if current_user.get("role") != "owner" and company_id:
         query["company_id"] = company_id
-    
-    result = await paginated_query(db.users, query, sort_field="name", sort_dir=1, limit=limit, skip=skip, projection={"password": 0})
+
+    # ── THE SORT BUFFER MUST NOT CARRY A SIGNATURE ──────────────────────────
+    #
+    # THIS WAS `{"password": 0}`, AN EXCLUSION, AND THAT IS THE DEFECT. An
+    # exclusion removes one field and leaves everything else in the sorted set
+    # -- including `cp_signature`, which cp-profile writes to db.users as
+    # inline vector/base64 for every CP in the company. Sorting by `name` with
+    # no index is a BLOCKING in-memory sort, so the buffer held whole user
+    # documents, signatures and all, against a 32MB ceiling.
+    #
+    # That is the exact shape that returned 500 twice in one day -- once on
+    # GET /workers and once on GET /logbooks/project/{id}/submitted, the second
+    # in front of a DOB inspector. `find_unserved_sorts.py` has reported this
+    # row since 2026-09-02 and test_sorts_are_indexed.py ALLOWLISTED it with a
+    # note ending "Remove this line when it lands." This is it landing.
+    #
+    # WHY A PROJECTION AND NOT AN INDEX, which is the usual answer here.
+    # `company_id` is added ONLY when the caller is not an owner, so the OWNER
+    # call -- the one that spans every tenant and matches the most rows -- has
+    # no equality predicate at all. `users_by_company_name` already serves the
+    # company-scoped call; nothing can serve the owner call except an index led
+    # by `name` alone, and that was ruled out as a whole second index to rescue
+    # one screen. An inclusion projection fixes BOTH calls at once, because
+    # Mongo pushes it below the SORT stage and the buffer then holds a few
+    # hundred bytes per user instead of a signature.
+    #
+    # THE FIELD LIST IS THE UNION OF WHAT THE THREE CALLERS ACTUALLY READ, and
+    # nothing else -- admin/users.jsx (id, name, email, phone, role,
+    # assigned_projects, deletion_requested_at, client_version),
+    # admin/superintendent.jsx (_id, id, name, full_name, email) and
+    # admin/checklists/index.jsx (id, name, email, role). Those are the only
+    # three callers; adminUsersAPI.getAll has no other call site.
+    #
+    # `password` is now excluded BY OMISSION, which is stronger than naming it:
+    # a field added to the user document in future is absent from this list
+    # until someone puts it there, so the next secret to land on db.users does
+    # not ship to an admin console by default.
+    USER_LIST_FIELDS = {
+        "name": 1, "full_name": 1, "email": 1, "phone": 1, "role": 1,
+        "company_id": 1, "company_name": 1, "assigned_projects": 1,
+        "deletion_requested_at": 1, "client_version": 1,
+        "is_active": 1, "status": 1, "is_deleted": 1,
+        "created_at": 1, "updated_at": 1,
+    }
+    result = await paginated_query(
+        db.users, query, sort_field="name", sort_dir=1,
+        limit=limit, skip=skip, projection=USER_LIST_FIELDS,
+    )
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_user)):
@@ -8704,81 +8811,37 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Projects assigned successfully"}
 
-# ==================== ADMIN SUBCONTRACTORS ====================
-
-@api_router.get("/admin/subcontractors")
-async def get_subcontractors(
-    current_user = Depends(get_current_user),
-    limit: int = Query(50, ge=1, le=200),
-    skip: int = Query(0, ge=0),
-):
-    company_id = get_user_company_id(current_user)
-    
-    query = {"is_deleted": {"$ne": True}}
-    if company_id:
-        query["company_id"] = company_id
-    
-    result = await paginated_query(db.subcontractors, query, sort_field="company_name", sort_dir=1, limit=limit, skip=skip, projection={"password": 0})
-    return result
-@api_router.post("/admin/subcontractors", response_model=SubcontractorResponse)
-async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(get_admin_user)):
-    existing = await db.subcontractors.find_one({"email": sub_data.email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    sub_dict = sub_data.model_dump()
-    sub_dict["password"] = hash_password(sub_dict["password"])
-    now = datetime.now(timezone.utc)
-    sub_dict["created_at"] = now
-    sub_dict["updated_at"] = now
-    sub_dict["workers_count"] = 0
-    sub_dict["assigned_projects"] = []
-    sub_dict["company_id"] = admin.get("company_id")
-    sub_dict["is_deleted"] = False
-    
-    result = await db.subcontractors.insert_one(sub_dict)
-    sub_dict["id"] = str(result.inserted_id)
-    del sub_dict["password"]
-    
-    return SubcontractorResponse(**sub_dict)
-
-@api_router.get("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
-async def get_subcontractor(sub_id: str, current_user = Depends(get_current_user)):
-    sub = await db.subcontractors.find_one({"_id": to_query_id(sub_id), "is_deleted": {"$ne": True}}, {"password": 0})
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subcontractor not found")
-    return SubcontractorResponse(**serialize_id(sub))
-
-@api_router.put("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
-async def update_subcontractor(sub_id: str, sub_data: dict, admin = Depends(get_admin_user)):
-    ALLOWED_SUB_FIELDS = {"name", "company_name", "email", "phone", "trade", "license_number", "insurance_info", "password"}
-    update_data = {k: v for k, v in sub_data.items() if v is not None and k in ALLOWED_SUB_FIELDS and k != "password"}
-    if "password" in sub_data and sub_data["password"]:
-        update_data["password"] = hash_password(sub_data["password"])
-    
-    update_data["updated_at"] = datetime.now(timezone.utc)
-    
-    result = await db.subcontractors.update_one(
-        {"_id": to_query_id(sub_id)},
-        {"$set": update_data}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Subcontractor not found")
-    
-    sub = await db.subcontractors.find_one({"_id": to_query_id(sub_id)}, {"password": 0})
-    return SubcontractorResponse(**serialize_id(sub))
-
-@api_router.delete("/admin/subcontractors/{sub_id}")
-async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
-    # Soft delete
-    result = await db.subcontractors.update_one(
-        {"_id": to_query_id(sub_id)},
-        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Subcontractor not found")
-    return {"message": "Subcontractor deleted successfully"}
+# ==================== ADMIN SUBCONTRACTORS — ROUTES REMOVED ==============
+#
+# FIVE HANDLERS LIVED HERE — GET list, POST, GET by id, PUT, DELETE on
+# /admin/subcontractors — AND NOTHING HAS EVER CALLED THEM. No wrapper in
+# frontend/src/utils/api.js, zero references in frontend/, nothing in
+# checkin.html, scripts/ or lib/. Recorded as zero-callers at
+# docs/plans/cp-rebuild-research.md:70 before this removal.
+#
+# WHY REMOVED RATHER THAN FIXED. The list handler sorted `company_name` under
+# `{"password": 0}` — an EXCLUSION projection, the same shape that returned 500
+# twice on collections carrying inline base64. It was rated slow-only for one
+# reason: nothing stores base64 on `subcontractors` yet. An unreachable
+# endpoint carrying a broken projection is a defect waiting for a future caller
+# who assumes it works, and removing it is a smaller change than fixing it.
+#
+# WHAT IS DELIBERATELY KEPT, AND THIS IS NOT AN OVERSIGHT:
+#   * `db.subcontractors` itself, and every document in it.
+#   * SubcontractorCreate / SubcontractorResponse (models, ~line 3702).
+#   * the `email_1` unique index on the collection.
+#   * the startup seed row, and backend/tests/test_startup_seed_guard.py —
+#     the seed still runs and the guard still describes real behaviour, so it
+#     is not orphaned by removing these routes.
+#
+# Retiring the collection is a DATA decision, not a routing one, and
+# subcontractors sits beside the Subcontractor Compliance Graph on the future
+# feature list. Deleting the schema now means rebuilding it from memory later.
+# See docs/audits/followups.md, 2026-09-04.
+#
+# ANYTHING RE-ADDING THESE ROUTES: give the list handler an INCLUSION
+# projection from the start. The exclusion is what made this a defect rather
+# than merely dead code.
 
 # ==================== OWNER - COMPANY MANAGEMENT ====================
 
@@ -13433,7 +13496,104 @@ async def get_checkin_info(project_id: str, tag_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-@api_router.post("/checkin/upload-osha")
+class OshaCardOcrResult(BaseModel):
+    """The shape POST /checkin/upload-osha is allowed to return.
+
+    IT HAD NO response_model AT ALL. The handler did
+
+        extracted = json_mod.loads(text)
+        return extracted
+
+    so whatever the vision model emitted became the API's response verbatim —
+    every key, every type, unvalidated. A model that answered `"name": "null"`
+    put the four-character string on the wire, into `oshaData` on the gate
+    page, into `osha_data` on the worker document, and onto filed compliance
+    PDFs as a worker called "null". Worker 6a96c5ff6ee1b3362d156e6c carries it
+    in two places today.
+
+    TWO SEPARATE PROTECTIONS, AND THEY FIX DIFFERENT HALVES:
+
+      * norm_ocr_str, applied below, turns the model's "null"/"N/A"/"" into a
+        real None BEFORE it is ever seen. That is the defect.
+      * this model pins the SHAPE — the fields, their types, and the fact that
+        a key nobody declared does not reach a caller. That is the reason the
+        defect could exist unnoticed: nothing anywhere stated what this
+        endpoint returns, so nothing could be wrong.
+
+    EVERY FIELD IS OPTIONAL AND NONE IS A REFUSAL. An unreadable field is the
+    normal case at a jobsite gate — glare, a sleeve, a bent card — and a
+    validation error here would turn a partly-read card into a 502 for a
+    worker standing at a turnstile. The gate's rule is that a config or tooling
+    problem never stops a man working; this model is written to that rule.
+
+    `box_2d` IS IN THE MODEL BECAUSE THE PAGE USES IT. checkin.html crops the
+    on-screen preview from it. A response_model silently drops undeclared keys,
+    so omitting it here would have removed the crop with nothing to read in a
+    diff — the shape of defect this model exists to prevent, introduced by the
+    model itself.
+    """
+    name: Optional[str] = None
+    sst_number: Optional[str] = None
+    card_type: Optional[str] = None
+    card_class: Optional[str] = None
+    issued: Optional[str] = None
+    expiration: Optional[str] = None
+    card_dominant_color: Optional[str] = None
+    card_color_confidence: Optional[str] = None
+    card_color_conditions: List[str] = Field(default_factory=list)
+    box_2d: Optional[List[float]] = None
+    # Present only on the JSONDecodeError path, where the model returned
+    # something that is not JSON and the raw text is the only evidence of what
+    # went wrong. Never populated on a successful parse.
+    raw_text: Optional[str] = None
+
+
+def _osha_ocr_payload(data: dict) -> "OshaCardOcrResult":
+    """The model's JSON, normalised once, at the boundary.
+
+    Three consumers each ask "did the model read this field" in their own way —
+    `name_ok` in build_worker_certifications, `ocrMissingCriticalFields` on the
+    gate page, and the identity normalisers that dedupe workers. All three are
+    correct against a real value and all three are wrong against the string
+    "null". Fixing them one at a time leaves a fourth place to get it wrong.
+
+    So it is fixed HERE, where the answer is parsed, and every reader downstream
+    receives a real None. See lib/ocr_text.py.
+    """
+    conditions = data.get("card_color_conditions")
+    if not isinstance(conditions, list):
+        conditions = []
+    # NORMALISED TOO, and this is not over-thoroughness: a list carrying the
+    # string "null" would put it in front of the same tests as the scalars.
+    conditions = [c for c in (norm_ocr_str(x) for x in conditions) if c]
+
+    box = data.get("box_2d")
+    coerced_box = None
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        try:
+            coerced_box = [float(v) for v in box]
+        except (TypeError, ValueError):
+            # A box that will not parse is a display convenience that failed,
+            # never a reason to fail the read. checkin.html already treats a
+            # missing box as "show the uncropped frame".
+            coerced_box = None
+
+    return OshaCardOcrResult(
+        name=norm_ocr_str(data.get("name")),
+        sst_number=norm_ocr_str(data.get("sst_number")),
+        card_type=norm_ocr_str(data.get("card_type")),
+        card_class=norm_ocr_str(data.get("card_class")),
+        issued=norm_ocr_str(data.get("issued")),
+        expiration=norm_ocr_str(data.get("expiration")),
+        card_dominant_color=norm_ocr_str(data.get("card_dominant_color")),
+        card_color_confidence=norm_ocr_str(data.get("card_color_confidence")),
+        card_color_conditions=conditions,
+        box_2d=coerced_box,
+        raw_text=norm_ocr_str(data.get("raw_text")),
+    )
+
+
+@api_router.post("/checkin/upload-osha", response_model=OshaCardOcrResult)
 async def upload_osha_card(file_data: dict, request: Request):
     """OCR an OSHA/SST card photo using the Qwen2.5-VL vision model.
 
@@ -13570,21 +13730,18 @@ async def upload_osha_card(file_data: dict, request: Request):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
 
         extracted = json_mod.loads(text)
-        return extracted
+        # NOT `return extracted`. See _osha_ocr_payload and lib/ocr_text.py:
+        # the model's own answer for "I could not read this" is sometimes the
+        # STRING "null", and every presence test between here and a filed PDF
+        # reads that as a value.
+        if not isinstance(extracted, dict):
+            # A JSON array or scalar parses fine and is not a card reading.
+            # Same disposition as unparseable text: nothing was read.
+            return _osha_ocr_payload({"raw_text": text})
+        return _osha_ocr_payload(extracted)
 
     except json_mod.JSONDecodeError:
-        return {
-            "name":       None,
-            "sst_number": None,
-            "card_type":  None,
-            "card_class": None,
-            "card_dominant_color": None,
-            "card_color_confidence": None,
-            "card_color_conditions": [],
-            "issued":     None,
-            "expiration": None,
-            "raw_text":   text,
-        }
+        return _osha_ocr_payload({"raw_text": text})
     except HTTPException:
         raise
     except Exception as e:
@@ -14136,7 +14293,23 @@ async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
     project_id = data.get("project_id")
     tag_id = data.get("tag_id")
-    name = data.get("name")
+    # NORMALISED AT THIS BOUNDARY TOO, and this is the half that makes a data
+    # correction stick. `if name: update_fields["name"] = name` below rewrites
+    # the stored worker name on EVERY returning check-in, so correcting a
+    # worker called "null" in the database is undone at his next tap unless the
+    # value that arrives here is cleaned first.
+    #
+    # THE GATE IS A SECOND MOUTH. upload-osha now returns a real None (see
+    # OshaCardOcrResult), but this endpoint takes a body, not that response:
+    # a cached gate page, a retried submit, a manual entry, or any future
+    # client can still post the string. Cleaning only the OCR response would
+    # fix the producer and leave the consumer open.
+    #
+    # `if name:` then does the rest of the work — None is falsy, so a nullish
+    # arrival leaves the stored name ALONE rather than overwriting it, which is
+    # also the right answer for a returning worker whose card would not read
+    # today.
+    name = norm_ocr_str(data.get("name"))
     phone = data.get("phone")
     trade = data.get("trade")
     company = data.get("company")
@@ -14145,7 +14318,9 @@ async def register_and_checkin(data: dict, request: Request):
     # liveness, no gate). Stored in R2 now, not inline — see _store_worker_selfie.
     selfie_image = data.get("selfie_image")
     osha_data = data.get("osha_data")  # OCR results dict
-    osha_number = data.get("osha_number")
+    # Same rule, same reason: osha_number reaches the OSHA register and the
+    # LL196 attestation, and a card number of "N/A" prints as one.
+    osha_number = norm_ocr_str(data.get("osha_number"))
     safety_orientation = data.get("safety_orientation")  # dict of checked items
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
@@ -14388,7 +14563,7 @@ async def register_and_checkin(data: dict, request: Request):
     else:
         # Update existing worker with new OSHA data if provided
         update_fields = {"updated_at": now}
-        if osha_card_image and not worker.get("osha_card_image"):
+        if card_image_may_be_replaced(worker, osha_card_image):
             update_fields["osha_card_image"] = osha_card_image
         # A WORKER WHO ALREADY HAS ONE IS LEFT ALONE, whichever form it is in.
         # `selfie_image` is the pre-R2 inline copy: existing rows keep it and
@@ -15886,6 +16061,73 @@ async def remove_worker_certification(
         {"$set": {"certifications": certs, "updated_at": now}}
     )
     return {"message": "Certification removed", "removed": removed}
+
+@api_router.delete("/workers/{worker_id}/osha-card-image")
+async def remove_worker_osha_card_image(
+    worker_id: str,
+    admin = Depends(get_admin_user),
+    worker = Depends(require_worker_write_access),
+):
+    """Remove the stored card IMAGE and nothing else.
+
+    THE MISSING PRIMITIVE. Three paths look like they would remove one and none
+    of them does:
+
+      DELETE /workers/{id}/certifications/{i}  pops a `certifications[]` row.
+          The image is a SIBLING field on the worker document, not inside the
+          array, so the row goes and the photograph stays.
+      DELETE /workers/{id}                     is a SOFT delete, and `workers`
+          is on SOFT_DELETE_NEVER_PURGE beside `checkins` and `audit_logs` --
+          exempted from the 90-day purge deliberately, because it is compliance
+          evidence. The row is never hard-deleted by anything.
+      a re-scan of the correct card            overwrites (now), which is a
+          correction, not a removal.
+
+    So a photograph of a worker's FACE, stored under a certification key
+    because he uploaded the wrong image, is retained permanently and served
+    inline to every CP flagged-review screen on the project as the credential
+    being judged. That is a privacy exposure rather than a compliance one, and
+    it needs an eraser, not a better guard.
+
+    WHAT THIS DOES NOT DO, and the omissions are the design:
+
+      * IT NEVER DELETES THE WORKER ROW. That row carries check-in history
+        which is statutory evidence; removing a photograph is not a reason to
+        touch it. `$unset` on one field, nothing else.
+      * IT NEVER TOUCHES `certifications[]`. Whether the card behind the image
+        was valid is a separate question with a separate endpoint, and
+        answering it here would delete a compliance fact to fix a privacy one.
+      * IT IS NOT OFFERED TO THE GATE OR THE SITE DEVICE. `get_admin_user` plus
+        `require_worker_write_access`: an admin, and this worker's admin. The
+        second dependency is not decoration -- DELETE /workers/{id} shipped
+        with only the first, so any admin could soft-delete any tenant's
+        worker.
+
+    Audited, because the whole point of removing the bytes is being able to say
+    later that they were removed, by whom, and when.
+    """
+    had_image = bool(worker.get("osha_card_image"))
+    result = await db.workers.update_one(
+        {"_id": to_query_id(worker_id)},
+        {
+            "$unset": {"osha_card_image": ""},
+            "$set": {"updated_at": datetime.now(timezone.utc)},
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    # RECORDED EVEN WHEN THERE WAS NOTHING TO REMOVE. "I asked and it was
+    # already gone" and "I never asked" are different facts, and only one of
+    # them is evidence that somebody handled the report.
+    await audit_log(
+        "worker_osha_card_image_removed",
+        str(admin.get("id", "")),
+        "worker",
+        worker_id,
+        {"had_image": had_image, "worker_name": worker.get("name")},
+    )
+    return {"message": "Card image removed", "had_image": had_image}
+
 
 @api_router.post("/admin/certifications/scan-expiring")
 async def scan_expiring_certifications(admin=Depends(get_admin_user)):
@@ -18785,12 +19027,27 @@ async def generate_single_logbook_html(logbook: dict) -> str:
 
         w_rows = ""
         for w in workers:
-            if w.get("name", "").strip():
+            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
+            # A row storing `name: None` — which is exactly what correcting a
+            # worker called "null" produces — returns None, and None.strip()
+            # raises AttributeError. In a renderer, that does not skip a row:
+            # it takes down the WHOLE PDF, so a data fix meant to clean one
+            # name would have stopped every filed roster from printing.
+            #
+            # The safe form is already used twice in these same two functions
+            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
+            # Shipped, not invented.
+            if str(w.get("name") or "").strip():
                 # PR G: name/company short-entry; osha_number excluded (identifier).
+                # `or ""` ON EVERY CELL, for the same reason as the guard
+                # above: a stored None interpolates into an f-string as the
+                # four characters None, and a filed compliance record printing
+                # "None" for a man's employer is the same defect as printing
+                # "null" for his name, one field over.
                 w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
-                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
+                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
@@ -22707,7 +22964,8 @@ _SUBMIT_ROW_CONTENT_RULES = {
 #
 # It QUALIFIES on every technical ground: it is a record that is a list of
 # rows, and both renderers already gate a worker row on
-# `if w.get("name", "").strip()` — the rule is shipped, not invented, and the
+# `if str(w.get("name") or "").strip()` — the rule is shipped, not invented,
+# and the
 # editor counts the same thing into total_count.
 #
 # It is left out because the FORM has no client-side gate. preshift_signin.jsx
@@ -23511,9 +23769,29 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         # Tier 1 (2): an immediate/pre-shift log freezes on submit (sign-now-lock).
         # No-op until counsel classifies a log as immediate_preshift.
         if data.status == "submitted":
-            _lt = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}, {"log_type": 1})
-            if _lt and is_immediate_preshift(_lt.get("log_type")):
-                update["is_locked"] = True
+            _lt = await db.logbooks.find_one(
+                {"_id": to_query_id(logbook_id)},
+                {"log_type": 1, "is_amendment": 1, "cp_signature": 1},
+            )
+            if _lt:
+                # The signature this decision is made on: the one this request
+                # carries if it carries one, else what is already stored. A
+                # submit that patches only `status` is judged on the signature
+                # already on the record.
+                _eff_cp = update.get("cp_signature", _lt.get("cp_signature"))
+                if submit_freezes_record(
+                    _lt.get("log_type"), _lt.get("is_amendment"), _eff_cp,
+                ):
+                    update["is_locked"] = True
+                    # A locked record with no finalized_at is a sealed document
+                    # nobody can attribute. /finalize stamps all three; so does
+                    # this, or the two lock paths would disagree about what a
+                    # frozen log looks like.
+                    update["finalized_at"] = now
+                    update["finalized_by"] = current_user.get("id")
+                    update["finalized_by_name"] = (
+                        current_user.get("full_name") or current_user.get("name")
+                    )
     result = await db.logbooks.update_one({"_id": to_query_id(logbook_id)}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Logbook not found")
@@ -25147,54 +25425,9 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     # DID: he signed that log, and a correction he did not make cleared the
     # signature. Sending him that sentence about his own filed work is the
     # defect, not the wording.
-    _amend_meta = {}
-    for _doc in stale_unsigned_docs:
-        if _doc.get("is_amendment") is not True:
-            continue
-        _lt, _dt = _doc.get("log_type"), _doc.get("date")
-        if _lt and _dt:
-            _amend_meta[(_lt, _dt)] = amendment_state(_doc)
-
-    _gaps = {}
-    for _ref in stale_unsigned_refs:
-        _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
-    # The third selector, merged as UNSIGNED — the banner's existing sentence
-    # ("never signed — still open and still yours to finish") is already the
-    # right one for it, so this needs no new copy and no fourth state.
-    for _doc in inkless_filed_docs:
-        _lt, _dt = _doc.get("log_type"), _doc.get("date")
-        if _lt and _dt:
-            _gaps[(_lt, _dt)] = "unsigned"
-    for _doc in unaffirmed_docs:
-        _lt, _dt = _doc.get("log_type"), _doc.get("date")
-        if not _lt or not _dt:
-            continue
-        # A present-but-unaffirmed signature is the more specific state, so it
-        # wins over the generic "unsigned" the stale pass assigned.
-        _gaps[(_lt, _dt)] = "unaffirmed"
-    # MORE SPECIFIC STILL, and applied last for that reason. An amendment child
-    # is created unsigned (cp_signature None), so it carries no ink and can
-    # never be `unaffirmed` -- the two never collide in practice, and the
-    # ordering says which would win if they ever did.
-    for _key in _amend_meta:
-        _gaps[_key] = "amendment_unsigned"
-    def _gap_row(k, v):
-        row = {"log_type": k[0], "date": k[1], "state": v}
-        meta = _amend_meta.get(k)
-        if meta:
-            # Off the RECORD. A bundle rendering this in December must read the
-            # same sentence it would have read in September.
-            row["amendment"] = {
-                "reason": meta.get("reason"),
-                "by": meta.get("by"),
-                "at": _amendment_day(meta.get("at")) or None,
-                "has_reason": meta.get("state") == AMENDMENT_PRESENT,
-            }
-        return row
-
-    attestation_gaps = sorted(
-        (_gap_row(k, v) for k, v in _gaps.items()),
-        key=lambda g: g["date"], reverse=True,
+    attestation_gaps = merge_attestation_gaps(
+        stale_unsigned_docs, stale_unsigned_refs, inkless_filed_docs,
+        unaffirmed_docs,
     )
 
     return {
@@ -25720,7 +25953,22 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             e = enrollment_map.get(eid)
             if not e:
                 continue
-            name = (e.get("worker_name") or "").strip()
+            # NULLISH TAKES THE PATH A BLANK NAME ALREADY TAKES.
+            #
+            # `"null"` is not blank. It is four characters, it survives
+            # `.strip()`, and `_norm_key` casefolds it to the string "null" —
+            # a LIVE DEDUPE KEY. Two different men whose cards could not be
+            # read both key as ("null", <company>) and the second is dropped
+            # as a duplicate of the first. That is the opposite failure from
+            # the case-variance one recorded beside it: "null" COLLAPSES
+            # distinct workers, case variance SPLITS one.
+            #
+            # NOT A NEW POLICY FOR AN UNNAMED ROW. Each pass keeps whatever it
+            # already does with a blank name — pass 3 skips one outright
+            # (`or not name: continue`), the others let it form a key. This
+            # only stops a token that means "nothing was read" from behaving
+            # like a name. See lib/ocr_text.py.
+            name = norm_ocr_str(e.get("worker_name")) or ""
             company = _worker_company(e.get("sub_name"))
             name_key = (_norm_key(name), _norm_key(company))
             seen_name_keys.add(name_key)
@@ -25856,7 +26104,10 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             _collapsed += 1
             continue          # same id, already emitted by an earlier pass
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
-        name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
+        # Same rule as the first pass: a token meaning "nothing was
+        # read" must not be a dedupe key. See lib/ocr_text.py.
+        name = norm_ocr_str(c.get("worker_name")
+                            or (worker.get("name") if worker else "")) or ""
         company = _worker_company(c.get("worker_company"),
                                  worker.get("company") if worker else None)
         name_key = (_norm_key(name), _norm_key(company))
@@ -25985,7 +26236,9 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             # pass 2 had already emitted for the same man.
             _collapsed += 1
             continue
-        name = (a.get("worker_name") or "").strip()
+        # Same rule as the first pass: a token meaning "nothing was
+        # read" must not be a dedupe key. See lib/ocr_text.py.
+        name = norm_ocr_str(a.get("worker_name")) or ""
         company = _worker_company(a.get("worker_company"))
         name_key = (_norm_key(name), _norm_key(company))
         if name_key in seen_name_keys:
@@ -26121,7 +26374,9 @@ async def get_project_daily_headcount(
         async for e in db.worker_enrollments.find({"_id": {"$in": oids}}):
             sub = _worker_company(e.get("sub_name"))
             trade = (e.get("trade") or "").strip()
-            name = (e.get("worker_name") or "").strip()
+            # Same rule as the first pass: a token meaning "nothing was
+            # read" must not be a dedupe key. See lib/ocr_text.py.
+            name = norm_ocr_str(e.get("worker_name")) or ""
             worker_key = (name.lower(), sub.lower())
             if worker_key in seen_workers:
                 continue
@@ -26146,7 +26401,10 @@ async def get_project_daily_headcount(
     for c in legacy:
         wid = c.get("worker_id")
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
-        name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
+        # Same rule as the first pass: a token meaning "nothing was
+        # read" must not be a dedupe key. See lib/ocr_text.py.
+        name = norm_ocr_str(c.get("worker_name")
+                            or (worker.get("name") if worker else "")) or ""
         company = _worker_company(c.get("worker_company"),
                                  worker.get("company") if worker else None)
         trade = (c.get("worker_trade") or (worker.get("trade") if worker else "") or "").strip()
@@ -26439,6 +26697,133 @@ _SIGNATURE_HAS_INK_CLAUSES = [
     {"cp_signature.data": {"$type": "string", "$ne": ""}},
     {"cp_signature": {"$type": "string", "$ne": ""}},
 ]
+
+
+def merge_attestation_gaps(
+    stale_unsigned_docs, stale_unsigned_refs, inkless_filed_docs, unaffirmed_docs,
+):
+    """One row per (log_type, date), each naming its own state.
+
+    LIFTED OUT OF THE ENDPOINT SO IT CAN BE TESTED AT ALL. It was 49 lines
+    inline in a 400-line handler that needs a live Mongo to reach, so the only
+    test of the merge rule was a REIMPLEMENTATION of it in the test file -- a
+    copy that agreed with itself while the original was wrong for weeks. Same
+    shape as a test double thinner than the real module, already recorded here.
+    Nothing about the merge changes in the move except the amendment guard.
+
+    Returns the list the endpoint serves as `attestation_gaps`.
+    """
+    # AND A SIGNED AMENDMENT IS NOT AN UNSIGNED ONE. `stale_unsigned_docs` is
+    # the RAW query result and its selector carries no signature clause at all --
+    # the affirmation test lives twenty lines below, in `stale_unsigned_refs`,
+    # and this loop did not use it. So an amendment the CP had signed AND
+    # affirmed kept raising `amendment_unsigned`, and because the override at
+    # the bottom is applied LAST it beat the two states that ARE signature-aware.
+    #
+    # The comment above states the assumption that made it wrong: "an amendment
+    # child is created unsigned ... and can never be `unaffirmed`". True at
+    # creation. False the moment he signs, which is the only interesting moment.
+    #
+    # THE COST WAS NOT COSMETIC. The banner cleared itself overnight, when the
+    # freeze sweep locked the row out of the selector -- so for up to 27 hours
+    # after every correction the app told the CP his signed work still needed a
+    # signature, and he signed it again. That is where the draft pile came from.
+    #
+    # META IS STILL COLLECTED FOR EVERY AMENDMENT, only the GAP is withheld.
+    # A parent and its child share (log_type, date), so an unsigned parent whose
+    # child is signed must still be able to say "this day was amended" on the
+    # row its own deficiency raises.
+    _amend_meta = {}
+    _amend_unsigned = set()
+    for _doc in stale_unsigned_docs:
+        if _doc.get("is_amendment") is not True:
+            continue
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if not (_lt and _dt):
+            continue
+        _amend_meta[(_lt, _dt)] = amendment_state(_doc)
+        if not _is_affirmed_signature(_doc.get("cp_signature")):
+            _amend_unsigned.add((_lt, _dt))
+
+    _gaps = {}
+    for _ref in stale_unsigned_refs:
+        _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
+    # The third selector, merged as UNSIGNED — the banner's existing sentence
+    # ("never signed — still open and still yours to finish") is already the
+    # right one for it, so this needs no new copy and no fourth state.
+    for _doc in inkless_filed_docs:
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if _lt and _dt:
+            _gaps[(_lt, _dt)] = "unsigned"
+    for _doc in unaffirmed_docs:
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if not _lt or not _dt:
+            continue
+        # A present-but-unaffirmed signature is the more specific state, so it
+        # wins over the generic "unsigned" the stale pass assigned.
+        _gaps[(_lt, _dt)] = "unaffirmed"
+    # MORE SPECIFIC STILL, and applied last for that reason. An amendment child
+    # is created unsigned (cp_signature None), so it carries no ink and can
+    # never be `unaffirmed` -- the two never collide in practice, and the
+    # ordering says which would win if they ever did.
+    for _key in _amend_unsigned:
+        _gaps[_key] = "amendment_unsigned"
+    def _gap_row(k, v):
+        row = {"log_type": k[0], "date": k[1], "state": v}
+        meta = _amend_meta.get(k)
+        if meta:
+            # Off the RECORD. A bundle rendering this in December must read the
+            # same sentence it would have read in September.
+            row["amendment"] = {
+                "reason": meta.get("reason"),
+                "by": meta.get("by"),
+                "at": _amendment_day(meta.get("at")) or None,
+                "has_reason": meta.get("state") == AMENDMENT_PRESENT,
+            }
+        return row
+
+    return sorted(
+        (_gap_row(k, v) for k, v in _gaps.items()),
+        key=lambda g: g["date"], reverse=True,
+    )
+
+def submit_freezes_record(log_type, is_amendment, effective_signature) -> bool:
+    """Does `status: submitted` seal this record, or does something else close it?
+
+    TWO REASONS, AND THEY ARE NOT THE SAME REASON.
+
+    IMMEDIATE / PRE-SHIFT -- the timing class says the signature is the freeze.
+    A no-op until counsel classifies a log as immediate_preshift; kept here so
+    the two freeze-on-submit rules live in one predicate rather than two
+    branches that drift.
+
+    AN AMENDMENT -- and NOT by its timing class, which is the point. An
+    END_OF_DAY log stays open because the day is still accumulating, and
+    sweep_stale_end_of_day_logs closes it that night. An amendment to
+    2026-08-14 filed on 2026-09-04 HAS NO DAY LEFT TO ACCUMULATE: it is
+    complete the instant it is signed. Leaving it to a sweep whose selector is
+    `date < today` makes a record three weeks old wait on a rule about
+    yesterday, and until it fires the row keeps matching stale_unsigned_docs
+    every night. The child inherits nothing from the parent and should not --
+    the parent was an end-of-day narrative, the child is a correction to a
+    closed one. This is the rule a `visit` log already uses.
+
+    AFFIRMED, NEVER MERELY PRESENT. The same bar sweep_stale_end_of_day_logs
+    sets, for its reason: an unfrozen record can still be frozen later and a
+    wrongly sealed one cannot be opened. An inherited credential, a legacy
+    signature and the `{}` production actually held are all not affirmed.
+
+    NOTE THE ASYMMETRY. is_immediate_preshift does not consult the signature
+    because SUBMIT_MISSING_CP_SIGNATURE has already refused an unsigned submit
+    upstream; the amendment arm asks anyway, because "signed" and "affirmed"
+    are different questions and only the second one may seal a record.
+    """
+    if is_immediate_preshift(log_type):
+        return True
+    if is_amendment is True and _is_affirmed_signature(effective_signature):
+        return True
+    return False
+
 
 
 def _signature_affirmation_html(sig):
@@ -28751,12 +29136,27 @@ async def generate_combined_report(
         _affirm_n = await preshift_affirmation_count(db, project_id, date)
         w_rows = ""
         for w in pd.get("workers", []):
-            if w.get("name", "").strip():
+            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
+            # A row storing `name: None` — which is exactly what correcting a
+            # worker called "null" produces — returns None, and None.strip()
+            # raises AttributeError. In a renderer, that does not skip a row:
+            # it takes down the WHOLE PDF, so a data fix meant to clean one
+            # name would have stopped every filed roster from printing.
+            #
+            # The safe form is already used twice in these same two functions
+            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
+            # Shipped, not invented.
+            if str(w.get("name") or "").strip():
                 # PR G: name/company short-entry; osha_number excluded.
+                # `or ""` ON EVERY CELL, for the same reason as the guard
+                # above: a stored None interpolates into an f-string as the
+                # four characters None, and a filed compliance record printing
+                # "None" for a man's employer is the same defect as printing
+                # "null" for his name, one field over.
                 w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
-                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
+                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
@@ -42754,7 +43154,9 @@ async def startup_event():
     # state, not about environment — so it ran against PRODUCTION on first
     # boot, and would run again on a fresh database, a restored backup, or a
     # rename. It has already done so: the malformed subcontractor row that
-    # 500s GET /admin/subcontractors/{id} is one of the documents it left.
+    # used to 500 the (since-removed) GET /admin/subcontractors/{id} is one of
+    # the documents it left. The route is gone; the ROW is still in production
+    # and the seed that wrote it still runs, which is what this check is for.
     #
     # FAILS CLOSED BY CONSTRUCTION. The variable must be explicitly set to a
     # truthy value for any insert below to happen. Unset, empty, misspelled,
@@ -42882,11 +43284,17 @@ async def startup_event():
             "name": "Test Electrical Sub",
             "company_name": "Spark Electric LLC",
             # REQUIRED by SubcontractorCreate, and therefore by
-            # SubcontractorResponse. Its absence here made
+            # SubcontractorResponse. Its absence here made the (since-removed)
             # GET /admin/subcontractors/{id} raise a ValidationError -> 500 for
             # this row alone. The model is right and every real writer already
-            # satisfies it; the seed was the only thing producing an invalid
+            # satisfied it; the seed was the only thing producing an invalid
             # document.
+            #
+            # STILL REQUIRED WITH THE ROUTES GONE. The models are kept on
+            # purpose (see the ADMIN SUBCONTRACTORS note above), so a seed row
+            # that cannot round-trip through them is still a malformed
+            # document — it just no longer has an endpoint to fail at, which
+            # makes it quieter rather than better.
             "contact_name": "Test Sub Contact",
             "company_id": test_company_id,
             "email": "sub@test.com",

@@ -55,9 +55,28 @@ const braceClose = matchBalanced(src, braceOpen, '{', '}');
 const fnSrc = src.slice(fnAt, braceClose + 1);
 
 // Build a callable with the extracted const in its scope.
+// 3. The nullish-token set and the blank predicate the function now calls.
+//    EXTRACTED, NOT REIMPLEMENTED. This file exists to run the SHIPPED code,
+//    and when ocrMissingCriticalFields grew a helper the build threw
+//    ReferenceError at the first call rather than quietly testing a stand-in.
+//    That is the extraction doing its job; a source grep would have passed.
+const setAnchor = 'const OCR_NULLISH = new Set([';
+const setAt = src.indexOf(setAnchor);
+if (setAt < 0) throw new Error('OCR_NULLISH not found in checkin.html');
+const setOpen = src.indexOf('[', src.indexOf('(', setAt));
+const setClose = matchBalanced(src, setOpen, '[', ']');
+const setSrc = src.slice(setAt, src.indexOf(';', setClose) + 1);
+
+const blankAnchor = 'function ocrValueIsBlank(v)';
+const blankAt = src.indexOf(blankAnchor);
+if (blankAt < 0) throw new Error('ocrValueIsBlank not found in checkin.html');
+const blankOpen = src.indexOf('{', blankAt);
+const blankClose = matchBalanced(src, blankOpen, '{', '}');
+const blankSrc = src.slice(blankAt, blankClose + 1);
+
 // eslint-disable-next-line no-new-func
-const build = new Function(`${constSrc}\n${fnSrc}\nreturn { OCR_CRITICAL_FIELDS, ocrMissingCriticalFields };`);
-const { OCR_CRITICAL_FIELDS, ocrMissingCriticalFields } = build();
+const build = new Function(`${constSrc}\n${setSrc}\n${blankSrc}\n${fnSrc}\nreturn { OCR_CRITICAL_FIELDS, OCR_NULLISH, ocrValueIsBlank, ocrMissingCriticalFields };`);
+const { OCR_CRITICAL_FIELDS, OCR_NULLISH, ocrValueIsBlank, ocrMissingCriticalFields } = build();
 
 let passed = 0;
 let failed = 0;
@@ -110,6 +129,47 @@ let out;
 try { out = ocrMissingCriticalFields(null); } catch (e) { threw = true; }
 ok(!threw && eq(keysOf(out), ['name', 'sst_number']),
   'null OCR -> both flagged (no throw)');
+
+
+// -- "null" IS NOT A READ FIELD -------------------------------------------
+//
+// The model is told "set the field to null if you cannot read it" and it
+// sometimes answers with the STRING. It is truthy and it trims to "null", so
+// the old predicate scored A TOTAL OCR FAILURE AS A COMPLETE READ: no retake
+// offered, manual entry never opened, and the card submitted with every field
+// saying the word null.
+
+for (const token of ['null', 'NULL', 'None', 'n/a', 'N/A', 'na', 'nil',
+                     '-', '--', 'undefined', '', '   ']) {
+  ok(ocrValueIsBlank(token), JSON.stringify(token) + ' is not a read value');
+}
+ok(ocrValueIsBlank(null) && ocrValueIsBlank(undefined), 'null/undefined are blank');
+
+// THE NEGATIVE HALF, so this cannot pass by calling everything blank -- and
+// the names are chosen to sit next to the tokens: Nathan, Nan, Nils, NA-4471.
+for (const real of ['Jose Ramirez', '12345', '0', 'Nathan', 'Nan Zhou',
+                    'Nils Andersen', 'NA-4471']) {
+  ok(!ocrValueIsBlank(real), JSON.stringify(real) + ' IS a read value');
+}
+
+ok(eq(keysOf(ocrMissingCriticalFields({ name: 'null', sst_number: 'null' })),
+      ['name', 'sst_number']),
+  'a card that read null on both fields is MISSING both -- a retake, not a pass');
+ok(ocrMissingCriticalFields({ name: 'Jose Ramirez', sst_number: '12345' }).length === 0,
+  'and a real read still scores clean');
+
+// ONE ADDRESS WITH THE SERVER. lib/ocr_text.py carries the same set, and the
+// two sides agreeing on what "nothing was read" means is the point of having
+// a rule rather than two predicates that drift.
+const pySrc = fs.readFileSync(
+  path.join(__dirname, '..', '..', '..', 'backend', 'lib', 'ocr_text.py'), 'utf8');
+const pyOpen = pySrc.indexOf('_NULLISH = {');
+const pyBlock = pyOpen < 0 ? '' : pySrc.slice(pyOpen, pySrc.indexOf('}', pyOpen));
+ok(pyBlock.length > 0, 'read the server-side token set');
+for (const token of OCR_NULLISH) {
+  ok(pyBlock.indexOf('"' + token + '"') >= 0,
+    'the server _NULLISH also carries ' + JSON.stringify(token));
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
