@@ -31,6 +31,8 @@ os.environ.setdefault("QWEN_API_KEY", "")
 _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
+from tests.source_text import strip_js, code_of  # noqa: E402  -- shared helpers the absence-literals classifier recognises
+
 import server  # noqa: E402
 
 _SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
@@ -415,8 +417,13 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
                   / "daily_jobsite.jsx").resolve().read_text(encoding="utf-8")
         # Comments discuss the removal by name, so read CODE. A prose mention
         # of `setTimeIn` must not keep this green or red on its own.
-        code = re.sub(r"/\*[\s\S]*?\*/", "", screen)
-        code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
+        # strip_js, NOT a hand-rolled re.sub. source_text.strip_js is the
+        # shared helper, and test_absence_literals_are_specific classifies an
+        # assertNotIn by the CALL that produced its haystack -- a local
+        # re.sub is opaque to it, so this assertion counted as unclassified
+        # and pushed that guard one over its ceiling. Using the convention
+        # the classifier already knows is the fix; raising the ceiling is not.
+        code = strip_js(screen)
         for gone in ("timeIn", "setTimeIn", "timeOut", "setTimeOut",
                      "time_in:", "time_out:", "d.time_in", "d.time_out"):
             self.assertNotIn(gone, code,
@@ -455,8 +462,17 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         """
         self.assertIn("_t_in = str(data.get(\"time_in\") or \"\").strip()", _SINGLE)
         self.assertIn("if (_t_in or _t_out) else \"\"", _SINGLE)
-        self.assertNotIn('data.get("time_in") or "N/A"', _SINGLE)
-        self.assertNotIn('data.get("time_out") or "N/A"', _SINGLE)
+        # code_of(), NOT the module-level _SINGLE slice. _SINGLE is bound by
+        # `_SRC[a:b]`, and test_absence_literals_are_specific classifies an
+        # assertNotIn by the call that produced its haystack: it proves "a
+        # slice of a string is a string" for a haystack expression but not for
+        # a NAME bound to one, so these two counted as unclassified and pushed
+        # that guard one over its ceiling. code_of is already in its
+        # _STRING_CALLS. Scoping is not lost: this form must exist in NEITHER
+        # renderer, so asserting it is absent from the file is the stronger claim.
+        _single_src = code_of("server.py")
+        self.assertNotIn('data.get("time_in") or "N/A"', _single_src)
+        self.assertNotIn('data.get("time_out") or "N/A"', _single_src)
 
     def test_the_conditional_block_behaves(self):
         """Asserted on the RENDERED document — see TheRenderedDocument below,
