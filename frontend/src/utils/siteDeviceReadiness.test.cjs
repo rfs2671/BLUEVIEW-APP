@@ -398,6 +398,97 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // 6b. NOT YET, OR NEVER. The two facts this state exists to tell apart.
+  //
+  //     A missing file looks identical on disk whether it is on its way or
+  //     will never come. Before this, a tablet that had REFUSED the fill for
+  //     lack of room reported "83 of 87 … Still saving this project to the
+  //     tablet", indefinitely — telling a superintendent to wait for something
+  //     that was not coming, and then he walks into a cellar.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const NO_SPACE = R.SITE_READY_NO_SPACE;
+    ok(NO_SPACE !== undefined, 'siteDeviceReadiness exports SITE_READY_NO_SPACE');
+
+    const short = { needed: 900 * 1024 * 1024, free: 560 * 1024 * 1024, at: NOW - 1000 };
+    const twoOfThree = {
+      files: complete([sRow('f1', 1), sRow('f2', 1), sRow('f3', 1)], NOW - 1000),
+      logbooks: complete([], NOW - 1000),
+      cachedNames: new Set(['f1.1.pdf', 'f2.1.pdf']),
+      now: NOW,
+    };
+
+    // Without the record, this is the ordinary filling advisory — unchanged.
+    const filling = readinessFrom(twoOfThree);
+    ok(filling.state === CURRENT && filling.filling === true,
+      'short of files with NO recorded refusal is still the ordinary filling state');
+
+    const stuck = readinessFrom({ ...twoOfThree, shortfall: short });
+    ok(stuck.state === NO_SPACE, 'a recorded refusal while short of files is NO SPACE');
+    ok(stuck.filling === false,
+      'and it is NOT filling — every reader asking this is asking whether to wait');
+    ok(stuck.saved === 2 && stuck.expected === 3,
+      'the fraction survives, because the list is still complete and trustworthy');
+    ok(stuck.shortBytes === (900 - 560) * 1024 * 1024,
+      'the shortfall is needed minus free, which is what a person has to free');
+
+    // A stale note must not accuse a tablet that is actually complete.
+    const complete3 = readinessFrom({
+      ...twoOfThree,
+      cachedNames: new Set(['f1.1.pdf', 'f2.1.pdf', 'f3.1.pdf']),
+      shortfall: short,
+    });
+    ok(complete3.state === CURRENT,
+      'a lingering refusal record does NOT accuse a device that now holds everything');
+
+    // It outranks STALE: stale self-clears on Wi-Fi, this waits for a person.
+    const old = NOW - (3 * 24 * 60 * 60 * 1000);
+    const bothWrong = readinessFrom({
+      files: complete([sRow('f1', 1), sRow('f2', 1)], old),
+      logbooks: complete([], old),
+      cachedNames: new Set(['f1.1.pdf']),
+      shortfall: short,
+      now: NOW,
+    });
+    ok(bothWrong.state === NO_SPACE,
+      'when a device is both stale and out of room, the actionable one is reported');
+
+    // NEVER still outranks it — no complete list means no denominator at all.
+    const noList = readinessFrom({
+      files: absent(), logbooks: absent(), shortfall: short, now: NOW,
+    });
+    ok(noList.state === NEVER,
+      'no complete list still outranks a space refusal — there is no fraction to report');
+
+    // The wording. Read at a gate, possibly by an inspector.
+    const copy = describeReadiness(stuck);
+    ok(copy && copy.tone === 'critical',
+      'it is critical, not an advisory — it does not clear without a person');
+    ok(/340 MB/.test(copy.detail),
+      'it names the number to free, rounded up, rather than saying "not enough space"');
+    ok(/will not show as missing/.test(copy.body),
+      'it says the one thing a person cannot work out by looking');
+    for (const word of ['manifest', 'cache', 'sync', 'server', 'endpoint', 'failed']) {
+      ok(!new RegExp(word, 'i').test(`${copy.heading} ${copy.body} ${copy.detail}`),
+        `the no-space wording does not say "${word}"`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6c. bytesPhrase — the same coarseness rule as agePhrase, and it rounds UP
+  //     because this number tells somebody how much to free.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const { bytesPhrase } = R;
+    ok(typeof bytesPhrase === 'function', 'siteDeviceReadiness exports bytesPhrase');
+    ok(bytesPhrase(340 * 1024 * 1024) === '340 MB', '340 MB reads as 340 MB');
+    ok(bytesPhrase(1) === '1 MB', 'a single byte short still asks for 1 MB, never "0 MB"');
+    ok(bytesPhrase(1.5 * 1024 * 1024 * 1024) === '1.5 GB', 'gigabytes carry one decimal');
+    ok(bytesPhrase(0) === null && bytesPhrase(-5) === null && bytesPhrase('x') === null,
+      'nothing to free, or nonsense, produces no phrase rather than "0 MB"');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // 7. THE WORDING. Pinned exactly, then swept for vocabulary that would
   //    either name a mechanism or read as a developer's error message on a
   //    screen a DOB inspector may be looking at.

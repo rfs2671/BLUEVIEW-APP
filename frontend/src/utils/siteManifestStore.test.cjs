@@ -536,6 +536,67 @@ async function main() {
       'but the sweep still ran, and ran BEFORE the budget was measured: '
       + 'reclaiming orphans is the only way a full tablet ever gets space '
       + 'back, and the sweep can only ever remove what no list names');
+
+    // ── AND THE REFUSAL IS WRITTEN DOWN ──────────────────────────────────
+    //
+    // This return value goes NOWHERE: setupSiteManifestSync discards what the
+    // run resolves to. Before the record below, the only consumer of
+    // `no-space` in the entire app was the assertion above — so a tablet that
+    // had stopped filling reported "83 of 87 … Still saving" for ever, which
+    // tells a superintendent to wait for something that is not coming.
+    const M = store(d);
+    const noted = await M.readSpaceShortfall('P1');
+    ok(noted && noted.needed === 1e9 && noted.free === 500,
+      'the refusal is recorded with the numbers a person can act on, because '
+      + 'the return value this run produces is discarded by its own caller');
+    ok(Number(noted.at) > 0, 'and when it happened');
+    ok((await M.readSpaceShortfall('OTHER')) === null,
+      'keyed per project — a full tablet on one job does not accuse another');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6b. ROOM AGAIN. The record has to clear itself, or a tablet that has had
+  //     space freed on it goes on calling itself full until someone reinstalls
+  //     the app.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const d = makeDevice({
+      freeBytes: 10e9,
+      pages: [page({ files: [fRow('F1', 1, 'pdf', 10)] })],
+    });
+    const M = store(d);
+    await M.recordSpaceShortfall('P1', { needed: 1e9, free: 500 });
+    ok((await M.readSpaceShortfall('P1')) !== null, 'a refusal is on the device');
+    const r = await M.syncSiteManifest('P1');
+    ok(r.reason !== 'no-space', 'the next run fits');
+    ok((await M.readSpaceShortfall('P1')) === null,
+      'and clears the refusal on the pass that PROVES there is room — not on a '
+      + 'later download, so freeing space is enough to stop the accusation');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6c. THE RECORD NEVER BREAKS A RUN. Storage that rejects is the ordinary
+  //     failure everywhere else in this module and must be here too.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const d = makeDevice({
+      freeBytes: 500,
+      pages: [page({ files: [fRow('F1', 1, 'pdf', 1e9)] })],
+    });
+    const realSet = d.AsyncStorage.setItem;
+    d.AsyncStorage.setItem = async (k, v) => {
+      if (String(k).startsWith('site_space_shortfall:')) throw new Error('db full');
+      return realSet(k, v);
+    };
+    const M = store(d);
+    let threw = null;
+    try { await M.syncSiteManifest('P1'); } catch (e) { threw = e; }
+    ok(threw === null,
+      'a device that cannot even write the note still completes its run — the '
+      + 'note is a report about the failure, never a second way to fail');
+    ok((await M.readSpaceShortfall('P1')) === null,
+      'and reports no refusal rather than a fabricated one, which under-reports '
+      + 'a real problem instead of accusing a healthy tablet');
   }
 
   // ═══════════════════════════════════════════════════════════════════════
