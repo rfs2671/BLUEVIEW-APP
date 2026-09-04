@@ -83,7 +83,7 @@ const STAMP_NAME = '.stamp';
 //   5 — the embedded-image compression scan. Same reasoning: a device staged
 //       at `4` would report every other measurement and silently omit the one
 //       the engine decision turns on.
-const VIEWER_VERSION = '5';
+const VIEWER_VERSION = '6';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -136,6 +136,14 @@ const VIEWER_SCRIPT = [
   '  var pagesEl = document.getElementById("pages");',
   '  var MAX_CANVAS_PX = 16000000;',   // ~16MP per page, keeps big plans off the OOM killer
   '  var MAX_CANVAS_EDGE = 4096;',
+  // THE RESOLUTION FLOOR FOR LARGE-FORMAT SHEETS. PDF user units are 1/72",
+  // so scale = TARGET_PPI/72 renders at this density whatever the page
+  // measures. 150 is a statement of intent, not a promise: the two caps above
+  // bind first on anything bigger than about 27x27 inches, so an arch-E sheet
+  // lands at 4096px on the long edge — 85 ppi — and asking for more here
+  // changes nothing until those move. Lower this first if a phone renders
+  // too slowly; it is the one constant to revert.
+  '  var TARGET_PPI = 150;',
   // How far either side of the viewport a page counts as "near". Feeds both
   // the observer's rootMargin and the no-observer sweep, so the two paths
   // agree on what is near.
@@ -534,14 +542,44 @@ const VIEWER_SCRIPT = [
   // second copy of the formula.
   '  function targetScaleInfo(vp1, over){',
   '    var dpr = window.devicePixelRatio || 1;',
-  // Render above CSS size so pinch-zoom stays legible without a re-render.
-  '    var s = (baseWidth / vp1.width) * Math.min(dpr, 2) * (over === undefined ? 1.5 : over);',
+  // ── THE SHEET'S OWN SIZE HAD CANCELLED OUT OF THIS ────────────────────────
+  //
+  // `(baseWidth / vp1.width) * dpr * 1.5` renders `baseWidth * dpr * 1.5`
+  // pixels across WHATEVER the page measures — so a 36x48 drawing and a letter
+  // page get the same pixel count, and resolution falls as the sheet grows.
+  // That is backwards for the one document type this viewer exists to show.
+  //
+  // Measured consequence on a 36x48 sheet, from those constants alone:
+  //   phone      390 CSS px  -> 1170 px  ->  32.5 ppi   (soft, and reported so)
+  //   tablet     768         -> 2304     ->  64 ppi
+  //   tablet LS  1024        -> 3072     ->  85 ppi     (already at the cap)
+  //
+  // A PPI FLOOR, NOT A REPLACEMENT. PDF user units are 1/72", so `TARGET_PPI/72`
+  // is the scale that renders at that density whatever the page measures. Taking
+  // the MAX of the two leaves every page that was already sharper exactly as it
+  // was — a letter page on a tablet still renders at the viewport-anchored
+  // scale, which is far above 150 ppi — and lifts only the pages the old
+  // formula starved. Nothing gets fewer pixels than before.
+  //
+  // AND THE CEILING IS UNCHANGED. The three clamps below already run
+  // unconditionally, so this cannot ask for more than MAX_CANVAS_EDGE and
+  // MAX_CANVAS_PX already permit: 4096px on the long edge is 85 ppi on a 48"
+  // sheet, which is what a landscape tablet renders today. The worst case is
+  // that a phone now does the same work a tablet already does.
+  //
+  // `over` still multiplies the viewport term only, so the probe's 1.0-vs-1.5
+  // A/B still measures what it was written to measure.
+  '    var viewportS = (baseWidth / vp1.width) * Math.min(dpr, 2) * (over === undefined ? 1.5 : over);',
+  '    var ppiS = TARGET_PPI / 72;',
+  '    var s = Math.max(viewportS, ppiS);',
+  '    var anchor = (s === ppiS && ppiS > viewportS) ? "ppi" : "viewport";',
   '    var w = vp1.width * s, h = vp1.height * s;',
   '    var clamp = "none";',
   '    if (w > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / w); w = vp1.width * s; h = vp1.height * s; clamp = "edge-w"; }',
   '    if (h > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / h); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "edge-h" : clamp + "+edge-h"); }',
   '    if (w * h > MAX_CANVAS_PX) { s = s * Math.sqrt(MAX_CANVAS_PX / (w * h)); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "maxpx" : clamp + "+maxpx"); }',
-  '    return { s: s, w: w, h: h, clamp: clamp, dpr: dpr, baseWidth: baseWidth };',
+  '    return { s: s, w: w, h: h, clamp: clamp, dpr: dpr, baseWidth: baseWidth,',
+  '             anchor: anchor, ppi: 72 * s, targetPpi: TARGET_PPI };',
   '  }',
   '',
   '  function targetScale(vp1){ return targetScaleInfo(vp1).s; }',
