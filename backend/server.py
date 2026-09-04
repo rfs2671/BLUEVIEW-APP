@@ -1735,26 +1735,6 @@ async def paginated_query(
         "has_more": (skip + limit) < total,
     }
 
-def serialize_sync_record(record):
-    """Convert MongoDB record to sync format with timestamps in milliseconds"""
-    if '_id' in record:
-        record['id'] = str(record['_id'])
-        del record['_id']
-    
-    # Convert datetime fields to milliseconds
-    if 'created_at' in record and isinstance(record['created_at'], datetime):
-        record['created_at'] = int(record['created_at'].timestamp() * 1000)
-    if 'updated_at' in record and isinstance(record['updated_at'], datetime):
-        record['updated_at'] = int(record['updated_at'].timestamp() * 1000)
-    if 'check_in_time' in record and isinstance(record['check_in_time'], datetime):
-        record['check_in_time'] = int(record['check_in_time'].timestamp() * 1000)
-    if 'check_out_time' in record and isinstance(record['check_out_time'], datetime):
-        record['check_out_time'] = int(record['check_out_time'].timestamp() * 1000)
-    if 'timestamp' in record and isinstance(record['timestamp'], datetime):
-        record['timestamp'] = int(record['timestamp'].timestamp() * 1000)
-    
-    return record
-
 def get_today_range_est():
     """Get today's start/end in UTC, aligned to Eastern Time midnight.
     Uses zoneinfo to automatically handle EST (-5) vs EDT (-4)."""
@@ -5253,19 +5233,8 @@ class CSRegistrationResponse(BaseModel):
     conflict_warning: Optional[str] = None  # Set if license found on another active project
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
-	
-# ==================== SYNC MODELS ====================
 
-class SyncPullRequest(BaseModel):
-    lastPulledAt: Optional[int] = None  # Unix timestamp in milliseconds
-    schemaVersion: int = 1
-    migration: Optional[dict] = None
-
-class SyncPushRequest(BaseModel):
-    changes: dict
-    lastPulledAt: Optional[int] = None
-    
-    # ==================== AUTH HELPERS ====================
+# ==================== AUTH HELPERS ====================
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -6474,255 +6443,51 @@ async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
     return ids
 
 
-# ==================== SYNC HELPERS ====================
+# ==================== SYNC ROUTES — REMOVED ==================================
+#
+# `POST /sync/pull`, `POST /sync/push` and `GET /sync/timestamp` lived here,
+# with WATERMELON_COLUMNS, sanitize_for_watermelon and get_table_changes.
+#
+# THEY WERE THE SERVER HALF OF A CLIENT THAT NO LONGER EXISTS. WatermelonDB was
+# removed from the app on 2026-08-05 (e8bf3962, "remove dormant WatermelonDB,
+# AsyncStorage-only DatabaseContext"), and a followups entry four days earlier
+# had already found the store dead as a data path: "no screen reads or writes
+# its local store ... a synchronize() (pull/push to /api/sync/*) runs at startup
+# doing no useful work." At removal there was no reference to these routes
+# anywhere outside this file — not in the app, checkin.html, scripts or tests.
+#
+# AND `sync_push` WAS A CREDENTIAL-FORGERY PATH INTO THE NFC GATE. It took
+# `changes: dict` — untyped — and ran `{"$set": record}` on workers, projects,
+# checkins, daily_logs and nfc_tags for ANY authenticated caller in the company,
+# a site_mode kiosk token included, with no field allowlist on the push side
+# (WATERMELON_COLUMNS was applied on PULL only). Last-write-wins compared an
+# `updated_at` the caller supplied, so a future timestamp always won. That
+# reached, concretely:
+#
+#   * `certifications` — write a fabricated OSHA_30 onto any worker, and
+#     validate_worker_certifications clears him. MISSING_OSHA is the gate's only
+#     hard block, so this cleared a man through a turnstile on a card that does
+#     not exist.
+#   * `is_deleted: false` — resurrect any soft-deleted record.
+#   * `company_id` — re-parent a worker into another tenant.
+#
+# Second time in a week that deleting an unreachable handler deleted a live
+# defect nobody had attributed to it; the five subcontractor routes in #404 took
+# an unserved tier-1-shaped sort with them. Unreachable code is not inert.
+#
+# NOT REPLACED. Offline sync does not run through here and never did: writes are
+# queued by `frontend/src/utils/offlineQueue.js` and replayed against the
+# ordinary REST endpoints (/api/workers, /api/projects, /api/checkins,
+# /api/daily-logs), each with its own auth and validation; reads come from
+# AsyncStorage write-through caches (projectCache, logbookDrafts, useCpProfile)
+# and, for plans, siteManifestStore + docCache.
+#
+# The ONE thing that depended on these routes was a ruling, not a caller: the
+# 2026-09-03 duplicate_of analysis required a "positive deletion signal" on
+# /sync/pull because WatermelonDB applies deletions only from its `deleted`
+# array. That was written 29 days after the client was deleted. See followups.
+# =============================================================================
 
-# WatermelonDB schema columns per table - only these fields should be sent to client
-WATERMELON_COLUMNS = {
-    "workers": {"id", "name", "phone", "trade", "company", "osha_number", "certifications", "backend_id", "created_at", "updated_at", "is_deleted"},
-    "projects": {"id", "name", "address", "status", "start_date", "end_date", "backend_id", "created_at", "updated_at", "is_deleted"},
-    "check_ins": {"id", "worker_id", "project_id", "worker_name", "worker_trade", "worker_company", "project_name", "check_in_time", "check_out_time", "nfc_tag_id", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
-    "daily_logs": {"id", "project_id", "project_name", "date", "weather", "notes", "work_performed", "materials_used", "issues", "phase", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
-    "nfc_tags": {"id", "tag_id", "project_id", "project_name", "location", "backend_id", "created_at", "updated_at", "is_deleted"},
-}
-
-def sanitize_for_watermelon(record, table_name):
-    """Remove fields that don't exist in WatermelonDB schema to prevent decorator errors"""
-    allowed = WATERMELON_COLUMNS.get(table_name)
-    if not allowed:
-        return record
-    
-    # Map backend field names to WatermelonDB field names
-    if table_name == "nfc_tags":
-        if "location_description" in record and "location" not in record:
-            record["location"] = record.pop("location_description")
-    
-    return {k: v for k, v in record.items() if k in allowed}
-
-async def get_table_changes(table_name: str, last_pulled: Optional[datetime], company_id: Optional[str]):
-    """Get created, updated, and deleted records for a table since last_pulled"""
-    # Map WatermelonDB table names to MongoDB collection names
-    collection_name_map = {
-        "check_ins": "checkins",
-    }
-    collection = db[collection_name_map.get(table_name, table_name)]
-    
-    base_query = {}
-    if company_id:
-        base_query["company_id"] = company_id
-    
-    if last_pulled:
-        # Records created since last pull
-        created_query = {**base_query, "created_at": {"$gt": last_pulled}, "is_deleted": {"$ne": True}}
-        created = await collection.find(created_query).to_list(10000)
-        
-        # Records updated since last pull (but created before)
-        updated_query = {
-            **base_query,
-            "updated_at": {"$gt": last_pulled},
-            "created_at": {"$lte": last_pulled},
-            "is_deleted": {"$ne": True}
-        }
-        updated = await collection.find(updated_query).to_list(10000)
-        
-        # Records deleted since last pull
-        deleted_query = {**base_query, "is_deleted": True, "updated_at": {"$gt": last_pulled}}
-        deleted_records = await collection.find(deleted_query, {"_id": 1}).to_list(10000)
-        deleted = [str(r["_id"]) for r in deleted_records]
-    else:
-        # First sync - get all non-deleted records
-        active_query = {**base_query, "is_deleted": {"$ne": True}}
-        created = await collection.find(active_query).to_list(10000)
-        updated = []
-        deleted = []
-    
-    return {
-        "created": [sanitize_for_watermelon(serialize_sync_record(dict(r)), table_name) for r in created],
-        "updated": [sanitize_for_watermelon(serialize_sync_record(dict(r)), table_name) for r in updated],
-        "deleted": deleted
-    }
-
-# ==================== SYNC ENDPOINTS ====================
-
-@api_router.post("/sync/pull")
-async def sync_pull(request: SyncPullRequest, current_user = Depends(get_current_user)):
-    """Pull all changes from server since lastPulledAt"""
-    try:
-        if current_user.get("role") == "owner":
-            company_id = None  # Owner sees all data
-        else:
-            company_id = get_user_company_id(current_user)
-            if not company_id:
-                raise HTTPException(status_code=403, detail="Company access required for sync")
-        
-        # Convert milliseconds to datetime
-        last_pulled = None
-        if request.lastPulledAt:
-            last_pulled = datetime.fromtimestamp(request.lastPulledAt / 1000, timezone.utc)
-        
-        logger.info(f"Sync pull request from user {current_user.get('id')}, company {company_id}, lastPulledAt: {last_pulled}")
-        
-        # Get changes for each table (use WatermelonDB table names)
-        changes = {
-            "workers": await get_table_changes("workers", last_pulled, company_id),
-            "projects": await get_table_changes("projects", last_pulled, company_id),
-            "check_ins": await get_table_changes("check_ins", last_pulled, company_id),
-            "daily_logs": await get_table_changes("daily_logs", last_pulled, company_id),
-            "nfc_tags": await get_table_changes("nfc_tags", last_pulled, company_id),
-        }
-        
-        current_timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
-        
-        logger.info(f"Sync pull response: {sum(len(t['created']) + len(t['updated']) for t in changes.values())} records")
-        
-        return {
-            "changes": changes,
-            "timestamp": current_timestamp
-        }
-    except Exception as e:
-        logger.error(f"Sync pull error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Sync pull failed: {str(e)}")
-
-@api_router.post("/sync/push")
-async def sync_push(request: SyncPushRequest, current_user = Depends(get_current_user)):
-    """Push local changes to server"""
-    try:
-        if current_user.get("role") == "owner":
-            company_id = None
-        else:
-            company_id = get_user_company_id(current_user)
-            if not company_id:
-                raise HTTPException(status_code=403, detail="Company access required for sync")
-        
-        logger.info(f"Sync push request from user {current_user.get('id')}, company {company_id}")
-        
-        # Map table names to collection names
-        table_map = {
-            "workers": "workers",
-            "projects": "projects",
-            "check_ins": "checkins",
-            "daily_logs": "daily_logs",
-            "nfc_tags": "nfc_tags"
-        }
-        
-        for table_name, table_changes in request.changes.items():
-            if table_name not in table_map:
-                continue
-                
-            collection_name = table_map[table_name]
-            collection = db[collection_name]
-            
-            # Handle creates — with duplicate detection for check-ins
-            for record in table_changes.get("created", []):
-                try:
-                    record["company_id"] = company_id
-                    record["is_deleted"] = False
-
-                    if "id" in record:
-                        record["_id"] = record["id"]
-                        del record["id"]
-
-                    if "created_at" in record:
-                        record["created_at"] = datetime.fromtimestamp(record["created_at"] / 1000, timezone.utc)
-                    else:
-                        record["created_at"] = datetime.now(timezone.utc)
-
-                    if "updated_at" in record:
-                        record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, timezone.utc)
-                    else:
-                        record["updated_at"] = datetime.now(timezone.utc)
-
-                    if "check_in_time" in record and isinstance(record["check_in_time"], (int, float)):
-                        record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, timezone.utc)
-                    if "check_out_time" in record and isinstance(record["check_out_time"], (int, float)):
-                        record["check_out_time"] = datetime.fromtimestamp(record["check_out_time"] / 1000, timezone.utc)
-                    if "timestamp" in record and isinstance(record["timestamp"], (int, float)):
-                        record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, timezone.utc)
-
-                    # Duplicate detection for check-ins: same worker + project + day = skip
-                    if collection_name == "checkins" and record.get("worker_id") and record.get("project_id"):
-                        today_start, today_end = get_today_range_est()
-                        existing = await collection.find_one({
-                            "worker_id": record["worker_id"],
-                            "project_id": record["project_id"],
-                            "check_in_time": {"$gte": today_start, "$lt": today_end},
-                            "status": "checked_in",
-                            "is_deleted": {"$ne": True},
-                        })
-                        if existing:
-                            logger.info(f"Duplicate check-in skipped: worker {record['worker_id']} already checked in")
-                            continue
-
-                    await collection.insert_one(record)
-                    logger.info(f"Created record in {collection_name} with ID {record['_id']}")
-                except Exception as e:
-                    if "E11000" in str(e):
-                        logger.warning(f"Duplicate ID {record.get('_id')} in create, skipping.")
-                    else:
-                        logger.error(f"Error creating record in {collection_name}: {str(e)}")
-            
-            # Handle updates — last-write-wins: only apply if incoming updated_at > server's
-            for record in table_changes.get("updated", []):
-                try:
-                    record_id = record.pop("id", None)
-                    if not record_id:
-                        continue
-
-                    # Convert timestamps
-                    if "updated_at" in record:
-                        record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, timezone.utc)
-                    else:
-                        record["updated_at"] = datetime.now(timezone.utc)
-
-                    if "check_in_time" in record and isinstance(record["check_in_time"], (int, float)):
-                        record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, timezone.utc)
-                    if "check_out_time" in record and isinstance(record["check_out_time"], (int, float)):
-                        record["check_out_time"] = datetime.fromtimestamp(record["check_out_time"] / 1000, timezone.utc)
-                    if "timestamp" in record and isinstance(record["timestamp"], (int, float)):
-                        record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, timezone.utc)
-
-                    # Last-write-wins: only update if our timestamp is newer than server's
-                    incoming_ts = record.get("updated_at", datetime.now(timezone.utc))
-                    result = await collection.update_one(
-                        {
-                            "_id": to_query_id(record_id),
-                            "company_id": company_id,
-                            "$or": [
-                                {"updated_at": {"$lt": incoming_ts}},
-                                {"updated_at": {"$exists": False}},
-                            ],
-                        },
-                        {"$set": record}
-                    )
-                    if result.matched_count > 0:
-                        logger.info(f"Updated record in {collection_name} (last-write-wins)")
-                    else:
-                        logger.info(f"Skipped stale update in {collection_name} for {record_id}")
-                except Exception as e:
-                    logger.error(f"Error updating record in {collection_name}: {str(e)}")
-            
-            # Handle deletes (soft delete)
-            for record_id in table_changes.get("deleted", []):
-                try:
-                    await collection.update_one(
-                        {"_id": to_query_id(record_id), "company_id": company_id},
-                        {"$set": {
-                            "is_deleted": True,
-                            "updated_at": datetime.now(timezone.utc)
-                        }}
-                    )
-                    logger.info(f"Soft deleted record in {collection_name}")
-                except Exception as e:
-                    logger.error(f"Error deleting record in {collection_name}: {str(e)}")
-        
-        return {"success": True}
-    except Exception as e:
-        logger.error(f"Sync push error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Sync push failed: {str(e)}")
-
-@api_router.get("/sync/timestamp")
-async def sync_timestamp():
-    """Get current server timestamp in milliseconds"""
-    return {"timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)}
 
 # ==================== AUTH ROUTES ====================
 
