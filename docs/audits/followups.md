@@ -51,7 +51,7 @@ path is what this command takes as its argument.
 - **`railway logs --since` is silently ineffective when the line cap binds
   first** (2026-09-02, below). The command that reads the log has its own
   reach problem, so running it first is necessary and not sufficient.
-- **Four sorts protected only by a projection** — the 292 above is the same
+- **Sorts protected only by a projection** — the 292 above is the same
   family, and the sweep for it is `backend/scripts/find_unserved_sorts.py`.
 
 Recorded on a fresh base: the original entry (#346) was written against a base
