@@ -1382,13 +1382,45 @@ EXPECTED_INDEXES = {
         "digest_queue_status_sched",
         "digest_queue_user_sched",
     },
-    "dob_logs": {
-        "dob_logs_ttl_short",
-        "dob_logs_ttl_long",
-    },
+    # dob_logs CARRIES NO EXPECTED INDEX ON PURPOSE.
+    #
+    # This entry used to demand dob_logs_ttl_short and dob_logs_ttl_long. Both
+    # were DELIBERATELY REMOVED on 2026-07-24 -- `detected_at` is a
+    # backfill/sync stamp, not an event date, so the TTLs measured
+    # time-since-first-sync and would have physically deleted compliance
+    # history. See the removal note in server.py's startup index pass and
+    # docs/runbooks/dob-logs-ttl-removal-2026-07-24.md.
+    #
+    # So for six weeks this tool -- the one thing meant to catch a missing
+    # index -- reported a WARNING on every run for two indexes that are
+    # supposed to be absent. A standing false positive in a detector is worse
+    # than no detector: it teaches the reader that section 10 is noise, which
+    # is exactly the reading under which a genuinely missing index goes by.
+    # dob_logs is still ENUMERATED below; it simply has nothing required.
     "renewal_alert_sent": {
         "renewal_alert_sent_idem",
         "renewal_alert_sent_ttl",
+    },
+    # ── THE TWO UNIQUE INDEXES THAT SETTLE RACES ON COMPLIANCE RECORDS ─────
+    #
+    # Neither collection was audited at all, and one of these has NEVER BUILT.
+    # `logbooks_one_open_amendment_per_parent` is rejected with E11000 by the
+    # duplicates production already holds (Aug 10, Aug 14), and the
+    # application's startup helper swallowed the rejection -- so the one place
+    # a person could have SEEN that the constraint is not enforced was this
+    # section, and it was not looking. That is the exact class of defect this
+    # section exists for, on the exact collection the product's legal record
+    # lives in.
+    #
+    # `signature_events_one_row_per_signing_act` is the partial unique index
+    # that stops two writers minting two ledger rows for one signing act. It
+    # starts empty by design (rows written before it carry no signature_key),
+    # so a silent failure to build would look identical to a healthy build.
+    "logbooks": {
+        "logbooks_one_open_amendment_per_parent",
+    },
+    "signature_events": {
+        "signature_events_one_row_per_signing_act",
     },
 }
 
@@ -1402,6 +1434,11 @@ async def section_indexes(db) -> Tuple[str, List[Concern]]:
         "dob_logs", "notification_log",
         "notification_preferences", "digest_queue",
         "permit_renewals", "renewal_alert_sent",
+        # Added 2026-09-03. The compliance record itself and its signing
+        # ledger — see the EXPECTED_INDEXES note above for why their absence
+        # from this list was the gap that let a never-built unique index sit
+        # unnoticed.
+        "logbooks", "signature_events",
     ]
 
     for coll_name in collections_to_audit:
