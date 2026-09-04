@@ -2,6 +2,49 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MEDIUM] REBASE, NEVER MERGE, across branches that touch the same subsystem
+  — and read the result. A merge tool resolves TEXT; nothing resolves an
+  assumption that was true in both parents and false in the child.**
+  Standing rule as of 2026-09-04. It has now paid on both of its first two
+  applications, and **both times the defect was in neither branch**.
+
+  **First (`test_absence_literals_are_specific`).** `backend/server.py`
+  auto-merged cleanly and the combined tree still tripped the repo's own floor:
+  415 unclassified `assertNotIn` haystacks against a cap of 410. The five over
+  the line read a LOCAL `body` variable, which the auditor cannot prove is
+  source text — so those assertions were never audited. Not wrong;
+  **unexamined**, which is the state that file exists to prevent. Inlining the
+  slice to make them visible then failed four MORE for a real reason: bare
+  words instead of constructs (`_upload_to_r2` is satisfied by a comment
+  mentioning it, when the assertion is that the reader does not WRITE).
+
+  **Second (`docCache` keep-set) — the sharper one.** `collectKeepNames`
+  rebuilds the sweep's keep-set from list records, which carry an id and a
+  version but no extension, so it enumerates what the cache can write. Its
+  comment said "keep every extension this cache can produce" and the code added
+  exactly one:
+
+      keep.add(safeName(id, v, 'pdf'));
+
+  True enough to be invisible for as long as `pdf` was the only extension
+  written. The instant plan thumbnails write `.jpg`, it is a silent deletion
+  bug — and `sweepDocCache` runs from the plans screen on every successful list
+  load, so the next sweep from ANY screen wipes every thumbnail.
+
+  **IT WOULD HAVE BEEN UNFINDABLE IN THE FIELD.** No error, no failing test, no
+  crash. It presents as "thumbnails don't work", intermittently, on a screen
+  whose whole purpose is to be glanceable. Fixed with `CACHE_EXTS`; proved by a
+  control run that fails three assertions with the keep-set reverted, one of
+  them catching a thumbnail deleted between two runs.
+
+  **THE SHAPE OF THE CLASS.** Both defects lived in an assumption each branch
+  was individually entitled to make — "pdf is the only extension", "the auditor
+  sees my haystack" — and that only became false when the other branch landed.
+  A clean auto-merge is not evidence; it is the absence of a TEXT conflict, and
+  these were not text conflicts. So: rebase the second branch onto the first,
+  then READ the resolved files and run the gates against the combined tree,
+  even when git reports no conflict at all.
+
 - **[MEDIUM] A build that could not reach its subject passed as a build, and
   `tail -2` is what hid it. Twelfth instance of the class.**
   Running `expo export` in a second git worktree produced a **662-module,
