@@ -2,6 +2,107 @@
 
 Known gaps and deferred work, newest first.
 
+- **[LOW] `_render_dpi_for`'s `"d-"` token fires on one sheet in 164, and that
+  one is a false positive. Measured 2026-09-04 — leave it, but know what it is.**
+  The heuristic picks 300 DPI over the 250 DPI default when a FILENAME contains
+  `detail`, `enlarged`, `schedule` or `d-`. Against 588 Thomas's 164 indexed
+  pages:
+
+  | token | pages |
+  |---|---|
+  | `detail` | 0 |
+  | `enlarged` | 0 |
+  | `schedule` | 0 |
+  | `d-` | **1** |
+
+  The single match is `588 Thomas S Boyland Street shed-1.pdf` — it matches on
+  `she`**`d-`**`1`. Its index row says `discipline: 'other'`, no sheet number,
+  no title. It is a shed drawing, not a detail sheet.
+
+  **SO THE FEATURE HAS NEVER ONCE FIRED FOR ITS PURPOSE ON THIS PROJECT**, and
+  its only firing is wrong. That is the finding; the COST is not the problem —
+  300 DPI is 1.44x the pixels of 250, one page in 164, and that page's stored
+  JPEG is 454 KB against a 3.0 MB median for the set. Negligible.
+
+  **DO NOT "FIX" IT BY READING THE INDEX.** `document_page_index` carries
+  `discipline` (164/164 populated), `sheet_number` (151/164) and `sheet_title`
+  (160/164), and reaching for them is the obvious move — but it cannot work.
+  The DPI is chosen in `_pdf_pages_render_and_text` BEFORE the page is
+  rasterised:
+
+      page_dpi = _render_dpi_for(file_name, page_num)
+      jpeg_bytes = _render_pdf_page(pdf_bytes, page_num, page_dpi)
+
+  and those index fields are extracted by the VLM FROM that render. At the
+  moment the decision is made, nothing about the page exists except its
+  filename. The heuristic is not a filename standing in for structure that was
+  available — at first index, the filename is the only signal there is.
+
+  **AND IT DOES NOT PREDATE THE INDEX.** `_render_dpi_for` landed 2026-04-17,
+  one day AFTER `document_page_index` with discipline/sheet_number on
+  2026-04-16 — same sprint. So it was never a reasonable choice that went
+  stale; the constraint above is why.
+
+  **WHAT IS ACTUALLY WORTH DOING, if anything:** tighten `"d-"` to something
+  anchored (`"-d-"`, or a leading `d-` after a path separator) so it stops
+  matching mid-word. A RE-index could legitimately use the index fields,
+  because by then they exist — but that is a narrow case and nobody is asking
+  for it. **Left alone deliberately.**
+
+- **[REFERENCE] The PREDATES_MARKING signature set is CLOSED at 252 rows.**
+  Counted 2026-09-04, read-only, nothing written.
+
+  `signature_events` carrying no `provenance` key at all — the state
+  `provenance_of` reports as PREDATES_MARKING, and the one this project ruled
+  must never be backfilled, because a reconstructed `content_snapshot` would
+  attest to content the signer never saw.
+
+  | | |
+  |---|---|
+  | total `signature_events` | 283 |
+  | with `provenance` | 31 |
+  | **PREDATES_MARKING** | **252** |
+  | date range | 2026-07-29 19:39:22 -> 2026-09-02 15:14:53 |
+  | `event_type` | `cp_sign` 239, `worker_sign` 13 |
+  | `document_type` | `logbook` 239, `preshift_signature_affirmation` 13 |
+  | `log_type` | subcontractor_orientation 73, daily_jobsite 55, preshift_signin 39, toolbox_talk 38, osha_log 32, scaffold_maintenance 2, (none) 13 |
+  | with a `signature_key` | 0 |
+
+  **CLOSED, AND PROVEN CLOSED RATHER THAN ASSUMED.** The earliest row carrying
+  provenance is **2026-09-03 11:35:19** — the deploy of #362, which is a day
+  after that commit's date. Every row without provenance predates it and the
+  count after it is zero. Testing against the COMMIT date instead of the deploy
+  boundary reports seven false positives; the boundary is the first row that
+  has the key, not the day the code was written.
+
+  The set can never grow: `create_signature_event` writes
+  `provenance or undetermined_provenance()` unconditionally, so a row minted
+  today always carries the key. **252 is final.** Recorded here so an audit
+  never has to recompute it.
+
+- **[LOW] Seven of 588 Thomas's 164 indexed pages have NO `page_jpeg_r2_key`,
+  despite all 164 being `index_version: 2`.**
+  Measured 2026-09-04. Coverage is **157/164**, not 164/164.
+
+      AR - 3.28.25.pdf   p6, p10
+      SP - 6.24.26.pdf   p1
+      ST - 7.29.26.pdf   p2, p3
+      (2 more whose file_id no longer resolves to a project_files record)
+
+  A v2 row with an empty key means `_upload_page_jpeg_to_r2` failed for that
+  page and the indexer carried on — which it is right to do. It matters because
+  every reader that wants a page image treats the key as the fast path: the
+  thumbnail and base-layer ladders both bottom out on re-rendering the source
+  PDF, so these seven pages pay a full poppler render of a large sheet on every
+  request, with no cache.
+
+  Two of the seven are worse than slow: their `file_id` does not resolve to any
+  `project_files` record, so even the fallback has nothing to render FROM.
+  Those are orphaned index rows.
+
+  Same remedy as the 20 `index_version: 1` pages — a re-index — and the same
+  priority: scheduled, not urgent. But note this project IS live, unlike those.
+
 - **[LOW] Two folder-grouping implementations now exist, and the kiosk keeping
   its own was a decision, not drift.**
   `src/utils/dropboxTree.js` is the shared one, lifted out of
