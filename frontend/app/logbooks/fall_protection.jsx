@@ -10,6 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { resolveSignerName } from '../../src/utils/signerName';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
@@ -79,6 +80,26 @@ export default function FallProtectionLog() {
   const tFinalize = useT('finalize');
   const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
 
+  // THE SESSION OUTRANKS THE CACHED PROFILE UNTIL HE TYPES.
+  //
+  // `cpName` arrives from useCpProfile, whose FIRST source is an AsyncStorage
+  // cache — on a shared device that is the PREVIOUS user's name. Showing it
+  // under a licensed signature is the fabrication class the departure stamp
+  // already cost us, so the authenticated session wins until the signer has
+  // actually edited the field.
+  //
+  // A REF, NOT DERIVED STATE. `cpName` cannot distinguish "loaded from cache"
+  // from "typed by this man" — it is one string with two origins. The ref
+  // records the origin, which is the fact the precedence needs.
+  const nameTouched = useRef(false);
+  const signerName = nameTouched.current
+    ? cpName
+    : resolveSignerName({ user, profileName: cpName });
+  const handleNameChange = useCallback((text) => {
+    nameTouched.current = true;
+    setCpName(text);
+  }, [setCpName]);
+
   const s = useMemo(() => buildStyles(), []);
 
   const [loading, setLoading] = useState(true);
@@ -140,7 +161,7 @@ export default function FallProtectionLog() {
       writeDraft(_key, {
         data: draftBody(rowsRef.current),
         cp_signature: cpSignature,
-        cp_name: cpName,
+        cp_name: signerName,
       })
         .then((_ok) => setAutosaveFailed(!_ok))
         .catch(() => setAutosaveFailed(true));
@@ -153,7 +174,7 @@ export default function FallProtectionLog() {
     try {
       const persisted = await persistActivityPhotos(rowsRef.current);
       const _ok = await writeDraft(_key, {
-        data: draftBody(persisted), cp_signature: cpSignature, cp_name: cpName,
+        data: draftBody(persisted), cp_signature: cpSignature, cp_name: signerName,
       });
       setAutosaveFailed(!_ok);
     } catch (_e) { setAutosaveFailed(true); }
@@ -361,7 +382,7 @@ export default function FallProtectionLog() {
     let localSaved = false;
     try {
       localSaved = await writeDraft(_key, {
-        data: draftBody(filed), cp_signature: cpSignature, cp_name: cpName,
+        data: draftBody(filed), cp_signature: cpSignature, cp_name: signerName,
         status: submitStatus,
       });
     } catch (_e) {
@@ -384,12 +405,12 @@ export default function FallProtectionLog() {
     try {
       if (existingLogId) {
         await logbooksAPI.update(existingLogId, {
-          data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          data, cp_signature: cpSignature, cp_name: signerName, status: submitStatus,
         });
       } else {
         created = await logbooksAPI.create({
           project_id: projectId, log_type: LOG_TYPE, date, data,
-          cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          cp_signature: cpSignature, cp_name: signerName, status: submitStatus,
         });
         savedId = created.id || created._id;
         setExistingLogId(savedId);
@@ -478,7 +499,7 @@ export default function FallProtectionLog() {
       if (docId) {
         recordSignatureEvent({
           documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
-          signerName: cpName, signerRole: user?.role || 'cp',
+          signerName, signerRole: user?.role || 'cp',
           signatureData: cpSignature,
           contentSnapshot: {
             log_type: LOG_TYPE, date, project_id: projectId, data, status: submitStatus,
@@ -823,12 +844,26 @@ export default function FallProtectionLog() {
         <Text style={s.noticeText}>{t('standardNotice')}</Text>
       </View>
 
+      {/* THE SAME DEFECT, AND IT LOOKED HEALTHIER FOR IT. `signerName` is a
+          real prop here, so the name DISPLAYED — but `onSignerNameChange` is
+          not one (it is `onNameChange`), so typing was a no-op, and `value` /
+          `onChange` are not props either, so the signature could never be
+          captured. The screen reads as working right up to the moment somebody
+          tries to finish, which is why it was never reported.
+
+          BLAST RADIUS, MEASURED: db.logbooks holds ZERO documents of log_type
+          "fall_protection". Like the superintendent log, never filed by
+          anyone, since launch.
+
+          Found by enumerating all 18 SignaturePad mounts after the
+          superintendent log was reported. Sixteen are correct; these were the
+          two. See signaturePadProps.test.cjs. */}
       <SignaturePad
-          pinned
-        value={cpSignature}
-        onChange={setCpSignature}
-        signerName={cpName}
-        onSignerNameChange={setCpName}
+        pinned
+        signerName={signerName}
+        onNameChange={handleNameChange}
+        existingSignature={cpSignature}
+        onSignatureCapture={setCpSignature}
       />
     </View>
   );
