@@ -168,9 +168,11 @@ class ItIsWiredWhereItHasToBe(unittest.TestCase):
         outermost layer and put CORS inside — reopening the bug
         test_cors_survives_rate_limit exists for."""
         from fastapi.middleware.cors import CORSMiddleware
-        classes = [m.cls.__name__ for m in server.app.user_middleware]
-        self.assertIn("CORSMiddleware", classes)
-        cors_at = classes.index("CORSMiddleware")
+        classes = [m.cls for m in server.app.user_middleware]
+        cors = [i for i, c in enumerate(classes)
+                if isinstance(c, type) and issubclass(c, CORSMiddleware)]
+        self.assertTrue(cors, "no CORS middleware registered at all")
+        cors_at = cors[0]
         # user_middleware is outermost-first.
         self.assertEqual(cors_at, 0,
                          "CORSMiddleware must remain the outermost layer")
@@ -182,7 +184,7 @@ class ItIsWiredWhereItHasToBe(unittest.TestCase):
         from fastapi.middleware.cors import CORSMiddleware
         kwargs = None
         for mw in server.app.user_middleware:
-            if mw.cls is CORSMiddleware:
+            if isinstance(mw.cls, type) and issubclass(mw.cls, CORSMiddleware):
                 kwargs = mw.kwargs
         self.assertIsNotNone(kwargs)
         self.assertIn(HEADER, kwargs.get("allow_headers"))

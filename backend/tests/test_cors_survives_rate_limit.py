@@ -86,7 +86,13 @@ class TheOriginListIsExactAndNarrow(unittest.TestCase):
         self.assertNotIn("*", server.ALLOWED_ORIGINS)
         for o in server.ALLOWED_ORIGINS:
             self.assertNotIn("*", o, f"wildcard in origin {o!r}")
-        cors = [m for m in server.app.user_middleware if m.cls is CORSMiddleware]
+        # BY SUBCLASS, NOT BY IDENTITY OR BY NAME. The registered class is
+        # CountingCORSMiddleware, which subclasses CORSMiddleware to record the
+        # preflights it refuses without changing a single decision. What this
+        # test guards -- one CORS layer, outermost, exact origins -- is unchanged
+        # by that, so it asks the question in a form the subclass answers.
+        cors = [m for m in server.app.user_middleware
+                if isinstance(m.cls, type) and issubclass(m.cls, CORSMiddleware)]
         self.assertEqual(len(cors), 1, "expected exactly one CORS middleware")
         self.assertIsNone(
             cors[0].kwargs.get("allow_origin_regex"),
@@ -107,11 +113,13 @@ class CorsIsTheOutermostLayer(unittest.TestCase):
     """Registration order, asserted on the stack rather than by reading code."""
 
     def test_cors_is_registered_last_so_it_wraps_the_limiter(self):
-        classes = [m.cls.__name__ for m in server.app.user_middleware]
-        self.assertIn("CORSMiddleware", classes)
-        cors_at = classes.index("CORSMiddleware")
+        classes = [m.cls for m in server.app.user_middleware]
+        cors = [i for i, c in enumerate(classes)
+                if isinstance(c, type) and issubclass(c, CORSMiddleware)]
+        self.assertTrue(cors, "no CORS middleware registered at all")
+        cors_at = cors[0]
 
-        rl = [i for i, n in enumerate(classes) if "RateLimit" in n]
+        rl = [i for i, c in enumerate(classes) if "RateLimit" in c.__name__]
         if not rl:
             self.skipTest("rate-limit middleware not installed in this env")
 

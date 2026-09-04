@@ -1048,6 +1048,12 @@ CLIENT_REQUEST_ID_HEADER = "X-Request-Id"
 # PREFLIGHT and never sends the request at all. See that list for the full note.
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
+# THE ALLOW LIST, NAMED ONCE. Read by the CORS registration below, by the
+# refusal recorder, and by the health payload — three readers that must not be
+# able to disagree about what is allowed.
+CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "Accept",
+                      CLIENT_REQUEST_ID_HEADER, CLIENT_VERSION_HEADER]
+
 # BOUNDED AND CHARSET-RESTRICTED, because this is attacker-controlled text on
 # its way into a log file, and an unbounded value with newlines in it is how a
 # log line gets forged. Opaque to the server otherwise: a correlation handle,
@@ -1115,6 +1121,156 @@ async def client_request_id_middleware(request: Request, call_next):
     return response
 
 
+# ── A REFUSED PREFLIGHT IS A SERVER-SIDE OUTAGE SIGNAL, AND IT WAS SILENT ──
+#
+# Starlette answers a preflight asking for a header this list does not name
+# with `400 Disallowed CORS headers`, and the browser then declines to send the
+# request at all. Nothing recorded that. Between 2026-08-28 and 2026-09-04 the
+# web build asked for X-Client-Version on every request, was refused every
+# time, and could not sign in — while /api/version returned 200, the suite was
+# green, and the mount smoke reported 37/37 clean.
+#
+# THIS IS THE CHEAPEST DETECTOR THERE IS. It needs no DSN, no client
+# instrumentation, no quota and no browser: the refusal happens here, in this
+# process, on the exact condition. It would have gone red on day one.
+#
+# Deliberately the same shape as FAILED_UNIQUE_INDEX_BUILDS below — a module
+# dict naming the present state, a compliance_alerts row deduped on the one
+# field that identifies the finding, and a section in GET /api/health — because
+# that shape is already built, already rendered by /admin/compliance-alerts,
+# and needs no new screen and no new concept.
+CORS_PREFLIGHT_REJECTIONS: dict = {}
+
+# HOW MANY REFUSALS OF ONE HEADER, FROM AN ORIGIN WE OWN, BEFORE IT IS A ROW.
+# In a healthy system this counter never moves: there is no legitimate source
+# of a refused preflight, so the honest threshold is "more than a handful".
+# A single page-load of the web app produced 2-4 blocked preflights per route
+# when this was measured, so a real outage crosses 5 inside one person's first
+# session — minutes, not days. A stray scanner sending one odd header does not.
+CORS_PREFLIGHT_ALERT_THRESHOLD = 5
+
+
+def _refused_preflight_headers(middleware, request_headers) -> list:
+    """Which requested header names are not on the allow list.
+
+    Starlette's own refusal has ALREADY happened when this runs — the decision
+    is not remade here. This only names the entries behind it, by reading the
+    middleware's own lowercased allow list, so the alert can say WHICH header
+    rather than "a header".
+    """
+    asked = request_headers.get("access-control-request-headers") or ""
+    allowed = set(getattr(middleware, "allow_headers", []) or [])
+    return [h for h in (x.strip().lower() for x in asked.split(",") if x.strip())
+            if h not in allowed]
+
+
+async def _flag_cors_preflight_refused(header: str, origin: str, count: int) -> None:
+    """One compliance_alerts row per refused header name. Never raises.
+
+    DEDUPED ON THE HEADER NAME, not on the origin or the count, for the reason
+    the index flagger dedupes on the index name: every blocked page-load
+    re-triggers this, and an undeduped row would write thousands during exactly
+    the outage it exists to report.
+    """
+    try:
+        exists = await db.compliance_alerts.find_one({
+            "alert_type": "cors_preflight_refused",
+            "details.header": header,
+        })
+        if exists:
+            return
+        await db.compliance_alerts.insert_one({
+            "alert_type": "cors_preflight_refused",
+            "severity": "high",
+            "project_id": None,
+            "company_id": None,
+            "message": (
+                f"The browser asked to send '{header}' and this server refused "
+                f"the preflight. Every request carrying that header is being "
+                f"blocked before it is sent — on every endpoint, including "
+                f"login. Add it to allow_headers in server.py."
+            ),
+            "details": {
+                "header": header,
+                "origin": origin,
+                "count": count,
+                "allow_headers": list(CORS_ALLOW_HEADERS),
+            },
+            "resolved": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+    except Exception as _alert_err:
+        logger.error(f"could not flag refused preflight {header!r}: {_alert_err!r}")
+
+
+class CountingCORSMiddleware(CORSMiddleware):
+    """CORSMiddleware that records the preflights it refuses.
+
+    IT DOES NOT DECIDE ANYTHING. `super().preflight_response(...)` makes every
+    call it always made and the result is returned unmodified; this subclass
+    only observes. Re-deriving the allow/refuse decision here would be a second
+    copy of Starlette's logic that could drift from the one actually serving.
+
+    A subclass rather than another middleware because a refused preflight is
+    short-circuited HERE and never reaches an inner layer, and because
+    registering anything outside this one would take CORS off the outermost
+    position that test_cors_survives_rate_limit exists to hold.
+    """
+
+    def preflight_response(self, request_headers):
+        response = super().preflight_response(request_headers)
+        try:
+            if response.status_code != 200:
+                self._record_refusal(request_headers, response)
+        except Exception:
+            # Observability must never change what the caller receives.
+            pass
+        return response
+
+    def _record_refusal(self, request_headers, response) -> None:
+        origin = request_headers.get("origin") or "?"
+        refused = _refused_preflight_headers(self, request_headers)
+        if not refused:
+            # The refusal was about the origin or the method, not a header.
+            # Counted under a sentinel so the health payload still shows it.
+            refused = ["(origin or method)"]
+        now = datetime.now(timezone.utc)
+        # ONLY AN ORIGIN WE OWN CAN RAISE AN ALERT. A refused preflight from a
+        # host that is not ours is a scanner, which is noise; a refused
+        # preflight from levelog.com is the web app being down. Both are
+        # counted, so the health payload never hides one, but only ours pages.
+        ours = origin in ALLOWED_ORIGINS
+        for header in refused:
+            row = CORS_PREFLIGHT_REJECTIONS.setdefault(header, {
+                "count": 0, "from_our_origins": 0, "origins": [],
+                "first_seen": now.isoformat(), "last_seen": None, "alerted": False,
+            })
+            row["count"] += 1
+            row["last_seen"] = now.isoformat()
+            if origin not in row["origins"] and len(row["origins"]) < 5:
+                row["origins"].append(origin)
+            if not ours:
+                continue
+            row["from_our_origins"] += 1
+            if row["alerted"] or row["from_our_origins"] < CORS_PREFLIGHT_ALERT_THRESHOLD:
+                continue
+            row["alerted"] = True
+            # ERROR, NOT WARNING. This line is the one a person reads.
+            logger.error(
+                f"CORS PREFLIGHT REFUSED: {origin} asked to send {header!r} and "
+                f"this server refused it {row['from_our_origins']} times. Every "
+                f"request carrying that header is blocked BEFORE IT IS SENT, on "
+                f"every endpoint including login. Add it to allow_headers."
+            )
+            try:
+                asyncio.create_task(
+                    _flag_cors_preflight_refused(header, origin, row["from_our_origins"]))
+            except RuntimeError:
+                # No running loop (a synchronous test harness). The dict and the
+                # log line above still carry the finding.
+                pass
+
+
 # ── CORS — REGISTERED LAST, WHICH MAKES IT THE OUTERMOST LAYER ────────────
 #
 # Starlette's add_middleware PREPENDS, so the LAST registration wraps every
@@ -1138,7 +1294,7 @@ async def client_request_id_middleware(request: Request, call_next):
 # that EVERY response now leaves through this middleware, including the ones
 # an inner layer generates by refusing.
 app.add_middleware(
-    CORSMiddleware,
+    CountingCORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -1147,8 +1303,7 @@ app.add_middleware(
     # expose_headers trap below, one direction earlier: ship the correlation
     # id without this line and the web build silently stops making the request
     # instead of silently making it without the header.
-    allow_headers=["Authorization", "Content-Type", "Accept",
-                   CLIENT_REQUEST_ID_HEADER, CLIENT_VERSION_HEADER],
+    allow_headers=CORS_ALLOW_HEADERS,
     # X-Refreshed-Token IS ON THIS LIST BECAUSE THE BROWSER HIDES WHAT IS NOT.
     # The web build reads response headers through fetch/XHR, which expose only
     # the CORS-safelisted set plus whatever is named here. Ship the re-issue
@@ -26612,6 +26767,9 @@ async def health_check():
     force, and any `except DuplicateKeyError` written against it is dead code.
     """
     _failed = sorted(FAILED_UNIQUE_INDEX_BUILDS)
+    _refused = sorted(CORS_PREFLIGHT_REJECTIONS)
+    _ours = [h for h in _refused
+             if CORS_PREFLIGHT_REJECTIONS[h].get("from_our_origins")]
     return {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -26619,6 +26777,19 @@ async def health_check():
             "complete": not _failed,
             "failed_unique_builds": _failed,
             "detail": {n: FAILED_UNIQUE_INDEX_BUILDS[n] for n in _failed},
+        },
+        # WHAT THE BROWSER WAS REFUSED PERMISSION TO SEND. `clean` false with a
+        # name under `refused_from_our_origins` means the web build is being
+        # blocked before it sends anything, on every endpoint — the state that
+        # ran for seven days behind a 200 from /api/version. Refusals from
+        # origins we do not own are counted but never listed there: those are
+        # scanners, not an outage.
+        "cors": {
+            "clean": not _ours,
+            "allow_headers": list(CORS_ALLOW_HEADERS),
+            "refused_from_our_origins": _ours,
+            "refused_any_origin": _refused,
+            "detail": {h: CORS_PREFLIGHT_REJECTIONS[h] for h in _refused},
         },
     }
 
