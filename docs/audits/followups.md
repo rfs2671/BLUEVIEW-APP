@@ -4,6 +4,103 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-04 — a check that can be satisfied without running must count its own executions and fail at zero
+
+The general form of the class this week kept producing. Everything below is one
+sentence and its consequences:
+
+> **ANY CHECK THAT CAN BE SATISFIED WITHOUT RUNNING MUST COUNT ITS OWN
+> EXECUTIONS AND FAIL AT ZERO.**
+
+### Why "without running" is the discriminating phrase
+
+Most checks fail loudly when they do not run — an import error, a missing
+fixture, a red suite. The dangerous ones are the checks whose PASS condition is
+the ABSENCE of something:
+
+  * no console errors
+  * no CORS failures
+  * no unresolved references
+  * no rows returned
+
+Absence is what you also get from not looking. A check of this shape has two
+paths to green — the subject was fine, or the subject was never reached — and
+nothing in its output distinguishes them. Every instance below sat on the second
+path, some of them for years, all of them reporting the first.
+
+### It caught itself, once, in the space of an hour
+
+`smoke-mount.cjs` answered every API call through Playwright route interception
+with `Access-Control-Allow-Headers: '*'`, inside an `if (method === 'OPTIONS')`
+branch. Run against a `server.py` that could not serve the web app it printed
+`37/37 route-mounts clean`.
+
+**The first fix was to make the stub strict** — derive the allow list from
+`server.py`, refuse what the server refuses. It was right in every particular
+and it changed nothing, because route interception SHORT-CIRCUITS BEFORE
+CHROMIUM ISSUES A PREFLIGHT. There was no OPTIONS to be strict about. The branch
+had never executed since the day it was written.
+
+The strict stub passed everything, exactly as the permissive one had.
+
+What separated them was one line added on a hunch:
+
+```
+preflights answered from server.py allow_headers: 0
+```
+
+A fix that fixed nothing was two minutes from being shipped and described as a
+fix. The count is the entire reason it was not.
+
+### The distinction underneath it
+
+**A stub of a RESPONSE leaves the mechanism intact. A stub of a TRANSPORT
+removes every mechanism the transport implements.**
+
+CORS does not live in the response; it lives in the transport. So intercepting
+the transport does not stub CORS permissively — it deletes CORS, and any
+CORS-shaped code left behind reads as coverage while being unreachable. The same
+is true of anything else the transport owns: redirects, cookies, caching,
+content-encoding, connection reuse.
+
+The question to ask of a stub is therefore not *what does it return* but **does
+the thing I am replacing still happen?** Nothing about `if (method ===
+'OPTIONS')` looks like dead code. It looks like the opposite, which is why it
+survived review.
+
+### The practical form
+
+Where the pass condition is an absence, add the smallest counter that proves the
+subject was present, and fail at zero. It is one integer and one branch:
+
+| Check | The absence it passes on | What it now counts |
+|---|---|---|
+| `smoke-mount.cjs` | no console errors on any route | preflights actually intercepted |
+| `test_cors_allows_every_client_header.py` | every client header is allowed | headers the extractor found in the client source |
+| `postdeploy-web-check.cjs` | no CORS failures on the live site | API responses that actually completed |
+| `sentry.js` | (inverted) events dropped as noise | blocked requests per session, carried on the sampled event |
+
+The last one is the same rule pointed at a filter rather than a test. The filter
+dropped every blocked request for seven days; it now still drops most of them,
+but **counts all of them**, and the count rides out on the ones it keeps. A
+dropped event that was never counted is how a total outage became
+indistinguishable from a user in a tunnel.
+
+### And it must fail, not warn
+
+`preflights: 0` printed as a note would have been read as a note. The run has to
+go red, with a line saying what was not exercised and instructing the reader not
+to widen the check to make it pass — because widening is the obvious repair and
+it is the bug.
+
+Related: [[a check that REPLACES its subject reports on what is left]],
+[[a filter that names the class it is discarding]].
+
+---
+
+
+---
+
 ## OPEN — 2026-09-04 — a paid operation ran since launch with no artifact recording that it happened
 
 Two endpoints call a paid vision model. `POST /checkin/upload-osha` does it on
