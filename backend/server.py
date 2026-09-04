@@ -17141,6 +17141,28 @@ async def update_daily_log(log_id: str, update_data: dict, current_user = Depend
     # RE-PARENT the log into another tenant. Ownership is set at creation only.
     update_data.pop("project_id", None)
     update_data.pop("company_id", None)
+    # ── LIFECYCLE IS NOT A FIELD EDIT ──────────────────────────────────────
+    #
+    # Both of these were reachable, by anyone with access to the project, until
+    # they were popped:
+    #
+    #   is_deleted  — a soft-deleted log has `is_deleted: True` and every reader
+    #                 filters on `{"$ne": True}`. Sending `is_deleted: false`
+    #                 through this body RESURRECTED it everywhere at once. The
+    #                 delete endpoint is the only thing that may set it.
+    #   is_locked   — sending `is_locked: true` FROZE somebody else's open log.
+    #                 The reverse was already impossible by accident rather than
+    #                 by design: the 423 above refuses a locked log before
+    #                 reaching this line, so an unlock could never land. Popping
+    #                 makes both directions deliberate instead of one of them
+    #                 being blocked by an unrelated guard.
+    #
+    # POPS, NOT AN ALLOWLIST. An allowlist is the better shape and is a contract
+    # change — the callers of PUT /daily-logs are not enumerated and the offline
+    # queue replays this endpoint, so a field silently dropped from a queued
+    # edit is a worse failure than the two this closes. Recorded as owed.
+    update_data.pop("is_deleted", None)
+    update_data.pop("is_locked", None)
 
     now = datetime.now(timezone.utc)
     update_data["updated_at"] = now
