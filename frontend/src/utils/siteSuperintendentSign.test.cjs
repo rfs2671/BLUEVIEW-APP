@@ -99,10 +99,34 @@ console.log('\n2. THE FREEZE IS AT DEPARTURE');
 {
   ok(/prior to departing/i.test(SCREEN),
     'the statute is quoted where the timing decision lives');
-  ok(/nowHHMM/.test(CODE(SCREEN)),
-    'departure is stamped when he signs');
-  ok(/departedAt\.trim\(\) \|\| nowHHMM\(\)/.test(CODE(SCREEN)),
-    'and the stamp is a FALLBACK — a time he typed wins over the app clock');
+  // ── THE CLOCK STAMP AT SIGNATURE IS GONE, AND THIS PAIR INVERTED ─────────
+  //
+  // These two used to read "departure is stamped when he signs" and "the stamp
+  // is a FALLBACK — a time he typed wins over the app clock", asserting
+  // `departedAt.trim() || nowHHMM()`. Both passed, and the thing they were
+  // protecting was wrong:
+  //
+  //   IT IS THE APP ASSERTING AN OBSERVATION on a licensed signature. Section
+  //   3 below is the rule — these times are HIS statement, not a measurement —
+  //   and the stamp broke it in the one place he could not see. Arrival's
+  //   prefill lands in a visible field he can correct all day; this one landed
+  //   in the payload at the instant of filing.
+  //
+  //   IT WAS NOT THE TIME HE LEFT. 3301.13.13 wants the departure; the clock
+  //   at signature is when he signed, and on a log he must complete BEFORE
+  //   departing those differ by construction.
+  //
+  //   AND IT MADE DEPARTURE UNGATEABLE. A field that can never be blank at
+  //   submit can never be reported missing, which is why the requirement had
+  //   no enforcement to inherit.
+  //
+  // So the claim inverts: nothing writes a departure he did not choose.
+  ok(!/nowHHMM/.test(CODE(SCREEN)),
+    'no clock stamp writes departed_at behind him');
+  ok(!/departedAt\.trim\(\) \|\| now/.test(CODE(SCREEN)),
+    'and the fallback that made it unreachable is gone');
+  ok(/if \(presenceMissing\.length > 0\) return;/.test(CODE(SCREEN)),
+    'the handler REFUSES a blank arrival or departure instead of filling it in');
 
   // THE FREEZE IS AN EXPLICIT FINALIZE, AND THAT IS THE CONTRACT.
   //
@@ -175,8 +199,154 @@ console.log('\n3. ARRIVAL AND DEPARTURE ARE HIS STATEMENT, NOT AN OBSERVATION');
   const en = read('src', 'i18n', 'en.js');
   ok(/YOUR statement of when you arrived and left, not a measurement/.test(en),
     'and the words say it plainly — he may open the app in his truck');
-  ok(/editable=\{!locked\}/.test(CODE(SCREEN)),
-    'both fields stay editable, so the claim is his to correct');
+  // RE-POINTED FROM `editable={!locked}` TO THE PICKERS. That assertion was
+  // about the two TextInputs these fields used to be, and it kept passing
+  // after they became TimeFields — because `editable={!locked}` lives inside
+  // the `Field` component, which twelve OTHER call sites still use. It was
+  // reporting on fields it no longer described. The claim it was making is
+  // asked of the controls that are actually there.
+  const csCode = CODE(SCREEN);
+  const arrived = csCode.slice(csCode.indexOf("label={t('arrivedAt')}"));
+  const departed = csCode.slice(csCode.indexOf("label={t('departedAt')}"));
+  ok(csCode.indexOf("label={t('arrivedAt')}") > 0
+     && /<TimeField[\s\S]{0,400}label=\{t\('arrivedAt'\)\}/.test(csCode),
+  'ARRIVED is a TimeField');
+  ok(/<TimeField[\s\S]{0,400}label=\{t\('departedAt'\)\}/.test(csCode),
+    'DEPARTED is a TimeField');
+  ok(/onChange=\{setArrivedAt\}/.test(arrived.slice(0, 400))
+     && /onChange=\{setDepartedAt\}/.test(departed.slice(0, 400)),
+  'and each one writes his choice straight back — no helper in between');
+  // NO NATIVE MODULE. The whole reason TimeField is hand-built: a picker
+  // package ends OTA delivery, and this screen is OTA-deliverable.
+  const pkg = JSON.parse(read('package.json'));
+  const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies });
+  const pickers = deps.filter((d) => /datetimepicker|date-picker|time-picker|react-native-modal-datetime/i.test(d));
+  ok(pickers.length === 0,
+    `no picker package was added for this (${JSON.stringify(pickers)})`);
+}
+
+console.log('\n3b. A LOG CANNOT FILE WITH EITHER TIME BLANK');
+{
+  // ── THE STRUCTURAL PROBLEM, PROVED BY RUNNING THE MODEL ──────────────────
+  //
+  // Not asserted from the screen's comment about it: `csUnanswered` filters on
+  // `i.attestable` and item 1 is declared `attestable: false`, so the existing
+  // submit gate is INCAPABLE of naming presence however blank it is. A source
+  // grep for the word "attestable" would pass on the prose explaining that.
+  const M = loadEsm('src/utils/superintendentLogModel.js');
+  const blankPresence = {
+    presence: { printed_name: 'R. Sanchez', arrived_at: '', departed_at: '' },
+    unsafe_conditions: { none_to_report: true },
+    orders_given: { none_to_report: true },
+    dob_actions: { none_to_report: true },
+    incidents: { none_to_report: true },
+  };
+  ok(M.csUnanswered(blankPresence, '2026-09-03').length === 0,
+    'csUnanswered names NOTHING for a log with both times blank — the gate '
+    + 'that already exists structurally cannot require them');
+  // AND THE ITEM READS AS ANSWERED. A printed name alone makes item 1 PRESENT
+  // on every reader, which is absence rendered as a claim.
+  ok(M.csItemState('presence', blankPresence, '2026-09-03') === 'present',
+    'and item 1 reports PRESENT off the printed name alone');
+
+  // ── SO THERE IS A SECOND GATE, AND IT NAMES THE FIELDS ───────────────────
+  const csCode = CODE(SCREEN);
+  ok(/const arrivalMissing = !arrivedAt\.trim\(\);/.test(csCode)
+     && /const departureMissing = !departedAt\.trim\(\);/.test(csCode),
+  'the screen asks the two fields directly');
+  ok(/submitDisabled=\{[\s\S]{0,200}presenceMissing\.length > 0/.test(csCode),
+    'a blank arrival or departure makes Submit UNREACHABLE, not warned about');
+  ok(/submitHint=\{\s*presenceMissing\.length > 0/.test(csCode),
+    'and the dead button names the presence gap FIRST — the other two gaps '
+    + 'are on the step he is already looking at, these are four steps back');
+  ok(/t\('presenceHint'\)\.replace\('\{fields\}', presenceMissing\.join\(' and '\)\)/
+    .test(csCode),
+  'the hint interpolates the MISSING FIELD LABELS, so he is told which one');
+  ok(/required=\{arrivalMissing\}/.test(csCode)
+     && /required=\{departureMissing\}/.test(csCode),
+  'and each control is marked on step 1, with the same red outline the rest '
+    + 'of the app uses');
+  ok(/requiredLabel=\{t\('requiredField'\)\}/.test(csCode),
+    'through the shared wording — one app must not mark a gap two ways');
+  // NOT `nextDisabled`. toolbox_talk blocks Next on its required step-1
+  // fields; this screen must not, because at 07:00 he does not yet know when
+  // he will leave and the other four steps are filled during the day.
+  ok(!/nextDisabled/.test(csCode),
+    'but Next is NOT blocked — he cannot know his departure time in the morning');
+
+  const en = read('src', 'i18n', 'en.js');
+  ok(/presenceHint: 'Go back to step 1 and choose \{fields\}\./.test(en),
+    'the copy sends him to the step the fields are on');
+  ok(/requiredField: 'Required field'/.test(en),
+    'and the field mark reads the same as everywhere else');
+}
+
+console.log('\n3d. STORED AS A WALL CLOCK, WITH THE NEXT DAY STATED');
+{
+  const csCode = CODE(SCREEN);
+  // A STRING, NOT AN INSTANT. Seven readers echo these two keys raw and
+  // convert nothing; a timestamp would force every one of them back to
+  // Eastern, and the first that forgot would reprint the 20:00-check-in and
+  // LL196 month-boundary bugs onto a licensed signature.
+  ok(/arrived_at: arrivedAt\.trim\(\)/.test(csCode)
+     && /departed_at: departedAt\.trim\(\)/.test(csCode),
+  'the payload carries the wall-clock string the picker wrote');
+  // SCOPED TO THE PRESENCE BLOCK. A whole-file sweep for `Date.now()` matches
+  // EntryList's row ids and `new Date()` matches todayISO — neither has
+  // anything to do with these two keys, and an assertion that cannot pass is
+  // one somebody deletes.
+  const presenceBlock = (() => {
+    const at = csCode.indexOf('presence: {');
+    return at < 0 ? '' : csCode.slice(at, csCode.indexOf('},', at));
+  })();
+  ok(presenceBlock.includes('arrived_at'),
+    'the presence block was located (otherwise the next claim is vacuous)');
+  ok(!/toISOString|Date\.now|getTime|new Date/.test(presenceBlock),
+    'and nothing in it turns either time into a timestamp');
+  // NEVER INFERRED. The tempting derivation is `departed < arrived`, and it is
+  // wrong twice: a mistyped 07:00 would silently reclassify a day shift, and a
+  // 20:00-to-20:30 night shift does not sort backwards at all.
+  ok(/departed_next_day: departedNextDay === true/.test(csCode),
+    'the next-day crossing is an EXPLICIT stored boolean');
+  ok(!/departedAt\s*<\s*arrivedAt/.test(csCode)
+     && !/arrivedAt\s*>\s*departedAt/.test(csCode),
+    'and it is never derived by comparing the two times');
+  ok(/setDepartedNextDay\(g\('presence'\)\.departed_next_day === true\)/.test(csCode),
+    'a log filed before the flag existed hydrates FALSE, not undefined — it '
+    + 'never told us it crossed midnight');
+  // FORWARD-ONLY. Nothing pipes a stored value through a display helper on the
+  // way in; a signed record must not change appearance because the control did.
+  ok(/setArrivedAt\(g\('presence'\)\.arrived_at \|\| ''\)/.test(csCode)
+     && /setDepartedAt\(g\('presence'\)\.departed_at \|\| ''\)/.test(csCode),
+  'hydrate takes the stored strings AS STORED — no displayClock on the way in');
+  ok(!/displayClock/.test(csCode),
+    'and the screen never normalises a filed value at render time');
+
+  // THE PREFILL IS IN THE PICKER'S OWN FORMAT AND ON ITS OWN GRID. A 24-hour
+  // "07:17" would put a second shape in the same key and would select no chip.
+  // THE REAL PARSER AND THE REAL GRID, not a copy of them. loadEsm cannot take
+  // this file — it is JSX, and the harness compiles modules with the CommonJS
+  // transform alone — so the component is dropped and its three PURE exports
+  // are lifted, exactly as portedFormPayloads.test.cjs already lifts them for
+  // hotWorkModel. A hand-typed grid here would be a second opinion about the
+  // format, which is the whole thing this section is guarding against.
+  const TF = (() => {
+    const src = read('src', 'components', 'logbookStepper', 'TimeField.jsx')
+      .replace(/^import .*$/gm, '')
+      .replace(/^export default [\s\S]*$/m, '')
+      .replace(/^export (const|function) /gm, '$1 ');
+    // eslint-disable-next-line no-new-func
+    return new Function(`${src}\nreturn { parseClock, toClock, timeOptions };`)();
+  })();
+  ok(/toClock\(p\.h24, p\.m - \(p\.m % 5\)\)/.test(csCode),
+    'nowClock floors onto the five-minute grid the picker offers');
+  const grid = TF.timeOptions().map((o) => TF.toClock(o.h24, o.m));
+  for (const probe of ['07:17', '00:03', '23:59', '12:31']) {
+    const p = TF.parseClock(probe);
+    const out = TF.toClock(p.h24, p.m - (p.m % 5));
+    ok(grid.includes(out),
+      `a ${probe} prefill lands on a selectable row (${out})`);
+  }
 }
 
 /**

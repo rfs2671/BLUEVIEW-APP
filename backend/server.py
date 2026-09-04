@@ -18519,13 +18519,41 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         cp_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
         sup_sig = render_signature_html(data.get("superintendent_signature"), "Superintendent")
         visitors = data.get("visitors_deliveries", "")
-        
+
+        # ── THE PERMANENT "N/A" IS GONE ──────────────────────────────────────
+        #
+        # This printed `Time In: N/A   Time Out: N/A` on EVERY daily jobsite
+        # log ever rendered, because nothing in the app has ever written those
+        # two keys -- daily_jobsite.jsx held the state and hydrated it and no
+        # control set it. As of the picker work the state, the payload keys and
+        # the hydrate are all deleted from the screen, so nothing will write
+        # them again and the row could only ever say N/A.
+        #
+        # CONDITIONAL RATHER THAN DELETED, and the difference matters on a
+        # signed record. A log filed BEFORE the U1 rebuild may carry real
+        # times; deleting the row outright would remove them from a document
+        # that has already been signed and read. Printed only when a value is
+        # actually there, an old log still shows what it said and a new one
+        # shows nothing at all.
+        #
+        # AND IT IS THE SAME RULE generate_combined_report ALREADY APPLIES,
+        # deliberately: TheTwoRenderersAgreeOnAnEmptyRow in
+        # backend/tests/test_report_six_defects.py exists because this pair has
+        # drifted twice before. Deleting here while the report stayed
+        # conditional would have been a third drift, on the same field.
+        _t_in = str(data.get("time_in") or "").strip()
+        _t_out = str(data.get("time_out") or "").strip()
+        _times_line = (
+            f'<strong style="color:#0A1929;">Time In:</strong> {_t_in or NOT_RECORDED}'
+            f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> '
+            f'{_t_out or NOT_RECORDED}<br />'
+        ) if (_t_in or _t_out) else ""
+
         body_html = (
             info_box(
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
                 f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description") or NOT_RECORDED)}<br />'
-                f'<strong style="color:#0A1929;">Time In:</strong> {data.get("time_in") or "N/A"}'
-                f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {data.get("time_out") or "N/A"}<br />'
+                f'{_times_line}'
                 f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(data.get("areas_visited") or "N/A")}'
             )
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '

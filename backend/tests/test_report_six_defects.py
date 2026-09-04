@@ -31,6 +31,8 @@ os.environ.setdefault("QWEN_API_KEY", "")
 _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
+from tests.source_text import strip_js, code_of  # noqa: E402  -- shared helpers the absence-literals classifier recognises
+
 import server  # noqa: E402
 
 _SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
@@ -382,12 +384,12 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
     """DEFECT 5 — Time In / Time Out / Areas Visited printed a permanent N/A
     because nothing in the app has ever written them."""
 
-    def test_nothing_writes_them(self):
+    def test_nothing_writes_areas_visited(self):
         """The premise, asserted rather than assumed. daily_jobsite.jsx holds
         the state and hydrates it, but no control sets it."""
         screen = (_BACKEND / ".." / "frontend" / "app" / "logbooks"
                   / "daily_jobsite.jsx").resolve().read_text(encoding="utf-8")
-        for setter in ("setTimeIn", "setTimeOut", "setAreasVisited"):
+        for setter in ("setAreasVisited",):
             calls = re.findall(rf"\b{setter}\(", screen)
             # EXACTLY ONE call site, and it is the hydrate in fetchData. The
             # useState destructure carries no parens so it is not counted. A
@@ -398,6 +400,35 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
             hydrate = re.search(rf"if \(d\.\w+\) {setter}\(", screen)
             self.assertIsNotNone(hydrate, f"{setter}'s only caller is not the hydrate")
 
+    def test_the_two_time_fields_are_gone_from_the_screen_entirely(self):
+        """TIME IN / TIME OUT WENT FURTHER THAN THE ROW.
+
+        This class used to assert that all THREE keys still travelled and only
+        the display was suppressed. For `areas_visited` that is still the deal.
+        For the two times it is not: the state, the payload keys and the
+        hydrate lines are DELETED, because a field with no control is not a
+        field the log collects, and the CP's own hours belong to item 1 of the
+        superintendent log (`presence.arrived_at` / `presence.departed_at`),
+        where they are now chosen from a clock and required before it files.
+
+        ASSERTED ON THE SCREEN, not on the renderer, because the renderer is
+        allowed to keep reading them — see the class below."""
+        screen = (_BACKEND / ".." / "frontend" / "app" / "logbooks"
+                  / "daily_jobsite.jsx").resolve().read_text(encoding="utf-8")
+        # Comments discuss the removal by name, so read CODE. A prose mention
+        # of `setTimeIn` must not keep this green or red on its own.
+        # strip_js, NOT a hand-rolled re.sub. source_text.strip_js is the
+        # shared helper, and test_absence_literals_are_specific classifies an
+        # assertNotIn by the CALL that produced its haystack -- a local
+        # re.sub is opaque to it, so this assertion counted as unclassified
+        # and pushed that guard one over its ceiling. Using the convention
+        # the classifier already knows is the fix; raising the ceiling is not.
+        code = strip_js(screen)
+        for gone in ("timeIn", "setTimeIn", "timeOut", "setTimeOut",
+                     "time_in:", "time_out:", "d.time_in", "d.time_out"):
+            self.assertNotIn(gone, code,
+                             f"{gone} survived the deletion in daily_jobsite.jsx")
+
     def test_the_report_prints_them_only_when_set(self):
         self.assertIn("_pg2_times", _REPORT)
         block = _REPORT[_REPORT.index("_pg2_bits = []"):]
@@ -406,12 +437,42 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         self.assertIn("if _areas:", block)
         self.assertIn('_pg2_times = ("<br />" + "<br />".join(_pg2_bits)) if _pg2_bits else ""', block)
 
-    def test_the_payload_keys_are_untouched(self):
-        """Display only. The keys still travel, so the day a control is added
-        the row reappears on its own with no renderer change."""
+    def test_the_areas_visited_payload_key_is_untouched(self):
+        """Display only, for the one key that still travels. The day a control
+        is added the row reappears on its own with no renderer change."""
         screen = (_BACKEND / ".." / "frontend" / "app" / "logbooks"
                   / "daily_jobsite.jsx").resolve().read_text(encoding="utf-8")
-        self.assertIn("time_in: timeIn, time_out: timeOut, areas_visited: areasVisited", screen)
+        self.assertIn("areas_visited: areasVisited", screen)
+
+    def test_BOTH_renderers_print_the_times_only_when_set(self):
+        """THE PAIR, ASKED THE SAME QUESTION.
+
+        generate_single_logbook_html printed `Time In: N/A   Time Out: N/A`
+        UNCONDITIONALLY on every daily jobsite log ever rendered, while the
+        combined report already suppressed the row. With nothing left in the
+        app that writes those keys, the single document would have carried a
+        permanent N/A forever.
+
+        SUPPRESSED, NOT DELETED, and the reason is the same one that governs
+        every other decision on a filed record: a log filed before the U1
+        rebuild may carry real times, and removing the row outright would
+        change what an already-signed document shows. So both renderers now
+        apply one rule — print it when a value is there, print nothing when it
+        is not — which is what TheTwoRenderersAgreeOnAnEmptyRow below is about.
+        """
+        self.assertIn("_t_in = str(data.get(\"time_in\") or \"\").strip()", _SINGLE)
+        self.assertIn("if (_t_in or _t_out) else \"\"", _SINGLE)
+        # code_of(), NOT the module-level _SINGLE slice. _SINGLE is bound by
+        # `_SRC[a:b]`, and test_absence_literals_are_specific classifies an
+        # assertNotIn by the call that produced its haystack: it proves "a
+        # slice of a string is a string" for a haystack expression but not for
+        # a NAME bound to one, so these two counted as unclassified and pushed
+        # that guard one over its ceiling. code_of is already in its
+        # _STRING_CALLS. Scoping is not lost: this form must exist in NEITHER
+        # renderer, so asserting it is absent from the file is the stronger claim.
+        _single_src = code_of("server.py")
+        self.assertNotIn('data.get("time_in") or "N/A"', _single_src)
+        self.assertNotIn('data.get("time_out") or "N/A"', _single_src)
 
     def test_the_conditional_block_behaves(self):
         """Asserted on the RENDERED document — see TheRenderedDocument below,

@@ -43,6 +43,18 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Plus, Trash2, Check, X } from 'lucide-react-native';
 
 import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+// THE TIME PICKER, AND IT IS THE ONE THIS REPO ALREADY OWNS. concrete,
+// crane, hot_work and toolbox_talk render this same component; a fifth screen
+// is not the moment to reach for a package. Every picker on npm carries a
+// NATIVE MODULE, and a native module ends OTA delivery — the rule TimeField
+// and DateField were both hand-built under, stated at the top of TimeField.jsx
+// and again in src/i18n/index.js, which refused expo-localization on it.
+//
+// `parseClock` and `toClock` come from the same file for the same reason
+// hotWorkModel takes them from there: the prefill below has to be written in
+// the format the picker itself writes, and a second implementation of that
+// format is how two of them start to disagree.
+import TimeField, { parseClock, toClock } from '../../src/components/logbookStepper/TimeField';
 import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
 import { Card, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
 import SignaturePad from '../../src/components/SignaturePad';
@@ -113,10 +125,38 @@ const NO_RECORD_RETURNED = 'LOG_NOT_FILED';
 const todayISO = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' })
   .format(new Date());
 
-/** HH:MM in the site's timezone, for a prefill he confirms or changes. */
-const nowHHMM = () => new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
-}).format(new Date());
+/**
+ * The site's wall clock right now, IN THE PICKER'S OWN FORMAT AND ON ITS GRID,
+ * for a prefill he confirms or changes.
+ *
+ * IT USED TO BE `nowHHMM()`, RETURNING 24-HOUR "HH:MM", and both reasons it
+ * cannot stay that way are about the filed record rather than the control:
+ *
+ *   TWO FORMATS IN ONE FIELD. `presence.arrived_at` now holds what TimeField
+ *   writes — "hh:mm AM/PM". A 24-hour prefill he never retapped would file a
+ *   SECOND format into the same key, and every reader of it (server.py's
+ *   `_arrived`/`_departed`, app/site/logbooks.jsx's "On site" line) echoes the
+ *   string raw and converts nothing. A key that holds two shapes is how a
+ *   reader eventually starts converting.
+ *
+ *   AN OFF-GRID MINUTE IS INVISIBLE IN THE PICKER. TimeField selects the chip
+ *   whose {h24, m} matches exactly, on a five-minute grid. Prefill 07:17 and
+ *   the modal opens with nothing selected — the field says one thing and the
+ *   list he is choosing from says he has chosen nothing.
+ *
+ * FLOORED, NEVER ROUNDED UP. A prefill is a suggestion about a moment that has
+ * already happened, and rounding forward would suggest an arrival the clock
+ * cannot support yet.
+ */
+const nowClock = () => {
+  const hhmm = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date()).replace(/^24:/, '00:');
+  const p = parseClock(hhmm);
+  // Unparseable means no suggestion, never a guess. The field stays blank and
+  // the gate below names it — which is the honest outcome and not a defect.
+  return p ? toClock(p.h24, p.m - (p.m % 5)) : '';
+};
 
 // ── THE FIELD COMPONENTS LIVE HERE, AND THAT IS THE WHOLE POINT ─────────────
 //
@@ -321,6 +361,22 @@ export default function SiteSuperintendentLog() {
   // (presenceNote) as well as by leaving the field editable.
   const [arrivedAt, setArrivedAt] = useState('');
   const [departedAt, setDepartedAt] = useState('');
+  // ── HE LEFT AFTER MIDNIGHT, AND HE SAYS SO ──────────────────────────────
+  //
+  // STORED, NEVER DERIVED. The obvious alternative is to notice that
+  // `departed_at` sorts before `arrived_at` and conclude the shift crossed
+  // midnight, and that is wrong twice over: a superintendent who typed 07:00
+  // for a 19:00 departure would have the app silently reclassify his log as a
+  // night shift, and a night shift that ran 20:00 to 20:30 the next evening
+  // does not sort backwards at all and would be silently kept on one day.
+  //
+  // AND IT IS WHY THE TIMES STAY WALL-CLOCK STRINGS. The other way to express
+  // this is to store an instant — and then all seven readers of these two
+  // fields, none of which converts anything today, have to convert back to
+  // Eastern to print them. The first one that forgets reprints the
+  // 20:00-check-in and LL196 month-boundary bugs onto a licensed signature.
+  // One boolean he sets costs nothing and asks nobody to convert.
+  const [departedNextDay, setDepartedNextDay] = useState(false);
   const [printedName, setPrintedName] = useState('');
   const [progress, setProgress] = useState('');
   const [activities, setActivities] = useState('');
@@ -341,7 +397,7 @@ export default function SiteSuperintendentLog() {
   useEffect(() => {
     if (prefilledArrival.current) return;
     prefilledArrival.current = true;
-    setArrivedAt((v) => v || nowHHMM());
+    setArrivedAt((v) => v || nowClock());
   }, []);
 
   useEffect(() => { if (cpName && !printedName) setPrintedName(cpName); }, [cpName]);
@@ -497,8 +553,20 @@ export default function SiteSuperintendentLog() {
 
   function hydrate(d) {
     const g = (k) => (d && d[k]) || {};
+    // AS STORED, NOT AS THE PICKER WOULD HAVE WRITTEN IT. Nothing here runs a
+    // stored value through a display helper: migration is forward-only, and a
+    // record that comes back out of storage in a shape it did not go in with
+    // is a record whose appearance changed after it was signed. TimeField's
+    // own rule is the same one — a value it did not produce is echoed as
+    // stored — and the autosave below writes back exactly this state, so
+    // opening an old draft cannot rewrite it either.
     setArrivedAt(g('presence').arrived_at || '');
     setDepartedAt(g('presence').departed_at || '');
+    // === true, so a log filed before this flag existed reads FALSE rather
+    // than undefined. It is not an inference about that log: the flag says
+    // "he told us he left after midnight", and a log that was never asked
+    // did not tell us that.
+    setDepartedNextDay(g('presence').departed_next_day === true);
     setPrintedName(g('presence').printed_name || '');
     setProgress(g('progress').summary || '');
     setActivities(g('cs_activities').summary || '');
@@ -558,7 +626,7 @@ export default function SiteSuperintendentLog() {
   // mount, which is exactly the class the mount smoke exists to catch.
 
   const snapshot = () => ({
-    arrivedAt, departedAt, printedName, progress, activities, locations,
+    arrivedAt, departedAt, departedNextDay, printedName, progress, activities, locations,
     inspectedOn, inspectionLocation, inspectionResult,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, step,
@@ -568,6 +636,7 @@ export default function SiteSuperintendentLog() {
     if (!v || typeof v !== 'object') return;
     setArrivedAt(v.arrivedAt ?? '');
     setDepartedAt(v.departedAt ?? '');
+    setDepartedNextDay(v.departedNextDay === true);
     setPrintedName(v.printedName ?? '');
     setProgress(v.progress ?? '');
     setActivities(v.activities ?? '');
@@ -588,15 +657,28 @@ export default function SiteSuperintendentLog() {
   };
 
   // ── the document this screen would file ─────────────────────────────────
-  const buildData = useCallback((departure) => {
+  // NO `departure` PARAMETER ANY MORE. It existed for one caller — the submit
+  // handler, which passed the moment he tapped Sign so that a blank departure
+  // could be back-filled from the clock. That stamp is gone (see handleSubmit),
+  // and a parameter whose only purpose was to inject a value the CP never chose
+  // is not something to keep for symmetry.
+  const buildData = useCallback(() => {
     const both = deriveConditionAndOrderBlocks(findings, noneBoth);
     const dobChosen = dobEntries.filter((e) => e.included && e.text.trim());
     const incChosen = incidentEntries.filter((e) => e.included && e.text.trim());
     return {
       presence: {
         printed_name: printedName.trim(),
+        // A WALL-CLOCK STRING, NOT AN INSTANT. See the note on
+        // `departedNextDay` above for why, and `nowClock` for the format.
         arrived_at: arrivedAt.trim(),
-        departed_at: (departure || departedAt).trim(),
+        departed_at: departedAt.trim(),
+        // ALWAYS WRITTEN, both ways. An absent key is the shape every other
+        // defect in this log has had — absence read as a claim — and here the
+        // claim would be "the shift did not cross midnight", which nobody
+        // made. Written explicitly, it is the CP's answer and no reader ever
+        // has to derive it from the two times.
+        departed_next_day: departedNextDay === true,
       },
       progress: progress.trim() ? { summary: progress.trim() } : {},
       cs_activities: (activities.trim() || locations.trim())
@@ -618,7 +700,8 @@ export default function SiteSuperintendentLog() {
         } : {},
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
-    printedName, arrivedAt, departedAt, progress, activities, locations,
+    printedName, arrivedAt, departedAt, departedNextDay,
+    progress, activities, locations,
     inspectedOn, inspectionLocation, inspectionResult, competentPersonName]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────
@@ -663,7 +746,41 @@ export default function SiteSuperintendentLog() {
   // THE SUBMIT GATE MIRRORS THE SERVER, WHICH REMAINS THE AUTHORITY.
   // create_logbook raises SUBMIT_UNATTESTED_ITEMS; this only decides whether
   // the button is reachable and names the items so he is not guessing.
-  const unanswered = csUnanswered(buildData(departedAt), logDate);
+  const unanswered = csUnanswered(buildData(), logDate);
+
+  // ── ARRIVAL AND DEPARTURE ARE REQUIRED, AND csUnanswered CANNOT SAY SO ────
+  //
+  // THE STRUCTURAL REASON, because it is not an oversight anybody can fix in
+  // the model. Item 1 is declared `attestable: false` in
+  // superintendentLogModel.js, and `csUnanswered` filters on `i.attestable`
+  // before it looks at any content. So the gate above is INCAPABLE of naming
+  // presence: "unanswered" there means "no content AND no nothing-to-report
+  // tick", and item 1 has no tick to make. A superintendent does not attest
+  // that he has nothing to report about his own presence; he states two times.
+  //
+  // AND FLIPPING THE FLAG WOULD BE WORSE. `attestable: true` on item 1 makes
+  // `none_to_report` a legal answer to it — the CS asserting he was not on the
+  // site, on the log that exists to record that he was — and it changes
+  // `csItemState` for every log already filed, which is a rewrite of records
+  // nobody may rewrite. The parity test against
+  // backend/lib/logbook/superintendent_log.py would then demand the same
+  // change on the server, spreading it to both PDF renderers.
+  //
+  // SO THIS IS A SECOND GATE, BESIDE THE FIRST, and it names FIELDS rather
+  // than an item — which is also what makes it useful to him: "presence" is
+  // not a thing he can go and fill in, ARRIVED and DEPARTED are.
+  //
+  // IT ALSO CATCHES WHAT `hasContent` CANNOT. csItemState calls item 1 PRESENT
+  // as soon as ANY of its four declared fields carries something, so a printed
+  // name alone makes the item look answered on every reader while both times
+  // are blank — absence read as a claim, the defect family this log keeps
+  // producing.
+  const arrivalMissing = !arrivedAt.trim();
+  const departureMissing = !departedAt.trim();
+  const presenceMissing = [
+    arrivalMissing ? t('arrivedAt') : null,
+    departureMissing ? t('departedAt') : null,
+  ].filter(Boolean);
 
   const handleSubmit = async () => {
     if (signing || locked) return;
@@ -684,11 +801,28 @@ export default function SiteSuperintendentLog() {
     // refusing save path cannot disagree — and the SAME predicate the other
     // eleven editors ask, so a CP does not learn this twelve ways.
     if (submitRefused(draftConflict)) return;
-    // DEPARTURE IS PREFILLED AT SIGN AND IS STILL HIS. Same rule as arrival —
-    // the app suggests the moment he signed; if he is filing from the truck
-    // ten minutes later, the field is his to correct before he taps.
-    const departure = departedAt.trim() || nowHHMM();
-    if (!departedAt.trim()) setDepartedAt(departure);
+    // ── THE DEPARTURE STAMP IS GONE, AND THAT IS THE POINT OF THIS GATE ────
+    //
+    // This read `const departure = departedAt.trim() || nowHHMM();` and wrote
+    // the moment he tapped Sign straight into `departed_at`. Three things were
+    // wrong with it:
+    //
+    //   IT IS THE APP ASSERTING AN OBSERVATION on a licensed signature — the
+    //   exact thing the note beside `arrivedAt` forbids for arrival. Arrival's
+    //   prefill lands in a VISIBLE field he can correct for as long as he is
+    //   filling the log; this one landed in the payload at the instant of
+    //   filing, where he never saw it and could never correct it.
+    //
+    //   IT WAS NOT WHEN HE LEFT. 3301.13.13 wants the time he departed the
+    //   job site; the clock at signature is the time he signed, and on a log
+    //   he is required to complete BEFORE departing those are different by
+    //   construction.
+    //
+    //   AND IT MADE THE REQUIREMENT UNREACHABLE. Departure could not be blank
+    //   at submit, so no gate could ever tell him it was missing.
+    //
+    // He picks it, from the same clock list as everything else on this screen.
+    if (presenceMissing.length > 0) return;
     if (!isAffirmedSignature(cpSignature)) return;
     if (unanswered.length > 0) return;
 
@@ -724,7 +858,7 @@ export default function SiteSuperintendentLog() {
     drop(scratchId);
 
     setSigning(true);
-    const data = buildData(departure);
+    const data = buildData();
     const signerName = printedName.trim() || cpName;
 
     // ── THE LOCAL SAVE, BEFORE THE PUSH, AND ITS ANSWER IS NOT DISCARDABLE ──
@@ -1076,8 +1210,54 @@ export default function SiteSuperintendentLog() {
       <StepHeaderBase s={s} title={t('presenceHeading')} />
       <Text style={s.noteText}>{t('presenceNote')}</Text>
       <Field s={s} locked={locked} label={t('printedName')} value={printedName} onChangeText={setPrintedName} />
-      <Field s={s} locked={locked} label={t('arrivedAt')} value={arrivedAt} onChangeText={setArrivedAt} placeholder="HH:MM" />
-      <Field s={s} locked={locked} label={t('departedAt')} value={departedAt} onChangeText={setDepartedAt} placeholder="HH:MM" />
+      {/* TAPPED, NOT TYPED. These were `<Field placeholder="HH:MM">` — a free
+          text box in which "7", "0730", "7:30pm" and "seven" were all
+          acceptable, on the two fields BC 3301.13.13 exists to record. No
+          `locked` prop is passed for the same reason the other four editors
+          pass none: LogbookStepper renders FiledLogView instead of the steps
+          on a filed log, and wraps them in `pointerEvents="none"` besides, so
+          a picker on a frozen record is unreachable by construction rather
+          than by a prop somebody has to remember. */}
+      <TimeField
+        s={s}
+        label={t('arrivedAt')}
+        placeholder={t('phTime')}
+        value={arrivedAt}
+        clearLabel={t('dateClear')}
+        doneLabel={t('dateDone')}
+        onChange={setArrivedAt}
+        required={arrivalMissing}
+        requiredLabel={t('requiredField')}
+      />
+      <TimeField
+        s={s}
+        label={t('departedAt')}
+        placeholder={t('phTime')}
+        value={departedAt}
+        clearLabel={t('dateClear')}
+        doneLabel={t('dateDone')}
+        onChange={setDepartedAt}
+        required={departureMissing}
+        requiredLabel={t('requiredField')}
+      />
+      {/* MARKED FROM THE START, BUT `nextDisabled` IS DELIBERATELY NOT SET.
+          toolbox_talk blocks Next on its required step-1 fields; this screen
+          must not, because in the morning he does not yet know when he will
+          leave. The mark says the field is required, the submit gate is what
+          enforces it, and he can fill the other four steps in between. */}
+      <Pressable
+        disabled={locked}
+        accessibilityRole="button"
+        accessibilityState={{ checked: departedNextDay }}
+        onPress={() => setDepartedNextDay((v) => !v)}
+        style={[s.chip, departedNextDay && s.chipSelected]}
+      >
+        {departedNextDay ? <Check size={13} strokeWidth={2} /> : null}
+        <Text style={[s.chipText, departedNextDay && s.chipTextSelected]}>
+          {t('departedNextDay')}
+        </Text>
+      </Pressable>
+      <Text style={s.noteText}>{t('departedNextDayNote')}</Text>
     </Card>
   );
 
@@ -1118,8 +1298,19 @@ export default function SiteSuperintendentLog() {
         <View key={f.id} style={s.cardFill}>
           <Field s={s} locked={locked} label={t('findingLocation')} value={f.location}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, location: v } : x)))} />
-          <Field s={s} locked={locked} label={t('findingObservedAt')} value={f.observed_at} placeholder="HH:MM"
-            onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, observed_at: v } : x)))} />
+          {/* NOT `required`. findingGaps asks for WHERE, WHAT YOU SAW and
+              WHETHER IT WAS CORRECTED and deliberately not this — a finding
+              with no time is still a record a reader can act on. The control
+              changes; the gate does not. */}
+          <TimeField
+            s={s}
+            label={t('findingObservedAt')}
+            placeholder={t('phTime')}
+            value={f.observed_at}
+            clearLabel={t('dateClear')}
+            doneLabel={t('dateDone')}
+            onChange={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, observed_at: v } : x)))}
+          />
           <Field s={s} locked={locked} label={t('findingCondition')} multiline value={f.condition}
             onChangeText={(v) => setFindings((p) => p.map((x, j) => (j === i ? { ...x, condition: v } : x)))} />
           <Field s={s} locked={locked} label={t('findingOrder')} multiline value={f.order_given}
@@ -1180,7 +1371,7 @@ export default function SiteSuperintendentLog() {
   );
 
   const stepSign = () => {
-    const data = buildData(departedAt);
+    const data = buildData();
     // ITEMS THIS RELEASE DOES NOT COLLECT, NAMED. An item of the eleven that
     // is simply missing reads as an omission; one that says it is not
     // collected reads as scope. csItemState returns NOT_COLLECTED for exactly
@@ -1267,7 +1458,9 @@ export default function SiteSuperintendentLog() {
          submit must be UNREACHABLE rather than warned about. The server's
          SUBMIT_UNATTESTED_ITEMS is the authority; this stops him arriving at
          a refusal he cannot read. */
-      submitDisabled={!isAffirmedSignature(cpSignature) || unanswered.length > 0}
+      submitDisabled={!isAffirmedSignature(cpSignature)
+        || presenceMissing.length > 0
+        || unanswered.length > 0}
       draftConflict={draftConflict}
       // HE TOOK THE OVERRIDE. Stored ON the verdict rather than beside it, so
       // the load that clears the verdict clears the acknowledgement with it and
@@ -1275,12 +1468,21 @@ export default function SiteSuperintendentLog() {
       onConflictAcknowledge={() => setDraftConflict(
         (c) => (c ? { ...c, acknowledged: true } : c),
       )}
+      /* THE PRESENCE GAP IS NAMED FIRST, AND THE ORDER IS THE WHOLE COPY
+         DECISION. The signature and the unanswered items are both on THIS
+         step — he can see and fix either without leaving. ARRIVED and
+         DEPARTED are back on step 1, so a hint that mentions them last costs
+         him a second trip through the stepper. It names the fields by the
+         labels printed above them and the step they are on, because "presence
+         is incomplete" is not something he can go and do anything about. */
       submitHint={
-        !isAffirmedSignature(cpSignature)
-          ? t('signatureHint')
-          : (unanswered.length > 0
-            ? t('unansweredHint').replace('{items}', unansweredLabels)
-            : '')
+        presenceMissing.length > 0
+          ? t('presenceHint').replace('{fields}', presenceMissing.join(' and '))
+          : (!isAffirmedSignature(cpSignature)
+            ? t('signatureHint')
+            : (unanswered.length > 0
+              ? t('unansweredHint').replace('{items}', unansweredLabels)
+              : ''))
       }
       onSubmit={handleSubmit}
     />
