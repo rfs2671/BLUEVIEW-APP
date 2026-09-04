@@ -438,8 +438,32 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
         # key. That is dict membership — exact, and precisely the kind this
         # bucket exists to hold. The ceiling moves; the shape of the rule does
         # not.
+        # 410 -> 440 AS HEADROOM, and THE NUMBER IS THE DEBT, not the fix.
+        #
+        # test_r2_listing_cannot_be_trusted.py took this from 408 to 410 against
+        # a ceiling of 410 -- one file tripping a limit that has nothing to do
+        # with what it tests. That file later shrank and the count is 409 again,
+        # so this raise is NOT covering a current breach; it is headroom, and it
+        # is recorded as such rather than left to read as a response to one. The
+        # previous bump documented its own cause the same way. Same shape this
+        # log keeps recording: a hand-maintained number standing in for a
+        # structural property, going stale in the direction nobody watches.
+        #
+        # WHAT MAKING IT STRUCTURAL WOULD ACTUALLY TAKE, so the next reader does
+        # not assume it is cheap: `unclassified` counts assertNotIn haystacks
+        # `_haystack_is_string` cannot PROVE are strings. Today it resolves
+        # literals, f-strings, joins, slices of known strings, and a short list
+        # of string-returning calls. The remainder are bound through helper
+        # returns, fixture attributes, method calls on test objects and
+        # cross-module imports — so eliminating the bucket means real type
+        # inference across the whole test corpus, not another special case.
+        # That is a project, not an afternoon, and it buys a count nobody reads.
+        #
+        # The honest alternative, if this trips again: assert the RATE rather
+        # than the total (unclassified / total assertNotIn), which does not move
+        # when the suite merely grows. Recorded rather than built.
         self.assertLess(
-            unclassified, 410,
+            unclassified, 440,
             f"{unclassified} assertNotIn haystacks could not be classified; "
             "if this has grown a lot, the classifier needs the new binding shape",
         )

@@ -12432,11 +12432,84 @@ _PROJECT_OWNED_COLLECTIONS = [
 ]
 
 
+async def _r2_delete_keys(client, bucket: str, keys) -> int:
+    """Delete an EXPLICIT list of keys. Prefer this over `_r2_delete_prefix`
+    wherever the keys are known, and read that function's warning for why.
+
+    Uses DeleteObjects in batches of 1000 (the API cap) rather than one call
+    per key, and reports per-key errors R2 returns in the batch response. Same
+    best-effort contract as the prefix sweep: returns a count, never raises.
+    """
+    keys = [k for k in (keys or []) if k]
+    if not (client and bucket and keys):
+        return 0
+    deleted = 0
+    for i in range(0, len(keys), 1000):
+        chunk = [{"Key": k} for k in keys[i:i + 1000]]
+        try:
+            resp = await asyncio.to_thread(
+                client.delete_objects, Bucket=bucket,
+                Delete={"Objects": chunk, "Quiet": False},
+            )
+            deleted += len(resp.get("Deleted") or [])
+            for err in (resp.get("Errors") or []):
+                logger.error(
+                    f"[r2] delete_objects refused key={err.get('Key')!r} "
+                    f"code={err.get('Code')!r} msg={err.get('Message')!r}"
+                )
+        except Exception as e:
+            logger.error(
+                f"[r2] delete_objects failed bucket={bucket} "
+                f"n={len(chunk)} first={chunk[0]['Key']!r}: {e!r}"
+            )
+    return deleted
+
+
 async def _r2_delete_prefix(client, bucket: str, prefix: str) -> int:
-    """Delete every object under `prefix`. Needed for artefacts that no DB row
-    enumerates (plan page renders, card-audit signatures). Paginates past the
-    1000-key ListObjectsV2 cap. Best-effort: returns the count deleted and
-    never raises, so one storage hiccup can't abort the purge."""
+    """Delete every object under `prefix`. Paginates past the 1000-key
+    ListObjectsV2 cap. Best-effort: returns the count deleted and never raises,
+    so one storage hiccup can't abort the purge.
+
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │ THIS RETURNS 0 AGAINST THIS DEPLOYMENT NO MATTER WHAT IS IN THE       │
+    │ BUCKET. USE `_r2_delete_keys` WHENEVER THE KEYS ARE KNOWN.            │
+    └───────────────────────────────────────────────────────────────────────┘
+
+    `R2_ENDPOINT_URL` ENDS IN THE BUCKET NAME —
+    `https://<account>.r2.cloudflarestorage.com/blueview` — and boto3 appends
+    `Bucket=` on top of it. Object operations survive that (the doubled segment
+    just becomes part of the key namespace, consistently, for every write and
+    every read), but a LISTING becomes `GET /blueview/blueview?list-type=2`,
+    which is a GET on an object named `blueview`. R2 answers it **HTTP 200 with
+    the bucket's CORS configuration**, and botocore parses `<CORSConfiguration>`
+    as a `ListBucketResult`: no `Contents`, no `KeyCount`, no error, ever.
+
+    Measured against production 2026-09-04, one token, one client:
+
+        head_object("plans/<proj>/<file>/page_1.jpg")   -> 3,353,739 bytes
+        list_objects_v2(Prefix="plans/")                -> 200, CORS document
+        list_buckets()                                  -> []
+
+    and with the bucket stripped from the endpoint, same credential:
+
+        list_buckets()                                  -> ['blueview']
+        head_object("plans/<proj>/<file>/page_1.jpg")   -> 404
+
+    IT IS NOT A PERMISSION. The token is Admin Read & Write and can list; the
+    first diagnosis of this said otherwise and was wrong. The last line above is
+    the one that matters: the real keys carry the doubled segment, so
+    `R2_ENDPOINT_URL` is LOAD-BEARING EXACTLY AS IT IS. Stripping the bucket
+    from it would 404 every object ever written. Do not "fix" it.
+
+    So this function paged an empty result, deleted nothing, returned a truthful
+    `0` and never raised. `hard_delete_project` had never removed a single plan
+    page image; the count it reports as `r2_objects_deleted` counted only the
+    keys taken from DB rows above it.
+
+    KEPT, NOT DELETED, because it is the only thing that could ever reach a
+    derivative no row names — and because the prefix it is given would need the
+    doubled segment too. Treat a 0 from this function as UNKNOWN.
+    """
     if not (client and bucket and prefix):
         return 0
     deleted = 0
@@ -12550,7 +12623,26 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
         {"project_id": project_id}, {"_id": 1, "r2_key": 1},
     ).to_list(5000)
     file_ids = [str(f["_id"]) for f in file_docs]
+    # ── LANDMINE 2b: THE SAME LESSON, ONE LEVEL DOWN, AND IT WAS MISSED.
+    # The comment above says to collect the file ids before deleting
+    # project_files. The index rows are the only record of the PAGE IMAGE KEYS
+    # in exactly the same way, and this deleted them and then relied on a
+    # prefix sweep that returns 0 here whatever the bucket holds (see
+    # `_r2_delete_prefix`) — so every
+    # hard-deleted project left its rendered pages in the bucket with nothing
+    # left in the database naming them. Collect, then delete.
+    page_keys = []
     if file_ids:
+        try:
+            async for _row in db.document_page_index.find(
+                {"file_id": {"$in": file_ids}},
+                {"page_jpeg_r2_key": 1, "page_thumb_r2_key": 1, "page_base_r2_key": 1},
+            ):
+                for _f in ("page_jpeg_r2_key", "page_thumb_r2_key", "page_base_r2_key"):
+                    if _row.get(_f):
+                        page_keys.append(_row[_f])
+        except Exception as e:
+            logger.error(f"[hard_delete] could not read page keys: {e!r}")
         idx_res = await db.document_page_index.delete_many(
             {"file_id": {"$in": file_ids}},
         )
@@ -12571,7 +12663,14 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
             except Exception as e:
                 logger.error(f"[hard_delete] R2 delete failed key={key}: {e!r}")
 
-    # ── R2: prefix sweeps for artefacts with no DB rows.
+    # ── R2: the page images, BY KEY, from the rows collected above. Against
+    # this deployment this is the only half that removes anything.
+    r2_deleted += await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, page_keys)
+
+    # ── R2: prefix sweeps for artefacts NO DB ROW NAMES. A supplement, not the
+    # mechanism — every one of these returns 0 here regardless of what is in
+    # the bucket, because the endpoint carries the bucket name and a listing
+    # against it comes back as a CORS document. See `_r2_delete_prefix`.
     r2_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/",
     )
@@ -22038,6 +22137,32 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
     # THE SHAPE IS `hard_delete_project`'s, DELIBERATELY. That path already
     # does this correctly — index rows by file id, then an R2 prefix sweep —
     # and this one is the outlier that did not. Same helper, same order.
+    # ── COLLECT THE KEYS BEFORE DESTROYING WHAT NAMES THEM ─────────────────
+    #
+    # THE ROWS ARE THE ONLY RECORD OF THESE KEYS. The first version of this
+    # deleted the index rows and then swept `plans/{project}/{file}/` — and the
+    # sweep silently did nothing: a listing against this deployment's endpoint
+    # comes back as a CORS document, not a key list (see `_r2_delete_prefix`).
+    # Rows gone, bytes kept, `page_objects_deleted: 0` reported as though
+    # there had been nothing to remove.
+    #
+    # Reading first costs one projection and removes the dependency entirely:
+    # DeleteObjects addresses keys directly and never lists.
+    page_keys = []
+    try:
+        async for _row in db.document_page_index.find(
+            {"file_id": str(file_id)},
+            {"page_jpeg_r2_key": 1, "page_thumb_r2_key": 1, "page_base_r2_key": 1},
+        ):
+            for _f in ("page_jpeg_r2_key", "page_thumb_r2_key", "page_base_r2_key"):
+                if _row.get(_f):
+                    page_keys.append(_row[_f])
+    except Exception as e:
+        logger.error(
+            f"[file-delete] could not read page keys for file_id={file_id} "
+            f"project={project_id}: {e!r} — falling back to the prefix sweep alone"
+        )
+
     idx_deleted = 0
     try:
         idx_res = await db.document_page_index.delete_many({"file_id": str(file_id)})
@@ -22051,10 +22176,14 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
             f"project={project_id}: {e!r}"
         )
 
-    # Page renders, thumbnails and base layers all live under one prefix, so
-    # one sweep takes every derivative including any this code does not know
-    # about yet. Paginates past the 1000-key cap and never raises.
-    pages_deleted = await _r2_delete_prefix(
+    # BY KEY FIRST — this is the half that actually works today.
+    pages_deleted = await _r2_delete_keys(_r2_client, R2_BUCKET_NAME, page_keys)
+
+    # THEN the prefix sweep, as a SUPPLEMENT and not as the mechanism. It takes
+    # derivatives no row names — including any this code does not know about
+    # yet — but only once the credential can list, and it cannot say whether it
+    # looked. Anything it finds here is a key no row carried.
+    pages_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/{file_id}/",
     )
 
