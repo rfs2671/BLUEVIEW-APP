@@ -8444,8 +8444,54 @@ async def get_admin_users(
     query = {"is_deleted": {"$ne": True}}
     if current_user.get("role") != "owner" and company_id:
         query["company_id"] = company_id
-    
-    result = await paginated_query(db.users, query, sort_field="name", sort_dir=1, limit=limit, skip=skip, projection={"password": 0})
+
+    # ── THE SORT BUFFER MUST NOT CARRY A SIGNATURE ──────────────────────────
+    #
+    # THIS WAS `{"password": 0}`, AN EXCLUSION, AND THAT IS THE DEFECT. An
+    # exclusion removes one field and leaves everything else in the sorted set
+    # -- including `cp_signature`, which cp-profile writes to db.users as
+    # inline vector/base64 for every CP in the company. Sorting by `name` with
+    # no index is a BLOCKING in-memory sort, so the buffer held whole user
+    # documents, signatures and all, against a 32MB ceiling.
+    #
+    # That is the exact shape that returned 500 twice in one day -- once on
+    # GET /workers and once on GET /logbooks/project/{id}/submitted, the second
+    # in front of a DOB inspector. `find_unserved_sorts.py` has reported this
+    # row since 2026-09-02 and test_sorts_are_indexed.py ALLOWLISTED it with a
+    # note ending "Remove this line when it lands." This is it landing.
+    #
+    # WHY A PROJECTION AND NOT AN INDEX, which is the usual answer here.
+    # `company_id` is added ONLY when the caller is not an owner, so the OWNER
+    # call -- the one that spans every tenant and matches the most rows -- has
+    # no equality predicate at all. `users_by_company_name` already serves the
+    # company-scoped call; nothing can serve the owner call except an index led
+    # by `name` alone, and that was ruled out as a whole second index to rescue
+    # one screen. An inclusion projection fixes BOTH calls at once, because
+    # Mongo pushes it below the SORT stage and the buffer then holds a few
+    # hundred bytes per user instead of a signature.
+    #
+    # THE FIELD LIST IS THE UNION OF WHAT THE THREE CALLERS ACTUALLY READ, and
+    # nothing else -- admin/users.jsx (id, name, email, phone, role,
+    # assigned_projects, deletion_requested_at, client_version),
+    # admin/superintendent.jsx (_id, id, name, full_name, email) and
+    # admin/checklists/index.jsx (id, name, email, role). Those are the only
+    # three callers; adminUsersAPI.getAll has no other call site.
+    #
+    # `password` is now excluded BY OMISSION, which is stronger than naming it:
+    # a field added to the user document in future is absent from this list
+    # until someone puts it there, so the next secret to land on db.users does
+    # not ship to an admin console by default.
+    USER_LIST_FIELDS = {
+        "name": 1, "full_name": 1, "email": 1, "phone": 1, "role": 1,
+        "company_id": 1, "company_name": 1, "assigned_projects": 1,
+        "deletion_requested_at": 1, "client_version": 1,
+        "is_active": 1, "status": 1, "is_deleted": 1,
+        "created_at": 1, "updated_at": 1,
+    }
+    result = await paginated_query(
+        db.users, query, sort_field="name", sort_dir=1,
+        limit=limit, skip=skip, projection=USER_LIST_FIELDS,
+    )
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_user)):
