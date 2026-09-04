@@ -282,5 +282,57 @@ class TheBaseLayerIsTheSamePipelineAtADifferentSize(unittest.TestCase):
         self.assertIn("if page_number < 1:", SRC[j:j + 600])
 
 
+class ASpecPageIsRefusedRatherThanRendered(unittest.TestCase):
+    """`_index_one_page` classifies a page as a SPECIFICATION when its text is
+    both long (>5000 chars) and paragraph-shaped, writes `page_jpeg_r2_key: ""`
+    on purpose, and returns without rendering — a wall of spec text is worth
+    nothing to a vision model.
+
+    Without a refusal here, such a page falls to the BOTTOM rung of the reader
+    ladder and re-renders the source PDF at 250 DPI on every request, uncached,
+    to produce a picture of a page of text. On 588 Thomas `SP - 6.24.26.pdf` is
+    a spec page at PAGE ONE — the page the plan list takes its thumbnail from —
+    so this fires on a live project today.
+    """
+
+    def test_the_thumbnail_endpoint_refuses(self):
+        i = SRC.index("async def get_project_file_thumbnail")
+        j = SRC.index("data = await _fetch_page_thumb", i)
+        self.assertIn('page_rec.get("is_spec_page") is True', SRC[i:j])
+        self.assertIn("status_code=404", SRC[i:j])
+
+    def test_the_base_layer_endpoint_refuses_too(self):
+        """Same ladder, same fallback, same cost — `_fetch_page_base` falls
+        through to `_fetch_page_jpeg`, which re-renders."""
+        i = SRC.index("async def get_project_file_page_base")
+        j = SRC.index("data = await _fetch_page_base", i)
+        self.assertIn('page_rec.get("is_spec_page") is True', SRC[i:j])
+        self.assertIn("status_code=404", SRC[i:j])
+
+    def test_both_refuse_BEFORE_reaching_the_ladder(self):
+        """A refusal after the fetch would have paid the render it exists to
+        avoid."""
+        for fn, fetch in (("get_project_file_thumbnail", "_fetch_page_thumb"),
+                          ("get_project_file_page_base", "_fetch_page_base")):
+            i = SRC.index(f"async def {fn}")
+            guard = SRC.index('page_rec.get("is_spec_page") is True', i)
+            call = SRC.index(f"data = await {fetch}", i)
+            self.assertLess(guard, call, fn)
+
+    def test_the_projection_actually_fetches_the_flag(self):
+        """`page_rec.get("is_spec_page")` on a row projected without it is
+        always None, and the guard would never fire."""
+        for fn in ("get_project_file_thumbnail", "get_project_file_page_base"):
+            i = SRC.index(f"async def {fn}")
+            self.assertIn('"is_spec_page": 1', SRC[i:i + 1400], fn)
+
+    def test_a_row_that_is_not_a_spec_page_is_untouched(self):
+        """`is True`, not truthy — an absent flag on a legacy row must fall
+        through to the ladder, not be refused."""
+        for fn in ("get_project_file_thumbnail", "get_project_file_page_base"):
+            i = SRC.index(f"async def {fn}")
+            self.assertNotIn('if page_rec.get("is_spec_page"):', SRC[i:i + 2600], fn)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

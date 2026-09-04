@@ -21997,9 +21997,29 @@ async def get_project_file_thumbnail(
 
     page_rec = await db.document_page_index.find_one(
         {"file_id": str(file_id), "page_number": 1},
-        {"page_thumb_r2_key": 1, "page_jpeg_r2_key": 1,
+        {"page_thumb_r2_key": 1, "page_jpeg_r2_key": 1, "is_spec_page": 1,
          "file_id": 1, "page_number": 1},
     )
+
+    # ── A SPECIFICATION PAGE HAS NO THUMBNAIL AND NEVER WILL ───────────────
+    #
+    # `_index_one_page` classifies a page as a spec sheet when its text is both
+    # long and paragraph-shaped, writes `page_jpeg_r2_key: ""` on purpose and
+    # returns WITHOUT rendering — a wall of specification text is worth nothing
+    # to a vision model.
+    #
+    # Without this, such a page falls all the way down `_fetch_page_thumb`'s
+    # ladder to the bottom rung and RE-RENDERS THE SOURCE PDF at 250 DPI, on
+    # every request, uncached, to produce a picture of a page of text. On
+    # 588 Thomas `SP - 6.24.26.pdf` is exactly this: a spec page at page one,
+    # which is the page the plan list takes its thumbnail from.
+    #
+    # 404 IS THE CORRECT ANSWER, NOT A DEGRADED ONE. The list already renders
+    # "no thumbnail" — it is the icon every row wore last week — and a picture
+    # of a specification identifies nothing. The fallback was doing expensive
+    # work to produce a worse result than doing nothing.
+    if page_rec and page_rec.get("is_spec_page") is True:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
     # A plan that was never indexed has no row at all. `_fetch_page_thumb`'s
     # bottom rung can still render page 1 from the source PDF, so hand it the
     # identity it needs rather than giving up here — that is the difference
@@ -22060,9 +22080,18 @@ async def get_project_file_page_base(
 
     page_rec = await db.document_page_index.find_one(
         {"file_id": str(file_id), "page_number": page_number},
-        {"page_base_r2_key": 1, "page_jpeg_r2_key": 1,
+        {"page_base_r2_key": 1, "page_jpeg_r2_key": 1, "is_spec_page": 1,
          "file_id": 1, "page_number": 1},
     )
+
+    # THE SAME LADDER, SO THE SAME FALLBACK, SO THE SAME REFUSAL.
+    # `_fetch_page_base` falls through to `_fetch_page_jpeg`, which re-renders
+    # from the source PDF — so a spec page would pay a full poppler render here
+    # too, for a base layer under a sheet the viewer is about to draw as text
+    # anyway. The viewer treats a missing base layer the way it always has:
+    # pdf.js renders the page and there is simply nothing underneath it first.
+    if page_rec and page_rec.get("is_spec_page") is True:
+        raise HTTPException(status_code=404, detail="No base layer available")
     # A plan that was never indexed has no row. The bottom rung can still
     # render this page from the source PDF, so hand it the identity it needs
     # rather than giving up — same reasoning as the thumbnail endpoint.
