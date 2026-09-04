@@ -26618,6 +26618,33 @@ async def serve_checkin_page(tag_id: str):
         raise HTTPException(status_code=404, detail="Check-in page not found")
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
+# ⚠️  THIS ROUTE SHADOWS card_audit.gate_router AND THAT IS LOAD-BEARING.
+#
+# `card_audit.py:1173` declares `GET /checkin/{project_id}/{gate_id}` — the
+# same method and the same two-segment shape. Both are mounted on `app`;
+# THIS ONE IS REGISTERED FIRST (module-level decorators run at import, the
+# include_router call is near the bottom of this file), so FastAPI matches
+# it and card_audit's gate page never serves. `GET /checkin/success/{id}`
+# is shadowed by the same rule — two segments after /checkin.
+#
+# WHAT DEPENDS ON THAT, PHYSICALLY. `nfcHelper.buildCheckinUrl` writes
+# `{baseUrl}/checkin/{projectId}/{tagId}` onto every NFC tag on every fence.
+# Those tags are already deployed and cannot be rewritten remotely. Which
+# side of this collision wins decides what a worker sees when he taps one.
+#
+# THE TWO SIDES ARE DIFFERENT GENERATIONS, not duplicates. This handler
+# serves checkin.html, which writes the LEGACY `checkins` collection.
+# card_audit's gate writes `sign_ins` + `worker_enrollments`, which
+# get_project_checkins_today calls the NEW system and still reads —
+# see its docstring on the rollout.
+#
+# SO DO NOT "TIDY" EITHER ROUTE. Removing this one hands every deployed tag
+# to a half-migrated gate. Removing card_audit's deletes the only writer of
+# `worker_enrollments` while a merge in this file goes on reading it.
+# Changing either path re-resolves a collision that is currently holding
+# hardware on a fence in a known state.
+#
+# Mirrored at card_audit.py:1173. If you change one, change both.
 @app.get("/checkin/{project_id}/{tag_id}")
 async def serve_checkin_page_full(project_id: str, tag_id: str):
     from fastapi.responses import HTMLResponse

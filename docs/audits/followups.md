@@ -4,6 +4,69 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-04 — the sweep could not reach its subject because something UNRELATED concealed it
+
+Twelve vision/OCR call sites were enumerated to answer one question — which of
+them normalise a model's string answer, and which let the literal `"null"`
+through. The sweep was thorough about the twelve. **There were thirteen.**
+
+`card_audit.py`'s `POST /enrollment/parse_card` calls a VLM, tells it "If a
+field is not visible, set it to null", does a bare `json.loads`, and writes
+`full_legal_name` into `worker_enrollments`. It is the same defect as
+`server.py`'s `upload_osha_card`, in a different file, **authored independently
+by someone who did not know the other existed** — and fixed the same day, hours
+apart, by two separate changes, because the first sweep did not see it.
+
+### Why it was invisible, and it is not "the grep was wrong"
+
+The grep was right. It found the `chat/completions` call. What it did not do
+was treat the site as LIVE, because the router it sits on has four of six
+routes shadowed by `server.py` — so a reader scanning the results discards it
+as dead code on a dead router.
+
+**The thing that concealed it has nothing to do with OCR.** It is a route
+registration order in an unrelated file, from an unfinished migration, which
+happens to make the page that would call this endpoint never serve. The same
+accident that hides it from a human reviewer hid it from the sweep, because the
+sweep's output was read by a human applying the same wrong inference.
+
+### The class
+
+Every earlier instance in this file is a check that could not reach its subject
+for a reason INSIDE the check: a glob that could not see `.cjs`, a scan root of
+`Path(__file__).parent`, a leftmost `re.search`, a filter naming a field no
+document carries, a projection matched by shape rather than validated.
+
+**This one reached its subject and discarded it, on a fact from somewhere
+else.** That is worse, because there is nothing wrong with the check to find.
+Re-running it, widening it, fixing its pattern — none of that recovers the
+missed site. The only thing that would have caught it is asking, of each
+result, "and is this one actually live", and answering from the route table
+rather than from an impression.
+
+### The rule
+
+**When a sweep's output is triaged by a judgment the sweep did not make, that
+judgment is part of the check and it is the unverified part.** Write it down as
+a step and evidence it. Here that means: for every endpoint an enumeration
+turns up, resolve REACHABILITY off the live router — `app.routes`, in matching
+order — and never from where the code appears to live.
+
+The cheap tell: any result dismissed with a reason the enumeration could not
+have computed. "That is on a dead router", "that is only called by the old
+client", "that path is behind a flag nobody sets" — each is a claim about
+something the sweep never examined, and each is where the missed instance is.
+
+### And the two producers should have found each other
+
+Two implementations of one defect, in one codebase, is also a statement about
+the codebase: nothing linked them, so nothing could notice they disagreed —
+and they did not disagree, they agreed on being wrong. `lib/ocr_text.py` now
+holds the rule and both import it, which is the same remedy `lib/cert_vocab.py`
+was written for and for the same reason.
+
+---
+
 ## PRACTICE — 2026-09-04 — a LOCATION standing in for a STRUCTURE, which is most of this week
 
 Five checks broke in one day, none of them because the thing they protect
