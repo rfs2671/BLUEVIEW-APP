@@ -1410,6 +1410,13 @@ async function handleOshaPhoto(input) {
       const res = await api('/checkin/upload-osha', 'POST', {
         image: compressed,
         content_type: 'image/jpeg',
+        // ATTRIBUTION ONLY. The endpoint has never taken a project_id, so
+        // every paid vision call it makes is unattributable — the meter can
+        // count them but not say WHICH SITE drives the spend, which is the
+        // question a ceiling has to answer. Optional server-side: an older
+        // cached page that does not send it counts under "unknown" rather
+        // than not at all. Nothing gates on this value.
+        project_id: projectId || undefined,
       });
       oshaData = res;
       if (res.box_2d && res.box_2d.length === 4) {

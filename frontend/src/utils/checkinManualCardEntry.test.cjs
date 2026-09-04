@@ -267,7 +267,14 @@ async function runHandler({ mode }) {
     'showLoading', 'hideLoading', 'showError', 'resetCardCameraZone',
     'handleOcrOutcome', 'reportGateFailure', 'showOcrResults',
     'ocrMissingCriticalFields', 'console',
-    `let oshaImage = null; let oshaData = null;
+    // `projectId` IS A MODULE-LEVEL LET IN checkin.html, and the handler now
+    // reads it — the upload-osha POST carries it so a paid vision call can be
+    // attributed to a site. Declared here for the same reason every other free
+    // name above is: this harness runs the SHIPPED handler source in a
+    // synthetic scope, so a name it references and this scope does not declare
+    // is a ReferenceError on the happy path. That is the extraction doing its
+    // job; it refused to test a handler it could not actually run.
+    `let oshaImage = null; let oshaData = null; let projectId = 'p_test';
      let ocrAttempts = 0; let ocrLastFailureReason = null;
      ${handlerSrc}
      return handleOshaPhoto;`,

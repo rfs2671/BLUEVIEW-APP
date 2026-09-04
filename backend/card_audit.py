@@ -51,6 +51,12 @@ from enum import Enum
 from fastapi import APIRouter, HTTPException, Depends, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+# ONE ADDRESS with server.py's OSHA path. See lib/ocr_text.py — two OCR
+# paths that disagree about what "null" means is exactly the drift this
+# module was written to avoid.
+from lib.ocr_text import norm_ocr_str
+from lib.vision_meter import record_vision_call, VISION_PARSE_CARD
 import httpx
 
 
@@ -165,6 +171,68 @@ class CardType(str, Enum):
     SST = "SST"
     WORKER_WALLET = "Worker Wallet"
     UNKNOWN = "unknown"
+
+
+class ParsedCard(BaseModel):
+    """What the VLM is allowed to have said about a card.
+
+    THE SECOND PRODUCER OF THE "null" CHAIN, INDEPENDENTLY AUTHORED. This path
+    did a bare `json.loads(txt)` and used the result directly — stashing it into
+    `pending_enrollments` and rendering it into the correction form, from where
+    /enrollment/complete writes `full_legal_name` into `worker_enrollments`.
+
+    Its prompt says "If a field is not visible, set it to null", which is the
+    same instruction that makes the model answer with the STRING "null" on the
+    OSHA path (server.py upload_osha_card, fixed 2026-09-04). Same defect, same
+    day, two files, neither written with knowledge of the other.
+
+    IT WAS MISSED BY THE OCR SWEEP that enumerated twelve vision call sites,
+    because it lives on a router four of whose six routes are shadowed by
+    server.py — so it read as dead. The accident that hides it from a reviewer
+    hid it from the enumeration too.
+
+    WHY A MODEL AND NOT JUST norm_ocr_str. The normalisation is the defect fix;
+    this is the other half — nothing stated what the model's answer is allowed
+    to contain, so nothing could be wrong. NOTE it is not a FastAPI
+    `response_model`: this route returns HTMLResponse, so the shape has to be
+    pinned where the JSON is parsed rather than where the response is
+    serialised. Same protection, the only place it can be applied here.
+
+    Every field is Optional and None is a refusal — an unreadable card is the
+    normal case, and the correction form downstream exists precisely to let a
+    human fill in what the model could not read.
+    """
+    card_id: Optional[str] = None
+    full_legal_name: Optional[str] = None
+    expiration_date: Optional[str] = None
+    card_type: Optional[str] = None
+    issuing_course_provider: Optional[str] = None
+
+
+def _normalised_card(data: dict) -> dict:
+    """The model's answer, normalised once, at the boundary.
+
+    `card_type` keeps CardType.UNKNOWN rather than None when nothing was read,
+    because every reader downstream compares it against the enum and a None
+    there would be a second shape to handle.
+    """
+    if not isinstance(data, dict):
+        data = {}
+    parsed = ParsedCard(
+        card_id=norm_ocr_str(data.get("card_id")),
+        full_legal_name=norm_ocr_str(data.get("full_legal_name")),
+        expiration_date=norm_ocr_str(data.get("expiration_date")),
+        card_type=norm_ocr_str(data.get("card_type")),
+        issuing_course_provider=norm_ocr_str(data.get("issuing_course_provider")),
+    ).model_dump()
+    # The stored/rendered shape has always used "" for "not read" on these
+    # three, and the correction form binds them to text inputs. None would
+    # render as the word None in a value attribute.
+    for k in ("card_id", "full_legal_name", "expiration_date",
+              "issuing_course_provider"):
+        parsed[k] = parsed[k] or ""
+    parsed["card_type"] = parsed["card_type"] or CardType.UNKNOWN.value
+    return parsed
 
 
 class TapMethod(str, Enum):
@@ -1170,6 +1238,38 @@ def _is_android_chrome(ua: str) -> bool:
 
 # ─── GET /checkin/{project_id}/{gate_id} ────────────────────────────────
 
+# ⚠️  THIS ROUTE IS SHADOWED BY server.py AND THAT IS LOAD-BEARING.
+#
+# `server.py` declares `@app.get("/checkin/{project_id}/{tag_id}")` — the same
+# method and the same two-segment shape — and REGISTERS IT FIRST, because its
+# module-level decorator runs at import while this router is mounted by an
+# `include_router` call near the bottom of that file. So FastAPI matches
+# server.py's handler and THIS PAGE NEVER SERVES. `/checkin/success/{id}`
+# below is shadowed by the same rule: two segments after /checkin.
+#
+# THE POSTs ON THIS ROUTER ARE NOT SHADOWED. /checkin/submit, /checkin/sign,
+# /enrollment/parse_card and /enrollment/complete are all reachable, public
+# and unauthenticated — parse_card calls a paid vision API on every request.
+# Nothing posts to them today only because the form that would is on this
+# page, which does not serve. That is an accident, not a gate.
+#
+# WHAT DEPENDS ON THE COLLISION, PHYSICALLY. `nfcHelper.buildCheckinUrl`
+# writes `{baseUrl}/checkin/{projectId}/{tagId}` onto every NFC tag on every
+# fence. Those tags are deployed and cannot be rewritten remotely. Which side
+# wins decides what a worker sees when he taps one.
+#
+# AND THE TWO SIDES ARE DIFFERENT GENERATIONS. server.py's handler serves
+# checkin.html, which writes the LEGACY `checkins` collection. This gate
+# writes `sign_ins` + `worker_enrollments` — what
+# server.py:get_project_checkins_today calls the NEW system and still reads.
+# This router is an unfinished migration held at a stop by the generation it
+# was meant to replace, not dead code.
+#
+# SO DO NOT UNMOUNT THIS ROUTER TO CLOSE THE parse_card EXPOSURE. Doing so
+# deletes the only writer of `worker_enrollments` while a merge in server.py
+# goes on reading it. Gate or meter parse_card instead.
+#
+# Mirrored at the server.py route. If you change one, change both.
 @gate_router.get("/checkin/{project_id}/{gate_id}", response_class=HTMLResponse)
 async def gate_landing(project_id: str, gate_id: str, request: Request, mode: Optional[str] = None):
     """The page the gate NFC tag opens. No auth — public.
@@ -1694,18 +1794,63 @@ async def enrollment_parse_card(request: Request):
     if not img_bytes:
         return HTMLResponse(render_enrollment_page(project_id, gate_id, card_id_read, lang, COPY_STRINGS[lang]["retry_photo"]), status_code=400)
 
+    # ── RESOLVE THE PROJECT AND THE GATE BEFORE SPENDING ANY MONEY ──────────
+    #
+    # THIS LOOKUP USED TO HAPPEN AFTER THE MODEL CALL, and only to read
+    # `trade_assignments` off the result — it never checked anything. So a POST
+    # naming a project that does not exist, or no project at all, reached a
+    # PAID VISION API and was billed before anything looked at it. This
+    # endpoint is public and unauthenticated; the only reason it has not been
+    # called in a loop is that the page carrying its form is shadowed by
+    # server.py, which is an accident rather than a control.
+    #
+    # THE SPLIT IS THE RULING, and the two halves are different in kind:
+    #
+    #   A request that RESOLVES — a real project, a real gate — is never
+    #   refused, whatever the spend. A man at a turnstile with a valid card
+    #   does not care about a ceiling, and refusing him makes the app the
+    #   obstacle. That is the standing rule on this project and a spend
+    #   ceiling does not get to be the exception to it.
+    #
+    #   A request that does NOT resolve is refused here, always, ceiling or no
+    #   ceiling. That is not a spend control; it is a VALIDITY check, and being
+    #   strict about it costs nothing and takes nothing from any worker.
+    #
+    # The exposure was never a man at a gate. It is an unauthenticated public
+    # endpoint anyone can call in a loop, and this is the half of that which is
+    # free to close. The per-project daily ceiling is a separate change and is
+    # gated on measuring what a normal day actually costs.
+    #
+    # SAME PREDICATE AS THE GATE PAGE ABOVE (`gate_landing`): project exists
+    # and is not soft-deleted, gate_id is one of the project's own gates.
+    # Written as the same two checks rather than a shared helper only because
+    # the failure RENDERING differs — the page returns a failure screen, this
+    # returns the enrollment form with a message the worker can act on.
+    project = await db.projects.find_one(
+        {"_id": _to_id(project_id), "is_deleted": {"$ne": True}}
+    ) if project_id else None
+    if not project:
+        return HTMLResponse(
+            render_failure_page(lang, "Unknown project"), status_code=404,
+        )
+    if not any(g.get("gate_id") == gate_id
+               for g in (project.get("gates") or [])):
+        return HTMLResponse(
+            render_failure_page(lang, "Unknown gate"), status_code=404,
+        )
+
+    # Counted here — AFTER the validity refusals above, so an unresolvable
+    # request costs nothing and is not counted as spend, and BEFORE the model
+    # call, so a call that errors after billing still counts. See
+    # lib/vision_meter.py; no limit is attached to this write.
+    await record_vision_call(db, endpoint=VISION_PARSE_CARD, project_id=project_id)
+
     parsed = {}
     raw_vlm_response = ""
     if _qwen_vlm is None:
         # Without VLM configured we jump straight to manual-correction
         # mode so enrollment isn't dead in the water.
-        parsed = {
-            "card_id": card_id_read,
-            "full_legal_name": "",
-            "expiration_date": "",
-            "card_type": CardType.UNKNOWN.value,
-            "issuing_course_provider": "",
-        }
+        parsed = _normalised_card({"card_id": card_id_read})
         raw_vlm_response = "vlm_not_configured"
     else:
         try:
@@ -1727,16 +1872,14 @@ async def enrollment_parse_card(request: Request):
                 txt = re.sub(r"^```[a-zA-Z]*\n?", "", txt).rstrip("`").rstrip()
                 if txt.endswith("```"):
                     txt = txt[:-3]
-            parsed = _json.loads(txt)
+            # NOT `parsed = _json.loads(txt)`. See ParsedCard: the model's
+            # own answer for "I could not read this" is sometimes the STRING
+            # "null", and it flows from here into worker_enrollments as a
+            # man's legal name.
+            parsed = _normalised_card(_json.loads(txt))
         except Exception as e:
             logger.warning(f"VLM card parse failed: {e!r} response={raw_vlm_response[:500]!r}")
-            parsed = {
-                "card_id": "",
-                "full_legal_name": "",
-                "expiration_date": "",
-                "card_type": CardType.UNKNOWN.value,
-                "issuing_course_provider": "",
-            }
+            parsed = _normalised_card({})
 
     # Validate the parsed fields with permissive rules
     valid_id = bool(parsed.get("card_id")) and _CARD_ID_PATTERN.fullmatch(str(parsed.get("card_id")) or "")
@@ -1751,7 +1894,10 @@ async def enrollment_parse_card(request: Request):
     except Exception:
         exp_ok = False
 
-    subs = (await db.projects.find_one({"_id": _to_id(project_id)}) or {}).get("trade_assignments") or []
+    # `project` is already resolved above, before the model call. This was a
+    # SECOND query for the same document, and it read without the is_deleted
+    # guard the first one applies.
+    subs = project.get("trade_assignments") or []
 
     # Stash the upload in a pending-enrollment doc so /enrollment/complete
     # can pick it up without requiring the form to re-send the file.
