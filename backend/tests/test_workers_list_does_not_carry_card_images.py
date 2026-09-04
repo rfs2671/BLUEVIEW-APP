@@ -153,12 +153,12 @@ class TheSortHasAnIndex(unittest.TestCase):
     def test_is_deleted_is_not_in_the_index_key(self):
         """A $ne before the sort key breaks the ordering the sort relies on."""
         m = re.search(
-            # TEMPERED, NOT LAZY. `(.*?)` with re.S still starts at the LEFTMOST
-            # `keys=[` in the file and stretches to this name, so an index declared
-            # ABOVE this one lands inside the capture and its keys read as though
-            # they were these. That is how a test about one index fails because an
-            # unrelated index was added earlier in the file -- three times in this
-            # repo now. The tempered form cannot cross another `keys=[`.
+            # (?!keys=\[) forbids the capture from crossing ANOTHER
+            # declaration, so this binds to the keys= immediately above the
+            # name instead of to the first one in the file. It matched the
+            # workers index before only because nothing earlier in server.py
+            # spelled `keys=[`; the moment one did, this captured thousands of
+            # unrelated lines and the assertion below became about them.
             r'keys=\[((?:(?!keys=\[)[\s\S])*?)\],\s*\n\s*name="workers_by_company_name"',
             self.src, re.S,
         )
