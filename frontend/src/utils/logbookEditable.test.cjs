@@ -35,8 +35,15 @@ const babel = require('@babel/core');
 
 const FRONTEND = path.join(__dirname, '..', '..');
 
-function loadModule(rel) {
-  const file = path.join(FRONTEND, rel);
+// RELATIVE IMPORTS ARE FOLLOWED, not handed to node's require. The module under
+// test imports ./dates for its one Eastern conversion, and a bare require would
+// hit that file's raw `export` and die -- so each relative specifier is
+// transpiled the same way and memoised. Node's own resolution is still used for
+// everything else (packages), which is what keeps this a loader and not a
+// bundler.
+const _cache = new Map();
+function loadFile(file) {
+  if (_cache.has(file)) return _cache.get(file);
   const { code } = babel.transformSync(fs.readFileSync(file, 'utf8'), {
     filename: file,
     plugins: [require.resolve('@babel/plugin-transform-modules-commonjs')],
@@ -44,8 +51,22 @@ function loadModule(rel) {
     babelrc: false,
   });
   const mod = { exports: {} };
-  new Function('module', 'exports', 'require', code)(mod, mod.exports, require);
+  _cache.set(file, mod.exports);
+  const localRequire = (spec) => {
+    if (!spec.startsWith('.')) return require(spec);
+    const base = path.resolve(path.dirname(file), spec);
+    const hit = [base, `${base}.js`, `${base}.jsx`, path.join(base, 'index.js')]
+      .find((p) => fs.existsSync(p) && fs.statSync(p).isFile());
+    if (!hit) throw new Error(`cannot resolve ${spec} from ${file}`);
+    return loadFile(hit);
+  };
+  new Function('module', 'exports', 'require', code)(mod, mod.exports, localRequire);
+  _cache.set(file, mod.exports);
   return mod.exports;
+}
+
+function loadModule(rel) {
+  return loadFile(path.join(FRONTEND, rel));
 }
 
 const { isOpenForEditing, chooseEditableLog } = loadModule('src/utils/logbookEditable.js');

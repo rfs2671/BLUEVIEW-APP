@@ -394,6 +394,15 @@ def _photo_added_after_filing_caption(photo: dict) -> str:
         except Exception:
             when = None
     if isinstance(when, datetime):
+        # THE NEW YORK DAY. `added_at` is a UTC instant, and 21:00 EDT is
+        # already tomorrow in UTC -- so a photograph appended on Tuesday
+        # evening was captioned Wednesday on the record. Same class of error
+        # `eastern_date` was written to stop, on the same kind of document.
+        # An unanchored legacy value keeps its own digits rather than vanishing.
+        try:
+            when = _as_eastern_instant(when)
+        except ValueError:
+            pass
         # NOT strftime('%b %-d'): '%-d' is a glibc extension and this module is
         # imported on developer machines that do not have it.
         parts.append(f"{when.strftime('%b')} {when.day}, {when.year}")
@@ -1284,6 +1293,87 @@ async def audit_log(action: str, user_id: str, resource_type: str, resource_id: 
 # tweak to a TTL duration or compound-key shape bricks the deploy.
 _INDEX_CONFLICT_CODES = {85, 86}
 
+# E11000 — DuplicateKey. DELIBERATELY NOT IN THE SET ABOVE, and the whole
+# reason this file now has a third branch.
+#
+# 85 and 86 say the SPEC YOU ASKED FOR disagrees with the spec that is there.
+# That is a deploy fact, a drop-and-recreate fixes it, and handling it silently
+# is right — nobody needs to know a TTL duration changed.
+#
+# 11000 says THE DATA DISAGREES WITH THE RULE. No recreate fixes it, no deploy
+# caused it, and nothing the application does will ever clear it: only a person
+# changing rows can. Treating it like a spec conflict is what let
+# `logbooks_one_open_amendment_per_parent` never build at all —
+# E11000 reproduced on the live deployment at 22:15:51 and again at 13:30:46,
+# and each time this helper logged ONE warning and returned, so startup went
+# green over an index that does not exist. An index that cannot build is a
+# CONSTRAINT THAT IS NOT ENFORCED, and `amend_logbook`'s
+# `except DuplicateKeyError` has been dead code reading as a live race guard
+# for as long as it has been there.
+_INDEX_DUPLICATE_KEY_CODE = 11000
+
+# WHICH UNIQUE INDEXES ARE NOT ENFORCING ANYTHING RIGHT NOW.
+# index name -> collection name. Read by GET /api/health so a deploy can be
+# shown to be index-COMPLETE rather than merely up. Cleared per index the
+# moment that index builds, so it reports the present state and not a history.
+FAILED_UNIQUE_INDEX_BUILDS: dict = {}
+
+
+async def _flag_unique_index_not_enforced(collection, *, name: str, err) -> None:
+    """Surface a unique index the data refuses, where the admin already looks.
+
+    THE SAME SHAPE `_flag_unsigned_stale_log` USES, and deliberately not a new
+    one: a compliance_alerts row, deduped on the one field that identifies the
+    finding, so a re-run cannot stack duplicates. /admin/compliance-alerts
+    renders it already — no new screen and no new concept.
+
+    DEDUPED ON INDEX NAME, not on the error text. Every restart re-attempts
+    every index, so an undeduped row would write one alert per boot forever on
+    a condition the app itself can never resolve. The name is also what the
+    operator types into create_open_amendment_index.js, so it is the field the
+    row is actually looked up by.
+
+    Never raises. It is called from the startup path.
+    """
+    coll_name = getattr(collection, "name", None) or "?"
+    FAILED_UNIQUE_INDEX_BUILDS[name] = coll_name
+    # ERROR, NOT WARNING. A warning is what hid this for two months; the whole
+    # point is that this line is the one a person reads.
+    logger.error(
+        f"UNIQUE INDEX NOT ENFORCED: {coll_name}.{name} was REJECTED BY THE "
+        f"DATA (E11000). The constraint it declares is not in force and any "
+        f"application-level DuplicateKeyError handler for it is dead code. "
+        f"Clear the duplicates and rebuild by hand. {err!r}"
+    )
+    try:
+        exists = await db.compliance_alerts.find_one({
+            "alert_type": "unique_index_not_enforced",
+            "details.index_name": name,
+        })
+        if exists:
+            return
+        await db.compliance_alerts.insert_one({
+            "alert_type": "unique_index_not_enforced",
+            "severity": "high",
+            "project_id": None,
+            "company_id": None,
+            "message": (
+                f"Unique index {coll_name}.{name} cannot build over existing "
+                f"data. The rule it declares is NOT being enforced."
+            ),
+            "details": {
+                "index_name": name,
+                "collection": coll_name,
+                "error": str(err)[:500],
+            },
+            "resolved": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+    except Exception as _alert_err:
+        logger.error(
+            f"could not flag unenforced index {coll_name}.{name}: {_alert_err!r}"
+        )
+
 
 async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
     """create_index that survives a spec change.
@@ -1293,20 +1383,38 @@ async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
     name, options)).
     On spec change: drops-and-recreates if the existing index has the
     same name/keys but different options (e.g. TTL duration changed).
+    On E11000 over a unique build: the DATA violates the constraint. Recorded
+    as a data-integrity finding — logged at error, written to
+    compliance_alerts, and named in the health payload — see
+    _INDEX_DUPLICATE_KEY_CODE for why that is not the same thing as a spec
+    conflict.
     Any other failure is logged and swallowed — index creation should
     never block app startup (DOB syncs and UI work fine without TTLs).
+
+    IT DOES NOT RAISE, ON ANY BRANCH, AND THAT IS LOAD-BEARING. startup_event
+    is @app.on_event("startup"): a raise out of here means two draft children
+    sharing one parent take the whole API offline for every CP on every
+    project. Make the STATE visible, not the event.
     """
     from pymongo.errors import OperationFailure
 
     try:
         await collection.create_index(keys, name=name, **opts)
-        return
     except OperationFailure as e:
-        if getattr(e, "code", None) not in _INDEX_CONFLICT_CODES:
+        code = getattr(e, "code", None)
+        if code == _INDEX_DUPLICATE_KEY_CODE and opts.get("unique"):
+            await _flag_unique_index_not_enforced(collection, name=name, err=e)
+            return
+        if code not in _INDEX_CONFLICT_CODES:
             logger.warning(
                 f"create_index({collection.name}, {name}) failed (non-conflict): {e!r}"
             )
             return
+    else:
+        # Built, or already there in the shape asked for. If a previous boot
+        # recorded it as unenforced, it is enforced now.
+        FAILED_UNIQUE_INDEX_BUILDS.pop(name, None)
+        return
 
     # Spec change: same name, different shape. Drop and recreate.
     logger.info(
@@ -1332,6 +1440,17 @@ async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
 
     try:
         await collection.create_index(keys, name=name, **opts)
+        FAILED_UNIQUE_INDEX_BUILDS.pop(name, None)
+    except OperationFailure as e:
+        # The recreate can meet the duplicate data too — a unique index whose
+        # KEY SHAPE changed is a new rule over old rows. Same finding, same
+        # treatment; it must not fall through to a warning.
+        if getattr(e, "code", None) == _INDEX_DUPLICATE_KEY_CODE and opts.get("unique"):
+            await _flag_unique_index_not_enforced(collection, name=name, err=e)
+            return
+        logger.warning(
+            f"create_index({collection.name}, {name}) post-recreate failed: {e!r}"
+        )
     except Exception as e:
         logger.warning(
             f"create_index({collection.name}, {name}) post-recreate failed: {e!r}"
@@ -1680,6 +1799,81 @@ def eastern_date(when=None) -> str:
 def eastern_today() -> str:
     """Today's New York calendar date, as 'YYYY-MM-DD'."""
     return eastern_date()
+
+
+def _as_eastern_instant(when) -> datetime:
+    """A stored instant, MOVED to New York — or ValueError, never a guess.
+
+    `eastern_date` above calls itself "the only date source" and that rule was
+    simply never extended to TIMES. Nothing owned the clock, so `_roster_clock`
+    parsed a check-in stored as `2026-08-11T10:47:05Z` — correctly, tz-aware,
+    UTC — and then called `.strftime("%I:%M %p")` straight on it. strftime
+    formats whatever zone the datetime is already in, so the roster on a signed
+    §3301.12.3 attendance record printed 10:47 for a man who walked through the
+    gate at 6:47 AM EDT. Four hours, on every report since the field existed.
+
+    IT REFUSES RATHER THAN PASSES THROUGH, and that is the whole design. A
+    naive datetime is a value that has NOT said what zone it is in; treating
+    its digits as New York's is precisely the assumption that produced the bug,
+    and doing it silently is what let the bug live. So a caller with an
+    unanchored value gets an exception and has to decide what to do about it —
+    _roster_clock prints the raw string, because an unanchored wall clock on an
+    old roster is a fact about the record and not something to invent a zone
+    for. See the "1d" note in followups.md for the fields that are in that
+    state and what anchoring them would take.
+
+    Accepts a datetime or an ISO-8601 string (trailing 'Z' included). Returns
+    an aware datetime in America/New_York; DST is the zone's business, never a
+    hard-coded -4 or -5.
+    """
+    from zoneinfo import ZoneInfo
+    if isinstance(when, datetime):
+        dt = when
+    else:
+        text = str(when).strip() if when is not None else ""
+        if not text:
+            raise ValueError("not an instant: nothing to convert")
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"not an instant: {when!r}") from exc
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise ValueError(f"not an instant — no timezone on {when!r}")
+    return dt.astimezone(ZoneInfo("America/New_York"))
+
+
+def eastern_clock(when) -> str:
+    """The NEW YORK wall-clock time for an instant, as '6:47 AM EDT'.
+
+    THE ONLY TIME SOURCE, the way `eastern_date` is the only date source. Every
+    user-facing time conversion goes through here; a renderer that formats a
+    clock itself has opted out of the one place DST is handled.
+
+    THE STRING CARRIES ITS ZONE. "10:47" said nothing about what it was a time
+    in, which is why nobody could see it was wrong by looking at it. "6:47 AM
+    EDT" can be checked against the record by anyone holding both.
+
+    Raises ValueError on anything that is not an anchored instant — see
+    `_as_eastern_instant`.
+    """
+    return _as_eastern_instant(when).strftime("%I:%M %p %Z").lstrip("0")
+
+
+def eastern_datetime(when) -> str:
+    """The New York day AND time for an instant: 'August 11, 2026 at 6:47 AM EDT'.
+
+    Sibling of `eastern_clock`, for the places that print both halves — the
+    "generated on" footers, most of all. The DAY is the New York day for the
+    same reason `eastern_date` exists: 01:30 UTC is still the previous evening
+    here, and a document stamped tomorrow is the failure that helper was
+    written to stop.
+
+    NOT strftime('%B %-d'): '%-d' is a glibc extension and this module is
+    imported on Windows, so the day is interpolated (matching
+    `_photo_added_after_filing_caption`, which learned it the hard way).
+    """
+    dt = _as_eastern_instant(when)
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year} at {eastern_clock(dt)}"
 
 VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 
@@ -4434,6 +4628,31 @@ def superintendent_log_deadline(project) -> str:
             else "departure")
 
 
+# ── HOW THE STALE-LOG WALK IS BOUNDED ────────────────────────────────────────
+#
+# One page of stale logs per read. NOT a cap on the run: the walk pages until
+# the selector is exhausted, and this is only how much is materialised at once.
+# The distinction is the whole point — the read this replaces was a single
+# `to_list(1000)`, which is a cap wearing a page size's clothes.
+_EOD_SWEEP_PAGE = 500
+
+# A CEILING ON THE NUMBER OF PAGES, AND IT IS A BACKSTOP, NOT THE DESIGN.
+#
+# The walk terminates on its own (see the sweep's own docstring: every page
+# visits documents no page has visited, so it ends after ceil(N / page) reads).
+# This exists for the case where that reasoning is wrong — a driver that
+# ignores `skip`, an index change that makes the sort non-total — because the
+# alternative to a bounded loop in a 3am unattended job is a job that never
+# finishes and a scheduler that never fires again.
+#
+# HITTING IT IS LOGGED AS AN ERROR. The defect being fixed here is a silent
+# truncation; a second silent truncation at 200,000 documents would be the same
+# bug with a bigger number. At the present volume this is roughly 3,000x the
+# nightly working set, so reaching it means something is wrong, not that the
+# estate grew.
+_EOD_SWEEP_MAX_PAGES = 400
+
+
 async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     """Freeze yesterday's signed daily narratives, and FLAG the unsigned ones.
 
@@ -4482,61 +4701,140 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     Idempotent: an already-locked log does not match the filter, so a re-run or
     an overlapping admin-triggered run is safe.
 
+    ── IT IS SORTED AND PAGED, AND THAT IS NOT AN OPTIMISATION ────────────────
+
+    THE READ WAS `cursor.to_list(1000)`, UNSORTED AND CAPPED, over a selector
+    that a stranded log NEVER LEAVES. A log whose signature is not affirmed is
+    flagged and left in place, so it matches again tomorrow, and the night
+    after, forever. Sixty-five such rows exist today.
+
+    At a thousand accumulated strandings the cap is filled by stranded rows
+    alone and CORRECTLY SIGNED LOGS STOP BEING FROZEN. There is no symptom:
+    nothing raises, nothing logs, the job returns its counts and reports
+    success, and end-of-day logs quietly stop locking. That is the same shape
+    as a sort that silently drops rows -- an answer that is wrong and looks
+    finished -- and it is worse, because the thing it stops doing is the
+    freeze that closes a compliance record.
+
+    OLDEST FIRST: `date` ascending, `_id` ascending. Two decisions, and they
+    are different ones.
+
+      The TIE-BREAK is what makes paging correct at all. `date` alone is not a
+      total order -- every project filing on the same day collides -- and a
+      page boundary drawn through a set of equal keys is not a boundary: the
+      driver may return those rows in any order on any read, so a document can
+      be visited twice or skipped entirely. `_id` is unique, so (date, _id)
+      is total and a page boundary means something.
+
+      The DIRECTION is oldest first because the oldest stale log has been
+      unfrozen the longest and is the one nearest an auditor's records
+      request. If a walk is ever cut short -- the page ceiling, a crash, a
+      restart -- the documents it did not reach are the NEWEST, which are the
+      least exposed and are re-swept the following night anyway. Newest-first
+      inverts that and leaves the oldest gap unvisited.
+
+    HOW THE PAGES ADVANCE, AND WHY IT ENDS. A frozen log leaves the selector;
+    a stranded one does not. So the offset carries past exactly the documents
+    this run visited and DELIBERATELY LEFT (the unsigned ones, plus any whose
+    write raised) -- and because those are the smallest sort keys seen so far,
+    `skip(carry)` lands on the first document no page has visited. Every page
+    therefore visits only new documents, the unvisited count falls by a full
+    page each time, and the walk ends after ceil(N / _EOD_SWEEP_PAGE) reads.
+    _EOD_SWEEP_MAX_PAGES is the backstop for the case where that reasoning is
+    wrong, and hitting it is logged as an error rather than absorbed.
+
+    A concurrent insert between pages can shift the window by a row. That is
+    accepted and cheap: a document missed tonight is swept tomorrow, which is
+    the same guarantee the whole job already offers.
+
     Returns counts for the caller to log. Never raises: the nightly tick runs
     unattended and a sweep that threw would take the detectors down with it.
     """
     today = eastern_date(now)
     out = {"frozen": 0, "unsigned": 0}
-    try:
-        cursor = database.logbooks.find({
-            "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
-            "date": {"$lt": today},
-            "is_locked": {"$ne": True},
-            "is_deleted": {"$ne": True},
-            # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
-            # this clause the nightly pass counts one as unsigned and
-            # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
-            # for it -- deduped on (project, log_type, date), so it is written
-            # once and then sits on the admin's alert list forever with no
-            # action that could ever clear it. The freeze branch cannot reach a
-            # withdrawn child either way (it has no affirmed signature), so
-            # this only ever removes a false alert.
-            **WITHDRAWN_EXCLUDED,
-        })
-        stale = await cursor.to_list(1000)
-    except Exception as e:
-        logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
-        return out
+    selector = {
+        "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
+        "date": {"$lt": today},
+        "is_locked": {"$ne": True},
+        "is_deleted": {"$ne": True},
+        # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
+        # this clause the nightly pass counts one as unsigned and
+        # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
+        # for it -- deduped on (project, log_type, date), so it is written
+        # once and then sits on the admin's alert list forever with no
+        # action that could ever clear it. The freeze branch cannot reach a
+        # withdrawn child either way (it has no affirmed signature), so
+        # this only ever removes a false alert.
+        **WITHDRAWN_EXCLUDED,
+    }
+    # Documents this run has visited and left behind in the selector. See the
+    # paging note above: this is the offset, not a count of failures.
+    carry = 0
+    pages = 0
 
-    for doc in stale:
+    while pages < _EOD_SWEEP_MAX_PAGES:
+        pages += 1
         try:
-            if not _is_affirmed_signature(doc.get("cp_signature")):
-                # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and left is
-                # a different fact from a CP who never signed; the second is an
-                # unfinished obligation, not a document to close.
-                out["unsigned"] += 1
-                await _flag_unsigned_stale_log(database, doc)
-                continue
-            stamp = datetime.now(timezone.utc)
-            await database.logbooks.update_one(
-                {"_id": doc["_id"], "is_locked": {"$ne": True}},
-                {"$set": {
-                    "is_locked": True,
-                    "finalized_at": stamp,
-                    # WHO froze it, in the same fields the manual path writes, so
-                    # a reader is never left guessing whether a person closed it.
-                    # The CP's signature is what made it eligible; the sweep only
-                    # applied the lock.
-                    "finalized_by": "system:eod_sweep",
-                    "finalized_by_name": "End-of-day sweep",
-                    "status": "submitted",
-                    "updated_at": stamp,
-                }},
-            )
-            out["frozen"] += 1
+            cursor = (database.logbooks.find(selector)
+                      .sort([("date", 1), ("_id", 1)])
+                      .skip(carry)
+                      .limit(_EOD_SWEEP_PAGE))
+            stale = await cursor.to_list(_EOD_SWEEP_PAGE)
         except Exception as e:
-            # One bad document must not stop the sweep for every other project.
-            logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+            # PARTIAL WORK IS KEPT. Every freeze already committed stands; the
+            # counts returned describe what actually happened.
+            logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
+            return out
+
+        if not stale:
+            return out
+
+        for doc in stale:
+            try:
+                if not _is_affirmed_signature(doc.get("cp_signature")):
+                    # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and
+                    # left is a different fact from a CP who never signed; the
+                    # second is an unfinished obligation, not a document to
+                    # close. It stays in the selector, which is why `carry`
+                    # has to step over it.
+                    out["unsigned"] += 1
+                    await _flag_unsigned_stale_log(database, doc)
+                    carry += 1
+                    continue
+                stamp = datetime.now(timezone.utc)
+                await database.logbooks.update_one(
+                    {"_id": doc["_id"], "is_locked": {"$ne": True}},
+                    {"$set": {
+                        "is_locked": True,
+                        "finalized_at": stamp,
+                        # WHO froze it, in the same fields the manual path
+                        # writes, so a reader is never left guessing whether a
+                        # person closed it. The CP's signature is what made it
+                        # eligible; the sweep only applied the lock.
+                        "finalized_by": "system:eod_sweep",
+                        "finalized_by_name": "End-of-day sweep",
+                        "status": "submitted",
+                        "updated_at": stamp,
+                    }},
+                )
+                out["frozen"] += 1
+            except Exception as e:
+                # One bad document must not stop the sweep for every other
+                # project -- and it must not stop the WALK either. A document
+                # whose write raised is still in the selector, so stepping over
+                # it is what keeps the next page moving forward instead of
+                # re-reading this one until the ceiling.
+                logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+                carry += 1
+
+        if len(stale) < _EOD_SWEEP_PAGE:
+            return out
+
+    logger.error(
+        f"[eod-freeze] stopped after {_EOD_SWEEP_MAX_PAGES} pages "
+        f"({_EOD_SWEEP_MAX_PAGES * _EOD_SWEEP_PAGE} documents); stale logs "
+        f"remain unswept -- frozen={out['frozen']} unsigned={out['unsigned']}"
+    )
     return out
 
 
@@ -4548,10 +4846,46 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
     nightly re-run cannot stack duplicates. No new screen and no new concept --
     /admin/compliance-alerts renders it already.
 
-    The CP-facing half is deliberately NOT here. It belongs on the logbook list
-    beside the unaffirmed-signature card, and that screen already carries three
-    different treatments for three exception signals (see followups.md); adding
-    a fourth from inside a sweep is how that drift continues.
+    ── AND ON `resolved`, SO A RESOLVE CAN BE CONTRADICTED TOMORROW ──────────
+
+    (project, log_type, date) ALONE MATCHED A RESOLVED ROW AS READILY AS AN
+    OPEN ONE. Resolve is the only action /admin/compliance-alerts offers, and
+    without this clause taking it PERMANENTLY SUPPRESSED the alert while the
+    log stayed stranded and stayed unfrozen. Resolving destroyed the only
+    surviving statement that the log needed fixing -- the same failure the
+    selector above already names for the withdrawn case ("sits on the admin's
+    alert list forever with no action that could ever clear it"), noticed
+    there and left standing here.
+
+    RE-RAISING IS NOT NOISE, BECAUSE THE CONDITION IS RE-VERIFIED. The sweep
+    only reaches a log that is STILL unaffirmed and STILL unfrozen; the moment
+    the CP affirms it, the freeze branch takes it and it leaves the selector
+    for good. So a row that comes back tomorrow is a fresh statement that the
+    fact has not changed, not a duplicate of a fact already handled.
+
+    THAT IS WHY THE RULE HERE IS SIMPLER THAN worker_cert_expiring'S. That
+    alert suppresses on `details.earliest_expiration` as well, because ITS
+    condition -- a certification 30 days out -- does not change when the admin
+    acts, so a bare `resolved: False` would decay resolve into "cleared for one
+    night". Here the condition IS the log's state, and an admin cannot clear it
+    by resolving a row; only the CP affirming can.
+
+    ── TWO POPULATIONS, TWO SENTENCES ────────────────────────────────────────
+
+    "was never signed" is TRUE of a log holding `cp_signature: {}` and FALSE of
+    one holding a real stroke the CP never affirmed for this document. Both
+    reach here, they need different actions, and one sentence for both told the
+    admin the wrong thing about whichever it was not describing. `details.ink`
+    carries the same split as a field so the alert list can be counted without
+    re-reading every logbook.
+
+    The CP-facing half is still deliberately NOT raised from here. It belongs
+    on the record, not on a notification minted inside a sweep: an unaffirmed
+    signature is now offered for affirmation by FiledLogView, on the filed log
+    itself, gated by isOpenForSignatureAffirmation. The logbook LIST is
+    untouched -- that screen already carries three treatments for three
+    exception signals (see followups.md), and adding a fourth from inside a
+    sweep is how that drift continues.
     """
     try:
         exists = await database.compliance_alerts.find_one({
@@ -4559,15 +4893,23 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
             "project_id": doc.get("project_id"),
             "details.log_type": doc.get("log_type"),
             "details.date": doc.get("date"),
+            # See the docstring: without this, resolve erases the only record
+            # that the log needs fixing.
+            "resolved": False,
         })
         if exists:
             return
+        _ink = _has_signature_ink(doc.get("cp_signature"))
         await database.compliance_alerts.insert_one({
             "alert_type": "unsigned_stale_logbook",
             "severity": "medium",
             "project_id": doc.get("project_id"),
             "company_id": doc.get("company_id"),
             "message": (
+                f"{doc.get('log_type')} for {doc.get('date')} carries a "
+                "signature the CP never affirmed for this log. Only he can "
+                "affirm it. It stays editable - it is not frozen."
+                if _ink else
                 f"{doc.get('log_type')} for {doc.get('date')} was never signed. "
                 "It stays editable - it is not frozen."
             ),
@@ -4575,6 +4917,11 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
                 "log_type": doc.get("log_type"),
                 "date": doc.get("date"),
                 "logbook_id": str(doc.get("_id")),
+                # "ink" -- there is a mark on the record -- vs "none". NOT
+                # "affirmed": nothing that reaches this function is affirmed,
+                # and a field named for the predicate it always fails would
+                # read as the answer to a different question.
+                "ink": "ink" if _ink else "none",
             },
             "resolved": False,
             "created_at": datetime.now(timezone.utc),
@@ -18082,7 +18429,11 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     log_type = logbook.get("log_type", "unknown")
     data = logbook.get("data", {})
     
-    gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
+    # THE ZONE IS PART OF THE FACT. This printed a UTC clock with the word
+    # UTC beside it -- not wrong, but the only Eastern-looking number on a
+    # New York document, sitting four hours from every other time on it.
+    # `eastern_datetime` carries its own zone, so the literal goes with it.
+    gen_time = eastern_datetime(datetime.now(timezone.utc))
     
     # Reuse existing style constants
     TH = (
@@ -18348,21 +18699,28 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # report apply; this table was the last one without it.
             if not str(a.get("name") or "").strip():
                 continue
-            # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
-            # Workers are not required to sign a toolbox talk — the CP signature
-            # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
-            present = "&#10003;" if a.get("signed") else "&mdash;"
-            # Optional worker self-confirm taken at the gate. Distinct column
-            # on purpose: it is the WORKER's voluntary tap, whereas Present is
-            # the CP's mark. Neither is a legal attestation.
-            gate = "&#10003;" if a.get("gate_confirmed") else "&mdash;"
+            # TWO COLUMNS ARE GONE FROM THIS TABLE, AND NEITHER FIELD IS.
+            #
+            # "Present" printed `signed` and "Confirmed" printed
+            # `gate_confirmed`. Neither is a legal attestation -- the CP's
+            # signature over the whole roster is (NYC DOB §3301.12.3 / OSHA
+            # 1926.21) -- and two tick columns beside it invited exactly the
+            # reading that signature already forecloses: that each man
+            # individually attested to something. "Added by" stays, because
+            # WHOSE CLAIM PUT HIM ON THE SHEET is the provenance question a
+            # reader of an attendance record actually has.
+            #
+            # THE FIELDS STAY IN STORAGE, unchanged, and toolboxTalkModel.js is
+            # untouched. Dropping a COLUMN is a rendering change; dropping a
+            # FIELD is a data change, and the operator is not making that one.
+            # Both are still written at the gate and both are still read --
+            # `signed` by app/site/logbooks.jsx, `gate_confirmed` by anything
+            # that queries the stored document.
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
-                f'<td {TD}>{gate}</td>'
-                f'<td {TD}>{present}</td>'
                 f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
             )
 
@@ -18380,8 +18738,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th><th {TH}>Added by</th></tr>'
-            + (att_rows or f'<tr><td colspan="7" {TD}>—</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Added by</th></tr>'
+            + (att_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + tb_sig
@@ -19069,7 +19427,7 @@ table{{border-collapse:collapse;}}
 {body_html}
 </td></tr>
 <tr><td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
-<span style="font-size:11px;color:#94a3b8;">Generated on {gen_time} UTC</span><br/>
+<span style="font-size:11px;color:#94a3b8;">Generated on {gen_time}</span><br/>
 <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;">LEVELOG CONSTRUCTION MANAGEMENT</span>
 </td></tr></table></body></html>"""
     
@@ -23202,6 +23560,87 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  THE PHOTO SET CLOSES AT THE END OF THAT LOG'S DAY
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# THE RULING, and it is a CLOCK RATHER THAN A PERMISSION MODEL. A photograph may
+# be added to or removed from a log until the end of that log's day. After that
+# the set is closed: no removal, no append, no exceptions. There is no per-photo
+# rule, no `added_after_filing` predicate, no chain-walk and no tombstone. WHO
+# is asking and WHETHER THE LOG IS SIGNED do not enter into it — those are
+# questions the authorization and immutability guards already answer, and mixing
+# them into this one is how a clock turns into a policy.
+#
+# END OF DAY IS THE SWEEP'S OWN BOUNDARY: 03:00 America/New_York on the day
+# AFTER the log's `date`. Not midnight, and the difference is not a rounding
+# choice. `sweep_stale_end_of_day_logs` is the thing that already decides a
+# daily narrative is over, and it runs at CronTrigger(hour=3, minute=0,
+# timezone="America/New_York"). So 03:00 is the instant the record actually
+# stops being live. Choosing midnight would invent a SECOND end-of-day three
+# hours before the one the system observes, and a CP would have to carry two of
+# them in his head for one document.
+#
+# IT ALSO ANSWERS THE TWO CASES THE BOUNDARY IS JUDGED ON. A log filed at 23:00
+# gets four hours instead of one. And the night-shift CP who files at 02:00 for
+# the shift that ended last night — `date` is YESTERDAY — gets an hour, where a
+# midnight rule would have shut his window BEFORE HE PRESSED SUBMIT: a log he
+# could never attach a photograph to, with no action available that could
+# change it.
+#
+# WHAT IT IS NOT ANCHORED TO: THE FILING. There is no filing instant on this
+# document to anchor to — no `filed_at`, and `submitted_at` is not written on
+# every path. Three further objections, any one fatal: a log that is NEVER
+# filed would never close, and those exist in production precisely because the
+# sweep declines to freeze a stale unsigned narrative; two logs for the same day
+# would close at different times, so there is no sentence a CP can learn; and a
+# window that is a function of an actor's behaviour is a permission model
+# wearing a clock's clothes.
+#
+# THE ARITHMETIC IS A STRING COMPARISON, ON PURPOSE. Subtracting three hours is
+# a pure UTC subtraction and `eastern_date` is the only timezone call; after
+# that it is 'YYYY-MM-DD' against 'YYYY-MM-DD'. So there is no offset anywhere
+# to be wrong about, DST cannot move the answer, and the device's mirror of this
+# rule (frontend/src/utils/logbookEditable.js, which computes the SAME shift
+# from the SAME field) cannot drift from it by arithmetic — only by edit, which
+# test_photo_window_rule.py pins.
+_PHOTO_WINDOW_GRACE_HOURS = 3
+
+
+def logbook_photo_window_day(now=None) -> str:
+    """The last New York day whose photo sets are still open.
+
+    `eastern_date(now - 3h)`. At 02:59 Eastern on D+1 that is still D; at 03:00
+    it becomes D+1, which is the moment sweep_stale_end_of_day_logs runs and
+    evaluates its own `date < eastern_date(now)`. The two are the same instant
+    by construction rather than by two constants that happen to agree.
+    """
+    now = now or datetime.now(timezone.utc)
+    return eastern_date(now - timedelta(hours=_PHOTO_WINDOW_GRACE_HOURS))
+
+
+def logbook_photo_window_is_open(logbook, now=None) -> bool:
+    """May this log's photo set still change?
+
+    FAILS CLOSED on a log with no usable `date`. A logbook without one is not
+    something the create path can produce — it is the dedupe key — so this is a
+    malformed record rather than an ordinary case. Of the two ways to be wrong,
+    refusing a photograph is recoverable by a conversation and appending one to
+    a closed compliance record is not.
+
+    A DATETIME IN `date` IS READ, NOT REFUSED. Some legacy rows carry one
+    instead of the string. Its first ten characters are the ISO calendar date,
+    and failing those closed would refuse a photograph for a log that is plainly
+    today's.
+    """
+    if not isinstance(logbook, dict):
+        return False
+    day = str(logbook.get("date") or "").strip()[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        return False
+    return day >= logbook_photo_window_day(now)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  A PHOTOGRAPH MAY BE ADDED TO A FILED LOG. NOTHING ELSE MAY.
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -23344,6 +23783,50 @@ async def append_activity_photo(
                 ),
             })
         raise HTTPException(status_code=404, detail={"code": "ACTIVITY_NOT_FOUND"})
+
+    # ── THE DAY IS OVER ─────────────────────────────────────────────────────
+    #
+    # THE ONE GATE THIS ROUTE DID NOT HAVE. Every neighbour has one — the
+    # capture route 409s FILED_LOG_PHOTO_CAPTURE_REFUSED, update and create 409
+    # FILED_LOG_DATA_IMMUTABLE — and this endpoint deliberately had none, on the
+    # reasoning that a photograph is not an amendment. That reasoning survives;
+    # what it never carried was an END. It accepted a photograph onto a log
+    # frozen by the sweep two years ago, which made it the only way to change
+    # the content of a closed compliance record.
+    #
+    # AFTER THE AUTHORIZATION AND IDENTITY REFUSALS, BEFORE THE BYTES.
+    #
+    #   AFTER, because this refusal NAMES THE LOG'S DATE, and that is a fact
+    #   about the record. A caller who may not see the log must not learn it
+    #   from here — _authorize_logbook_view has already refused him, and
+    #   ACTIVITY_NOT_FOUND has already refused a row that does not exist.
+    #
+    #   BEFORE, because a refusal must cost no storage and no transfer. That is
+    #   the ordering principle upload_logbook_photo states for itself, and it
+    #   binds harder here: NOTHING IN THIS SYSTEM EVER RECLAIMS AN ORPHANED R2
+    #   OBJECT (docs/audits/photo-window-rule.md), so bytes uploaded before a
+    #   refusal would be permanent, billed, and named by no document.
+    #
+    # 409, NOT 423. 423 says "locked" and this log frequently is not: the sweep
+    # declines to freeze a stale UNSIGNED narrative, so those sit
+    # `is_locked: false` forever and are exactly the case this gate exists for.
+    # 409 follows the convention its neighbours set — the server names the
+    # condition, the client owns the wording.
+    #
+    # AND 4xx IS LOAD-BEARING, not merely correct. filedPhotoQueue's
+    # `shouldQueueError` retains a held photograph on 5xx or a network failure
+    # and DROPS it on any 4xx, recording the code for the CP to read. A 5xx here
+    # would make a phone retry a photograph for a permanently closed log at
+    # every app launch, forever.
+    if not logbook_photo_window_is_open(logbook):
+        raise HTTPException(status_code=409, detail={
+            "code": "PHOTO_WINDOW_CLOSED",
+            "closed_after": str(logbook.get("date") or "")[:10] or None,
+            "message": (
+                "This log's day is over, so its photographs can no longer be "
+                "changed."
+            ),
+        })
 
     # ── THE BYTES ───────────────────────────────────────────────────────────
     try:
@@ -23832,6 +24315,38 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     try:
         result = await db.logbooks.insert_one(child)
     except DuplicateKeyError:
+    # ── FINDING, 2026-09-03: THIS HANDLER HAS NEVER RUN. ───────────────────
+    #
+    # `logbooks_one_open_amendment_per_parent` HAS NEVER BUILT. Production
+    # holds the duplicates it forbids -- Aug 10 and Aug 14, two open children
+    # on one parent each -- so every attempt is rejected with E11000. Until
+    # today _ensure_index_resilient did not recognise 11000, logged one
+    # warning, and returned; startup went green over an index that is not
+    # there.
+    #
+    # An index that cannot build is A CONSTRAINT THAT IS NOT ENFORCED. So the
+    # `except DuplicateKeyError` above is DEAD CODE THAT READS AS A LIVE RACE
+    # GUARD: the note on the insert describes a database rule settling the
+    # race, and there is no database rule. Two simultaneous taps still both
+    # read "no open child" and both insert, exactly as before, and the only
+    # thing standing in the way is the non-atomic application check.
+    #
+    # NOTHING HERE IS WRONG AND NOTHING HERE SHOULD CHANGE. This code is
+    # correct the moment the index exists, and it is what turns the index's
+    # refusal into the 409 the CP needs. It is the INDEX that is missing.
+    # The startup helper now reports the state -- error log, a
+    # compliance_alerts row, and the index name in GET /api/health's
+    # `indexes.failed_unique_builds`. Clearing it is a product action:
+    # withdraw the extra drafts, then run
+    # backend/scripts/create_open_amendment_index.js, which refuses over
+    # duplicates instead of failing quietly.
+    #
+    # IT IS DELIBERATELY *BELOW* THE INSERT AND NOT ABOVE IT. Two tests in
+    # test_amendment_reason_and_fork.py read a fixed 6000-character window
+    # from `async def amend_logbook` and require the insert to fall inside it;
+    # a note of this length above the insert pushes it out of the window and
+    # turns a real ordering assertion into a ValueError. The note belongs on
+    # the handler it is about, so it sits inside the handler.
         _raced = await db.logbooks.find({
             "parent_logbook_id": str(original["_id"]),
             "is_deleted": {"$ne": True},
@@ -25758,7 +26273,30 @@ async def root():
 
 @api_router.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    """Up, and — separately — INDEX-COMPLETE.
+
+    `status` deliberately stays "healthy" while an index is missing. This is
+    the probe the platform restarts on, and a unique index the data refuses is
+    not fixed by cycling the process; flipping it would turn a data finding
+    into a restart loop that takes the API down for exactly the reason
+    _ensure_index_resilient refuses to raise.
+
+    `indexes.failed_unique_builds` NAMES them instead. A deploy is provably
+    index-complete when that list is empty — which is the question nobody could
+    ask before, because a rejected build logged one warning and startup went
+    green over it. Each name here is a declared uniqueness rule that is NOT in
+    force, and any `except DuplicateKeyError` written against it is dead code.
+    """
+    _failed = sorted(FAILED_UNIQUE_INDEX_BUILDS)
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "indexes": {
+            "complete": not _failed,
+            "failed_unique_builds": _failed,
+            "detail": {n: FAILED_UNIQUE_INDEX_BUILDS[n] for n in _failed},
+        },
+    }
 
 @api_router.get("/version")
 async def version():
@@ -25889,7 +26427,18 @@ def _signature_affirmation_html(sig):
         )
 
     def _fmt(raw):
-        return (str(raw)[:19].replace("T", " ") + " UTC") if raw else ""
+        # NEW YORK, like every other time on this document. It printed the
+        # stored digits with " UTC" appended -- honest, and still the only
+        # clock on a §3301 record a New York inspector had to convert in his
+        # head. eastern_datetime carries the zone, so nothing is lost by it.
+        # AN UNANCHORED VALUE STILL PRINTS: a legacy signature carrying a naive
+        # timestamp says what it says rather than disappearing from the banner.
+        if not raw:
+            return ""
+        try:
+            return eastern_datetime(raw)
+        except Exception:
+            return str(raw)[:19].replace("T", " ")
 
     claimed = _fmt(sig.get("affirmedAt") or sig.get("timestamp"))
     received = _fmt(sig.get("affirmed_received_at"))
@@ -25947,14 +26496,27 @@ def _attendee_source_label(a) -> str:
 
 
 def _roster_clock(v) -> str:
-    """HH:MM for a roster row's check-in time. The toolbox roster carries the
-    §3301.12.3 required fields (name, title, company, date/time); this renders
-    the time compactly for the PDF. Falls back to the raw value rather than
-    printing a parse error onto a legal record."""
+    """A roster row's check-in time, IN NEW YORK. The toolbox roster carries
+    the §3301.12.3 required fields (name, title, company, date/time); this
+    renders the time for the PDF.
+
+    IT USED TO PRINT THE UTC DIGITS. The stored value is an instant -- the gate
+    writes `check_in_time` straight onto the attendee (toolboxTalkModel.js
+    buildAttendees) -- and this parsed it correctly and then formatted it
+    without converting, so `10:47:05Z` printed as "10:47" on a signed
+    attendance record for a man who was at the gate at 6:47 AM EDT.
+    `eastern_clock` owns that conversion now and no other renderer does it.
+
+    AN UNANCHORED VALUE IS PRINTED AS ITSELF. `weeklyGapAttendee` writes
+    `time: ''` and older rosters hold typed wall-clock strings like "07:15".
+    Those carry no zone, so there is nothing to convert -- eastern_clock
+    refuses them rather than guessing, and they print exactly as they always
+    did. Never a parse error onto a legal record.
+    """
     if not v:
         return "&mdash;"
     try:
-        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).strftime("%I:%M %p").lstrip("0")
+        return eastern_clock(v)
     except Exception:
         return str(v)[:16]
 
@@ -26370,6 +26932,15 @@ def _amendment_day(value) -> str:
     """The calendar day off the record. A datetime or an ISO string, both of
     which reach here depending on whether the doc has been serialized. Never a
     guess, and never relative to now."""
+    # ── LEFT AS THE UTC DAY, DELIBERATELY, AND IT IS WRONG ──────────────────
+    # `amended_at` / `withdrawn_at` are UTC instants, so an amendment filed at
+    # 8pm on a Tuesday in New York reports as Wednesday's -- the same defect
+    # `eastern_date` exists to stop, on the one line of the document that says
+    # when somebody changed it. Routing it through eastern_date is a two-line
+    # change and it was made and reverted here: `_amendment_day` is shared with
+    # `withdrawal_sentence`, which is not part of the report renderer, and the
+    # correction moves a date on two of ITS tests. That is an owner's call, not
+    # this one's. See the report's "found but not changed" section.
     if isinstance(value, datetime):
         return value.date().isoformat()
     text = str(value or "").strip()
@@ -27030,8 +27601,31 @@ def _cs_item_body(item, block, cs_name):
         return NOT_RECORDED
 
     # ── content ─────────────────────────────────────────────────────────────
+    #
+    # A SIGNATURE IS NOT A LINE OF TEXT, AND ITEM 1 WAS PRINTING IT AS ONE.
+    # superintendentLogModel.js lists `signature` among the presence FIELDS, so
+    # this loop reached it like any other and fell through to `str(value)`.
+    # SignaturePad stores strokes, so a filed BC 3301.13.13 log rendered
+    #
+    #     Michael Cespedes
+    #     {'paths': [[{'x': 1, 'y': 2}, ...]], 'signerName': 'Michael Cespedes'}
+    #     06:45
+    #     16:30
+    #
+    # as item 1's record, on BOTH renderers -- and a legacy base64 signature is
+    # a STRING, so that branch pasted the whole blob in as body text instead.
+    #
+    # The signature is already rendered, correctly and with its affirmation
+    # banner, by render_signature_html at the foot of this same section. This
+    # was a second, garbled copy of it inside the table.
+    #
+    # SKIPPED BY NAME, not by type: the value being a dict is incidental, and a
+    # type test would go on printing the base64 case. Nothing is lost.
+    _NOT_TEXT = {"signature"}
     rows = []
     for field in fields:
+        if field in _NOT_TEXT:
+            continue
         value = block.get(field)
         if isinstance(value, (list, tuple)):
             for entry in value:
@@ -27244,13 +27838,34 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
     )
 
 
-def render_signature_html(sig, label="CP Signature"):
+def render_signature_html(sig, label="CP Signature", show_affirmation=True):
     """Render a signature as email-safe HTML with its AFFIRMED / UNAFFIRMED
     banner. Handles both shapes: a base64 PNG string / {data: base64}, and the
-    SignaturePad vector shape {paths: [...strokes...]} (reconstructed to SVG)."""
+    SignaturePad vector shape {paths: [...strokes...]} (reconstructed to SVG).
+
+    ── show_affirmation ────────────────────────────────────────────────────
+    A PARAMETER, NOT A SECOND RENDERER. The investor report prints the same
+    fourteen signatures the filed documents do, and the affirmation banner
+    beneath each one is machinery: "AFFIRMED for this document", a claimed
+    time, a server-received time. That is the audit trail of a §3301 filing
+    and it is exactly what a DOB inspector needs. It is not what a lender
+    needs, and fourteen copies of it on a progress report read as a system
+    talking to itself.
+
+    THE SIGNATURE ITSELF NEVER GOES. Only the banner under it. Passing False
+    also drops the UNAFFIRMED warning, which the operator has accepted for
+    that document and ONLY that document: the per-logbook PDF
+    (generate_single_logbook_html, 8 call sites) and the superintendent's log
+    (_superintendent_log_html, 1) are the legal records and keep every banner
+    they have.
+
+    A COPY OF THIS FUNCTION WOULD HAVE DRIFTED. Two renderers of the same
+    section have had to be pulled back twice on this file already; a third
+    that differs only in one boolean would go the same way.
+    """
     if not sig:
         return ""
-    status = _signature_affirmation_html(sig)
+    status = _signature_affirmation_html(sig) if show_affirmation else ""
 
     def _wrap(full_label, inner):
         return (
@@ -27258,8 +27873,11 @@ def render_signature_html(sig, label="CP Signature"):
             '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
             + full_label + ':</td></tr>'
             '<tr><td>' + inner + '</td></tr>'
-            '<tr><td>' + status + '</td></tr>'
-            '</table>'
+            # An empty banner emits no row at all -- a bare <tr><td></td></tr>
+            # is an invisible strip of padding under every signature on the
+            # report, and fourteen of them is a visible one.
+            + ('<tr><td>' + status + '</td></tr>' if status else '')
+            + '</table>'
         )
 
     def _img(b64):
@@ -27415,34 +28033,94 @@ async def generate_combined_report(
     EMPTY_6 = f'<tr><td colspan="6" {TD}>&mdash;</td></tr>'
     EMPTY_3 = f'<tr><td colspan="3" {TD}>&mdash;</td></tr>'
 
+    # =====================================================================
+    #  TYPE AND SPACING SCALE
+    # =====================================================================
+    #
+    # 17px against a 16px body is not a heading. This document had FOUR sizes
+    # -- 16 body, 16 section header, 17 sub-head, 14 sub-title -- all within a
+    # point of each other, so nothing on the page carried a rank. A reader
+    # looking for the Pre-Shift Sign-In had to READ the words to find it, on a
+    # sixteen-section record; and a section header the same size as the
+    # sentence beneath it is not a header, it is a bolder sentence.
+    #
+    # THE TYPE SCALE. Each step is a jump, not a nudge:
+    #
+    #     30  document title      page 1 only, once
+    #     24  section header      the name of a filed document
+    #     19  sub-head            a named block inside a section
+    #     16  body
+    #     15  table label         uppercase and tracked; a caption, not a head
+    #     13  table cell          density matters on a sixty-man roster
+    #
+    # THE SPACING SCALE, in the same spirit -- four steps, each roughly 1.7x
+    # the one below it, so a gap ALWAYS says which boundary it is:
+    #
+    #     40  above a section header      between two filed documents
+    #     24  between content blocks      within one document
+    #     14  header to its description   they belong together
+    #      8  label to its table          they are one unit
+    #
+    # A section header, its description and its content were separated by 12,
+    # 12 and 12 -- three different relationships rendered identically, which is
+    # why the page read as one undifferentiated column.
+    _T_SECTION, _T_SUBHEAD, _T_LABEL = "24px", "19px", "15px"
+    _S_SECTION, _S_BLOCK, _S_HEAD, _S_TIGHT = "40px", "24px", "14px", "8px"
+
     def section_title(text):
+        """THE NAME OF A FILED DOCUMENT. Every one of these now starts its own
+        sheet, so this is the first thing on a page and has to read like it."""
         return (
-            '<table cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 12px 0;">'
-            '<tr><td style="font-size:16px;font-weight:600;color:#0A1929;'
-            f'padding-bottom:8px;border-bottom:2px solid #e2e8f0;">{text}</td></tr></table>'
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            f'class="doc-section-title" style="margin:{_S_SECTION} 0 0 0;">'
+            f'<tr><td style="font-size:{_T_SECTION};font-weight:700;'
+            'line-height:1.25;color:#0A1929;letter-spacing:-0.01em;'
+            'padding-bottom:12px;border-bottom:2px solid #cbd5e1;">'
+            f'{text}</td></tr></table>'
         )
 
     def sub_title(text):
+        """THE CAPTION OVER A TABLE, and it is set as one: small, uppercase and
+        tracked out, so it reads as a label rather than as a smaller heading
+        competing with the section name above it."""
         return (
-            '<table cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 8px 0;">'
-            f'<tr><td style="font-size:14px;font-weight:600;color:#475569;">{text}</td></tr></table>'
+            '<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:{_S_BLOCK} 0 {_S_TIGHT} 0;">'
+            f'<tr><td style="font-size:{_T_LABEL};font-weight:700;'
+            'color:#475569;text-transform:uppercase;letter-spacing:0.08em;">'
+            f'{text}</td></tr></table>'
+        )
+
+    def sub_head(text):
+        """A NAMED BLOCK INSIDE A SECTION -- "Headcount by subcontractor",
+        "Work today". Four hand-written <h3>s at 17px; one builder at 19."""
+        return (
+            f'<h3 style="color:#0A1929;margin:{_S_BLOCK} 0 {_S_TIGHT};'
+            f'font-size:{_T_SUBHEAD};font-weight:700;line-height:1.3;">'
+            f'{text}</h3>'
         )
 
     def info_box(content):
+        """THE SECTION'S DESCRIPTION. It sits under the header at the HEAD gap,
+        the tightest of the block gaps -- a header and the line that qualifies
+        it are one thing, and 12px put it exactly as far from its header as
+        from the table below it."""
         return (
             '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            'style="margin:12px 0;" bgcolor="#f1f5f9">'
-            '<tr><td style="background-color:#f1f5f9;padding:14px 18px;'
+            f'style="margin:{_S_HEAD} 0 0 0;" bgcolor="#f1f5f9">'
+            '<tr><td style="background-color:#f1f5f9;padding:16px 20px;'
             'border-left:4px solid #1565C0;font-size:16px;line-height:1.7;color:#475569;">'
             + content + '</td></tr></table>'
         )
 
     def para(text):
-        return f'<p style="color:#475569;line-height:1.6;margin:8px 0;">{text}</p>'
+        return (f'<p style="color:#475569;font-size:16px;line-height:1.65;'
+                f'margin:{_S_BLOCK} 0 0;">{text}</p>')
 
     def bold_para(label, value):
         return (
-            '<p style="color:#475569;line-height:1.6;margin:8px 0;">'
+            f'<p style="color:#475569;font-size:16px;line-height:1.65;'
+            f'margin:{_S_BLOCK} 0 0;">'
             f'<strong style="color:#0A1929;">{label}:</strong> {value}</p>'
         )
 
@@ -27488,7 +28166,13 @@ async def generate_combined_report(
 
     _dj = ((daily_jobsite or {}).get("data") or {}) if daily_jobsite else {}
     _dj_id = str(daily_jobsite["_id"]) if daily_jobsite else ""
-    _pg1_weather = _display_weather(_dj) if _dj else NOT_RECORDED
+    # NO WEATHER ON THE COVER. It is a fact about the DAILY JOBSITE LOG and it
+    # is printed there, in that log's own info box, where §3301-02 asks for it.
+    # On the investor cover it was a second copy of the same string with no
+    # document behind it -- the first line of a progress report answering a
+    # question nobody with $2M in the ground was asking. `_display_weather` is
+    # untouched and still has three call sites: both PDF renderers' daily
+    # jobsite sections and the SSC section.
 
     # Headcount, by sub and total. From CHECK-INS, as ruled.
     _sub_rows = "".join(
@@ -27700,10 +28384,10 @@ async def generate_combined_report(
                 f'{_inspection_label(_k)}{" - " + _note if _note else ""}</li>'
             )
     _flags_html = (
-        '<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-        'Flagged today</h3>'
-        '<ul style="margin:0 0 8px;padding-left:20px;font-size:14px;'
-        f'color:#334155;">{_flags}</ul>'
+        sub_head("Flagged today")
+        + '<ul style="margin:0 0 8px;padding-left:20px;font-size:15px;'
+          'line-height:1.6;'
+        + f'color:#334155;">{_flags}</ul>'
     ) if _flags else ""
 
     # ONE line of compliance status. The detail is page 2; this says only
@@ -27814,33 +28498,32 @@ async def generate_combined_report(
     # though they were two different facts. A reader counting fields on a
     # compliance document reads a repeat as a discrepancy.
     progress_html = (
-        '<h2 style="color:#0A1929;margin:0 0 18px;font-size:24px;">'
+        '<h2 style="color:#0A1929;margin:0 0 4px;font-size:30px;'
+        'font-weight:700;line-height:1.2;letter-spacing:-0.02em;">'
         'Daily Progress Report</h2>'
         + info_box(
-            f'<strong style="color:#0A1929;">Weather:</strong> '
-            f'{_pg1_weather}<br />'
             '<strong style="color:#0A1929;">'
             f'Workers checked in at the gate:</strong> {_sub_total}'
         )
-        + '<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-          'Headcount by subcontractor</h3>'
+        + sub_head("Headcount by subcontractor")
         + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-          'style="border-collapse:collapse;font-size:15px;">'
+          'style="border-collapse:collapse;margin:8px 0 0 0;font-size:15px;">'
         + f'<tr><th {TH}>Subcontractor</th>'
           f'<th {TH} align="right">Workers</th></tr>'
         + _sub_rows
         + f'<tr><td {TD}><strong>Total</strong></td>'
           f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
         + '</table>'
-        + (('<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-            'Work today</h3>' + _pg1_lines + _pg1_ai_note) if _pg1_lines else "")
-        + (('<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-            'Photos</h3>' + _pg1_photos) if _pg1_photos else "")
+        + ((sub_head("Work today") + _pg1_lines + _pg1_ai_note)
+           if _pg1_lines else "")
+        + ((sub_head("Photos") + _pg1_photos) if _pg1_photos else "")
         + _flags_html
         + '<p style="margin:22px 0 0;font-size:16px;line-height:1.6;color:#334155;">'
           f'<strong style="color:#0A1929;">Compliance:</strong> {_compliance}</p>'
-        # Page 2 starts a new sheet in the PDF. Inert in email.
-        + '<div style="page-break-after:always;"></div>'
+        # THE BREAK USED TO BE EMITTED HERE and it was the only one in the
+        # report. It is now emitted BETWEEN every pair of sections by the
+        # joiner in the final assembly -- keeping a copy here as well would put
+        # two breaks after the cover and a blank sheet between it and page 2.
     )
 
     jobsite_html = ""
@@ -27893,13 +28576,13 @@ async def generate_combined_report(
             obs_html = (
                 sub_title("Safety Observations")
                 + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-                  'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+                  'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
                 + f'<tr><th {TH}>Description</th><th {TH}>Responsible</th><th {TH}>Remedy</th></tr>'
                 + obs_rows + '</table>'
             )
 
-        cp_sig = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature")
-        sup_sig = render_signature_html(d.get("superintendent_signature"), "Superintendent")
+        cp_sig = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature", show_affirmation=False)
+        sup_sig = render_signature_html(d.get("superintendent_signature"), "Superintendent", show_affirmation=False)
         visitors = d.get("visitors_deliveries", "")
         wind = d.get("weather_wind", "")
 
@@ -27939,7 +28622,7 @@ async def generate_combined_report(
             )
             + sub_title("Activity Details")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             # "CP's count", not "Workers" — the same label the single-document
             # renderer now carries, for the same reason. See the note there.
             + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>CP&#39;s count</th>'
@@ -27982,25 +28665,32 @@ async def generate_combined_report(
             # agree; there are two of these gates and both are load-bearing.
             if not str(a.get("name") or "").strip():
                 continue
-            # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
-            # Workers are not required to sign a toolbox talk — the CP signature
-            # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
-            present = "&#10003;" if a.get("signed") else "&mdash;"
-            # Optional worker self-confirm taken at the gate. Distinct column
-            # on purpose: it is the WORKER's voluntary tap, whereas Present is
-            # the CP's mark. Neither is a legal attestation.
-            gate = "&#10003;" if a.get("gate_confirmed") else "&mdash;"
+            # TWO COLUMNS ARE GONE FROM THIS TABLE, AND NEITHER FIELD IS.
+            #
+            # "Present" printed `signed` and "Confirmed" printed
+            # `gate_confirmed`. Neither is a legal attestation -- the CP's
+            # signature over the whole roster is (NYC DOB §3301.12.3 / OSHA
+            # 1926.21) -- and two tick columns beside it invited exactly the
+            # reading that signature already forecloses: that each man
+            # individually attested to something. "Added by" stays, because
+            # WHOSE CLAIM PUT HIM ON THE SHEET is the provenance question a
+            # reader of an attendance record actually has.
+            #
+            # THE FIELDS STAY IN STORAGE, unchanged, and toolboxTalkModel.js is
+            # untouched. Dropping a COLUMN is a rendering change; dropping a
+            # FIELD is a data change, and the operator is not making that one.
+            # Both are still written at the gate and both are still read --
+            # `signed` by app/site/logbooks.jsx, `gate_confirmed` by anything
+            # that queries the stored document.
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
-                f'<td {TD}>{gate}</td>'
-                f'<td {TD}>{present}</td>'
                 f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
             )
 
-        tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature")
+        tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature", show_affirmation=False)
 
         # PR G: location/company/performed-by/cp short-entry; time excluded.
         toolbox_html = (
@@ -28013,9 +28703,9 @@ async def generate_combined_report(
             )
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th><th {TH}>Added by</th></tr>'
-            + (att_rows or f'<tr><td colspan="7" {TD}>&mdash;</td></tr>')
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Added by</th></tr>'
+            + (att_rows or f'<tr><td colspan="5" {TD}>&mdash;</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
             + tb_sig
@@ -28044,12 +28734,12 @@ async def generate_combined_report(
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
                 )
 
-        ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
+        ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature", show_affirmation=False)
 
         preshift_html = (
             section_title("Pre-Shift Sign-In")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or EMPTY_6)
@@ -28163,13 +28853,13 @@ async def generate_combined_report(
             + work_html
             + sub_title("Subcontractor Activity")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Company</th><th {TH}>Trade</th><th {TH}>Workers</th>'
               f'<th {TH}>Hours</th><th {TH}>Description</th></tr>'
             + (sub_rows or EMPTY_5) + '</table>'
             + sub_title("Safety Checklist")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Status</th><th {TH}>Checked By</th></tr>'
             + (safety_rows or EMPTY_3) + '</table>'
             + sub_title("Corrective Actions") + para(corrective_text)
@@ -28268,11 +28958,11 @@ async def generate_combined_report(
                 f'<td {TD}>{review_cell}</td></tr>'
             )
 
-        osha_sig = render_signature_html(osha_lb.get("cp_signature"), "CP Signature")
+        osha_sig = render_signature_html(osha_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         osha_html = (
             section_title("OSHA / SST Certification Log")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Cert Type</th>'
               f'<th {TH}>Card #</th><th {TH}>Expiration</th><th {TH}>Signed</th>'
               f'<th {TH}>Review</th></tr>'
@@ -28336,11 +29026,11 @@ async def generate_combined_report(
             )
             + sub_title("Pre-Work Precautions")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Precaution</th><th {TH}>Confirmed</th></tr>'
             + prec_rows
             + '</table>'
-            + render_signature_html(hw_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(hw_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28404,17 +29094,17 @@ async def generate_combined_report(
             )
             + sub_title("Pre-Operation Checklist")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
             + preop_rows
             + '</table>'
             + sub_title("Lift Log")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Time</th><th {TH}>Description</th><th {TH}>Load Weight</th><th {TH}>Radius</th></tr>'
             + (load_rows or f'<tr><td colspan="4" {TD}>No lifts recorded</td></tr>')
             + '</table>'
-            + render_signature_html(crane_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(crane_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28475,11 +29165,11 @@ async def generate_combined_report(
             )
             + sub_title("Adjacent-Structure Monitoring Points")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Location</th><th {TH}>Baseline</th><th {TH}>Current</th><th {TH}>Movement (&Delta;)</th></tr>'
             + (bld_rows or f'<tr><td colspan="4" {TD}>No monitoring points recorded</td></tr>')
             + '</table>'
-            + render_signature_html(exc_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(exc_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28523,13 +29213,13 @@ async def generate_combined_report(
         fp_html = (
             section_title("Fall Protection Equipment")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Equipment</th>'
               f'<th {TH}>ID / Serial</th><th {TH}>Mfg Date</th><th {TH}>Result</th>'
               f'<th {TH}>Impact Loaded</th><th {TH}>Defect</th><th {TH}>Action Taken</th></tr>'
             + (_fp_rows or f'<tr><td colspan="9" {TD}>No inspections recorded</td></tr>')
             + '</table>'
-            + render_signature_html(fp_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(fp_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
             # THIS REPORT GOES TO INVESTORS AND LENDERS, and it is where a
             # reader is most likely to mistake this section for a required
             # filing. One sentence, on the section, saying what it is.
@@ -28596,11 +29286,11 @@ async def generate_combined_report(
             )
             + sub_title("Inspection Checklist")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Question</th><th {TH}>Answer</th></tr>'
             + q_rows
             + '</table>'
-            + render_signature_html(scaffold_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(scaffold_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28723,7 +29413,7 @@ async def generate_combined_report(
         oriented_today_html = (
             sub_title("Oriented Today")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Worker</th><th {TH}>Trade / Company</th>'
               f'<th {TH}>Orientation Date</th><th {TH}>Conducted By (CP)</th>'
               f'<th {TH}>Worker Signature</th></tr>'
@@ -28777,7 +29467,7 @@ async def generate_combined_report(
             )
             + sub_title("Compliance")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Status</th></tr>'
             + flag_rows
             + '</table>'
@@ -28791,7 +29481,7 @@ async def generate_combined_report(
             + bold_para("Safety Violations Observed", _ssc_prose(d.get("safety_violations_observed")))
             + bold_para("Corrective Actions Taken", _ssc_prose(d.get("corrective_actions_taken")))
             + incident_line
-            + render_signature_html(ssc_lb.get("cp_signature"), "SSC / SSM Signature")
+            + render_signature_html(ssc_lb.get("cp_signature"), "SSC / SSM Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28851,17 +29541,17 @@ async def generate_combined_report(
             )
             + sub_title("Slump Tests")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Time</th><th {TH}>Slump</th><th {TH}>Result</th></tr>'
             + (slump_rows or f'<tr><td colspan="3" {TD}>No slump tests recorded</td></tr>')
             + '</table>'
             + sub_title("Formwork Inspection")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
             + formwork_rows
             + '</table>'
-            + render_signature_html(concrete_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(concrete_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28906,20 +29596,62 @@ async def generate_combined_report(
                 field_label = k.replace("_", " ").title()
                 data_rows += f'<tr><td {TD} style="font-weight:600;width:35%;padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;">{field_label}</td><td {TD}>{v_str}</td></tr>'
 
-        sig_html = render_signature_html(logbook.get("cp_signature"), "Signature")
+        sig_html = render_signature_html(logbook.get("cp_signature"), "Signature", show_affirmation=False)
         additional_logbooks_html += (
             section_title(f"{label}")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + (data_rows or f'<tr><td {TD}>No data recorded</td></tr>')
             + '</table>'
             + sig_html
         )
 
     # ==========================================================
+    #  EVERY DOCUMENT ON ITS OWN PAGE
+    # ==========================================================
+    #
+    # There was exactly ONE page break in this report -- between the investor
+    # cover and everything after it -- and page 2 onward ran together. A Tool
+    # Box Talk ended four lines into a sheet and the Pre-Shift Sign-In began on
+    # the fifth; an Activity Details table split across the fold with its
+    # header on one page and half its crews on the next.
+    #
+    # THESE ARE SEPARATE FILED DOCUMENTS. An inspector asks for one of them by
+    # name and a lender is handed another; a printed record that has to be cut
+    # apart with a ruler to separate two statutory logs is not a record of
+    # either. So each section starts a sheet.
+    #
+    # THE BREAK GOES *BETWEEN*, NEVER AFTER EACH. A break after the last
+    # section ends the PDF on a blank sheet, and a blank final page on a
+    # compliance document reads as a page somebody removed.
+    #
+    # AN UNFILED LOG IS NOT A PAGE. A section with no document behind it
+    # renders "" and is dropped before the join, so a three-document day is
+    # three sheets and not sixteen -- thirteen of them blank, each looking like
+    # a filing that went missing.
+    _SECTIONS = (
+        progress_html, jobsite_html, cs_html, toolbox_html, preshift_html,
+        site_html, osha_html, hot_work_html, crane_html, exc_html,
+        scaffold_html, fp_html, orientation_html, ssc_html, concrete_html,
+        additional_logbooks_html,
+    )
+    # page-break-inside ON THE WRAPPER, which is what stops a table splitting
+    # across the fold. A section taller than a page cannot honour it, and
+    # WeasyPrint drops the request rather than leaving the sheet blank -- which
+    # is what makes this safe on a sixty-man pre-shift sheet.
+    sections_html = '<div style="page-break-after:always;"></div>'.join(
+        f'<div class="doc-section" style="page-break-inside:avoid;">{_s}</div>'
+        for _s in _SECTIONS if _s
+    )
+
+    # ==========================================================
     #  FINAL HTML ASSEMBLY  (email-safe, table-based)
     # ==========================================================
-    gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
+    # THE ZONE IS PART OF THE FACT. This printed a UTC clock with the word
+    # UTC beside it -- not wrong, but the only Eastern-looking number on a
+    # New York document, sitting four hours from every other time on it.
+    # `eastern_datetime` carries its own zone, so the literal goes with it.
+    gen_time = eastern_datetime(datetime.now(timezone.utc))
     font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
     html = f"""<!DOCTYPE html>
@@ -28957,6 +29689,33 @@ async def generate_combined_report(
   @media print {{
     .wrapper {{ width: 100% !important; max-width: 100% !important; }}
     body, .body {{ background-color: #ffffff !important; }}
+
+    /* THE REST OF THE LEVER. The block released the width and stopped, and
+       every typographic decision below is one an EMAIL CLIENT must not be
+       asked to make -- these rules exist only for the sheet of paper.
+
+       A HEADING MUST NOT BE THE LAST THING ON A PAGE. Every section now
+       starts its own sheet, but the sub-heads inside one do not, and
+       "Activity Details" alone at the foot of a page with its table
+       overleaf is the shape a reader takes for a truncated document. */
+    h2, h3, .doc-section-title {{
+      page-break-after: avoid; break-after: avoid-page;
+    }}
+
+    /* THE SECTION HEADER IS THE FIRST THING ON ITS SHEET, so the 40px that
+       separates it from the previous section on screen is a dead strip at
+       the top of every printed page. Inline styles lose to !important. */
+    .doc-section > .doc-section-title:first-child {{ margin-top: 0 !important; }}
+
+    /* NEVER SPLIT A ROW. A man's name on one sheet and his check-in time on
+       the next is not a roster entry -- and page-break-inside on the section
+       wrapper cannot help a table that is genuinely taller than a page,
+       which the pre-shift sheet on a busy day is. */
+    tr {{ page-break-inside: avoid; break-inside: avoid; }}
+    .doc-section {{ break-inside: avoid; }}
+
+    /* One line of a paragraph stranded by itself reads as a fragment. */
+    p, li {{ orphans: 3; widows: 3; }}
   }}
 </style>
 </head>
@@ -29005,29 +29764,14 @@ async def generate_combined_report(
   <!-- CONTENT -->
   <tr>
     <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
-      {progress_html}
-      {jobsite_html}
-      {cs_html}
-      {toolbox_html}
-      {preshift_html}
-      {site_html}
-      {osha_html}
-      {hot_work_html}
-      {crane_html}
-      {exc_html}
-      {scaffold_html}
-      {fp_html}
-      {orientation_html}
-      {ssc_html}
-      {concrete_html}
-      {additional_logbooks_html}
+      {sections_html}
     </td>
   </tr>
 
   <!-- FOOTER -->
   <tr>
     <td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
-      <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time} UTC</span><br />
+      <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time}</span><br />
       <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;text-transform:uppercase;">LEVELOG CONSTRUCTION MANAGEMENT</span>
     </td>
   </tr>
@@ -36036,6 +36780,53 @@ async def ensure_dropbox_sync_indexes():
         logger.warning(f"ensure_dropbox_sync_indexes: {e}")
 
 
+async def ensure_document_page_indexes():
+    """Indexes for the plan-query page index. Idempotent; safe every boot.
+
+    ITS OWN FUNCTION AND ITS OWN try/except, for exactly the reason
+    ensure_dropbox_sync_indexes gives — and these four had even less business
+    being where they were. `document_page_index` is the Sprint 3 PLAN QUERY
+    pipeline. It has NOTHING TO DO WITH WHATSAPP. It sat inside
+    run_whatsapp_startup_migrations under a shared `except` with four unrelated
+    WhatsApp migrations, so a failure in the bot_config backfill — a collection
+    the plan pipeline has never heard of — silently skipped every index the
+    plan search reads through.
+
+    `document_page_unique` is a UNIQUE build, so it goes through
+    _ensure_index_resilient like every other one: duplicate (file_id,
+    page_number) rows from a re-index would otherwise be a silent no-index, and
+    now they are a named finding in the health payload.
+    """
+    try:
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("file_id", 1), ("page_number", 1)],
+            name="document_page_unique",
+            unique=True,
+        )
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("project_id", 1), ("discipline", 1)],
+            name="document_page_by_project_discipline",
+        )
+        # Plan-query v2: fast exact-match lookup on sheet number per project.
+        # Alphanumeric sheet IDs ('A-301', 'ME-401') are poorly served by
+        # vector search; regex / exact match on this field always takes
+        # priority over semantic retrieval.
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("project_id", 1), ("sheet_number", 1)],
+            name="document_page_by_sheet_number",
+        )
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("project_id", 1), ("floor", 1)],
+            name="document_page_by_floor",
+        )
+    except Exception as e:
+        logger.warning(f"ensure_document_page_indexes: {e}")
+
+
 async def run_whatsapp_startup_migrations():
     """Idempotent startup migrations for the WhatsApp feature set.
 
@@ -36043,10 +36834,25 @@ async def run_whatsapp_startup_migrations():
     - Set default bot_config on any existing whatsapp_groups without one.
     - Create whatsapp_send_log collection + unique compound + TTL index.
     - Create whatsapp_checklists compound index (used in Sprint 2).
-    - Create document_page_index unique compound (used in Sprint 3).
+    - Create whatsapp_conversation_state unique + TTL (Sprint 6).
+
+    ── ONE try PER MIGRATION, AND THAT IS THE CHANGE ─────────────────────────
+
+    All of this was under ONE try with ONE `except` that logged and moved on.
+    A throw in migration 2 silently skipped 3, 4 and 5 — and the log line said
+    "run_whatsapp_startup_migrations: <error>", which reads like ONE thing
+    failed. Nothing anywhere said the other three never ran.
+
+    This is the shape ensure_dropbox_sync_indexes was extracted OUT of. That
+    extraction fixed two lines and left five; this finishes it. The
+    document_page_index block, which was never a WhatsApp migration at all, is
+    now ensure_document_page_indexes() above.
+
+    Each stage is independent and each names ITSELF in its log line, so a
+    failure says which migration failed and the rest still run.
     """
+    # Migration 1 — backfill bot_config on legacy group docs
     try:
-        # Migration 1 — backfill bot_config on legacy group docs
         result = await db.whatsapp_groups.update_many(
             {"bot_config": {"$exists": False}},
             {"$set": {"bot_config": _default_bot_config()}},
@@ -36056,64 +36862,60 @@ async def run_whatsapp_startup_migrations():
                 f"WhatsApp migration: backfilled bot_config on "
                 f"{result.modified_count} existing group doc(s)"
             )
+    except Exception as e:
+        logger.warning(f"whatsapp migration 1 (bot_config backfill): {e}")
 
-        # Migration 2 — send_log dedup collection
-        await db.whatsapp_send_log.create_index(
-            [("group_id", 1), ("job_type", 1), ("sent_date_est", 1)],
+    # Migration 2 — send_log dedup collection
+    try:
+        await _ensure_index_resilient(
+            db.whatsapp_send_log,
+            keys=[("group_id", 1), ("job_type", 1), ("sent_date_est", 1)],
             unique=True,
             name="whatsapp_send_log_unique",
         )
         # 45-day TTL so the collection doesn't grow forever
-        await db.whatsapp_send_log.create_index(
-            "created_at",
+        await _ensure_index_resilient(
+            db.whatsapp_send_log,
+            keys=[("created_at", 1)],
             expireAfterSeconds=60 * 60 * 24 * 45,
             name="whatsapp_send_log_ttl",
         )
+    except Exception as e:
+        logger.warning(f"whatsapp migration 2 (send_log indexes): {e}")
 
-
-        # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
-        await db.whatsapp_checklists.create_index(
-            [("project_id", 1), ("generated_at", -1)],
+    # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
+    try:
+        await _ensure_index_resilient(
+            db.whatsapp_checklists,
+            keys=[("project_id", 1), ("generated_at", -1)],
             name="checklists_by_project_recent",
         )
-        await db.whatsapp_checklists.create_index(
-            [("group_id", 1), ("generated_at", -1)],
+        await _ensure_index_resilient(
+            db.whatsapp_checklists,
+            keys=[("group_id", 1), ("generated_at", -1)],
             name="checklists_by_group_recent",
         )
+    except Exception as e:
+        logger.warning(f"whatsapp migration 3 (checklist indexes): {e}")
 
-        # Migration 4 — document_page_index unique compound (Sprint 3 consumer)
-        await db.document_page_index.create_index(
-            [("file_id", 1), ("page_number", 1)],
+    # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
+    # One active draft per group; auto-expire via TTL on expires_at.
+    # (Migration 4 was document_page_index — see ensure_document_page_indexes.)
+    try:
+        await _ensure_index_resilient(
+            db.whatsapp_conversation_state,
+            keys=[("group_id", 1)],
             unique=True,
-            name="document_page_unique",
+            name="convo_state_by_group",
         )
-        await db.document_page_index.create_index(
-            [("project_id", 1), ("discipline", 1)],
-            name="document_page_by_project_discipline",
-        )
-        # Migration 4b (plan-query v2): fast exact-match lookup on sheet
-        # number per project. Alphanumeric sheet IDs ('A-301', 'ME-401')
-        # are poorly served by vector search; regex / exact match on this
-        # field always takes priority over semantic retrieval.
-        await db.document_page_index.create_index(
-            [("project_id", 1), ("sheet_number", 1)],
-            name="document_page_by_sheet_number",
-        )
-        await db.document_page_index.create_index(
-            [("project_id", 1), ("floor", 1)],
-            name="document_page_by_floor",
-        )
-
-        # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
-        # One active draft per group; auto-expire via TTL on expires_at.
-        await db.whatsapp_conversation_state.create_index(
-            "group_id", unique=True, name="convo_state_by_group"
-        )
-        await db.whatsapp_conversation_state.create_index(
-            "expires_at", expireAfterSeconds=0, name="convo_state_ttl"
+        await _ensure_index_resilient(
+            db.whatsapp_conversation_state,
+            keys=[("expires_at", 1)],
+            expireAfterSeconds=0,
+            name="convo_state_ttl",
         )
     except Exception as e:
-        logger.warning(f"run_whatsapp_startup_migrations: {e}")
+        logger.warning(f"whatsapp migration 5 (conversation state): {e}")
 
 
 # ==================== SPRINT 3 — PLAN QUERY PIPELINE ====================
@@ -41622,12 +42424,39 @@ async def startup_event():
     except Exception as _e:
         logger.error(f"pdf2image/poppler not available: {_e}. Annotation screenshots disabled.")
 
-    # Create indexes
-    await db.users.create_index("email", unique=True)
-    await db.workers.create_index("phone", unique=True, sparse=True)
-    await db.nfc_tags.create_index("tag_id", unique=True)
-    await db.subcontractors.create_index("email", unique=True)
-    await db.companies.create_index("name", unique=True)
+    # ── EVERY UNIQUE BUILD GOES THROUGH THE RESILIENT HELPER ───────────────
+    #
+    # These five were BARE AWAITS in an @app.on_event("startup") handler. A
+    # unique index whose collection already holds a duplicate raises E11000
+    # straight out of startup, and the API does not start AT ALL — a total
+    # outage, on a data condition, at the next restart, with no deploy having
+    # changed anything. Two accounts sharing an email, one phone typed onto two
+    # workers, one company name entered twice: every one of those is a thing a
+    # person can do through the product today, and any one of them was a
+    # company-wide outage waiting for a redeploy.
+    #
+    # THE NAMES ARE THE ONES MONGO WOULD HAVE GENERATED, and that is not
+    # cosmetic. `create_index("email", unique=True)` produces `email_1`. Naming
+    # it anything else here does not rename the live index — it asks for a
+    # SECOND index beside it, or trips an IndexOptionsConflict that makes the
+    # helper drop a live uniqueness constraint and rebuild it. Passing the
+    # default name makes this a no-op against every existing deployment.
+    await _ensure_index_resilient(
+        db.users, keys=[("email", 1)], name="email_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db.workers, keys=[("phone", 1)], name="phone_1",
+        unique=True, sparse=True,
+    )
+    await _ensure_index_resilient(
+        db.nfc_tags, keys=[("tag_id", 1)], name="tag_id_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db.subcontractors, keys=[("email", 1)], name="email_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db.companies, keys=[("name", 1)], name="name_1", unique=True,
+    )
     await db.checklists.create_index("company_id")
     await db.checklist_assignments.create_index("checklist_id")
     await db.checklist_assignments.create_index("project_id")
@@ -41660,8 +42489,12 @@ async def startup_event():
             await db.project_files.drop_index(_old_name)
     except Exception as _e:
         logger.warning(f"project_files unique index migration skipped: {_e}")
-    await db.project_files.create_index(
-        [("project_id", 1), ("dropbox_path", 1)],
+    # Same treatment, same name the migration above drops by — so the
+    # drop-then-rebuild pair still refers to one index and not two.
+    await _ensure_index_resilient(
+        db.project_files,
+        keys=[("project_id", 1), ("dropbox_path", 1)],
+        name="project_id_1_dropbox_path_1",
         unique=True,
         partialFilterExpression={"dropbox_path": {"$gt": ""}},
     )
@@ -41672,10 +42505,40 @@ async def startup_event():
     await db.projects.create_index([("company_id", 1), ("updated_at", -1)])
     await db.checkins.create_index([("company_id", 1), ("updated_at", -1)])
     await db.daily_logs.create_index([("company_id", 1), ("updated_at", -1)])
-    await db.daily_logs.create_index([("project_id", 1), ("date", 1)], unique=True, sparse=True)
+    await _ensure_index_resilient(
+        db.daily_logs,
+        keys=[("project_id", 1), ("date", 1)],
+        name="project_id_1_date_1",
+        unique=True, sparse=True,
+    )
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
     await db.logbooks.create_index([("project_id", 1), ("log_type", 1), ("date", -1)])
     await db.logbooks.create_index([("company_id", 1), ("date", -1)])
+    # THE END-OF-DAY FREEZE SWEEP'S OWN INDEX. It pages
+    # {log_type: $in, date: $lt} sorted (date, _id), and `logbooks` holds
+    # inline base64 -- a signature, and photos before the finalize purge. An
+    # unserved sort there is the 32MB in-memory sort limit, which is an outage
+    # this product has already had once. test_sorts_are_indexed catches it.
+    #
+    # THE SORT KEYS ARE THE PREFIX, and that is forced rather than chosen.
+    # This selector pins NOTHING by equality: `log_type` is an $in, `date` is
+    # an $lt, and both `is_locked` and `is_deleted` are $ne. find_unserved_sorts
+    # counts only `$eq` as a pin -- correctly, because an index leading on an
+    # $in would make Mongo merge-sort across one branch per log type, which is
+    # not sorted output from one scan. So (date, _id) leads, the $lt becomes a
+    # range on the leading key (an index range walked in sort order, which is
+    # the cheap case), and `_id` is the unique tie-break that makes skip-free
+    # paging correct.
+    #
+    # The key spec is a LITERAL on purpose: find_unserved_sorts.py resolves
+    # index declarations with an AST walk and cannot read a constant, so a
+    # named tuple here would drop this index out of the sweep's coverage
+    # silently -- the failure that guard exists to prevent.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("date", 1), ("_id", 1)],
+        name="logbooks_eod_sweep_by_type_date",
+    )
 
 	# Compound index for check-in duplicate prevention (critical at scale)
     await db.checkins.create_index(
@@ -41822,7 +42685,12 @@ async def startup_event():
     await db.whatsapp_groups.create_index("project_id")
     await db.whatsapp_messages.create_index([("project_id", 1), ("timestamp", -1)])
     await db.whatsapp_messages.create_index([("group_id", 1), ("created_at", -1)])
-    await db.whatsapp_contacts.create_index([("company_id", 1), ("phone", 1)], unique=True)
+    await _ensure_index_resilient(
+        db.whatsapp_contacts,
+        keys=[("company_id", 1), ("phone", 1)],
+        name="company_id_1_phone_1",
+        unique=True,
+    )
     await db.whatsapp_link_codes.create_index("expires_at", expireAfterSeconds=0)
 
     # Create owner account if doesn't exist
@@ -42047,6 +42915,33 @@ async def startup_event():
     # category) unique index) so a tick that overlaps with admin-
     # triggered runs is safe. Cron-driven, not interval-driven, so
     # DST shifts are handled by the timezone string.
+    # ── FINDING, 2026-09-03: FOUR STAGES UNDER ONE try. NOT FIXED HERE. ────
+    #
+    # The body below runs four independent stages under a single try/except:
+    #
+    #   1. run_missing_detector_for_all_projects
+    #   2. run_deficiency_detector_for_all_projects
+    #   3. sweep_stale_end_of_day_logs   -- the END-OF-DAY FREEZE
+    #   4. sweep_signature_ledger_gaps   -- the audit-trail reconciliation
+    #
+    # A throw anywhere in 1 or 2 SILENTLY DISABLES 3 AND 4. That is not a
+    # missing report: stage 3 is the freeze that seals yesterday's signed logs,
+    # and logbook locking depends on it. A detector crash -- on one malformed
+    # project, on one night -- leaves every stale signed log across every
+    # project unfrozen and editable, and the only trace is one line reading
+    # "[v2_logbook] nightly tick failed", which reads like one thing failed.
+    #
+    # It is the same shape as run_whatsapp_startup_migrations' shared try,
+    # which this change split. THE FIX IS THE SAME: one try per stage, each
+    # naming itself, so a failing detector cannot take the freeze down with it.
+    #
+    # NOT MADE HERE BECAUSE IT CROSSES REGIONS. Stages 3 and 4 are the sweep
+    # region and belong to another worker; sequencing them under separate
+    # excepts changes when each is reached. Described rather than done: wrap
+    # each of the four awaits in its own try/except logging
+    # "[v2_logbook] <stage> failed", keep the existing order (the freeze must
+    # still run before the ledger reconciliation, per the note below), and
+    # leave the outer handler as a last-resort net.
     async def _logbook_nightly_tick():
         try:
             from lib.logbook.missing_detector import run_missing_detector_for_all_projects
@@ -43032,6 +43927,9 @@ async def startup_event():
     await run_whatsapp_startup_migrations()
     # Separate await, so a failure in the WhatsApp migrations cannot skip it.
     await ensure_dropbox_sync_indexes()
+    # Also separate, and it never belonged inside the WhatsApp runner at all —
+    # document_page_index is the plan-query pipeline. See its docstring.
+    await ensure_document_page_indexes()
 
     # Account activation gating — backfill existing users to "approved" so the
     # new pending-by-default gate never locks out current accounts.

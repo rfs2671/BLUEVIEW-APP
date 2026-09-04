@@ -153,7 +153,13 @@ class TheSortHasAnIndex(unittest.TestCase):
     def test_is_deleted_is_not_in_the_index_key(self):
         """A $ne before the sort key breaks the ordering the sort relies on."""
         m = re.search(
-            r'keys=\[(.*?)\],\s*\n\s*name="workers_by_company_name"',
+            # (?!keys=\[) forbids the capture from crossing ANOTHER
+            # declaration, so this binds to the keys= immediately above the
+            # name instead of to the first one in the file. It matched the
+            # workers index before only because nothing earlier in server.py
+            # spelled `keys=[`; the moment one did, this captured thousands of
+            # unrelated lines and the assertion below became about them.
+            r'keys=\[((?:(?!keys=\[)[\s\S])*?)\],\s*\n\s*name="workers_by_company_name"',
             self.src, re.S,
         )
         self.assertIsNotNone(m)

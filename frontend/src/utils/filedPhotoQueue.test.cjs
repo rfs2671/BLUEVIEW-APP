@@ -268,11 +268,25 @@ const PHOTO = {
     'AND THE DRAIN MINTS NOTHING. It replays the ids the queue holds, which is '
     + 'the client\'s entire share of the idempotency contract');
   const serverSrc = LF(path.join(REPO, 'backend', 'server.py'));
-  ok(/photos\.original_r2_key.*\$ne.*r2_key/s.test(
-    serverSrc.slice(serverSrc.indexOf('async def append_activity_photo'),
-      serverSrc.indexOf('async def append_activity_photo') + 9000)),
-  'VERIFIED, NOT ASSUMED: the append route\'s update carries the $elemMatch '
+  // THE SLICE ENDS AT THE FUNCTION, NOT AT A CHARACTER COUNT. This used to take
+  // a flat 9000 characters from the `def`, which is a window that silently
+  // narrows every time the route gains a line — and it did: the PHOTO_WINDOW_
+  // CLOSED gate and its reasoning pushed the $elemMatch past 9000, so a test
+  // about the precondition began reporting on the size of a comment. Bounding
+  // it on the next route decorator makes the extraction mean what it says.
+  const appendBody = (() => {
+    const i = serverSrc.indexOf('async def append_activity_photo');
+    if (i < 0) return '';
+    const j = serverSrc.indexOf('\n@api_router.', i);
+    return serverSrc.slice(i, j < 0 ? undefined : j);
+  })();
+  ok(appendBody.length > 400, 'POSITIVE CONTROL: the append route was extracted');
+  ok(/photos\.original_r2_key.*\$ne.*r2_key/s.test(appendBody),
+    'VERIFIED, NOT ASSUMED: the append route\'s update carries the $elemMatch '
     + 'precondition that refuses a photo already on the row');
+  ok(/PHOTO_WINDOW_CLOSED/.test(appendBody),
+    'and it refuses after the log\'s day has ended — the 4xx that makes the '
+    + 'queue STOP retrying rather than hold the photograph forever');
   ok(/_logbook_capture_photo_r2_key\(project_id, activity_id, photo_id\)/.test(serverSrc),
     'and the R2 key is a pure function of (project, activity, photo)');
 
