@@ -2855,6 +2855,10 @@ from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
     OSHA_TYPES,
 )
 
+# The same rule the COI path has always had, now with one address so the two
+# OCR paths cannot disagree about what "null" means. See lib/ocr_text.py.
+from lib.ocr_text import norm_ocr_str  # noqa: E402
+
 
 
 # ══ COLOUR-FIRST CARD CLASSIFICATION ════════════════════════════════════════
@@ -13536,7 +13540,104 @@ async def get_checkin_info(project_id: str, tag_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-@api_router.post("/checkin/upload-osha")
+class OshaCardOcrResult(BaseModel):
+    """The shape POST /checkin/upload-osha is allowed to return.
+
+    IT HAD NO response_model AT ALL. The handler did
+
+        extracted = json_mod.loads(text)
+        return extracted
+
+    so whatever the vision model emitted became the API's response verbatim —
+    every key, every type, unvalidated. A model that answered `"name": "null"`
+    put the four-character string on the wire, into `oshaData` on the gate
+    page, into `osha_data` on the worker document, and onto filed compliance
+    PDFs as a worker called "null". Worker 6a96c5ff6ee1b3362d156e6c carries it
+    in two places today.
+
+    TWO SEPARATE PROTECTIONS, AND THEY FIX DIFFERENT HALVES:
+
+      * norm_ocr_str, applied below, turns the model's "null"/"N/A"/"" into a
+        real None BEFORE it is ever seen. That is the defect.
+      * this model pins the SHAPE — the fields, their types, and the fact that
+        a key nobody declared does not reach a caller. That is the reason the
+        defect could exist unnoticed: nothing anywhere stated what this
+        endpoint returns, so nothing could be wrong.
+
+    EVERY FIELD IS OPTIONAL AND NONE IS A REFUSAL. An unreadable field is the
+    normal case at a jobsite gate — glare, a sleeve, a bent card — and a
+    validation error here would turn a partly-read card into a 502 for a
+    worker standing at a turnstile. The gate's rule is that a config or tooling
+    problem never stops a man working; this model is written to that rule.
+
+    `box_2d` IS IN THE MODEL BECAUSE THE PAGE USES IT. checkin.html crops the
+    on-screen preview from it. A response_model silently drops undeclared keys,
+    so omitting it here would have removed the crop with nothing to read in a
+    diff — the shape of defect this model exists to prevent, introduced by the
+    model itself.
+    """
+    name: Optional[str] = None
+    sst_number: Optional[str] = None
+    card_type: Optional[str] = None
+    card_class: Optional[str] = None
+    issued: Optional[str] = None
+    expiration: Optional[str] = None
+    card_dominant_color: Optional[str] = None
+    card_color_confidence: Optional[str] = None
+    card_color_conditions: List[str] = Field(default_factory=list)
+    box_2d: Optional[List[float]] = None
+    # Present only on the JSONDecodeError path, where the model returned
+    # something that is not JSON and the raw text is the only evidence of what
+    # went wrong. Never populated on a successful parse.
+    raw_text: Optional[str] = None
+
+
+def _osha_ocr_payload(data: dict) -> "OshaCardOcrResult":
+    """The model's JSON, normalised once, at the boundary.
+
+    Three consumers each ask "did the model read this field" in their own way —
+    `name_ok` in build_worker_certifications, `ocrMissingCriticalFields` on the
+    gate page, and the identity normalisers that dedupe workers. All three are
+    correct against a real value and all three are wrong against the string
+    "null". Fixing them one at a time leaves a fourth place to get it wrong.
+
+    So it is fixed HERE, where the answer is parsed, and every reader downstream
+    receives a real None. See lib/ocr_text.py.
+    """
+    conditions = data.get("card_color_conditions")
+    if not isinstance(conditions, list):
+        conditions = []
+    # NORMALISED TOO, and this is not over-thoroughness: a list carrying the
+    # string "null" would put it in front of the same tests as the scalars.
+    conditions = [c for c in (norm_ocr_str(x) for x in conditions) if c]
+
+    box = data.get("box_2d")
+    coerced_box = None
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        try:
+            coerced_box = [float(v) for v in box]
+        except (TypeError, ValueError):
+            # A box that will not parse is a display convenience that failed,
+            # never a reason to fail the read. checkin.html already treats a
+            # missing box as "show the uncropped frame".
+            coerced_box = None
+
+    return OshaCardOcrResult(
+        name=norm_ocr_str(data.get("name")),
+        sst_number=norm_ocr_str(data.get("sst_number")),
+        card_type=norm_ocr_str(data.get("card_type")),
+        card_class=norm_ocr_str(data.get("card_class")),
+        issued=norm_ocr_str(data.get("issued")),
+        expiration=norm_ocr_str(data.get("expiration")),
+        card_dominant_color=norm_ocr_str(data.get("card_dominant_color")),
+        card_color_confidence=norm_ocr_str(data.get("card_color_confidence")),
+        card_color_conditions=conditions,
+        box_2d=coerced_box,
+        raw_text=norm_ocr_str(data.get("raw_text")),
+    )
+
+
+@api_router.post("/checkin/upload-osha", response_model=OshaCardOcrResult)
 async def upload_osha_card(file_data: dict, request: Request):
     """OCR an OSHA/SST card photo using the Qwen2.5-VL vision model.
 
@@ -13673,21 +13774,18 @@ async def upload_osha_card(file_data: dict, request: Request):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
 
         extracted = json_mod.loads(text)
-        return extracted
+        # NOT `return extracted`. See _osha_ocr_payload and lib/ocr_text.py:
+        # the model's own answer for "I could not read this" is sometimes the
+        # STRING "null", and every presence test between here and a filed PDF
+        # reads that as a value.
+        if not isinstance(extracted, dict):
+            # A JSON array or scalar parses fine and is not a card reading.
+            # Same disposition as unparseable text: nothing was read.
+            return _osha_ocr_payload({"raw_text": text})
+        return _osha_ocr_payload(extracted)
 
     except json_mod.JSONDecodeError:
-        return {
-            "name":       None,
-            "sst_number": None,
-            "card_type":  None,
-            "card_class": None,
-            "card_dominant_color": None,
-            "card_color_confidence": None,
-            "card_color_conditions": [],
-            "issued":     None,
-            "expiration": None,
-            "raw_text":   text,
-        }
+        return _osha_ocr_payload({"raw_text": text})
     except HTTPException:
         raise
     except Exception as e:
