@@ -17,6 +17,7 @@ import { registerRateLimitToast } from '../src/utils/api';
 import { setupDraftAutoSync } from '../src/utils/draftSync';
 import { setupFiledPhotoAutoDrain } from '../src/utils/filedPhotoQueue';
 import { setupSiteManifestSync } from '../src/utils/siteManifestStore';
+import { setupAdminPlanPrefetch } from '../src/utils/adminPlanPrefetch';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
@@ -309,6 +310,39 @@ function SiteManifestSync() {
   return null;
 }
 
+/**
+ * THE SAME PROMISE, ON THE OTHER DEVICE THAT CAN OPEN PLANS.
+ *
+ * An admin's phone held nothing: it cached a plan at the moment he tapped it,
+ * which is the "open it once while online" instruction the ruling removes. The
+ * plans an inspector asks about are the ones nobody opened.
+ *
+ * NOT THE CP. He does not see plans, so he is out of scope and this must not
+ * spend his battery or his data — hence the role test rather than merely
+ * "not a site device".
+ *
+ * MOUNTED ONCE, NOT KEYED ON A PROJECT. Unlike the tablet, which syncs the one
+ * job it is bolted to, this walks every assigned project on each trigger and
+ * reads the list at fire time — so a project assigned this afternoon is picked
+ * up on the next foreground with no remount.
+ */
+const PLAN_PREFETCH_ROLES = new Set(['admin', 'owner', 'superintendent']);
+
+function AdminPlanPrefetch() {
+  const { user, siteMode, isAuthenticated } = useAuth();
+  const role = String(user?.role || '').trim().toLowerCase();
+  const enabled = !!isAuthenticated && !siteMode && PLAN_PREFETCH_ROLES.has(role);
+
+  useEffect(() => {
+    // `enabled` is also read at fire time inside the hook, so a sign-out stops
+    // a walk that is already scheduled rather than only preventing the next.
+    const stop = setupAdminPlanPrefetch(() => enabled);
+    return () => { if (typeof stop === 'function') stop(); };
+  }, [enabled]);
+
+  return null;
+}
+
 function AppShell() {
   const { isDark, themeKey } = useTheme();
   const toast = useToast();
@@ -367,6 +401,7 @@ function AppShell() {
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <RouteGuard />
       <SiteManifestSync />
+      <AdminPlanPrefetch />
       {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
     </View>
   );

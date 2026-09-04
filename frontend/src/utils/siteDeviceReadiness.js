@@ -267,9 +267,22 @@ export function readinessFrom({
       // NOT `filling`. A device that has stopped is not filling, and every
       // reader that asks this question is asking whether to wait.
       filling: false,
-      shortBytes: Math.max(0, Number(shortfall.needed) - Number(shortfall.free)) || null,
+      // THE REMAINING REQUIREMENT, not the whole set. Once a run has filled
+      // what fits, what a person still has to free is the sum of what it
+      // SKIPPED. `needed - free` was right when the run was all-or-nothing and
+      // would now overstate it, telling him to free space he no longer needs.
+      // Falls back for a record written before partial filling existed.
+      shortBytes: Number(shortfall.shortBy)
+        || Math.max(0, Number(shortfall.needed) - Number(shortfall.free))
+        || null,
       neededBytes: Number(shortfall.needed) || null,
       freeBytes: Number(shortfall.free) || null,
+      // The rows the plan list marks. Empty on a record written before the
+      // names were kept — the device is short and cannot say which, which is
+      // what it knew.
+      absentIds: Array.isArray(shortfall.absentIds) ? shortfall.absentIds : [],
+      absentTotal: Number(shortfall.absentTotal) || 0,
+      absentTruncated: shortfall.absentTruncated === true,
       reason: 'no-space',
     };
   }

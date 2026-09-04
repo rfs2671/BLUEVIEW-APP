@@ -2,6 +2,56 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MEDIUM] A build that could not reach its subject passed as a build, and
+  `tail -2` is what hid it. Twelfth instance of the class.**
+  Running `expo export` in a second git worktree produced a **662-module,
+  986 kB** bundle instead of the real **3498-module, 6.33 MB** one. Every route
+  then failed mount-smoke with `pageerror: No routes found` — the app's own
+  `app/` directory was not in the bundle at all.
+
+  **The cause is the `node_modules` junction the worktree recipe depends on.**
+  Worktrees have no `node_modules`, so the recipe junctions the main checkout's
+  (see the mount-smoke note in memory). Metro's cache lives under the OS temp
+  directory and is keyed on a project root that resolves THROUGH that junction,
+  so two worktrees share one cache entry and the second one inherits a
+  resolution built for the first. `TMPDIR`/`TEMP`/`TMP` pointed at a scratch
+  directory fixes it:
+
+      TMPDIR=<scratch> TEMP=<scratch> TMP=<scratch> npx expo export --platform web --output-dir dist
+
+  **WHY IT SURVIVED A ROUND OF VERIFICATION.** The export and the smoke run were
+  chained and piped through `tail -2`, which showed the last two ROUTE lines and
+  not the summary. A 0/74 run and a 74/74 run look identical through that pipe.
+  The failure was found only by a control run — stashing the change and
+  re-exporting — which proved the broken bundle predated it.
+
+  **THE RULE.** Never truncate the output of a gate. `tail` on a build or a test
+  run is the same move as a green suite that never executed the file it names,
+  and this codebase has now recorded twelve of those. If output volume is the
+  problem, `grep` for the summary line — which asserts the summary EXISTS —
+  rather than taking the last N lines, which asserts nothing.
+
+- **[LOW] The 20 `index_version: 1` plan pages need a re-index before their
+  projects go live — scheduled, not urgent.**
+  Coverage measured 2026-09-04: `document_page_index` holds 267 v2 pages with
+  100% `page_jpeg_r2_key` coverage (164 of them 588 Thomas), and **20 v1 pages
+  on other projects with none**. Nothing migrates them; `index_version` is
+  stamped and never swept, so they stay v1 until someone re-indexes those files.
+
+  **They are slow, not broken.** Every reader that wants a page image degrades
+  correctly: `_fetch_page_jpeg` falls back to rendering from the source PDF, the
+  thumbnail and base-layer ladders bottom out on that same re-render, and the
+  manifest's `t` flag is simply absent so a device does not prefetch a
+  thumbnail it cannot get.
+
+  **The scale argument, which is why this is recorded rather than ignored.** On
+  a v1 file EVERY thumbnail and base-layer request pays a full poppler render of
+  a 36x48 sheet at 250 DPI, with no cache in front of it. That is seconds of
+  backend CPU per request. Fine for 20 pages on dormant projects; not fine if
+  one of those projects goes live and a plan list requests a thumbnail per row.
+
+  **Do it before those projects go live, not now.**
+
 - **[LOW] Two folder-grouping implementations now exist, and the kiosk keeping
   its own was a decision, not drift.**
   `src/utils/dropboxTree.js` is the shared one, lifted out of

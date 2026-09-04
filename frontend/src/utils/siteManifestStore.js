@@ -124,12 +124,36 @@ export function spaceShortfallKey(projectId) {
  * can act on. Never throws: a device that cannot write this is a device that
  * reports the old state, which is the ordinary failure everywhere else here.
  */
-export async function recordSpaceShortfall(projectId, { needed, free } = {}) {
+export async function recordSpaceShortfall(
+  projectId, { needed, free, shortBy, absentIds } = {},
+) {
   if (!projectId) return false;
+  const ids = Array.isArray(absentIds) ? absentIds.map(String) : [];
   try {
     await AsyncStorage.setItem(spaceShortfallKey(projectId), JSON.stringify({
       needed: Number(needed) || 0,
       free: Number(free) || 0,
+      // How much MORE room is needed to hold the rest. Distinct from
+      // `needed - free`: once a run has filled what fits, the remaining
+      // requirement is the sum of what it skipped, not the whole set.
+      shortBy: Number(shortBy) || 0,
+      // ── THE NAMES, CAPPED ────────────────────────────────────────────
+      //
+      // The plan list marks these rows so a man learns a sheet is missing from
+      // the list rather than from a spinner. Capped because this is one
+      // AsyncStorage value on a device whose 6 MB ceiling this module already
+      // documents at length: a pathological case (a device that can hold
+      // almost nothing, against a 400-sheet set) must not turn a diagnostic
+      // into the thing that breaks the store.
+      //
+      // TRUNCATION IS DECLARED, never silent. A list that says it is partial
+      // lets the caller mark what it can and say the rest are unknown; a list
+      // that quietly stopped at 500 would have the caller render 400 sheets as
+      // held when they are not, which is the failure this whole feature is
+      // about.
+      absentIds: ids.slice(0, ABSENT_ID_CAP),
+      absentTotal: ids.length,
+      absentTruncated: ids.length > ABSENT_ID_CAP,
       at: Date.now(),
     }));
     return true;
@@ -168,7 +192,21 @@ export async function readSpaceShortfall(projectId) {
     const needed = Number(p.needed);
     const free = Number(p.free);
     if (!Number.isFinite(needed) || !Number.isFinite(free)) return null;
-    return { needed, free, at: Number(p.at) || null };
+    const ids = Array.isArray(p.absentIds) ? p.absentIds.map(String) : [];
+    return {
+      needed,
+      free,
+      // A RECORD WRITTEN BEFORE THESE FIELDS EXISTED still reads. It reports a
+      // shortfall with no names, which is exactly what it knew — the caller
+      // marks nothing and says the device is short, which was the behaviour
+      // before per-row marking and is the honest degradation.
+      shortBy: Number.isFinite(Number(p.shortBy)) ? Number(p.shortBy) : null,
+      absentIds: ids,
+      absentTotal: Number.isFinite(Number(p.absentTotal))
+        ? Number(p.absentTotal) : ids.length,
+      absentTruncated: p.absentTruncated === true,
+      at: Number(p.at) || null,
+    };
   } catch (_e) {
     return null;
   }
@@ -181,12 +219,27 @@ const DOWNLOADABLE = new Set(['pdf']);
 
 // Leave the OS room to breathe. A device driven to zero free bytes fails in
 // ways that are not this module's to recover from.
-const DISK_RESERVE_BYTES = 200 * 1024 * 1024;
+//
+// TWO RESERVES, BECAUSE THEY ARE TWO MACHINES. The gate tablet is dedicated:
+// it holds this project and nothing else, and 200 MB is a sensible floor for
+// an appliance. A personal phone is not an appliance — it holds a camera roll,
+// messages and everything else its owner needs that day, and a plan set that
+// consumes its last 200 MB does not degrade the plan viewer, it breaks the
+// phone. The caller says which machine it is; neither value is a default that
+// can be reached by accident.
+export const DISK_RESERVE_SITE_BYTES = 200 * 1024 * 1024;
+export const DISK_RESERVE_PHONE_BYTES = 1024 * 1024 * 1024;
+const DISK_RESERVE_BYTES = DISK_RESERVE_SITE_BYTES;
 
 // Bounded so one run cannot occupy the device for ever. A run is RESUMABLE by
 // construction — anything already on disk is skipped in a single directory
 // read — so a first fill simply completes across the next few polls.
 const DOWNLOADS_PER_RUN = 500;
+
+// How many absent ids are kept for the plan list to mark. See the note in
+// recordSpaceShortfall: this is a diagnostic riding in one AsyncStorage
+// value, and it must never be the thing that fills the store.
+const ABSENT_ID_CAP = 500;
 
 // A server that never says has_more:false is a bug, and an unbounded walk
 // against one never returns. Stopping short reports INCOMPLETE, which by the
@@ -702,36 +755,78 @@ export async function syncSiteManifest(projectId, opts = {}) {
     // mean refusing to fill a tablet that had room, which is the worse error.
     const needed = wanted.reduce((n, r) => n + (Number(r.s) || 0), 0);
     const free = await freeDiskBytes();
-    if (free !== null && needed > Math.max(0, free - DISK_RESERVE_BYTES)) {
-      // ── THE REFUSAL IS RECORDED, NOT JUST RETURNED ────────────────────
-      //
-      // This return value goes nowhere. setupSiteManifestSync calls
-      // `Promise.resolve(run(pid)).catch(() => {})` and discards what it
-      // resolves to, so before this write the ONLY consumer of `no-space` in
-      // the whole app was a unit test.
-      //
-      // WHAT THAT COST. Readiness computes `filling` from a directory read —
-      // saved < expected — and never sees this result. A tablet that will
-      // NEVER download the last four sheets therefore reported "83 of 87 …
-      // Still saving this project to the tablet", indefinitely. That is worse
-      // than reporting itself ready: it tells a superintendent to wait for
-      // something that is not coming, and he waits, and then he walks into a
-      // cellar. The model had two facts to tell apart — NOT YET and NEVER —
-      // and words for only one of them.
-      await recordSpaceShortfall(projectId, { needed, free });
-      return {
-        ok: true, complete: manifest.complete, reason: 'no-space', swept,
-        downloaded: 0, needed, free,
-        files: nextFiles.length, logbooks: nextLogs.length,
-      };
+    const reserve = Number.isFinite(opts.reserveBytes)
+      ? opts.reserveBytes : DISK_RESERVE_BYTES;
+    const budget = free === null ? null : Math.max(0, free - reserve);
+
+    // ── WHAT FITS GOES ON, AND WHAT DOES NOT IS NAMED ──────────────────────
+    //
+    // AN ADMIN IN A BASEMENT WITH 80 OF 87 SHEETS IS BETTER OFF THAN ONE WITH
+    // NONE — provided the list names the seven he does not have. Refusing the
+    // whole run was the honest half of that; it was still the wrong half,
+    // because it threw away eighty sheets the device had room for.
+    //
+    // The other half is per-row marking on the plan list, and it is why
+    // `absentIds` is returned rather than merely counted: without the names,
+    // "download what fits" is the same dishonesty in a smaller form — he
+    // learns a sheet is missing from a spinner rather than from the list.
+    //
+    // ORDERED, SO "WHAT FITS" IS REPRODUCIBLE. `wanted` is manifest order,
+    // which is record id — stable across runs, so two devices with the same
+    // free space hold the same subset and a device that gains space fills in
+    // the same direction rather than reshuffling.
+    let plan = wanted;
+    let absentIds = [];
+    let shortBy = 0;
+    if (budget !== null && needed > budget) {
+      plan = [];
+      let spent = 0;
+      for (const r of wanted) {
+        const size = Number(r.s) || 0;
+        // A row with no size (a logbook PDF, rendered on request) cannot be
+        // budgeted for. It rides along: the reserve is what covers it, and
+        // excluding it would drop every logbook from a device that is merely
+        // short on plans.
+        if (size === 0 || spent + size <= budget) {
+          plan.push(r);
+          spent += size;
+        } else {
+          absentIds.push(r.id);
+          shortBy += size;
+        }
+      }
     }
-    // ROOM AGAIN. Cleared on the same pass that proves it, so a device that
-    // has space freed on it stops accusing itself without waiting for anything
-    // to be downloaded.
-    await clearSpaceShortfall(projectId);
+
+    // ── THE SHORTFALL IS RECORDED, NOT JUST RETURNED ───────────────────────
+    //
+    // This run's return value goes nowhere. setupSiteManifestSync calls
+    // `Promise.resolve(run(pid)).catch(() => {})` and discards what it
+    // resolves to, so before this write the ONLY consumer of a space refusal
+    // in the whole app was a unit test.
+    //
+    // WHAT THAT COST. Readiness computes `filling` from a directory read —
+    // saved < expected — and never sees this result. A device that will NEVER
+    // download the last four sheets therefore reported "83 of 87 … Still
+    // saving", indefinitely: an instruction to wait for something that is not
+    // coming. NOT YET and NEVER are different facts and there were words for
+    // only one of them.
+    //
+    // `absentIds` IS THE HALF THAT MAKES PARTIAL FILLING HONEST. A count says
+    // the device is short; the names are what let the plan list mark the seven
+    // rows he does not have, so he learns it from the list rather than from a
+    // spinner in a cellar.
+    if (absentIds.length > 0) {
+      await recordSpaceShortfall(projectId, {
+        needed, free, shortBy, absentIds,
+      });
+    } else {
+      // ROOM. Cleared on the pass that PROVES it, so a device that has space
+      // freed on it stops accusing itself without waiting for a download.
+      await clearSpaceShortfall(projectId);
+    }
 
     let downloaded = 0;
-    for (const r of wanted.slice(0, opts.downloadLimit || DOWNLOADS_PER_RUN)) {
+    for (const r of plan.slice(0, opts.downloadLimit || DOWNLOADS_PER_RUN)) {
       const got = await ensureCachedDocFile({
         fileId: r.id, cacheVersion: r.cache_version, remoteUrl: r.url,
       });
@@ -741,6 +836,14 @@ export async function syncSiteManifest(projectId, opts = {}) {
     return {
       ok: true, complete: manifest.complete, swept, downloaded,
       files: nextFiles.length, logbooks: nextLogs.length,
+      // `no-space` ONLY WHEN NOTHING FIT, `partial` when some did. A caller
+      // that treats "held 80 of 87" as the same event as "held none" would be
+      // making exactly the judgement this change exists to stop making.
+      spaceReason: absentIds.length === 0
+        ? null : (plan.length === 0 ? 'no-space' : 'partial'),
+      absent: absentIds.length,
+      needed,
+      free,
       // WHETHER THE LISTS ACTUALLY LANDED, reported rather than assumed. A run
       // that downloaded everything and stored no list is not a successful run,
       // and a caller reading only `ok` would never learn the difference.
