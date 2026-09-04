@@ -61,14 +61,39 @@ def _log(_id, log_type="daily_jobsite", date="2026-08-17", sig=None, **over):
     return doc
 
 
+def _sortable(v):
+    """A TOTAL order over the values these documents actually carry.
+
+    `date` is a string and `_id` may be a string or an ObjectId, and Python
+    refuses to compare across types. Mongo would sort by type bracket and then
+    by value; this keeps the same two properties that matter to a paged walk —
+    it is total, and it is stable across calls.
+    """
+    return (v is None, type(v).__name__, str(v))
+
+
 class _Coll:
     """Applies the sweep's own filter, so a test cannot pass by the fake being
-    more permissive than Mongo."""
+    more permissive than Mongo.
+
+    AND ITS OWN LIMIT. `to_list(n)` used to ignore `n` and hand back every
+    matching row, which is the one way this fake WAS more permissive than
+    Mongo — and it hid the exact defect the sweep shipped with: an unsorted
+    `to_list(1000)` over a selector that stranded rows never leave. Every
+    truncation test in this file would have passed against a driver that
+    silently dropped the 1001st document. It honours `n`, `skip` and `limit`
+    now, so a capped read is visible as a capped read.
+    """
 
     def __init__(self, docs=None):
         self.docs = docs or []
         self.updates = []
         self.inserted = []
+        # What the sweep asked to be sorted by, in the order it asked. Recorded
+        # rather than asserted here so a test can name the sort key.
+        self.sorts = []
+        # (skip, limit) per page, so the paging walk is observable.
+        self.pages = []
 
     def find(self, query=None):
         q = query or {}
@@ -87,10 +112,42 @@ class _Coll:
             return True
 
         rows = [d for d in self.docs if keep(d)]
+        coll = self
 
         class _Cur:
+            def __init__(self):
+                self.rows = rows
+                self.n_skip = 0
+                self.n_limit = None
+
+            def sort(self, spec):
+                # Motor/pymongo's list-of-pairs form. Applied right to left so
+                # the FIRST pair is the primary key — the same precedence Mongo
+                # gives it.
+                coll.sorts.append(list(spec))
+                for key, direction in reversed(list(spec)):
+                    self.rows = sorted(
+                        self.rows,
+                        key=lambda d, _k=key: _sortable(d.get(_k)),
+                        reverse=(direction < 0),
+                    )
+                return self
+
+            def skip(self, n):
+                self.n_skip = int(n or 0)
+                return self
+
+            def limit(self, n):
+                self.n_limit = int(n or 0) or None
+                return self
+
             async def to_list(self, n=None):
-                return rows
+                cap = self.n_limit
+                if n is not None:
+                    cap = n if cap is None else min(cap, n)
+                coll.pages.append((self.n_skip, cap))
+                out = self.rows[self.n_skip:]
+                return out if cap is None else out[:cap]
         return _Cur()
 
     async def update_one(self, q, update):
@@ -259,6 +316,163 @@ class AnUnsignedStaleLogIsFlaggedNeverSealed(unittest.TestCase):
         _run(db)
         _run(db)
         self.assertEqual(len(db.compliance_alerts.inserted), 1)
+
+
+class AResolvedAlertMustBeContradictableTomorrow(unittest.TestCase):
+    """THE DEDUPE KEY OMITTED `resolved`, SO RESOLVING DESTROYED THE RECORD.
+
+    (project, log_type, date) alone matches a RESOLVED row as readily as an
+    open one. An admin who resolved the alert — the one action the screen
+    offers — permanently suppressed it while the log stayed stranded and
+    stayed unfrozen. Resolving destroyed the only surviving statement that the
+    log needed fixing.
+
+    THE SELECTOR RE-VERIFIES THE CONDITION EVERY NIGHT, which is what makes
+    re-raising honest rather than noise: this sweep only reaches a log that is
+    STILL unaffirmed and STILL unfrozen. The moment the CP affirms, the log is
+    frozen and leaves the selector for good, and no further alert is raised. So
+    a re-raised row is not a duplicate of a handled fact — it is a fresh
+    statement that the fact has not changed.
+
+    The same rule is already written a few thousand lines down for
+    worker_cert_expiring, with its reasoning: "without it, an admin who
+    resolves an alert ... gets a fresh one that same night, and 'resolved'
+    decays into 'cleared for one night'". THERE the suppression test is the
+    expiry date, because the alert's condition (30 days out) does not change
+    when the admin acts. HERE the condition is the log's own state, and the
+    admin resolving the row does not change it.
+    """
+
+    def test_a_resolved_alert_does_not_suppress_a_still_stranded_log(self):
+        db = _DB([_log("a", sig=None)])
+        _run(db)
+        self.assertEqual(len(db.compliance_alerts.inserted), 1)
+        # The one action the admin screen offers.
+        db.compliance_alerts.inserted[0]["resolved"] = True
+        _run(db)
+        self.assertEqual(
+            len(db.compliance_alerts.inserted), 2,
+            "resolving must not be able to erase a log that is still stranded",
+        )
+        self.assertIs(db.compliance_alerts.inserted[1]["resolved"], False)
+
+    def test_the_re_raised_row_is_then_deduped_like_any_other(self):
+        """One resolve, one new row — not one per night thereafter."""
+        db = _DB([_log("a", sig=None)])
+        _run(db)
+        db.compliance_alerts.inserted[0]["resolved"] = True
+        _run(db)
+        _run(db)
+        _run(db)
+        self.assertEqual(len(db.compliance_alerts.inserted), 2)
+
+    def test_the_dedupe_query_names_resolved(self):
+        """Asserted on the QUERY as well as the behaviour: the fake dedupes on
+        equality, so a future widening that matched resolved rows again would
+        have to change this line too."""
+        db = _DB([_log("a", sig=None)])
+        seen = []
+        real = db.compliance_alerts.find_one
+
+        async def spy(q=None, **k):
+            seen.append(q)
+            return await real(q, **k)
+        db.compliance_alerts.find_one = spy
+        _run(db)
+        self.assertTrue(seen)
+        self.assertIs(seen[0].get("resolved"), False)
+
+
+class ItPagesRatherThanTruncating(unittest.TestCase):
+    """A TIME BOMB WITH NO SYMPTOM.
+
+    The read was `cursor.to_list(1000)` — UNSORTED, and capped. A log that
+    fails the per-document affirmed test is flagged and LEFT IN PLACE, so it
+    matches the selector again the next night, and the night after, forever.
+    Sixty-five such rows exist today.
+
+    At a thousand accumulated strandings the cap is reached by stranded rows
+    alone, and correctly signed logs stop being frozen. Nothing raises, nothing
+    logs, the job reports success, and end-of-day logs simply stop locking.
+
+    THE SORT IS OLDEST FIRST — `date` ascending, `_id` ascending to break the
+    ties, which is what makes it a TOTAL order and therefore a page boundary
+    that means something. Two reasons for the direction: the oldest stale log
+    has been unfrozen longest and is the one nearest a records request, and if
+    a walk is ever cut short — the page ceiling below, a crash, a restart —
+    the documents it did not reach are the newest, which are the least exposed
+    and are re-swept the following night anyway.
+    """
+
+    def test_a_thousand_signed_logs_do_not_stop_the_walk(self):
+        db = _DB([_log(f"s{i:05d}", sig=AFFIRMED) for i in range(1200)])
+        self.assertEqual(_run(db)["frozen"], 1200)
+
+    def test_stranded_rows_cannot_crowd_out_a_signed_log(self):
+        """THE FAILURE ITSELF. A thousand stranded rows are older than
+        yesterday's signed narratives — they accumulated — so they sit at the
+        head of the walk under ANY honest ordering. Only exhausting the pages
+        reaches the signed ones behind them.
+
+        Pre-fix this froze 0 of 5 and reported success."""
+        stranded = [_log(f"u{i:05d}", date="2026-07-01", sig=EMPTY_SIG)
+                    for i in range(1000)]
+        signed = [_log(f"s{i}", date="2026-08-17", sig=AFFIRMED) for i in range(5)]
+        db = _DB(stranded + signed)
+        out = _run(db)
+        self.assertEqual(out["unsigned"], 1000)
+        self.assertEqual(
+            out["frozen"], 5,
+            "a signed log must be frozen no matter how many stranded rows "
+            "precede it",
+        )
+
+    def test_it_sorts_oldest_first_on_a_total_order(self):
+        db = _DB([_log("a", sig=AFFIRMED)])
+        _run(db)
+        self.assertTrue(db.logbooks.sorts, "the read is sorted")
+        self.assertEqual(db.logbooks.sorts[0], [("date", 1), ("_id", 1)])
+
+    def test_every_page_is_bounded(self):
+        """Paging, not an unbounded slurp: a nightly job that materialised
+        every stale log at once would be one OOM away from the same silence."""
+        db = _DB([_log(f"s{i:05d}", sig=AFFIRMED) for i in range(1200)])
+        _run(db)
+        self.assertTrue(db.logbooks.pages)
+        for skip, cap in db.logbooks.pages:
+            self.assertIsNotNone(cap, "a page with no limit is not a page")
+            self.assertLessEqual(cap, S._EOD_SWEEP_PAGE)
+
+    def test_the_walk_terminates_when_nothing_can_be_frozen(self):
+        """THE GUARD AGAINST RUNNING FOREVER, and the reason it is needed: a
+        stranded row does not leave the selector, so a walk that re-read from
+        the start would re-read the same page forever. The offset carries past
+        exactly the documents left behind, so each page visits documents no
+        page has visited, and the walk ends after ceil(N / page) reads."""
+        db = _DB([_log(f"u{i:04d}", sig=EMPTY_SIG) for i in range(1100)])
+        out = _run(db)
+        self.assertEqual(out["unsigned"], 1100)
+        self.assertEqual(out["frozen"], 0)
+        self.assertLessEqual(len(db.logbooks.pages), 1100 // S._EOD_SWEEP_PAGE + 2)
+
+    def test_a_page_ceiling_stops_a_pathological_run_LOUDLY(self):
+        """The ceiling is a backstop, not the design — but if it is ever hit
+        the job must say so. Silence is the defect being fixed here; a second
+        silent cap in its place would be the same bug wearing a page size."""
+        db = _DB([_log(f"u{i:05d}", sig=EMPTY_SIG)
+                  for i in range(S._EOD_SWEEP_PAGE * 3)])
+        with patch.object(S, "_EOD_SWEEP_MAX_PAGES", 2), \
+                patch.object(S, "logger") as log:
+            out = _run(db)
+        self.assertEqual(out["unsigned"], S._EOD_SWEEP_PAGE * 2)
+        self.assertTrue(log.error.called, "hitting the ceiling is reported")
+        self.assertIn("eod-freeze", str(log.error.call_args))
+
+    def test_the_read_is_no_longer_a_bare_to_list_1000(self):
+        """The literal that was the bomb. Named so a revert is legible."""
+        src = _CODE[_CODE.index("async def sweep_stale_end_of_day_logs"):]
+        src = src[:src.index("async def _flag_unsigned_stale_log")]
+        self.assertNotIn("to_list(1000)", src)
 
 
 class ItSurvivesBadInput(unittest.TestCase):
