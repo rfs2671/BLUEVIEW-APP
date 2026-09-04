@@ -2855,6 +2855,10 @@ from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
     OSHA_TYPES,
 )
 
+# The same rule the COI path has always had, now with one address so the two
+# OCR paths cannot disagree about what "null" means. See lib/ocr_text.py.
+from lib.ocr_text import norm_ocr_str  # noqa: E402
+
 
 
 # ══ COLOUR-FIRST CARD CLASSIFICATION ════════════════════════════════════════
@@ -13492,7 +13496,104 @@ async def get_checkin_info(project_id: str, tag_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-@api_router.post("/checkin/upload-osha")
+class OshaCardOcrResult(BaseModel):
+    """The shape POST /checkin/upload-osha is allowed to return.
+
+    IT HAD NO response_model AT ALL. The handler did
+
+        extracted = json_mod.loads(text)
+        return extracted
+
+    so whatever the vision model emitted became the API's response verbatim —
+    every key, every type, unvalidated. A model that answered `"name": "null"`
+    put the four-character string on the wire, into `oshaData` on the gate
+    page, into `osha_data` on the worker document, and onto filed compliance
+    PDFs as a worker called "null". Worker 6a96c5ff6ee1b3362d156e6c carries it
+    in two places today.
+
+    TWO SEPARATE PROTECTIONS, AND THEY FIX DIFFERENT HALVES:
+
+      * norm_ocr_str, applied below, turns the model's "null"/"N/A"/"" into a
+        real None BEFORE it is ever seen. That is the defect.
+      * this model pins the SHAPE — the fields, their types, and the fact that
+        a key nobody declared does not reach a caller. That is the reason the
+        defect could exist unnoticed: nothing anywhere stated what this
+        endpoint returns, so nothing could be wrong.
+
+    EVERY FIELD IS OPTIONAL AND NONE IS A REFUSAL. An unreadable field is the
+    normal case at a jobsite gate — glare, a sleeve, a bent card — and a
+    validation error here would turn a partly-read card into a 502 for a
+    worker standing at a turnstile. The gate's rule is that a config or tooling
+    problem never stops a man working; this model is written to that rule.
+
+    `box_2d` IS IN THE MODEL BECAUSE THE PAGE USES IT. checkin.html crops the
+    on-screen preview from it. A response_model silently drops undeclared keys,
+    so omitting it here would have removed the crop with nothing to read in a
+    diff — the shape of defect this model exists to prevent, introduced by the
+    model itself.
+    """
+    name: Optional[str] = None
+    sst_number: Optional[str] = None
+    card_type: Optional[str] = None
+    card_class: Optional[str] = None
+    issued: Optional[str] = None
+    expiration: Optional[str] = None
+    card_dominant_color: Optional[str] = None
+    card_color_confidence: Optional[str] = None
+    card_color_conditions: List[str] = Field(default_factory=list)
+    box_2d: Optional[List[float]] = None
+    # Present only on the JSONDecodeError path, where the model returned
+    # something that is not JSON and the raw text is the only evidence of what
+    # went wrong. Never populated on a successful parse.
+    raw_text: Optional[str] = None
+
+
+def _osha_ocr_payload(data: dict) -> "OshaCardOcrResult":
+    """The model's JSON, normalised once, at the boundary.
+
+    Three consumers each ask "did the model read this field" in their own way —
+    `name_ok` in build_worker_certifications, `ocrMissingCriticalFields` on the
+    gate page, and the identity normalisers that dedupe workers. All three are
+    correct against a real value and all three are wrong against the string
+    "null". Fixing them one at a time leaves a fourth place to get it wrong.
+
+    So it is fixed HERE, where the answer is parsed, and every reader downstream
+    receives a real None. See lib/ocr_text.py.
+    """
+    conditions = data.get("card_color_conditions")
+    if not isinstance(conditions, list):
+        conditions = []
+    # NORMALISED TOO, and this is not over-thoroughness: a list carrying the
+    # string "null" would put it in front of the same tests as the scalars.
+    conditions = [c for c in (norm_ocr_str(x) for x in conditions) if c]
+
+    box = data.get("box_2d")
+    coerced_box = None
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        try:
+            coerced_box = [float(v) for v in box]
+        except (TypeError, ValueError):
+            # A box that will not parse is a display convenience that failed,
+            # never a reason to fail the read. checkin.html already treats a
+            # missing box as "show the uncropped frame".
+            coerced_box = None
+
+    return OshaCardOcrResult(
+        name=norm_ocr_str(data.get("name")),
+        sst_number=norm_ocr_str(data.get("sst_number")),
+        card_type=norm_ocr_str(data.get("card_type")),
+        card_class=norm_ocr_str(data.get("card_class")),
+        issued=norm_ocr_str(data.get("issued")),
+        expiration=norm_ocr_str(data.get("expiration")),
+        card_dominant_color=norm_ocr_str(data.get("card_dominant_color")),
+        card_color_confidence=norm_ocr_str(data.get("card_color_confidence")),
+        card_color_conditions=conditions,
+        box_2d=coerced_box,
+        raw_text=norm_ocr_str(data.get("raw_text")),
+    )
+
+
+@api_router.post("/checkin/upload-osha", response_model=OshaCardOcrResult)
 async def upload_osha_card(file_data: dict, request: Request):
     """OCR an OSHA/SST card photo using the Qwen2.5-VL vision model.
 
@@ -13629,21 +13730,18 @@ async def upload_osha_card(file_data: dict, request: Request):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
 
         extracted = json_mod.loads(text)
-        return extracted
+        # NOT `return extracted`. See _osha_ocr_payload and lib/ocr_text.py:
+        # the model's own answer for "I could not read this" is sometimes the
+        # STRING "null", and every presence test between here and a filed PDF
+        # reads that as a value.
+        if not isinstance(extracted, dict):
+            # A JSON array or scalar parses fine and is not a card reading.
+            # Same disposition as unparseable text: nothing was read.
+            return _osha_ocr_payload({"raw_text": text})
+        return _osha_ocr_payload(extracted)
 
     except json_mod.JSONDecodeError:
-        return {
-            "name":       None,
-            "sst_number": None,
-            "card_type":  None,
-            "card_class": None,
-            "card_dominant_color": None,
-            "card_color_confidence": None,
-            "card_color_conditions": [],
-            "issued":     None,
-            "expiration": None,
-            "raw_text":   text,
-        }
+        return _osha_ocr_payload({"raw_text": text})
     except HTTPException:
         raise
     except Exception as e:
@@ -14195,7 +14293,23 @@ async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
     project_id = data.get("project_id")
     tag_id = data.get("tag_id")
-    name = data.get("name")
+    # NORMALISED AT THIS BOUNDARY TOO, and this is the half that makes a data
+    # correction stick. `if name: update_fields["name"] = name` below rewrites
+    # the stored worker name on EVERY returning check-in, so correcting a
+    # worker called "null" in the database is undone at his next tap unless the
+    # value that arrives here is cleaned first.
+    #
+    # THE GATE IS A SECOND MOUTH. upload-osha now returns a real None (see
+    # OshaCardOcrResult), but this endpoint takes a body, not that response:
+    # a cached gate page, a retried submit, a manual entry, or any future
+    # client can still post the string. Cleaning only the OCR response would
+    # fix the producer and leave the consumer open.
+    #
+    # `if name:` then does the rest of the work — None is falsy, so a nullish
+    # arrival leaves the stored name ALONE rather than overwriting it, which is
+    # also the right answer for a returning worker whose card would not read
+    # today.
+    name = norm_ocr_str(data.get("name"))
     phone = data.get("phone")
     trade = data.get("trade")
     company = data.get("company")
@@ -14204,7 +14318,9 @@ async def register_and_checkin(data: dict, request: Request):
     # liveness, no gate). Stored in R2 now, not inline — see _store_worker_selfie.
     selfie_image = data.get("selfie_image")
     osha_data = data.get("osha_data")  # OCR results dict
-    osha_number = data.get("osha_number")
+    # Same rule, same reason: osha_number reaches the OSHA register and the
+    # LL196 attestation, and a card number of "N/A" prints as one.
+    osha_number = norm_ocr_str(data.get("osha_number"))
     safety_orientation = data.get("safety_orientation")  # dict of checked items
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
@@ -18911,12 +19027,27 @@ async def generate_single_logbook_html(logbook: dict) -> str:
 
         w_rows = ""
         for w in workers:
-            if w.get("name", "").strip():
+            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
+            # A row storing `name: None` — which is exactly what correcting a
+            # worker called "null" produces — returns None, and None.strip()
+            # raises AttributeError. In a renderer, that does not skip a row:
+            # it takes down the WHOLE PDF, so a data fix meant to clean one
+            # name would have stopped every filed roster from printing.
+            #
+            # The safe form is already used twice in these same two functions
+            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
+            # Shipped, not invented.
+            if str(w.get("name") or "").strip():
                 # PR G: name/company short-entry; osha_number excluded (identifier).
+                # `or ""` ON EVERY CELL, for the same reason as the guard
+                # above: a stored None interpolates into an f-string as the
+                # four characters None, and a filed compliance record printing
+                # "None" for a man's employer is the same defect as printing
+                # "null" for his name, one field over.
                 w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
-                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
+                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
@@ -22833,7 +22964,8 @@ _SUBMIT_ROW_CONTENT_RULES = {
 #
 # It QUALIFIES on every technical ground: it is a record that is a list of
 # rows, and both renderers already gate a worker row on
-# `if w.get("name", "").strip()` — the rule is shipped, not invented, and the
+# `if str(w.get("name") or "").strip()` — the rule is shipped, not invented,
+# and the
 # editor counts the same thing into total_count.
 #
 # It is left out because the FORM has no client-side gate. preshift_signin.jsx
@@ -28979,12 +29111,27 @@ async def generate_combined_report(
         _affirm_n = await preshift_affirmation_count(db, project_id, date)
         w_rows = ""
         for w in pd.get("workers", []):
-            if w.get("name", "").strip():
+            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
+            # A row storing `name: None` — which is exactly what correcting a
+            # worker called "null" produces — returns None, and None.strip()
+            # raises AttributeError. In a renderer, that does not skip a row:
+            # it takes down the WHOLE PDF, so a data fix meant to clean one
+            # name would have stopped every filed roster from printing.
+            #
+            # The safe form is already used twice in these same two functions
+            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
+            # Shipped, not invented.
+            if str(w.get("name") or "").strip():
                 # PR G: name/company short-entry; osha_number excluded.
+                # `or ""` ON EVERY CELL, for the same reason as the guard
+                # above: a stored None interpolates into an f-string as the
+                # four characters None, and a filed compliance record printing
+                # "None" for a man's employer is the same defect as printing
+                # "null" for his name, one field over.
                 w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
-                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
+                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
