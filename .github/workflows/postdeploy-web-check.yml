@@ -1,0 +1,76 @@
+# The deployed WEB build must be able to reach the API from its own origin.
+#
+# From 2026-08-28 the web build sent X-Client-Version on every request, the
+# API's allow_headers did not name it, and Chrome refused to send anything at
+# all — nobody could sign in for at least six days and twenty-two hours. Four
+# green signals were incapable of seeing it:
+#
+#   * the backend suite      — no test issued a preflight;
+#   * /api/version           — 200 by curl, because curl sends no Origin;
+#   * postdeploy-login-check — sends the header, over urllib: no Origin, no
+#                              OPTIONS. Green throughout;
+#   * the mount smoke        — Playwright route interception short-circuits the
+#                              preflight, so the browser never issues one.
+#
+# This job is a real browser, on the real origin, against the real API, after
+# the real deploy. It is the only check in this repo that would have caught it
+# in production rather than in a test.
+#
+# IT WAITS FOR THE BUILD. `version.json` is emitted by build-with-sourcemaps.js
+# carrying the same SHA the bundle inlines for its Sentry release tag, so this
+# cannot be satisfied by whatever build happens to still be live — the state
+# that hid a 33-commit deployment gap for three days.
+#
+# NOTE ON THE HOST. The web deploy runs through an external git integration, not
+# from this repo, so this job OBSERVES the deploy rather than performing it. It
+# is why the outage's duration is recorded as a floor rather than a measurement.
+
+name: post-deploy web check
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      site:
+        description: "Web origin to check"
+        required: false
+        default: "https://www.levelog.com"
+      api_base:
+        description: "API origin the site must reach"
+        required: false
+        default: "https://api.levelog.com"
+      expect_sha:
+        description: "SHA that must be deployed (blank = whatever is live)"
+        required: false
+        default: ""
+
+jobs:
+  web-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # playwright-core is not a project dependency; this job is the only
+      # thing outside the mount smoke that needs a browser.
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: |
+          npm i --no-save playwright-core@1.49.1
+          npx --yes playwright@1.49.1 install --with-deps chromium
+
+      - name: Load the deployed site and watch what the browser is refused
+        working-directory: frontend
+        env:
+          SITE: ${{ github.event.inputs.site || 'https://www.levelog.com' }}
+          API: ${{ github.event.inputs.api_base || 'https://api.levelog.com' }}
+          # On a push this is the commit that was just merged. The script polls
+          # version.json until the live build reports it, then asserts.
+          EXPECT_SHA: ${{ github.event.inputs.expect_sha || github.sha }}
+        run: node scripts/postdeploy-web-check.cjs

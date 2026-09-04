@@ -97,12 +97,24 @@ function main() {
   // Expo's metro bundler inlines process.env.EXPO_PUBLIC_* at build
   // time; we copy the SHA into that namespace BEFORE invoking
   // expo export so the resulting bundle has it baked in.
-  const sha = process.env.VERCEL_GIT_COMMIT_SHA || '';
+  // EVERY HOST THIS REPO CLAIMS TO USE, because they do not agree and neither
+  // does the repo. runbook.md says production is Cloudflare Pages; the only
+  // checked-in host config is vercel.json; this file was written to read
+  // VERCEL_GIT_COMMIT_SHA alone. On Cloudflare that variable is unset, the
+  // release tag silently falls back to "development", and the source maps
+  // uploaded under a real release match nothing that production ever sends.
+  // Reading all three costs nothing and removes the release tag's dependence
+  // on a question nobody in this repo answers the same way twice.
+  const sha = process.env.VERCEL_GIT_COMMIT_SHA
+    || process.env.CF_PAGES_COMMIT_SHA
+    || process.env.GITHUB_SHA
+    || '';
   if (sha) {
     process.env.EXPO_PUBLIC_VERCEL_GIT_COMMIT_SHA = sha;
     log(`release tag: ${sha}`);
   } else {
-    log('VERCEL_GIT_COMMIT_SHA unset — release tag will fall back to "development"');
+    log('no VERCEL_GIT_COMMIT_SHA / CF_PAGES_COMMIT_SHA / GITHUB_SHA — '
+      + 'release tag falls back to "development" and version.json stamps empty');
   }
 
   // ── Step 2: the actual build ───────────────────────────────────
@@ -136,7 +148,7 @@ function main() {
     // produce an "unreleased" upload that Sentry can't match to
     // events. Fail loud rather than ship orphan maps.
     log(
-      'SENTRY_AUTH_TOKEN set but VERCEL_GIT_COMMIT_SHA is missing; ' +
+      'SENTRY_AUTH_TOKEN set but no commit SHA is available from any host; ' +
       'refusing to upload source maps without a release tag',
     );
   } else {
@@ -179,12 +191,61 @@ function main() {
   const removed = deleteSourceMapsRecursive(DIST);
   log(`removed ${removed} .map file(s) from ${DIST}`);
 
+  // ── Step 6: say which commit this bundle IS ────────────────────
+  //
+  // THE BACKEND HAS HAD THIS ANSWER ALL ALONG. /api/version reports the
+  // commit Railway is serving, which is how "the fix is deployed" gets
+  // proved rather than assumed. The web build had no equivalent: nothing
+  // in this repo could say when — or whether — a given commit reached
+  // production, because the deploy runs through an external git
+  // integration and no workflow observes it.
+  //
+  // That gap has a cost with a number on it. The CORS outage of
+  // 2026-08-28 is recorded as "AT LEAST 6 days 22 hours" and cannot be
+  // stated more precisely than that, because the commit date is all
+  // anyone can read. This file is the counterpart:
+  //
+  //     curl https://www.levelog.com/version.json
+  //
+  // The SHA is the one already inlined into the bundle for the Sentry
+  // release tag, so the file and the running code cannot disagree about
+  // which build this is — a version stamp derived separately would be a
+  // second source of truth and could be right while the bundle was old.
+  writeVersionFile(sha);
+
   log('build complete');
 }
 
-try {
-  main();
-} catch (err) {
-  log(`build failed: ${err && err.message ? err.message : err}`);
-  process.exit(1);
+function writeVersionFile(sha) {
+  const payload = {
+    // Empty, not "unknown", when the build had no SHA. A reader polling
+    // for a specific commit must never match on a placeholder.
+    commit: sha || '',
+    short: sha ? sha.slice(0, 7) : '',
+    built_at: new Date().toISOString(),
+  };
+  const dest = path.join(DIST, 'version.json');
+  try {
+    fs.mkdirSync(DIST, { recursive: true });
+    fs.writeFileSync(dest, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+    log(`wrote ${dest} (${payload.short || 'no sha'})`);
+  } catch (e) {
+    // NOT FATAL. A deploy that ships without its stamp is worse observed,
+    // not broken, and failing the build here would take the site down for
+    // a diagnostic.
+    log(`could not write version.json: ${e && e.message ? e.message : e}`);
+  }
+}
+
+// Exported so writeVersionFile can be asserted without running a build; the
+// build itself still runs on direct invocation exactly as before.
+module.exports = { writeVersionFile, DIST };
+
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    log(`build failed: ${err && err.message ? err.message : err}`);
+    process.exit(1);
+  }
 }
