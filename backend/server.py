@@ -26471,12 +26471,47 @@ async def health_check():
         },
     }
 
+# WHEN THIS PROCESS CAME INTO EXISTENCE. Read once, at import, so every request
+# reports the same instant.
+#
+# NOT THE COMMIT'S DATE, and the difference is stated rather than papered over.
+# Railway injects RAILWAY_GIT_COMMIT_SHA / _BRANCH but NO commit timestamp, and
+# asking git at runtime assumes a .git the image may not carry. What this does
+# answer is the question the build card actually asks — WHICH SIDE IS MORE
+# RECENT — because a deploy is the moment the backend's code started running,
+# the same kind of fact as `Updates.createdAt` on the bundle side.
+#
+# A RESTART RESETS IT WITHOUT A NEW COMMIT. That is why the card's wording (see
+# app/settings.jsx) states the comparison as a fact and offers the benign cause
+# without asserting it: "backend is ahead of your bundle" is true after a
+# restart too, and a card that over-claimed would be the same defect it exists
+# to fix.
+BACKEND_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
 @api_router.get("/version")
 async def version():
     """Report the exact commit this running backend was built from, so a
     deploy can be verified as "the active deploy IS my commit" — not merely
     "a deploy is green". Railway injects RAILWAY_GIT_COMMIT_SHA at build; the
-    others are fallbacks for other hosts / local runs."""
+    others are fallbacks for other hosts / local runs.
+
+    IT ALSO REPORTS WHEN, and that is not decoration. The build card compared
+    `jsCommit[:7] == backendCommit[:7]` and printed "MISMATCH — the app and the
+    backend are on different commits" for every inequality. That single output
+    covers three different states:
+
+        the app is behind          a bundle that failed to publish
+        the backend is behind      a deploy that has not landed
+        neither is behind          a BACKEND-ONLY change, where no OTA is
+                                   published because nothing under frontend/
+                                   changed, and the phone is exactly right
+
+    On 2026-09-04 the third case sent an acceptance test out that told the CP
+    to wait for a version line that was never going to change. String equality
+    has no notion of ancestry, so it cannot separate them — but two timestamps
+    can say WHICH SIDE MOVED, which is the actionable half.
+    """
     sha = (
         os.environ.get("RAILWAY_GIT_COMMIT_SHA")
         or os.environ.get("GIT_COMMIT_SHA")
@@ -26488,7 +26523,17 @@ async def version():
         "commit": sha,
         "short": sha[:7] if sha != "unknown" else "unknown",
         "branch": os.environ.get("RAILWAY_GIT_BRANCH") or None,
+        # MISNAMED SINCE IT WAS WRITTEN: this is a deployment UUID, not a
+        # time, and anything reading `built_at` as a timestamp got a string
+        # that parses as nothing. Kept under the old key because removing it
+        # is a response-shape change nothing asked for, and named correctly
+        # beside it.
         "built_at": os.environ.get("RAILWAY_DEPLOYMENT_ID") or None,
+        "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or None,
+        # The one the build card compares against Updates.createdAt. ISO-8601,
+        # UTC, process start — see BACKEND_STARTED_AT above for what it is and
+        # what it is not.
+        "deployed_at": BACKEND_STARTED_AT,
         # The floor a client compares its own NATIVE version against. Null when
         # this deploy could not read it, and the client treats null as "do not
         # judge" rather than as "behind" — an install we cannot assess must not

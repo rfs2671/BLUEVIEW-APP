@@ -143,11 +143,34 @@ ok(/\[ -n "\$MSG" \]/.test(ota),
 
 console.log('\n-- It never claims a match it cannot make --');
 
-ok(/Boolean\(jsCommit && backendCommit\)/.test(code),
-  'a verdict of "same commit" requires BOTH commits to exist');
-ok(/MISMATCH/.test(code), 'and a mismatch is stated in those words');
-ok(/not injected at build time/.test(code),
-  'with no injected commit it says so, rather than implying a comparison');
+// THESE THREE PINNED settings.jsx SOURCE and broke on a change that was the
+// whole point. They grepped for `Boolean(jsCommit && backendCommit)`, for the
+// literal MISMATCH, and for the 'not injected' wording — all three inline in a
+// render, all three now in src/utils/buildVerdict.js with tests of their own.
+//
+// MISMATCH IS DELIBERATELY GONE. It was one output for three states: a failed
+// OTA, a deploy that had not landed, and a BACKEND-ONLY change where nothing
+// under frontend/ moved, no OTA was published, and the phone was exactly
+// right. On 2026-09-04 the third case produced an acceptance test telling the
+// CP to wait for a version line that would never change. An assertion that the
+// word is PRESENT was pinning the defect.
+//
+// What belongs in THIS file is that settings.jsx does not hand-roll build
+// identity. The rules themselves are behaviour, and behaviour is tested where
+// it lives — see buildVerdict.test.cjs.
+ok(/from '\.\.\/src\/utils\/buildVerdict'/.test(code),
+  'settings.jsx delegates the verdict rather than deriving it in a render');
+ok(!/\.slice\(0, 7\) ===/.test(code),
+  'and does NOT re-derive the seven-character comparison inline');
+ok(!/MISMATCH/.test(code),
+  'the single-output MISMATCH wording is gone from the card');
+
+const verdictSrc = fs.readFileSync(
+  path.join(__dirname, 'buildVerdict.js'), 'utf8');
+ok(/not injected at build time/.test(verdictSrc),
+  'and the uninjected-commit wording moved with the rule, rather than being lost');
+ok(/deployed_at|backendDeployedAt/.test(code),
+  'the card reads the backend deploy time it now compares against');
 ok(!/buildMatches = true/.test(code), 'nothing hard-codes a pass');
 
 console.log('\n-- Reachable, readable, copyable --');
