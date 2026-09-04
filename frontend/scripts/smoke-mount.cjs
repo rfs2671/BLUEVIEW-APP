@@ -174,6 +174,10 @@ const ROUTES = [
   // <Image> per plan — a thumbnail component that throws takes the whole list
   // with it, and every static gate here would still be green.
   '/projects/p1/files',
+  // The capability read. It mounts a WebView and drives it, so an import or a
+  // style it gets wrong is a screen the operator finds broken on the tablet he
+  // took to site — which is the one place this instrument has to work.
+  '/admin/device-capabilities',
   '/workers',
   '/workers/w1',                        // worker detail — cert/OSHA expiry
   '/logbooks',

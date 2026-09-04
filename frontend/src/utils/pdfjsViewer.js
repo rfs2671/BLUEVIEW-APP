@@ -197,10 +197,27 @@ const VIEWER_SCRIPT = [
   // retaining the bytes, because holding a second 30 MB buffer on a device
   // that is already being killed for memory would change the thing under test.
   '  var PROBE = param("probe") === "1";',
+  // ── THE CAPABILITY READ, WITHOUT A DOCUMENT AND WITHOUT THE FLAG ───────
+  //
+  // `?caps=1` runs the six DEVICE measurements and stops. No file, no pdf.js
+  // parse, no A/B suite, and -- deliberately -- no feature-flag dependency, so
+  // it works on a site device that is offline by design and may never take a
+  // flag refresh.
+  //
+  // ONE IMPLEMENTATION, TWO CALLERS, and that is the whole reason this is a
+  // MODE rather than a second HTML page. These answers only mean anything when
+  // the operator's phone and the site device can be compared line for line, and
+  // a separate capability page would drift from the viewer's copy until the
+  // comparison quietly stopped being like-for-like.
+  '  var CAPS = param("caps") === "1";',
+  // Either mode turns the measurements on. Everything that touches the
+  // DOCUMENT stays gated on PROBE alone at its call site, so caps mode cannot
+  // reach a render, a timing, or the A/B suite.
+  '  var MEASURE = PROBE || CAPS;',
   '  function pnow(){ try { return performance.now(); } catch (e) { return Date.now(); } }',
   '  function r1(x){ return Math.round(x * 10) / 10; }',
   '  function probePost(kind, data){',
-  '    if (!PROBE) return;',
+  '    if (!MEASURE) return;',
   '    try { post({ type: "pdf-probe", probe: kind, data: data }); } catch (e) {}',
   '  }',
   '',
@@ -209,7 +226,7 @@ const VIEWER_SCRIPT = [
   // element because the prototype can carry the method on builds where calling
   // it throws.
   '  function probeEnv(){',
-  '    if (!PROBE) return;',
+  '    if (!MEASURE) return;',
   '    var d = {};',
   '    try { d.ua = String(navigator.userAgent || "").slice(0, 200); } catch (e) {}',
   '    try { d.dpr = window.devicePixelRatio || 1; } catch (e) {}',
@@ -237,7 +254,7 @@ const VIEWER_SCRIPT = [
   // getImageData is the part that proves the backing store is real — a canvas
   // can accept width/height and hand back a context that draws nothing.
   '  function probeCanvasLimits(){',
-  '    if (!PROBE) return;',
+  '    if (!MEASURE) return;',
   '    function tryEdge(edge){',
   '      var c = null;',
   '      try {',
@@ -280,7 +297,7 @@ const VIEWER_SCRIPT = [
   // every tiling design that puts work on a worker is dead in this delivery
   // model and the report has to say so.
   '  function probeBlobWorker(done){',
-  '    if (!PROBE) { if (done) done(false); return; }',
+  '    if (!MEASURE) { if (done) done(false); return; }',
   '    var r = { supported: false, error: "" };',
   '    var settled = false;',
   '    function finish(){',
@@ -347,7 +364,7 @@ const VIEWER_SCRIPT = [
   // than read from disk. Different plumbing, its own cost, and this is the
   // measurement that says whether it is needed.
   '  function probeWorkerSource(done){',
-  '    if (!PROBE) { if (done) done(); return; }',
+  '    if (!MEASURE) { if (done) done(); return; }',
   '    var out = { path: "' + WORKER_NAME + '", xhr: false, xhrBytes: 0, xhrMs: null,',
   '                xhrError: "", fetchSupported: (typeof fetch === "function"),',
   '                fetch: false, fetchMs: null, fetchError: "" };',
@@ -401,7 +418,7 @@ const VIEWER_SCRIPT = [
   // answer a question gated on a probe that has not run yet is the wrong
   // order. If these two come back green it is its own small trip.
   '  function probeWasm(done){',
-  '    if (!PROBE) { if (done) done(); return; }',
+  '    if (!MEASURE) { if (done) done(); return; }',
   '    var out = { hasWebAssembly: (typeof WebAssembly !== "undefined"), instantiated: false, ms: null, error: "" };',
   '    if (!out.hasWebAssembly) { probePost("wasm", out); if (done) done(); return; }',
   '    try {',
@@ -419,7 +436,7 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   '  function probeBinaryRead(done){',
-  '    if (!PROBE) { if (done) done(); return; }',
+  '    if (!MEASURE) { if (done) done(); return; }',
   '    var out = { path: "' + WORKER_NAME + '", ok: false, bytes: 0, ms: null, mbPerSec: null, error: "" };',
   '    var t0 = pnow();',
   '    try {',
@@ -461,6 +478,20 @@ const VIEWER_SCRIPT = [
   '    if (!PROBE || !hbTimer) return;',
   '    clearInterval(hbTimer); hbTimer = null;',
   '    probePost("uithread", { label: label, longestStallMs: r1(hbMax), ticks: hbTicks, stallsOver100ms: hbOver });',
+  '  }',
+  '',
+  // ── CAPS MODE ENDS HERE ────────────────────────────────────────────────
+  //
+  // No document is read, so there is nothing to fail on and nothing to clean
+  // up. The `caps` marker is what the admin screen waits for; without it the
+  // screen cannot tell "still running" from "this WebView answered nothing".
+  '  if (CAPS) {',
+  '    if (msgEl) msgEl.textContent = "Reading device capabilities\\u2026";',
+  '    capabilityRead(function(){',
+  '      if (msgEl) msgEl.textContent = "Device capability read complete.";',
+  '      probePost("caps", { done: true });',
+  '    });',
+  '    return;',
   '  }',
   '',
   '  var fileUrl = param("file");',
@@ -1020,17 +1051,30 @@ const VIEWER_SCRIPT = [
   '    })["catch"](function(e){ probePost("suite", { error: String(e) }); });',
   '  }',
   '',
-  '  probeEnv();',
-  '  probeCanvasLimits();',
-  // THE TWO HALVES OF BLOCKER A, and the two MBTiles prerequisites. All four
-  // are cheap, none touches the document, and running them before the open
-  // rather than in the A/B suite means they still report on a plan that fails
-  // to parse — which is exactly when someone will want to know what this
+  // ── THE SIX DEVICE MEASUREMENTS ────────────────────────────────────────
+  //
+  // SEQUENCED, NOT FIRED IN PARALLEL. Three of them issue an XHR against the
+  // staged assets, and in viewer mode the document read is starting at the
+  // same moment — four concurrent reads off the same storage would distort
+  // both the throughput figure and the open being measured.
+  //
+  // BEFORE THE FILE IS EVEN LOOKED AT, so they still report on a plan that
+  // fails to parse. That is exactly when someone wants to know what this
   // WebView can and cannot do.
-  '  probeBlobWorker(function(){});',
-  '  probeWorkerSource(function(){});',
-  '  probeWasm(function(){});',
-  '  probeBinaryRead(function(){});',
+  '  function capabilityRead(after){',
+  '    if (!MEASURE) { if (after) after(); return; }',
+  '    probeEnv();',
+  '    probeCanvasLimits();',
+  '    probeBlobWorker(function(){',
+  '      probeWorkerSource(function(){',
+  '        probeWasm(function(){',
+  '          probeBinaryRead(function(){ if (after) after(); });',
+  '        });',
+  '      });',
+  '    });',
+  '  }',
+  '',
+  '  capabilityRead(function(){});',
   '  hbStart();',
   '  var ptOpen0 = PROBE ? pnow() : 0;',
   '  readBytes(fileUrl, function(bytes){',

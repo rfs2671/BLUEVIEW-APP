@@ -139,13 +139,13 @@ try {
 
 // ── 3. EVERY EMITTER IS BEHIND probePost ─────────────────────────────────
 {
-  const probePostDef = /function probePost\(kind, data\)\{[\s\S]{0,120}?if \(!PROBE\) return;/.test(
-    script.replace(/\s+/g, ' ').replace(/function probePost\(kind, data\)\s*\{/, 'function probePost(kind, data){')
-  );
-  ok(/function probePost\(kind, data\)\{\s*\n?\s*if \(!PROBE\) return;/.test(script)
-    || /function probePost\(kind, data\)\{[\s\S]{0,60}if \(!PROBE\) return;/.test(script)
-    || probePostDef,
-    'probePost returns early when the probe is off');
+  // MEASURE, not PROBE — caps mode has to be able to emit, and it carries no
+  // feature flag. The property is unchanged: with neither mode on, nothing
+  // is posted.
+  ok(/function probePost\(kind, data\)\{[\s\S]{0,60}if \(!MEASURE\) return;/.test(script),
+    'probePost returns early when neither probe nor caps mode is on');
+  ok(/var MEASURE = PROBE \|\| CAPS;/.test(script),
+    'MEASURE is exactly "probe mode or caps mode"');
 
   // Any raw pdf-probe post that did not go through probePost.
   const rawEmits = script
@@ -231,8 +231,42 @@ try {
   // turns an assumption into a number.
   ok(/out\.xhr = t\.length > 0;/.test(script), 'the source read tries XMLHttpRequest');
   ok(/fetch\("pdf\.worker\.min\.js"\)/.test(script), 'the source read tries fetch() too');
-  ok(script.indexOf('probeWorkerSource(function(){});') > 0,
-    'the source read runs in the startup sequence');
+  ok(/probeWorkerSource\(function\(\)\{/.test(script),
+    'the source read runs inside the capability sequence');
+}
+
+// ── 12. CAPS MODE: ONE IMPLEMENTATION, AND IT CANNOT TOUCH A DOCUMENT ────
+{
+  // The site device is offline by design and may never take a flag refresh, so
+  // the capability read cannot depend on the feature flag. A SECOND page would
+  // drift from the viewer's copy and stop the two devices being comparable
+  // line for line — hence a mode, not a page.
+  ok(/var CAPS = param\("caps"\) === "1";/.test(script),
+    'caps mode is its own url flag, independent of the feature flag');
+
+  const capsAt = script.indexOf('if (CAPS) {');
+  const fileAt = script.indexOf('var fileUrl = param("file")');
+  ok(capsAt > 0 && capsAt < fileAt,
+    'the caps short-circuit runs BEFORE the no-file guard',
+    `caps@${capsAt} file@${fileAt}`);
+  ok(/probePost\("caps", \{ done: true \}\)/.test(script),
+    'caps mode posts a completion marker — "still running" and "answered nothing" must differ');
+
+  // The one guard that must NOT have been widened. probeSuite opens a page and
+  // renders it; caps mode has no document and must never reach it.
+  ok(/function probeSuite\(\)\{[\s\S]{0,40}if \(!PROBE\) return;/.test(script),
+    'probeSuite is still PROBE-only, so caps mode cannot reach a render');
+  ok(!/function probeSuite\(\)\{[\s\S]{0,40}if \(!MEASURE\)/.test(script),
+    'probeSuite was not widened to MEASURE');
+
+  // Three of the six issue an XHR; in viewer mode the document read starts in
+  // the same breath. Firing them together would distort the throughput figure
+  // and the open being measured.
+  ok(/function capabilityRead\(after\)\{/.test(script),
+    'the six run through one sequencer');
+  const seq = script.slice(script.indexOf('function capabilityRead(after){'));
+  const nested = /probeBlobWorker\(function\(\)\{[\s\S]{0,400}probeWorkerSource\(function\(\)\{[\s\S]{0,400}probeWasm\(function\(\)\{[\s\S]{0,400}probeBinaryRead\(function\(\)\{/.test(seq);
+  ok(nested, 'the four async reads are sequenced, not fired in parallel');
 }
 
 // ── 10. THE MBTiles PREREQUISITES, ASKED BEFORE ANYTHING IS DESIGNED ─────
