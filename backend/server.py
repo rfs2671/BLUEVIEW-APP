@@ -4410,6 +4410,31 @@ def superintendent_log_deadline(project) -> str:
             else "departure")
 
 
+# ── HOW THE STALE-LOG WALK IS BOUNDED ────────────────────────────────────────
+#
+# One page of stale logs per read. NOT a cap on the run: the walk pages until
+# the selector is exhausted, and this is only how much is materialised at once.
+# The distinction is the whole point — the read this replaces was a single
+# `to_list(1000)`, which is a cap wearing a page size's clothes.
+_EOD_SWEEP_PAGE = 500
+
+# A CEILING ON THE NUMBER OF PAGES, AND IT IS A BACKSTOP, NOT THE DESIGN.
+#
+# The walk terminates on its own (see the sweep's own docstring: every page
+# visits documents no page has visited, so it ends after ceil(N / page) reads).
+# This exists for the case where that reasoning is wrong — a driver that
+# ignores `skip`, an index change that makes the sort non-total — because the
+# alternative to a bounded loop in a 3am unattended job is a job that never
+# finishes and a scheduler that never fires again.
+#
+# HITTING IT IS LOGGED AS AN ERROR. The defect being fixed here is a silent
+# truncation; a second silent truncation at 200,000 documents would be the same
+# bug with a bigger number. At the present volume this is roughly 3,000x the
+# nightly working set, so reaching it means something is wrong, not that the
+# estate grew.
+_EOD_SWEEP_MAX_PAGES = 400
+
+
 async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     """Freeze yesterday's signed daily narratives, and FLAG the unsigned ones.
 
@@ -4458,61 +4483,140 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     Idempotent: an already-locked log does not match the filter, so a re-run or
     an overlapping admin-triggered run is safe.
 
+    ── IT IS SORTED AND PAGED, AND THAT IS NOT AN OPTIMISATION ────────────────
+
+    THE READ WAS `cursor.to_list(1000)`, UNSORTED AND CAPPED, over a selector
+    that a stranded log NEVER LEAVES. A log whose signature is not affirmed is
+    flagged and left in place, so it matches again tomorrow, and the night
+    after, forever. Sixty-five such rows exist today.
+
+    At a thousand accumulated strandings the cap is filled by stranded rows
+    alone and CORRECTLY SIGNED LOGS STOP BEING FROZEN. There is no symptom:
+    nothing raises, nothing logs, the job returns its counts and reports
+    success, and end-of-day logs quietly stop locking. That is the same shape
+    as a sort that silently drops rows -- an answer that is wrong and looks
+    finished -- and it is worse, because the thing it stops doing is the
+    freeze that closes a compliance record.
+
+    OLDEST FIRST: `date` ascending, `_id` ascending. Two decisions, and they
+    are different ones.
+
+      The TIE-BREAK is what makes paging correct at all. `date` alone is not a
+      total order -- every project filing on the same day collides -- and a
+      page boundary drawn through a set of equal keys is not a boundary: the
+      driver may return those rows in any order on any read, so a document can
+      be visited twice or skipped entirely. `_id` is unique, so (date, _id)
+      is total and a page boundary means something.
+
+      The DIRECTION is oldest first because the oldest stale log has been
+      unfrozen the longest and is the one nearest an auditor's records
+      request. If a walk is ever cut short -- the page ceiling, a crash, a
+      restart -- the documents it did not reach are the NEWEST, which are the
+      least exposed and are re-swept the following night anyway. Newest-first
+      inverts that and leaves the oldest gap unvisited.
+
+    HOW THE PAGES ADVANCE, AND WHY IT ENDS. A frozen log leaves the selector;
+    a stranded one does not. So the offset carries past exactly the documents
+    this run visited and DELIBERATELY LEFT (the unsigned ones, plus any whose
+    write raised) -- and because those are the smallest sort keys seen so far,
+    `skip(carry)` lands on the first document no page has visited. Every page
+    therefore visits only new documents, the unvisited count falls by a full
+    page each time, and the walk ends after ceil(N / _EOD_SWEEP_PAGE) reads.
+    _EOD_SWEEP_MAX_PAGES is the backstop for the case where that reasoning is
+    wrong, and hitting it is logged as an error rather than absorbed.
+
+    A concurrent insert between pages can shift the window by a row. That is
+    accepted and cheap: a document missed tonight is swept tomorrow, which is
+    the same guarantee the whole job already offers.
+
     Returns counts for the caller to log. Never raises: the nightly tick runs
     unattended and a sweep that threw would take the detectors down with it.
     """
     today = eastern_date(now)
     out = {"frozen": 0, "unsigned": 0}
-    try:
-        cursor = database.logbooks.find({
-            "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
-            "date": {"$lt": today},
-            "is_locked": {"$ne": True},
-            "is_deleted": {"$ne": True},
-            # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
-            # this clause the nightly pass counts one as unsigned and
-            # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
-            # for it -- deduped on (project, log_type, date), so it is written
-            # once and then sits on the admin's alert list forever with no
-            # action that could ever clear it. The freeze branch cannot reach a
-            # withdrawn child either way (it has no affirmed signature), so
-            # this only ever removes a false alert.
-            **WITHDRAWN_EXCLUDED,
-        })
-        stale = await cursor.to_list(1000)
-    except Exception as e:
-        logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
-        return out
+    selector = {
+        "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
+        "date": {"$lt": today},
+        "is_locked": {"$ne": True},
+        "is_deleted": {"$ne": True},
+        # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
+        # this clause the nightly pass counts one as unsigned and
+        # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
+        # for it -- deduped on (project, log_type, date), so it is written
+        # once and then sits on the admin's alert list forever with no
+        # action that could ever clear it. The freeze branch cannot reach a
+        # withdrawn child either way (it has no affirmed signature), so
+        # this only ever removes a false alert.
+        **WITHDRAWN_EXCLUDED,
+    }
+    # Documents this run has visited and left behind in the selector. See the
+    # paging note above: this is the offset, not a count of failures.
+    carry = 0
+    pages = 0
 
-    for doc in stale:
+    while pages < _EOD_SWEEP_MAX_PAGES:
+        pages += 1
         try:
-            if not _is_affirmed_signature(doc.get("cp_signature")):
-                # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and left is
-                # a different fact from a CP who never signed; the second is an
-                # unfinished obligation, not a document to close.
-                out["unsigned"] += 1
-                await _flag_unsigned_stale_log(database, doc)
-                continue
-            stamp = datetime.now(timezone.utc)
-            await database.logbooks.update_one(
-                {"_id": doc["_id"], "is_locked": {"$ne": True}},
-                {"$set": {
-                    "is_locked": True,
-                    "finalized_at": stamp,
-                    # WHO froze it, in the same fields the manual path writes, so
-                    # a reader is never left guessing whether a person closed it.
-                    # The CP's signature is what made it eligible; the sweep only
-                    # applied the lock.
-                    "finalized_by": "system:eod_sweep",
-                    "finalized_by_name": "End-of-day sweep",
-                    "status": "submitted",
-                    "updated_at": stamp,
-                }},
-            )
-            out["frozen"] += 1
+            cursor = (database.logbooks.find(selector)
+                      .sort([("date", 1), ("_id", 1)])
+                      .skip(carry)
+                      .limit(_EOD_SWEEP_PAGE))
+            stale = await cursor.to_list(_EOD_SWEEP_PAGE)
         except Exception as e:
-            # One bad document must not stop the sweep for every other project.
-            logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+            # PARTIAL WORK IS KEPT. Every freeze already committed stands; the
+            # counts returned describe what actually happened.
+            logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
+            return out
+
+        if not stale:
+            return out
+
+        for doc in stale:
+            try:
+                if not _is_affirmed_signature(doc.get("cp_signature")):
+                    # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and
+                    # left is a different fact from a CP who never signed; the
+                    # second is an unfinished obligation, not a document to
+                    # close. It stays in the selector, which is why `carry`
+                    # has to step over it.
+                    out["unsigned"] += 1
+                    await _flag_unsigned_stale_log(database, doc)
+                    carry += 1
+                    continue
+                stamp = datetime.now(timezone.utc)
+                await database.logbooks.update_one(
+                    {"_id": doc["_id"], "is_locked": {"$ne": True}},
+                    {"$set": {
+                        "is_locked": True,
+                        "finalized_at": stamp,
+                        # WHO froze it, in the same fields the manual path
+                        # writes, so a reader is never left guessing whether a
+                        # person closed it. The CP's signature is what made it
+                        # eligible; the sweep only applied the lock.
+                        "finalized_by": "system:eod_sweep",
+                        "finalized_by_name": "End-of-day sweep",
+                        "status": "submitted",
+                        "updated_at": stamp,
+                    }},
+                )
+                out["frozen"] += 1
+            except Exception as e:
+                # One bad document must not stop the sweep for every other
+                # project -- and it must not stop the WALK either. A document
+                # whose write raised is still in the selector, so stepping over
+                # it is what keeps the next page moving forward instead of
+                # re-reading this one until the ceiling.
+                logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+                carry += 1
+
+        if len(stale) < _EOD_SWEEP_PAGE:
+            return out
+
+    logger.error(
+        f"[eod-freeze] stopped after {_EOD_SWEEP_MAX_PAGES} pages "
+        f"({_EOD_SWEEP_MAX_PAGES * _EOD_SWEEP_PAGE} documents); stale logs "
+        f"remain unswept -- frozen={out['frozen']} unsigned={out['unsigned']}"
+    )
     return out
 
 
@@ -4524,10 +4628,46 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
     nightly re-run cannot stack duplicates. No new screen and no new concept --
     /admin/compliance-alerts renders it already.
 
-    The CP-facing half is deliberately NOT here. It belongs on the logbook list
-    beside the unaffirmed-signature card, and that screen already carries three
-    different treatments for three exception signals (see followups.md); adding
-    a fourth from inside a sweep is how that drift continues.
+    ── AND ON `resolved`, SO A RESOLVE CAN BE CONTRADICTED TOMORROW ──────────
+
+    (project, log_type, date) ALONE MATCHED A RESOLVED ROW AS READILY AS AN
+    OPEN ONE. Resolve is the only action /admin/compliance-alerts offers, and
+    without this clause taking it PERMANENTLY SUPPRESSED the alert while the
+    log stayed stranded and stayed unfrozen. Resolving destroyed the only
+    surviving statement that the log needed fixing -- the same failure the
+    selector above already names for the withdrawn case ("sits on the admin's
+    alert list forever with no action that could ever clear it"), noticed
+    there and left standing here.
+
+    RE-RAISING IS NOT NOISE, BECAUSE THE CONDITION IS RE-VERIFIED. The sweep
+    only reaches a log that is STILL unaffirmed and STILL unfrozen; the moment
+    the CP affirms it, the freeze branch takes it and it leaves the selector
+    for good. So a row that comes back tomorrow is a fresh statement that the
+    fact has not changed, not a duplicate of a fact already handled.
+
+    THAT IS WHY THE RULE HERE IS SIMPLER THAN worker_cert_expiring'S. That
+    alert suppresses on `details.earliest_expiration` as well, because ITS
+    condition -- a certification 30 days out -- does not change when the admin
+    acts, so a bare `resolved: False` would decay resolve into "cleared for one
+    night". Here the condition IS the log's state, and an admin cannot clear it
+    by resolving a row; only the CP affirming can.
+
+    ── TWO POPULATIONS, TWO SENTENCES ────────────────────────────────────────
+
+    "was never signed" is TRUE of a log holding `cp_signature: {}` and FALSE of
+    one holding a real stroke the CP never affirmed for this document. Both
+    reach here, they need different actions, and one sentence for both told the
+    admin the wrong thing about whichever it was not describing. `details.ink`
+    carries the same split as a field so the alert list can be counted without
+    re-reading every logbook.
+
+    The CP-facing half is still deliberately NOT raised from here. It belongs
+    on the record, not on a notification minted inside a sweep: an unaffirmed
+    signature is now offered for affirmation by FiledLogView, on the filed log
+    itself, gated by isOpenForSignatureAffirmation. The logbook LIST is
+    untouched -- that screen already carries three treatments for three
+    exception signals (see followups.md), and adding a fourth from inside a
+    sweep is how that drift continues.
     """
     try:
         exists = await database.compliance_alerts.find_one({
@@ -4535,15 +4675,23 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
             "project_id": doc.get("project_id"),
             "details.log_type": doc.get("log_type"),
             "details.date": doc.get("date"),
+            # See the docstring: without this, resolve erases the only record
+            # that the log needs fixing.
+            "resolved": False,
         })
         if exists:
             return
+        _ink = _has_signature_ink(doc.get("cp_signature"))
         await database.compliance_alerts.insert_one({
             "alert_type": "unsigned_stale_logbook",
             "severity": "medium",
             "project_id": doc.get("project_id"),
             "company_id": doc.get("company_id"),
             "message": (
+                f"{doc.get('log_type')} for {doc.get('date')} carries a "
+                "signature the CP never affirmed for this log. Only he can "
+                "affirm it. It stays editable - it is not frozen."
+                if _ink else
                 f"{doc.get('log_type')} for {doc.get('date')} was never signed. "
                 "It stays editable - it is not frozen."
             ),
@@ -4551,6 +4699,11 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
                 "log_type": doc.get("log_type"),
                 "date": doc.get("date"),
                 "logbook_id": str(doc.get("_id")),
+                # "ink" -- there is a mark on the record -- vs "none". NOT
+                # "affirmed": nothing that reaches this function is affirmed,
+                # and a field named for the predicate it always fails would
+                # read as the answer to a different question.
+                "ink": "ink" if _ink else "none",
             },
             "resolved": False,
             "created_at": datetime.now(timezone.utc),
@@ -41801,6 +41954,31 @@ async def startup_event():
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
     await db.logbooks.create_index([("project_id", 1), ("log_type", 1), ("date", -1)])
     await db.logbooks.create_index([("company_id", 1), ("date", -1)])
+    # THE END-OF-DAY FREEZE SWEEP'S OWN INDEX. It pages
+    # {log_type: $in, date: $lt} sorted (date, _id), and `logbooks` holds
+    # inline base64 -- a signature, and photos before the finalize purge. An
+    # unserved sort there is the 32MB in-memory sort limit, which is an outage
+    # this product has already had once. test_sorts_are_indexed catches it.
+    #
+    # THE SORT KEYS ARE THE PREFIX, and that is forced rather than chosen.
+    # This selector pins NOTHING by equality: `log_type` is an $in, `date` is
+    # an $lt, and both `is_locked` and `is_deleted` are $ne. find_unserved_sorts
+    # counts only `$eq` as a pin -- correctly, because an index leading on an
+    # $in would make Mongo merge-sort across one branch per log type, which is
+    # not sorted output from one scan. So (date, _id) leads, the $lt becomes a
+    # range on the leading key (an index range walked in sort order, which is
+    # the cheap case), and `_id` is the unique tie-break that makes skip-free
+    # paging correct.
+    #
+    # The key spec is a LITERAL on purpose: find_unserved_sorts.py resolves
+    # index declarations with an AST walk and cannot read a constant, so a
+    # named tuple here would drop this index out of the sweep's coverage
+    # silently -- the failure that guard exists to prevent.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("date", 1), ("_id", 1)],
+        name="logbooks_eod_sweep_by_type_date",
+    )
 
 	# Compound index for check-in duplicate prevention (critical at scale)
     await db.checkins.create_index(

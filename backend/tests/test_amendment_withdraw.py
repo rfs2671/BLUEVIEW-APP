@@ -987,9 +987,16 @@ class TheSelectorsWereAllTold(unittest.TestCase):
         that is deduped on (project, log_type, date) -- so it is written once
         and then sits on the admin's list forever with no action that could
         clear it."""
+        # ANCHORED ON THE SELECTOR LITERAL, not on the read. The sweep's read
+        # is now a PAGED walk -- `database.logbooks.find(selector)` inside a
+        # loop -- so the filter is hoisted into a named dict above it. The
+        # property asserted is unchanged: the withdrawn exclusion is in the
+        # filter the walk uses.
         s = self._selector_src(server.sweep_stale_end_of_day_logs,
-                               "cursor = database.logbooks.find")
+                               "selector = {")
         self.assertIn("WITHDRAWN_EXCLUDED", s)
+        self.assertIn("database.logbooks.find(selector)",
+                      inspect.getsource(server.sweep_stale_end_of_day_logs))
 
     def test_the_project_list_every_editor_reads(self):
         """The leverage point: twelve client pickers choose the document to
