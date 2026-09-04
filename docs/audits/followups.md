@@ -4,6 +4,114 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-04 — a guard reading a field its projection does not carry never fires and never fails
+
+`page_rec.get("is_spec_page") is True` is a refusal that stops an endpoint
+re-rendering a 250-DPI image of a wall of text. It was written against a row
+fetched like this:
+
+```python
+page_rec = await db.document_page_index.find_one(
+    {...},
+    {"page_thumb_r2_key": 1, "page_jpeg_r2_key": 1, ...},
+)
+```
+
+**A projected-away field comes back absent, `.get` returns `None`, `None is True`
+is `False`, and the guard passes every row through.** Not an error, not a log
+line, not a slow path — the branch simply never executes. The endpoint keeps
+its expensive fallback and the refusal that was written to prevent it reads,
+in review, as though it works.
+
+Caught in `392f001a` and the projection now carries `is_spec_page`, with a test
+asserting the field is fetched and not only that the guard exists.
+
+### Why this one is nastier than a missing guard
+
+A missing guard is visible: the behaviour is wrong and the code says nothing
+about it. This is worse in the two ways that matter.
+
+**It reads as covered.** Anyone auditing the endpoint finds the check, the
+comment above it, and a test that exercises the guard against a hand-built dict
+— which of course carries the field, because the test author wrote the dict.
+The projection is twenty lines away and in a different statement.
+
+**A test can pass for the wrong reason.** `assertIn('is_spec_page', BODY)` is
+true whether or not the query fetches it. So can an integration test, if its
+fixture returns a full document while production returns a projected one. The
+only assertion that discriminates is one about the QUERY, and that is the
+assertion nobody writes, because the query is not the thing being tested.
+
+### The shape
+
+Same family as the rest of this log: something ran, did exactly what it was
+written to do, and the answer meant nothing because an input had moved.
+Here the input is the document itself, narrowed by a decision made elsewhere
+for an unrelated reason — projections get tightened for bytes, not for logic,
+and the person tightening one is not thinking about a branch further down.
+
+Note the asymmetry that makes it silent. A projection that omits a field a
+guard needs produces `None`, which is falsy, which means **the failure mode is
+always "the guard does not fire"** — never "the guard fires when it should
+not". Tightening a projection can only ever turn protections OFF. There is no
+version of this mistake that surfaces as a false refusal somebody would report.
+
+### The same coupling, in the other direction
+
+`OPEN — 2026-09-02 — sorts that are safe only because of a projection, and
+widening one is silent` is this entry's mirror image, and the two belong
+together. There, four sorts stay under the 32 MB in-memory limit ONLY because a
+projection keeps the documents small, and **widening** it breaks them. Here a
+guard fires only because a projection carries a field, and **narrowing** it
+disables the guard.
+
+So a projection has load-bearing consumers in both directions and no
+declaration of either. Every edit to one is a change to code somewhere else in
+the function, in whichever direction it moves. That is the thing worth carrying
+forward — not two separate cautions about projections, one coupling with two
+failure modes.
+
+### The rule
+
+**When a query has a projection, the projection is part of the guard.** Change
+either and re-read the other. A test that holds a refusal exists should also
+hold that the row it reads is fetched carrying the field it refuses on —
+otherwise it is testing the author's fixture, not the endpoint.
+
+`is True` rather than truthiness is worth keeping for a separate reason: a
+legacy row genuinely missing the flag falls through to the ladder instead of
+being refused. That is correct, and it is also exactly what makes the
+projection bug invisible — the two cases are indistinguishable at the guard.
+The projection is the only place they can be told apart.
+
+### The sweep, and what it is worth
+
+A scan of `server.py` for the general shape — a variable bound from a
+`find`/`find_one` with an inclusion projection, then read for a field the
+projection omits — returned **four candidates across 35 functions holding a
+projected read. All four are false positives**, checked by hand:
+
+| site | why the scan was wrong |
+|---|---|
+| `generate_combined_report` | `{"data.worker_id": 1}` is a DOTTED path; `o.get("data")` legitimately returns the subdocument. The scanner does not model dotted projections. |
+| `renewal_digest_daily_cron` ×2 | `p` is bound twice in one function; `p.get("name")` belongs to the `projects` read, which does project `name`. And `p["project_name"] = ...` is a WRITE. |
+| `get_logbook_notifications` | `_doc` iterates `stale_unsigned_docs`, not the `unaffirmed_docs` read the scanner matched — and that projection carries `is_amendment`, `amendment_reason`, `created_by_name` and `created_at`, exactly what `amendment_state` reads. |
+
+So no second live instance is known. **That is not a clean bill of health.**
+The scanner's precision was 0 for 4 and its recall is unmeasured — it cannot
+follow a row through a helper call, a dict comprehension, or a return value,
+which is where the next one will be. Recorded per the standing correction on
+`get_company_roster`: a sweep that matches a SHAPE without validating it
+produces classifications that get copied forward as fact.
+
+The useful half is the positive example. `stale_unsigned_docs` projects
+`is_amendment`, `amendment_reason`, `created_by_name`, `created_at` — every
+field `amendment_state` goes on to read, and nothing else. That is the pattern:
+the projection is written from the consumer's needs, so widening the consumer
+forces a visit to the query.
+
+---
+
 ## PRACTICE — 2026-09-04 — a LOCATION standing in for a STRUCTURE, which is most of this week
 
 Five checks broke in one day, none of them because the thing they protect
