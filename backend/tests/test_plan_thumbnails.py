@@ -25,6 +25,14 @@ that make it plumbing rather than a second rasteriser:
   4. THE MANIFEST FLAG RIDES THE FILE ROW. A parallel `thumbnails` section
      would need a second copy of the site device's visibility filter, and this
      file already documents what that costs.
+
+NOTE ON THE ASSERTIONS BELOW. Every `assertNotIn` here takes an inline
+`SRC[...]` slice rather than a local `body` variable, and that is deliberate
+rather than clumsy. tests/test_absence_literals_are_specific.py audits absence
+assertions across the suite and can only PROVE a haystack is source text when
+it is a string expression, a module-level string name, or a slice of one — a
+local name defeats it, and an assertion it cannot classify goes unaudited. It
+counts those, and five of them here pushed the repo over its own floor.
 """
 
 import io
@@ -101,8 +109,7 @@ class PageOneOnly(unittest.TestCase):
     def test_the_full_page_upload_is_NOT_guarded(self):
         """Every page keeps its full JPEG — the VLM query path reads them."""
         i = SRC.index("page_jpeg_r2_key = await _upload_page_jpeg_to_r2")
-        window = SRC[max(0, i - 300):i]
-        self.assertNotIn("if page_number == 1:", window)
+        self.assertNotIn("if page_number == 1:", SRC[max(0, i - 300):i])
 
 
 class TheKeyIsWrittenOnEveryBranch(unittest.TestCase):
@@ -147,9 +154,9 @@ class TheReaderIsALadder(unittest.TestCase):
 
     def test_the_reader_does_not_write_back_to_r2(self):
         i = SRC.index("async def _fetch_page_thumb")
-        body = SRC[i:SRC.index("async def _fetch_page_jpeg")]
-        self.assertNotIn("_upload_to_r2", body)
-        self.assertNotIn("_upload_page_thumb_to_r2", body)
+        j = SRC.index("async def _fetch_page_jpeg")
+        self.assertNotIn("_upload_to_r2(", SRC[i:j])
+        self.assertNotIn("_upload_page_thumb_to_r2(", SRC[i:j])
 
 
 class TheEndpointIsScopedToTheProject(unittest.TestCase):
@@ -175,7 +182,7 @@ class TheEndpointIsScopedToTheProject(unittest.TestCase):
         i = SRC.index("async def get_project_file_thumbnail")
         body = SRC[i:i + 2000]
         self.assertIn("private, max-age=", body)
-        self.assertNotIn("public, max-age=", body)
+        self.assertNotIn("public, max-age=", SRC[i:i + 2000])
 
 
 class TheManifestFlagRidesTheFileRow(unittest.TestCase):
@@ -193,9 +200,8 @@ class TheManifestFlagRidesTheFileRow(unittest.TestCase):
         """A url in a cached manifest is an authenticated endpoint written into
         a document that outlives the token."""
         i = SRC.index("_thumb_ids = set()")
-        body = SRC[i:i + 900]
-        self.assertNotIn("http", body)
-        self.assertIn('"page_thumb_r2_key": 1', body)
+        self.assertNotIn("/api/", SRC[i:i + 900])
+        self.assertIn('"page_thumb_r2_key": 1', SRC[i:i + 900])
 
     def test_a_failure_degrades_rather_than_failing_the_manifest(self):
         """A manifest that raises is a device that syncs nothing."""
@@ -254,11 +260,12 @@ class TheBaseLayerIsTheSamePipelineAtADifferentSize(unittest.TestCase):
 
     def test_the_reader_is_the_same_ladder(self):
         i = SRC.index("async def _fetch_page_base")
-        body = SRC[i:SRC.index("async def _fetch_page_thumb")]
+        j = SRC.index("async def _fetch_page_thumb")
+        body = SRC[i:j]
         self.assertIn("page_base_r2_key", body)
         self.assertIn("_fetch_page_jpeg", body)
         self.assertIn("_make_page_base_jpeg", body)
-        self.assertNotIn("_upload_to_r2", body)
+        self.assertNotIn("_upload_to_r2(", SRC[i:j])
 
     def test_the_endpoint_is_scoped_and_404s(self):
         i = SRC.index('"/projects/{project_id}/files/{file_id}/pages/{page_number}/base"')
