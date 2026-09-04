@@ -124,9 +124,28 @@ def test_the_removal_endpoint_exists_and_is_admin_and_tenant_gated():
     path = "/api/workers/{worker_id}/osha-card-image"
     assert path in routes, sorted(p for p in routes if "osha-card" in p)
     assert "DELETE" in routes[path].methods
-    deps = str(routes[path].dependant.dependencies)
-    assert "get_admin_user" in deps, "an admin"
-    assert "require_worker_write_access" in deps, "and THIS worker's admin"
+    # BY NAME, OFF THE DEPENDANT TREE, NOT OUT OF A repr().
+    #
+    # This read `str(route.dependant.dependencies)` and substring-matched it.
+    # That repr is 3,242 characters of nested Dependant/ModelField objects
+    # whose text is a FastAPI + Pydantic version artifact: it passed locally
+    # and failed in CI on the same code, reporting "an admin" about an
+    # endpoint that has always had one. A representation is not a structure --
+    # the same bet as a character window or a line number, and it lost the
+    # same way. Walk the tree and read `__name__`.
+    def _dep_names(dep, out=None):
+        out = set() if out is None else out
+        for d in dep.dependencies:
+            call = getattr(d, "call", None)
+            if call is not None:
+                out.add(getattr(call, "__name__", ""))
+            _dep_names(d, out)
+        return out
+
+    names = _dep_names(routes[path].dependant)
+    assert names, "read no dependencies at all off the route"
+    assert "get_admin_user" in names, f"an admin: {sorted(names)}"
+    assert "require_worker_write_access" in names,         f"and THIS worker's admin: {sorted(names)}"
 
 
 def test_the_removal_unsets_one_field_and_never_deletes_the_row():
