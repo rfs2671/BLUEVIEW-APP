@@ -617,6 +617,83 @@ async function main() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  // 6a-iii. PAGE ONE OF EACH PLAN COMES DOWN TOO, so a sheet can be
+  //         IDENTIFIED with no signal. The manifest's `t` flag was written by
+  //         the server and read by nothing; this is what it was written to be.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const withT = (id, v, t) => ({ ...fRow(id, v, 'pdf', 100), t });
+    const d = makeDevice({
+      pages: [page({ files: [withT('A', 1, 1), withT('B', 1, undefined)] })],
+    });
+    const r = await store(d).syncSiteManifest('P1');
+
+    const names = d.downloaded.map((x) => x.name);
+    ok(names.includes('A.1.jpg'),
+      'a row the server flags with t:1 gets its page-one thumbnail pulled');
+    ok(!names.includes('B.1.jpg'),
+      'a row with no flag does NOT — an unindexed page would make the endpoint '
+      + 'render the source PDF, and a device is the wrong place to trigger that');
+    ok(names.includes('A.1.pdf') && names.includes('B.1.pdf'),
+      'and both PDFs still come down');
+    ok(r.thumbs === 1 && r.thumbsWanted === 1,
+      'thumbnails are counted APART from documents, so the fraction readiness '
+      + 'reports stays a fraction of records');
+
+    const thumbUrl = d.downloaded.find((x) => x.name === 'A.1.jpg').url;
+    ok(/\/api\/projects\/P1\/files\/A\/thumbnail$/.test(thumbUrl),
+      'from the project-scoped thumbnail endpoint');
+
+    // Documents before pictures of documents.
+    ok(names.indexOf('A.1.pdf') < names.indexOf('A.1.jpg'),
+      'sheets are fetched BEFORE thumbnails — a device interrupted halfway '
+      + 'should hold documents it can open, not pictures of ones it cannot');
+
+    // Second run: nothing re-downloads.
+    const d2 = makeDevice({
+      files: ['A.1.pdf', 'A.1.jpg'],
+      pages: [page({ files: [withT('A', 1, 1)] })],
+    });
+    const r2 = await store(d2).syncSiteManifest('P1');
+    ok(d2.downloaded.length === 0 && r2.thumbs === 0 && r2.thumbsWanted === 0,
+      'a thumbnail already on disk is not fetched again');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6a-iv. THE SWEEP DOES NOT EAT THE THUMBNAILS.
+  //
+  //        docCache's keep-set is rebuilt from list RECORDS, which carry an id
+  //        and a version but NO extension — so it enumerates the extensions
+  //        this cache can write. Its comment said "every extension" and the
+  //        code added exactly one, `pdf`. Harmless while pdf was the only
+  //        thing written; the moment thumbnails write `.jpg`, the next sweep
+  //        from ANY screen deletes every one of them and the plan list goes
+  //        back to blank icons with nothing to explain why.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const withT = (id, v, t) => ({ ...fRow(id, v, 'pdf', 100), t });
+    const d = makeDevice({
+      pages: [page({ files: [withT('A', 1, 1)] })],
+    });
+    const M = store(d);
+    await M.syncSiteManifest('P1');
+    ok(d.disk.has('A.1.jpg'), 'the thumbnail landed');
+
+    // THE REAL docCache, on the same device — the same instance the store
+    // itself imported, so this is the sweep that actually runs from the plans
+    // screen rather than a description of one.
+    const { sweepDocCache } = load(d, 'docCache.js');
+    const res = await sweepDocCache({});
+    ok(Array.isArray(res.deleted),
+      'the sweep ran rather than declining — a skipped sweep would prove nothing');
+    ok(!res.deleted.includes('A.1.jpg'),
+      'and it KEEPS the thumbnail — the keep-set enumerates every extension '
+      + 'this cache can write, not just pdf');
+    ok(!res.deleted.includes('A.1.pdf'), 'along with the sheet itself');
+    ok(d.disk.has('A.1.jpg'), 'which is to say the file is still there');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   // 6a-ii. THE RESERVE IS THE CALLER'S, because they are two machines. A
   //        dedicated tablet may run down to 200 MB; a personal phone that
   //        fills its last 200 MB with plans is a broken phone.

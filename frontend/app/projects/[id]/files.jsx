@@ -61,6 +61,7 @@ import {
 } from '../../../src/utils/dropboxTree';
 import {
   listCachedDocs, cachedDocName, freeDiskBytes, cacheDocFile, sweepDocCache,
+  getCachedDocFile,
 } from '../../../src/utils/docCache';
 import {
   readinessOf, saveQueue, megabytes, hasRoomFor,
@@ -110,15 +111,32 @@ const nameOfFile = (f) => cachedDocName(f?.id || f?._id, f?.cache_version ?? 0);
  * it is the correct answer for most of these states anyway; swapping it for a
  * grey box would make a plan with no thumbnail look like one that failed.
  */
-function PlanThumb({ projectId, fileId, fallback, style }) {
-  const [uri, setUri] = useState(null);
-  const [headers, setHeaders] = useState(null);
+function PlanThumb({ projectId, fileId, cacheVersion, fallback, style }) {
+  const [source, setSource] = useState(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setFailed(false);
+    setSource(null);
     if (!projectId || !fileId) return undefined;
     (async () => {
+      // ── THE DEVICE'S OWN COPY FIRST, AND THAT IS THE WHOLE POINT ────────
+      //
+      // The prefetch pulls page one of every plan onto the device precisely so
+      // a sheet can be identified with no signal. Reaching for the network
+      // first would make that work invisible: offline, every row would fall
+      // back to the blank icon the thumbnail exists to replace, which is the
+      // failure exactly where it matters most.
+      //
+      // No token, no headers, no request — a `file://` uri an <Image> renders
+      // from disk.
+      try {
+        const local = await getCachedDocFile(fileId, cacheVersion ?? 0, 'jpg');
+        if (cancelled) return;
+        if (local) { setSource({ uri: local }); return; }
+      } catch (_e) { /* fall through to the network */ }
+
       let token = null;
       try { token = await AsyncStorage.getItem('blueview_token'); } catch (_e) { token = null; }
       if (cancelled || !token) return;
@@ -126,16 +144,18 @@ function PlanThumb({ projectId, fileId, fallback, style }) {
       // THE TOKEN GOES IN A HEADER, NEVER THE QUERY STRING. `/content` accepts
       // `?token=` because an <iframe> cannot set headers; an <Image> can, and a
       // url with a live bearer in it ends up in caches and logs.
-      setUri(`${base}/api/projects/${projectId}/files/${fileId}/thumbnail`);
-      setHeaders({ Authorization: `Bearer ${token}` });
+      setSource({
+        uri: `${base}/api/projects/${projectId}/files/${fileId}/thumbnail`,
+        headers: { Authorization: `Bearer ${token}` },
+      });
     })();
     return () => { cancelled = true; };
-  }, [projectId, fileId]);
+  }, [projectId, fileId, cacheVersion]);
 
-  if (failed || !uri || !headers) return fallback;
+  if (failed || !source) return fallback;
   return (
     <Image
-      source={{ uri, headers }}
+      source={source}
       style={style}
       resizeMode="cover"
       accessibilityIgnoresInvertColors
@@ -1244,6 +1264,7 @@ export default function ProjectFilesScreen() {
                         <PlanThumb
                           projectId={projectId}
                           fileId={typeInfo.label === 'PDF' ? (file.id || file._id) : null}
+                          cacheVersion={file.cache_version ?? 0}
                           style={s.fileThumb}
                           fallback={(
                             <View
