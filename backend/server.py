@@ -1042,6 +1042,12 @@ except Exception as _rl_err:
 # device so a support call can quote it.
 CLIENT_REQUEST_ID_HEADER = "X-Request-Id"
 
+# WHICH INSTALL IS ASKING -- set by the client on EVERY request (the api.js
+# request interceptor), not just at login. It is not a CORS-safelisted header,
+# so it must be named in allow_headers below or the browser refuses the
+# PREFLIGHT and never sends the request at all. See that list for the full note.
+CLIENT_VERSION_HEADER = "X-Client-Version"
+
 # BOUNDED AND CHARSET-RESTRICTED, because this is attacker-controlled text on
 # its way into a log file, and an unbounded value with newlines in it is how a
 # log line gets forged. Opaque to the server otherwise: a correlation handle,
@@ -1142,7 +1148,7 @@ app.add_middleware(
     # id without this line and the web build silently stops making the request
     # instead of silently making it without the header.
     allow_headers=["Authorization", "Content-Type", "Accept",
-                   CLIENT_REQUEST_ID_HEADER],
+                   CLIENT_REQUEST_ID_HEADER, CLIENT_VERSION_HEADER],
     # X-Refreshed-Token IS ON THIS LIST BECAUSE THE BROWSER HIDES WHAT IS NOT.
     # The web build reads response headers through fetch/XHR, which expose only
     # the CORS-safelisted set plus whatever is named here. Ship the re-issue
