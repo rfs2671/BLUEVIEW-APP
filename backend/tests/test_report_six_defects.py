@@ -648,14 +648,23 @@ class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
     def test_the_table_is_not_left_one_column_short(self):
         """A header row wider than its empty-state placeholder renders a
         ragged table on the one document nobody re-renders."""
-        # NARROWED. This meant "the toolbox placeholder is not left one column
-        # short of its header" and was written as a global ban on colspan 6 —
-        # which the pre-shift sheet then legitimately needed when it gained a
-        # signature column. Asserted on the toolbox table's own placeholder.
+        # NARROWED once (it was a global ban on colspan 6, which the pre-shift
+        # sheet then legitimately needed), and now COMPUTED rather than pinned.
+        #
+        # It asserted the literal `colspan="7"`, which made it a test about the
+        # NUMBER SEVEN and not about the invariant. Dropping the Confirmed and
+        # Present columns is a correct change that left the placeholder and the
+        # header agreeing at five, and this failed on it -- while the ragged
+        # table it exists to catch is any header/placeholder MISMATCH, at any
+        # width. So it counts both sides and compares them.
         _tb = _REPORT[_REPORT.index('toolbox = _filed_log'):]
         _tb = _tb[:_tb.index('preshift = _filed_log')]
-        self.assertIn('colspan="7"', _tb)
-        self.assertNotIn('colspan="6"', _tb)
+        header = next(l for l in _tb.splitlines() if "{TH}>Name</th>" in l)
+        columns = header.count("<th {TH}>")
+        self.assertGreater(columns, 0, header)
+        self.assertIn(f'colspan="{columns}"', _tb,
+                      f"the header carries {columns} columns; the empty-state "
+                      f"placeholder does not span them")
 
 
 class TestGroupThreeRendering(unittest.TestCase):
@@ -963,9 +972,18 @@ class TestPageOneReadsLikeSomethingSentToALender(unittest.TestCase):
         # reads under the heading — so the slice starts at the report title.
         page1 = html[html.index('<h2 style='):
                      html.index('page-break-after:always')]
-        self.assertIn("font-size:24px", page1)      # the report title
-        self.assertIn("font-size:17px", page1)      # section heads
+        # THE SCALE MOVED UP, and the assertion moves with it. 24/17/16 put
+        # the report title, its section heads and its body within eight points
+        # of each other, and 17 against a 16 body is not a heading -- a reader
+        # scanning for a block had to read the words to find it. The scale is
+        # now 30 / 19 / 16 (see the TYPE AND SPACING SCALE note in the
+        # renderer). What this test asserts is unchanged: THREE distinct ranks
+        # on page 1, and none of them at the filing's table size.
+        self.assertIn("font-size:30px", page1)      # the report title
+        self.assertIn("font-size:19px", page1)      # section heads
         self.assertIn("font-size:16px", page1)      # body / per-sub lines
+        self.assertNotIn("font-size:24px", page1)   # the old, too-small title
+        self.assertNotIn("font-size:17px", page1)   # the old, too-small heads
         self.assertNotIn("font-size:13px", page1)   # nothing at filing size
         # 14px was the OLD body size on this page. Asserting only that 16px
         # is PRESENT was not enough: the info box is also 16px, so shrinking

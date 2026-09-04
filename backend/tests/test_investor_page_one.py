@@ -170,10 +170,18 @@ class Base(unittest.TestCase):
         return self.loop.run_until_complete(
             server.generate_combined_report(PROJECT, DATE))
 
+    # THE DIVIDER, not the two words. This searched for "page-break-after"
+    # anywhere in the document and took the first hit, which was fine while the
+    # only occurrence was the divider itself. The print stylesheet now carries
+    # `page-break-after: avoid` on headings (a heading must not be the last
+    # thing on a sheet), so the first hit moved into the <head> and page1()
+    # started returning the shell. Anchored on the element that IS the break.
+    BREAK = '<div style="page-break-after:always;"></div>'
+
     def page1(self):
-        """Everything before the page break — page 2 begins after it."""
+        """Everything before the first page break — page 2 begins after it."""
         h = self.html()
-        i = h.find("page-break-after")
+        i = h.find(self.BREAK)
         self.assertGreater(i, -1, "no page break between page 1 and the filing")
         return h[:i]
 
@@ -188,8 +196,20 @@ class ItAnswersTheQuestionThatWasAsked(Base):
     def test_the_machine_date_is_not_on_page_1(self):
         self.assertNotIn("2026-08-11", self.page1())
 
-    def test_weather(self):
-        self.assertIn("Sunny", self.page1())
+    def test_weather_is_NOT_on_the_cover(self):
+        """It was, and it was a second copy with no document behind it.
+
+        Weather is a §3301-02 field of the DAILY JOBSITE LOG and it is printed
+        there, in that log's own info box. On the cover it was the first line
+        of a progress report answering a question nobody with $2M in the ground
+        was asking, and a reader counting fields on a compliance document reads
+        a repeat as a discrepancy. `_display_weather` is untouched -- the
+        assertion below is that the fact moved, not that it was dropped."""
+        self.assertNotIn("Sunny", self.page1())
+
+    def test_and_it_is_still_on_the_daily_jobsite_log(self):
+        h = self.html()
+        self.assertIn("Sunny", h[h.index("Daily Jobsite Log"):])
 
     def test_a_line_per_subcontractor_with_what_they_did(self):
         p1 = self.page1()
@@ -405,7 +425,7 @@ class PageTwoIsUntouched(Base):
 
     def test_the_logbook_section_still_renders_after_the_break(self):
         h = self.html()
-        tail = h[h.find("page-break-after"):]
+        tail = h[h.find(self.BREAK):]
         self.assertIn("Daily Jobsite Log (NYC DOB 3301-02)", tail)
 
     def test_page_1_comes_FIRST(self):

@@ -364,6 +364,22 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     ("test_public_signature_guard.py", "LOGBOOK_SIGNATURE_REQUIRES_AUTH"),
     ("test_superintendent_log.py", "unsafe_conditions"),
     ("test_superintendent_log.py", "cs_applicable_items"),
+
+    # ── THE INVESTOR REPORT'S DROPPED BADGE ──────────────────────────────────
+    # Same claim as the test_signature_affirmation.py entry above, on the other
+    # document: the combined report must not carry the badge in any position.
+    # It cannot usefully be anchored either way -- "AFFIRMED" is a SUBSTRING of
+    # "UNAFFIRMED", so an anchor built around the shorter word matches the
+    # longer one, and an anchor built around the longer sentence would pass on
+    # a reworded banner that still accuses the signer.
+    ("test_report_document_layout.py", "UNAFFIRMED"),
+
+    # ── A SENTINEL THE FIXTURE PLANTED ───────────────────────────────────────
+    # The base64 PNG magic prefix. It is in the document ONLY if item 1 pasted
+    # the superintendent's signature blob in as body text, which is the whole
+    # finding, so any occurrence at all is the violation and there is nothing
+    # to anchor to.
+    ("test_report_document_layout.py", "iVBORw0KGgo"),
 }
 
 

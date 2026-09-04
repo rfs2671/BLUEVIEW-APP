@@ -757,23 +757,28 @@ export default function SiteLogbooksViewer() {
         <DocSectionLabel icon={Users} label={`Attendees (${attendees.length})`} color="#8b5cf6" />
         {attendees.length > 0 && (
           <>
-            {/* ROSTER, not a worker attestation. "Present" is a CP-marked
-                boolean — workers are not required to sign a toolbox talk. The
-                CP signature over this roster is the legal attestation
-                (NYC DOB §3301.12.3 / OSHA 29 CFR 1926.21). The column used to
-                read "Signed", which told an inspector the opposite. */}
-            <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Title', flex: 1 }, { text: 'Company', flex: 1 }, { text: 'In', flex: 0.8 }, { text: 'Present', flex: 0.7 }]} />
+            {/* PRESENT AND CONFIRMED ARE GONE FROM THIS TABLE, AND NEITHER
+                FIELD IS. `signed` is the CP's presence tick and
+                `gate_confirmed` is the worker's own tap at the turnstile.
+                Neither is a legal attestation — the CP signature over the
+                whole roster is (NYC DOB §3301.12.3 / OSHA 29 CFR 1926.21) —
+                and rendering them as a tick column and a dagger invited
+                exactly the reading that signature already forecloses: that
+                each man individually attested to something.
+
+                THE FIELDS STAY IN STORAGE, unchanged, and toolboxTalkModel.js
+                is untouched. Dropping a COLUMN is a rendering change;
+                dropping a FIELD is a data change. Both are still written at
+                the gate.
+
+                The two PDF renderers dropped the same two columns in the same
+                change, so this viewer and the document an inspector downloads
+                still show one record one way — the drift that has had to be
+                pulled back twice on these two surfaces. */}
+            <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Title', flex: 1 }, { text: 'Company', flex: 1 }, { text: 'In', flex: 0.8 }]} />
             {attendees.map((a, i) => (
-              <DocTableRow key={i} cells={[{ text: `${a.name || 'Unknown'}${a.gate_confirmed ? ' †' : ''}${cpAdded(a) ? ' ‡' : ''}`, flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }, { text: a.signed ? '✓' : '—', flex: 0.7 }]} />
+              <DocTableRow key={i} cells={[{ text: `${a.name || 'Unknown'}${cpAdded(a) ? ' ‡' : ''}`, flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }]} />
             ))}
-            {/* The PDF carries gate-confirm as its own column; this phone-width
-                viewer would be unreadable at 6 columns, so it rides as a dagger
-                on the name with a legend. Same data either way. */}
-            {attendees.some(a => a.gate_confirmed) && (
-              <Text style={s.rosterLegend}>
-                † Confirmed attending at gate check-in (optional; not a required signature)
-              </Text>
-            )}
             {/* WHOSE CLAIM PUT HIM HERE. The gate saying a man was on site and
                 the CP saying a man attended are different assertions, and a
                 roster that renders them identically is the stronger one lending
