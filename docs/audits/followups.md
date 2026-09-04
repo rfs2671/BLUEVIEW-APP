@@ -4,6 +4,64 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-04 — `railway logs --json` is the FIRST move on a server-side failure, not the last
+
+    railway logs --json | grep "api/workers"
+
+The CLI is authenticated in the working environment. One command, filtered on
+the path, returned the status line AND the full traceback:
+
+    GET /api/workers HTTP/1.1" 500 Internal Server Error
+    pymongo.errors.OperationFailure: Executor error during find command:
+    blueview.workers :: caused by :: Sort exceeded memory limit of 33554432
+    bytes, but did not opt in to external sorting.
+    code 292, QueryExceededMemoryLimitNoDiskUseAllowed
+
+**The traceback is in the deployment log even when the client shows only a
+banner.** The screen said "some of today's data could not be read". The server
+had written the collection, the operation, the byte limit and the error code.
+
+### What it cost not to run it first
+
+One evening, four proposed causes for one failure. Three reasoned off the
+CLIENT's symptom and all three were wrong: the rate limiter (plausible, killed
+by the banner not clearing on refresh); a missing `/api/dob/portfolio-dashboard`
+endpoint that has never existed in this repository and that nothing calls; and
+an account with no `company_id`, ruled out by construction because that path
+returns an empty list with 200 and never an error.
+
+The fourth — an unindexed sort over documents carrying inline base64 — was
+correct, and the server had been stating it in plain text the whole time. It was
+not deduced. It was read.
+
+### The rule
+
+On any failure where the server ANSWERED — a 4xx or 5xx, as opposed to a dead
+zone — read the deployment log before forming a hypothesis. Filter on the path.
+The cost is one command, and it either names the failure outright or proves the
+server never saw the request. Both are worth more than the best available guess.
+
+**Corollary:** a client-side symptom tells you WHICH call failed and nothing
+about WHY. Making the dashboard banner name its failing source (#343) was worth
+doing for exactly that reason — it turns "some data failed" into a path, and a
+path is what this command takes as its argument.
+
+### Two neighbours in this file, and why all three are one lesson
+
+- **`railway logs --since` is silently ineffective when the line cap binds
+  first** (2026-09-02, below). The command that reads the log has its own
+  reach problem, so running it first is necessary and not sufficient.
+- **Four sorts protected only by a projection** — the 292 above is the same
+  family, and the sweep for it is `backend/scripts/find_unserved_sorts.py`.
+
+Recorded on a fresh base: the original entry (#346) was written against a base
+that predates both of those and the seven merges of 2026-09-04, and merging a
+stale three-day base to carry one lesson is how a clean auto-merge misfiles an
+entry below the block it belonged above — which this file has already recorded
+happening.
+
+---
+
 ## OPEN — 2026-09-03 — a tradeoff paying full price for a guarantee its other half stopped delivering
 
 The PDF viewer rasterises pages at up to 16 megapixels, oversampled ~3x on a
