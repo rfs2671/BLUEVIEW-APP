@@ -184,9 +184,36 @@ try {
 {
   const m = /const VIEWER_VERSION = '(\d+)';/.exec(viewerSrc);
   ok(!!m, 'VIEWER_VERSION is present');
-  ok(m && Number(m[1]) >= 4,
+  ok(m && Number(m[1]) >= 5,
     'VIEWER_VERSION bumped so staged devices re-write viewer.html',
-    m ? `found '${m[1]}', expected >= 4` : '');
+    m ? `found '${m[1]}', expected >= 5` : '');
+}
+
+// ── 11. THE ENGINE DECISION GETS A MEASUREMENT, NOT AN INFERENCE ─────────
+{
+  // JBIG2/CCITT is the strongest form of the PDFium argument; DCTDecode
+  // collapses it. That distinction is not available from getOperatorList —
+  // pdf.js resolves an image object to a DECODED bitmap with the source filter
+  // already consumed — so it has to come from the file's own bytes.
+  ok(/function probeImageFilters\(next\)\{/.test(script),
+    'embedded image compression is measured');
+  for (const f of ['JBIG2Decode', 'CCITTFaxDecode', 'DCTDecode', 'JPXDecode']) {
+    ok(script.includes(`"${f}"`), `the image-only filter ${f} is scanned for`);
+  }
+  ok(/out\.verdict = out\.bilevel \?/.test(script),
+    'the scan reports a verdict, not seven raw counts to re-derive');
+  ok(/bytes = null;/.test(script.slice(script.indexOf('function probeImageFilters'))),
+    'the scan drops the buffer it re-read');
+  // The decoded-kind shadow is useful but must not be presented as the answer.
+  ok(/decodedKinds/.test(script),
+    'ImageKind is captured alongside, as the operator-list shadow of the filter');
+  // Cheap measurement before the expensive one: a device that dies on the
+  // worker A/B has still reported the compression.
+  const filtersAt = script.indexOf('probeImageFilters(function()');
+  const workerAt = script.indexOf('probeWorkerAB(function()');
+  ok(filtersAt > 0 && workerAt > filtersAt,
+    'the filter scan runs before the worker A/B',
+    `filters@${filtersAt} worker@${workerAt}`);
 }
 
 // ── 9. BLOCKER A HAS TWO HALVES AND BOTH ARE ASKED ───────────────────────

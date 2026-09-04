@@ -80,7 +80,10 @@ const STAMP_NAME = '.stamp';
 //       SOURCE be read at all) and the two MBTiles prerequisites. Bumped
 //       rather than reused because a device that already staged `3` would
 //       report the first round's measurements and silently omit these.
-const VIEWER_VERSION = '4';
+//   5 — the embedded-image compression scan. Same reasoning: a device staged
+//       at `4` would report every other measurement and silently omit the one
+//       the engine decision turns on.
+const VIEWER_VERSION = '5';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -795,24 +798,108 @@ const VIEWER_SCRIPT = [
   '    if (!OPS) { cb(null); return; }',
   '    doc.getPage(pageNo).then(function(page){',
   '      page.getOperatorList().then(function(ol){',
-  '        var best = null, imgs = 0;',
+  '        var best = null, imgs = 0, kinds = {}, masks = 0;',
   '        try {',
   '          for (var i = 0; i < ol.fnArray.length; i++) {',
   '            var fn = ol.fnArray[i];',
   '            if (fn !== OPS.paintImageXObject && fn !== OPS.paintJpegXObject && fn !== OPS.paintImageMaskXObject) continue;',
   '            imgs++;',
+  '            if (fn === OPS.paintImageMaskXObject) masks++;',
   '            var nm = ol.argsArray[i] && ol.argsArray[i][0];',
   '            if (!nm) continue;',
   '            var o = null;',
   '            try { o = page.objs.get(nm); } catch (e) { o = null; }',
-  '            if (o && o.width && o.height && (!best || o.width * o.height > best.w * best.h)) best = { w: o.width, h: o.height };',
+  '            if (!o) continue;',
+  // THE DECODED SHAPE, WHICH IS AS CLOSE AS THE OPERATOR LIST GETS TO THE
+  // COMPRESSION. pdf.js hands back a DECODED bitmap; the source filter is
+  // consumed and discarded by then, so it cannot be read here. `kind` is the
+  // useful shadow of it: ImageKind 1 is GRAYSCALE_1BPP — bilevel — which is
+  // what JBIG2 and CCITT decode to and what a scanned line drawing is. 2 and 3
+  // are RGB/RGBA, which is what a DCT (JPEG) photo or a rendered raster gives.
+  // The authoritative answer comes from `imgfilters` below, which reads the
+  // filter names out of the file itself.
+  '            if (o.kind !== undefined && o.kind !== null) kinds["k" + o.kind] = (kinds["k" + o.kind] || 0) + 1;',
+  '            if (o.width && o.height && (!best || o.width * o.height > best.w * best.h)) best = { w: o.width, h: o.height };',
   '          }',
   '        } catch (e) {}',
-  '        probePost("native-raster", { page: pageNo, imageOps: imgs, nativeW: best ? best.w : null, nativeH: best ? best.h : null });',
+  '        probePost("native-raster", { page: pageNo, imageOps: imgs, imageMasks: masks,',
+  '          decodedKinds: kinds, nativeW: best ? best.w : null, nativeH: best ? best.h : null });',
   '        try { page.cleanup(); } catch (e) {}',
   '        cb(best);',
   '      })["catch"](function(){ probePost("native-raster", { page: pageNo, error: "operator-list-failed" }); cb(null); });',
   '    })["catch"](function(){ cb(null); });',
+  '  }',
+  '',
+  // ── WHAT THE EMBEDDED IMAGES ARE ACTUALLY COMPRESSED WITH ──────────────
+  //
+  // NOT AVAILABLE FROM getOperatorList, AND THAT IS WHY THIS EXISTS. The
+  // operator list hands back a DECODED bitmap — `page.objs.get(name)` resolves
+  // to width/height/data with the source filter already consumed and thrown
+  // away. `decodedKinds` above is the closest shadow of it (kind 1 is
+  // GRAYSCALE_1BPP, which is what a bilevel scan decodes to), but it cannot
+  // tell JBIG2 from CCITT from a 1-bit Flate raster, and those are three very
+  // different decode costs.
+  //
+  // SO READ THE FILTER NAMES OUT OF THE FILE. Four of the seven are
+  // IMAGE-ONLY filters, which is what makes a raw byte scan conclusive rather
+  // than suggestive:
+  //
+  //   JBIG2Decode     bilevel, extremely expensive to decode — the strongest
+  //   CCITTFaxDecode  bilevel fax coding, also expensive   } form of the
+  //                                                          PDFium argument
+  //   DCTDecode       baseline JPEG — cheap, and its presence alone COLLAPSES
+  //                   the PDFium argument
+  //   JPXDecode       JPEG 2000 — expensive, and pdf.js's implementation is
+  //                   its weakest decoder
+  //
+  // FlateDecode and LZWDecode are counted too but prove nothing on their own:
+  // every PDF uses Flate for content streams. They are reported so a sheet
+  // with NO image-only filter can be told apart from one this scan failed on.
+  //
+  // WHY A BYTE SCAN IS SOUND HERE. An image XObject is a STREAM, and a stream
+  // cannot live inside an object stream — so its dictionary, and therefore its
+  // /Filter entry, is always present verbatim in the file. A compressed xref
+  // can hide plenty of other objects from a scan like this; it cannot hide
+  // these.
+  //
+  // WHAT IT CANNOT DO, stated: it counts filters across the WHOLE document,
+  // not per page, and it cannot attribute a filter to a particular image. For
+  // the question being asked — is this plan set bilevel-scanned or JPEG — that
+  // is enough, and anything finer means parsing the PDF a second time.
+  '  function probeImageFilters(next){',
+  '    if (!PROBE) { if (next) next(); return; }',
+  '    readBytes(fileUrl, function(bytes){',
+  '      var names = ["JBIG2Decode", "CCITTFaxDecode", "DCTDecode", "JPXDecode",',
+  '                   "FlateDecode", "LZWDecode", "RunLengthDecode"];',
+  '      var out = { byteLength: bytes.length, scanMs: null };',
+  '      var t0 = pnow();',
+  '      try {',
+  '        for (var n = 0; n < names.length; n++) {',
+  '          var pat = names[n], plen = pat.length, first = pat.charCodeAt(0), count = 0;',
+  '          var limit = bytes.length - plen;',
+  '          for (var i = 0; i <= limit; i++) {',
+  '            if (bytes[i] !== first) continue;',
+  '            var j = 1;',
+  '            while (j < plen && bytes[i + j] === pat.charCodeAt(j)) j++;',
+  '            if (j === plen) { count++; i += plen - 1; }',
+  '          }',
+  '          out[pat] = count;',
+  '        }',
+  '        out.scanMs = r1(pnow() - t0);',
+  // The verdict, spelled out rather than left to be re-derived from seven
+  // counts by whoever reads the log.
+  '        out.bilevel = (out.JBIG2Decode > 0 || out.CCITTFaxDecode > 0);',
+  '        out.jpeg = (out.DCTDecode > 0);',
+  '        out.jpeg2000 = (out.JPXDecode > 0);',
+  '        out.verdict = out.bilevel ? "bilevel-scan (JBIG2/CCITT) — expensive decode"',
+  '          : (out.jpeg2000 ? "jpeg2000 (JPX) — expensive decode"',
+  '          : (out.jpeg ? "jpeg (DCT) — cheap decode"',
+  '          : "no image-only filter found — likely vector"));',
+  '      } catch (e) { out.error = "scan:" + String(e); }',
+  '      bytes = null;',
+  '      probePost("imgfilters", out);',
+  '      if (next) next();',
+  '    }, function(code){ probePost("imgfilters", { error: "reread:" + code }); if (next) next(); });',
   '  }',
   '',
   // ── THE COST OF HAVING NO WORKER, PART TWO: THE A/B ────────────────────
@@ -910,7 +997,12 @@ const VIEWER_SCRIPT = [
   '        probeRenderAt(1, noOver.s, "anchor:viewport over:1.0", { clamp: noOver.clamp }, function(){',
   '          probeRenderAt(1, ceil.s, "anchor:cap-ceiling (HEADROOM)", { clamp: ceil.clamp }, function(){',
   '            probeNativeRaster(1, function(nat){',
-  '              function thenWorker(){ probeWorkerAB(function(){ probePost("suite", { done: true }); }); }',
+  // FILTERS BEFORE THE WORKER A/B. The scan is a read plus a linear pass and
+  // frees its buffer immediately; the worker A/B holds a whole second parsed
+  // document. Running the cheap one first means a device that dies on the
+  // expensive one has still reported the compression, which is the measurement
+  // the engine decision turns on.
+  '              function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ probePost("suite", { done: true }); }); }); }',
   '              if (!nat) { thenWorker(); return; }',
   // Anchored to the SCAN's own pixels, then held to the same caps — the
   // "render it at what the plan actually is" case, measured rather than
