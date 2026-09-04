@@ -6,7 +6,7 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ## PRACTICE — 2026-09-04 — a LOCATION standing in for a STRUCTURE, which is most of this week
 
-Three checks broke in one day, none of them because the thing they protect
+Five checks broke in one day, none of them because the thing they protect
 changed. Each had substituted a position in a file for the shape it cared about.
 
 | check | what it pinned | what it meant |
@@ -14,6 +14,8 @@ changed. Each had substituted a position in a file for the shape it cared about.
 | `test_signature_ink_predicate` | the affirmed/ink predicates within 4000 CHARACTERS of each other | "the two halves of one rule are read together" |
 | `test_startup_seed_guard`, and a SECOND COPY in `test_worker_response_model` | 900 CHARACTERS from a marker comment | "these keys are in the seeded document" |
 | `test_assigned_projects_grant` | the LITERAL `sub_dict["assigned_projects"] = []` | "every creation handler forces the list" |
+| `test_card_image_correction` (authored same day) | a 3,242-character `repr()` of the dependant tree | "this endpoint is admin- and tenant-gated" |
+| `buildIdentity.test.cjs` (inherited, broke on a deliberate change) | the literal `MISMATCH` in `settings.jsx` | "the card does not claim a match it cannot make" |
 
 The first fired because a new module-level function was inserted between them.
 The second and third fired because a COMMENT was added inside the seed call and
@@ -27,6 +29,35 @@ a 41k-line file, which this project hit four times in a week and twice more
 from two directions at once; as a ratchet whose scan root was
 `Path(__file__).parent`; and as a source pin that greps a location when the
 thing worth protecting is a behaviour.
+
+### It is easy to WRITE, not merely easy to inherit — and that is the harder half
+
+Three of the four instances below were inherited. **Two were authored the same
+day, by the person writing this entry, one of them in the same hour as this
+paragraph.**
+
+  * `test_card_image_correction` asserted a route's dependencies by
+    `str(route.dependant.dependencies)` and substring-matching the result —
+    3,242 characters of nested Dependant/ModelField objects whose TEXT is a
+    FastAPI + Pydantic version artifact. It passed locally, failed in CI on
+    identical code, and reported "an admin" about an endpoint that has always
+    had one.
+  * `buildIdentity.test.cjs` had three assertions greping `settings.jsx` for
+    `Boolean(jsCommit && backendCommit)`, for the literal `MISMATCH`, and for
+    a wording string. All three broke when the rule moved into a module — and
+    the MISMATCH one was PINNING THE DEFECT: it asserted the presence of the
+    single-output wording that sent a wrong acceptance test out.
+
+**Inherited defects get audited; authored ones do not.** Nobody re-reads a test
+they wrote an hour ago looking for this, because writing it felt like being
+thorough — a repr contains the name, a grep finds the literal, and both pass on
+the machine they were written on. The tell is not carelessness, it is that the
+check was easier to write than the structural one.
+
+So the rule below is not only for old code. **Ask it of the assertion you are
+writing right now**, and specifically: would this still hold if the thing it
+names moved to a different file, a different line, or a different library
+version?
 
 ### The rule
 
