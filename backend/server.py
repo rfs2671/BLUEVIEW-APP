@@ -1042,6 +1042,12 @@ except Exception as _rl_err:
 # device so a support call can quote it.
 CLIENT_REQUEST_ID_HEADER = "X-Request-Id"
 
+# WHICH INSTALL IS ASKING -- set by the client on EVERY request (the api.js
+# request interceptor), not just at login. It is not a CORS-safelisted header,
+# so it must be named in allow_headers below or the browser refuses the
+# PREFLIGHT and never sends the request at all. See that list for the full note.
+CLIENT_VERSION_HEADER = "X-Client-Version"
+
 # BOUNDED AND CHARSET-RESTRICTED, because this is attacker-controlled text on
 # its way into a log file, and an unbounded value with newlines in it is how a
 # log line gets forged. Opaque to the server otherwise: a correlation handle,
@@ -1142,7 +1148,7 @@ app.add_middleware(
     # id without this line and the web build silently stops making the request
     # instead of silently making it without the header.
     allow_headers=["Authorization", "Content-Type", "Accept",
-                   CLIENT_REQUEST_ID_HEADER],
+                   CLIENT_REQUEST_ID_HEADER, CLIENT_VERSION_HEADER],
     # X-Refreshed-Token IS ON THIS LIST BECAUSE THE BROWSER HIDES WHAT IS NOT.
     # The web build reads response headers through fetch/XHR, which expose only
     # the CORS-safelisted set plus whatever is named here. Ship the re-issue
@@ -22237,11 +22243,95 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
             logger.error(f"R2 delete_object failed key={r2_key}: {e}")
             # Continue: still remove DB row so the file stops appearing.
 
+    # ── EVERYTHING INDEXING MADE, REMOVED WITH THE FILE ────────────────────
+    #
+    # THIS ENDPOINT LEAKED ON EVERY CALL. It deleted the source object and the
+    # `project_files` row and touched NOTHING ELSE, so each deletion left one
+    # `document_page_index` row per page and one rendered image per page behind
+    # for ever. Production carried 44 such rows across 8 files and 74.6 MB of
+    # unreferenced objects when this was written — not a historical accident,
+    # an accumulation, and it would have gone on accumulating.
+    #
+    # THE ORPHANS WERE NOT INERT. The plan-query retriever searches that index,
+    # so a WhatsApp answer could name a sheet, offer its image and tell a
+    # superintendent to open it in the app — where it did not exist.
+    #
+    # HARD, NOT SOFT, AND THE ARGUMENT IS THAT THIS IS A DERIVED ARTEFACT.
+    # `document_page_index` is a SEARCH INDEX: it attests nothing, and a
+    # re-index reconstructs it exactly. Soft deletion in this codebase is for
+    # RECORDS — logbooks, signatures, workers — things that would lose evidence
+    # if removed. Keeping a searchable row pointing at bytes this same call has
+    # just destroyed is not preserving evidence; it is preserving a pointer to
+    # nothing, which is precisely the wrong-answer failure above. A soft flag
+    # would also have to be honoured by twelve readers, and this codebase has
+    # lost that race often enough to have a name for it.
+    #
+    # WHAT PRESERVES THE FACT INSTEAD is the audit entry below. "This plan was
+    # deleted, by whom, when, and how much went with it" belongs in the audit
+    # log, not in a stale index row.
+    #
+    # THE SHAPE IS `hard_delete_project`'s, DELIBERATELY. That path already
+    # does this correctly — index rows by file id, then an R2 prefix sweep —
+    # and this one is the outlier that did not. Same helper, same order.
+    idx_deleted = 0
+    try:
+        idx_res = await db.document_page_index.delete_many({"file_id": str(file_id)})
+        idx_deleted = getattr(idx_res, "deleted_count", 0) or 0
+    except Exception as e:
+        # Never fail the deletion over its own housekeeping: the file must stop
+        # appearing. A failure here is recorded and leaves exactly the state
+        # that existed before this change, which the sweep can still reach.
+        logger.error(
+            f"[file-delete] index rows NOT removed for file_id={file_id} "
+            f"project={project_id}: {e!r}"
+        )
+
+    # Page renders, thumbnails and base layers all live under one prefix, so
+    # one sweep takes every derivative including any this code does not know
+    # about yet. Paginates past the 1000-key cap and never raises.
+    pages_deleted = await _r2_delete_prefix(
+        _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/{file_id}/",
+    )
+
     delete_result = await db.project_files.delete_one({"_id": rec_oid})
+
+    # ── THE SOURCE OBJECT IS THE ONE THING THAT CAN OUTLIVE THIS ───────────
+    #
+    # The `project_files` row goes whether or not R2 accepted the delete —
+    # deliberately, because the user's instruction was to remove the file and a
+    # storage hiccup must not leave it on his screen. That trade produces the
+    # only orphan this endpoint can still make: bytes with no row.
+    #
+    # It is now RECORDED rather than merely logged in passing. The key is what
+    # a later sweep needs, and an ERROR line carrying it is the difference
+    # between a reclaimable object and an unknown one.
+    if r2_key and not r2_deleted and _r2_client and R2_BUCKET_NAME:
+        logger.error(
+            f"[file-delete] ORPHANED R2 OBJECT — the row is gone and the bytes "
+            f"are not. bucket={R2_BUCKET_NAME} key={r2_key} "
+            f"file_id={file_id} project={project_id} name={rec.get('name')!r}"
+        )
+
+    try:
+        await audit_log(
+            "project_file_delete", str(current_user.get("id", "")),
+            "project_file", str(file_id),
+            {
+                "project_id": project_id,
+                "name": rec.get("name"),
+                "r2_key": r2_key or None,
+                "r2_source_deleted": r2_deleted,
+                "index_rows_deleted": idx_deleted,
+                "page_objects_deleted": pages_deleted,
+            },
+        )
+    except Exception as e:  # pragma: no cover - the audit must not block
+        logger.error(f"[file-delete] audit_log failed for {file_id}: {e!r}")
 
     logger.info(
         f"File hard-deleted by {current_user.get('email')}: "
         f"name={rec.get('name')} r2_key={r2_key or '-'} r2_deleted={r2_deleted} "
+        f"index_rows={idx_deleted} page_objects={pages_deleted} "
         f"mongo_deleted={delete_result.deleted_count}"
     )
     return {
@@ -22250,6 +22340,10 @@ async def delete_project_file(project_id: str, file_id: str, current_user = Depe
         "name": rec.get("name", ""),
         "r2_deleted": r2_deleted,
         "mongo_deleted": delete_result.deleted_count == 1,
+        # Reported so a caller can SEE the derivatives went. Silence about them
+        # is how they accumulated in the first place.
+        "index_rows_deleted": idx_deleted,
+        "page_objects_deleted": pages_deleted,
     }
 
 
@@ -35289,9 +35383,36 @@ async def get_company_roster(current_user=Depends(get_current_user)):
     query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
+    # ── `password: 0` REMOVED, AND THAT WAS THE WHOLE DEFECT ────────────────
+    #
+    # MongoDB REJECTS a projection that mixes an exclusion with inclusions —
+    # `_id` is the only field allowed to be excluded inside an inclusion
+    # projection. So this raised
+    #
+    #   OperationFailure: Cannot do inclusion on field name in exclusion
+    #   projection
+    #
+    # on EVERY call. Not sometimes, not at scale: every call, since the line
+    # was written. The annotation recipient picker has been returning a 500 to
+    # any authenticated user who opened it — 40 events in Sentry over the week
+    # before this fix, still arriving.
+    #
+    # HOW IT SURVIVED. `find_unserved_sorts.py` classifies a projection by
+    # SHAPE and reported this row as "inclusion, base64 excluded" — protected.
+    # docs/audits/followups.md then recorded that classification as fact, and a
+    # later pass deferred the fix as "a riskier edit than adding an index"
+    # WITHOUT CHECKING WHETHER IT WAS ALREADY FAILING. It was, and the evidence
+    # was in Sentry the whole time. A tool that says "protected" must be able
+    # to say protected BY WHAT, and be wrong loudly when the projection is
+    # malformed.
+    #
+    # NOTHING ELSE CHANGES. `password` was already excluded by OMISSION — the
+    # five inclusions below are the only fields the loop reads, so the response
+    # is byte-identical to what this endpoint was written to return. The one
+    # difference is that it now returns it.
     users = await db.users.find(
         query,
-        {"password": 0, "_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1},
+        {"_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1},
     ).sort("name", 1).to_list(500)
     out = []
     for u in users:

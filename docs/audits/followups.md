@@ -144,6 +144,789 @@ the codebase: nothing linked them, so nothing could notice they disagreed —
 and they did not disagree, they agreed on being wrong. `lib/ocr_text.py` now
 holds the rule and both import it, which is the same remedy `lib/cert_vocab.py`
 was written for and for the same reason.
+## PRACTICE — 2026-09-04 — a check that REPLACES its subject reports on what is left
+
+Not "the mount smoke had a gap". A gap is a subject a check never reaches. This
+is a check that reached its subject, removed it, substituted an answer that
+always passes, and reported the result as coverage.
+
+### What it looked like
+
+`frontend/scripts/smoke-mount.cjs` is the only thing in CI that runs the real
+web bundle in a real browser. It stubbed the API with Playwright route
+interception:
+
+```js
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', ... };
+if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
+```
+
+An `OPTIONS` branch. A CORS header block. It reads as a job that has thought
+about preflights and decided to allow them all.
+
+### What it actually was
+
+**There was no preflight.** `page.route(...).fulfill()` short-circuits before
+Chromium issues one. Measured on the same page with the same non-safelisted
+header:
+
+```
+interception OFF  ->  origin saw ["OPTIONS /api/probe", "GET /api/probe"]
+interception ON   ->  handler saw ["GET"],  origin saw []
+```
+
+The `OPTIONS` branch has never executed in any run since it was written. The
+`'*'` was never sent to anything. Route interception does not stub CORS
+permissively — it deletes CORS from the browser's behaviour, and the branch
+that appears to handle it is decoration over the deletion.
+
+### The cost, stated exactly
+
+`X-Client-Version` shipped on every request from 2026-08-28 and was absent from
+`allow_headers`, so the real server answered `400 Disallowed CORS headers` and
+Chrome declined to send the request at all — every endpoint, `auth/login`
+included. Run against that exact `server.py`, this job printed:
+
+```
+37/37 route-mounts clean
+```
+
+Every other signal was structurally incapable, which is a different and lesser
+failure: native sends no `Origin` and gets no preflight; `postdeploy_login_check.py`
+sends the header but speaks `urllib`, so no `Origin` and no `OPTIONS`. Those
+checks were looking elsewhere. This one was looking straight at it.
+
+**And `/api/version` is not the exception it appeared to be.** By `curl` it is a
+simple GET, no preflight, 200 — which is how it stayed green. From the app it
+goes through the same axios interceptor, carries `X-Client-Version`, preflights,
+and was blocked like everything else. The health check and the application were
+making different requests to the same URL, and only the health check's version
+was healthy.
+
+### The tell
+
+**A branch whose condition can never be true, inside a stub, is invisible to
+review** — it reads as thoroughness. Nothing about `if (method === 'OPTIONS')`
+looks like dead code; it looks like the opposite.
+
+The general question for any stub: *does the thing I am replacing still happen?*
+A stub of a response leaves the mechanism intact. A stub of a **transport**
+removes every mechanism the transport implements, and CORS lives in the
+transport, not in the response.
+
+### The fix, and the guard that found the real problem
+
+`smoke-mount.cjs` now serves a real HTTPS origin on the hostname the production
+bundle is built against (`--host-resolver-rules`, `--ignore-certificate-errors`),
+answering preflights from `server.py`'s own `allow_headers`. Nothing is
+intercepted; the browser does real DNS, real TLS, real CORS. Against the outage
+state, every route now fails with the production error; with the header
+restored, 74/74 clean and 116 real preflights answered.
+
+**The counter is what caught it.** A first pass made the interception handler
+strict — derive the list, refuse what the server refuses. It passed everything
+and reported `preflights: 0`. Without that number the strict version would have
+shipped as a fix and changed nothing at all, which would have been the same
+defect a third time. Any check that can be satisfied without running should
+count its own executions and fail at zero.
+
+### How long, and what cannot be proven from here
+
+**At least 6 days 22 hours**, from `b5aabe95` (2026-08-28 17:18:19 -0400) to the
+fix serving at 2026-09-04 19:35:28 UTC.
+
+That is the **code** date. It is a floor, not a measurement. No workflow in this
+repo deploys the web bundle — it ships through an external git integration — so
+nothing here records when a build carrying that commit actually reached
+production. The repo can date the commit and cannot date the deploy, and that
+gap is itself the finding: `/api/version` answers the same question for the
+backend in one request, and the web build has no equivalent.
+
+---
+
+## PRACTICE — 2026-09-04 — a filter that names the class it is discarding
+
+The strongest form of this failure. Not an oversight, not a missing case: a
+deliberate rule, written by someone who correctly identified the category, that
+suppressed a total outage because a total outage arrives in the same shape as
+the noise.
+
+### The rule
+
+`frontend/src/lib/sentry.js`:
+
+```js
+// Drop CORS noise that comes through with a generic "Network Error"
+// message and no stack. These are almost always misconfigured CORS
+// preflights or browser-blocked fetches that say nothing useful.
+if (t === 'error' && (msg === 'network error' || msg === 'failed to fetch')) {
+  return null;
+}
+```
+
+Axios raises exactly `Error: Network Error` when a preflight blocks the request.
+The comment names *misconfigured CORS preflights* as the thing being dropped.
+
+Sentry is configured on web and was firing throughout — the failing page shows
+`envelope/?sentry_version=7` going out. The only client-side channel that could
+have observed a seven-day outage was wired to discard it, on purpose, by someone
+who understood the class well enough to describe it in a comment.
+
+### Why the reasoning was not wrong
+
+It is true that an individual `Network Error` with no stack says nothing useful.
+One of them is noise. The judgement failed on **volume**, not on kind: the
+predicate is right about a single event and silent about the difference between
+one event and every event from every session.
+
+That is the general shape. **A filter written on the properties of one instance
+cannot distinguish an outage from the noise it resembles**, because at the level
+of the instance they are identical. What separates them is rate, breadth and
+duration — none of which a `beforeSend` on a single event can see.
+
+### Ruling
+
+Keep the filter. It is correct about what it says. But not silently — a total
+outage must not be indistinguishable from noise on the way to `return null`.
+Options are open (a counter, a sampled breadcrumb, a distinct low-priority event
+type); **reported before building**, deliberately, because the choice is about
+alert economics and not about plumbing.
+
+### Mobile, and what is ruled there
+
+Sentry does not run on device at all: `@sentry/react` only (no
+`@sentry/react-native`), and `eas.json` has no `env` block, so
+`EXPO_PUBLIC_SENTRY_DSN` is never inlined into a native build — `initSentry()`
+returns `false` and every helper is a no-op. The DSN reaches the web build alone,
+through Cloudflare Pages.
+
+Ruled: **`POST /api/client-error` first**, because it is OTA-deliverable and
+reaches installs already in the field. `@sentry/react-native` folded into the
+next native build.
+
+---
+
+## PRACTICE — 2026-09-04 — a warning written beside an unnoticed instance of itself
+
+The same day as the fix, `#399` rewrote the exact line that was broken, to add a
+different header to it, and attached this:
+
+```python
+# X-Request-Id IS ON THIS LIST BECAUSE A HEADER THE PREFLIGHT DOES NOT
+# ALLOW IS A REQUEST THE BROWSER REFUSES TO SEND AT ALL. Same shape as the
+# expose_headers trap below, one direction earlier: ship the correlation
+# id without this line and the web build silently stops making the request
+# instead of silently making it without the header.
+allow_headers=["Authorization", "Content-Type", "Accept",
+               CLIENT_REQUEST_ID_HEADER],
+```
+
+The hazard is stated precisely, in the right place, by someone who had clearly
+just reasoned it through. `X-Client-Version` had been shipping on every request
+for seven days, from the file two lines above the one being edited, and was not
+added.
+
+### Why the comment did not help
+
+Because it is written in the **prospective** voice. It explains what would happen
+if *this* header were omitted — a hypothetical about the change in hand. It
+never asks the retrospective question the same reasoning implies: *what else is
+already on the wire that is not on this list?*
+
+Understanding a failure mode makes you careful about the instance you are
+holding. It does not, on its own, make you enumerate the others. The two are
+different acts, and the first feels enough like diligence to substitute for the
+second.
+
+### What replaces it
+
+Not a better comment. A comment cannot enumerate, and a second reader of that
+comment would have had exactly the same thought and made exactly the same
+omission.
+
+`backend/tests/test_cors_allows_every_client_header.py` derives the header set
+from the client source and asserts a real preflight against a real route. The
+audit is performed by something that cannot be satisfied by having understood it.
+
+**Where a comment explains a hazard that has a checkable form, the check is the
+deliverable and the comment is the commit message.**
+
+---
+
+## PRACTICE — 2026-09-04 — a test that pins a LITERAL can hold the defect in place
+
+Not "source pins are brittle", which is a style opinion. This is a claim about
+a failure mode with a cost that is different **in kind** from a false alarm.
+
+### The two that did it
+
+**`buildIdentity.test.cjs` required the word MISMATCH.**
+
+```js
+ok(/MISMATCH/.test(code), 'and a mismatch is stated in those words');
+```
+
+The build card printed *"MISMATCH — the app and the backend are on different
+commits"* for every inequality of two seven-character strings. That single
+output covers three states, two of which are faults and one of which is a
+**backend-only change** — nothing under `frontend/` moved, the OTA workflow
+correctly did not run, the phone is exactly right.
+
+On the morning of 2026-09-04 the third case produced an acceptance test telling
+the CP to wait for a version line that was never going to change. He would have
+concluded a landed fix had not shipped.
+
+**The assertion required the presence of the wording that caused it.** Anyone
+who softened that sentence would have been told by CI that they had broken the
+card — in the file that exists to keep the card honest.
+
+**Four preshift pins required `w.get("name", "")`.**
+
+```python
+self.assertEqual(_SRC.count('if w.get("name", "").strip():'), 2)
+```
+
+`.get(key, default)` returns the default only on an **absent** key, never on a
+present-but-`None` value. So `{"name": None}.get("name", "").strip()` raises
+`AttributeError` — and `None` is precisely what correcting a worker stored as
+the string `"null"` produces. In a renderer that does not skip a row; it takes
+down the whole PDF.
+
+**Four tests required the exact spelling that crashes on the exact value the
+pending data correction creates.** The data fix was blocked behind a code fix
+that four tests were holding shut.
+
+### Why this is not the same as a false failure
+
+A pin that breaks on a correct change costs an hour and announces itself: the
+test is red, someone reads it, the intent is re-expressed. Annoying, bounded,
+self-reporting.
+
+A pin that requires a defective literal costs **whatever the defect costs**,
+and it conceals that it is doing so. The failing signal points at the person
+fixing the bug. Nobody audits a green test.
+
+### It is common, and here is the evidence
+
+Nine instances in one day on this project: the leftmost-regex tempering (twice,
+from both directions at once), a 4000-character adjacency span, a
+900-character window into a seeded document **duplicated across two files**, a
+pinned `sub_dict["assigned_projects"] = []` inside a handler being deleted, a
+3,242-character `repr()` of a FastAPI dependant tree, three greps of
+`settings.jsx` source, and these four preshift counts.
+
+Seven of the nine fired on a **correct change**. That number is sampled over a
+day of unusually heavy correct change, which is when these misfire most, and
+their catch side accrues over months of regressions that never happened and
+were never counted — so it is evidence that the CLASS IS COMMON, and it is not
+a verdict on whether pinning is worth it. **The two that held defects are the
+verdict.**
+
+### The tell, and it is the actionable line
+
+**The check was easier to write than the structural one.**
+
+A `repr()` contains the name. A grep finds the literal. A character window
+reaches the fields. Each felt like being thorough, and each passed on the
+machine where it was written.
+
+**Inherited defects get audited; authored ones do not.** Two of the nine were
+written the same day by the person recording this, one in the same hour as the
+paragraph warning against it. Nobody re-reads a test they wrote an hour ago
+looking for this.
+
+### Three of them were caught by their own author, in one session
+
+That number is the argument, and it points the opposite way from reassurance.
+
+  1. `test_card_image_correction` asserted a route's dependencies out of a
+     3,242-character `repr()`. Passed locally, failed in CI on identical code.
+  2. `test_the_gate_actually_asks_the_predicate` — the FIRST control run passed,
+     which meant ten tests were driving a predicate directly and none of them
+     noticed the call site had been reverted.
+  3. `test_an_unresolved_request_is_refused_and_a_resolved_one_is_not` checked
+     for the substrings "rate", "quota", "ceiling" in a function's source, and
+     failed on the word **sepa-rate** in a comment written minutes earlier.
+
+Each was written by someone who had just finished writing THIS ENTRY. Each felt
+like being thorough at the moment it was typed.
+
+**So the class is not rare; it is the DEFAULT.** The structural version is
+always more work than the version that greps, and the version that greps always
+passes first. Catching it is not a matter of remembering that the class exists —
+all three of those were written by someone who demonstrably remembered. It is a
+matter of asking, of each assertion, at the moment of writing it: **what am I
+actually asserting, and would it still hold if the thing I named moved?**
+
+A useful forcing question, because it is answerable in seconds: **what is the
+smallest edit that breaks this test without breaking the behaviour?** If one
+exists, the test is pinned to a location.
+
+### What to do instead
+
+Ask of the assertion you are writing **right now**: would this still hold if
+the thing it names moved to another file, another line, or another library
+version? If the answer is no and the subject is a structure — a dict's keys, a
+function's calls, a route's dependencies, a projection's shape — read the
+structure. `ast.parse` is three lines and cannot be pushed out of range by a
+comment.
+
+And when a pin is genuinely about position, say so in the failure message, and
+say that the fix may be to move the new code rather than to widen the bound.
+`test_signature_ink_predicate` was RIGHT to fail on 2026-09-04; the correct
+response was relocating two helpers, not raising 4000 to 6000.
+
+**Three shapes from this session are the models, and the harness item names
+them rather than re-describing the idea:**
+
+- `test_the_two_halves_agree` — a PROPERTY, not a case. Sealing and
+  asking-for-a-signature must be complements, or the row is wrong either way.
+- the SYNTHETIC SPECIMEN rule — a check whose subject is production code stops
+  working the day production is correct. Drive the rule on a fixture you made,
+  with a positive case and a negative one beside it.
+- the PRECONDITION assertion — `test_the_old_form_is_the_one_that_crashed` and
+  the `name_ok` property test both assert the precondition BEFORE the fix, so
+  they fail if either side moves and cannot pass by accident.
+
+---
+
+## PRACTICE — 2026-09-04 — a comment citing code as precedent goes stale silently
+
+`server.py` carried, in the note explaining why `preshift_signin` is absent
+from `_SUBMIT_ROW_CONTENT_RULES`:
+
+> both renderers already gate a worker row on `if w.get("name", "").strip()` —
+> **the rule is shipped, not invented**
+
+A design decision justified by pointing at existing code. The citation was the
+argument: the deferral was defensible *because* the rule already existed
+somewhere.
+
+Then that line was deleted — it is the form that raises `AttributeError` on a
+stored `None` — and the comment went on asserting a precedent that no longer
+existed, in the exact words that made it persuasive. Nothing failed. Comments
+are not compiled and no sweep reads them.
+
+**The class:** a comment that cites code as PRECEDENT has a dependency on that
+code, and it is the only kind of dependency in the file that nothing checks. It
+is worse than a comment that merely describes behaviour, because a stale
+description misleads a reader while a stale citation misleads them *and* hands
+them a reason to stop looking.
+
+**The cheap rule.** When a comment quotes a line of code as justification, the
+next person to change that line has to be able to find the comment. Quote the
+FUNCTION and the FILE, not the expression — `both preshift renderers gate on a
+non-blank name` survives a rewrite that `if w.get("name", "").strip()` does
+not. Where the exact expression is the point, put an assertion beside it, so
+the citation has something enforcing it.
+## PRACTICE — 2026-09-04 — `railway logs --json` is the FIRST move on a server-side failure, not the last
+
+    railway logs --json | grep "api/workers"
+
+The CLI is authenticated in the working environment. One command, filtered on
+the path, returned the status line AND the full traceback:
+
+    GET /api/workers HTTP/1.1" 500 Internal Server Error
+    pymongo.errors.OperationFailure: Executor error during find command:
+    blueview.workers :: caused by :: Sort exceeded memory limit of 33554432
+    bytes, but did not opt in to external sorting.
+    code 292, QueryExceededMemoryLimitNoDiskUseAllowed
+
+**The traceback is in the deployment log even when the client shows only a
+banner.** The screen said "some of today's data could not be read". The server
+had written the collection, the operation, the byte limit and the error code.
+
+### What it cost not to run it first
+
+One evening, four proposed causes for one failure. Three reasoned off the
+CLIENT's symptom and all three were wrong: the rate limiter (plausible, killed
+by the banner not clearing on refresh); a missing `/api/dob/portfolio-dashboard`
+endpoint that has never existed in this repository and that nothing calls; and
+an account with no `company_id`, ruled out by construction because that path
+returns an empty list with 200 and never an error.
+
+The fourth — an unindexed sort over documents carrying inline base64 — was
+correct, and the server had been stating it in plain text the whole time. It was
+not deduced. It was read.
+
+### The rule
+
+On any failure where the server ANSWERED — a 4xx or 5xx, as opposed to a dead
+zone — read the deployment log before forming a hypothesis. Filter on the path.
+The cost is one command, and it either names the failure outright or proves the
+server never saw the request. Both are worth more than the best available guess.
+
+**Corollary:** a client-side symptom tells you WHICH call failed and nothing
+about WHY. Making the dashboard banner name its failing source (#343) was worth
+doing for exactly that reason — it turns "some data failed" into a path, and a
+path is what this command takes as its argument.
+
+### Two neighbours in this file, and why all three are one lesson
+
+- **`railway logs --since` is silently ineffective when the line cap binds
+  first** (2026-09-02, below). The command that reads the log has its own
+  reach problem, so running it first is necessary and not sufficient.
+- **Sorts protected only by a projection** — the 292 above is the same
+  family, and the sweep for it is `backend/scripts/find_unserved_sorts.py`.
+
+Recorded on a fresh base: the original entry (#346) was written against a base
+that predates both of those and the seven merges of 2026-09-04, and merging a
+stale three-day base to carry one lesson is how a clean auto-merge misfiles an
+entry below the block it belonged above — which this file has already recorded
+happening.
+## OPEN — 2026-09-04 — file deletion was not the only unaudited destructive operation: 14 of 23 DELETE routes write no record
+
+Asked after `delete_project_file` was found to leak orphans AND leave no trace:
+was it the only one? No. Measured against `cf4e8f00`.
+
+**23 `DELETE` routes. 9 write an audit record. 14 do not.**
+
+### First, the sweep's own false positive, because it changes the shape
+
+A scan for `audit_log(` reported `admin_delete_feature_flag` as unaudited. **It
+is the best-audited destructive endpoint in the codebase.** It writes through
+`_write_flag_audit()` into a SEPARATE collection, `feature_flag_audit_log`, and
+stores the complete before/after document so the deletion can be reversed by
+re-creating the flag from the row. Verified: 4 rows in production, full
+documents present.
+
+So the audit surface is **fragmented across collections** — `audit_logs` (559
+rows, 16 actions), `feature_flag_audit_log` (4 rows), and `card_audit_log`
+(0 rows, consistent with that path being a decoy). Any coverage question asked
+of one collection under-reports, and "is this audited?" has no single place to
+look. That is worth more than any individual gap below.
+
+### The unaudited 14, ranked by what is lost
+
+**Compliance evidence:**
+
+| route | what goes | measured |
+|---|---|---|
+| `DELETE /workers/{id}/certifications/{i}` | **an OSHA/SST certification** | 60 workers hold 61 certifications |
+| `DELETE /workers/{id}` | a worker (soft) | 0 of 61 deleted so far |
+| `DELETE /annotations/{id}` | plan markup (soft) | collection does not exist |
+| `DELETE /admin/cs-registrations/{id}` | a CS registration (soft) | 1 row, 0 deleted |
+
+**Access and identity:**
+
+| route | measured |
+|---|---|
+| `DELETE /owner/admins/{id}` | 8 users, 1 deleted |
+| `DELETE /admin/site-devices/{id}` | **5 devices, 3 already deleted — unaudited, and it has happened** |
+| `DELETE /owner/companies/{id}/filing-reps/{id}` | no such collection |
+
+**Configuration and derived state** (`nfc-tags`, `checkin-points`, `checklists`
+— 1 of 1 already deleted — `dropbox/disconnect`, `notification-preferences`,
+`whatsapp/groups`), plus `POST` paths that destroy without being DELETEs:
+`reset-resync`, `reindex-document`, `reindex-all`, `repair-file-names` (renames
+R2 objects).
+
+`DELETE /projects/{id}/files/{file_id}` still counts as unaudited here because
+the fix that adds `project_file_delete` is on a branch and not merged.
+
+### The certification one is the worst, and not because of the audit
+
+`remove_worker_certification` pops an entry out of an array and returns it:
+
+```python
+removed = certs.pop(cert_index)
+await db.workers.update_one({...}, {"$set": {"certifications": certs, ...}})
+return {"message": "Certification removed", "removed": removed}
+```
+
+Every other unaudited deletion in this list sets `is_deleted: True`, so however
+poor the record, **the damage can at least be counted afterwards** — that is how
+the numbers in the tables above exist. An array pop leaves nothing. There is no
+flag, no tombstone, no count, and no audit row. It is the one destructive
+operation in the system whose past use is **unmeasurable by construction**, and
+what it destroys is a compliance credential on a DOB app.
+
+### The pair 200 lines apart that decides the argument
+
+`DELETE /workers/{id}/osha-card-image` — the PICTURE of the card — is audited,
+and carries this comment:
+
+> RECORDED EVEN WHEN THERE WAS NOTHING TO REMOVE. "I asked and it was already
+> gone" and "I never asked" are different facts.
+
+`DELETE /workers/{id}/certifications/{i}` — the certification RECORD itself —
+is not audited at all. Same worker, same screen, adjacent handlers. Somebody
+reasoned carefully about the weaker of the two and never looked at the stronger.
+
+Same shape at `DELETE /owner/admins/{id}` and `DELETE /admin/users/{id}`: both
+soft-delete a user through the same `_mark_user_deleted` writer — deliberately
+unified, with a comment pointing from one to the other — and only one writes
+`user_delete`. **The write was unified and the record was not.** An audit that
+is added per-endpoint rather than at the writer diverges exactly where two
+endpoints were made to agree.
+
+### Two things production says that the code does not
+
+**1. The audited check-in path does not run.** `checkin_create` and `checkout`
+are declared in `server.py` and have **zero rows** in `audit_logs`, against
+**301 check-ins** in the database. The admin-side actions on the same feature do
+fire (`checkin_review` 80, `checkin_assign_trade` 13), so the collection is
+reachable and the feature is live — it is the CREATION path that is audited in
+code nothing executes. Consistent with the gate being served outside these
+handlers; the exact route needs confirming before this is stated as cause.
+
+**2. A renamed action silently partitioned the history.** `project_delete` holds
+32 rows from 2026-04-10 to 2026-07-20 and **is not a literal anywhere in the
+current code**. `project_mark_delete` holds 1 row, 2026-08-10 onward. The action
+was renamed and nothing migrated. Ask "how many projects were deleted" under
+either name and get a confident wrong number — 32 or 1 — with no indication the
+other era exists. 17 of the 32 actions declared in code have never appeared in
+production at all; this is the inverse, a name in production the code can no
+longer produce.
+
+### What this is not
+
+Not an argument for auditing everything. Deleting an NFC tag or a notification
+preference is configuration, and a log full of it is a log nobody reads. The
+line worth drawing is **evidence versus configuration**, and the four rows in
+the first table are on the wrong side of it.
+
+Nothing here has been built. `project_file_delete` on
+`fix/file-delete-leaves-no-orphans` is the only change made.
+
+---
+
+## PRACTICE — 2026-09-04 — an empty result proves nothing until you prove the query reached its subject
+
+About to publish "file deletion was never audited — the audit log holds zero
+rows for it" as a finding. The query was `db.audit_log.count_documents(...)`.
+
+**The collection is `db.audit_logs`.** A nonexistent collection returns zero to
+every query, cheerfully, with no error. The finding happened to be true, and the
+evidence for it was worthless: the same zero would have come back if the log
+held ten thousand file-deletion rows.
+
+Re-run against the real collection: 559 rows, 16 distinct actions, most recent
+that same afternoon. The conclusion survived — there genuinely is no file-level
+action — but it now rests on *enumerating the actions and reading them*, which
+is a different act from counting a filter's matches.
+
+### The class
+
+This is the third form of the same defect this log has recorded:
+
+| where | the empty set | why it looked like an answer |
+|---|---|---|
+| `db.workers.find({project_id})` | no writer sets `project_id` on workers | query well-formed, collection real, field never populated |
+| Query D | compared 0 to 0 on 27 of 35 groups | both sides empty, so "they match" was vacuous |
+| `db.audit_log` (this one) | collection does not exist | name off by one character |
+
+Each returns a clean, confident, well-formed nothing. **A zero is a measurement
+of the query at least as much as of the data**, and nothing in the result says
+which.
+
+### The rule
+
+Before reporting an absence, prove the query reaches its subject: assert the
+collection is in `list_collection_names()`, or that an unfiltered count is
+non-zero, or that a deliberately-matching probe returns rows. `inserted_doc_keys`
+already does the committed-code version of this — it RAISES rather than
+returning an empty set when it finds no matching call. Ad-hoc queries need the
+same discipline and have nothing enforcing it.
+
+Cheapest habit that would have caught all three: **run the query once with the
+filter removed.** If that is also zero, the filter was never the question.
+
+---
+
+## PRACTICE — 2026-09-04 — the substring class, now outside committed code: `/file/i` matched `profile_phone_change`
+
+Having fixed the collection name above, the next query asked which audited
+actions concern files:
+
+```
+db.audit_logs.count_documents({"action": {"$regex": "file", "$options": "i"}})  ->  2
+```
+
+Two hits. Both `profile_phone_change`. **"pro-file" contains "file".**
+
+Had that run first, or alone, it would have produced the exact opposite of the
+truth — "file operations ARE audited, here are two" — with a real collection, a
+real count, and real rows to point at. The right answer came only from
+enumerating `distinct("action")` and reading all 16 by eye: no file-level action
+exists.
+
+### Why this instance is worth its own entry
+
+The substring-standing-in-for-structure class is well represented in this log
+and every prior instance was in COMMITTED CODE, where a test or a review can
+eventually catch it:
+
+- `fall_protection` matching `fall_protection_required`, overstating logbook
+  type coverage
+- source pins grepping a LOCATION instead of a BEHAVIOUR
+- absence assertions on bare words rather than anchored constructs
+- a grep whose pattern did not match its own output, reporting a red PR green
+
+**This one was in an ad-hoc diagnostic query, and that is a different risk.** A
+throwaway query has no test, no review, no second reader, and no second run. It
+executes once, its output becomes a sentence in a report, and the query is
+discarded. There is no artefact left for anyone to find the bug in — only the
+wrong conclusion, now sourced and confident.
+
+### The rule
+
+A regex over an enumerable field is the wrong instrument. `distinct()` first,
+read the values, then match exactly. When a substring filter must be used,
+anchor it (`^file_`) or verify each hit — and treat a small hit count as a
+reason to print the matches, not as a reason to trust them.
+
+The general form, which covers both of today's entries: **a diagnostic query
+that produces a number for a report deserves the same scepticism as a test
+assertion, and gets less, because nothing runs it twice.**
+
+---
+
+## PRACTICE — 2026-09-04 — deleting dead code deleted a latent defect nobody had attributed to it
+
+`get_subcontractors()` was one of five subcontractor routes removed in #404 for
+being unreachable: no wrapper in `api.js`, zero references under `frontend/`,
+nothing in `checkin.html`, `scripts/` or `lib/`. The case for removal was
+entirely "nothing calls this".
+
+It was ALSO carrying an unserved sort. The unserved-sort sweep had rated it
+`exclusion of ['password']` — the same shape as the two endpoints that returned
+500s under `Sort exceeded memory limit` — and rated it SLOW ONLY because nothing
+stores base64 on `subcontractors` yet. One inline blob added to that collection
+would have promoted it to tier 1.
+
+**Two independent pieces of work, each blind to the other.** The sweep did not
+know the route was dead; the removal did not know the route was a latent
+outage. The defect went away as a side effect, and nothing in either record
+connected them — the sort entry still listed it as live until re-measured today.
+
+### What to take from it
+
+Not "delete dead code, you might get lucky". The useful form is narrower:
+
+**Unreachable code is not inert — it is unmaintained code holding live
+liabilities.** It sits in the same file, inherits every schema change, and is
+skipped by exactly the attention that would notice it degrading. A handler
+nobody calls still carries whatever was true when it was written, and the
+database grows underneath it.
+
+And a smaller, sharper one: **a risk register goes stale in the direction of
+overstating risk, too.** This log carried `get_subcontractors` as a live tier-1
+promotion candidate for two days after the function ceased to exist. A finding
+that is never re-measured is not conservative; it is just wrong in a direction
+nobody checks.
+
+---
+
+## OPEN — 2026-09-04 — a guard reading a field its projection does not carry never fires and never fails
+
+**A missing field is always falsy, so this mistake can only ever turn a
+protection OFF. There is no version of it that surfaces as a false refusal
+somebody would report.** That asymmetry is the whole danger: every other way of
+breaking a guard produces something a user complains about, and this one
+produces silence.
+
+`page_rec.get("is_spec_page") is True` is a refusal that stops an endpoint
+re-rendering a 250-DPI image of a wall of text. It was written against a row
+fetched like this:
+
+```python
+page_rec = await db.document_page_index.find_one(
+    {...},
+    {"page_thumb_r2_key": 1, "page_jpeg_r2_key": 1, ...},
+)
+```
+
+**A projected-away field comes back absent, `.get` returns `None`, `None is True`
+is `False`, and the guard passes every row through.** Not an error, not a log
+line, not a slow path — the branch simply never executes. The endpoint keeps
+its expensive fallback and the refusal that was written to prevent it reads,
+in review, as though it works.
+
+Caught in `392f001a` and the projection now carries `is_spec_page`, with a test
+asserting the field is fetched and not only that the guard exists.
+
+### Why this one is nastier than a missing guard
+
+A missing guard is visible: the behaviour is wrong and the code says nothing
+about it. This is worse in the two ways that matter.
+
+**It reads as covered.** Anyone auditing the endpoint finds the check, the
+comment above it, and a test that exercises the guard against a hand-built dict
+— which of course carries the field, because the test author wrote the dict.
+The projection is twenty lines away and in a different statement.
+
+**A test can pass for the wrong reason.** `assertIn('is_spec_page', BODY)` is
+true whether or not the query fetches it. So can an integration test, if its
+fixture returns a full document while production returns a projected one. The
+only assertion that discriminates is one about the QUERY, and that is the
+assertion nobody writes, because the query is not the thing being tested.
+
+### The shape
+
+Same family as the rest of this log: something ran, did exactly what it was
+written to do, and the answer meant nothing because an input had moved.
+Here the input is the document itself, narrowed by a decision made elsewhere
+for an unrelated reason — projections get tightened for bytes, not for logic,
+and the person tightening one is not thinking about a branch further down.
+
+And it is silent for the reason stated at the top: the omitted field arrives as
+`None`, so the failure mode is always "the guard does not fire" and never "the
+guard fires when it should not".
+
+### The same coupling, in the other direction
+
+`OPEN — 2026-09-02 — sorts that are safe only because of a projection, and
+widening one is silent` is this entry's mirror image, and the two belong
+together. There, four sorts stay under the 32 MB in-memory limit ONLY because a
+projection keeps the documents small, and **widening** it breaks them. Here a
+guard fires only because a projection carries a field, and **narrowing** it
+disables the guard.
+
+So a projection has load-bearing consumers in both directions and no
+declaration of either. Every edit to one is a change to code somewhere else in
+the function, in whichever direction it moves. That is the thing worth carrying
+forward — not two separate cautions about projections, one coupling with two
+failure modes.
+
+### The rule
+
+**When a query has a projection, the projection is part of the guard.** Change
+either and re-read the other. A test that holds a refusal exists should also
+hold that the row it reads is fetched carrying the field it refuses on —
+otherwise it is testing the author's fixture, not the endpoint.
+
+`is True` rather than truthiness is worth keeping for a separate reason: a
+legacy row genuinely missing the flag falls through to the ladder instead of
+being refused. That is correct, and it is also exactly what makes the
+projection bug invisible — the two cases are indistinguishable at the guard.
+The projection is the only place they can be told apart.
+
+### The sweep, and what it is worth
+
+A scan of `server.py` for the general shape — a variable bound from a
+`find`/`find_one` with an inclusion projection, then read for a field the
+projection omits — returned **four candidates across 35 functions holding a
+projected read. All four are false positives**, checked by hand:
+
+| site | why the scan was wrong |
+|---|---|
+| `generate_combined_report` | `{"data.worker_id": 1}` is a DOTTED path; `o.get("data")` legitimately returns the subdocument. The scanner does not model dotted projections. |
+| `renewal_digest_daily_cron` ×2 | `p` is bound twice in one function; `p.get("name")` belongs to the `projects` read, which does project `name`. And `p["project_name"] = ...` is a WRITE. |
+| `get_logbook_notifications` | `_doc` iterates `stale_unsigned_docs`, not the `unaffirmed_docs` read the scanner matched — and that projection carries `is_amendment`, `amendment_reason`, `created_by_name` and `created_at`, exactly what `amendment_state` reads. |
+
+So no second live instance is known. **That is not a clean bill of health.**
+The scanner's precision was 0 for 4 and its recall is unmeasured — it cannot
+follow a row through a helper call, a dict comprehension, or a return value,
+which is where the next one will be. Recorded per the standing correction on
+`get_company_roster`: a sweep that matches a SHAPE without validating it
+produces classifications that get copied forward as fact.
+
+The useful half is the positive example. `stale_unsigned_docs` projects
+`is_amendment`, `amendment_reason`, `created_by_name`, `created_at` — every
+field `amendment_state` goes on to read, and nothing else. That is the pattern:
+the projection is written from the consumer's needs, so widening the consumer
+forces a visit to the query.
 
 ---
 
@@ -433,7 +1216,7 @@ never be built.
 
 `dob_logs_summary_dedup` was suspected of having been created by hand rather
 than by the code that intended it — a divergence between what the code declares
-and what production runs. It is not. `server.py:42989` creates it at indent 4
+and what production runs. It is not. `server.py:44463` creates it at indent 4
 inside `startup_event`, unconditionally, on every boot. Recorded because the
 suspicion was reasonable and the answer is worth not re-deriving: an index
 present in production AND declared unconditionally in startup code is the system
@@ -567,6 +1350,236 @@ from the document that prompted it.
 
 ---
 
+## PRACTICE — 2026-09-02 — the parallel run, and why the correction was the valuable half
+
+*The partitioning half of this is recorded separately, at `PRACTICE — 2026-09-01 — file ownership has to follow the change, not the
+ticket`. What is unique here is the second half: where the ticket's LOCATION was
+wrong.*
+
+Six streams ran concurrently in isolated worktrees, and that is the only reason
+one night covered the offline store, the ledger loss, the sort-index class, the
+orientation render path, retention, deletion and the Dropbox key collision.
+Partitioned by FILE after reading, not by ticket - the earlier split by intent
+produced three conflicts.
+
+**But throughput was not the finding. This was:** C1 was filed as
+"`created_by` absent on 50 subcontractor_orientation documents - name the
+writer, then fix." The endpoint everyone assumed was responsible,
+`create_logbook`, **already sets it correctly** from the authenticated
+principal. The fifty came from `register_and_checkin`, the unauthenticated gate,
+which cannot know an identity at all - a worker taps a tag with his own phone.
+
+Every available substitute would have been wrong rather than merely imperfect:
+the project's `admin_id` is fabricated attribution, `worker["_id"]` is a
+`db.workers` row in a field consumed as a `db.users` id, and IP and device
+fingerprint are presence evidence, not principals.
+
+**So the correct output was a report and an empty branch.** A fast pass would
+have "fixed" the innocent endpoint, closed the ticket, and left the population
+growing.
+
+The same shape appeared twice more the same night: D2's ticket named a broken
+deeplink anchor, and the real finding was that expo-router never matched
+fragments at all, so the mechanism had never worked for any notification; and
+`get_company_roster` was recorded in THIS FILE as protected by an inclusion
+projection when its projection is `{"password": 0, "name": 1, ...}`, which
+MongoDB rejects outright.
+
+**The rule: a ticket reports a symptom and asserts a location. The location is
+the part to distrust.** Enumerate every writer into the affected space before
+starting from the one the ticket names.
+
+---
+
+## OPEN — 2026-09-02 — sorts that are safe only because of a projection, and widening one is silent
+
+Two endpoints returned 500 in one day with `Sort exceeded memory limit of
+33554432 bytes` (code 292): an unindexed sort over documents carrying inline
+base64. `backend/scripts/find_unserved_sorts.py` now sweeps for that shape.
+
+*Line numbers in this entry are as of `effd24dc` (2026-09-04). `server.py` is
+41k lines and they move; the FUNCTION NAMES are the durable handle, and the
+sweep above finds the shape without needing either.*
+
+### RE-MEASURED ON 2026-09-04 AGAINST `effd24dc`, AND THE TABLE CHANGED
+
+This entry was written against a branch that did not carry `005587e6` (#359),
+which DECLARES `logbooks_project_status_date` = `{project_id:1, status:1,
+date:-1}` — the emergency index from the first outage, created in Atlas with no
+deploy and only later written into `server.py`. A sweep that cannot see an index
+declaration reports the sort it serves as unserved. **So two of the original four
+rows were never protected by a projection at all; they were protected by an
+index, and the entry did not know it.**
+
+Re-running `find_unserved_sorts.py` on `effd24dc` gives:
+
+> **Line numbers below were RE-MEASURED at `cf4e8f00` and were wrong before
+> that.** The entry rebased clean onto six commits of `main` and every citation
+> in it silently moved — `get_company_roster` by 391 lines, the failing sort by
+> 4,221, and one function ceased to exist. A clean rebase preserves text, not
+> references. This is the same defect the LOCATION-for-a-STRUCTURE entry above
+> describes, committed by the file that describes it; the durable fix is to cite
+> the symbol and let the number be a hint.
+
+| where | function | sort | status today |
+|---|---|---|---|
+| `server.py:15527` | `get_workers` | `name:1` | defused by `WORKER_LIST_FIELDS` (inclusion) |
+| `server.py:35228` | `get_company_roster` | `name:1` | **claims a projection it does not have — see below** |
+| ~~`get_logbook_notifications` (`unaffirmed_docs`)~~ | | `date:-1` | **SERVED** by `logbooks_project_status_date` |
+| ~~`get_logbook_notifications` (`inkless_filed_docs`)~~ | | `date:-1` | **SERVED** by `logbooks_project_status_date` |
+
+**Two remain defused only by a projection, and the warning below applies to those
+two.** The two struck rows are genuinely indexed and need nothing.
+
+### AND THE SWEEP NOW NAMES A TIER-1 ROW THIS ENTRY NEVER HAD
+
+    users  sort {name: 1}
+        server.py:8498  get_admin_users()  [paginated_query()]
+        projection:    exclusion of ['password'] — base64 still carried
+        3 index(es) declared on `users`, none serves this sort
+
+`db.users` carries `cp_signature` inline. `{"password": 0}` is an EXCLUSION, so
+it removes one field and leaves every blob in the sorted set — the opposite of
+what the two defused rows do. The broad call passes no `company_id`, so nothing
+pins an index key, and **the broad call is the big one.** This is the same shape
+as the two 500s, live, today, with no projection standing in front of it.
+
+~~`get_subcontractors()` at `server.py:8721`~~ **— GONE. The function no longer
+exists.** It was one of the five dead subcontractor routes removed in #404, so
+the tier-1 promotion this paragraph warned about can no longer happen: deleting
+an unreachable handler also deleted an unserved sort nobody had noticed it
+carried. Kept struck rather than dropped, because the shape it described is the
+one `get_admin_users` still has.
+
+### Correction - `get_company_roster` is not protected, and may not run at all
+
+The sweep classified this row as protected by an inclusion projection. It is not.
+The projection at `server.py:35239` reads:
+
+```python
+{"password": 0, "_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1}
+```
+
+**That mixes an exclusion (`password: 0`) with inclusions, which MongoDB rejects**
+- the only field allowed to be excluded inside an inclusion projection is `_id`.
+So this endpoint does not have a protective projection; it has an invalid one,
+and should raise before it ever reaches the sort.
+
+Two things follow. The endpoint is a live defect worth its own look - it is
+either erroring on every call or behaving in some way nobody has characterised.
+And the sweep pattern-matched a projection's SHAPE without validating it, then
+that classification was copied into this file as fact. A tool that reports
+"protected" must be able to say protected BY WHAT, and be wrong loudly when the
+protection is malformed.
+
+### The warning, stated plainly
+
+**Adding one field to any of these projections moves it to tier 1, and nothing
+would catch it.** Not a type checker, not a review that reads the diff as "we
+now also return the signature", not any existing test. The endpoint keeps
+working in every environment small enough to fit under 32MB, and fails later, in
+production, on whichever project grew first - with no code change in the blast
+radius to blame, because the change that caused it shipped months earlier.
+
+`WORKER_LIST_FIELDS` is the sharpest case: it is the FIX for the first outage.
+The remedy for one incident is the only thing standing between that endpoint and
+a repeat of it.
+
+`get_logbook_notifications` is still worth reading, for a different reason than
+this entry first gave. **The same function holds three `date:-1` sorts and they
+are not equally safe.** `stale_unsigned_docs` at `server.py:25337` projects
+`cp_signature: 1` INTO the sorted set; the two beside it project only
+`{log_type, date}`. All three are served by `logbooks_project_status_date` today,
+so none is at risk — but anyone reading that handler for a pattern to copy will
+find two, and the wrong one is easier to copy. An index is a weaker guarantee than
+a projection here: it can be dropped in Atlas by someone who never opens this
+file, and `_ensure_index_resilient` will not rebuild what it cannot name.
+
+### What would actually catch it
+
+`backend/tests/test_sorts_are_indexed.py` classifies a row as protected when its
+projection is an inclusion that omits every base64 field. Widening a projection
+to include one of those fields therefore flips the row to AT RISK and the ratchet
+fails - **provided the base64 field is one the sweep knows about.** The known set
+is `base64`, `thumb_base64`, `worker_signature`, `cp_signature`, `signature`,
+`selfie_image`, `osha_card_image`, `screenshot`. A NEW inline-blob field added to
+any of these collections is invisible to it until that list is updated, and
+nothing enforces that either.
+
+So the ratchet covers the likely mistake and not the general one. Recorded rather
+than solved, because solving it properly means not storing base64 inline at all -
+which is the standing recommendation for `worker_signature` and
+`osha_card_image` and is tracked separately.
+
+---
+
+## PRACTICE — 2026-09-02 — a check whose subject is a result set must prove the set is non-empty first
+
+Recorded because it happened in the VERIFICATION OF AN EMERGENCY FIX, with a DOB
+inspector on site, and it returned a clean green.
+
+The site device could not show submitted logbooks. Railway named the cause
+exactly: `GET /api/logbooks/project/{id}/submitted` returning 500 with
+`OperationFailure ... Sort exceeded memory limit of 33554432 bytes` (code 292,
+`QueryExceededMemoryLimitNoDiskUseAllowed`) at `server.py:30593`. The sort field
+sat outside any index prefix, the documents carry inline base64, and the matched
+set had simply grown past 32MB. Creating
+`{project_id:1, status:1, date:-1}` restored it with no deploy.
+
+**The verification then read:**
+
+```
+db.logbooks.find({projecproject_id:"...", status:"submitted", ...})
+  .sort({date:-1}).limit(500).explain("executionStats").executionStats.executionSuccess
+true
+```
+
+`projecproject_id`. The filter named a field no document carries, so it matched
+NOTHING - and **a sort over zero documents cannot exceed a memory limit.** The
+`true` was real, correctly computed, and about nothing. Had it been trusted, the
+conclusion "the fix works" would have rested on a query that never touched the
+data.
+
+### The rule
+
+**Any check whose subject is a RESULT SET must assert the set is non-empty
+before asserting anything about it.** `executionSuccess` alone is not evidence;
+`nReturned > 0` is what makes it evidence. The same applies to a count that
+could be zero, a test fixture list that could be empty, a grep whose glob could
+match no files, and a sweep whose walk could reach nothing.
+
+An empty set satisfies almost every property you can name. That is what makes it
+dangerous: it does not error, it does not look wrong, and every universally
+quantified assertion over it is vacuously true.
+
+### Why this belongs with the rest of the week
+
+It is the same defect as the sweep blind to 96 `.cjs` files, the local glob that
+ran 85 of CI's 93, the `sort()` that did nothing and still satisfied a
+determinism assertion, the keep-set that could not see one of the two shapes it
+protected, and the ratchet script whose scan root was `Path(__file__).parent`
+so a "control run" against a different tree silently re-measured its own.
+**Each ran, returned a well-formed answer, and never reached its subject.**
+
+Four more surfaced in one night's work, and all four were caught by the person
+who wrote them, which is the only reason they are recorded rather than shipped:
+a mutation control whose patches did not apply against CRLF (an inert mutation
+reads exactly like a caught one); a test that satisfied itself because its own
+prose contained the string it searched for; a foreign-sweep test seeded with
+files no list had ever named, so the sweep deleting them was correct behaviour
+rather than the bug; and an assertion that matched the comment explaining why
+the code does not do the thing.
+
+### The cheap tells
+
+- A boolean read off an aggregate (`executionSuccess`, `all()`, `every()`) with
+  no cardinality assertion beside it.
+- A control run that produces the SAME answer as the treatment run - that is not
+  a passing control, it is a signal that neither touched the subject.
+- Any assertion of the form "nothing matched / nothing failed / nothing was
+  found" where "the search did not run" is an equally good explanation.
+
+---
 ## PRACTICE — 2026-09-02 — `git stash` is ONE ref shared by every worktree, and two agents traded trees through it
 
 Roughly forty-five agent worktrees hang off this repository. `refs/stash` lives
