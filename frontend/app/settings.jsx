@@ -52,6 +52,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { retentionSentence, drainWarning, accessRemovedSentence } from '../src/utils/retentionCopy';
 import apiClient, { authAPI, versionAPI } from '../src/utils/api';
+import { buildVerdict } from '../src/utils/buildVerdict';
 import { spacing, borderRadius, typography, touchTarget } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 
@@ -124,6 +125,10 @@ export default function SettingsScreen() {
   const [deletionBusy, setDeletionBusy] = useState(false);
 
   const [backendCommit, setBackendCommit] = useState(null);
+  // `deployed_at` from /api/version — when the RUNNING backend started.
+  // Null on an older deploy that does not report it, and buildVerdict
+  // treats null as "no direction" rather than guessing one.
+  const [backendDeployedAt, setBackendDeployedAt] = useState(null);
   const [backendLoading, setBackendLoading] = useState(true);
   const [buildCopied, setBuildCopied] = useState(false);
 
@@ -166,9 +171,15 @@ export default function SettingsScreen() {
     (async () => {
       try {
         const v = await versionAPI.get();
-        if (alive) setBackendCommit(v?.short || v?.commit || null);
+        if (alive) {
+          setBackendCommit(v?.short || v?.commit || null);
+          setBackendDeployedAt(v?.deployed_at || null);
+        }
       } catch (_e) {
-        if (alive) setBackendCommit(null);   // rendered as "unreachable"
+        if (alive) {
+          setBackendCommit(null);   // rendered as "unreachable"
+          setBackendDeployedAt(null);
+        }
       } finally {
         if (alive) setBackendLoading(false);
       }
@@ -176,17 +187,26 @@ export default function SettingsScreen() {
     return () => { alive = false; };
   }, []);
 
-  // Only a REAL comparison is offered. With no injected commit the two
-  // identities are different kinds of thing, and claiming a match either way
-  // would be the same false confidence this card exists to remove.
-  const buildMatches = Boolean(jsCommit && backendCommit)
-    && jsCommit.slice(0, 7) === String(backendCommit).slice(0, 7);
-  const buildVerdict = !backendCommit
-    ? null
-    : jsCommit
-      ? (buildMatches ? 'App and backend are on the same commit.'
-        : 'MISMATCH — the app and the backend are on different commits.')
-      : 'Bundle commit not injected at build time; compare the times above.';
+  // WHICH SIDE MOVED, not merely "these differ".
+  //
+  // This was `buildMatches = jsCommit[:7] === backendCommit[:7]` with the word
+  // MISMATCH for every inequality, in warning colour — ONE OUTPUT for three
+  // states, two of which are faults and one of which is a system working
+  // exactly as designed. See src/utils/buildVerdict.js for the full account;
+  // the short version is that a BACKEND-ONLY change publishes no OTA (nothing
+  // under frontend/ moved, so the workflow correctly does not run), the phone
+  // keeps its bundle, and the card called that a mismatch. On 2026-09-04 it
+  // sent out an acceptance test telling the CP to wait for a version line that
+  // was never going to change.
+  //
+  // The rule lives in a module with its own tests rather than inline here,
+  // because the wording is the part that matters and the wording is what
+  // nobody could test while it was three nested ternaries in a render.
+  const verdict = buildVerdict(
+    jsCommit, backendCommit, Updates.createdAt, backendDeployedAt,
+  );
+  const buildMatches = verdict.ok;
+  const buildVerdictText = backendLoading ? null : verdict.text;
 
   const copyBuild = async () => {
     await Clipboard.setStringAsync(
@@ -1214,9 +1234,9 @@ export default function SettingsScreen() {
               value={backendLoading ? 'checking…' : (backendCommit || 'unreachable')}
               onCopy={copyBuild}
             />
-            {buildVerdict && (
+            {buildVerdictText && (
               <Text style={[s.buildVerdict, buildMatches ? s.buildOk : s.buildWarn]}>
-                {buildVerdict}
+                {buildVerdictText}
               </Text>
             )}
             <Pressable
