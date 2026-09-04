@@ -13,7 +13,8 @@
     "update": "eas update --auto",
     "postinstall": "patch-package",
     "smoke": "node scripts/smoke-mount.cjs --dist dist",
-    "consent:paint": "node scripts/consent-paint.cjs --dist dist"
+    "consent:paint": "node scripts/consent-paint.cjs --dist dist",
+    "amend:paint": "node scripts/amend-paint.cjs --dist dist"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",

@@ -1150,6 +1150,87 @@ async def audit_log(action: str, user_id: str, resource_type: str, resource_id: 
 # tweak to a TTL duration or compound-key shape bricks the deploy.
 _INDEX_CONFLICT_CODES = {85, 86}
 
+# E11000 — DuplicateKey. DELIBERATELY NOT IN THE SET ABOVE, and the whole
+# reason this file now has a third branch.
+#
+# 85 and 86 say the SPEC YOU ASKED FOR disagrees with the spec that is there.
+# That is a deploy fact, a drop-and-recreate fixes it, and handling it silently
+# is right — nobody needs to know a TTL duration changed.
+#
+# 11000 says THE DATA DISAGREES WITH THE RULE. No recreate fixes it, no deploy
+# caused it, and nothing the application does will ever clear it: only a person
+# changing rows can. Treating it like a spec conflict is what let
+# `logbooks_one_open_amendment_per_parent` never build at all —
+# E11000 reproduced on the live deployment at 22:15:51 and again at 13:30:46,
+# and each time this helper logged ONE warning and returned, so startup went
+# green over an index that does not exist. An index that cannot build is a
+# CONSTRAINT THAT IS NOT ENFORCED, and `amend_logbook`'s
+# `except DuplicateKeyError` has been dead code reading as a live race guard
+# for as long as it has been there.
+_INDEX_DUPLICATE_KEY_CODE = 11000
+
+# WHICH UNIQUE INDEXES ARE NOT ENFORCING ANYTHING RIGHT NOW.
+# index name -> collection name. Read by GET /api/health so a deploy can be
+# shown to be index-COMPLETE rather than merely up. Cleared per index the
+# moment that index builds, so it reports the present state and not a history.
+FAILED_UNIQUE_INDEX_BUILDS: dict = {}
+
+
+async def _flag_unique_index_not_enforced(collection, *, name: str, err) -> None:
+    """Surface a unique index the data refuses, where the admin already looks.
+
+    THE SAME SHAPE `_flag_unsigned_stale_log` USES, and deliberately not a new
+    one: a compliance_alerts row, deduped on the one field that identifies the
+    finding, so a re-run cannot stack duplicates. /admin/compliance-alerts
+    renders it already — no new screen and no new concept.
+
+    DEDUPED ON INDEX NAME, not on the error text. Every restart re-attempts
+    every index, so an undeduped row would write one alert per boot forever on
+    a condition the app itself can never resolve. The name is also what the
+    operator types into create_open_amendment_index.js, so it is the field the
+    row is actually looked up by.
+
+    Never raises. It is called from the startup path.
+    """
+    coll_name = getattr(collection, "name", None) or "?"
+    FAILED_UNIQUE_INDEX_BUILDS[name] = coll_name
+    # ERROR, NOT WARNING. A warning is what hid this for two months; the whole
+    # point is that this line is the one a person reads.
+    logger.error(
+        f"UNIQUE INDEX NOT ENFORCED: {coll_name}.{name} was REJECTED BY THE "
+        f"DATA (E11000). The constraint it declares is not in force and any "
+        f"application-level DuplicateKeyError handler for it is dead code. "
+        f"Clear the duplicates and rebuild by hand. {err!r}"
+    )
+    try:
+        exists = await db.compliance_alerts.find_one({
+            "alert_type": "unique_index_not_enforced",
+            "details.index_name": name,
+        })
+        if exists:
+            return
+        await db.compliance_alerts.insert_one({
+            "alert_type": "unique_index_not_enforced",
+            "severity": "high",
+            "project_id": None,
+            "company_id": None,
+            "message": (
+                f"Unique index {coll_name}.{name} cannot build over existing "
+                f"data. The rule it declares is NOT being enforced."
+            ),
+            "details": {
+                "index_name": name,
+                "collection": coll_name,
+                "error": str(err)[:500],
+            },
+            "resolved": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+    except Exception as _alert_err:
+        logger.error(
+            f"could not flag unenforced index {coll_name}.{name}: {_alert_err!r}"
+        )
+
 
 async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
     """create_index that survives a spec change.
@@ -1159,20 +1240,38 @@ async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
     name, options)).
     On spec change: drops-and-recreates if the existing index has the
     same name/keys but different options (e.g. TTL duration changed).
+    On E11000 over a unique build: the DATA violates the constraint. Recorded
+    as a data-integrity finding — logged at error, written to
+    compliance_alerts, and named in the health payload — see
+    _INDEX_DUPLICATE_KEY_CODE for why that is not the same thing as a spec
+    conflict.
     Any other failure is logged and swallowed — index creation should
     never block app startup (DOB syncs and UI work fine without TTLs).
+
+    IT DOES NOT RAISE, ON ANY BRANCH, AND THAT IS LOAD-BEARING. startup_event
+    is @app.on_event("startup"): a raise out of here means two draft children
+    sharing one parent take the whole API offline for every CP on every
+    project. Make the STATE visible, not the event.
     """
     from pymongo.errors import OperationFailure
 
     try:
         await collection.create_index(keys, name=name, **opts)
-        return
     except OperationFailure as e:
-        if getattr(e, "code", None) not in _INDEX_CONFLICT_CODES:
+        code = getattr(e, "code", None)
+        if code == _INDEX_DUPLICATE_KEY_CODE and opts.get("unique"):
+            await _flag_unique_index_not_enforced(collection, name=name, err=e)
+            return
+        if code not in _INDEX_CONFLICT_CODES:
             logger.warning(
                 f"create_index({collection.name}, {name}) failed (non-conflict): {e!r}"
             )
             return
+    else:
+        # Built, or already there in the shape asked for. If a previous boot
+        # recorded it as unenforced, it is enforced now.
+        FAILED_UNIQUE_INDEX_BUILDS.pop(name, None)
+        return
 
     # Spec change: same name, different shape. Drop and recreate.
     logger.info(
@@ -1198,6 +1297,17 @@ async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
 
     try:
         await collection.create_index(keys, name=name, **opts)
+        FAILED_UNIQUE_INDEX_BUILDS.pop(name, None)
+    except OperationFailure as e:
+        # The recreate can meet the duplicate data too — a unique index whose
+        # KEY SHAPE changed is a new rule over old rows. Same finding, same
+        # treatment; it must not fall through to a warning.
+        if getattr(e, "code", None) == _INDEX_DUPLICATE_KEY_CODE and opts.get("unique"):
+            await _flag_unique_index_not_enforced(collection, name=name, err=e)
+            return
+        logger.warning(
+            f"create_index({collection.name}, {name}) post-recreate failed: {e!r}"
+        )
     except Exception as e:
         logger.warning(
             f"create_index({collection.name}, {name}) post-recreate failed: {e!r}"
@@ -4300,6 +4410,31 @@ def superintendent_log_deadline(project) -> str:
             else "departure")
 
 
+# ── HOW THE STALE-LOG WALK IS BOUNDED ────────────────────────────────────────
+#
+# One page of stale logs per read. NOT a cap on the run: the walk pages until
+# the selector is exhausted, and this is only how much is materialised at once.
+# The distinction is the whole point — the read this replaces was a single
+# `to_list(1000)`, which is a cap wearing a page size's clothes.
+_EOD_SWEEP_PAGE = 500
+
+# A CEILING ON THE NUMBER OF PAGES, AND IT IS A BACKSTOP, NOT THE DESIGN.
+#
+# The walk terminates on its own (see the sweep's own docstring: every page
+# visits documents no page has visited, so it ends after ceil(N / page) reads).
+# This exists for the case where that reasoning is wrong — a driver that
+# ignores `skip`, an index change that makes the sort non-total — because the
+# alternative to a bounded loop in a 3am unattended job is a job that never
+# finishes and a scheduler that never fires again.
+#
+# HITTING IT IS LOGGED AS AN ERROR. The defect being fixed here is a silent
+# truncation; a second silent truncation at 200,000 documents would be the same
+# bug with a bigger number. At the present volume this is roughly 3,000x the
+# nightly working set, so reaching it means something is wrong, not that the
+# estate grew.
+_EOD_SWEEP_MAX_PAGES = 400
+
+
 async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     """Freeze yesterday's signed daily narratives, and FLAG the unsigned ones.
 
@@ -4348,61 +4483,140 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     Idempotent: an already-locked log does not match the filter, so a re-run or
     an overlapping admin-triggered run is safe.
 
+    ── IT IS SORTED AND PAGED, AND THAT IS NOT AN OPTIMISATION ────────────────
+
+    THE READ WAS `cursor.to_list(1000)`, UNSORTED AND CAPPED, over a selector
+    that a stranded log NEVER LEAVES. A log whose signature is not affirmed is
+    flagged and left in place, so it matches again tomorrow, and the night
+    after, forever. Sixty-five such rows exist today.
+
+    At a thousand accumulated strandings the cap is filled by stranded rows
+    alone and CORRECTLY SIGNED LOGS STOP BEING FROZEN. There is no symptom:
+    nothing raises, nothing logs, the job returns its counts and reports
+    success, and end-of-day logs quietly stop locking. That is the same shape
+    as a sort that silently drops rows -- an answer that is wrong and looks
+    finished -- and it is worse, because the thing it stops doing is the
+    freeze that closes a compliance record.
+
+    OLDEST FIRST: `date` ascending, `_id` ascending. Two decisions, and they
+    are different ones.
+
+      The TIE-BREAK is what makes paging correct at all. `date` alone is not a
+      total order -- every project filing on the same day collides -- and a
+      page boundary drawn through a set of equal keys is not a boundary: the
+      driver may return those rows in any order on any read, so a document can
+      be visited twice or skipped entirely. `_id` is unique, so (date, _id)
+      is total and a page boundary means something.
+
+      The DIRECTION is oldest first because the oldest stale log has been
+      unfrozen the longest and is the one nearest an auditor's records
+      request. If a walk is ever cut short -- the page ceiling, a crash, a
+      restart -- the documents it did not reach are the NEWEST, which are the
+      least exposed and are re-swept the following night anyway. Newest-first
+      inverts that and leaves the oldest gap unvisited.
+
+    HOW THE PAGES ADVANCE, AND WHY IT ENDS. A frozen log leaves the selector;
+    a stranded one does not. So the offset carries past exactly the documents
+    this run visited and DELIBERATELY LEFT (the unsigned ones, plus any whose
+    write raised) -- and because those are the smallest sort keys seen so far,
+    `skip(carry)` lands on the first document no page has visited. Every page
+    therefore visits only new documents, the unvisited count falls by a full
+    page each time, and the walk ends after ceil(N / _EOD_SWEEP_PAGE) reads.
+    _EOD_SWEEP_MAX_PAGES is the backstop for the case where that reasoning is
+    wrong, and hitting it is logged as an error rather than absorbed.
+
+    A concurrent insert between pages can shift the window by a row. That is
+    accepted and cheap: a document missed tonight is swept tomorrow, which is
+    the same guarantee the whole job already offers.
+
     Returns counts for the caller to log. Never raises: the nightly tick runs
     unattended and a sweep that threw would take the detectors down with it.
     """
     today = eastern_date(now)
     out = {"frozen": 0, "unsigned": 0}
-    try:
-        cursor = database.logbooks.find({
-            "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
-            "date": {"$lt": today},
-            "is_locked": {"$ne": True},
-            "is_deleted": {"$ne": True},
-            # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
-            # this clause the nightly pass counts one as unsigned and
-            # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
-            # for it -- deduped on (project, log_type, date), so it is written
-            # once and then sits on the admin's alert list forever with no
-            # action that could ever clear it. The freeze branch cannot reach a
-            # withdrawn child either way (it has no affirmed signature), so
-            # this only ever removes a false alert.
-            **WITHDRAWN_EXCLUDED,
-        })
-        stale = await cursor.to_list(1000)
-    except Exception as e:
-        logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
-        return out
+    selector = {
+        "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
+        "date": {"$lt": today},
+        "is_locked": {"$ne": True},
+        "is_deleted": {"$ne": True},
+        # A WITHDRAWN CORRECTION IS NOT AN UNFINISHED OBLIGATION. Without
+        # this clause the nightly pass counts one as unsigned and
+        # _flag_unsigned_stale_log raises an `unsigned_stale_logbook` row
+        # for it -- deduped on (project, log_type, date), so it is written
+        # once and then sits on the admin's alert list forever with no
+        # action that could ever clear it. The freeze branch cannot reach a
+        # withdrawn child either way (it has no affirmed signature), so
+        # this only ever removes a false alert.
+        **WITHDRAWN_EXCLUDED,
+    }
+    # Documents this run has visited and left behind in the selector. See the
+    # paging note above: this is the offset, not a count of failures.
+    carry = 0
+    pages = 0
 
-    for doc in stale:
+    while pages < _EOD_SWEEP_MAX_PAGES:
+        pages += 1
         try:
-            if not _is_affirmed_signature(doc.get("cp_signature")):
-                # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and left is
-                # a different fact from a CP who never signed; the second is an
-                # unfinished obligation, not a document to close.
-                out["unsigned"] += 1
-                await _flag_unsigned_stale_log(database, doc)
-                continue
-            stamp = datetime.now(timezone.utc)
-            await database.logbooks.update_one(
-                {"_id": doc["_id"], "is_locked": {"$ne": True}},
-                {"$set": {
-                    "is_locked": True,
-                    "finalized_at": stamp,
-                    # WHO froze it, in the same fields the manual path writes, so
-                    # a reader is never left guessing whether a person closed it.
-                    # The CP's signature is what made it eligible; the sweep only
-                    # applied the lock.
-                    "finalized_by": "system:eod_sweep",
-                    "finalized_by_name": "End-of-day sweep",
-                    "status": "submitted",
-                    "updated_at": stamp,
-                }},
-            )
-            out["frozen"] += 1
+            cursor = (database.logbooks.find(selector)
+                      .sort([("date", 1), ("_id", 1)])
+                      .skip(carry)
+                      .limit(_EOD_SWEEP_PAGE))
+            stale = await cursor.to_list(_EOD_SWEEP_PAGE)
         except Exception as e:
-            # One bad document must not stop the sweep for every other project.
-            logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+            # PARTIAL WORK IS KEPT. Every freeze already committed stands; the
+            # counts returned describe what actually happened.
+            logger.error(f"[eod-freeze] could not read stale logs: {e!r}")
+            return out
+
+        if not stale:
+            return out
+
+        for doc in stale:
+            try:
+                if not _is_affirmed_signature(doc.get("cp_signature")):
+                    # NOT THIS SWEEP'S BUSINESS TO SEAL. A CP who signed and
+                    # left is a different fact from a CP who never signed; the
+                    # second is an unfinished obligation, not a document to
+                    # close. It stays in the selector, which is why `carry`
+                    # has to step over it.
+                    out["unsigned"] += 1
+                    await _flag_unsigned_stale_log(database, doc)
+                    carry += 1
+                    continue
+                stamp = datetime.now(timezone.utc)
+                await database.logbooks.update_one(
+                    {"_id": doc["_id"], "is_locked": {"$ne": True}},
+                    {"$set": {
+                        "is_locked": True,
+                        "finalized_at": stamp,
+                        # WHO froze it, in the same fields the manual path
+                        # writes, so a reader is never left guessing whether a
+                        # person closed it. The CP's signature is what made it
+                        # eligible; the sweep only applied the lock.
+                        "finalized_by": "system:eod_sweep",
+                        "finalized_by_name": "End-of-day sweep",
+                        "status": "submitted",
+                        "updated_at": stamp,
+                    }},
+                )
+                out["frozen"] += 1
+            except Exception as e:
+                # One bad document must not stop the sweep for every other
+                # project -- and it must not stop the WALK either. A document
+                # whose write raised is still in the selector, so stepping over
+                # it is what keeps the next page moving forward instead of
+                # re-reading this one until the ceiling.
+                logger.error(f"[eod-freeze] {doc.get('_id')}: {e!r}")
+                carry += 1
+
+        if len(stale) < _EOD_SWEEP_PAGE:
+            return out
+
+    logger.error(
+        f"[eod-freeze] stopped after {_EOD_SWEEP_MAX_PAGES} pages "
+        f"({_EOD_SWEEP_MAX_PAGES * _EOD_SWEEP_PAGE} documents); stale logs "
+        f"remain unswept -- frozen={out['frozen']} unsigned={out['unsigned']}"
+    )
     return out
 
 
@@ -4414,10 +4628,46 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
     nightly re-run cannot stack duplicates. No new screen and no new concept --
     /admin/compliance-alerts renders it already.
 
-    The CP-facing half is deliberately NOT here. It belongs on the logbook list
-    beside the unaffirmed-signature card, and that screen already carries three
-    different treatments for three exception signals (see followups.md); adding
-    a fourth from inside a sweep is how that drift continues.
+    ── AND ON `resolved`, SO A RESOLVE CAN BE CONTRADICTED TOMORROW ──────────
+
+    (project, log_type, date) ALONE MATCHED A RESOLVED ROW AS READILY AS AN
+    OPEN ONE. Resolve is the only action /admin/compliance-alerts offers, and
+    without this clause taking it PERMANENTLY SUPPRESSED the alert while the
+    log stayed stranded and stayed unfrozen. Resolving destroyed the only
+    surviving statement that the log needed fixing -- the same failure the
+    selector above already names for the withdrawn case ("sits on the admin's
+    alert list forever with no action that could ever clear it"), noticed
+    there and left standing here.
+
+    RE-RAISING IS NOT NOISE, BECAUSE THE CONDITION IS RE-VERIFIED. The sweep
+    only reaches a log that is STILL unaffirmed and STILL unfrozen; the moment
+    the CP affirms it, the freeze branch takes it and it leaves the selector
+    for good. So a row that comes back tomorrow is a fresh statement that the
+    fact has not changed, not a duplicate of a fact already handled.
+
+    THAT IS WHY THE RULE HERE IS SIMPLER THAN worker_cert_expiring'S. That
+    alert suppresses on `details.earliest_expiration` as well, because ITS
+    condition -- a certification 30 days out -- does not change when the admin
+    acts, so a bare `resolved: False` would decay resolve into "cleared for one
+    night". Here the condition IS the log's state, and an admin cannot clear it
+    by resolving a row; only the CP affirming can.
+
+    ── TWO POPULATIONS, TWO SENTENCES ────────────────────────────────────────
+
+    "was never signed" is TRUE of a log holding `cp_signature: {}` and FALSE of
+    one holding a real stroke the CP never affirmed for this document. Both
+    reach here, they need different actions, and one sentence for both told the
+    admin the wrong thing about whichever it was not describing. `details.ink`
+    carries the same split as a field so the alert list can be counted without
+    re-reading every logbook.
+
+    The CP-facing half is still deliberately NOT raised from here. It belongs
+    on the record, not on a notification minted inside a sweep: an unaffirmed
+    signature is now offered for affirmation by FiledLogView, on the filed log
+    itself, gated by isOpenForSignatureAffirmation. The logbook LIST is
+    untouched -- that screen already carries three treatments for three
+    exception signals (see followups.md), and adding a fourth from inside a
+    sweep is how that drift continues.
     """
     try:
         exists = await database.compliance_alerts.find_one({
@@ -4425,15 +4675,23 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
             "project_id": doc.get("project_id"),
             "details.log_type": doc.get("log_type"),
             "details.date": doc.get("date"),
+            # See the docstring: without this, resolve erases the only record
+            # that the log needs fixing.
+            "resolved": False,
         })
         if exists:
             return
+        _ink = _has_signature_ink(doc.get("cp_signature"))
         await database.compliance_alerts.insert_one({
             "alert_type": "unsigned_stale_logbook",
             "severity": "medium",
             "project_id": doc.get("project_id"),
             "company_id": doc.get("company_id"),
             "message": (
+                f"{doc.get('log_type')} for {doc.get('date')} carries a "
+                "signature the CP never affirmed for this log. Only he can "
+                "affirm it. It stays editable - it is not frozen."
+                if _ink else
                 f"{doc.get('log_type')} for {doc.get('date')} was never signed. "
                 "It stays editable - it is not frozen."
             ),
@@ -4441,6 +4699,11 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
                 "log_type": doc.get("log_type"),
                 "date": doc.get("date"),
                 "logbook_id": str(doc.get("_id")),
+                # "ink" -- there is a mark on the record -- vs "none". NOT
+                # "affirmed": nothing that reaches this function is affirmed,
+                # and a field named for the predicate it always fails would
+                # read as the answer to a different question.
+                "ink": "ink" if _ink else "none",
             },
             "resolved": False,
             "created_at": datetime.now(timezone.utc),
@@ -23823,6 +24086,38 @@ async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_
     try:
         result = await db.logbooks.insert_one(child)
     except DuplicateKeyError:
+    # ── FINDING, 2026-09-03: THIS HANDLER HAS NEVER RUN. ───────────────────
+    #
+    # `logbooks_one_open_amendment_per_parent` HAS NEVER BUILT. Production
+    # holds the duplicates it forbids -- Aug 10 and Aug 14, two open children
+    # on one parent each -- so every attempt is rejected with E11000. Until
+    # today _ensure_index_resilient did not recognise 11000, logged one
+    # warning, and returned; startup went green over an index that is not
+    # there.
+    #
+    # An index that cannot build is A CONSTRAINT THAT IS NOT ENFORCED. So the
+    # `except DuplicateKeyError` above is DEAD CODE THAT READS AS A LIVE RACE
+    # GUARD: the note on the insert describes a database rule settling the
+    # race, and there is no database rule. Two simultaneous taps still both
+    # read "no open child" and both insert, exactly as before, and the only
+    # thing standing in the way is the non-atomic application check.
+    #
+    # NOTHING HERE IS WRONG AND NOTHING HERE SHOULD CHANGE. This code is
+    # correct the moment the index exists, and it is what turns the index's
+    # refusal into the 409 the CP needs. It is the INDEX that is missing.
+    # The startup helper now reports the state -- error log, a
+    # compliance_alerts row, and the index name in GET /api/health's
+    # `indexes.failed_unique_builds`. Clearing it is a product action:
+    # withdraw the extra drafts, then run
+    # backend/scripts/create_open_amendment_index.js, which refuses over
+    # duplicates instead of failing quietly.
+    #
+    # IT IS DELIBERATELY *BELOW* THE INSERT AND NOT ABOVE IT. Two tests in
+    # test_amendment_reason_and_fork.py read a fixed 6000-character window
+    # from `async def amend_logbook` and require the insert to fall inside it;
+    # a note of this length above the insert pushes it out of the window and
+    # turns a real ordering assertion into a ValueError. The note belongs on
+    # the handler it is about, so it sits inside the handler.
         _raced = await db.logbooks.find({
             "parent_logbook_id": str(original["_id"]),
             "is_deleted": {"$ne": True},
@@ -25749,7 +26044,30 @@ async def root():
 
 @api_router.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    """Up, and — separately — INDEX-COMPLETE.
+
+    `status` deliberately stays "healthy" while an index is missing. This is
+    the probe the platform restarts on, and a unique index the data refuses is
+    not fixed by cycling the process; flipping it would turn a data finding
+    into a restart loop that takes the API down for exactly the reason
+    _ensure_index_resilient refuses to raise.
+
+    `indexes.failed_unique_builds` NAMES them instead. A deploy is provably
+    index-complete when that list is empty — which is the question nobody could
+    ask before, because a rejected build logged one warning and startup went
+    green over it. Each name here is a declared uniqueness rule that is NOT in
+    force, and any `except DuplicateKeyError` written against it is dead code.
+    """
+    _failed = sorted(FAILED_UNIQUE_INDEX_BUILDS)
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "indexes": {
+            "complete": not _failed,
+            "failed_unique_builds": _failed,
+            "detail": {n: FAILED_UNIQUE_INDEX_BUILDS[n] for n in _failed},
+        },
+    }
 
 @api_router.get("/version")
 async def version():
@@ -36027,6 +36345,53 @@ async def ensure_dropbox_sync_indexes():
         logger.warning(f"ensure_dropbox_sync_indexes: {e}")
 
 
+async def ensure_document_page_indexes():
+    """Indexes for the plan-query page index. Idempotent; safe every boot.
+
+    ITS OWN FUNCTION AND ITS OWN try/except, for exactly the reason
+    ensure_dropbox_sync_indexes gives — and these four had even less business
+    being where they were. `document_page_index` is the Sprint 3 PLAN QUERY
+    pipeline. It has NOTHING TO DO WITH WHATSAPP. It sat inside
+    run_whatsapp_startup_migrations under a shared `except` with four unrelated
+    WhatsApp migrations, so a failure in the bot_config backfill — a collection
+    the plan pipeline has never heard of — silently skipped every index the
+    plan search reads through.
+
+    `document_page_unique` is a UNIQUE build, so it goes through
+    _ensure_index_resilient like every other one: duplicate (file_id,
+    page_number) rows from a re-index would otherwise be a silent no-index, and
+    now they are a named finding in the health payload.
+    """
+    try:
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("file_id", 1), ("page_number", 1)],
+            name="document_page_unique",
+            unique=True,
+        )
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("project_id", 1), ("discipline", 1)],
+            name="document_page_by_project_discipline",
+        )
+        # Plan-query v2: fast exact-match lookup on sheet number per project.
+        # Alphanumeric sheet IDs ('A-301', 'ME-401') are poorly served by
+        # vector search; regex / exact match on this field always takes
+        # priority over semantic retrieval.
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("project_id", 1), ("sheet_number", 1)],
+            name="document_page_by_sheet_number",
+        )
+        await _ensure_index_resilient(
+            db.document_page_index,
+            keys=[("project_id", 1), ("floor", 1)],
+            name="document_page_by_floor",
+        )
+    except Exception as e:
+        logger.warning(f"ensure_document_page_indexes: {e}")
+
+
 async def run_whatsapp_startup_migrations():
     """Idempotent startup migrations for the WhatsApp feature set.
 
@@ -36034,10 +36399,25 @@ async def run_whatsapp_startup_migrations():
     - Set default bot_config on any existing whatsapp_groups without one.
     - Create whatsapp_send_log collection + unique compound + TTL index.
     - Create whatsapp_checklists compound index (used in Sprint 2).
-    - Create document_page_index unique compound (used in Sprint 3).
+    - Create whatsapp_conversation_state unique + TTL (Sprint 6).
+
+    ── ONE try PER MIGRATION, AND THAT IS THE CHANGE ─────────────────────────
+
+    All of this was under ONE try with ONE `except` that logged and moved on.
+    A throw in migration 2 silently skipped 3, 4 and 5 — and the log line said
+    "run_whatsapp_startup_migrations: <error>", which reads like ONE thing
+    failed. Nothing anywhere said the other three never ran.
+
+    This is the shape ensure_dropbox_sync_indexes was extracted OUT of. That
+    extraction fixed two lines and left five; this finishes it. The
+    document_page_index block, which was never a WhatsApp migration at all, is
+    now ensure_document_page_indexes() above.
+
+    Each stage is independent and each names ITSELF in its log line, so a
+    failure says which migration failed and the rest still run.
     """
+    # Migration 1 — backfill bot_config on legacy group docs
     try:
-        # Migration 1 — backfill bot_config on legacy group docs
         result = await db.whatsapp_groups.update_many(
             {"bot_config": {"$exists": False}},
             {"$set": {"bot_config": _default_bot_config()}},
@@ -36047,64 +36427,60 @@ async def run_whatsapp_startup_migrations():
                 f"WhatsApp migration: backfilled bot_config on "
                 f"{result.modified_count} existing group doc(s)"
             )
+    except Exception as e:
+        logger.warning(f"whatsapp migration 1 (bot_config backfill): {e}")
 
-        # Migration 2 — send_log dedup collection
-        await db.whatsapp_send_log.create_index(
-            [("group_id", 1), ("job_type", 1), ("sent_date_est", 1)],
+    # Migration 2 — send_log dedup collection
+    try:
+        await _ensure_index_resilient(
+            db.whatsapp_send_log,
+            keys=[("group_id", 1), ("job_type", 1), ("sent_date_est", 1)],
             unique=True,
             name="whatsapp_send_log_unique",
         )
         # 45-day TTL so the collection doesn't grow forever
-        await db.whatsapp_send_log.create_index(
-            "created_at",
+        await _ensure_index_resilient(
+            db.whatsapp_send_log,
+            keys=[("created_at", 1)],
             expireAfterSeconds=60 * 60 * 24 * 45,
             name="whatsapp_send_log_ttl",
         )
+    except Exception as e:
+        logger.warning(f"whatsapp migration 2 (send_log indexes): {e}")
 
-
-        # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
-        await db.whatsapp_checklists.create_index(
-            [("project_id", 1), ("generated_at", -1)],
+    # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
+    try:
+        await _ensure_index_resilient(
+            db.whatsapp_checklists,
+            keys=[("project_id", 1), ("generated_at", -1)],
             name="checklists_by_project_recent",
         )
-        await db.whatsapp_checklists.create_index(
-            [("group_id", 1), ("generated_at", -1)],
+        await _ensure_index_resilient(
+            db.whatsapp_checklists,
+            keys=[("group_id", 1), ("generated_at", -1)],
             name="checklists_by_group_recent",
         )
+    except Exception as e:
+        logger.warning(f"whatsapp migration 3 (checklist indexes): {e}")
 
-        # Migration 4 — document_page_index unique compound (Sprint 3 consumer)
-        await db.document_page_index.create_index(
-            [("file_id", 1), ("page_number", 1)],
+    # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
+    # One active draft per group; auto-expire via TTL on expires_at.
+    # (Migration 4 was document_page_index — see ensure_document_page_indexes.)
+    try:
+        await _ensure_index_resilient(
+            db.whatsapp_conversation_state,
+            keys=[("group_id", 1)],
             unique=True,
-            name="document_page_unique",
+            name="convo_state_by_group",
         )
-        await db.document_page_index.create_index(
-            [("project_id", 1), ("discipline", 1)],
-            name="document_page_by_project_discipline",
-        )
-        # Migration 4b (plan-query v2): fast exact-match lookup on sheet
-        # number per project. Alphanumeric sheet IDs ('A-301', 'ME-401')
-        # are poorly served by vector search; regex / exact match on this
-        # field always takes priority over semantic retrieval.
-        await db.document_page_index.create_index(
-            [("project_id", 1), ("sheet_number", 1)],
-            name="document_page_by_sheet_number",
-        )
-        await db.document_page_index.create_index(
-            [("project_id", 1), ("floor", 1)],
-            name="document_page_by_floor",
-        )
-
-        # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
-        # One active draft per group; auto-expire via TTL on expires_at.
-        await db.whatsapp_conversation_state.create_index(
-            "group_id", unique=True, name="convo_state_by_group"
-        )
-        await db.whatsapp_conversation_state.create_index(
-            "expires_at", expireAfterSeconds=0, name="convo_state_ttl"
+        await _ensure_index_resilient(
+            db.whatsapp_conversation_state,
+            keys=[("expires_at", 1)],
+            expireAfterSeconds=0,
+            name="convo_state_ttl",
         )
     except Exception as e:
-        logger.warning(f"run_whatsapp_startup_migrations: {e}")
+        logger.warning(f"whatsapp migration 5 (conversation state): {e}")
 
 
 # ==================== SPRINT 3 — PLAN QUERY PIPELINE ====================
@@ -41613,12 +41989,39 @@ async def startup_event():
     except Exception as _e:
         logger.error(f"pdf2image/poppler not available: {_e}. Annotation screenshots disabled.")
 
-    # Create indexes
-    await db.users.create_index("email", unique=True)
-    await db.workers.create_index("phone", unique=True, sparse=True)
-    await db.nfc_tags.create_index("tag_id", unique=True)
-    await db.subcontractors.create_index("email", unique=True)
-    await db.companies.create_index("name", unique=True)
+    # ── EVERY UNIQUE BUILD GOES THROUGH THE RESILIENT HELPER ───────────────
+    #
+    # These five were BARE AWAITS in an @app.on_event("startup") handler. A
+    # unique index whose collection already holds a duplicate raises E11000
+    # straight out of startup, and the API does not start AT ALL — a total
+    # outage, on a data condition, at the next restart, with no deploy having
+    # changed anything. Two accounts sharing an email, one phone typed onto two
+    # workers, one company name entered twice: every one of those is a thing a
+    # person can do through the product today, and any one of them was a
+    # company-wide outage waiting for a redeploy.
+    #
+    # THE NAMES ARE THE ONES MONGO WOULD HAVE GENERATED, and that is not
+    # cosmetic. `create_index("email", unique=True)` produces `email_1`. Naming
+    # it anything else here does not rename the live index — it asks for a
+    # SECOND index beside it, or trips an IndexOptionsConflict that makes the
+    # helper drop a live uniqueness constraint and rebuild it. Passing the
+    # default name makes this a no-op against every existing deployment.
+    await _ensure_index_resilient(
+        db.users, keys=[("email", 1)], name="email_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db.workers, keys=[("phone", 1)], name="phone_1",
+        unique=True, sparse=True,
+    )
+    await _ensure_index_resilient(
+        db.nfc_tags, keys=[("tag_id", 1)], name="tag_id_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db.subcontractors, keys=[("email", 1)], name="email_1", unique=True,
+    )
+    await _ensure_index_resilient(
+        db.companies, keys=[("name", 1)], name="name_1", unique=True,
+    )
     await db.checklists.create_index("company_id")
     await db.checklist_assignments.create_index("checklist_id")
     await db.checklist_assignments.create_index("project_id")
@@ -41651,8 +42054,12 @@ async def startup_event():
             await db.project_files.drop_index(_old_name)
     except Exception as _e:
         logger.warning(f"project_files unique index migration skipped: {_e}")
-    await db.project_files.create_index(
-        [("project_id", 1), ("dropbox_path", 1)],
+    # Same treatment, same name the migration above drops by — so the
+    # drop-then-rebuild pair still refers to one index and not two.
+    await _ensure_index_resilient(
+        db.project_files,
+        keys=[("project_id", 1), ("dropbox_path", 1)],
+        name="project_id_1_dropbox_path_1",
         unique=True,
         partialFilterExpression={"dropbox_path": {"$gt": ""}},
     )
@@ -41663,10 +42070,40 @@ async def startup_event():
     await db.projects.create_index([("company_id", 1), ("updated_at", -1)])
     await db.checkins.create_index([("company_id", 1), ("updated_at", -1)])
     await db.daily_logs.create_index([("company_id", 1), ("updated_at", -1)])
-    await db.daily_logs.create_index([("project_id", 1), ("date", 1)], unique=True, sparse=True)
+    await _ensure_index_resilient(
+        db.daily_logs,
+        keys=[("project_id", 1), ("date", 1)],
+        name="project_id_1_date_1",
+        unique=True, sparse=True,
+    )
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
     await db.logbooks.create_index([("project_id", 1), ("log_type", 1), ("date", -1)])
     await db.logbooks.create_index([("company_id", 1), ("date", -1)])
+    # THE END-OF-DAY FREEZE SWEEP'S OWN INDEX. It pages
+    # {log_type: $in, date: $lt} sorted (date, _id), and `logbooks` holds
+    # inline base64 -- a signature, and photos before the finalize purge. An
+    # unserved sort there is the 32MB in-memory sort limit, which is an outage
+    # this product has already had once. test_sorts_are_indexed catches it.
+    #
+    # THE SORT KEYS ARE THE PREFIX, and that is forced rather than chosen.
+    # This selector pins NOTHING by equality: `log_type` is an $in, `date` is
+    # an $lt, and both `is_locked` and `is_deleted` are $ne. find_unserved_sorts
+    # counts only `$eq` as a pin -- correctly, because an index leading on an
+    # $in would make Mongo merge-sort across one branch per log type, which is
+    # not sorted output from one scan. So (date, _id) leads, the $lt becomes a
+    # range on the leading key (an index range walked in sort order, which is
+    # the cheap case), and `_id` is the unique tie-break that makes skip-free
+    # paging correct.
+    #
+    # The key spec is a LITERAL on purpose: find_unserved_sorts.py resolves
+    # index declarations with an AST walk and cannot read a constant, so a
+    # named tuple here would drop this index out of the sweep's coverage
+    # silently -- the failure that guard exists to prevent.
+    await _ensure_index_resilient(
+        db.logbooks,
+        keys=[("date", 1), ("_id", 1)],
+        name="logbooks_eod_sweep_by_type_date",
+    )
 
 	# Compound index for check-in duplicate prevention (critical at scale)
     await db.checkins.create_index(
@@ -41813,7 +42250,12 @@ async def startup_event():
     await db.whatsapp_groups.create_index("project_id")
     await db.whatsapp_messages.create_index([("project_id", 1), ("timestamp", -1)])
     await db.whatsapp_messages.create_index([("group_id", 1), ("created_at", -1)])
-    await db.whatsapp_contacts.create_index([("company_id", 1), ("phone", 1)], unique=True)
+    await _ensure_index_resilient(
+        db.whatsapp_contacts,
+        keys=[("company_id", 1), ("phone", 1)],
+        name="company_id_1_phone_1",
+        unique=True,
+    )
     await db.whatsapp_link_codes.create_index("expires_at", expireAfterSeconds=0)
 
     # Create owner account if doesn't exist
@@ -42038,6 +42480,33 @@ async def startup_event():
     # category) unique index) so a tick that overlaps with admin-
     # triggered runs is safe. Cron-driven, not interval-driven, so
     # DST shifts are handled by the timezone string.
+    # ── FINDING, 2026-09-03: FOUR STAGES UNDER ONE try. NOT FIXED HERE. ────
+    #
+    # The body below runs four independent stages under a single try/except:
+    #
+    #   1. run_missing_detector_for_all_projects
+    #   2. run_deficiency_detector_for_all_projects
+    #   3. sweep_stale_end_of_day_logs   -- the END-OF-DAY FREEZE
+    #   4. sweep_signature_ledger_gaps   -- the audit-trail reconciliation
+    #
+    # A throw anywhere in 1 or 2 SILENTLY DISABLES 3 AND 4. That is not a
+    # missing report: stage 3 is the freeze that seals yesterday's signed logs,
+    # and logbook locking depends on it. A detector crash -- on one malformed
+    # project, on one night -- leaves every stale signed log across every
+    # project unfrozen and editable, and the only trace is one line reading
+    # "[v2_logbook] nightly tick failed", which reads like one thing failed.
+    #
+    # It is the same shape as run_whatsapp_startup_migrations' shared try,
+    # which this change split. THE FIX IS THE SAME: one try per stage, each
+    # naming itself, so a failing detector cannot take the freeze down with it.
+    #
+    # NOT MADE HERE BECAUSE IT CROSSES REGIONS. Stages 3 and 4 are the sweep
+    # region and belong to another worker; sequencing them under separate
+    # excepts changes when each is reached. Described rather than done: wrap
+    # each of the four awaits in its own try/except logging
+    # "[v2_logbook] <stage> failed", keep the existing order (the freeze must
+    # still run before the ledger reconciliation, per the note below), and
+    # leave the outer handler as a last-resort net.
     async def _logbook_nightly_tick():
         try:
             from lib.logbook.missing_detector import run_missing_detector_for_all_projects
@@ -43023,6 +43492,9 @@ async def startup_event():
     await run_whatsapp_startup_migrations()
     # Separate await, so a failure in the WhatsApp migrations cannot skip it.
     await ensure_dropbox_sync_indexes()
+    # Also separate, and it never belonged inside the WhatsApp runner at all —
+    # document_page_index is the plan-query pipeline. See its docstring.
+    await ensure_document_page_indexes()
 
     # Account activation gating — backfill existing users to "approved" so the
     # new pending-by-default gate never locks out current accounts.
