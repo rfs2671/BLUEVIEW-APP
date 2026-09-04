@@ -44,6 +44,58 @@ const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_
  */
 const DEFAULT_TIMEOUT_MS = 25000;
 
+// ── ONE ID PER LOGICAL REQUEST ─────────────────────────────────────────────
+//
+// WHAT THIS IS FOR. A single tap on Amend produced TWO arrivals of
+// POST /logbooks/{id}/amend, 3.2 seconds apart, on two different containers
+// behind two different edge IPs. `doAmend` cannot have fired twice — at +3.2s
+// either the 200 had arrived and the modal had closed, or the await was still
+// pending, which leaves `busy` true and the Pressable disabled. And nothing in
+// this client re-issues: axios is 0.27.2, there is no axios-retry, and the
+// three interceptors below handle a token, a 401 and a 429 without ever
+// resending. 3.2s also fits no timeout we own — DEFAULT_TIMEOUT_MS is 25000 and
+// every override at a call site is LARGER, never smaller.
+//
+// So the replay is BELOW the application, and OkHttp's retryOnConnectionFailure
+// (on by default, and a new connection is exactly what a new edge IP and a new
+// container look like) is the leading candidate. That is platform-default
+// inference, not code in this repo, and eight hours of production logs could
+// not settle it — because NOTHING IN THE PRODUCT CARRIES AN IDENTITY TWO LOG
+// LINES COULD BE JOINED ON. This is that identity.
+//
+// MINTED PER LOGICAL REQUEST, NOT PER TRANSMISSION. That distinction is the
+// whole mechanism:
+//
+//   • a retry below the app replays the serialized request byte for byte,
+//     headers included, so both arrivals carry the SAME id;
+//   • two taps, or two queue drains, mint TWO ids.
+//
+// One grep over the server log therefore says which mechanism is running,
+// permanently and without a repro.
+//
+// AND IT SURVIVES A RETRY WE OWN. `config.requestId` lets a caller re-issue the
+// SAME logical request under its original id, and the guard below never
+// overwrites an id already on the config — which is what makes offlineQueue's
+// three-attempt replay of a queued create honest: the server sees one write
+// attempted three times, not three writes.
+//
+// NOT A SECURITY TOKEN. It is a correlation handle: attacker-visible,
+// attacker-settable, and never an input to any authorization decision. Math
+// .random is the right cost for that job; the counter is what makes two ids
+// minted in the SAME MILLISECOND — the offline-queue duplicate, exactly — still
+// distinct, which a timestamp alone would not guarantee.
+export const REQUEST_ID_HEADER = 'X-Request-Id';
+
+let _requestIdSeq = 0;
+export const newRequestId = () => {
+  _requestIdSeq = (_requestIdSeq + 1) % 0xffffffff;
+  return [
+    Date.now().toString(36),
+    _requestIdSeq.toString(36),
+    Math.random().toString(36).slice(2, 10),
+  ].join('-');
+};
+
 // Create axios instance
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -123,6 +175,17 @@ apiClient.interceptors.request.use(
     // nothing. Sent on every request rather than at login: a 30-day token
     // means a login is far too coarse to notice an install that updated.
     if (CLIENT_VERSION) config.headers['X-Client-Version'] = CLIENT_VERSION;
+    // ONE ID PER LOGICAL REQUEST — see newRequestId above for why this is the
+    // only thing that can tell a transport replay from a second tap.
+    //
+    // NEVER OVERWRITTEN. A caller re-issuing the same logical request passes
+    // `requestId` on the config (or sets the header itself) and keeps its id;
+    // only a request that has none gets a fresh one. Minting unconditionally
+    // here would give a deliberate retry a new identity and destroy the one
+    // property the header exists to provide.
+    if (!config.headers[REQUEST_ID_HEADER]) {
+      config.headers[REQUEST_ID_HEADER] = config.requestId || newRequestId();
+    }
     return config;
   },
   (error) => Promise.reject(error)

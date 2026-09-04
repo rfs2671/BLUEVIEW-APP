@@ -982,6 +982,133 @@ except Exception as _rl_err:
         f"all endpoints currently unrestricted",
     )
 
+# ── ONE ID PER LOGICAL REQUEST, SO A DUPLICATE CAN BE NAMED ───────────────
+#
+# THE THING THIS ANSWERS. A single tap on Amend produced TWO arrivals of
+# POST /logbooks/{id}/amend, 3.2 seconds apart, on two different containers
+# behind two different edge IPs. Only amend_logbook's one-open-correction check
+# stopped a second unsigned child being written, and the unique index that is
+# supposed to settle that race HAS NEVER BUILT — see the open-amendment index
+# further down, where the comment says so plainly: production holds the
+# duplicates the index forbids, so a unique build over them is rejected and
+# _ensure_index_resilient logs and returns. The database is not protecting that
+# endpoint today.
+#
+# (No constant is NAMED in this comment on purpose. Several tests locate a
+# region of this file by searching it for a literal, and a search returns the
+# LEFTMOST match — so a constant's name written into prose 22,000 lines above
+# its definition silently moves a test's window onto the prose. That is exactly
+# what an earlier draft of this comment did to
+# test_amendment_reason_and_fork::test_it_returns_the_open_childs_id.)
+#
+# Eight hours of logs could not say whether the client sent two requests or the
+# transport replayed one, because nothing in the product carried an identity
+# two log lines could be joined on. X-Request-Id is that identity. The client
+# mints it per LOGICAL request (frontend/src/utils/api.js, newRequestId) and a
+# retry BELOW the application — OkHttp's retryOnConnectionFailure is the
+# leading candidate for the 3.2s gap — replays the serialized request byte for
+# byte, header included. So:
+#
+#     one id, two arrivals    ->  the transport replayed one request
+#     two ids, two arrivals   ->  the client issued two
+#
+# and that is one grep, permanently, with no repro needed.
+#
+# ── WHY THIS OBSERVES AND DOES NOT YET REFUSE ─────────────────────────────
+#
+# The obvious next step is an idempotency store keyed on this header, with
+# /amend replaying the first response to a repeat. That is deliberately NOT
+# built here, and the scope line is drawn on three grounds:
+#
+#   1. IT WOULD DESTROY THE EVIDENCE IT IS MEANT TO ACT ON. A layer that
+#      silently absorbs the second arrival also stops it appearing in any log,
+#      and the mechanism behind the 3.2s gap is still INFERRED, not observed.
+#      Turning an open question into a permanently unobservable one is how this
+#      investigation got here. Detect first; the same header is the key on the
+#      day the mechanism is known.
+#   2. THE IN-FLIGHT CASE HAS NO SAFE DEFAULT YET. At +3.2s the first request
+#      may still be running, so there IS no stored response to replay. Every
+#      available answer — block and wait, 409, 202-and-poll — is a product
+#      decision about a statutory record, not a plumbing detail, and picking
+#      one here by implication would be picking it by accident.
+#   3. A WRONG DEDUPE IS WORSE THAN THE DUPLICATE IT PREVENTS. Replaying a
+#      cached 200 for an id a client reused by mistake SUPPRESSES an amendment
+#      the CP genuinely made: a silently missing correction on a compliance
+#      record, which is strictly worse than the extra unsigned child the
+#      existing 409 already catches and hands back.
+#
+# What is built is the part with no downside: every request carries an id,
+# every mutating request logs one line naming it, and the id goes back to the
+# device so a support call can quote it.
+CLIENT_REQUEST_ID_HEADER = "X-Request-Id"
+
+# BOUNDED AND CHARSET-RESTRICTED, because this is attacker-controlled text on
+# its way into a log file, and an unbounded value with newlines in it is how a
+# log line gets forged. Opaque to the server otherwise: a correlation handle,
+# never an authorization input, never interpolated into a query.
+_CLIENT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+_request_id_logger = logging.getLogger("levelog.request")
+
+
+def sanitized_client_request_id(raw):
+    """The caller's id if it is well-formed, else None. Never raises."""
+    try:
+        if raw and _CLIENT_REQUEST_ID_RE.match(str(raw)):
+            return str(raw)
+    except Exception:
+        pass
+    return None
+
+
+# REGISTERED BEFORE CORS ON PURPOSE. Starlette PREPENDS, so the block below
+# still wraps this one and the ordering CORS depends on is unchanged; this sits
+# OUTSIDE the rate limiter, which means a 429 is tagged and logged too — the
+# duplicate-write question is exactly the kind that gets answered by a request
+# nobody expected to be refused.
+@app.middleware("http")
+async def client_request_id_middleware(request: Request, call_next):
+    # MINTED SERVER-SIDE WHEN ABSENT. Older builds send no header, and a
+    # request with no id is precisely the one that cannot be correlated later.
+    # `origin` records who minted it so a log line is never ambiguous about
+    # whether the device actually sent one.
+    supplied = sanitized_client_request_id(
+        request.headers.get(CLIENT_REQUEST_ID_HEADER))
+    request_id = supplied or f"srv-{uuid.uuid4().hex[:16]}"
+    request.state.client_request_id = request_id
+    request.state.client_request_id_origin = "client" if supplied else "server"
+
+    response = await call_next(request)
+
+    # Echoed so a device — and a support call — can quote the id it was served
+    # under. Needs the expose_headers entry below or the web build cannot read
+    # it; that trap is documented on REISSUED_TOKEN_HEADER and is the same one.
+    try:
+        response.headers[CLIENT_REQUEST_ID_HEADER] = request_id
+    except Exception:
+        pass
+
+    # ONE LINE PER MUTATING REQUEST. GETs are excluded: they are the bulk of
+    # the traffic and a replayed read is not the problem being investigated.
+    # This is the join key — two lines with the same id are one logical write
+    # that arrived twice.
+    try:
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            _request_id_logger.info(
+                "[req] id=%s origin=%s %s %s -> %s",
+                request_id,
+                request.state.client_request_id_origin,
+                request.method,
+                request.url.path,
+                getattr(response, "status_code", "?"),
+            )
+    except Exception:
+        # A logging failure must never change what the caller receives.
+        pass
+
+    return response
+
+
 # ── CORS — REGISTERED LAST, WHICH MAKES IT THE OUTERMOST LAYER ────────────
 #
 # Starlette's add_middleware PREPENDS, so the LAST registration wraps every
@@ -1009,13 +1136,20 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    # X-Request-Id IS ON THIS LIST BECAUSE A HEADER THE PREFLIGHT DOES NOT
+    # ALLOW IS A REQUEST THE BROWSER REFUSES TO SEND AT ALL. Same shape as the
+    # expose_headers trap below, one direction earlier: ship the correlation
+    # id without this line and the web build silently stops making the request
+    # instead of silently making it without the header.
+    allow_headers=["Authorization", "Content-Type", "Accept",
+                   CLIENT_REQUEST_ID_HEADER],
     # X-Refreshed-Token IS ON THIS LIST BECAUSE THE BROWSER HIDES WHAT IS NOT.
     # The web build reads response headers through fetch/XHR, which expose only
     # the CORS-safelisted set plus whatever is named here. Ship the re-issue
     # without this line and it works on native, silently never lands on web,
     # and the failure looks like "the token just expired" a month later.
-    expose_headers=["Content-Disposition", REISSUED_TOKEN_HEADER],
+    expose_headers=["Content-Disposition", REISSUED_TOKEN_HEADER,
+                    CLIENT_REQUEST_ID_HEADER],
 )
 
 # Create a router with the /api prefix
