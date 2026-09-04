@@ -4,6 +4,172 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-04 — a test that pins a LITERAL can hold the defect in place
+
+Not "source pins are brittle", which is a style opinion. This is a claim about
+a failure mode with a cost that is different **in kind** from a false alarm.
+
+### The two that did it
+
+**`buildIdentity.test.cjs` required the word MISMATCH.**
+
+```js
+ok(/MISMATCH/.test(code), 'and a mismatch is stated in those words');
+```
+
+The build card printed *"MISMATCH — the app and the backend are on different
+commits"* for every inequality of two seven-character strings. That single
+output covers three states, two of which are faults and one of which is a
+**backend-only change** — nothing under `frontend/` moved, the OTA workflow
+correctly did not run, the phone is exactly right.
+
+On the morning of 2026-09-04 the third case produced an acceptance test telling
+the CP to wait for a version line that was never going to change. He would have
+concluded a landed fix had not shipped.
+
+**The assertion required the presence of the wording that caused it.** Anyone
+who softened that sentence would have been told by CI that they had broken the
+card — in the file that exists to keep the card honest.
+
+**Four preshift pins required `w.get("name", "")`.**
+
+```python
+self.assertEqual(_SRC.count('if w.get("name", "").strip():'), 2)
+```
+
+`.get(key, default)` returns the default only on an **absent** key, never on a
+present-but-`None` value. So `{"name": None}.get("name", "").strip()` raises
+`AttributeError` — and `None` is precisely what correcting a worker stored as
+the string `"null"` produces. In a renderer that does not skip a row; it takes
+down the whole PDF.
+
+**Four tests required the exact spelling that crashes on the exact value the
+pending data correction creates.** The data fix was blocked behind a code fix
+that four tests were holding shut.
+
+### Why this is not the same as a false failure
+
+A pin that breaks on a correct change costs an hour and announces itself: the
+test is red, someone reads it, the intent is re-expressed. Annoying, bounded,
+self-reporting.
+
+A pin that requires a defective literal costs **whatever the defect costs**,
+and it conceals that it is doing so. The failing signal points at the person
+fixing the bug. Nobody audits a green test.
+
+### It is common, and here is the evidence
+
+Nine instances in one day on this project: the leftmost-regex tempering (twice,
+from both directions at once), a 4000-character adjacency span, a
+900-character window into a seeded document **duplicated across two files**, a
+pinned `sub_dict["assigned_projects"] = []` inside a handler being deleted, a
+3,242-character `repr()` of a FastAPI dependant tree, three greps of
+`settings.jsx` source, and these four preshift counts.
+
+Seven of the nine fired on a **correct change**. That number is sampled over a
+day of unusually heavy correct change, which is when these misfire most, and
+their catch side accrues over months of regressions that never happened and
+were never counted — so it is evidence that the CLASS IS COMMON, and it is not
+a verdict on whether pinning is worth it. **The two that held defects are the
+verdict.**
+
+### The tell, and it is the actionable line
+
+**The check was easier to write than the structural one.**
+
+A `repr()` contains the name. A grep finds the literal. A character window
+reaches the fields. Each felt like being thorough, and each passed on the
+machine where it was written.
+
+**Inherited defects get audited; authored ones do not.** Two of the nine were
+written the same day by the person recording this, one in the same hour as the
+paragraph warning against it. Nobody re-reads a test they wrote an hour ago
+looking for this.
+
+### Three of them were caught by their own author, in one session
+
+That number is the argument, and it points the opposite way from reassurance.
+
+  1. `test_card_image_correction` asserted a route's dependencies out of a
+     3,242-character `repr()`. Passed locally, failed in CI on identical code.
+  2. `test_the_gate_actually_asks_the_predicate` — the FIRST control run passed,
+     which meant ten tests were driving a predicate directly and none of them
+     noticed the call site had been reverted.
+  3. `test_an_unresolved_request_is_refused_and_a_resolved_one_is_not` checked
+     for the substrings "rate", "quota", "ceiling" in a function's source, and
+     failed on the word **sepa-rate** in a comment written minutes earlier.
+
+Each was written by someone who had just finished writing THIS ENTRY. Each felt
+like being thorough at the moment it was typed.
+
+**So the class is not rare; it is the DEFAULT.** The structural version is
+always more work than the version that greps, and the version that greps always
+passes first. Catching it is not a matter of remembering that the class exists —
+all three of those were written by someone who demonstrably remembered. It is a
+matter of asking, of each assertion, at the moment of writing it: **what am I
+actually asserting, and would it still hold if the thing I named moved?**
+
+A useful forcing question, because it is answerable in seconds: **what is the
+smallest edit that breaks this test without breaking the behaviour?** If one
+exists, the test is pinned to a location.
+
+### What to do instead
+
+Ask of the assertion you are writing **right now**: would this still hold if
+the thing it names moved to another file, another line, or another library
+version? If the answer is no and the subject is a structure — a dict's keys, a
+function's calls, a route's dependencies, a projection's shape — read the
+structure. `ast.parse` is three lines and cannot be pushed out of range by a
+comment.
+
+And when a pin is genuinely about position, say so in the failure message, and
+say that the fix may be to move the new code rather than to widen the bound.
+`test_signature_ink_predicate` was RIGHT to fail on 2026-09-04; the correct
+response was relocating two helpers, not raising 4000 to 6000.
+
+**Three shapes from this session are the models, and the harness item names
+them rather than re-describing the idea:**
+
+- `test_the_two_halves_agree` — a PROPERTY, not a case. Sealing and
+  asking-for-a-signature must be complements, or the row is wrong either way.
+- the SYNTHETIC SPECIMEN rule — a check whose subject is production code stops
+  working the day production is correct. Drive the rule on a fixture you made,
+  with a positive case and a negative one beside it.
+- the PRECONDITION assertion — `test_the_old_form_is_the_one_that_crashed` and
+  the `name_ok` property test both assert the precondition BEFORE the fix, so
+  they fail if either side moves and cannot pass by accident.
+
+---
+
+## PRACTICE — 2026-09-04 — a comment citing code as precedent goes stale silently
+
+`server.py` carried, in the note explaining why `preshift_signin` is absent
+from `_SUBMIT_ROW_CONTENT_RULES`:
+
+> both renderers already gate a worker row on `if w.get("name", "").strip()` —
+> **the rule is shipped, not invented**
+
+A design decision justified by pointing at existing code. The citation was the
+argument: the deferral was defensible *because* the rule already existed
+somewhere.
+
+Then that line was deleted — it is the form that raises `AttributeError` on a
+stored `None` — and the comment went on asserting a precedent that no longer
+existed, in the exact words that made it persuasive. Nothing failed. Comments
+are not compiled and no sweep reads them.
+
+**The class:** a comment that cites code as PRECEDENT has a dependency on that
+code, and it is the only kind of dependency in the file that nothing checks. It
+is worse than a comment that merely describes behaviour, because a stale
+description misleads a reader while a stale citation misleads them *and* hands
+them a reason to stop looking.
+
+**The cheap rule.** When a comment quotes a line of code as justification, the
+next person to change that line has to be able to find the comment. Quote the
+FUNCTION and the FILE, not the expression — `both preshift renderers gate on a
+non-blank name` survives a rewrite that `if w.get("name", "").strip()` does
+not. Where the exact expression is the point, put an assertion beside it, so
+the citation has something enforcing it.
 ## PRACTICE — 2026-09-04 — `railway logs --json` is the FIRST move on a server-side failure, not the last
 
     railway logs --json | grep "api/workers"
