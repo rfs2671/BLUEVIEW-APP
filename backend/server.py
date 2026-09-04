@@ -23557,9 +23557,29 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         # Tier 1 (2): an immediate/pre-shift log freezes on submit (sign-now-lock).
         # No-op until counsel classifies a log as immediate_preshift.
         if data.status == "submitted":
-            _lt = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}, {"log_type": 1})
-            if _lt and is_immediate_preshift(_lt.get("log_type")):
-                update["is_locked"] = True
+            _lt = await db.logbooks.find_one(
+                {"_id": to_query_id(logbook_id)},
+                {"log_type": 1, "is_amendment": 1, "cp_signature": 1},
+            )
+            if _lt:
+                # The signature this decision is made on: the one this request
+                # carries if it carries one, else what is already stored. A
+                # submit that patches only `status` is judged on the signature
+                # already on the record.
+                _eff_cp = update.get("cp_signature", _lt.get("cp_signature"))
+                if submit_freezes_record(
+                    _lt.get("log_type"), _lt.get("is_amendment"), _eff_cp,
+                ):
+                    update["is_locked"] = True
+                    # A locked record with no finalized_at is a sealed document
+                    # nobody can attribute. /finalize stamps all three; so does
+                    # this, or the two lock paths would disagree about what a
+                    # frozen log looks like.
+                    update["finalized_at"] = now
+                    update["finalized_by"] = current_user.get("id")
+                    update["finalized_by_name"] = (
+                        current_user.get("full_name") or current_user.get("name")
+                    )
     result = await db.logbooks.update_one({"_id": to_query_id(logbook_id)}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Logbook not found")
@@ -25193,54 +25213,9 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     # DID: he signed that log, and a correction he did not make cleared the
     # signature. Sending him that sentence about his own filed work is the
     # defect, not the wording.
-    _amend_meta = {}
-    for _doc in stale_unsigned_docs:
-        if _doc.get("is_amendment") is not True:
-            continue
-        _lt, _dt = _doc.get("log_type"), _doc.get("date")
-        if _lt and _dt:
-            _amend_meta[(_lt, _dt)] = amendment_state(_doc)
-
-    _gaps = {}
-    for _ref in stale_unsigned_refs:
-        _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
-    # The third selector, merged as UNSIGNED — the banner's existing sentence
-    # ("never signed — still open and still yours to finish") is already the
-    # right one for it, so this needs no new copy and no fourth state.
-    for _doc in inkless_filed_docs:
-        _lt, _dt = _doc.get("log_type"), _doc.get("date")
-        if _lt and _dt:
-            _gaps[(_lt, _dt)] = "unsigned"
-    for _doc in unaffirmed_docs:
-        _lt, _dt = _doc.get("log_type"), _doc.get("date")
-        if not _lt or not _dt:
-            continue
-        # A present-but-unaffirmed signature is the more specific state, so it
-        # wins over the generic "unsigned" the stale pass assigned.
-        _gaps[(_lt, _dt)] = "unaffirmed"
-    # MORE SPECIFIC STILL, and applied last for that reason. An amendment child
-    # is created unsigned (cp_signature None), so it carries no ink and can
-    # never be `unaffirmed` -- the two never collide in practice, and the
-    # ordering says which would win if they ever did.
-    for _key in _amend_meta:
-        _gaps[_key] = "amendment_unsigned"
-    def _gap_row(k, v):
-        row = {"log_type": k[0], "date": k[1], "state": v}
-        meta = _amend_meta.get(k)
-        if meta:
-            # Off the RECORD. A bundle rendering this in December must read the
-            # same sentence it would have read in September.
-            row["amendment"] = {
-                "reason": meta.get("reason"),
-                "by": meta.get("by"),
-                "at": _amendment_day(meta.get("at")) or None,
-                "has_reason": meta.get("state") == AMENDMENT_PRESENT,
-            }
-        return row
-
-    attestation_gaps = sorted(
-        (_gap_row(k, v) for k, v in _gaps.items()),
-        key=lambda g: g["date"], reverse=True,
+    attestation_gaps = merge_attestation_gaps(
+        stale_unsigned_docs, stale_unsigned_refs, inkless_filed_docs,
+        unaffirmed_docs,
     )
 
     return {
@@ -26485,6 +26460,133 @@ _SIGNATURE_HAS_INK_CLAUSES = [
     {"cp_signature.data": {"$type": "string", "$ne": ""}},
     {"cp_signature": {"$type": "string", "$ne": ""}},
 ]
+
+
+def merge_attestation_gaps(
+    stale_unsigned_docs, stale_unsigned_refs, inkless_filed_docs, unaffirmed_docs,
+):
+    """One row per (log_type, date), each naming its own state.
+
+    LIFTED OUT OF THE ENDPOINT SO IT CAN BE TESTED AT ALL. It was 49 lines
+    inline in a 400-line handler that needs a live Mongo to reach, so the only
+    test of the merge rule was a REIMPLEMENTATION of it in the test file -- a
+    copy that agreed with itself while the original was wrong for weeks. Same
+    shape as a test double thinner than the real module, already recorded here.
+    Nothing about the merge changes in the move except the amendment guard.
+
+    Returns the list the endpoint serves as `attestation_gaps`.
+    """
+    # AND A SIGNED AMENDMENT IS NOT AN UNSIGNED ONE. `stale_unsigned_docs` is
+    # the RAW query result and its selector carries no signature clause at all --
+    # the affirmation test lives twenty lines below, in `stale_unsigned_refs`,
+    # and this loop did not use it. So an amendment the CP had signed AND
+    # affirmed kept raising `amendment_unsigned`, and because the override at
+    # the bottom is applied LAST it beat the two states that ARE signature-aware.
+    #
+    # The comment above states the assumption that made it wrong: "an amendment
+    # child is created unsigned ... and can never be `unaffirmed`". True at
+    # creation. False the moment he signs, which is the only interesting moment.
+    #
+    # THE COST WAS NOT COSMETIC. The banner cleared itself overnight, when the
+    # freeze sweep locked the row out of the selector -- so for up to 27 hours
+    # after every correction the app told the CP his signed work still needed a
+    # signature, and he signed it again. That is where the draft pile came from.
+    #
+    # META IS STILL COLLECTED FOR EVERY AMENDMENT, only the GAP is withheld.
+    # A parent and its child share (log_type, date), so an unsigned parent whose
+    # child is signed must still be able to say "this day was amended" on the
+    # row its own deficiency raises.
+    _amend_meta = {}
+    _amend_unsigned = set()
+    for _doc in stale_unsigned_docs:
+        if _doc.get("is_amendment") is not True:
+            continue
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if not (_lt and _dt):
+            continue
+        _amend_meta[(_lt, _dt)] = amendment_state(_doc)
+        if not _is_affirmed_signature(_doc.get("cp_signature")):
+            _amend_unsigned.add((_lt, _dt))
+
+    _gaps = {}
+    for _ref in stale_unsigned_refs:
+        _gaps[(_ref["log_type"], _ref["date"])] = "unsigned"
+    # The third selector, merged as UNSIGNED — the banner's existing sentence
+    # ("never signed — still open and still yours to finish") is already the
+    # right one for it, so this needs no new copy and no fourth state.
+    for _doc in inkless_filed_docs:
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if _lt and _dt:
+            _gaps[(_lt, _dt)] = "unsigned"
+    for _doc in unaffirmed_docs:
+        _lt, _dt = _doc.get("log_type"), _doc.get("date")
+        if not _lt or not _dt:
+            continue
+        # A present-but-unaffirmed signature is the more specific state, so it
+        # wins over the generic "unsigned" the stale pass assigned.
+        _gaps[(_lt, _dt)] = "unaffirmed"
+    # MORE SPECIFIC STILL, and applied last for that reason. An amendment child
+    # is created unsigned (cp_signature None), so it carries no ink and can
+    # never be `unaffirmed` -- the two never collide in practice, and the
+    # ordering says which would win if they ever did.
+    for _key in _amend_unsigned:
+        _gaps[_key] = "amendment_unsigned"
+    def _gap_row(k, v):
+        row = {"log_type": k[0], "date": k[1], "state": v}
+        meta = _amend_meta.get(k)
+        if meta:
+            # Off the RECORD. A bundle rendering this in December must read the
+            # same sentence it would have read in September.
+            row["amendment"] = {
+                "reason": meta.get("reason"),
+                "by": meta.get("by"),
+                "at": _amendment_day(meta.get("at")) or None,
+                "has_reason": meta.get("state") == AMENDMENT_PRESENT,
+            }
+        return row
+
+    return sorted(
+        (_gap_row(k, v) for k, v in _gaps.items()),
+        key=lambda g: g["date"], reverse=True,
+    )
+
+def submit_freezes_record(log_type, is_amendment, effective_signature) -> bool:
+    """Does `status: submitted` seal this record, or does something else close it?
+
+    TWO REASONS, AND THEY ARE NOT THE SAME REASON.
+
+    IMMEDIATE / PRE-SHIFT -- the timing class says the signature is the freeze.
+    A no-op until counsel classifies a log as immediate_preshift; kept here so
+    the two freeze-on-submit rules live in one predicate rather than two
+    branches that drift.
+
+    AN AMENDMENT -- and NOT by its timing class, which is the point. An
+    END_OF_DAY log stays open because the day is still accumulating, and
+    sweep_stale_end_of_day_logs closes it that night. An amendment to
+    2026-08-14 filed on 2026-09-04 HAS NO DAY LEFT TO ACCUMULATE: it is
+    complete the instant it is signed. Leaving it to a sweep whose selector is
+    `date < today` makes a record three weeks old wait on a rule about
+    yesterday, and until it fires the row keeps matching stale_unsigned_docs
+    every night. The child inherits nothing from the parent and should not --
+    the parent was an end-of-day narrative, the child is a correction to a
+    closed one. This is the rule a `visit` log already uses.
+
+    AFFIRMED, NEVER MERELY PRESENT. The same bar sweep_stale_end_of_day_logs
+    sets, for its reason: an unfrozen record can still be frozen later and a
+    wrongly sealed one cannot be opened. An inherited credential, a legacy
+    signature and the `{}` production actually held are all not affirmed.
+
+    NOTE THE ASYMMETRY. is_immediate_preshift does not consult the signature
+    because SUBMIT_MISSING_CP_SIGNATURE has already refused an unsigned submit
+    upstream; the amendment arm asks anyway, because "signed" and "affirmed"
+    are different questions and only the second one may seal a record.
+    """
+    if is_immediate_preshift(log_type):
+        return True
+    if is_amendment is True and _is_affirmed_signature(effective_signature):
+        return True
+    return False
+
 
 
 def _signature_affirmation_html(sig):
