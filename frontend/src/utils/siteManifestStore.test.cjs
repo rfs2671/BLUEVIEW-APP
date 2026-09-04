@@ -529,13 +529,158 @@ async function main() {
       pages: [page({ files: [fRow('F1', 1, 'pdf', 1e9)] })],
     });
     const r = await store(d).syncSiteManifest('P1');
-    ok(d.downloaded.length === 0 && r.reason === 'no-space',
-      'a run that cannot fit refuses up front and says why — rather than dying '
-      + 'on file 9 with a half-filled tablet and no way to know which half');
+    // THE ASSERTION THIS REPLACES was `r.reason === 'no-space'` with the run
+    // refusing entirely, and it was right for the ruling it encoded: refuse up
+    // front rather than die on file 9 with a half-filled tablet. That ruling
+    // has been superseded — a man in a basement with 80 of 87 sheets is better
+    // off than one with none, PROVIDED the list names the seven. The refusal
+    // survives for the case it was actually about: when NOTHING fits.
+    ok(d.downloaded.length === 0 && r.spaceReason === 'no-space',
+      'a run where not one file fits still downloads nothing and says so');
     ok(r.swept === true,
       'but the sweep still ran, and ran BEFORE the budget was measured: '
       + 'reclaiming orphans is the only way a full tablet ever gets space '
       + 'back, and the sweep can only ever remove what no list names');
+
+    // ── AND THE REFUSAL IS WRITTEN DOWN ──────────────────────────────────
+    //
+    // This return value goes NOWHERE: setupSiteManifestSync discards what the
+    // run resolves to. Before the record below, the only consumer of
+    // `no-space` in the entire app was the assertion above — so a tablet that
+    // had stopped filling reported "83 of 87 … Still saving" for ever, which
+    // tells a superintendent to wait for something that is not coming.
+    const M = store(d);
+    const noted = await M.readSpaceShortfall('P1');
+    ok(noted && noted.needed === 1e9 && noted.free === 500,
+      'the refusal is recorded with the numbers a person can act on, because '
+      + 'the return value this run produces is discarded by its own caller');
+    ok(Number(noted.at) > 0, 'and when it happened');
+    ok((await M.readSpaceShortfall('OTHER')) === null,
+      'keyed per project — a full tablet on one job does not accuse another');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6a. WHAT FITS GOES ON, AND WHAT DOES NOT IS NAMED.
+  //
+  //     Refusing the whole run was the honest half. It was still the wrong
+  //     half: it threw away eighty sheets the device had room for. The other
+  //     half is the NAMES — without them, "download what fits" is the same
+  //     dishonesty in a smaller form, because he learns a sheet is missing
+  //     from a spinner in a cellar rather than from the list.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const d = makeDevice({
+      // Room for two of the three 100-byte files, after a reserve of zero.
+      freeBytes: 250,
+      pages: [page({
+        files: [
+          fRow('A', 1, 'pdf', 100),
+          fRow('B', 1, 'pdf', 100),
+          fRow('C', 1, 'pdf', 100),
+        ],
+      })],
+    });
+    const M = store(d);
+    const r = await M.syncSiteManifest('P1', { reserveBytes: 0 });
+
+    ok(r.spaceReason === 'partial',
+      'some fitting and some not is PARTIAL — not the same event as holding none');
+    ok(d.downloaded.length === 2,
+      'the two that fit are on the device rather than thrown away with the third');
+    ok(r.absent === 1, 'and the run says how many it could not take');
+
+    const short = await M.readSpaceShortfall('P1');
+    ok(short && short.absentIds.length === 1 && short.absentIds[0] === 'C',
+      'the NAME of the sheet it could not take is recorded, so the list can mark it');
+    ok(short.shortBy === 100,
+      'the remaining requirement is what it SKIPPED, not the whole set — telling '
+      + 'him to free the whole set would send him to free space he does not need');
+    ok(short.absentTruncated === false, 'and it is not truncated at this size');
+
+    // Order has to be reproducible or "what fits" reshuffles between runs and
+    // a device that gains space fills in a different direction each time.
+    const d2 = makeDevice({
+      freeBytes: 250,
+      pages: [page({
+        files: [
+          fRow('A', 1, 'pdf', 100),
+          fRow('B', 1, 'pdf', 100),
+          fRow('C', 1, 'pdf', 100),
+        ],
+      })],
+    });
+    await store(d2).syncSiteManifest('P1', { reserveBytes: 0 });
+    ok(JSON.stringify(d2.downloaded.map((x) => x.name))
+       === JSON.stringify(d.downloaded.map((x) => x.name)),
+      'two devices with the same room hold the same subset — manifest order, '
+      + 'not filesystem accident');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6a-ii. THE RESERVE IS THE CALLER'S, because they are two machines. A
+  //        dedicated tablet may run down to 200 MB; a personal phone that
+  //        fills its last 200 MB with plans is a broken phone.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const M0 = store(makeDevice({}));
+    ok(M0.DISK_RESERVE_SITE_BYTES === 200 * 1024 * 1024,
+      'the site device reserve is unchanged at 200 MB');
+    ok(M0.DISK_RESERVE_PHONE_BYTES === 1024 * 1024 * 1024,
+      'a phone keeps a gigabyte for its owner');
+
+    const d = makeDevice({
+      freeBytes: 1000,
+      pages: [page({ files: [fRow('A', 1, 'pdf', 100)] })],
+    });
+    const r = await store(d).syncSiteManifest('P1', { reserveBytes: 950 });
+    ok(d.downloaded.length === 0 && r.spaceReason === 'no-space',
+      'a reserve the caller passes is honoured — 1000 free minus 950 held back '
+      + 'leaves no room for a 100-byte file');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6b. ROOM AGAIN. The record has to clear itself, or a tablet that has had
+  //     space freed on it goes on calling itself full until someone reinstalls
+  //     the app.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const d = makeDevice({
+      freeBytes: 10e9,
+      pages: [page({ files: [fRow('F1', 1, 'pdf', 10)] })],
+    });
+    const M = store(d);
+    await M.recordSpaceShortfall('P1', { needed: 1e9, free: 500 });
+    ok((await M.readSpaceShortfall('P1')) !== null, 'a refusal is on the device');
+    const r = await M.syncSiteManifest('P1');
+    ok(r.reason !== 'no-space', 'the next run fits');
+    ok((await M.readSpaceShortfall('P1')) === null,
+      'and clears the refusal on the pass that PROVES there is room — not on a '
+      + 'later download, so freeing space is enough to stop the accusation');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6c. THE RECORD NEVER BREAKS A RUN. Storage that rejects is the ordinary
+  //     failure everywhere else in this module and must be here too.
+  // ═══════════════════════════════════════════════════════════════════════
+  {
+    const d = makeDevice({
+      freeBytes: 500,
+      pages: [page({ files: [fRow('F1', 1, 'pdf', 1e9)] })],
+    });
+    const realSet = d.AsyncStorage.setItem;
+    d.AsyncStorage.setItem = async (k, v) => {
+      if (String(k).startsWith('site_space_shortfall:')) throw new Error('db full');
+      return realSet(k, v);
+    };
+    const M = store(d);
+    let threw = null;
+    try { await M.syncSiteManifest('P1'); } catch (e) { threw = e; }
+    ok(threw === null,
+      'a device that cannot even write the note still completes its run — the '
+      + 'note is a report about the failure, never a second way to fail');
+    ok((await M.readSpaceShortfall('P1')) === null,
+      'and reports no refusal rather than a fabricated one, which under-reports '
+      + 'a real problem instead of accusing a healthy tablet');
   }
 
   // ═══════════════════════════════════════════════════════════════════════

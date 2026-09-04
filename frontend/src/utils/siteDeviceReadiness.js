@@ -1,4 +1,4 @@
-import { manifestScopes, readManifestList } from './siteManifestStore';
+import { manifestScopes, readManifestList, readSpaceShortfall } from './siteManifestStore';
 import { listCachedDocs, cachedDocName, canCacheDocs } from './docCache';
 
 /**
@@ -92,6 +92,18 @@ export const SITE_READY_NEVER = 'never';
 export const SITE_READY_CURRENT = 'current';
 /** A complete set that has not been refreshed. Still authoritative, ageing. */
 export const SITE_READY_STALE = 'stale';
+/**
+ * A complete LIST, and the device has stopped filling it because there is no
+ * room. Terminal until somebody frees space.
+ *
+ * ITS WHOLE REASON FOR EXISTING IS TO NOT BE `filling`. Before it, a tablet
+ * that had refused the fill reported "83 of 87 … Still saving this project to
+ * the tablet" for ever, because `filling` is computed from a directory read
+ * and a missing file looks identical whether it is on its way or will never
+ * come. That told a superintendent to wait for something that was not coming.
+ * NOT YET and NEVER are different facts and this is the second one.
+ */
+export const SITE_READY_NO_SPACE = 'no-space';
 
 /**
  * How old a complete set may be before the screens say so.
@@ -116,6 +128,26 @@ const isComplete = (r) => !!r && r.state === 'complete';
  * Deliberately coarse: nobody decides anything differently at 51 hours than at
  * 49, and three significant figures would read as machine output.
  */
+/**
+ * A size in words somebody can act on, at the same coarseness as agePhrase.
+ *
+ * "1.2 GB" and "340 MB" are decisions a person can make about a device;
+ * "1,283,457,024 bytes" is machine output on an inspector's screen. Rounds UP,
+ * because this number tells someone how much to free and rounding down would
+ * send them back for a second go.
+ */
+export function bytesPhrase(n) {
+  const b = Number(n);
+  if (!Number.isFinite(b) || b <= 0) return null;
+  const MB = 1024 * 1024;
+  const GB = 1024 * MB;
+  if (b >= GB) {
+    const gb = Math.ceil((b / GB) * 10) / 10;
+    return `${gb} GB`;
+  }
+  return `${Math.max(1, Math.ceil(b / MB))} MB`;
+}
+
 export function agePhrase(ms) {
   const n = Number(ms);
   if (!Number.isFinite(n) || n < 0) return null;
@@ -136,8 +168,15 @@ export function agePhrase(ms) {
  *   cachedNames        the Set from listCachedDocs(), or NULL where this
  *                      platform cannot hold files at all. Null withholds the
  *                      fraction; an empty Set is a measured zero.
+ *   shortfall          readSpaceShortfall() — {needed, free, at} when the last
+ *                      fill was REFUSED for room, else null. Injected for the
+ *                      same reason as the other two: it is the one fact a
+ *                      directory read cannot produce, because a missing file
+ *                      looks the same whether it is coming or never will.
  */
-export function readinessFrom({ files, logbooks, cachedNames, now, staleAfterMs } = {}) {
+export function readinessFrom({
+  files, logbooks, cachedNames, shortfall, now, staleAfterMs,
+} = {}) {
   const at = Number.isFinite(now) ? now : Date.now();
   const limit = Number.isFinite(staleAfterMs) ? staleAfterMs : STALE_AFTER_MS;
 
@@ -189,7 +228,7 @@ export function readinessFrom({ files, logbooks, cachedNames, now, staleAfterMs 
     ? wanted.filter((r) => cachedNames.has(cachedDocName(r.id, r.cache_version))).length
     : null;
 
-  return {
+  const out = {
     ...base,
     state: (!ageKnown || ageMs > limit) ? SITE_READY_STALE : SITE_READY_CURRENT,
     at: oldest,
@@ -203,18 +242,65 @@ export function readinessFrom({ files, logbooks, cachedNames, now, staleAfterMs 
     filling: countsKnown && expected > 0 && saved < expected,
     reason: ageKnown ? null : 'age-not-recorded',
   };
+
+  // ── NOT YET, OR NEVER ────────────────────────────────────────────────────
+  //
+  // Applied LAST, over a state that is otherwise complete, because that is
+  // exactly the situation it describes: the list is whole and trustworthy, and
+  // the FILES behind it have stopped arriving. It converts the advisory into a
+  // verdict rather than adding a fourth thing to read.
+  //
+  // ONLY WHEN THE DEVICE IS ACTUALLY SHORT. A recorded refusal with everything
+  // on disk is a stale note — the fill was refused, then space was freed and
+  // the files landed some other way, or the manifest shrank. Reporting no-space
+  // there would accuse a tablet that is complete, which is the failure this
+  // whole module refuses in the other direction. The next successful run clears
+  // the record; this makes sure a lingering one cannot lie in the meantime.
+  //
+  // IT OUTRANKS STALE, DELIBERATELY. A stale set self-clears the moment the
+  // tablet sees Wi-Fi; this one does not clear until a person does something.
+  // When both are true the actionable one is the one to print.
+  if (shortfall && out.filling) {
+    return {
+      ...out,
+      state: SITE_READY_NO_SPACE,
+      // NOT `filling`. A device that has stopped is not filling, and every
+      // reader that asks this question is asking whether to wait.
+      filling: false,
+      // THE REMAINING REQUIREMENT, not the whole set. Once a run has filled
+      // what fits, what a person still has to free is the sum of what it
+      // SKIPPED. `needed - free` was right when the run was all-or-nothing and
+      // would now overstate it, telling him to free space he no longer needs.
+      // Falls back for a record written before partial filling existed.
+      shortBytes: Number(shortfall.shortBy)
+        || Math.max(0, Number(shortfall.needed) - Number(shortfall.free))
+        || null,
+      neededBytes: Number(shortfall.needed) || null,
+      freeBytes: Number(shortfall.free) || null,
+      // The rows the plan list marks. Empty on a record written before the
+      // names were kept — the device is short and cannot say which, which is
+      // what it knew.
+      absentIds: Array.isArray(shortfall.absentIds) ? shortfall.absentIds : [],
+      absentTotal: Number(shortfall.absentTotal) || 0,
+      absentTruncated: shortfall.absentTruncated === true,
+      reason: 'no-space',
+    };
+  }
+
+  return out;
 }
 
 /** Read the device's readiness for one project. */
 export async function readSiteReadiness(projectId, opts = {}) {
   if (!projectId) return readinessFrom({});
   const scopes = manifestScopes(projectId);
-  const [files, logbooks] = await Promise.all([
+  const [files, logbooks, shortfall] = await Promise.all([
     readManifestList(scopes.files),
     readManifestList(scopes.logbooks),
+    readSpaceShortfall(projectId),
   ]);
   const cachedNames = canCacheDocs() ? await listCachedDocs() : null;
-  return readinessFrom({ files, logbooks, cachedNames, now: opts.now });
+  return readinessFrom({ files, logbooks, cachedNames, shortfall, now: opts.now });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -249,6 +335,37 @@ export function describeReadiness(readiness) {
         + 'Wi-Fi until this message clears.',
       detail: 'If this message is still here tomorrow, tell the office before anyone '
         + 'relies on this tablet.',
+    };
+  }
+
+  // ── THE TABLET HAS STOPPED, AND ONLY A PERSON CAN RESTART IT ────────────
+  //
+  // CRITICAL, not attention, and above STALE. Every other state on this screen
+  // either fixes itself or is about age; this one waits for a human, and until
+  // that human acts the tablet is missing drawings it will never fetch.
+  //
+  // IT SAYS THE NUMBER TO FREE. "Not enough space" sends someone to a settings
+  // screen to guess; "needs about 340 MB more" is a decision. Rounded up,
+  // because rounding down sends them back for a second go.
+  //
+  // NO PART OF THE MACHINE IS NAMED, per this module's rule — no manifest, no
+  // cache, no sync. "It has stopped saving" is the fact; "the manifest run was
+  // refused" is machine output on an inspector's screen.
+  if (r.state === SITE_READY_NO_SPACE) {
+    const short = bytesPhrase(r.shortBytes);
+    const held = r.countsKnown && r.expected > 0
+      ? ` ${r.saved} of ${r.expected} records are on it.`
+      : '';
+    return {
+      tone: 'critical',
+      heading: 'This tablet is full and has stopped saving records',
+      body: 'Some of this project’s plans, documents and logbooks are not on it '
+        + 'and will not download until space is freed. They will not open once '
+        + 'the signal drops, and they will not show as missing.'
+        + held,
+      detail: short
+        ? `Free about ${short} on this tablet, then keep it on Wi-Fi. Tell the office if you cannot.`
+        : 'Free space on this tablet, then keep it on Wi-Fi. Tell the office if you cannot.',
     };
   }
 
@@ -299,8 +416,10 @@ export default {
   SITE_READY_NEVER,
   SITE_READY_CURRENT,
   SITE_READY_STALE,
+  SITE_READY_NO_SPACE,
   STALE_AFTER_MS,
   agePhrase,
+  bytesPhrase,
   readinessFrom,
   readSiteReadiness,
   describeReadiness,

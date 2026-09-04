@@ -13,6 +13,9 @@ import {
   Modal,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import { readSiteReadiness } from '../../../src/utils/siteDeviceReadiness';
+import SiteReadinessNotice from '../../../src/components/SiteReadinessNotice';
+import { noteProjectOpened } from '../../../src/utils/adminPlanPrefetch';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -220,6 +223,43 @@ export default function ProjectFilesScreen() {
       fetchData();
     }
   }, [isAuthenticated, projectId]);
+
+  /* ── WHAT THIS DEVICE ACTUALLY HOLDS, ON THE SCREEN WHERE HE LOOKS ───────
+   *
+   * He decides whether to walk into a basement while standing on this list.
+   * That is where the answer belongs — not behind a tap, and not in a spinner
+   * once the signal has already gone.
+   *
+   * TWO SEPARATE FACTS, and conflating them is the failure this closes:
+   *
+   *   the BANNER   whether the set as a whole can be relied on away from
+   *                signal. It already knows how to say "still saving", "out
+   *                of date", and — since the tablet fix — "full and stopped".
+   *   the ROWS     WHICH sheets are not here. Without this, "download what
+   *                fits" is the same dishonesty in a smaller form: he learns
+   *                a sheet is missing from a spinner instead of from the list.
+   *
+   * ONLY ROWS THE DEVICE HAS GIVEN UP ON ARE MARKED. A sheet still queued is
+   * not missing, it is arriving, and marking it would teach him to read past
+   * the marker on the one that matters.
+   */
+  const [held, setHeld] = useState({ readiness: null, absent: null });
+
+  useEffect(() => {
+    if (!projectId) return undefined;
+    let cancelled = false;
+    // The ordering hint for the prefetch walk: an interrupted phone should
+    // hold the projects he actually opens.
+    noteProjectOpened(projectId).catch(() => {});
+    readSiteReadiness(projectId)
+      .then((r) => {
+        if (cancelled) return;
+        const ids = Array.isArray(r?.absentIds) ? r.absentIds : [];
+        setHeld({ readiness: r, absent: ids.length ? new Set(ids) : null });
+      })
+      .catch(() => { if (!cancelled) setHeld({ readiness: null, absent: null }); });
+    return () => { cancelled = true; };
+  }, [projectId]);
 
   /**
    * Write-through: a list read refreshes the offline copy — UNLESS a sync is
@@ -1012,6 +1052,14 @@ export default function ProjectFilesScreen() {
                 </View>
               </View>
 
+              {/* WHETHER THIS DEVICE CAN BE TAKEN AT ITS WORD, above the
+                  list rather than after it. He decides whether to walk into a
+                  basement while standing here; the answer has to be on the way
+                  in, not at the bottom of a scroll. Renders nothing at all
+                  when the set is complete and current — a banner that is
+                  always there is furniture. */}
+              <SiteReadinessNotice readiness={held.readiness} />
+
               {/* Filter Tabs */}
               <ScrollView
                 horizontal
@@ -1159,6 +1207,17 @@ export default function ProjectFilesScreen() {
                             <Text style={s.fileMetaText}>
                               {formatFileSize(file.size)}
                             </Text>
+                            {/* NAMED HERE, NOT DISCOVERED IN A CELLAR. Only
+                                rows the device has GIVEN UP on — a sheet still
+                                queued is arriving, not missing, and marking it
+                                would teach him to read past the marker on the
+                                one that matters. */}
+                            {held.absent && held.absent.has(String(file.id || file._id)) && (
+                              <>
+                                <Text style={s.fileMetaDot}>•</Text>
+                                <Text style={s.fileAbsent}>Not on this device</Text>
+                              </>
+                            )}
                             {file.modified && (
                               <>
                                 <Text style={s.fileMetaDot}>•</Text>
@@ -1755,6 +1814,13 @@ function buildStyles(colors, isDark) {
   },
   fileItemPressed: {
     backgroundColor: withAlpha('#ffffff', 0.12),
+  },
+  // The one thing on this row that is a warning rather than a detail, so it
+  // is the one thing on it that is not grey.
+  fileAbsent: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: semantic.critical,
   },
   fileIconContainer: {
     width: 56,
