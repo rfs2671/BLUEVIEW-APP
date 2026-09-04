@@ -469,27 +469,56 @@ async function pushOne(key) {
   }
 }
 
+/**
+ * ONE DRAIN AT A TIME, DECIDED SYNCHRONOUSLY.
+ *
+ * THIS DRAIN HAD NO LOCK OF ANY KIND, and it needs one more than offlineQueue
+ * does: `pushOne` CREATES a logbook when the draft has no backend_id, and a
+ * create is not idempotent. Two overlapping drains both read the same pending
+ * key, both find `backend_id` null — because neither has written one yet — and
+ * both POST /api/logbooks. Nothing between the read and the create closes that.
+ *
+ * AND IT IS ALREADY DRIVEN BY TWO TRIGGERS THAT FIRE TOGETHER.
+ * setupDraftAutoSync calls syncPendingDrafts() at startup AND on every offline
+ * -> online transition, and a cold launch in a lift is the ordinary way to get
+ * both within one await window.
+ *
+ * Same mechanism as filedPhotoQueue's `_draining` and offlineQueue's
+ * `_processing`: a module-scope flag, checked and set with NO AWAIT BETWEEN, so
+ * the decision is taken in one uninterruptible step. Three drains in this
+ * codebase, one idiom.
+ */
+let _syncing = false;
+
 /** Drain every pending logbook draft. Safe to call repeatedly. */
 export async function syncPendingDrafts() {
-  let keys = [];
-  try { keys = await getPendingKeys(); } catch (_e) { return { attempted: 0, synced: 0, finalizeRefused: 0 }; }
-  if (!keys.length) return { attempted: 0, synced: 0, finalizeRefused: 0 };
+  // FIRST STATEMENT, BEFORE ANY AWAIT. A guard after the getPendingKeys await
+  // would let the second caller in while the first is still reading the index.
+  if (_syncing) return { attempted: 0, synced: 0, finalizeRefused: 0, deferred: true };
+  _syncing = true;
+  try {
+    let keys = [];
+    try { keys = await getPendingKeys(); } catch (_e) { return { attempted: 0, synced: 0, finalizeRefused: 0 }; }
+    if (!keys.length) return { attempted: 0, synced: 0, finalizeRefused: 0 };
 
-  let synced = 0;
-  let refused = 0;
-  for (const key of keys) {
-    const r = await pushOne(key);
-    if (r.ok) synced += 1;
-    else if (r.reason === 'finalize-refused' || r.reason === 'push-refused'
-      || r.reason === 'unsigned-submit' || r.reason === 'already-filed') {
-      refused += 1;
-      // Diagnostic only. The user-visible surface is the banner LogbookLockBar
-      // renders from the record written above — this drain has no screen.
-      console.warn(`[draftSync] ${r.reason} for ${r.logId || r.key} (${r.code || 'no code'}); staying pending`);
+    let synced = 0;
+    let refused = 0;
+    for (const key of keys) {
+      const r = await pushOne(key);
+      if (r.ok) synced += 1;
+      else if (r.reason === 'finalize-refused' || r.reason === 'push-refused'
+        || r.reason === 'unsigned-submit' || r.reason === 'already-filed') {
+        refused += 1;
+        // Diagnostic only. The user-visible surface is the banner LogbookLockBar
+        // renders from the record written above — this drain has no screen.
+        console.warn(`[draftSync] ${r.reason} for ${r.logId || r.key} (${r.code || 'no code'}); staying pending`);
+      }
     }
+    if (synced) console.log(`[draftSync] pushed ${synced}/${keys.length} pending draft(s)`);
+    return { attempted: keys.length, synced, finalizeRefused: refused };
+  } finally {
+    _syncing = false;
   }
-  if (synced) console.log(`[draftSync] pushed ${synced}/${keys.length} pending draft(s)`);
-  return { attempted: keys.length, synced, finalizeRefused: refused };
 }
 
 /**
