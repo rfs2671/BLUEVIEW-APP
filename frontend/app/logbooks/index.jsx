@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { logTypeStatus, amendmentSentence, collapseChains } from '../../src/utils/amendmentChain';
 import { typeCarriesActivityPhotos } from '../../src/utils/filedLogSummary';
+import { isPhotoWindowOpen } from '../../src/utils/logbookEditable';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -434,6 +435,12 @@ export default function LogBooksScreen() {
     const heads = collapseChains(todayLogs[logTypeKey]);
     const filed = heads.find((h) => h && (h.is_locked || h.status === 'submitted'));
     if (!filed) return null;
+    // AND THE DAY MUST NOT BE OVER — the row disappears rather than leading to
+    // a screen that would refuse. This list is today's, so the window is
+    // normally open; the case it catches is the APP LEFT RUNNING OVERNIGHT,
+    // where `todayLogs` still holds yesterday's fetch after 03:00 and the row
+    // would otherwise offer photographs on a log the server has closed.
+    if (!isPhotoWindowOpen(filed)) return null;
     const id = filed.id || filed._id;
     return id ? String(id) : null;
   };

@@ -137,9 +137,17 @@ STATUTORY = {
 
 
 def _filed_log(**over):
+    # `date` IS TODAY'S, AND IT HAS TO BE COMPUTED RATHER THAN WRITTEN DOWN.
+    # The photo set closes at the end of the log's day (409 PHOTO_WINDOW_CLOSED,
+    # test_photo_window_rule.py), so a hardcoded 2026-08-12 would make every
+    # append in this file a refusal the moment that date fell behind the clock.
+    # Every test here is about appending to a log whose day is still open, which
+    # is what today's date says. The boundary itself is exercised next door,
+    # where `date` is passed explicitly.
     doc = {
         "_id": "lb1", "project_id": "proj1", "company_id": "co_test",
-        "log_type": "daily_jobsite", "date": "2026-08-12", "is_deleted": False,
+        "log_type": "daily_jobsite", "date": server.eastern_date(),
+        "is_deleted": False,
         "status": "submitted", "is_locked": False,
         "cp_signature": {"paths": "p", "affirmed": True}, "cp_name": "Casey CP",
         "created_at": datetime(2026, 8, 12, 13, tzinfo=timezone.utc),
