@@ -34,6 +34,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
 import server as S  # noqa: E402
+from tests.source_text import inserted_doc_keys  # noqa: E402
 
 _SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 _NOW = datetime.now(timezone.utc)
@@ -134,6 +135,9 @@ class NoOtherResponseModelDemandsWhatNoWriterProduces(unittest.TestCase):
         tests/test_startup_seed_guard.py."""
         self.assertTrue(
             S.SubcontractorResponse.model_fields["contact_name"].is_required())
-        i = _SRC.index("# 6. Create test subcontractor")
-        seed = _SRC[i:i + 900]
-        self.assertIn('"contact_name"', seed)
+        # THE SECOND COPY OF A 900-CHARACTER WINDOW, and it broke on the same
+        # day as the first, for the same reason: a comment added inside the
+        # seed call pushed the fields out of the budget, and both files
+        # reported a document that carries contact_name as omitting it. One
+        # reader now, in tests/source_text.py, and it reads the dict as a dict.
+        self.assertIn("contact_name", inserted_doc_keys("subcontractors"))

@@ -31,6 +31,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
 import server as S  # noqa: E402
+from tests.source_text import inserted_doc_keys  # noqa: E402
 
 _SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 _SEED = _SRC[_SRC.index("# ENV-GATED, AND IT FAILS CLOSED."):]
@@ -89,15 +90,27 @@ class TheSeededSubcontractorIsValid(unittest.TestCase):
     """The model is right; the seed was the only writer producing an invalid
     document. Fixed at the seed, per ruling."""
 
+    # THE SEEDED DOCUMENT, READ FROM THE AST RATHER THAN A CHARACTER WINDOW.
+    #
+    # These two tests sliced `_SRC[i:i + 900]` from a marker comment. That is a
+    # fixed-size byte budget standing in for a syntactic block, and on
+    # 2026-09-04 it broke for the reason it was always going to: somebody added
+    # a COMMENT inside the seed call, the budget ran out mid-comment, and two
+    # tests reported that the seed "still omits email, contact_name" about a
+    # document that carries both. The fields had not moved; the window had.
+    #
+    # Same family as a line-number pin and as a leftmost `re.search` over a 41k
+    # line file — a location standing in for a structure. The dict is a dict,
+    # so it is read as one.
     def test_it_now_carries_contact_name(self):
-        i = _SRC.index("# 6. Create test subcontractor")
-        block = _SRC[i:i + 900]
-        self.assertIn('"contact_name"', block)
+        self.assertIn("contact_name", inserted_doc_keys("subcontractors"))
 
     def test_the_seeded_document_validates_against_the_response_model(self):
-        i = _SRC.index("# 6. Create test subcontractor")
-        block = _SRC[i:i + 900]
-        keys = set(re.findall(r'"([a-z_]+)":', block))
+        keys = inserted_doc_keys("subcontractors")
+        # NON-EMPTY FIRST. Every "is X missing" assertion below is vacuously
+        # satisfied by an empty set, which is exactly how a check that stopped
+        # reaching its subject reports success.
+        self.assertTrue(keys, "read no keys off the seeded document")
         required = {f for f, inf in S.SubcontractorResponse.model_fields.items()
                     if inf.is_required()} - {"id"}   # id comes from serialize_id
         missing = required - keys

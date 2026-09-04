@@ -48,7 +48,7 @@ Construction site management application with NFC-based worker check-in system, 
 | `/reports` | Reports | ✅ Working |
 | `/admin/integrations` | Dropbox Integration | ✅ Working |
 | `/admin/users` | Admin User Management | ✅ Full CRUD |
-| `/admin/subcontractors` | Admin Subcontractors | ✅ Full CRUD |
+| `/admin/subcontractors` | ~~Admin Subcontractors~~ | ❌ NEVER EXISTED — no screen, and the five API routes were removed 2026-09-04 as zero-caller dead code. See docs/audits/followups.md. |
 | `/admin/site-devices` | Site Device Management | ✅ NEW |
 | `/owner` | Owner Portal | ✅ Working |
 

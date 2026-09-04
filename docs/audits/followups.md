@@ -4,6 +4,155 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-04 — a LOCATION standing in for a STRUCTURE, which is most of this week
+
+Three checks broke in one day, none of them because the thing they protect
+changed. Each had substituted a position in a file for the shape it cared about.
+
+| check | what it pinned | what it meant |
+|---|---|---|
+| `test_signature_ink_predicate` | the affirmed/ink predicates within 4000 CHARACTERS of each other | "the two halves of one rule are read together" |
+| `test_startup_seed_guard`, and a SECOND COPY in `test_worker_response_model` | 900 CHARACTERS from a marker comment | "these keys are in the seeded document" |
+| `test_assigned_projects_grant` | the LITERAL `sub_dict["assigned_projects"] = []` | "every creation handler forces the list" |
+
+The first fired because a new module-level function was inserted between them.
+The second and third fired because a COMMENT was added inside the seed call and
+the byte budget ran out mid-comment — both files then reported a document that
+carries `contact_name` as omitting it. The third fired because the handler it
+named was deleted as dead code.
+
+**In every case the invariant was intact and the check was measuring
+somewhere.** That is the same defect as a leftmost `re.search` with `(.*?)` over
+a 41k-line file, which this project hit four times in a week and twice more
+from two directions at once; as a ratchet whose scan root was
+`Path(__file__).parent`; and as a source pin that greps a location when the
+thing worth protecting is a behaviour.
+
+### The rule
+
+**If the assertion is about a STRUCTURE — a dict's keys, a function's calls, a
+projection's shape — read the structure.** `ast.parse` is three lines and it
+cannot be pushed out of range by a comment. A character window, a line number
+and a bare literal are all the same bet: that nothing above the subject will
+ever move.
+
+Where a positional check is genuinely the point — "these two predicates must
+stay adjacent" IS a claim about position — keep it, and say in the failure
+message that the fix may be to move the new code rather than to widen the
+bound. `test_signature_ink_predicate` was RIGHT to fail on 2026-09-04, and the
+correct response was relocating two helpers, not raising 4000 to 6000.
+
+### And the corollary that cost the most
+
+**A grep for a route string cannot find every reference to a route.** Removing
+five dead `/admin/subcontractors` handlers was preceded by a full-repo search
+for the path, which returned seven references and was reported as complete. Two
+more existed: one naming a handler by SYMBOL through `hasattr`-shaped source
+text, one pinning a line from inside its body. Neither contains the path.
+
+The suite found them. **Treat a reference grep as necessary and never
+sufficient before a removal; the full suite is the check.**
+
+### Where the two repairs landed
+
+The window is gone. `tests/source_text.inserted_doc_keys(collection)` reads the
+document from the AST, is used by both files that had a copy of the window, and
+RAISES rather than returning an empty set when it finds no matching call —
+every "is field X present" assertion downstream is vacuously satisfied by an
+empty result, which is exactly how a check that stopped reaching its subject
+reports success. See the empty-set entry.
+
+The injection guard was made CONDITIONAL rather than deleted: it re-arms if
+`create_subcontractor` ever comes back, which matters because the models were
+kept deliberately and re-adding a handler is a plausible afternoon's work.
+
+---
+
+## RULED — 2026-09-04 — five dead subcontractor routes removed; the COLLECTION is kept, deliberately
+
+`GET/POST /admin/subcontractors`, `GET/PUT/DELETE /admin/subcontractors/{id}`
+are gone. Nothing had ever called them: no wrapper in
+`frontend/src/utils/api.js`, zero references anywhere under `frontend/`,
+nothing in `checkin.html`, `scripts/` or `lib/`.
+
+**Removed rather than fixed, because the list handler was not merely dead.** It
+sorted `company_name` under `{"password": 0}` — an EXCLUSION projection, the
+shape that returned 500 twice this week on collections carrying inline base64.
+It was rated slow-only for exactly one reason: nothing stores base64 on
+`subcontractors` *yet*. An unreachable endpoint carrying a broken projection is
+a defect waiting for a future caller who assumes it works, and deleting it is a
+smaller change than repairing it.
+
+### What is KEPT, and why that is not an oversight
+
+`db.subcontractors` and every document in it. `SubcontractorCreate` /
+`SubcontractorResponse`. The `email_1` unique index. The startup seed row, and
+`backend/tests/test_startup_seed_guard.py` — the seed still runs at boot and the
+guard still describes real behaviour, so removing the routes does not orphan it.
+
+**Retiring a collection is a DATA decision, not a routing one.** Subcontractors
+sit beside the Subcontractor Compliance Graph on the future feature list, and
+deleting the schema now means rebuilding it from memory later. The routes were
+the liability; the shape was not.
+
+**If these routes are ever re-added, the list handler gets an INCLUSION
+projection from the start.** The exclusion is what turned dead code into a
+defect.
+
+### The PRD claimed a page that has never existed
+
+`memory/PRD.md` listed `/admin/subcontractors` under **Pages Implemented** as
+"Admin Subcontractors — ✅ Full CRUD". There is no such screen in
+`frontend/app/admin/` and there never has been. That line was false before this
+change, not because of it, and it is the most likely source of the future
+caller this removal exists to protect against: a spec asserting a working
+feature is stronger evidence to a reader than an endpoint's absence is.
+
+**The rule.** A status table that is written by hand and read as truth needs the
+same treatment as a comment asserting a rule the code does not implement —
+recorded here more than once this week. When a row says ✅, something has to
+have checked.
+
+---
+
+## PRACTICE — 2026-09-04 — the build card's verdict line is a COMPARISON, not a health check
+
+`app/settings.jsx` prints "MISMATCH — the app and the backend are on different
+commits" whenever `jsCommit[:7] != backendCommit[:7]`. That sentence has one
+reading in the field — *something is wrong, the app is stale* — and it is
+correct for the case it was built for: a bundle that failed to publish.
+
+**It is also what a BACKEND-ONLY change legitimately produces.** #401 and #402
+touched `backend/server.py` and nothing under `frontend/`, so the OTA workflow
+did not run — correctly, its paths filter is frontend-only. The phone keeps the
+bundle it has, the backend moves, and the card says MISMATCH about a system
+that is exactly right.
+
+**The cost is concrete and was nearly paid.** The acceptance test for #401 was
+first written as "wait for the OTA, confirm the version line reads the new
+SHA." That would never have happened, and the CP would have concluded a landed
+fix had not shipped — the same wrong conclusion the stale-bundle case produces,
+from the opposite cause.
+
+### What the card can and cannot distinguish today
+
+It cannot. It compares two commit strings for equality and has no notion of
+ANCESTRY, so "the app is behind the backend", "the backend is behind the app"
+and "they differ because the change was one-sided" are one output.
+
+Everything needed to tell them apart is already on the card: `Bundle built`
+carries `Updates.createdAt`, and `/api/version` could carry the backend's
+commit date. **Backend newer than the bundle, with the bundle's own age small,
+is the one-sided case; a bundle weeks older than the backend is the stale one.**
+That is a comparison of two timestamps, not a graph walk, and it needs one
+field added to `/api/version`.
+
+Recorded rather than built: the card is honest today, and a wrong explanation
+would be worse than a bare fact. But an unexplained MISMATCH is read as a
+fault, and this week it was.
+
+---
+
 ## OPEN — 2026-09-03 — a tradeoff paying full price for a guarantee its other half stopped delivering
 
 The PDF viewer rasterises pages at up to 16 megapixels, oversampled ~3x on a
