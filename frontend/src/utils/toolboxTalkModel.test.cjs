@@ -280,8 +280,16 @@ ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 2,
 for (const [from, to] of [['elif log_type == "toolbox_talk":', 'elif log_type == "preshift_signin":'],
   ['toolbox = _filed_log', 'preshift = _filed_log']]) {
   const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
-  ok(/colspan="7"/.test(block) && !/colspan="6"/.test(block),
-    'the toolbox placeholder widened with its header');
+  // THE INVARIANT, NOT THE NUMBER. This asserted colspan="7" literally, and
+  // the number is not the claim -- the claim is that the placeholder spans its
+  // own header. Removing the Confirmed and Present columns made 7 wrong and 5
+  // right, and a pinned number reports that correct change as a regression.
+  // This assertion has already been narrowed once for the same reason (see
+  // above), which is the argument for measuring rather than pinning.
+  const headers = (block.match(/<th /g) || []).length;
+  const span = block.match(/colspan="(\d+)"/);
+  ok(headers > 0 && span && Number(span[1]) === headers,
+    `the toolbox placeholder spans its own header (${headers} th, colspan ${span && span[1]})`);
 }
 // The three labels must be distinguishable, and an OLD record must not be
 // given one it never earned.

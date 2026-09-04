@@ -36,8 +36,14 @@ class AffirmationBannerTest(unittest.TestCase):
         )
         self.assertIn("AFFIRMED for this document", html)
         self.assertNotIn("UNAFFIRMED", html)
-        # The affirmation time is surfaced.
-        self.assertIn("2026-07-29 13:45:06", html)
+        # The affirmation time is surfaced, IN NEW YORK TIME and carrying its
+        # zone. It used to print the stored UTC digits with " UTC" appended:
+        # honest, but the only clock on a NYC compliance document a reader had
+        # to convert in his head, sitting four hours from the roster times
+        # beside it. 13:45:06Z on a July day is 9:45 AM EDT. `eastern_datetime`
+        # owns the conversion (see test_eastern_clock.py).
+        self.assertIn("July 29, 2026 at 9:45 AM EDT", html)
+        self.assertNotIn("13:45", html)
 
     def test_inherited_dict_without_affirmed_renders_unaffirmed(self):
         html = server.render_signature_html(
@@ -137,7 +143,9 @@ class FinalizeCpSignatureTest(unittest.TestCase):
         out = self._fin({"affirmed": True, "affirmedAt": "2026-07-29T17:30:00Z"})
         html = server.render_signature_html(out, "CP Signature")
         self.assertIn("AFFIRMED for this document", html)
-        self.assertIn("claimed 2026-07-29 17:30:00", html)
+        # 17:30:00Z on a July day is 1:30 PM EDT -- see the note in
+        # AffirmationBannerTest above.
+        self.assertIn("claimed July 29, 2026 at 1:30 PM EDT", html)
         self.assertIn("server-received", html)
         self.assertNotIn("NOT VERIFIED", html)
 

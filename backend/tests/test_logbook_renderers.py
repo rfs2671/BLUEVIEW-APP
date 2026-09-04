@@ -772,6 +772,20 @@ def _table_rows(html: str, last_header: str) -> int:
     return table.count("<tr>")
 
 
+def _toolbox_columns(html: str) -> int:
+    """How many columns the toolbox header actually carries.
+
+    READ OFF THE DOCUMENT, never pinned to a number. The empty-state colspan
+    has to match the header; asserting the literal 7 made the old test a test
+    about the number seven, and it failed on a correct column removal while the
+    ragged table it exists to catch is any MISMATCH, at any width.
+    """
+    i = html.index(">Name<")
+    head = html[html.rindex("<tr>", 0, i):]
+    head = head[:head.index("</tr>")]
+    return head.count("<th ")
+
+
 class TheNamelessToolboxAttendee(unittest.TestCase):
     """ITEM 2. The emailed report dropped a nameless attendee; THIS renderer —
     the per-logbook PDF, the document an inspector asks for by name — did not.
@@ -780,6 +794,14 @@ class TheNamelessToolboxAttendee(unittest.TestCase):
     The row was not blank, either. `signed` is the CP's Present mark and
     `gate_confirmed` is the worker's own tap at the turnstile, so the line
     printed Present ✓ and Confirmed ✓ against a man the record cannot name.
+
+    THOSE TWO COLUMNS ARE NO LONGER RENDERED — neither is a legal attestation
+    and the CP signature over the roster is, so a tick beside each name invited
+    a reading that signature already forecloses. The FIELDS are untouched in
+    storage. So the assertions below moved from the ticks to the row itself:
+    the point was never the ticks, it was that a signed attendance record
+    carried a LINE about somebody it does not identify, and that is still
+    exactly what is asserted.
     """
 
     def _html(self, attendees):
@@ -801,24 +823,40 @@ class TheNamelessToolboxAttendee(unittest.TestCase):
         self.assertNotIn(">Laborer<", html)
         self.assertEqual(_table_rows(html, "Added by"), 1)
 
-    def test_and_it_takes_its_ticks_with_it(self):
+    def test_and_it_takes_its_whole_row_with_it(self):
         """The point is not the empty cell. It is that a signed attendance
-        record asserted PRESENT and CONFIRMED AT GATE about somebody it does
-        not identify."""
+        record carried a LINE about somebody it does not identify.
+
+        The empty-state placeholder spans the header exactly — five columns
+        since Confirmed and Present were dropped — because a placeholder
+        narrower than its header renders a ragged table on the one document
+        nobody re-renders. Read off the header rather than pinned, so a future
+        column change fails only when the two actually disagree."""
         one = self._html([dict(self.NAMELESS)])
         self.assertEqual(_table_rows(one, "Added by"), 1)   # the "no rows" dash
-        self.assertIn("colspan=\"7\"", one)
-        self.assertNotIn("&#10003;", one)
+        self.assertIn("colspan=\"%d\"" % _toolbox_columns(one), one)
+        self.assertNotIn("Laborer", one)
 
     def test_whitespace_is_not_a_name(self):
         html = self._html([dict(self.NAMELESS, name="   ")])
-        self.assertIn("colspan=\"7\"", html)
+        self.assertIn("colspan=\"%d\"" % _toolbox_columns(html), html)
 
     def test_a_named_row_is_untouched(self):
         html = self._html([self.NAMED])
         self.assertEqual(_table_rows(html, "Added by"), 1)
         self.assertIn("Wilmer carrillo", html)
-        self.assertIn("&#10003;", html)
+        # The cells that survive the column drop: title, company, provenance.
+        self.assertIn("Foreman", html)
+        self.assertIn("Gate", html)
+
+    def test_the_two_dropped_columns_are_not_rendered_by_EITHER_renderer(self):
+        """Asserted on a roster where both flags are TRUE, so the absence is
+        about the columns and not about a fixture that never set them."""
+        html = self._html([dict(self.NAMED, signed=True, gate_confirmed=True)])
+        head = html[html.index(">Name<"):html.index("Added by")]
+        self.assertNotIn(">Present<", head)
+        self.assertNotIn(">Confirmed<", head)
+        self.assertNotIn("&#10003;", html)
 
 
 class TheNamelessOshaRow(unittest.TestCase):
