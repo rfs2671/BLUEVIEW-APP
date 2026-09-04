@@ -3216,6 +3216,63 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
     return "unknown"                           # missing / suppressed / unparseable
 
 
+def card_image_may_be_replaced(worker, new_image) -> bool:
+    """May a re-scan overwrite the OSHA/SST card image already on this worker?
+
+    THE GUARD THIS REPLACES WAS `if osha_card_image and not worker.get(
+    "osha_card_image")` -- write-once, forever. The FIRST image a worker ever
+    uploaded was the one his record kept, and a later scan of the correct card
+    could not displace it because the field was already populated.
+
+    That is how a worker who photographed HIS OWN FACE instead of his SST card
+    ended up with a photograph of a face stored under a certification key,
+    served inline to the flagged-review screen as the credential being judged,
+    permanently -- `workers` is on SOFT_DELETE_NEVER_PURGE, so nothing ever
+    removes it -- and unfixable by the obvious remedy of scanning the real card,
+    because the write-once guard refused the correction. His record could not
+    hold his actual credential.
+
+    THE RULE: THE IMAGE FOLLOWS THE CERTIFICATION. `build_worker_certifications`
+    already decides when a re-scan may overwrite STORED CERT FIELDS -- never on
+    a `verified` row ("admin-confirmed -- a re-scan may never modify it"), and
+    otherwise only when the stored row is flagged or carries no expiry. This
+    asks the same question about the image the certification was read FROM,
+    because the alternative is a record showing card B's data beside card A's
+    photograph, which is worse than either alone.
+
+    Four cases, in order:
+
+      * NO NEW IMAGE -- nothing to do. A quick returning-worker check-in sends
+        no card evidence at all and must not blank what is on file.
+      * NOTHING STORED -- write it. This is the original write-once case and it
+        is unchanged.
+      * A VERIFIED SST ON FILE -- refuse. Somebody looked at that card and
+        confirmed it; a drive-by re-scan does not get to replace the evidence.
+      * ANYTHING ELSE -- replace. No SST cert at all (which is what a face
+        produces), a flagged one, or one with no expiry. Exactly the states
+        `old_flagged` already treats as correctable.
+
+    A FACE IS ALWAYS REPLACEABLE UNDER THIS RULE and a confirmed card never is,
+    which is the whole intent. It does NOT remove the stored bytes -- that is
+    DELETE /workers/{id}/osha-card-image, and it is a separate, audited,
+    admin-only action, because overwriting is a correction and deleting is not.
+    """
+    if not new_image:
+        return False
+    if not worker.get("osha_card_image"):
+        return True
+    sst = [c for c in (worker.get("certifications") or [])
+           if str(c.get("type") or "") in RECOGNIZED_SST_TYPES]
+    if any(c.get("verified") for c in sst):
+        return False
+    if not sst:
+        return True
+    return any(
+        bool(c.get("needs_review")) or c.get("expiration_date") is None
+        for c in sst
+    )
+
+
 def build_worker_certifications(existing_certs, osha_data, osha_number, osha_card_image, now):
     """Given prior certs + ONE OCR scan, return (worker_certs, not_sst).
 
@@ -14388,7 +14445,7 @@ async def register_and_checkin(data: dict, request: Request):
     else:
         # Update existing worker with new OSHA data if provided
         update_fields = {"updated_at": now}
-        if osha_card_image and not worker.get("osha_card_image"):
+        if card_image_may_be_replaced(worker, osha_card_image):
             update_fields["osha_card_image"] = osha_card_image
         # A WORKER WHO ALREADY HAS ONE IS LEFT ALONE, whichever form it is in.
         # `selfie_image` is the pre-R2 inline copy: existing rows keep it and
@@ -15886,6 +15943,73 @@ async def remove_worker_certification(
         {"$set": {"certifications": certs, "updated_at": now}}
     )
     return {"message": "Certification removed", "removed": removed}
+
+@api_router.delete("/workers/{worker_id}/osha-card-image")
+async def remove_worker_osha_card_image(
+    worker_id: str,
+    admin = Depends(get_admin_user),
+    worker = Depends(require_worker_write_access),
+):
+    """Remove the stored card IMAGE and nothing else.
+
+    THE MISSING PRIMITIVE. Three paths look like they would remove one and none
+    of them does:
+
+      DELETE /workers/{id}/certifications/{i}  pops a `certifications[]` row.
+          The image is a SIBLING field on the worker document, not inside the
+          array, so the row goes and the photograph stays.
+      DELETE /workers/{id}                     is a SOFT delete, and `workers`
+          is on SOFT_DELETE_NEVER_PURGE beside `checkins` and `audit_logs` --
+          exempted from the 90-day purge deliberately, because it is compliance
+          evidence. The row is never hard-deleted by anything.
+      a re-scan of the correct card            overwrites (now), which is a
+          correction, not a removal.
+
+    So a photograph of a worker's FACE, stored under a certification key
+    because he uploaded the wrong image, is retained permanently and served
+    inline to every CP flagged-review screen on the project as the credential
+    being judged. That is a privacy exposure rather than a compliance one, and
+    it needs an eraser, not a better guard.
+
+    WHAT THIS DOES NOT DO, and the omissions are the design:
+
+      * IT NEVER DELETES THE WORKER ROW. That row carries check-in history
+        which is statutory evidence; removing a photograph is not a reason to
+        touch it. `$unset` on one field, nothing else.
+      * IT NEVER TOUCHES `certifications[]`. Whether the card behind the image
+        was valid is a separate question with a separate endpoint, and
+        answering it here would delete a compliance fact to fix a privacy one.
+      * IT IS NOT OFFERED TO THE GATE OR THE SITE DEVICE. `get_admin_user` plus
+        `require_worker_write_access`: an admin, and this worker's admin. The
+        second dependency is not decoration -- DELETE /workers/{id} shipped
+        with only the first, so any admin could soft-delete any tenant's
+        worker.
+
+    Audited, because the whole point of removing the bytes is being able to say
+    later that they were removed, by whom, and when.
+    """
+    had_image = bool(worker.get("osha_card_image"))
+    result = await db.workers.update_one(
+        {"_id": to_query_id(worker_id)},
+        {
+            "$unset": {"osha_card_image": ""},
+            "$set": {"updated_at": datetime.now(timezone.utc)},
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    # RECORDED EVEN WHEN THERE WAS NOTHING TO REMOVE. "I asked and it was
+    # already gone" and "I never asked" are different facts, and only one of
+    # them is evidence that somebody handled the report.
+    await audit_log(
+        "worker_osha_card_image_removed",
+        str(admin.get("id", "")),
+        "worker",
+        worker_id,
+        {"had_image": had_image, "worker_name": worker.get("name")},
+    )
+    return {"message": "Card image removed", "had_image": had_image}
+
 
 @api_router.post("/admin/certifications/scan-expiring")
 async def scan_expiring_certifications(admin=Depends(get_admin_user)):
