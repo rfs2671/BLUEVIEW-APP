@@ -348,6 +348,33 @@ export function incompleteSteps({
   return out;
 }
 
+/**
+ * IS THIS KEY ON THE DOCUMENT? — ABSENT and EMPTY are different facts.
+ *
+ * `if (d.meeting_time)` collapses them, and that collapse fabricated a time on
+ * a filed §3301.12.3 record: the screen seeded `meetingTime` from the clock,
+ * a stored EMPTY value failed the truthiness test, hydrate did nothing, and the
+ * field kept the moment the CP happened to open the log. He never typed it and
+ * never looked at it, and the autosave wrote it 800ms later.
+ *
+ * THE READING SIDE ALREADY DRAWS THIS LINE. server.py's renderer `has()` is the
+ * same distinction — a key that is not on the document is not an unrecorded
+ * field, and printing one would invent a record of work nobody logged.
+ *
+ * PRESENT-AND-EMPTY IS TRUE. That is the whole point: "the CP left it blank" is
+ * something the document says, and hydrate must apply it rather than skip it.
+ * Whitespace is true for the same reason — he cleared the field.
+ *
+ * NULL AND UNDEFINED ARE FALSE. There is nothing there to put in a text input,
+ * and a `null` in a TextInput's `value` is not an empty field, it is an
+ * uncontrolled one.
+ */
+export function hasStoredKey(d, key) {
+  if (!d || typeof d !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(d, key)) return false;
+  return d[key] !== null && d[key] !== undefined;
+}
+
 /** The payload body. The ONE place the shape is decided. */
 export function draftBody(f) {
   return {
@@ -390,5 +417,6 @@ export default {
   unnamedAttendees,
   incompleteSteps,
   emptyTopicGroups,
+  hasStoredKey,
   draftBody,
 };

@@ -35,7 +35,7 @@ import {
   TOPICS, TOPIC_GROUPS, EMPTY_ATTENDEE, formatClock, buildAttendees,
   ATTENDEE_SOURCES, missingStepOneFields, weeklyGapWorkers, weeklyGapAttendee,
   reconcileAttendees, topicCount, namedAttendees, unnamedAttendees,
-  emptyTopicGroups,
+  emptyTopicGroups, hasStoredKey,
   incompleteSteps as computeIncomplete, draftBody,
 } from '../../src/utils/toolboxTalkModel';
 import { useT } from '../../src/i18n';
@@ -111,9 +111,22 @@ export default function ToolboxTalkLog() {
   const [location, setLocation] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [typeOfWork, setTypeOfWork] = useState('');
-  const [meetingTime, setMeetingTime] = useState(
-    () => new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-  );
+  // EMPTY, NOT now(). This seeded from the clock, and because hydrate skipped a
+  // stored EMPTY value the field kept the moment the screen mounted — so
+  // re-opening a talk whose `meeting_time` was blank and saving wrote a
+  // FABRICATED meeting time onto a filed §3301.12.3 record. Nobody typed it and
+  // nobody read it.
+  //
+  // A prefilled time the CP never looked at is the fabrication; an empty field
+  // he must fill is the record. Step 1 is the one gated step in the app, so
+  // empty is not merely marked — `missingStepOneFields` puts it in
+  // `missingStep1`, which disables Next, and he answers before he can leave.
+  //
+  // NOT EVERY CLOCK SEED IS WRONG. The superintendent log prefills ARRIVED from
+  // nowHHMM() and keeps it, because he IS present when he opens it. The test is
+  // whether the value is a claim the app is making on the user's behalf about
+  // something it cannot observe, and the app was not at the talk.
+  const [meetingTime, setMeetingTime] = useState('');
   const [performedBy, setPerformedBy] = useState('');
   const [checkedTopics, setCheckedTopics] = useState({});
   const [attendees, setAttendees] = useState([]);
@@ -189,13 +202,37 @@ export default function ToolboxTalkLog() {
     } catch (_e) { setAutosaveFailed(true); }
   }, [locked, _key, cpSignature, cpName]);
 
+  /**
+   * ABSENT IS NOT EMPTY — `hasStoredKey`, not truthiness.
+   *
+   * `if (d.meeting_time)` asked one question and answered a different one. A
+   * key that is NOT ON THE DOCUMENT and a key that is on the document HOLDING
+   * NOTHING are different facts about a filed record, and this is the read side
+   * of the same line server.py's renderer `has()` draws.
+   *
+   * WHAT IT COST. Paired with a clock-seeded `meetingTime`, the collapse meant
+   * a stored empty time left the seed standing and the record was written with
+   * a time the app invented. The seed above is empty now, so for THAT field the
+   * two tests happen to agree today; the presence test is what stops the next
+   * non-empty seed re-opening the hole silently.
+   *
+   * AND IT IS NOT ONLY THE SEED. `fetchData` re-runs on `onAmended`, so hydrate
+   * runs over state that already holds the PARENT's values. Under truthiness an
+   * amendment that CLEARS a field left the parent's value on screen — and the
+   * autosave then wrote it back, so a correction that removed something could
+   * not be filed. Presence clears it, which is what the amendment says.
+   *
+   * `checked_topics` is guarded the same way for the same reason: a talk
+   * amended to tick nothing must show nothing ticked.
+   */
   const hydrate = (d) => {
-    if (d.location) setLocation(d.location);
-    if (d.company_name) setCompanyName(d.company_name);
-    if (d.type_of_work) setTypeOfWork(d.type_of_work);
-    if (d.meeting_time) setMeetingTime(d.meeting_time);
-    if (d.performed_by) setPerformedBy(d.performed_by);
-    if (d.checked_topics) setCheckedTopics(d.checked_topics);
+    if (hasStoredKey(d, 'location')) setLocation(String(d.location));
+    if (hasStoredKey(d, 'company_name')) setCompanyName(String(d.company_name));
+    if (hasStoredKey(d, 'type_of_work')) setTypeOfWork(String(d.type_of_work));
+    if (hasStoredKey(d, 'meeting_time')) setMeetingTime(String(d.meeting_time));
+    if (hasStoredKey(d, 'performed_by')) setPerformedBy(String(d.performed_by));
+    // NOT String()'d — this one is an object, and the renderers read its keys.
+    if (hasStoredKey(d, 'checked_topics')) setCheckedTopics(d.checked_topics);
   };
 
   const fetchData = useCallback(async () => {
