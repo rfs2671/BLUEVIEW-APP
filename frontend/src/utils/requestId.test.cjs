@@ -237,8 +237,14 @@ function serverCase() {
 
   // ── THE TWO CORS LINES, which are the difference between a header that
   //    works on the web build and one that silently does not ──────────────
-  ok(/allow_headers=\[[^\]]*CLIENT_REQUEST_ID_HEADER/s.test(SERVER),
-    'the header is in allow_headers — or the browser refuses to SEND it');
+  // The list is now named once as CORS_ALLOW_HEADERS and read by three
+  // things — the registration, the refusal recorder and /api/health — so
+  // both halves are asserted: the name is on the list, and the list is what
+  // is actually registered.
+  ok(/CORS_ALLOW_HEADERS = \[[^\]]*CLIENT_REQUEST_ID_HEADER/s.test(SERVER),
+    'the header is in CORS_ALLOW_HEADERS — or the browser refuses to SEND it');
+  ok(/allow_headers=CORS_ALLOW_HEADERS/.test(SERVER),
+    '...and that list is the one handed to the middleware');
   ok(/expose_headers=\[[^\]]*CLIENT_REQUEST_ID_HEADER/s.test(SERVER),
     'the header is in expose_headers — or the browser hides the echo');
 
@@ -247,7 +253,9 @@ function serverCase() {
   // prepend leaves CORS outside it. Registering it after would put CORS inside
   // and reopen the bug test_cors_survives_rate_limit exists for.
   const midAt = SERVER.indexOf('@app.middleware("http")');
-  const corsAt = SERVER.search(/app\.add_middleware\(\s*CORSMiddleware/);
+  // \w* because the registered class is CountingCORSMiddleware — a subclass
+  // that records refused preflights and decides nothing.
+  const corsAt = SERVER.search(/app\.add_middleware\(\s*\w*CORSMiddleware/);
   ok(midAt > 0 && corsAt > 0 && midAt < corsAt,
     'the request-id middleware is registered BEFORE CORS, so CORS stays outermost');
 

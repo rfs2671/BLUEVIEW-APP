@@ -182,7 +182,7 @@ class ItIsWiredWhereEveryAuthenticatedRequestPassesThrough(unittest.TestCase):
         the header without this and the re-issue silently never lands."""
         exposed = None
         for mw in server.app.user_middleware:
-            if mw.cls is server.CORSMiddleware:
+            if isinstance(mw.cls, type) and issubclass(mw.cls, server.CORSMiddleware):
                 exposed = mw.kwargs.get("expose_headers")
         self.assertIsNotNone(exposed, "CORS middleware not found")
         self.assertIn(server.REISSUED_TOKEN_HEADER, exposed)
