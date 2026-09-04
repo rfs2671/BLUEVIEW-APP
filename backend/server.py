@@ -394,6 +394,15 @@ def _photo_added_after_filing_caption(photo: dict) -> str:
         except Exception:
             when = None
     if isinstance(when, datetime):
+        # THE NEW YORK DAY. `added_at` is a UTC instant, and 21:00 EDT is
+        # already tomorrow in UTC -- so a photograph appended on Tuesday
+        # evening was captioned Wednesday on the record. Same class of error
+        # `eastern_date` was written to stop, on the same kind of document.
+        # An unanchored legacy value keeps its own digits rather than vanishing.
+        try:
+            when = _as_eastern_instant(when)
+        except ValueError:
+            pass
         # NOT strftime('%b %-d'): '%-d' is a glibc extension and this module is
         # imported on developer machines that do not have it.
         parts.append(f"{when.strftime('%b')} {when.day}, {when.year}")
@@ -1546,6 +1555,81 @@ def eastern_date(when=None) -> str:
 def eastern_today() -> str:
     """Today's New York calendar date, as 'YYYY-MM-DD'."""
     return eastern_date()
+
+
+def _as_eastern_instant(when) -> datetime:
+    """A stored instant, MOVED to New York — or ValueError, never a guess.
+
+    `eastern_date` above calls itself "the only date source" and that rule was
+    simply never extended to TIMES. Nothing owned the clock, so `_roster_clock`
+    parsed a check-in stored as `2026-08-11T10:47:05Z` — correctly, tz-aware,
+    UTC — and then called `.strftime("%I:%M %p")` straight on it. strftime
+    formats whatever zone the datetime is already in, so the roster on a signed
+    §3301.12.3 attendance record printed 10:47 for a man who walked through the
+    gate at 6:47 AM EDT. Four hours, on every report since the field existed.
+
+    IT REFUSES RATHER THAN PASSES THROUGH, and that is the whole design. A
+    naive datetime is a value that has NOT said what zone it is in; treating
+    its digits as New York's is precisely the assumption that produced the bug,
+    and doing it silently is what let the bug live. So a caller with an
+    unanchored value gets an exception and has to decide what to do about it —
+    _roster_clock prints the raw string, because an unanchored wall clock on an
+    old roster is a fact about the record and not something to invent a zone
+    for. See the "1d" note in followups.md for the fields that are in that
+    state and what anchoring them would take.
+
+    Accepts a datetime or an ISO-8601 string (trailing 'Z' included). Returns
+    an aware datetime in America/New_York; DST is the zone's business, never a
+    hard-coded -4 or -5.
+    """
+    from zoneinfo import ZoneInfo
+    if isinstance(when, datetime):
+        dt = when
+    else:
+        text = str(when).strip() if when is not None else ""
+        if not text:
+            raise ValueError("not an instant: nothing to convert")
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"not an instant: {when!r}") from exc
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise ValueError(f"not an instant — no timezone on {when!r}")
+    return dt.astimezone(ZoneInfo("America/New_York"))
+
+
+def eastern_clock(when) -> str:
+    """The NEW YORK wall-clock time for an instant, as '6:47 AM EDT'.
+
+    THE ONLY TIME SOURCE, the way `eastern_date` is the only date source. Every
+    user-facing time conversion goes through here; a renderer that formats a
+    clock itself has opted out of the one place DST is handled.
+
+    THE STRING CARRIES ITS ZONE. "10:47" said nothing about what it was a time
+    in, which is why nobody could see it was wrong by looking at it. "6:47 AM
+    EDT" can be checked against the record by anyone holding both.
+
+    Raises ValueError on anything that is not an anchored instant — see
+    `_as_eastern_instant`.
+    """
+    return _as_eastern_instant(when).strftime("%I:%M %p %Z").lstrip("0")
+
+
+def eastern_datetime(when) -> str:
+    """The New York day AND time for an instant: 'August 11, 2026 at 6:47 AM EDT'.
+
+    Sibling of `eastern_clock`, for the places that print both halves — the
+    "generated on" footers, most of all. The DAY is the New York day for the
+    same reason `eastern_date` exists: 01:30 UTC is still the previous evening
+    here, and a document stamped tomorrow is the failure that helper was
+    written to stop.
+
+    NOT strftime('%B %-d'): '%-d' is a glibc extension and this module is
+    imported on Windows, so the day is interpolated (matching
+    `_photo_added_after_filing_caption`, which learned it the hard way).
+    """
+    dt = _as_eastern_instant(when)
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year} at {eastern_clock(dt)}"
 
 VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 
@@ -17948,7 +18032,11 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     log_type = logbook.get("log_type", "unknown")
     data = logbook.get("data", {})
     
-    gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
+    # THE ZONE IS PART OF THE FACT. This printed a UTC clock with the word
+    # UTC beside it -- not wrong, but the only Eastern-looking number on a
+    # New York document, sitting four hours from every other time on it.
+    # `eastern_datetime` carries its own zone, so the literal goes with it.
+    gen_time = eastern_datetime(datetime.now(timezone.utc))
     
     # Reuse existing style constants
     TH = (
@@ -18214,21 +18302,28 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # report apply; this table was the last one without it.
             if not str(a.get("name") or "").strip():
                 continue
-            # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
-            # Workers are not required to sign a toolbox talk — the CP signature
-            # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
-            present = "&#10003;" if a.get("signed") else "&mdash;"
-            # Optional worker self-confirm taken at the gate. Distinct column
-            # on purpose: it is the WORKER's voluntary tap, whereas Present is
-            # the CP's mark. Neither is a legal attestation.
-            gate = "&#10003;" if a.get("gate_confirmed") else "&mdash;"
+            # TWO COLUMNS ARE GONE FROM THIS TABLE, AND NEITHER FIELD IS.
+            #
+            # "Present" printed `signed` and "Confirmed" printed
+            # `gate_confirmed`. Neither is a legal attestation -- the CP's
+            # signature over the whole roster is (NYC DOB §3301.12.3 / OSHA
+            # 1926.21) -- and two tick columns beside it invited exactly the
+            # reading that signature already forecloses: that each man
+            # individually attested to something. "Added by" stays, because
+            # WHOSE CLAIM PUT HIM ON THE SHEET is the provenance question a
+            # reader of an attendance record actually has.
+            #
+            # THE FIELDS STAY IN STORAGE, unchanged, and toolboxTalkModel.js is
+            # untouched. Dropping a COLUMN is a rendering change; dropping a
+            # FIELD is a data change, and the operator is not making that one.
+            # Both are still written at the gate and both are still read --
+            # `signed` by app/site/logbooks.jsx, `gate_confirmed` by anything
+            # that queries the stored document.
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
-                f'<td {TD}>{gate}</td>'
-                f'<td {TD}>{present}</td>'
                 f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
             )
 
@@ -18246,8 +18341,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th><th {TH}>Added by</th></tr>'
-            + (att_rows or f'<tr><td colspan="7" {TD}>—</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Added by</th></tr>'
+            + (att_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + tb_sig
@@ -18935,7 +19030,7 @@ table{{border-collapse:collapse;}}
 {body_html}
 </td></tr>
 <tr><td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
-<span style="font-size:11px;color:#94a3b8;">Generated on {gen_time} UTC</span><br/>
+<span style="font-size:11px;color:#94a3b8;">Generated on {gen_time}</span><br/>
 <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;">LEVELOG CONSTRUCTION MANAGEMENT</span>
 </td></tr></table></body></html>"""
     
@@ -25755,7 +25850,18 @@ def _signature_affirmation_html(sig):
         )
 
     def _fmt(raw):
-        return (str(raw)[:19].replace("T", " ") + " UTC") if raw else ""
+        # NEW YORK, like every other time on this document. It printed the
+        # stored digits with " UTC" appended -- honest, and still the only
+        # clock on a §3301 record a New York inspector had to convert in his
+        # head. eastern_datetime carries the zone, so nothing is lost by it.
+        # AN UNANCHORED VALUE STILL PRINTS: a legacy signature carrying a naive
+        # timestamp says what it says rather than disappearing from the banner.
+        if not raw:
+            return ""
+        try:
+            return eastern_datetime(raw)
+        except Exception:
+            return str(raw)[:19].replace("T", " ")
 
     claimed = _fmt(sig.get("affirmedAt") or sig.get("timestamp"))
     received = _fmt(sig.get("affirmed_received_at"))
@@ -25813,14 +25919,27 @@ def _attendee_source_label(a) -> str:
 
 
 def _roster_clock(v) -> str:
-    """HH:MM for a roster row's check-in time. The toolbox roster carries the
-    §3301.12.3 required fields (name, title, company, date/time); this renders
-    the time compactly for the PDF. Falls back to the raw value rather than
-    printing a parse error onto a legal record."""
+    """A roster row's check-in time, IN NEW YORK. The toolbox roster carries
+    the §3301.12.3 required fields (name, title, company, date/time); this
+    renders the time for the PDF.
+
+    IT USED TO PRINT THE UTC DIGITS. The stored value is an instant -- the gate
+    writes `check_in_time` straight onto the attendee (toolboxTalkModel.js
+    buildAttendees) -- and this parsed it correctly and then formatted it
+    without converting, so `10:47:05Z` printed as "10:47" on a signed
+    attendance record for a man who was at the gate at 6:47 AM EDT.
+    `eastern_clock` owns that conversion now and no other renderer does it.
+
+    AN UNANCHORED VALUE IS PRINTED AS ITSELF. `weeklyGapAttendee` writes
+    `time: ''` and older rosters hold typed wall-clock strings like "07:15".
+    Those carry no zone, so there is nothing to convert -- eastern_clock
+    refuses them rather than guessing, and they print exactly as they always
+    did. Never a parse error onto a legal record.
+    """
     if not v:
         return "&mdash;"
     try:
-        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).strftime("%I:%M %p").lstrip("0")
+        return eastern_clock(v)
     except Exception:
         return str(v)[:16]
 
@@ -26236,6 +26355,15 @@ def _amendment_day(value) -> str:
     """The calendar day off the record. A datetime or an ISO string, both of
     which reach here depending on whether the doc has been serialized. Never a
     guess, and never relative to now."""
+    # ── LEFT AS THE UTC DAY, DELIBERATELY, AND IT IS WRONG ──────────────────
+    # `amended_at` / `withdrawn_at` are UTC instants, so an amendment filed at
+    # 8pm on a Tuesday in New York reports as Wednesday's -- the same defect
+    # `eastern_date` exists to stop, on the one line of the document that says
+    # when somebody changed it. Routing it through eastern_date is a two-line
+    # change and it was made and reverted here: `_amendment_day` is shared with
+    # `withdrawal_sentence`, which is not part of the report renderer, and the
+    # correction moves a date on two of ITS tests. That is an owner's call, not
+    # this one's. See the report's "found but not changed" section.
     if isinstance(value, datetime):
         return value.date().isoformat()
     text = str(value or "").strip()
@@ -26896,8 +27024,31 @@ def _cs_item_body(item, block, cs_name):
         return NOT_RECORDED
 
     # ── content ─────────────────────────────────────────────────────────────
+    #
+    # A SIGNATURE IS NOT A LINE OF TEXT, AND ITEM 1 WAS PRINTING IT AS ONE.
+    # superintendentLogModel.js lists `signature` among the presence FIELDS, so
+    # this loop reached it like any other and fell through to `str(value)`.
+    # SignaturePad stores strokes, so a filed BC 3301.13.13 log rendered
+    #
+    #     Michael Cespedes
+    #     {'paths': [[{'x': 1, 'y': 2}, ...]], 'signerName': 'Michael Cespedes'}
+    #     06:45
+    #     16:30
+    #
+    # as item 1's record, on BOTH renderers -- and a legacy base64 signature is
+    # a STRING, so that branch pasted the whole blob in as body text instead.
+    #
+    # The signature is already rendered, correctly and with its affirmation
+    # banner, by render_signature_html at the foot of this same section. This
+    # was a second, garbled copy of it inside the table.
+    #
+    # SKIPPED BY NAME, not by type: the value being a dict is incidental, and a
+    # type test would go on printing the base64 case. Nothing is lost.
+    _NOT_TEXT = {"signature"}
     rows = []
     for field in fields:
+        if field in _NOT_TEXT:
+            continue
         value = block.get(field)
         if isinstance(value, (list, tuple)):
             for entry in value:
@@ -27110,13 +27261,34 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
     )
 
 
-def render_signature_html(sig, label="CP Signature"):
+def render_signature_html(sig, label="CP Signature", show_affirmation=True):
     """Render a signature as email-safe HTML with its AFFIRMED / UNAFFIRMED
     banner. Handles both shapes: a base64 PNG string / {data: base64}, and the
-    SignaturePad vector shape {paths: [...strokes...]} (reconstructed to SVG)."""
+    SignaturePad vector shape {paths: [...strokes...]} (reconstructed to SVG).
+
+    ── show_affirmation ────────────────────────────────────────────────────
+    A PARAMETER, NOT A SECOND RENDERER. The investor report prints the same
+    fourteen signatures the filed documents do, and the affirmation banner
+    beneath each one is machinery: "AFFIRMED for this document", a claimed
+    time, a server-received time. That is the audit trail of a §3301 filing
+    and it is exactly what a DOB inspector needs. It is not what a lender
+    needs, and fourteen copies of it on a progress report read as a system
+    talking to itself.
+
+    THE SIGNATURE ITSELF NEVER GOES. Only the banner under it. Passing False
+    also drops the UNAFFIRMED warning, which the operator has accepted for
+    that document and ONLY that document: the per-logbook PDF
+    (generate_single_logbook_html, 8 call sites) and the superintendent's log
+    (_superintendent_log_html, 1) are the legal records and keep every banner
+    they have.
+
+    A COPY OF THIS FUNCTION WOULD HAVE DRIFTED. Two renderers of the same
+    section have had to be pulled back twice on this file already; a third
+    that differs only in one boolean would go the same way.
+    """
     if not sig:
         return ""
-    status = _signature_affirmation_html(sig)
+    status = _signature_affirmation_html(sig) if show_affirmation else ""
 
     def _wrap(full_label, inner):
         return (
@@ -27124,8 +27296,11 @@ def render_signature_html(sig, label="CP Signature"):
             '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
             + full_label + ':</td></tr>'
             '<tr><td>' + inner + '</td></tr>'
-            '<tr><td>' + status + '</td></tr>'
-            '</table>'
+            # An empty banner emits no row at all -- a bare <tr><td></td></tr>
+            # is an invisible strip of padding under every signature on the
+            # report, and fourteen of them is a visible one.
+            + ('<tr><td>' + status + '</td></tr>' if status else '')
+            + '</table>'
         )
 
     def _img(b64):
@@ -27281,34 +27456,94 @@ async def generate_combined_report(
     EMPTY_6 = f'<tr><td colspan="6" {TD}>&mdash;</td></tr>'
     EMPTY_3 = f'<tr><td colspan="3" {TD}>&mdash;</td></tr>'
 
+    # =====================================================================
+    #  TYPE AND SPACING SCALE
+    # =====================================================================
+    #
+    # 17px against a 16px body is not a heading. This document had FOUR sizes
+    # -- 16 body, 16 section header, 17 sub-head, 14 sub-title -- all within a
+    # point of each other, so nothing on the page carried a rank. A reader
+    # looking for the Pre-Shift Sign-In had to READ the words to find it, on a
+    # sixteen-section record; and a section header the same size as the
+    # sentence beneath it is not a header, it is a bolder sentence.
+    #
+    # THE TYPE SCALE. Each step is a jump, not a nudge:
+    #
+    #     30  document title      page 1 only, once
+    #     24  section header      the name of a filed document
+    #     19  sub-head            a named block inside a section
+    #     16  body
+    #     15  table label         uppercase and tracked; a caption, not a head
+    #     13  table cell          density matters on a sixty-man roster
+    #
+    # THE SPACING SCALE, in the same spirit -- four steps, each roughly 1.7x
+    # the one below it, so a gap ALWAYS says which boundary it is:
+    #
+    #     40  above a section header      between two filed documents
+    #     24  between content blocks      within one document
+    #     14  header to its description   they belong together
+    #      8  label to its table          they are one unit
+    #
+    # A section header, its description and its content were separated by 12,
+    # 12 and 12 -- three different relationships rendered identically, which is
+    # why the page read as one undifferentiated column.
+    _T_SECTION, _T_SUBHEAD, _T_LABEL = "24px", "19px", "15px"
+    _S_SECTION, _S_BLOCK, _S_HEAD, _S_TIGHT = "40px", "24px", "14px", "8px"
+
     def section_title(text):
+        """THE NAME OF A FILED DOCUMENT. Every one of these now starts its own
+        sheet, so this is the first thing on a page and has to read like it."""
         return (
-            '<table cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 12px 0;">'
-            '<tr><td style="font-size:16px;font-weight:600;color:#0A1929;'
-            f'padding-bottom:8px;border-bottom:2px solid #e2e8f0;">{text}</td></tr></table>'
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            f'class="doc-section-title" style="margin:{_S_SECTION} 0 0 0;">'
+            f'<tr><td style="font-size:{_T_SECTION};font-weight:700;'
+            'line-height:1.25;color:#0A1929;letter-spacing:-0.01em;'
+            'padding-bottom:12px;border-bottom:2px solid #cbd5e1;">'
+            f'{text}</td></tr></table>'
         )
 
     def sub_title(text):
+        """THE CAPTION OVER A TABLE, and it is set as one: small, uppercase and
+        tracked out, so it reads as a label rather than as a smaller heading
+        competing with the section name above it."""
         return (
-            '<table cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 8px 0;">'
-            f'<tr><td style="font-size:14px;font-weight:600;color:#475569;">{text}</td></tr></table>'
+            '<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="margin:{_S_BLOCK} 0 {_S_TIGHT} 0;">'
+            f'<tr><td style="font-size:{_T_LABEL};font-weight:700;'
+            'color:#475569;text-transform:uppercase;letter-spacing:0.08em;">'
+            f'{text}</td></tr></table>'
+        )
+
+    def sub_head(text):
+        """A NAMED BLOCK INSIDE A SECTION -- "Headcount by subcontractor",
+        "Work today". Four hand-written <h3>s at 17px; one builder at 19."""
+        return (
+            f'<h3 style="color:#0A1929;margin:{_S_BLOCK} 0 {_S_TIGHT};'
+            f'font-size:{_T_SUBHEAD};font-weight:700;line-height:1.3;">'
+            f'{text}</h3>'
         )
 
     def info_box(content):
+        """THE SECTION'S DESCRIPTION. It sits under the header at the HEAD gap,
+        the tightest of the block gaps -- a header and the line that qualifies
+        it are one thing, and 12px put it exactly as far from its header as
+        from the table below it."""
         return (
             '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            'style="margin:12px 0;" bgcolor="#f1f5f9">'
-            '<tr><td style="background-color:#f1f5f9;padding:14px 18px;'
+            f'style="margin:{_S_HEAD} 0 0 0;" bgcolor="#f1f5f9">'
+            '<tr><td style="background-color:#f1f5f9;padding:16px 20px;'
             'border-left:4px solid #1565C0;font-size:16px;line-height:1.7;color:#475569;">'
             + content + '</td></tr></table>'
         )
 
     def para(text):
-        return f'<p style="color:#475569;line-height:1.6;margin:8px 0;">{text}</p>'
+        return (f'<p style="color:#475569;font-size:16px;line-height:1.65;'
+                f'margin:{_S_BLOCK} 0 0;">{text}</p>')
 
     def bold_para(label, value):
         return (
-            '<p style="color:#475569;line-height:1.6;margin:8px 0;">'
+            f'<p style="color:#475569;font-size:16px;line-height:1.65;'
+            f'margin:{_S_BLOCK} 0 0;">'
             f'<strong style="color:#0A1929;">{label}:</strong> {value}</p>'
         )
 
@@ -27354,7 +27589,13 @@ async def generate_combined_report(
 
     _dj = ((daily_jobsite or {}).get("data") or {}) if daily_jobsite else {}
     _dj_id = str(daily_jobsite["_id"]) if daily_jobsite else ""
-    _pg1_weather = _display_weather(_dj) if _dj else NOT_RECORDED
+    # NO WEATHER ON THE COVER. It is a fact about the DAILY JOBSITE LOG and it
+    # is printed there, in that log's own info box, where §3301-02 asks for it.
+    # On the investor cover it was a second copy of the same string with no
+    # document behind it -- the first line of a progress report answering a
+    # question nobody with $2M in the ground was asking. `_display_weather` is
+    # untouched and still has three call sites: both PDF renderers' daily
+    # jobsite sections and the SSC section.
 
     # Headcount, by sub and total. From CHECK-INS, as ruled.
     _sub_rows = "".join(
@@ -27566,10 +27807,10 @@ async def generate_combined_report(
                 f'{_inspection_label(_k)}{" - " + _note if _note else ""}</li>'
             )
     _flags_html = (
-        '<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-        'Flagged today</h3>'
-        '<ul style="margin:0 0 8px;padding-left:20px;font-size:14px;'
-        f'color:#334155;">{_flags}</ul>'
+        sub_head("Flagged today")
+        + '<ul style="margin:0 0 8px;padding-left:20px;font-size:15px;'
+          'line-height:1.6;'
+        + f'color:#334155;">{_flags}</ul>'
     ) if _flags else ""
 
     # ONE line of compliance status. The detail is page 2; this says only
@@ -27680,33 +27921,32 @@ async def generate_combined_report(
     # though they were two different facts. A reader counting fields on a
     # compliance document reads a repeat as a discrepancy.
     progress_html = (
-        '<h2 style="color:#0A1929;margin:0 0 18px;font-size:24px;">'
+        '<h2 style="color:#0A1929;margin:0 0 4px;font-size:30px;'
+        'font-weight:700;line-height:1.2;letter-spacing:-0.02em;">'
         'Daily Progress Report</h2>'
         + info_box(
-            f'<strong style="color:#0A1929;">Weather:</strong> '
-            f'{_pg1_weather}<br />'
             '<strong style="color:#0A1929;">'
             f'Workers checked in at the gate:</strong> {_sub_total}'
         )
-        + '<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-          'Headcount by subcontractor</h3>'
+        + sub_head("Headcount by subcontractor")
         + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-          'style="border-collapse:collapse;font-size:15px;">'
+          'style="border-collapse:collapse;margin:8px 0 0 0;font-size:15px;">'
         + f'<tr><th {TH}>Subcontractor</th>'
           f'<th {TH} align="right">Workers</th></tr>'
         + _sub_rows
         + f'<tr><td {TD}><strong>Total</strong></td>'
           f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
         + '</table>'
-        + (('<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-            'Work today</h3>' + _pg1_lines + _pg1_ai_note) if _pg1_lines else "")
-        + (('<h3 style="color:#0A1929;margin:22px 0 10px;font-size:17px;">'
-            'Photos</h3>' + _pg1_photos) if _pg1_photos else "")
+        + ((sub_head("Work today") + _pg1_lines + _pg1_ai_note)
+           if _pg1_lines else "")
+        + ((sub_head("Photos") + _pg1_photos) if _pg1_photos else "")
         + _flags_html
         + '<p style="margin:22px 0 0;font-size:16px;line-height:1.6;color:#334155;">'
           f'<strong style="color:#0A1929;">Compliance:</strong> {_compliance}</p>'
-        # Page 2 starts a new sheet in the PDF. Inert in email.
-        + '<div style="page-break-after:always;"></div>'
+        # THE BREAK USED TO BE EMITTED HERE and it was the only one in the
+        # report. It is now emitted BETWEEN every pair of sections by the
+        # joiner in the final assembly -- keeping a copy here as well would put
+        # two breaks after the cover and a blank sheet between it and page 2.
     )
 
     jobsite_html = ""
@@ -27759,13 +27999,13 @@ async def generate_combined_report(
             obs_html = (
                 sub_title("Safety Observations")
                 + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-                  'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+                  'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
                 + f'<tr><th {TH}>Description</th><th {TH}>Responsible</th><th {TH}>Remedy</th></tr>'
                 + obs_rows + '</table>'
             )
 
-        cp_sig = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature")
-        sup_sig = render_signature_html(d.get("superintendent_signature"), "Superintendent")
+        cp_sig = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature", show_affirmation=False)
+        sup_sig = render_signature_html(d.get("superintendent_signature"), "Superintendent", show_affirmation=False)
         visitors = d.get("visitors_deliveries", "")
         wind = d.get("weather_wind", "")
 
@@ -27805,7 +28045,7 @@ async def generate_combined_report(
             )
             + sub_title("Activity Details")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             # "CP's count", not "Workers" — the same label the single-document
             # renderer now carries, for the same reason. See the note there.
             + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>CP&#39;s count</th>'
@@ -27848,25 +28088,32 @@ async def generate_combined_report(
             # agree; there are two of these gates and both are load-bearing.
             if not str(a.get("name") or "").strip():
                 continue
-            # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
-            # Workers are not required to sign a toolbox talk — the CP signature
-            # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
-            present = "&#10003;" if a.get("signed") else "&mdash;"
-            # Optional worker self-confirm taken at the gate. Distinct column
-            # on purpose: it is the WORKER's voluntary tap, whereas Present is
-            # the CP's mark. Neither is a legal attestation.
-            gate = "&#10003;" if a.get("gate_confirmed") else "&mdash;"
+            # TWO COLUMNS ARE GONE FROM THIS TABLE, AND NEITHER FIELD IS.
+            #
+            # "Present" printed `signed` and "Confirmed" printed
+            # `gate_confirmed`. Neither is a legal attestation -- the CP's
+            # signature over the whole roster is (NYC DOB §3301.12.3 / OSHA
+            # 1926.21) -- and two tick columns beside it invited exactly the
+            # reading that signature already forecloses: that each man
+            # individually attested to something. "Added by" stays, because
+            # WHOSE CLAIM PUT HIM ON THE SHEET is the provenance question a
+            # reader of an attendance record actually has.
+            #
+            # THE FIELDS STAY IN STORAGE, unchanged, and toolboxTalkModel.js is
+            # untouched. Dropping a COLUMN is a rendering change; dropping a
+            # FIELD is a data change, and the operator is not making that one.
+            # Both are still written at the gate and both are still read --
+            # `signed` by app/site/logbooks.jsx, `gate_confirmed` by anything
+            # that queries the stored document.
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
-                f'<td {TD}>{gate}</td>'
-                f'<td {TD}>{present}</td>'
                 f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
             )
 
-        tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature")
+        tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature", show_affirmation=False)
 
         # PR G: location/company/performed-by/cp short-entry; time excluded.
         toolbox_html = (
@@ -27879,9 +28126,9 @@ async def generate_combined_report(
             )
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th><th {TH}>Added by</th></tr>'
-            + (att_rows or f'<tr><td colspan="7" {TD}>&mdash;</td></tr>')
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Added by</th></tr>'
+            + (att_rows or f'<tr><td colspan="5" {TD}>&mdash;</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
             + tb_sig
@@ -27910,12 +28157,12 @@ async def generate_combined_report(
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
                 )
 
-        ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
+        ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature", show_affirmation=False)
 
         preshift_html = (
             section_title("Pre-Shift Sign-In")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
               f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
             + (w_rows or EMPTY_6)
@@ -28029,13 +28276,13 @@ async def generate_combined_report(
             + work_html
             + sub_title("Subcontractor Activity")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Company</th><th {TH}>Trade</th><th {TH}>Workers</th>'
               f'<th {TH}>Hours</th><th {TH}>Description</th></tr>'
             + (sub_rows or EMPTY_5) + '</table>'
             + sub_title("Safety Checklist")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Status</th><th {TH}>Checked By</th></tr>'
             + (safety_rows or EMPTY_3) + '</table>'
             + sub_title("Corrective Actions") + para(corrective_text)
@@ -28134,11 +28381,11 @@ async def generate_combined_report(
                 f'<td {TD}>{review_cell}</td></tr>'
             )
 
-        osha_sig = render_signature_html(osha_lb.get("cp_signature"), "CP Signature")
+        osha_sig = render_signature_html(osha_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         osha_html = (
             section_title("OSHA / SST Certification Log")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Cert Type</th>'
               f'<th {TH}>Card #</th><th {TH}>Expiration</th><th {TH}>Signed</th>'
               f'<th {TH}>Review</th></tr>'
@@ -28202,11 +28449,11 @@ async def generate_combined_report(
             )
             + sub_title("Pre-Work Precautions")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Precaution</th><th {TH}>Confirmed</th></tr>'
             + prec_rows
             + '</table>'
-            + render_signature_html(hw_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(hw_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28270,17 +28517,17 @@ async def generate_combined_report(
             )
             + sub_title("Pre-Operation Checklist")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
             + preop_rows
             + '</table>'
             + sub_title("Lift Log")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Time</th><th {TH}>Description</th><th {TH}>Load Weight</th><th {TH}>Radius</th></tr>'
             + (load_rows or f'<tr><td colspan="4" {TD}>No lifts recorded</td></tr>')
             + '</table>'
-            + render_signature_html(crane_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(crane_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28341,11 +28588,11 @@ async def generate_combined_report(
             )
             + sub_title("Adjacent-Structure Monitoring Points")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Location</th><th {TH}>Baseline</th><th {TH}>Current</th><th {TH}>Movement (&Delta;)</th></tr>'
             + (bld_rows or f'<tr><td colspan="4" {TD}>No monitoring points recorded</td></tr>')
             + '</table>'
-            + render_signature_html(exc_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(exc_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28389,13 +28636,13 @@ async def generate_combined_report(
         fp_html = (
             section_title("Fall Protection Equipment")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Equipment</th>'
               f'<th {TH}>ID / Serial</th><th {TH}>Mfg Date</th><th {TH}>Result</th>'
               f'<th {TH}>Impact Loaded</th><th {TH}>Defect</th><th {TH}>Action Taken</th></tr>'
             + (_fp_rows or f'<tr><td colspan="9" {TD}>No inspections recorded</td></tr>')
             + '</table>'
-            + render_signature_html(fp_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(fp_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
             # THIS REPORT GOES TO INVESTORS AND LENDERS, and it is where a
             # reader is most likely to mistake this section for a required
             # filing. One sentence, on the section, saying what it is.
@@ -28462,11 +28709,11 @@ async def generate_combined_report(
             )
             + sub_title("Inspection Checklist")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Question</th><th {TH}>Answer</th></tr>'
             + q_rows
             + '</table>'
-            + render_signature_html(scaffold_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(scaffold_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28589,7 +28836,7 @@ async def generate_combined_report(
         oriented_today_html = (
             sub_title("Oriented Today")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Worker</th><th {TH}>Trade / Company</th>'
               f'<th {TH}>Orientation Date</th><th {TH}>Conducted By (CP)</th>'
               f'<th {TH}>Worker Signature</th></tr>'
@@ -28643,7 +28890,7 @@ async def generate_combined_report(
             )
             + sub_title("Compliance")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Status</th></tr>'
             + flag_rows
             + '</table>'
@@ -28657,7 +28904,7 @@ async def generate_combined_report(
             + bold_para("Safety Violations Observed", _ssc_prose(d.get("safety_violations_observed")))
             + bold_para("Corrective Actions Taken", _ssc_prose(d.get("corrective_actions_taken")))
             + incident_line
-            + render_signature_html(ssc_lb.get("cp_signature"), "SSC / SSM Signature")
+            + render_signature_html(ssc_lb.get("cp_signature"), "SSC / SSM Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28717,17 +28964,17 @@ async def generate_combined_report(
             )
             + sub_title("Slump Tests")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Time</th><th {TH}>Slump</th><th {TH}>Result</th></tr>'
             + (slump_rows or f'<tr><td colspan="3" {TD}>No slump tests recorded</td></tr>')
             + '</table>'
             + sub_title("Formwork Inspection")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
             + formwork_rows
             + '</table>'
-            + render_signature_html(concrete_lb.get("cp_signature"), "CP Signature")
+            + render_signature_html(concrete_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
         )
 
     # ==========================================================
@@ -28772,20 +29019,62 @@ async def generate_combined_report(
                 field_label = k.replace("_", " ").title()
                 data_rows += f'<tr><td {TD} style="font-weight:600;width:35%;padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;">{field_label}</td><td {TD}>{v_str}</td></tr>'
 
-        sig_html = render_signature_html(logbook.get("cp_signature"), "Signature")
+        sig_html = render_signature_html(logbook.get("cp_signature"), "Signature", show_affirmation=False)
         additional_logbooks_html += (
             section_title(f"{label}")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
             + (data_rows or f'<tr><td {TD}>No data recorded</td></tr>')
             + '</table>'
             + sig_html
         )
 
     # ==========================================================
+    #  EVERY DOCUMENT ON ITS OWN PAGE
+    # ==========================================================
+    #
+    # There was exactly ONE page break in this report -- between the investor
+    # cover and everything after it -- and page 2 onward ran together. A Tool
+    # Box Talk ended four lines into a sheet and the Pre-Shift Sign-In began on
+    # the fifth; an Activity Details table split across the fold with its
+    # header on one page and half its crews on the next.
+    #
+    # THESE ARE SEPARATE FILED DOCUMENTS. An inspector asks for one of them by
+    # name and a lender is handed another; a printed record that has to be cut
+    # apart with a ruler to separate two statutory logs is not a record of
+    # either. So each section starts a sheet.
+    #
+    # THE BREAK GOES *BETWEEN*, NEVER AFTER EACH. A break after the last
+    # section ends the PDF on a blank sheet, and a blank final page on a
+    # compliance document reads as a page somebody removed.
+    #
+    # AN UNFILED LOG IS NOT A PAGE. A section with no document behind it
+    # renders "" and is dropped before the join, so a three-document day is
+    # three sheets and not sixteen -- thirteen of them blank, each looking like
+    # a filing that went missing.
+    _SECTIONS = (
+        progress_html, jobsite_html, cs_html, toolbox_html, preshift_html,
+        site_html, osha_html, hot_work_html, crane_html, exc_html,
+        scaffold_html, fp_html, orientation_html, ssc_html, concrete_html,
+        additional_logbooks_html,
+    )
+    # page-break-inside ON THE WRAPPER, which is what stops a table splitting
+    # across the fold. A section taller than a page cannot honour it, and
+    # WeasyPrint drops the request rather than leaving the sheet blank -- which
+    # is what makes this safe on a sixty-man pre-shift sheet.
+    sections_html = '<div style="page-break-after:always;"></div>'.join(
+        f'<div class="doc-section" style="page-break-inside:avoid;">{_s}</div>'
+        for _s in _SECTIONS if _s
+    )
+
+    # ==========================================================
     #  FINAL HTML ASSEMBLY  (email-safe, table-based)
     # ==========================================================
-    gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
+    # THE ZONE IS PART OF THE FACT. This printed a UTC clock with the word
+    # UTC beside it -- not wrong, but the only Eastern-looking number on a
+    # New York document, sitting four hours from every other time on it.
+    # `eastern_datetime` carries its own zone, so the literal goes with it.
+    gen_time = eastern_datetime(datetime.now(timezone.utc))
     font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
     html = f"""<!DOCTYPE html>
@@ -28823,6 +29112,33 @@ async def generate_combined_report(
   @media print {{
     .wrapper {{ width: 100% !important; max-width: 100% !important; }}
     body, .body {{ background-color: #ffffff !important; }}
+
+    /* THE REST OF THE LEVER. The block released the width and stopped, and
+       every typographic decision below is one an EMAIL CLIENT must not be
+       asked to make -- these rules exist only for the sheet of paper.
+
+       A HEADING MUST NOT BE THE LAST THING ON A PAGE. Every section now
+       starts its own sheet, but the sub-heads inside one do not, and
+       "Activity Details" alone at the foot of a page with its table
+       overleaf is the shape a reader takes for a truncated document. */
+    h2, h3, .doc-section-title {{
+      page-break-after: avoid; break-after: avoid-page;
+    }}
+
+    /* THE SECTION HEADER IS THE FIRST THING ON ITS SHEET, so the 40px that
+       separates it from the previous section on screen is a dead strip at
+       the top of every printed page. Inline styles lose to !important. */
+    .doc-section > .doc-section-title:first-child {{ margin-top: 0 !important; }}
+
+    /* NEVER SPLIT A ROW. A man's name on one sheet and his check-in time on
+       the next is not a roster entry -- and page-break-inside on the section
+       wrapper cannot help a table that is genuinely taller than a page,
+       which the pre-shift sheet on a busy day is. */
+    tr {{ page-break-inside: avoid; break-inside: avoid; }}
+    .doc-section {{ break-inside: avoid; }}
+
+    /* One line of a paragraph stranded by itself reads as a fragment. */
+    p, li {{ orphans: 3; widows: 3; }}
   }}
 </style>
 </head>
@@ -28871,29 +29187,14 @@ async def generate_combined_report(
   <!-- CONTENT -->
   <tr>
     <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
-      {progress_html}
-      {jobsite_html}
-      {cs_html}
-      {toolbox_html}
-      {preshift_html}
-      {site_html}
-      {osha_html}
-      {hot_work_html}
-      {crane_html}
-      {exc_html}
-      {scaffold_html}
-      {fp_html}
-      {orientation_html}
-      {ssc_html}
-      {concrete_html}
-      {additional_logbooks_html}
+      {sections_html}
     </td>
   </tr>
 
   <!-- FOOTER -->
   <tr>
     <td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
-      <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time} UTC</span><br />
+      <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time}</span><br />
       <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;text-transform:uppercase;">LEVELOG CONSTRUCTION MANAGEMENT</span>
     </td>
   </tr>
