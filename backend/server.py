@@ -2858,6 +2858,10 @@ from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
 # The same rule the COI path has always had, now with one address so the two
 # OCR paths cannot disagree about what "null" means. See lib/ocr_text.py.
 from lib.ocr_text import norm_ocr_str  # noqa: E402
+from lib.vision_meter import (  # noqa: E402
+    record_vision_call,
+    VISION_UPLOAD_OSHA,
+)
 
 
 
@@ -13642,6 +13646,30 @@ async def upload_osha_card(file_data: dict, request: Request):
         image_b64 = image_b64.split(",", 1)[1]
 
     image_url = f"data:{content_type};base64,{image_b64}"
+
+    # ── COUNTED BEFORE THE CALL, NOT AFTER ──────────────────────────────────
+    #
+    # NOTHING RECORDED THAT THIS HAPPENED. This endpoint has called a paid
+    # vision model on every card photo at every gate since launch, and "how
+    # much did we spend on OCR last month" could not be answered from our own
+    # data — only from a lower bound (checkins.card_ocr_attempts, which exists
+    # only for workers who got PAST the card step), the Railway access log
+    # (bounded by retention), or the provider's dashboard.
+    #
+    # NO LIMIT IS ATTACHED. Nothing below refuses, alerts or thresholds. A
+    # ceiling reads a number and there is no number yet; this is the write that
+    # makes one, and it is the same write a ceiling would need.
+    #
+    # BEFORE, because a call that errors after the provider has billed it is
+    # still spend — and a provider outage arrives as a burst of exactly those.
+    #
+    # project_id is optional and may be absent on an older cached gate page;
+    # those count under "unknown" rather than not at all.
+    await record_vision_call(
+        db,
+        endpoint=VISION_UPLOAD_OSHA,
+        project_id=(str(file_data.get("project_id") or "").strip() or None),
+    )
 
     extraction_prompt = (
         "Extract the following from this SST/OSHA safety training card image. "

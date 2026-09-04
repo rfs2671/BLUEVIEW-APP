@@ -106,3 +106,90 @@ def test_it_shares_the_rule_with_the_osha_path():
     """Two OCR paths that disagree about what "null" means is exactly the drift
     lib/ocr_text.py exists to prevent."""
     assert card_audit.norm_ocr_str is norm_ocr_str
+
+
+# ══ NOTHING UNRESOLVED REACHES THE PAID MODEL ═════════════════════════════
+#
+# The project lookup used to happen AFTER the VLM call, and only to read
+# trade_assignments off the result — it validated nothing. So a POST naming a
+# project that does not exist reached a paid vision API and was billed before
+# anything looked at it, on a public unauthenticated endpoint.
+#
+# THE SPLIT: a request that RESOLVES is never refused, whatever the spend — a
+# man at a turnstile with a valid card does not care about a ceiling. A request
+# that does NOT resolve is refused here, always. That is a validity check, not
+# a spend control, and being strict about it takes nothing from any worker.
+
+def test_the_project_and_gate_are_resolved_before_the_model_call():
+    """Order, read off the AST rather than assumed from the source text: the
+    `db.projects.find_one` that gates this must precede the `_qwen_vlm` call."""
+    import ast
+    import inspect
+    import textwrap
+    src = textwrap.dedent(inspect.getsource(card_audit.enrollment_parse_card))
+    tree = ast.parse(src)
+
+    lookup_at = vlm_at = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        rendered = ast.unparse(node.func)
+        if rendered.endswith("projects.find_one") and lookup_at is None:
+            lookup_at = node.lineno
+        if rendered == "_qwen_vlm" and vlm_at is None:
+            vlm_at = node.lineno
+
+    assert lookup_at is not None, "the project lookup is gone entirely"
+    assert vlm_at is not None, "the VLM call is gone — this test lost its subject"
+    assert lookup_at < vlm_at, (
+        f"the paid model call (line {vlm_at}) happens before the project is "
+        f"resolved (line {lookup_at}); an unresolvable request spends money"
+    )
+
+
+def test_an_unresolved_request_is_refused_and_a_resolved_one_is_not():
+    """The refusals are both 404 and both happen before any model call. The
+    important half is the ABSENCE of a refusal for a resolved request — no
+    ceiling, no cap, no admission control on the path a real worker takes."""
+    import inspect
+    src = inspect.getsource(card_audit.enrollment_parse_card)
+    head = src[:src.index("_qwen_vlm")]
+    assert head.count("Unknown project") == 1, "no refusal for an unknown project"
+    assert head.count("Unknown gate") == 1, "no refusal for an unknown gate"
+    # AND NOTHING TURNS AWAY A REQUEST THAT DID RESOLVE.
+    #
+    # The first draft of this checked for the substrings "rate", "quota",
+    # "ceiling" in the source. It failed on the word "sepa-rate" in a comment —
+    # an over-broad match, the same class as every other location-for-structure
+    # failure recorded this week, written while recording them.
+    #
+    # Read the STATUS CODES off the AST instead. Every early return before the
+    # model call must be one of the validity refusals; anything else is an
+    # admission control on the path a real worker takes.
+    import ast
+    import textwrap
+    tree = ast.parse(textwrap.dedent(src))
+    vlm_line = min(n.lineno for n in ast.walk(tree)
+                   if isinstance(n, ast.Call) and ast.unparse(n.func) == "_qwen_vlm")
+    codes = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or node.lineno >= vlm_line:
+            continue
+        for kw in getattr(node.value, "keywords", []) or []:
+            if kw.arg == "status_code":
+                codes.add(ast.literal_eval(kw.value))
+    assert codes <= {400, 404}, (
+        f"an early return before the model call carries {sorted(codes)}. "
+        "400/404 are validity refusals; anything else refuses a request that "
+        "resolved, and the ceiling is admit-and-alert."
+    )
+    assert 404 in codes, "the validity refusals are gone"
+
+
+def test_the_project_is_not_queried_twice():
+    """It was: once here for the gate check, once afterwards for
+    trade_assignments — and the second read omitted the is_deleted guard."""
+    import inspect
+    src = inspect.getsource(card_audit.enrollment_parse_card)
+    assert src.count("projects.find_one") == 1, "the duplicate query is back"
+    assert "subs = project.get(" in src

@@ -56,6 +56,7 @@ from pydantic import BaseModel, Field
 # paths that disagree about what "null" means is exactly the drift this
 # module was written to avoid.
 from lib.ocr_text import norm_ocr_str
+from lib.vision_meter import record_vision_call, VISION_PARSE_CARD
 import httpx
 
 
@@ -1793,6 +1794,57 @@ async def enrollment_parse_card(request: Request):
     if not img_bytes:
         return HTMLResponse(render_enrollment_page(project_id, gate_id, card_id_read, lang, COPY_STRINGS[lang]["retry_photo"]), status_code=400)
 
+    # ── RESOLVE THE PROJECT AND THE GATE BEFORE SPENDING ANY MONEY ──────────
+    #
+    # THIS LOOKUP USED TO HAPPEN AFTER THE MODEL CALL, and only to read
+    # `trade_assignments` off the result — it never checked anything. So a POST
+    # naming a project that does not exist, or no project at all, reached a
+    # PAID VISION API and was billed before anything looked at it. This
+    # endpoint is public and unauthenticated; the only reason it has not been
+    # called in a loop is that the page carrying its form is shadowed by
+    # server.py, which is an accident rather than a control.
+    #
+    # THE SPLIT IS THE RULING, and the two halves are different in kind:
+    #
+    #   A request that RESOLVES — a real project, a real gate — is never
+    #   refused, whatever the spend. A man at a turnstile with a valid card
+    #   does not care about a ceiling, and refusing him makes the app the
+    #   obstacle. That is the standing rule on this project and a spend
+    #   ceiling does not get to be the exception to it.
+    #
+    #   A request that does NOT resolve is refused here, always, ceiling or no
+    #   ceiling. That is not a spend control; it is a VALIDITY check, and being
+    #   strict about it costs nothing and takes nothing from any worker.
+    #
+    # The exposure was never a man at a gate. It is an unauthenticated public
+    # endpoint anyone can call in a loop, and this is the half of that which is
+    # free to close. The per-project daily ceiling is a separate change and is
+    # gated on measuring what a normal day actually costs.
+    #
+    # SAME PREDICATE AS THE GATE PAGE ABOVE (`gate_landing`): project exists
+    # and is not soft-deleted, gate_id is one of the project's own gates.
+    # Written as the same two checks rather than a shared helper only because
+    # the failure RENDERING differs — the page returns a failure screen, this
+    # returns the enrollment form with a message the worker can act on.
+    project = await db.projects.find_one(
+        {"_id": _to_id(project_id), "is_deleted": {"$ne": True}}
+    ) if project_id else None
+    if not project:
+        return HTMLResponse(
+            render_failure_page(lang, "Unknown project"), status_code=404,
+        )
+    if not any(g.get("gate_id") == gate_id
+               for g in (project.get("gates") or [])):
+        return HTMLResponse(
+            render_failure_page(lang, "Unknown gate"), status_code=404,
+        )
+
+    # Counted here — AFTER the validity refusals above, so an unresolvable
+    # request costs nothing and is not counted as spend, and BEFORE the model
+    # call, so a call that errors after billing still counts. See
+    # lib/vision_meter.py; no limit is attached to this write.
+    await record_vision_call(db, endpoint=VISION_PARSE_CARD, project_id=project_id)
+
     parsed = {}
     raw_vlm_response = ""
     if _qwen_vlm is None:
@@ -1842,7 +1894,10 @@ async def enrollment_parse_card(request: Request):
     except Exception:
         exp_ok = False
 
-    subs = (await db.projects.find_one({"_id": _to_id(project_id)}) or {}).get("trade_assignments") or []
+    # `project` is already resolved above, before the model call. This was a
+    # SECOND query for the same document, and it read without the is_deleted
+    # guard the first one applies.
+    subs = project.get("trade_assignments") or []
 
     # Stash the upload in a pending-enrollment doc so /enrollment/complete
     # can pick it up without requiring the form to re-send the file.

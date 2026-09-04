@@ -4,6 +4,86 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-04 — a paid operation ran since launch with no artifact recording that it happened
+
+Two endpoints call a paid vision model. `POST /checkin/upload-osha` does it on
+every card photo at every gate — the busiest path in the product. `POST
+/enrollment/parse_card` does it too. **Nothing recorded that a call was made.**
+No counter, no log collection, no per-call row, no field on any document.
+
+So these could not be answered from our own data at all:
+
+- what did OCR cost us last month
+- which project drives the spend
+- has `/enrollment/parse_card` ever been called even once
+
+### The three things that looked like an answer, and what each is worth
+
+`checkins.card_ocr_attempts` is stamped onto the CHECK-IN ROW, so it exists
+only for workers who got PAST the card step. **The population that most needs
+counting — the failures, the retakes, the man who gave up — wrote nothing.** A
+lower bound, and biased low exactly where the cost is.
+
+The Railway access log has every request and is bounded by retention, which is
+already recorded here as silently binding before `--since` does.
+
+The provider's billing dashboard is ground truth and is not ours. It cannot be
+queried by project, it is not in the system, and it disappears if the vendor
+changes.
+
+### Why this is its own entry
+
+Every earlier instance in this file is a CHECK that could not reach its
+subject: a glob blind to `.cjs`, a scan root of `Path(__file__).parent`, a
+leftmost `re.search`, a sweep whose result was discarded on an unrelated fact.
+All of them are tests, and all of them EXIST and are wrong.
+
+**This one is a measurement, and it was not there at all.** Nothing was wrong;
+nothing had been written. That is a harder class to notice, because a missing
+check produces no failing signal, no green tick to distrust, and no artifact to
+audit — the absence is invisible precisely because absence is what it is.
+
+**The tell, and it generalises:** for any operation that costs money, takes
+time, or calls something outside the system, ask what row it writes. If the
+answer is "the thing it did, if it succeeded", the operation is unmeasured. A
+side effect is not a record.
+
+### What shipped, and what deliberately did not
+
+`lib/vision_meter.py` counts every call — one row per (Eastern day, project,
+endpoint), atomic `$inc`, written BEFORE the model call so a call that errors
+after the provider billed it still counts.
+
+**No limit is attached, and that is the point.** A ceiling reads a number and
+there was no number. Setting one from the provider's dashboard, or from a
+guess, is either useless or hostile. It ships alone, runs a week, and the
+ceiling comes from our own traffic — which is the same write a ceiling needs,
+so nothing is thrown away.
+
+`upload-osha` had also never taken a `project_id`, so its spend was
+unattributable even in principle. The gate page sends one now; an older cached
+page counts under `unknown` rather than not at all.
+
+### `$inc`, and why the careful-looking version is the broken one
+
+We run at least two containers. This is the version that reads as diligent:
+
+```python
+row = await db.vision_calls.find_one(key)     # both containers read 4
+await db.vision_calls.update_one(key, {"$set": {"calls": row["calls"] + 1}})
+```
+
+Two containers read the same value and both write 5. **Two calls count as
+one**, and the undercount scales with the container count under exactly the
+load worth measuring. It is the in-process rate limiter's N-times problem with
+extra steps, and it looks MORE careful than `{"$inc": {"calls": 1}}`, which is
+applied server-side under the document's own lock and has no read to race.
+
+Stated in the module and asserted by `test_vision_meter.py`, because the next
+person to touch this will reach for the version with the explicit read.
+
+---
+
 ## PRACTICE — 2026-09-04 — the sweep could not reach its subject because something UNRELATED concealed it
 
 Twelve vision/OCR call sites were enumerated to answer one question — which of
