@@ -4,6 +4,215 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-04 — a check that REPLACES its subject reports on what is left
+
+Not "the mount smoke had a gap". A gap is a subject a check never reaches. This
+is a check that reached its subject, removed it, substituted an answer that
+always passes, and reported the result as coverage.
+
+### What it looked like
+
+`frontend/scripts/smoke-mount.cjs` is the only thing in CI that runs the real
+web bundle in a real browser. It stubbed the API with Playwright route
+interception:
+
+```js
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', ... };
+if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
+```
+
+An `OPTIONS` branch. A CORS header block. It reads as a job that has thought
+about preflights and decided to allow them all.
+
+### What it actually was
+
+**There was no preflight.** `page.route(...).fulfill()` short-circuits before
+Chromium issues one. Measured on the same page with the same non-safelisted
+header:
+
+```
+interception OFF  ->  origin saw ["OPTIONS /api/probe", "GET /api/probe"]
+interception ON   ->  handler saw ["GET"],  origin saw []
+```
+
+The `OPTIONS` branch has never executed in any run since it was written. The
+`'*'` was never sent to anything. Route interception does not stub CORS
+permissively — it deletes CORS from the browser's behaviour, and the branch
+that appears to handle it is decoration over the deletion.
+
+### The cost, stated exactly
+
+`X-Client-Version` shipped on every request from 2026-08-28 and was absent from
+`allow_headers`, so the real server answered `400 Disallowed CORS headers` and
+Chrome declined to send the request at all — every endpoint, `auth/login`
+included. Run against that exact `server.py`, this job printed:
+
+```
+37/37 route-mounts clean
+```
+
+Every other signal was structurally incapable, which is a different and lesser
+failure: native sends no `Origin` and gets no preflight; `postdeploy_login_check.py`
+sends the header but speaks `urllib`, so no `Origin` and no `OPTIONS`. Those
+checks were looking elsewhere. This one was looking straight at it.
+
+**And `/api/version` is not the exception it appeared to be.** By `curl` it is a
+simple GET, no preflight, 200 — which is how it stayed green. From the app it
+goes through the same axios interceptor, carries `X-Client-Version`, preflights,
+and was blocked like everything else. The health check and the application were
+making different requests to the same URL, and only the health check's version
+was healthy.
+
+### The tell
+
+**A branch whose condition can never be true, inside a stub, is invisible to
+review** — it reads as thoroughness. Nothing about `if (method === 'OPTIONS')`
+looks like dead code; it looks like the opposite.
+
+The general question for any stub: *does the thing I am replacing still happen?*
+A stub of a response leaves the mechanism intact. A stub of a **transport**
+removes every mechanism the transport implements, and CORS lives in the
+transport, not in the response.
+
+### The fix, and the guard that found the real problem
+
+`smoke-mount.cjs` now serves a real HTTPS origin on the hostname the production
+bundle is built against (`--host-resolver-rules`, `--ignore-certificate-errors`),
+answering preflights from `server.py`'s own `allow_headers`. Nothing is
+intercepted; the browser does real DNS, real TLS, real CORS. Against the outage
+state, every route now fails with the production error; with the header
+restored, 74/74 clean and 116 real preflights answered.
+
+**The counter is what caught it.** A first pass made the interception handler
+strict — derive the list, refuse what the server refuses. It passed everything
+and reported `preflights: 0`. Without that number the strict version would have
+shipped as a fix and changed nothing at all, which would have been the same
+defect a third time. Any check that can be satisfied without running should
+count its own executions and fail at zero.
+
+### How long, and what cannot be proven from here
+
+**At least 6 days 22 hours**, from `b5aabe95` (2026-08-28 17:18:19 -0400) to the
+fix serving at 2026-09-04 19:35:28 UTC.
+
+That is the **code** date. It is a floor, not a measurement. No workflow in this
+repo deploys the web bundle — it ships through an external git integration — so
+nothing here records when a build carrying that commit actually reached
+production. The repo can date the commit and cannot date the deploy, and that
+gap is itself the finding: `/api/version` answers the same question for the
+backend in one request, and the web build has no equivalent.
+
+---
+
+## PRACTICE — 2026-09-04 — a filter that names the class it is discarding
+
+The strongest form of this failure. Not an oversight, not a missing case: a
+deliberate rule, written by someone who correctly identified the category, that
+suppressed a total outage because a total outage arrives in the same shape as
+the noise.
+
+### The rule
+
+`frontend/src/lib/sentry.js`:
+
+```js
+// Drop CORS noise that comes through with a generic "Network Error"
+// message and no stack. These are almost always misconfigured CORS
+// preflights or browser-blocked fetches that say nothing useful.
+if (t === 'error' && (msg === 'network error' || msg === 'failed to fetch')) {
+  return null;
+}
+```
+
+Axios raises exactly `Error: Network Error` when a preflight blocks the request.
+The comment names *misconfigured CORS preflights* as the thing being dropped.
+
+Sentry is configured on web and was firing throughout — the failing page shows
+`envelope/?sentry_version=7` going out. The only client-side channel that could
+have observed a seven-day outage was wired to discard it, on purpose, by someone
+who understood the class well enough to describe it in a comment.
+
+### Why the reasoning was not wrong
+
+It is true that an individual `Network Error` with no stack says nothing useful.
+One of them is noise. The judgement failed on **volume**, not on kind: the
+predicate is right about a single event and silent about the difference between
+one event and every event from every session.
+
+That is the general shape. **A filter written on the properties of one instance
+cannot distinguish an outage from the noise it resembles**, because at the level
+of the instance they are identical. What separates them is rate, breadth and
+duration — none of which a `beforeSend` on a single event can see.
+
+### Ruling
+
+Keep the filter. It is correct about what it says. But not silently — a total
+outage must not be indistinguishable from noise on the way to `return null`.
+Options are open (a counter, a sampled breadcrumb, a distinct low-priority event
+type); **reported before building**, deliberately, because the choice is about
+alert economics and not about plumbing.
+
+### Mobile, and what is ruled there
+
+Sentry does not run on device at all: `@sentry/react` only (no
+`@sentry/react-native`), and `eas.json` has no `env` block, so
+`EXPO_PUBLIC_SENTRY_DSN` is never inlined into a native build — `initSentry()`
+returns `false` and every helper is a no-op. The DSN reaches the web build alone,
+through Cloudflare Pages.
+
+Ruled: **`POST /api/client-error` first**, because it is OTA-deliverable and
+reaches installs already in the field. `@sentry/react-native` folded into the
+next native build.
+
+---
+
+## PRACTICE — 2026-09-04 — a warning written beside an unnoticed instance of itself
+
+The same day as the fix, `#399` rewrote the exact line that was broken, to add a
+different header to it, and attached this:
+
+```python
+# X-Request-Id IS ON THIS LIST BECAUSE A HEADER THE PREFLIGHT DOES NOT
+# ALLOW IS A REQUEST THE BROWSER REFUSES TO SEND AT ALL. Same shape as the
+# expose_headers trap below, one direction earlier: ship the correlation
+# id without this line and the web build silently stops making the request
+# instead of silently making it without the header.
+allow_headers=["Authorization", "Content-Type", "Accept",
+               CLIENT_REQUEST_ID_HEADER],
+```
+
+The hazard is stated precisely, in the right place, by someone who had clearly
+just reasoned it through. `X-Client-Version` had been shipping on every request
+for seven days, from the file two lines above the one being edited, and was not
+added.
+
+### Why the comment did not help
+
+Because it is written in the **prospective** voice. It explains what would happen
+if *this* header were omitted — a hypothetical about the change in hand. It
+never asks the retrospective question the same reasoning implies: *what else is
+already on the wire that is not on this list?*
+
+Understanding a failure mode makes you careful about the instance you are
+holding. It does not, on its own, make you enumerate the others. The two are
+different acts, and the first feels enough like diligence to substitute for the
+second.
+
+### What replaces it
+
+Not a better comment. A comment cannot enumerate, and a second reader of that
+comment would have had exactly the same thought and made exactly the same
+omission.
+
+`backend/tests/test_cors_allows_every_client_header.py` derives the header set
+from the client source and asserts a real preflight against a real route. The
+audit is performed by something that cannot be satisfied by having understood it.
+
+**Where a comment explains a hazard that has a checkable form, the check is the
+deliverable and the comment is the commit message.**
+
+---
+
 ## PRACTICE — 2026-09-04 — a test that pins a LITERAL can hold the defect in place
 
 Not "source pins are brittle", which is a style opinion. This is a claim about
