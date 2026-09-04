@@ -76,7 +76,11 @@ const STAMP_NAME = '.stamp';
 //       but the viewer HTML on disk has to be rewritten for the probe code to
 //       exist at all, so the stamp has to move or a device that already staged
 //       `2` would keep serving a viewer with no probe in it and report nothing.
-const VIEWER_VERSION = '3';
+//   4 — the probe's second round: Blocker A's second half (can the worker
+//       SOURCE be read at all) and the two MBTiles prerequisites. Bumped
+//       rather than reused because a device that already staged `3` would
+//       report the first round's measurements and silently omit these.
+const VIEWER_VERSION = '4';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -317,6 +321,119 @@ const VIEWER_SCRIPT = [
   '      try { if (u) URL.revokeObjectURL(u); } catch (e2) {}',
   '      finish();',
   '    }',
+  '  }',
+  '',
+  // ── BLOCKER A, SECOND HALF: CAN THE SCRIPT TEXT BE OBTAINED AT ALL ─────
+  //
+  // The blob trick above proves a Worker can be CONSTRUCTED. It says nothing
+  // about whether we can get pdf.worker.min.js into a string to put in the
+  // Blob — and that is a separate restriction that kills the same plan one
+  // step earlier. The worker bundle is staged in documentDirectory, so the
+  // text has to be read off a file:// path first.
+  //
+  // XHR AND fetch ARE MEASURED SEPARATELY AND THAT IS THE POINT. `fetch()` on
+  // a file:// URL is blocked outright in Chromium; XMLHttpRequest is not, and
+  // is what `allowFileAccessFromFileURLs` grants — it is how `readBytes`
+  // already pulls 30 MB of PDF off disk on this very page. So the expected
+  // answer is xhr:true / fetch:false, and if that is what comes back then the
+  // constructor half above is the only real question. Assuming it would be a
+  // guess, and the two failures have completely different fixes.
+  //
+  // IF XHR FAILS TOO, the text has to come across the React Native bridge as a
+  // string — 1.1 MB of JavaScript marshalled through injectedJavaScript rather
+  // than read from disk. Different plumbing, its own cost, and this is the
+  // measurement that says whether it is needed.
+  '  function probeWorkerSource(done){',
+  '    if (!PROBE) { if (done) done(); return; }',
+  '    var out = { path: "' + WORKER_NAME + '", xhr: false, xhrBytes: 0, xhrMs: null,',
+  '                xhrError: "", fetchSupported: (typeof fetch === "function"),',
+  '                fetch: false, fetchMs: null, fetchError: "" };',
+  '    var pending = 2;',
+  '    function step(){ pending--; if (pending <= 0) { probePost("workersrc", out); if (done) done(); } }',
+  '    var t0 = pnow();',
+  '    try {',
+  '      var x = new XMLHttpRequest();',
+  '      x.open("GET", "' + WORKER_NAME + '", true);',
+  '      x.onload = function(){',
+  '        var t = x.responseText || "";',
+  '        out.xhr = t.length > 0;',
+  '        out.xhrBytes = t.length;',
+  '        out.xhrMs = r1(pnow() - t0);',
+  '        step();',
+  '      };',
+  '      x.onerror = function(){ out.xhrError = "xhr-blocked"; step(); };',
+  '      x.send(null);',
+  '    } catch (e) { out.xhrError = "throw:" + String(e); step(); }',
+  '    if (typeof fetch !== "function") { out.fetchError = "no-fetch"; step(); }',
+  '    else {',
+  '      var f0 = pnow();',
+  '      try {',
+  '        fetch("' + WORKER_NAME + '").then(function(res){ return res.text(); })',
+  '          .then(function(t){ out.fetch = !!(t && t.length); out.fetchMs = r1(pnow() - f0); step(); })',
+  '          ["catch"](function(e){ out.fetchError = "rejected:" + String((e && (e.message || e)) || "unknown"); step(); });',
+  '      } catch (e) { out.fetchError = "throw:" + String(e); step(); }',
+  '    }',
+  '  }',
+  '',
+  // ── THE MBTiles PREREQUISITES ──────────────────────────────────────────
+  //
+  // NOT A PYRAMID DESIGN. If the probe forces server-side tiling, the sync
+  // shape that keeps the manifest flat is one SQLite file per sheet queried in
+  // the page — but sql.js is SQLite compiled to wasm and would be a SECOND
+  // bundled binary in a viewer already carrying 1.5 MB of pdf.js. Two things
+  // have to be true before that is worth costing, and both are cheap to ask
+  // here rather than on a second trip:
+  //
+  //   wasm     does WebAssembly instantiate at all in this System WebView,
+  //            from a file:// page. If not, sql.js is dead and the
+  //            one-file-per-sheet shape goes with it.
+  //   binread  can a staged BINARY file be read as an ArrayBuffer. A .mbtiles
+  //            is a binary blob on disk, and that is exactly the read sql.js
+  //            would have to do. Measured against pdf.worker.min.js — ~1.1 MB,
+  //            already on disk — so the throughput number is real rather than
+  //            a synthetic.
+  //
+  // WHAT IS DELIBERATELY NOT MEASURED: tile-query cost versus a direct object
+  // fetch. That needs sql.js actually present, and bundling a wasm binary to
+  // answer a question gated on a probe that has not run yet is the wrong
+  // order. If these two come back green it is its own small trip.
+  '  function probeWasm(done){',
+  '    if (!PROBE) { if (done) done(); return; }',
+  '    var out = { hasWebAssembly: (typeof WebAssembly !== "undefined"), instantiated: false, ms: null, error: "" };',
+  '    if (!out.hasWebAssembly) { probePost("wasm", out); if (done) done(); return; }',
+  '    try {',
+  // The smallest valid module there is: magic number, version, no sections.
+  '      var bytes = new Uint8Array([0,97,115,109,1,0,0,0]);',
+  '      var t0 = pnow();',
+  '      WebAssembly.instantiate(bytes).then(function(){',
+  '        out.instantiated = true; out.ms = r1(pnow() - t0);',
+  '        probePost("wasm", out); if (done) done();',
+  '      })["catch"](function(e){',
+  '        out.error = String((e && (e.message || e)) || "unknown");',
+  '        probePost("wasm", out); if (done) done();',
+  '      });',
+  '    } catch (e) { out.error = "throw:" + String(e); probePost("wasm", out); if (done) done(); }',
+  '  }',
+  '',
+  '  function probeBinaryRead(done){',
+  '    if (!PROBE) { if (done) done(); return; }',
+  '    var out = { path: "' + WORKER_NAME + '", ok: false, bytes: 0, ms: null, mbPerSec: null, error: "" };',
+  '    var t0 = pnow();',
+  '    try {',
+  '      var x = new XMLHttpRequest();',
+  '      x.open("GET", "' + WORKER_NAME + '", true);',
+  '      x.responseType = "arraybuffer";',
+  '      x.onload = function(){',
+  '        var b = x.response;',
+  '        out.ok = !!(b && b.byteLength);',
+  '        out.bytes = (b && b.byteLength) || 0;',
+  '        out.ms = r1(pnow() - t0);',
+  '        if (out.ok && out.ms > 0) out.mbPerSec = r1((out.bytes / 1048576) / (out.ms / 1000));',
+  '        probePost("binread", out); if (done) done();',
+  '      };',
+  '      x.onerror = function(){ out.error = "xhr-blocked"; probePost("binread", out); if (done) done(); };',
+  '      x.send(null);',
+  '    } catch (e) { out.error = "throw:" + String(e); probePost("binread", out); if (done) done(); }',
   '  }',
   '',
   // ── THE COST OF HAVING NO WORKER, PART ONE ─────────────────────────────
@@ -813,7 +930,15 @@ const VIEWER_SCRIPT = [
   '',
   '  probeEnv();',
   '  probeCanvasLimits();',
+  // THE TWO HALVES OF BLOCKER A, and the two MBTiles prerequisites. All four
+  // are cheap, none touches the document, and running them before the open
+  // rather than in the A/B suite means they still report on a plan that fails
+  // to parse — which is exactly when someone will want to know what this
+  // WebView can and cannot do.
   '  probeBlobWorker(function(){});',
+  '  probeWorkerSource(function(){});',
+  '  probeWasm(function(){});',
+  '  probeBinaryRead(function(){});',
   '  hbStart();',
   '  var ptOpen0 = PROBE ? pnow() : 0;',
   '  readBytes(fileUrl, function(bytes){',

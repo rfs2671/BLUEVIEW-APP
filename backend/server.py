@@ -22022,6 +22022,64 @@ async def get_project_file_thumbnail(
     )
 
 
+@api_router.get(
+    "/projects/{project_id}/files/{file_id}/pages/{page_number}/base",
+    dependencies=[Depends(require_project_access)],
+)
+async def get_project_file_page_base(
+    project_id: str, file_id: str, page_number: int,
+    current_user = Depends(get_current_user),
+):
+    """The 2048px base layer for one page of a plan.
+
+    WHAT IT IS FOR. The viewer rasterises a sheet on the device and takes
+    20-30 seconds to do it. This is the image that sits underneath while that
+    happens — and if the sharp render really does take twenty seconds, this is
+    not a flash before the real thing, it is what the CP is looking at for
+    twenty seconds. Hence 2048px rather than something merely good enough to
+    hide a white flash.
+
+    THE BACKEND ALREADY OUT-RENDERS THE DEVICE BY 4x. An ARCH-E sheet is about
+    12000x9000 in R2 at 250 DPI; the device produces 3000x2250. This endpoint
+    is the first thing that has ever handed any of that to a phone.
+
+    Same auth shape as the thumbnail: project-scoped, record keyed on
+    (file_id, project_id), 404 rather than a placeholder, private cache.
+    """
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="Invalid page number")
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one(
+        {"_id": rec_oid, "project_id": project_id, "is_deleted": {"$ne": True}}
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    page_rec = await db.document_page_index.find_one(
+        {"file_id": str(file_id), "page_number": page_number},
+        {"page_base_r2_key": 1, "page_jpeg_r2_key": 1,
+         "file_id": 1, "page_number": 1},
+    )
+    # A plan that was never indexed has no row. The bottom rung can still
+    # render this page from the source PDF, so hand it the identity it needs
+    # rather than giving up — same reasoning as the thumbnail endpoint.
+    if not page_rec:
+        page_rec = {"file_id": str(file_id), "page_number": page_number}
+
+    data = await _fetch_page_base(page_rec)
+    if not data:
+        raise HTTPException(status_code=404, detail="No base layer available")
+
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
 @api_router.get("/projects/{project_id}/files/{file_id}/content")
 async def stream_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
     """Stream a project file from R2 through the backend.
@@ -37645,17 +37703,38 @@ async def _upload_page_jpeg_to_r2(project_id: str, file_id: str,
 _PLAN_THUMB_MAX_EDGE = 400
 _PLAN_THUMB_QUALITY = 80
 
+# ── THE VIEWER'S BASE LAYER ─────────────────────────────────────────────────
+#
+# THE SECOND DERIVATIVE OF THE SAME ORIGINAL, and the reason the two are
+# defined together: one pipeline, two outputs, and a change to the 250 DPI
+# source moves both.
+#
+# 2048 ON THE LONG EDGE, ruled by the operator. At fit-to-width on a ~1000 CSS
+# px tablet the sheet occupies roughly 2000 device pixels, so 2048 is sharp
+# rather than soft — and that matters more than it sounds, because if pdf.js
+# takes twenty seconds this is not a flash before the real render. It IS what
+# the CP is looking at for twenty seconds.
+#
+# EVERY PAGE, unlike the thumbnail. The thumbnail identifies a FILE in a list,
+# so page one is the whole job. The base layer is what sits under the sharp
+# render of whatever page he is on, so a set is only covered if every sheet has
+# one. ~150-250 KB per sheet, ~25 MB for a hundred-sheet set.
+_PLAN_BASE_MAX_EDGE = 2048
+_PLAN_BASE_QUALITY = 80
 
-def _make_page_thumb_jpeg(jpeg_bytes: bytes) -> Optional[bytes]:
-    """Downscale an already-rendered page JPEG to a list thumbnail.
+
+def _downscale_page_jpeg(jpeg_bytes: bytes, max_edge: int,
+                         quality: int) -> Optional[bytes]:
+    """Downscale an already-rendered page JPEG.
 
     FROM THE RENDERED PAGE, NOT FROM THE PDF. The expensive step — poppler
     rasterising a 36x48 sheet at 250 DPI — has already happened by the time
-    this is called, and re-rendering to get a small copy would pay it twice.
+    this is called, and re-rendering to get a smaller copy would pay it twice.
     This is a resize of bytes already in hand.
 
-    Returns None on any failure. A missing thumbnail is a blank icon, which is
-    what the list shows today, so it must never be able to fail an import.
+    Returns None on any failure. Both callers treat a missing derivative as
+    "fall back to what the screen already does", so this must never be able to
+    fail an import.
     """
     if not jpeg_bytes:
         return None
@@ -37668,18 +37747,30 @@ def _make_page_thumb_jpeg(jpeg_bytes: bytes) -> Optional[bytes]:
             img = img.convert("RGB")
         w, h = img.size
         longest = max(w, h)
-        if longest > _PLAN_THUMB_MAX_EDGE:
-            ratio = _PLAN_THUMB_MAX_EDGE / float(longest)
+        if longest > max_edge:
+            ratio = max_edge / float(longest)
             img = img.resize(
                 (max(1, int(w * ratio)), max(1, int(h * ratio))),
                 Image.LANCZOS,
             )
         buf = _io.BytesIO()
-        img.save(buf, format="JPEG", quality=_PLAN_THUMB_QUALITY, optimize=True)
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
         return buf.getvalue()
     except Exception as e:
-        logger.warning(f"page thumb encode failed: {e}")
+        logger.warning(f"page downscale to {max_edge}px failed: {e}")
         return None
+
+
+def _make_page_thumb_jpeg(jpeg_bytes: bytes) -> Optional[bytes]:
+    """The list thumbnail: 400px long edge."""
+    return _downscale_page_jpeg(
+        jpeg_bytes, _PLAN_THUMB_MAX_EDGE, _PLAN_THUMB_QUALITY)
+
+
+def _make_page_base_jpeg(jpeg_bytes: bytes) -> Optional[bytes]:
+    """The viewer's base layer: 2048px long edge."""
+    return _downscale_page_jpeg(
+        jpeg_bytes, _PLAN_BASE_MAX_EDGE, _PLAN_BASE_QUALITY)
 
 
 async def _upload_page_thumb_to_r2(project_id: str, file_id: str,
@@ -37699,6 +37790,26 @@ async def _upload_page_thumb_to_r2(project_id: str, file_id: str,
         return r2_key
     except Exception as e:
         logger.warning(f"page thumb upload failed {r2_key}: {e}")
+        return ""
+
+
+async def _upload_page_base_to_r2(project_id: str, file_id: str,
+                                  page_number: int, jpeg_bytes: bytes) -> str:
+    """Store the viewer base layer at `plans/{project}/{file}/page_{N}_base.jpg`.
+
+    Same prefix as the full page and the thumbnail, for the same reason: one
+    plan's derivatives live together, so a project purge that sweeps
+    `plans/{project_id}/` takes all three rather than orphaning two of them.
+    """
+    base = await asyncio.to_thread(_make_page_base_jpeg, jpeg_bytes)
+    if not base:
+        return ""
+    r2_key = f"plans/{project_id}/{file_id}/page_{page_number}_base.jpg"
+    try:
+        await asyncio.to_thread(_upload_to_r2, base, r2_key, "image/jpeg")
+        return r2_key
+    except Exception as e:
+        logger.warning(f"page base upload failed {r2_key}: {e}")
         return ""
 
 
@@ -37773,6 +37884,7 @@ async def _index_single_page(
             "embedding":          None,
             "page_jpeg_r2_key":   "",
             "page_thumb_r2_key":  "",
+            "page_base_r2_key":   "",
             "is_spec_page":       True,
         })
         await db.document_page_index.update_one(
@@ -37793,6 +37905,7 @@ async def _index_single_page(
             "embedding":          None,
             "page_jpeg_r2_key":   "",
             "page_thumb_r2_key":  "",
+            "page_base_r2_key":   "",
             "is_spec_page":       False,
         })
         await db.document_page_index.update_one(
@@ -37816,6 +37929,14 @@ async def _index_single_page(
         page_thumb_r2_key = await _upload_page_thumb_to_r2(
             project_id, file_id, page_number, page_image_bytes
         )
+
+    # 1c. THE VIEWER'S BASE LAYER — EVERY PAGE, not just the first. It sits
+    # under the sharp render of whatever sheet the CP is on, so a set is only
+    # covered when every sheet has one. Written here for the same reason as the
+    # thumbnail: this is the one moment the 250 DPI pixels exist in memory.
+    page_base_r2_key = await _upload_page_base_to_r2(
+        project_id, file_id, page_number, page_image_bytes
+    )
 
     # 2. Qwen summary.
     summary_text = ""
@@ -37887,6 +38008,7 @@ async def _index_single_page(
         "embedding":          embedding,
         "page_jpeg_r2_key":   page_jpeg_r2_key,
         "page_thumb_r2_key":  page_thumb_r2_key,
+        "page_base_r2_key":   page_base_r2_key,
         "is_spec_page":       False,
     })
     await db.document_page_index.update_one(
@@ -38528,6 +38650,33 @@ def _classify_plan_question(query: str) -> bool:
     if "?" in low:
         return True
     return False
+
+
+async def _fetch_page_base(page_rec: dict) -> Optional[bytes]:
+    """The viewer's base layer for a page, down the same three rungs the
+    thumbnail uses: the stored 2048px derivative; else the full page JPEG
+    downscaled here; else `_fetch_page_jpeg`'s own re-render from the source
+    PDF.
+
+    THE LADDER IS WHAT MAKES THIS SHIP WITHOUT A BACKFILL. Every v2-indexed
+    plan already has a full page JPEG in R2, so rung two covers the entire
+    existing plan set from the day this deploys, at the cost of one downscale
+    per request until the next reindex writes rung one.
+    """
+    key = page_rec.get("page_base_r2_key")
+    if key and _r2_client and R2_BUCKET_NAME:
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key
+            )
+            return obj["Body"].read()
+        except Exception as e:
+            logger.warning(f"R2 get page base {key} failed: {e}")
+
+    full = await _fetch_page_jpeg(page_rec)
+    if not full:
+        return None
+    return await asyncio.to_thread(_make_page_base_jpeg, full)
 
 
 async def _fetch_page_thumb(page_rec: dict) -> Optional[bytes]:

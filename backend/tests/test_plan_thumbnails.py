@@ -204,5 +204,76 @@ class TheManifestFlagRidesTheFileRow(unittest.TestCase):
         self.assertIn("except Exception", body)
 
 
+class TheBaseLayerIsTheSamePipelineAtADifferentSize(unittest.TestCase):
+    """RULED: 2048px long edge, q80. At fit-to-width on a ~1000 css tablet the
+    sheet occupies ~2000 device px, so 2048 is sharp rather than soft — and if
+    pdf.js takes twenty seconds this is not a flash, it is what the CP looks at
+    for twenty seconds."""
+
+    def test_the_ruled_size(self):
+        import server
+        self.assertEqual(server._PLAN_BASE_MAX_EDGE, 2048)
+        self.assertEqual(server._PLAN_BASE_QUALITY, 80)
+
+    def test_one_downscaler_serves_both_derivatives(self):
+        """Two resize implementations is two to keep in step. The thumbnail and
+        the base layer are one function with two sets of constants."""
+        self.assertIn("def _downscale_page_jpeg(", SRC)
+        for wrapper in ("_make_page_thumb_jpeg", "_make_page_base_jpeg"):
+            i = SRC.index(f"def {wrapper}(")
+            self.assertIn("_downscale_page_jpeg", SRC[i:i + 300])
+
+    def test_the_base_layer_is_written_for_every_page(self):
+        """The thumbnail identifies a FILE, so page one is the whole job. The
+        base layer sits under whatever sheet he is on, so a set is only covered
+        when every sheet has one.
+
+        INDENTATION IS THE ASSERTION, not proximity. The thumbnail's
+        `if page_number == 1:` sits directly above this line, so a
+        preceding-window scan finds it and proves nothing. What distinguishes
+        the two is nesting: the guarded upload is indented inside the `if`, the
+        unguarded one is at the function's own level.
+        """
+        def indent_of(needle):
+            line = next(ln for ln in SRC.splitlines() if needle in ln)
+            return len(line) - len(line.lstrip())
+
+        base = indent_of("page_base_r2_key = await _upload_page_base_to_r2")
+        thumb = indent_of("page_thumb_r2_key = await _upload_page_thumb_to_r2")
+        guard = indent_of("if page_number == 1:")
+        self.assertEqual(base, guard, "the base upload is NOT inside the guard")
+        self.assertGreater(thumb, guard, "the thumb upload IS inside the guard")
+
+    def test_it_produces_a_2048px_image(self):
+        import server
+        from PIL import Image
+        src = TheThumbnailIsMadeFromThePageNotThePdf._page_jpeg(4000, 3000)
+        out = server._make_page_base_jpeg(src)
+        self.assertIsNotNone(out)
+        self.assertEqual(max(Image.open(io.BytesIO(out)).size), 2048)
+
+    def test_the_reader_is_the_same_ladder(self):
+        i = SRC.index("async def _fetch_page_base")
+        body = SRC[i:SRC.index("async def _fetch_page_thumb")]
+        self.assertIn("page_base_r2_key", body)
+        self.assertIn("_fetch_page_jpeg", body)
+        self.assertIn("_make_page_base_jpeg", body)
+        self.assertNotIn("_upload_to_r2", body)
+
+    def test_the_endpoint_is_scoped_and_404s(self):
+        i = SRC.index('"/projects/{project_id}/files/{file_id}/pages/{page_number}/base"')
+        head = SRC[i:i + 200]
+        self.assertIn("require_project_access", head)
+        j = SRC.index("async def get_project_file_page_base")
+        body = SRC[j:j + 2400]
+        self.assertIn('"project_id": project_id', body)
+        self.assertIn("status_code=404", body)
+        self.assertIn("private, max-age=", body)
+
+    def test_a_page_number_below_one_is_refused(self):
+        j = SRC.index("async def get_project_file_page_base")
+        self.assertIn("if page_number < 1:", SRC[j:j + 600])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -184,9 +184,59 @@ try {
 {
   const m = /const VIEWER_VERSION = '(\d+)';/.exec(viewerSrc);
   ok(!!m, 'VIEWER_VERSION is present');
-  ok(m && Number(m[1]) >= 3,
+  ok(m && Number(m[1]) >= 4,
     'VIEWER_VERSION bumped so staged devices re-write viewer.html',
-    m ? `found '${m[1]}', expected >= 3` : '');
+    m ? `found '${m[1]}', expected >= 4` : '');
+}
+
+// ── 9. BLOCKER A HAS TWO HALVES AND BOTH ARE ASKED ───────────────────────
+{
+  // A Worker that can be constructed is useless if its source cannot be read.
+  // These are separate restrictions with completely different fixes, so a
+  // probe that measured only one would send somebody back to the tablet.
+  ok(/function probeBlobWorker\(done\)\{/.test(script),
+    'half (a): the Worker constructor is exercised from a blob: URL');
+  ok(/function probeWorkerSource\(done\)\{/.test(script),
+    'half (b): the worker SOURCE read is measured separately');
+  ok(/probePost\("workersrc"/.test(script), 'the source read reports its own reading');
+  // XHR is what allowFileAccessFromFileURLs grants and what readBytes already
+  // uses; fetch() on file:// is blocked in Chromium. Measuring both is what
+  // turns an assumption into a number.
+  ok(/out\.xhr = t\.length > 0;/.test(script), 'the source read tries XMLHttpRequest');
+  ok(/fetch\("pdf\.worker\.min\.js"\)/.test(script), 'the source read tries fetch() too');
+  ok(script.indexOf('probeWorkerSource(function(){});') > 0,
+    'the source read runs in the startup sequence');
+}
+
+// ── 10. THE MBTiles PREREQUISITES, ASKED BEFORE ANYTHING IS DESIGNED ─────
+{
+  ok(/function probeWasm\(done\)\{/.test(script),
+    'wasm instantiation is measured — sql.js is dead without it');
+  ok(/new Uint8Array\(\[0,97,115,109,1,0,0,0\]\)/.test(script),
+    'the wasm check uses a minimal valid module, not a bundled binary');
+  ok(/function probeBinaryRead\(done\)\{/.test(script),
+    'binary ArrayBuffer read is measured — that is the .mbtiles read');
+  ok(/responseType = "arraybuffer";/.test(script),
+    'the binary read actually asks for an ArrayBuffer');
+  ok(/mbPerSec/.test(script),
+    'the binary read reports throughput, not just success');
+  // Bundling sql.js to answer a question gated on a probe that has not run is
+  // the wrong order. If this branch ever grows a wasm asset, this fails.
+  const assetsDir = path.join(ROOT, 'assets');
+  let wasmAssets = [];
+  try {
+    const walk = (d) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.wasm$/i.test(e.name) || /sql[-.]?wasm/i.test(e.name)) wasmAssets.push(p);
+      }
+    };
+    walk(assetsDir);
+  } catch (_e) { /* no assets dir is fine */ }
+  ok(wasmAssets.length === 0,
+    'no wasm binary has been bundled to answer a question the probe has not asked',
+    wasmAssets.join(', '));
 }
 
 // ── 6. THE SHIPPING RENDER PATH IS UNCHANGED ─────────────────────────────
