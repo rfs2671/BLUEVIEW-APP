@@ -35240,9 +35240,36 @@ async def get_company_roster(current_user=Depends(get_current_user)):
     query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
+    # ── `password: 0` REMOVED, AND THAT WAS THE WHOLE DEFECT ────────────────
+    #
+    # MongoDB REJECTS a projection that mixes an exclusion with inclusions —
+    # `_id` is the only field allowed to be excluded inside an inclusion
+    # projection. So this raised
+    #
+    #   OperationFailure: Cannot do inclusion on field name in exclusion
+    #   projection
+    #
+    # on EVERY call. Not sometimes, not at scale: every call, since the line
+    # was written. The annotation recipient picker has been returning a 500 to
+    # any authenticated user who opened it — 40 events in Sentry over the week
+    # before this fix, still arriving.
+    #
+    # HOW IT SURVIVED. `find_unserved_sorts.py` classifies a projection by
+    # SHAPE and reported this row as "inclusion, base64 excluded" — protected.
+    # docs/audits/followups.md then recorded that classification as fact, and a
+    # later pass deferred the fix as "a riskier edit than adding an index"
+    # WITHOUT CHECKING WHETHER IT WAS ALREADY FAILING. It was, and the evidence
+    # was in Sentry the whole time. A tool that says "protected" must be able
+    # to say protected BY WHAT, and be wrong loudly when the projection is
+    # malformed.
+    #
+    # NOTHING ELSE CHANGES. `password` was already excluded by OMISSION — the
+    # five inclusions below are the only fields the loop reads, so the response
+    # is byte-identical to what this endpoint was written to return. The one
+    # difference is that it now returns it.
     users = await db.users.find(
         query,
-        {"password": 0, "_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1},
+        {"_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1},
     ).sort("name", 1).to_list(500)
     out = []
     for u in users:
