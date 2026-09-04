@@ -102,6 +102,7 @@ import { isOfflineError } from '../../src/utils/offlineState';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { isAffirmedSignature } from '../../src/utils/signatureAffirmed';
 import { useAuth } from '../../src/context/AuthContext';
+import { resolveSignerName } from '../../src/utils/signerName';
 import {
   csLogItems, csItemState, csUnanswered, csItemLabels,
 } from '../../src/utils/superintendentLogModel';
@@ -400,7 +401,28 @@ export default function SiteSuperintendentLog() {
     setArrivedAt((v) => v || nowClock());
   }, []);
 
-  useEffect(() => { if (cpName && !printedName) setPrintedName(cpName); }, [cpName]);
+  // PREFILLED FROM THE SESSION, NOT THE CACHED PROFILE.
+  //
+  // This was `if (cpName && !printedName) setPrintedName(cpName)`. `cpName`
+  // comes from useCpProfile, a cache written AFTER a successful signature — so
+  // it is blank for anyone who has never signed, and on a screen that has
+  // never been signable that is everyone. It would have prefilled for one CP
+  // and left the next man with an empty field on the one control that gates
+  // filing.
+  //
+  // resolveSignerName reads the authenticated session ahead of the profile:
+  // typed > stored draft > session > profile. See src/utils/signerName.js for
+  // why the profile is LAST — on a shared device it is the previous user's
+  // name, and putting that under a licensed signature is the fabrication class
+  // the departure stamp already cost us.
+  //
+  // STILL ONLY A DEFAULT. It never overwrites what he has typed, and the field
+  // stays editable at every step.
+  useEffect(() => {
+    setPrintedName((current) => current || resolveSignerName({
+      typed: current, user, profileName: cpName,
+    }));
+  }, [cpName, user]);
 
   // ── load ────────────────────────────────────────────────────────────────
   //
@@ -859,7 +881,12 @@ export default function SiteSuperintendentLog() {
 
     setSigning(true);
     const data = buildData();
-    const signerName = printedName.trim() || cpName;
+    // ONE RESOLUTION, shared with the pad above — see the `signerName` const
+    // near the render. Kept as a local so the submit cannot drift from what
+    // the signer was shown when he signed.
+    const signerName = resolveSignerName({
+      typed: printedName, user, profileName: cpName,
+    });
 
     // ── THE LOCAL SAVE, BEFORE THE PUSH, AND ITS ANSWER IS NOT DISCARDABLE ──
     //
@@ -1205,6 +1232,13 @@ export default function SiteSuperintendentLog() {
   }, [flushDraft]);
 
   // ── steps ───────────────────────────────────────────────────────────────
+  // WHAT THE PAD SHOWS AND WHAT handleSubmit SENDS ARE THE SAME VALUE.
+  // Two independent expressions here is how a document gets signed under one
+  // name and filed under another.
+  const signerName = resolveSignerName({
+    typed: printedName, user, profileName: cpName,
+  });
+
   const stepPresence = () => (
     <Card s={s}>
       <StepHeaderBase s={s} title={t('presenceHeading')} />
@@ -1400,11 +1434,36 @@ export default function SiteSuperintendentLog() {
         <Card s={s}>
           <StepHeaderBase s={s} title={t('signHeading')} />
           <Text style={s.noteText}>{t('signNote')}</Text>
+          {/* THREE PROP NAMES, NONE OF WHICH THIS COMPONENT DECLARES.
+              This read `value` / `onChange` / `name`. SignaturePad takes
+              `existingSignature` / `onSignatureCapture` / `signerName` /
+              `onNameChange`. React passes unknown props through and the
+              destructure yields undefined, so nothing errored and nothing
+              worked:
+
+                value={signerName || ''}                 -> always ''
+                onChangeText={(t) => onNameChange && onNameChange(t)}  -> no-op
+
+              A controlled input whose value is a constant and whose handler is
+              undefined: every keystroke discarded, field re-renders empty.
+              That is the "will not accept typing" report, and it is ONE defect
+              with the blank, not two.
+
+              AND onSignatureCapture WAS UNDEFINED TOO, so the signature could
+              never be captured either. The pad was fully inert and Sign and
+              Freeze was unreachable.
+
+              BLAST RADIUS, MEASURED: db.logbooks holds ZERO documents of
+              log_type "site_superintendent_log". This statutory log has never
+              been filed by anyone since launch, and three misspelled prop
+              names are the reason. */}
           <SignaturePad
             pinned
-            value={cpSignature}
-            onChange={setCpSignature}
-            name={printedName || cpName}
+            title={t('signHeading')}
+            signerName={signerName}
+            onNameChange={setPrintedName}
+            existingSignature={cpSignature}
+            onSignatureCapture={setCpSignature}
           />
         </Card>
       </>
