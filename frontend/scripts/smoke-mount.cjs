@@ -26,8 +26,11 @@
  * Exits 1 on the first route that errors, 0 if every route mounts clean.
  */
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -47,6 +50,99 @@ if (process.argv.includes('--help')) {
 const DIST = path.resolve(arg('dist', 'dist'));
 const PORT = Number(arg('port', 5810));
 const THEMES = arg('theme', 'both') === 'both' ? ['light', 'dark'] : [arg('theme', 'both')];
+
+// ── THE API IS A REAL ORIGIN, NOT AN INTERCEPTED ONE ─────────────────────
+//
+// This job used to answer every API call with `page.route(...).fulfill()` and
+// a header block containing `Access-Control-Allow-Headers: '*'`. It had an
+// `if (method === 'OPTIONS')` branch, so it read as though it covered CORS.
+//
+// IT NEVER RAN. Playwright's route interception short-circuits BEFORE the
+// browser issues a preflight: with interception on, the handler is asked for
+// GET and the preflight does not happen at all. Measured, not assumed --
+// handler saw ["GET"], the origin server saw []; with interception off the
+// same page produced ["OPTIONS /api/probe", "GET /api/probe"]. The OPTIONS
+// branch was dead code from the day it was written, and the '*' in it was
+// never sent to anything.
+//
+// That is what cost seven days. X-Client-Version shipped on every request from
+// 2026-08-28 and was missing from allow_headers, so the real server answered
+// `400 Disallowed CORS headers` and Chrome refused to send the request at all
+// -- every endpoint, including auth/login. Native sends no Origin and gets no
+// preflight; /api/version is a simple GET and needs none; the post-deploy
+// login check speaks urllib. This job is the only thing in CI that runs the
+// real web bundle in a real browser, and it had removed the browser's CORS
+// machinery from the picture entirely. It reported 37/37 clean while the web
+// app could not sign in.
+//
+// So the stub is now a REAL HTTPS ORIGIN. Chromium resolves the hostname the
+// production bundle is built against to a local server
+// (--host-resolver-rules), which answers preflights from server.py's OWN
+// allow_headers list. The browser does real CORS against it: a header the real
+// server would refuse is refused here, the request is blocked, and the console
+// error that follows is already a mount failure to this job.
+const REPO = path.join(__dirname, '..', '..');
+const SERVER_PY = path.join(REPO, 'backend', 'server.py');
+const API_HOST = 'api.levelog.com';
+const API_PORT = Number(arg('api-port', 5899));
+
+function serverAllowHeaders() {
+  const src = fs.readFileSync(SERVER_PY, 'utf8');
+  const block = src.match(/allow_headers=\[([^\]]*)\]/);
+  if (!block) throw new Error(`no allow_headers=[...] found in ${SERVER_PY}`);
+  // Entries are string literals or module constants (CLIENT_REQUEST_ID_HEADER,
+  // CLIENT_VERSION_HEADER). Resolve the constants out of the same file.
+  const consts = {};
+  for (const m of src.matchAll(/^([A-Z][A-Z0-9_]*)\s*=\s*["']([A-Za-z0-9-]+)["']/gm)) consts[m[1]] = m[2];
+  const names = [];
+  for (const raw of block[1].split(',')) {
+    const tok = raw.replace(/#.*$/, '').trim();
+    if (!tok) continue;
+    const lit = tok.match(/^["']([A-Za-z0-9-]+)["']$/);
+    if (lit) { names.push(lit[1]); continue; }
+    if (consts[tok]) { names.push(consts[tok]); continue; }
+    // NEVER FALL BACK TO PERMISSIVE. An entry this cannot resolve means the
+    // derivation has rotted, and a stub that guesses wide is the original bug.
+    throw new Error(`unresolved entry in allow_headers: ${tok} — add it to the resolver, do not widen the stub`);
+  }
+  if (!names.length) throw new Error('allow_headers parsed to an empty list');
+  return names;
+}
+
+// Starlette unions the fetch-spec safelist onto whatever is configured, so the
+// real preflight response carries these too.
+const SAFELISTED = ['Accept', 'Accept-Language', 'Content-Language', 'Content-Type'];
+const ALLOW_HEADERS = [...new Set([...SAFELISTED, ...serverAllowHeaders()])].sort();
+const ALLOW_SET = new Set(ALLOW_HEADERS.map((h) => h.toLowerCase()));
+
+// A throwaway cert for a hostname we are impersonating locally. Chromium is
+// launched with --ignore-certificate-errors, so this only has to exist.
+function selfSignedCert() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-tls-'));
+  const key = path.join(dir, 'k.pem');
+  const crt = path.join(dir, 'c.pem');
+  try {
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', key, '-out', crt, '-days', '1',
+      '-subj', `/CN=${API_HOST}`, '-addext', `subjectAltName=DNS:${API_HOST}`],
+      { stdio: 'ignore' });
+  } catch (e) {
+    // LOUD, NOT PERMISSIVE. Falling back to route interception here would
+    // silently restore the blind spot this whole change exists to remove.
+    throw new Error('openssl is required to serve the local API origin: ' + e.message);
+  }
+  return { key: fs.readFileSync(key), cert: fs.readFileSync(crt), dir };
+}
+
+// STRICTNESS THAT IS NEVER EXERCISED IS THE SAME BUG IN A DIFFERENT HAT — the
+// counter below is what caught the dead OPTIONS branch. The run fails if it
+// never saw a preflight.
+const seen = { preflights: 0, refused: [] };
+
+// What the API answers depends on which route is mounting (the gate tablet
+// sees a different /auth/me; a filed route needs the filed by-project read).
+// Pages are driven strictly one at a time, so a single mutable cell is enough.
+const current = { me: null, filed: null };
 
 if (!fs.existsSync(path.join(DIST, 'index.html'))) {
   console.error(`✗ no index.html in ${DIST} — run: npx expo export --platform web --output-dir ${DIST}`);
@@ -283,35 +379,59 @@ const SITE_USER = { ...USER, id: 'sd1', email: 'site@test.local', full_name: 'Ga
 const siteRoute = (r) => r === '/site' || r.startsWith('/site/');
 
 // Every API call resolves to a benign shape. The point is mounting, not data.
-function stub(page, me = USER, filed = null) {
-  return page.route('**://api.levelog.com/**', (route) => {
-    const url = route.request().url();
-    const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*', 'Content-Type': 'application/json' };
-    if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors, body: '' });
-    let body = {};
-    if (url.includes('/api/auth/me')) body = me;
-    else if (url.includes('feature-flags')) body = { flags: {} };
-    else if (url.includes('dob-summary')) body = { by_project: {}, totals: {} };
-    // BEFORE the generic /api/projects match below, which would otherwise
-    // swallow this literal path and hand back an ARRAY — the screen reads
-    // `.items` off it, gets undefined, and renders "Nothing pending deletion".
-    // That mounts green while executing none of the retention branches.
-    else if (url.includes('/api/projects/pending-deletion')) body = PENDING_DELETION;
-    else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
-    else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
-    else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;
-    else if (url.match(/\/api\/workers(\?|$)/)) body = [WORKER];
-    // THE FILED READS, BEFORE the generic /logbooks match below — which would
-    // otherwise swallow them and hand back [], mounting the UNFILED branch and
-    // reporting green while executing none of the filed view.
-    else if (/\/api\/logbooks\/lb2(\?|$)/.test(url)) body = FILED_TOOLBOX;
-    else if (/\/api\/logbooks\/lb[0-9]+(\?|$)/.test(url)) body = FILED_DAILY;
-    else if (filed && /\/api\/logbooks\/project\//.test(url)) {
-      body = filed === 'toolbox_talk' ? [FILED_TOOLBOX] : [FILED_DAILY];
+// Served over real HTTPS from the hostname the bundle was built against, so
+// the browser performs real CORS against it — see the block above.
+function apiHandler(req, res) {
+  const url = req.url || '/';
+  const origin = req.headers.origin || '*';
+  const cors = { 'Access-Control-Allow-Origin': origin, 'Vary': 'Origin', 'Content-Type': 'application/json' };
+  const me = current.me || USER;
+  const filed = current.filed;
+  if (req.method === 'OPTIONS') {
+    seen.preflights += 1;
+    const asked = (req.headers['access-control-request-headers'] || '')
+      .split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+    const refused = asked.filter((h) => !ALLOW_SET.has(h));
+    if (refused.length) {
+      // EXACTLY WHAT STARLETTE SENDS: 400, and no Access-Control-Allow-Headers.
+      // Chrome then blocks the real request and logs a CORS error, which this
+      // job already treats as a mount failure.
+      refused.forEach((h) => { if (!seen.refused.includes(h)) seen.refused.push(h); });
+      res.writeHead(400, { 'Access-Control-Allow-Origin': origin, 'Content-Type': 'text/plain' });
+      return res.end('Disallowed CORS headers');
     }
-    else if (/\/(logbooks|checkins|nfc|site-devices|documents|reports|notifications|annotations|admins|companies)/.test(url)) body = [];
-    return route.fulfill({ status: 200, headers: cors, body: JSON.stringify(body) });
-  });
+    res.writeHead(204, {
+      ...cors,
+      'Access-Control-Allow-Headers': ALLOW_HEADERS.join(', '),
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+      'Access-Control-Max-Age': '600',
+    });
+    return res.end();
+  }
+  let body = {};
+  if (url.includes('/api/auth/me')) body = me;
+  else if (url.includes('feature-flags')) body = { flags: {} };
+  else if (url.includes('dob-summary')) body = { by_project: {}, totals: {} };
+  // BEFORE the generic /api/projects match below, which would otherwise
+  // swallow this literal path and hand back an ARRAY — the screen reads
+  // `.items` off it, gets undefined, and renders "Nothing pending deletion".
+  // That mounts green while executing none of the retention branches.
+  else if (url.includes('/api/projects/pending-deletion')) body = PENDING_DELETION;
+  else if (url.match(/\/api\/projects\/p1(\?|$)/)) body = PROJECT;
+  else if (url.match(/\/api\/projects(\?|\/|$)/)) body = [PROJECT];
+  else if (url.match(/\/api\/workers\/w1(\?|$)/)) body = WORKER;
+  else if (url.match(/\/api\/workers(\?|$)/)) body = [WORKER];
+  // THE FILED READS, BEFORE the generic /logbooks match below — which would
+  // otherwise swallow them and hand back [], mounting the UNFILED branch and
+  // reporting green while executing none of the filed view.
+  else if (/\/api\/logbooks\/lb2(\?|$)/.test(url)) body = FILED_TOOLBOX;
+  else if (/\/api\/logbooks\/lb[0-9]+(\?|$)/.test(url)) body = FILED_DAILY;
+  else if (filed && /\/api\/logbooks\/project\//.test(url)) {
+    body = filed === 'toolbox_talk' ? [FILED_TOOLBOX] : [FILED_DAILY];
+  }
+  else if (/\/(logbooks|checkins|nfc|site-devices|documents|reports|notifications|annotations|admins|companies)/.test(url)) body = [];
+  res.writeHead(200, cors);
+  res.end(JSON.stringify(body));
 }
 
 // Console noise that is not a mount failure. Keep this list SHORT and specific —
@@ -328,7 +448,22 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
 
 (async () => {
   await new Promise((r) => server.listen(PORT, r));
-  const launch = { headless: true, args: ['--no-sandbox'] };
+
+  // The API, as a real origin on the real hostname. --host-resolver-rules
+  // points Chromium's DNS at it; --ignore-certificate-errors accepts the
+  // throwaway cert. Nothing is intercepted, so the browser preflights for real.
+  const tls = selfSignedCert();
+  const apiServer = https.createServer({ key: tls.key, cert: tls.cert }, apiHandler);
+  await new Promise((r) => apiServer.listen(API_PORT, '127.0.0.1', r));
+
+  const launch = {
+    headless: true,
+    args: [
+      '--no-sandbox',
+      `--host-resolver-rules=MAP ${API_HOST} 127.0.0.1:${API_PORT}`,
+      '--ignore-certificate-errors',
+    ],
+  };
   if (process.env.CHROME) launch.executablePath = process.env.CHROME;
   const browser = await chromium.launch(launch);
 
@@ -352,8 +487,8 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
       // The route says whether this mount is of a FILED log; the stub answers
       // the by-project read accordingly. Without it every logbook route mounts
       // an empty editable day and the filed view is never executed.
-      const filed = (route.match(/[?&]filed=([a-z_]+)/) || [])[1] || null;
-      await stub(page, me, filed);
+      current.filed = (route.match(/[?&]filed=([a-z_]+)/) || [])[1] || null;
+      current.me = me;
       const errors = [];
       page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
       page.on('console', (m) => {
@@ -391,8 +526,19 @@ const ignored = (t) => IGNORE.some((re) => re.test(t));
 
   await browser.close();
   server.close();
+  apiServer.close();
 
   console.log(`\n${checked - failures.length}/${checked} route-mounts clean`);
+  console.log(`preflights answered from server.py allow_headers: ${seen.preflights}`
+    + ` [${ALLOW_HEADERS.join(', ')}]`);
+  if (seen.refused.length) console.log(`refused, as the server would: ${seen.refused.join(', ')}`);
+  if (!seen.preflights) {
+    console.log('\n\u2717 NOT ONE PREFLIGHT was intercepted, so the CORS half of'
+      + ' this job proved nothing this run. Either the client stopped sending a'
+      + ' non-safelisted header, or route interception stopped surfacing OPTIONS.'
+      + ' Do not widen the stub to make this pass.');
+    process.exit(1);
+  }
   if (failures.length) {
     console.log(`\n${failures.length} FAILED:`);
     failures.forEach((f) => console.log(`  [${f.theme}] ${f.route}`));
