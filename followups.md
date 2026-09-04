@@ -2,6 +2,44 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MEDIUM] A COMMIT DATE IS NOT A DEPLOY DATE. Second time in one day, from
+  opposite directions.**
+  Counting the closed PREDATES_MARKING set, the boundary was taken from #362's
+  COMMIT date (2026-09-02). Seven `signature_events` fall between that date and
+  the actual deploy, so the count reported seven rows apparently written after
+  provenance shipped — which reads as **"the set is still growing"** when it was
+  closed at 252.
+
+  The real boundary is the earliest row that CARRIES the key: **2026-09-03
+  11:35:19**, a full day after the commit. Partitioned there, the count after is
+  zero, which is the true answer.
+
+  **THE RULE.** A date from git says when code was WRITTEN. Production behaviour
+  changes when it is DEPLOYED, and that gap has been over 24 hours on this
+  project. Any query splitting production data on "before/after a change" must
+  take its boundary from the DATA — the first row exhibiting the new behaviour —
+  or from `/api/version`, never from `git log`.
+
+  Same confusion as the acceptance test earlier the same day, from the other
+  direction. Twice in one day makes it a class, not a slip.
+
+- **[REFERENCE] The tile-pyramid closure now stands on measured bytes.**
+  588 Thomas, 2026-09-04: 157 stored `page_N.jpg` objects, sources 9000x6000 at
+  250 DPI, **median 2.9 MB, total 428.8 MB**.
+
+  A 768px pyramid's L0 re-encodes those same pixels as ~192 tiles per sheet, and
+  tiled JPEG is LESS efficient than one image (per-tile headers, no cross-tile
+  prediction) — so 5-8 MB per sheet, roughly **1 GB for this project's 164
+  sheets**, against 100.5 MB of PDFs already resident. Under the fully-resident
+  ruling that is a 10x footprint on the devices least able to carry it, and the
+  pyramid is closed on that arithmetic rather than on an estimate. Recorded so
+  the closure need not be re-derived, and so it can be re-opened honestly if the
+  probe changes what the device has to do.
+
+  Measured derivatives of the same sources: 2048px q80 median **236 KB**
+  (37.7 MB for 164 pages, +37.5% on the PDFs — the ruled size, confirmed);
+  1536px q80 median 145 KB; 400px q80 median 13 KB (2.1 MB for the set).
+
 - **[LOW] `_render_dpi_for`'s `"d-"` token fires on one sheet in 164, and that
   one is a false positive. Measured 2026-09-04 — leave it, but know what it is.**
   The heuristic picks 300 DPI over the 250 DPI default when a FILENAME contains
@@ -80,28 +118,72 @@ Known gaps and deferred work, newest first.
   today always carries the key. **252 is final.** Recorded here so an audit
   never has to recompute it.
 
-- **[LOW] Seven of 588 Thomas's 164 indexed pages have NO `page_jpeg_r2_key`,
-  despite all 164 being `index_version: 2`.**
-  Measured 2026-09-04. Coverage is **157/164**, not 164/164.
+- **[REFERENCE] The seven 588 Thomas pages with no `page_jpeg_r2_key` are
+  SPECIFICATION PAGES, skipped on purpose. Corrected 2026-09-04 — the entry
+  that stood here called them failed writes and was wrong.**
 
-      AR - 3.28.25.pdf   p6, p10
-      SP - 6.24.26.pdf   p1
-      ST - 7.29.26.pdf   p2, p3
-      (2 more whose file_id no longer resolves to a project_files record)
+  All seven carry `is_spec_page: True` and `sheet_title: '[SPECIFICATION
+  PAGE]'`, with no summary, no embedding and no page text. `_index_one_page`
+  classifies a page as a spec sheet when its extracted text is BOTH long
+  (>5000 chars) and paragraph-shaped (mean non-empty line >=40 chars), writes
+  `page_jpeg_r2_key: ""` deliberately, and returns before rendering anything —
+  a wall of specification text is worth nothing to a vision model, so the
+  render is skipped rather than wasted.
 
-  A v2 row with an empty key means `_upload_page_jpeg_to_r2` failed for that
-  page and the indexer carried on — which it is right to do. It matters because
-  every reader that wants a page image treats the key as the fast path: the
-  thumbnail and base-layer ladders both bottom out on re-rendering the source
-  PDF, so these seven pages pay a full poppler render of a large sheet on every
-  request, with no cache.
+      AR - 3.28.25.pdf  p6, p10
+      SP - 6.24.26.pdf  p1
+      ST - 7.29.26.pdf  p2, p3   (plus two rows on an orphaned file, below)
 
-  Two of the seven are worse than slow: their `file_id` does not resolve to any
-  `project_files` record, so even the fallback has nothing to render FROM.
-  Those are orphaned index rows.
+  **SO THE COVERAGE FIGURE IS 157/157 OF THE PAGES THAT HAVE DRAWINGS ON
+  THEM**, not 157/164 of something that should have been 164. A re-index would
+  reclassify them identically and cost a full re-render of three files to
+  change nothing.
 
-  Same remedy as the 20 `index_version: 1` pages — a re-index — and the same
-  priority: scheduled, not urgent. But note this project IS live, unlike those.
+  **ONE REAL CONSEQUENCE, AND IT IS ON A LIVE PROJECT.** `SP - 6.24.26.pdf` is
+  a spec page at PAGE 1 — the page the plan list takes its thumbnail from. It
+  has no stored image, so `_fetch_page_thumb` falls to its bottom rung and
+  re-renders the source PDF at 250 DPI on **every request**, uncached, to make
+  a thumbnail of a page of text. One file today; any spec-first PDF lands in
+  the same place.
+
+  Two ways out, neither built: have the thumbnail endpoint recognise
+  `is_spec_page` and 404 at once (the list already renders "no thumbnail"
+  correctly, and a picture of a specification identifies nothing), or render a
+  thumbnail for spec pages even though the VLM does not want one. The first is
+  cheaper and says something true.
+
+  The manifest `t` flag is CORRECTLY ABSENT for all seven: the spec branch
+  returns before the thumbnail upload, so `page_thumb_r2_key` is never set and
+  the prefetch never queues a thumbnail that cannot exist.
+
+- **[MEDIUM] 44 orphaned `document_page_index` rows across 8 file_ids, holding
+  74.6 MB of R2 objects no live record points at.**
+  Measured 2026-09-04. A `project_files` row was removed and its index rows and
+  rendered page images were left behind. The earlier count of "two" was taken
+  from the missing-key pages alone and undercounted by 42.
+
+  | file name | index rows |
+  |---|---|
+  | `AR - 3.28.25.pdf` | 26 (588 Thomas) |
+  | `MH - 4.16.25 (3).pdf`, `SP%20-%203.26.25%20(2).pdf` | 13 (other projects) |
+  | `final_e2e.pdf`, `levelog_upload_test.pdf`, `levelog_upload_valid.pdf`, `presigned_test.pdf`, `test_warning_modal.pdf` | 5 (test uploads) |
+
+  24 of the 44 rows carry a `page_jpeg_r2_key` whose object **still exists** —
+  74.6 MB. Nothing references them: the file is gone from `project_files`, so
+  the plan list cannot show it and `_fetch_page_jpeg`'s fallback has no source
+  to re-render from. A request for one of those pages 404s.
+
+  **THEY ARE NOT INERT.** The plan-query pipeline searches
+  `document_page_index`, so a WhatsApp or AI answer can still cite a sheet from
+  a deleted file and offer a page image the endpoint will 404 on — a confident
+  answer about a document nobody can open.
+
+  Note `SP%20-%203.26.25%20(2).pdf`: a URL-ENCODED filename stored as a name,
+  which is its own small finding about whatever wrote it.
+
+  **Not swept.** Removing index rows is a write against production, and this
+  codebase's deletion rule is that nothing goes without a named owner and a
+  keep-set. Recorded so the number is known.
 
 - **[LOW] Two folder-grouping implementations now exist, and the kiosk keeping
   its own was a decision, not drift.**
