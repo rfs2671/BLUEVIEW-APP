@@ -398,7 +398,7 @@ never be built.
 
 `dob_logs_summary_dedup` was suspected of having been created by hand rather
 than by the code that intended it — a divergence between what the code declares
-and what production runs. It is not. `server.py:42989` creates it at indent 4
+and what production runs. It is not. `server.py:44463` creates it at indent 4
 inside `startup_event`, unconditionally, on every boot. Recorded because the
 suspicion was reasonable and the answer is worth not re-deriving: an index
 present in production AND declared unconditionally in startup code is the system
@@ -595,10 +595,18 @@ index, and the entry did not know it.**
 
 Re-running `find_unserved_sorts.py` on `effd24dc` gives:
 
+> **Line numbers below were RE-MEASURED at `cf4e8f00` and were wrong before
+> that.** The entry rebased clean onto six commits of `main` and every citation
+> in it silently moved — `get_company_roster` by 391 lines, the failing sort by
+> 4,221, and one function ceased to exist. A clean rebase preserves text, not
+> references. This is the same defect the LOCATION-for-a-STRUCTURE entry above
+> describes, committed by the file that describes it; the durable fix is to cite
+> the symbol and let the number be a hint.
+
 | where | function | sort | status today |
 |---|---|---|---|
-| `server.py:15429` | `get_workers` | `name:1` | defused by `WORKER_LIST_FIELDS` (inclusion) |
-| `server.py:34837` | `get_company_roster` | `name:1` | **claims a projection it does not have — see below** |
+| `server.py:15527` | `get_workers` | `name:1` | defused by `WORKER_LIST_FIELDS` (inclusion) |
+| `server.py:35228` | `get_company_roster` | `name:1` | **claims a projection it does not have — see below** |
 | ~~`get_logbook_notifications` (`unaffirmed_docs`)~~ | | `date:-1` | **SERVED** by `logbooks_project_status_date` |
 | ~~`get_logbook_notifications` (`inkless_filed_docs`)~~ | | `date:-1` | **SERVED** by `logbooks_project_status_date` |
 
@@ -608,7 +616,7 @@ two.** The two struck rows are genuinely indexed and need nothing.
 ### AND THE SWEEP NOW NAMES A TIER-1 ROW THIS ENTRY NEVER HAD
 
     users  sort {name: 1}
-        server.py:8448  get_admin_users()  [paginated_query()]
+        server.py:8498  get_admin_users()  [paginated_query()]
         projection:    exclusion of ['password'] — base64 still carried
         3 index(es) declared on `users`, none serves this sort
 
@@ -618,15 +626,17 @@ what the two defused rows do. The broad call passes no `company_id`, so nothing
 pins an index key, and **the broad call is the big one.** This is the same shape
 as the two 500s, live, today, with no projection standing in front of it.
 
-`get_subcontractors()` at `server.py:8721` has the identical
-`exclusion of ['password']` shape and is rated SLOW ONLY for one reason: nothing
-stores base64 on `subcontractors` yet. One inline blob added to that collection
-promotes it to tier 1 with no change at the call site.
+~~`get_subcontractors()` at `server.py:8721`~~ **— GONE. The function no longer
+exists.** It was one of the five dead subcontractor routes removed in #404, so
+the tier-1 promotion this paragraph warned about can no longer happen: deleting
+an unreachable handler also deleted an unserved sort nobody had noticed it
+carried. Kept struck rather than dropped, because the shape it described is the
+one `get_admin_users` still has.
 
 ### Correction - `get_company_roster` is not protected, and may not run at all
 
 The sweep classified this row as protected by an inclusion projection. It is not.
-The projection at `server.py:34839` reads:
+The projection at `server.py:35239` reads:
 
 ```python
 {"password": 0, "_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1}
@@ -659,7 +669,7 @@ a repeat of it.
 
 `get_logbook_notifications` is still worth reading, for a different reason than
 this entry first gave. **The same function holds three `date:-1` sorts and they
-are not equally safe.** `stale_unsigned_docs` at `server.py:25070` projects
+are not equally safe.** `stale_unsigned_docs` at `server.py:25337` projects
 `cp_signature: 1` INTO the sorted set; the two beside it project only
 `{log_type, date}`. All three are served by `logbooks_project_status_date` today,
 so none is at risk — but anyone reading that handler for a pattern to copy will
@@ -693,7 +703,7 @@ inspector on site, and it returned a clean green.
 The site device could not show submitted logbooks. Railway named the cause
 exactly: `GET /api/logbooks/project/{id}/submitted` returning 500 with
 `OperationFailure ... Sort exceeded memory limit of 33554432 bytes` (code 292,
-`QueryExceededMemoryLimitNoDiskUseAllowed`) at `server.py:26372`. The sort field
+`QueryExceededMemoryLimitNoDiskUseAllowed`) at `server.py:30593`. The sort field
 sat outside any index prefix, the documents carry inline base64, and the matched
 set had simply grown past 32MB. Creating
 `{project_id:1, status:1, date:-1}` restored it with no deploy.
