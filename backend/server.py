@@ -25953,7 +25953,22 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             e = enrollment_map.get(eid)
             if not e:
                 continue
-            name = (e.get("worker_name") or "").strip()
+            # NULLISH TAKES THE PATH A BLANK NAME ALREADY TAKES.
+            #
+            # `"null"` is not blank. It is four characters, it survives
+            # `.strip()`, and `_norm_key` casefolds it to the string "null" —
+            # a LIVE DEDUPE KEY. Two different men whose cards could not be
+            # read both key as ("null", <company>) and the second is dropped
+            # as a duplicate of the first. That is the opposite failure from
+            # the case-variance one recorded beside it: "null" COLLAPSES
+            # distinct workers, case variance SPLITS one.
+            #
+            # NOT A NEW POLICY FOR AN UNNAMED ROW. Each pass keeps whatever it
+            # already does with a blank name — pass 3 skips one outright
+            # (`or not name: continue`), the others let it form a key. This
+            # only stops a token that means "nothing was read" from behaving
+            # like a name. See lib/ocr_text.py.
+            name = norm_ocr_str(e.get("worker_name")) or ""
             company = _worker_company(e.get("sub_name"))
             name_key = (_norm_key(name), _norm_key(company))
             seen_name_keys.add(name_key)
@@ -26089,7 +26104,10 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             _collapsed += 1
             continue          # same id, already emitted by an earlier pass
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
-        name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
+        # Same rule as the first pass: a token meaning "nothing was
+        # read" must not be a dedupe key. See lib/ocr_text.py.
+        name = norm_ocr_str(c.get("worker_name")
+                            or (worker.get("name") if worker else "")) or ""
         company = _worker_company(c.get("worker_company"),
                                  worker.get("company") if worker else None)
         name_key = (_norm_key(name), _norm_key(company))
@@ -26218,7 +26236,9 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             # pass 2 had already emitted for the same man.
             _collapsed += 1
             continue
-        name = (a.get("worker_name") or "").strip()
+        # Same rule as the first pass: a token meaning "nothing was
+        # read" must not be a dedupe key. See lib/ocr_text.py.
+        name = norm_ocr_str(a.get("worker_name")) or ""
         company = _worker_company(a.get("worker_company"))
         name_key = (_norm_key(name), _norm_key(company))
         if name_key in seen_name_keys:
@@ -26354,7 +26374,9 @@ async def get_project_daily_headcount(
         async for e in db.worker_enrollments.find({"_id": {"$in": oids}}):
             sub = _worker_company(e.get("sub_name"))
             trade = (e.get("trade") or "").strip()
-            name = (e.get("worker_name") or "").strip()
+            # Same rule as the first pass: a token meaning "nothing was
+            # read" must not be a dedupe key. See lib/ocr_text.py.
+            name = norm_ocr_str(e.get("worker_name")) or ""
             worker_key = (name.lower(), sub.lower())
             if worker_key in seen_workers:
                 continue
@@ -26379,7 +26401,10 @@ async def get_project_daily_headcount(
     for c in legacy:
         wid = c.get("worker_id")
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
-        name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
+        # Same rule as the first pass: a token meaning "nothing was
+        # read" must not be a dedupe key. See lib/ocr_text.py.
+        name = norm_ocr_str(c.get("worker_name")
+                            or (worker.get("name") if worker else "")) or ""
         company = _worker_company(c.get("worker_company"),
                                  worker.get("company") if worker else None)
         trade = (c.get("worker_trade") or (worker.get("trade") if worker else "") or "").strip()
