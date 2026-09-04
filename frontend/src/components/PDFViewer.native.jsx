@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform } from 'react-native';
+import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform, Share } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
@@ -15,6 +15,7 @@ function documentKeyFor(file) {
 }
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { spacing } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { ensurePdfJsViewer, localViewerUrlFor, pdfJsViewerDir } from '../utils/pdfjsViewer';
@@ -73,14 +74,17 @@ async function nativePdfUri(rawUrl, file) {
  *                             null and the caller keeps the error state rather
  *                             than reaching for a viewer we do not host.
  */
-function webViewSourceForPdf(pdfUrl, localViewerUri) {
+function webViewSourceForPdf(pdfUrl, localViewerUri, probeOn) {
   if (Platform.OS === 'ios') {
-    // PDFKit via WKWebView: smooth native zoom/scroll.
+    // PDFKit via WKWebView: smooth native zoom/scroll. THE PROBE DOES NOT
+    // APPLY HERE and cannot: there is no pdf.js on iOS, no canvas we size, and
+    // no JS context of ours in the page. Everything the probe measures is a
+    // property of the Android viewer.
     return { uri: pdfUrl };
   }
   // No staged viewer yet -> caller keeps showing the loader / error.
   if (!isLocalFileUri(pdfUrl) || !localViewerUri) return null;
-  return { uri: localViewerUrlFor(localViewerUri, pdfUrl) };
+  return { uri: localViewerUrlFor(localViewerUri, pdfUrl, { probe: probeOn }) };
 }
 
 export default function PDFViewer({ visible, file, projectId, onClose }) {
@@ -109,9 +113,28 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // input, annotation taps) don't create a new object reference and force a
   // WebView reload. Without this, every pinch-zoom-induced re-render dropped
   // the user back to page 1.
+  // ── THE RENDER-COST PROBE, GATED PER USER ───────────────────────────────
+  //
+  // `pdf_viewer_probe` is resolved by the existing feature-flag service, so it
+  // is turned on for ONE signed-in operator by adding his user id to that
+  // flag's `enabled_for_users` — no build, no source constant, and nobody
+  // else's viewer changes. useFeatureFlag fails closed while the flag map is
+  // still loading, which is the behaviour we want: a probe that switched on
+  // mid-session would remount the WebView.
+  const probeOn = useFeatureFlag('pdf_viewer_probe');
+  const probeLines = useRef([]);
+
+  // Memoize the WebView source so unrelated state updates (note sheet, reply
+  // input, annotation taps) don't create a new object reference and force a
+  // WebView reload. Without this, every pinch-zoom-induced re-render dropped
+  // the user back to page 1.
+  //
+  // `probeOn` IS A DEPENDENCY and has to be: it changes the url. It resolves
+  // once per session before a document is opened, so in practice it never
+  // moves while a viewer is mounted.
   const webViewSource = useMemo(
-    () => (url ? webViewSourceForPdf(url, localViewerUri) : null),
-    [url, localViewerUri]
+    () => (url ? webViewSourceForPdf(url, localViewerUri, probeOn) : null),
+    [url, localViewerUri, probeOn]
   );
 
   const isLocalPdf = isLocalFileUri(url);
@@ -351,6 +374,24 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               <ExternalLink size={20} strokeWidth={1.5} color="#fff" />
             </Pressable>
           )}
+          {/* PROBE ONLY. Renders for nobody but a user the flag names, and its
+              single job is to get the run off the device without adb. */}
+          {probeOn && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Share PDF probe measurements"
+              onPress={() => {
+                const body = probeLines.current.join('\n');
+                Share.share({
+                  title: 'PDF viewer probe',
+                  message: body || '[pdfprobe] no readings captured',
+                }).catch(() => {});
+              }}
+              style={[styles.iconBtn, { backgroundColor: '#7c3aed' }]}
+            >
+              <Download size={20} strokeWidth={1.5} color="#fff" />
+            </Pressable>
+          )}
         </View>
 
         {loading && (
@@ -442,6 +483,26 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 onMessage: (e) => {
                   let msg = null;
                   try { msg = JSON.parse(e?.nativeEvent?.data || '{}'); } catch (_err) { return; }
+                  // ── PROBE READINGS ────────────────────────────────────
+                  //
+                  // Kept in a ref AND logged. The log is for a machine with
+                  // adb attached; the ref is for the far more likely case —
+                  // the operator holding the tablet, who taps Share and sends
+                  // the whole run to himself. A measurement nobody can get off
+                  // the device is a trip wasted.
+                  if (msg?.type === 'pdf-probe') {
+                    const line = `[pdfprobe] ${msg.probe} ${JSON.stringify(msg.data)}`;
+                    console.log(line);
+                    try {
+                      probeLines.current.push(line);
+                      // A run is bounded — env/limits/caps once, a handful of
+                      // pages, one A/B suite. This cap only catches a pathology
+                      // (a 200-sheet set scrolled end to end) and stops the ref
+                      // growing without limit on a screen the CP leaves open.
+                      if (probeLines.current.length > 400) probeLines.current.shift();
+                    } catch (_e) {}
+                    return;
+                  }
                   if (msg?.type === 'pdf-error') {
                     console.warn('Offline PDF viewer error:', msg.code, msg.detail);
                     setErrorHint(

@@ -224,8 +224,29 @@ async function main() {
     const keep = await load(d).collectKeepNames();
     ok(keep.has('a1.1.pdf'), 'reads id');
     ok(keep.has('a2.4.pdf'), 'and _id');
-    ok(keep.size === 2,
+    ok(keep.has('a1.1.jpg') && keep.has('a2.4.jpg'),
+      'and every extension the cache can write, for each');
+
+    // ─────────────────────────────────────────────────────────────────────
+    // THE SUBJECT, ASSERTED DIRECTLY, BECAUSE A TOTAL IS NOT THIS SUBJECT.
+    //
+    // This read `keep.size === 2`. The claim is "a row with no identifier
+    // contributes nothing", and a size only shows that while EVERY row happens
+    // to contribute exactly one name. It stopped showing it the day
+    // CACHE_EXTS made each row contribute a .pdf AND a .jpg — a change to a
+    // different dimension entirely, which moved the number without touching
+    // the property. Bumping the 2 to a 4 would have restored the green and
+    // kept the defect: the assertion would still be pinning an arithmetic
+    // coincidence rather than the absence it is named for.
+    //
+    // So assert the absence. The keep-set must name exactly the two rows that
+    // HAVE identifiers, whatever number of names that turns out to be.
+    // ─────────────────────────────────────────────────────────────────────
+    const idsKept = new Set([...keep].map((n) => n.split('.')[0]));
+    ok(idsKept.size === 2 && idsKept.has('a1') && idsKept.has('a2'),
       'and skips a row with no identifier rather than inventing one');
+    ok(![...keep].some((n) => /undefined|null|NaN/.test(n)),
+      'and invents no name from a missing id');
 
     const empty = await load(makeDevice({ lists: {} })).collectKeepNames();
     ok(empty === null, 'NULL, not an empty Set, when there is no basis to delete');

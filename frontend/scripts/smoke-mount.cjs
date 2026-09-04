@@ -191,6 +191,18 @@ const ROUTES = [
   '/projects',                          // ProjectsTable
   '/project/p1',                        // project detail — CompliancePanel, DefconHeader
   '/project/p1/dob-logs',               // DOB compliance
+  // ── THE PLAN LIST ────────────────────────────────────────────────────────
+  //
+  // Nothing in CI executed this screen, and it is the one the CP spends his
+  // day in: it owns the file listing, the folder grouping and the PDF viewer
+  // it launches. It earned a route the moment its rows started rendering an
+  // <Image> per plan — a thumbnail component that throws takes the whole list
+  // with it, and every static gate here would still be green.
+  '/projects/p1/files',
+  // The capability read. It mounts a WebView and drives it, so an import or a
+  // style it gets wrong is a screen the operator finds broken on the tablet he
+  // took to site — which is the one place this instrument has to work.
+  '/admin/device-capabilities',
   '/workers',
   '/workers/w1',                        // worker detail — cert/OSHA expiry
   '/logbooks',

@@ -21436,6 +21436,45 @@ async def get_project_manifest(
                 "e": _manifest_ext(rec.get("name") or dropbox_path),
             })
 
+        # ── THUMBNAILS RIDE THE FILE ROWS, NOT A SECTION OF THEIR OWN ──────
+        #
+        # A parallel `thumbnails` section would need its own copy of the site
+        # device's visibility filter, and this file already carries the note
+        # about what that costs: "a direct upload the listing shows but the
+        # manifest omits would render on screen and never reach the offline
+        # store". Two filters is one divergence away from a device that syncs
+        # thumbnails for plans it may not open. Hanging a flag on the row that
+        # has ALREADY passed the filter cannot drift.
+        #
+        # `t: 1` means page one has a thumbnail to fetch from
+        # GET /projects/{pid}/files/{fid}/thumbnail. It is a FLAG, not a url:
+        # the device builds that url from the id it already has, and a row that
+        # carried one would put an authenticated endpoint into a cached
+        # document.
+        #
+        # ONE QUERY FOR THE PAGE, bounded by `limit`, projected to two fields.
+        # Absent for a plan that was never indexed, which is honest — the
+        # endpoint's bottom rung may still produce one by rendering the source
+        # PDF, and a device that skips it loses a thumbnail, never a document.
+        if file_rows:
+            try:
+                _thumb_ids = set()
+                async for _p in db.document_page_index.find(
+                    {"file_id": {"$in": [r["id"] for r in file_rows]},
+                     "page_number": 1},
+                    {"file_id": 1, "page_thumb_r2_key": 1},
+                ):
+                    if _p.get("page_thumb_r2_key"):
+                        _thumb_ids.add(str(_p.get("file_id")))
+                for _r in file_rows:
+                    if _r["id"] in _thumb_ids:
+                        _r["t"] = 1
+            except Exception as _e:
+                # A manifest that fails is a device that syncs nothing. A
+                # thumbnail flag is not worth that, so this degrades to "no
+                # thumbnails known" and the rest of the manifest stands.
+                logger.warning(f"manifest thumbnail flags failed: {_e!r}")
+
     # ── submitted logbooks ─────────────────────────────────────────────────
     #
     # SUBMITTED ONLY. A draft is not a filed record and must never be pulled
@@ -22194,6 +22233,156 @@ async def debug_upload_log(current_user=Depends(get_current_user)):
             for r in rows
         ],
     }
+
+
+@api_router.get(
+    "/projects/{project_id}/files/{file_id}/thumbnail",
+    dependencies=[Depends(require_project_access)],
+)
+async def get_project_file_thumbnail(
+    project_id: str, file_id: str, current_user = Depends(get_current_user),
+):
+    """Page one of a plan, small enough for a list row.
+
+    WHY THIS EXISTS. The plan list draws a blank document icon, so identifying
+    a sheet costs the CP a 20-30 second open — and picking the wrong one costs
+    it twice. The pixels have existed all along: the indexer renders every page
+    at 250 DPI and stores it in R2 for the VLM, and until now nothing served
+    one to a phone.
+
+    SCOPED BY THE PROJECT, NOT BY THE FILE ID ALONE. `require_project_access`
+    is the same gate the manifest and the listing use, and the record lookup is
+    keyed on (file_id, project_id) so a file id from another project 404s
+    rather than resolving. A thumbnail is a picture of a plan sheet; it is as
+    confidential as the plan.
+
+    404, NEVER A PLACEHOLDER IMAGE. A grey rectangle served with 200 is
+    indistinguishable to the client from a real thumbnail of a blank sheet, and
+    the list already has a correct rendering for "no thumbnail" — the icon it
+    draws today. Saying so plainly lets the client keep using it.
+    """
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one(
+        {"_id": rec_oid, "project_id": project_id, "is_deleted": {"$ne": True}}
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    page_rec = await db.document_page_index.find_one(
+        {"file_id": str(file_id), "page_number": 1},
+        {"page_thumb_r2_key": 1, "page_jpeg_r2_key": 1, "is_spec_page": 1,
+         "file_id": 1, "page_number": 1},
+    )
+
+    # ── A SPECIFICATION PAGE HAS NO THUMBNAIL AND NEVER WILL ───────────────
+    #
+    # `_index_one_page` classifies a page as a spec sheet when its text is both
+    # long and paragraph-shaped, writes `page_jpeg_r2_key: ""` on purpose and
+    # returns WITHOUT rendering — a wall of specification text is worth nothing
+    # to a vision model.
+    #
+    # Without this, such a page falls all the way down `_fetch_page_thumb`'s
+    # ladder to the bottom rung and RE-RENDERS THE SOURCE PDF at 250 DPI, on
+    # every request, uncached, to produce a picture of a page of text. On
+    # 588 Thomas `SP - 6.24.26.pdf` is exactly this: a spec page at page one,
+    # which is the page the plan list takes its thumbnail from.
+    #
+    # 404 IS THE CORRECT ANSWER, NOT A DEGRADED ONE. The list already renders
+    # "no thumbnail" — it is the icon every row wore last week — and a picture
+    # of a specification identifies nothing. The fallback was doing expensive
+    # work to produce a worse result than doing nothing.
+    if page_rec and page_rec.get("is_spec_page") is True:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
+    # A plan that was never indexed has no row at all. `_fetch_page_thumb`'s
+    # bottom rung can still render page 1 from the source PDF, so hand it the
+    # identity it needs rather than giving up here — that is the difference
+    # between "thumbnails work once the indexer has caught up" and "thumbnails
+    # work".
+    if not page_rec:
+        page_rec = {"file_id": str(file_id), "page_number": 1}
+
+    data = await _fetch_page_thumb(page_rec)
+    if not data:
+        raise HTTPException(status_code=404, detail="No thumbnail available")
+
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        # Immutable in practice: the key encodes the file id, and a replaced
+        # plan is a new record with a new id. `private` because this is a
+        # picture of a plan sheet and must not sit in a shared cache.
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@api_router.get(
+    "/projects/{project_id}/files/{file_id}/pages/{page_number}/base",
+    dependencies=[Depends(require_project_access)],
+)
+async def get_project_file_page_base(
+    project_id: str, file_id: str, page_number: int,
+    current_user = Depends(get_current_user),
+):
+    """The 2048px base layer for one page of a plan.
+
+    WHAT IT IS FOR. The viewer rasterises a sheet on the device and takes
+    20-30 seconds to do it. This is the image that sits underneath while that
+    happens — and if the sharp render really does take twenty seconds, this is
+    not a flash before the real thing, it is what the CP is looking at for
+    twenty seconds. Hence 2048px rather than something merely good enough to
+    hide a white flash.
+
+    THE BACKEND ALREADY OUT-RENDERS THE DEVICE BY 4x. An ARCH-E sheet is about
+    12000x9000 in R2 at 250 DPI; the device produces 3000x2250. This endpoint
+    is the first thing that has ever handed any of that to a phone.
+
+    Same auth shape as the thumbnail: project-scoped, record keyed on
+    (file_id, project_id), 404 rather than a placeholder, private cache.
+    """
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="Invalid page number")
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one(
+        {"_id": rec_oid, "project_id": project_id, "is_deleted": {"$ne": True}}
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    page_rec = await db.document_page_index.find_one(
+        {"file_id": str(file_id), "page_number": page_number},
+        {"page_base_r2_key": 1, "page_jpeg_r2_key": 1, "is_spec_page": 1,
+         "file_id": 1, "page_number": 1},
+    )
+
+    # THE SAME LADDER, SO THE SAME FALLBACK, SO THE SAME REFUSAL.
+    # `_fetch_page_base` falls through to `_fetch_page_jpeg`, which re-renders
+    # from the source PDF — so a spec page would pay a full poppler render here
+    # too, for a base layer under a sheet the viewer is about to draw as text
+    # anyway. The viewer treats a missing base layer the way it always has:
+    # pdf.js renders the page and there is simply nothing underneath it first.
+    if page_rec and page_rec.get("is_spec_page") is True:
+        raise HTTPException(status_code=404, detail="No base layer available")
+    # A plan that was never indexed has no row. The bottom rung can still
+    # render this page from the source PDF, so hand it the identity it needs
+    # rather than giving up — same reasoning as the thumbnail endpoint.
+    if not page_rec:
+        page_rec = {"file_id": str(file_id), "page_number": page_number}
+
+    data = await _fetch_page_base(page_rec)
+    if not data:
+        raise HTTPException(status_code=404, detail="No base layer available")
+
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @api_router.get("/projects/{project_id}/files/{file_id}/content")
@@ -37845,6 +38034,136 @@ async def _upload_page_jpeg_to_r2(project_id: str, file_id: str,
         return ""
 
 
+# ── THE SHEET, SMALL ENOUGH TO PUT IN A LIST ────────────────────────────────
+#
+# THE PLAN LIST SHOWS A BLANK DOCUMENT ICON, so the only way to find out which
+# sheet a row is is to open it — and opening costs the CP 20-30 seconds. A
+# thumbnail is the cheapest possible fix for that, and the pixels for it have
+# existed all along: the indexer already renders every page at 250 DPI and
+# stores it in R2 for the VLM. Nothing has ever served one to a phone.
+#
+# 400px LONG EDGE / QUALITY 80, taken from lib/photo_enhance (THUMB_MAX_EDGE,
+# THUMB_QUALITY) rather than picked afresh. The app already renders 400px
+# thumbnails for logbook photos through that path; a second, slightly different
+# thumbnail convention is two conventions to keep in step.
+#
+# THIS IS NOT THE VIEWER'S BASE LAYER. A two-layer viewer wants roughly
+# viewport width (1200-3000px), not 400 — same 250 DPI original, a different
+# derivative. That size is deliberately NOT decided here: it depends on whether
+# the viewer keeps rendering PDFs on-device at all, which is an open ruling.
+_PLAN_THUMB_MAX_EDGE = 400
+_PLAN_THUMB_QUALITY = 80
+
+# ── THE VIEWER'S BASE LAYER ─────────────────────────────────────────────────
+#
+# THE SECOND DERIVATIVE OF THE SAME ORIGINAL, and the reason the two are
+# defined together: one pipeline, two outputs, and a change to the 250 DPI
+# source moves both.
+#
+# 2048 ON THE LONG EDGE, ruled by the operator. At fit-to-width on a ~1000 CSS
+# px tablet the sheet occupies roughly 2000 device pixels, so 2048 is sharp
+# rather than soft — and that matters more than it sounds, because if pdf.js
+# takes twenty seconds this is not a flash before the real render. It IS what
+# the CP is looking at for twenty seconds.
+#
+# EVERY PAGE, unlike the thumbnail. The thumbnail identifies a FILE in a list,
+# so page one is the whole job. The base layer is what sits under the sharp
+# render of whatever page he is on, so a set is only covered if every sheet has
+# one. ~150-250 KB per sheet, ~25 MB for a hundred-sheet set.
+_PLAN_BASE_MAX_EDGE = 2048
+_PLAN_BASE_QUALITY = 80
+
+
+def _downscale_page_jpeg(jpeg_bytes: bytes, max_edge: int,
+                         quality: int) -> Optional[bytes]:
+    """Downscale an already-rendered page JPEG.
+
+    FROM THE RENDERED PAGE, NOT FROM THE PDF. The expensive step — poppler
+    rasterising a 36x48 sheet at 250 DPI — has already happened by the time
+    this is called, and re-rendering to get a smaller copy would pay it twice.
+    This is a resize of bytes already in hand.
+
+    Returns None on any failure. Both callers treat a missing derivative as
+    "fall back to what the screen already does", so this must never be able to
+    fail an import.
+    """
+    if not jpeg_bytes:
+        return None
+    try:
+        from PIL import Image
+        import io as _io
+        img = Image.open(_io.BytesIO(jpeg_bytes))
+        img.load()
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_edge:
+            ratio = max_edge / float(longest)
+            img = img.resize(
+                (max(1, int(w * ratio)), max(1, int(h * ratio))),
+                Image.LANCZOS,
+            )
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"page downscale to {max_edge}px failed: {e}")
+        return None
+
+
+def _make_page_thumb_jpeg(jpeg_bytes: bytes) -> Optional[bytes]:
+    """The list thumbnail: 400px long edge."""
+    return _downscale_page_jpeg(
+        jpeg_bytes, _PLAN_THUMB_MAX_EDGE, _PLAN_THUMB_QUALITY)
+
+
+def _make_page_base_jpeg(jpeg_bytes: bytes) -> Optional[bytes]:
+    """The viewer's base layer: 2048px long edge."""
+    return _downscale_page_jpeg(
+        jpeg_bytes, _PLAN_BASE_MAX_EDGE, _PLAN_BASE_QUALITY)
+
+
+async def _upload_page_thumb_to_r2(project_id: str, file_id: str,
+                                   page_number: int, jpeg_bytes: bytes) -> str:
+    """Store the list thumbnail at `plans/{project_id}/{file_id}/page_{N}_thumb.jpg`.
+
+    Same prefix as the full page deliberately: one plan's derivatives live
+    together, so a project purge that sweeps `plans/{project_id}/` takes the
+    thumbnails with it rather than orphaning them in a second location.
+    """
+    thumb = await asyncio.to_thread(_make_page_thumb_jpeg, jpeg_bytes)
+    if not thumb:
+        return ""
+    r2_key = f"plans/{project_id}/{file_id}/page_{page_number}_thumb.jpg"
+    try:
+        await asyncio.to_thread(_upload_to_r2, thumb, r2_key, "image/jpeg")
+        return r2_key
+    except Exception as e:
+        logger.warning(f"page thumb upload failed {r2_key}: {e}")
+        return ""
+
+
+async def _upload_page_base_to_r2(project_id: str, file_id: str,
+                                  page_number: int, jpeg_bytes: bytes) -> str:
+    """Store the viewer base layer at `plans/{project}/{file}/page_{N}_base.jpg`.
+
+    Same prefix as the full page and the thumbnail, for the same reason: one
+    plan's derivatives live together, so a project purge that sweeps
+    `plans/{project_id}/` takes all three rather than orphaning two of them.
+    """
+    base = await asyncio.to_thread(_make_page_base_jpeg, jpeg_bytes)
+    if not base:
+        return ""
+    r2_key = f"plans/{project_id}/{file_id}/page_{page_number}_base.jpg"
+    try:
+        await asyncio.to_thread(_upload_to_r2, base, r2_key, "image/jpeg")
+        return r2_key
+    except Exception as e:
+        logger.warning(f"page base upload failed {r2_key}: {e}")
+        return ""
+
+
 def _is_sheet_number_query(s: str) -> bool:
     """Heuristic: does this token look like a sheet id (A-301, ME-401)?"""
     if not s:
@@ -37915,6 +38234,8 @@ async def _index_single_page(
             "notes":              None,
             "embedding":          None,
             "page_jpeg_r2_key":   "",
+            "page_thumb_r2_key":  "",
+            "page_base_r2_key":   "",
             "is_spec_page":       True,
         })
         await db.document_page_index.update_one(
@@ -37934,6 +38255,8 @@ async def _index_single_page(
             "summary":            "",
             "embedding":          None,
             "page_jpeg_r2_key":   "",
+            "page_thumb_r2_key":  "",
+            "page_base_r2_key":   "",
             "is_spec_page":       False,
         })
         await db.document_page_index.update_one(
@@ -37945,6 +38268,24 @@ async def _index_single_page(
 
     # 1. Upload per-page JPEG to R2 (used at query time so we don't re-render).
     page_jpeg_r2_key = await _upload_page_jpeg_to_r2(
+        project_id, file_id, page_number, page_image_bytes
+    )
+
+    # 1b. PAGE ONE ONLY. The list needs one image per FILE, not per page, and
+    # a thumbnail for sheet 147 of a 200-sheet set is storage nobody reads.
+    # Written here because this is the one moment the rendered pixels exist in
+    # memory — anywhere later and it is a second 250 DPI rasterise.
+    page_thumb_r2_key = ""
+    if page_number == 1:
+        page_thumb_r2_key = await _upload_page_thumb_to_r2(
+            project_id, file_id, page_number, page_image_bytes
+        )
+
+    # 1c. THE VIEWER'S BASE LAYER — EVERY PAGE, not just the first. It sits
+    # under the sharp render of whatever sheet the CP is on, so a set is only
+    # covered when every sheet has one. Written here for the same reason as the
+    # thumbnail: this is the one moment the 250 DPI pixels exist in memory.
+    page_base_r2_key = await _upload_page_base_to_r2(
         project_id, file_id, page_number, page_image_bytes
     )
 
@@ -38017,6 +38358,8 @@ async def _index_single_page(
         "notes":              parsed.get("notes"),
         "embedding":          embedding,
         "page_jpeg_r2_key":   page_jpeg_r2_key,
+        "page_thumb_r2_key":  page_thumb_r2_key,
+        "page_base_r2_key":   page_base_r2_key,
         "is_spec_page":       False,
     })
     await db.document_page_index.update_one(
@@ -38658,6 +39001,67 @@ def _classify_plan_question(query: str) -> bool:
     if "?" in low:
         return True
     return False
+
+
+async def _fetch_page_base(page_rec: dict) -> Optional[bytes]:
+    """The viewer's base layer for a page, down the same three rungs the
+    thumbnail uses: the stored 2048px derivative; else the full page JPEG
+    downscaled here; else `_fetch_page_jpeg`'s own re-render from the source
+    PDF.
+
+    THE LADDER IS WHAT MAKES THIS SHIP WITHOUT A BACKFILL. Every v2-indexed
+    plan already has a full page JPEG in R2, so rung two covers the entire
+    existing plan set from the day this deploys, at the cost of one downscale
+    per request until the next reindex writes rung one.
+    """
+    key = page_rec.get("page_base_r2_key")
+    if key and _r2_client and R2_BUCKET_NAME:
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key
+            )
+            return obj["Body"].read()
+        except Exception as e:
+            logger.warning(f"R2 get page base {key} failed: {e}")
+
+    full = await _fetch_page_jpeg(page_rec)
+    if not full:
+        return None
+    return await asyncio.to_thread(_make_page_base_jpeg, full)
+
+
+async def _fetch_page_thumb(page_rec: dict) -> Optional[bytes]:
+    """The list thumbnail for a page, down three rungs.
+
+    A LADDER, NOT A LOOKUP, because the plan set on the live project predates
+    this field and a blank icon is the thing being fixed:
+
+      1. `page_thumb_r2_key`  — written at import since this change
+      2. the full `page_jpeg_r2_key`, resized here — every v2-indexed page has
+         one, so every plan indexed before this change still gets a thumbnail
+         without a backfill, at the cost of one resize per request
+      3. `_fetch_page_jpeg`'s own fallback, which re-renders from the source
+         PDF — the only rung that touches poppler, and the only one a plan that
+         was never indexed at all can reach
+
+    Rung 2 is deliberately not cached back into R2 here. A GET that writes is a
+    GET that can fail in a new way, and the same bytes are one `reindex` away
+    from being written by the path that owns them.
+    """
+    key = page_rec.get("page_thumb_r2_key")
+    if key and _r2_client and R2_BUCKET_NAME:
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key
+            )
+            return obj["Body"].read()
+        except Exception as e:
+            logger.warning(f"R2 get page thumb {key} failed: {e}")
+
+    full = await _fetch_page_jpeg(page_rec)
+    if not full:
+        return None
+    return await asyncio.to_thread(_make_page_thumb_jpeg, full)
 
 
 async def _fetch_page_jpeg(page_rec: dict) -> Optional[bytes]:

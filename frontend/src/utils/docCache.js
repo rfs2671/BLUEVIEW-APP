@@ -358,7 +358,19 @@ function addRecordNames(keep, rec) {
   for (const v of versions) {
     // Extension is not on the record, so keep every extension this cache
     // can produce for that id+version rather than guessing one.
-    keep.add(safeName(id, v, 'pdf'));
+    //
+    // THIS COMMENT DESCRIBED AN INTENT THE CODE DID NOT IMPLEMENT. It said
+    // "every extension" and added exactly one, which was harmless for as long
+    // as `pdf` was the only thing this cache wrote — and became a deletion bug
+    // the moment plan thumbnails started writing `.jpg`. A thumbnail's name
+    // would not be in the keep-set, so the NEXT sweep from any screen would
+    // delete every one, and the plan list would go back to blank icons with
+    // nothing to explain why.
+    //
+    // The set is now real. Anything this cache can write has to be in it, or
+    // the sweep removes it: that is the contract, and CACHE_EXTS is the one
+    // place it is stated.
+    for (const ext of CACHE_EXTS) keep.add(safeName(id, v, ext));
   }
 }
 
@@ -405,6 +417,22 @@ export async function collectKeepNames() {
 
 /** `{id}.{version}.{ext}` -> true. A name this cache did not write is left
  *  alone; we only remove what we can prove we created. */
+/**
+ * EVERY EXTENSION THIS CACHE CAN WRITE.
+ *
+ * The keep-set is built from list RECORDS, which carry an id and a version but
+ * no extension — so the sweep has to enumerate what a given id could be stored
+ * as. Anything written with an extension missing from this set is deleted by
+ * the next sweep from any screen.
+ *
+ *   pdf   plans, project documents, rendered logbook reports
+ *   jpg   plan page-one thumbnails (see the manifest's `t` flag)
+ *
+ * ADD TO THIS BEFORE WRITING A NEW EXTENSION, never after. The failure is not
+ * an error, it is a file that quietly stops existing.
+ */
+export const CACHE_EXTS = Object.freeze(['pdf', 'jpg']);
+
 const SWEEPABLE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/;
 
 /**

@@ -259,12 +259,19 @@ const FOREGROUND_INTERVAL_MS = 5 * 60 * 1000;
  * downloaded. The wire shape is compact; the stored shape is docCache's.
  */
 function toStoredRow(row) {
-  return {
+  const stored = {
     id: String(row.id),
     cache_version: row.v === undefined || row.v === null ? 0 : row.v,
     s: row.s || 0,
     e: row.e || '',
   };
+  // `t` ONLY WHEN THE SERVER SAID SO, and omitted otherwise rather than stored
+  // as 0. Every row on the device pays for every field, and the flag is true
+  // for a minority of them; an explicit falsy value would add a byte to each
+  // of ten thousand rows to say nothing. Absent already means "no thumbnail
+  // known", which is exactly what the download path tests for.
+  if (row.t === 1) stored.t = 1;
+  return stored;
 }
 
 const rowKey = (r) => `${r.id}|${String(r.cache_version)}`;
@@ -646,6 +653,8 @@ export async function fetchManifest(projectId, opts = {}) {
 const fileContentPath = (projectId, id) =>
   `/api/projects/${projectId}/files/${id}/content`;
 const logbookPdfPath = (id) => `/api/reports/logbook/${id}/pdf`;
+const fileThumbPath = (projectId, id) =>
+  `/api/projects/${projectId}/files/${id}/thumbnail`;
 
 // ONE RUN AT A TIME. A reconnect that lands on a foreground event fires both
 // triggers together, and a second run on top of the first would double every
@@ -743,6 +752,37 @@ export async function syncSiteManifest(projectId, opts = {}) {
       ...[...nextLogs].reverse().map((r) => ({ ...r, url: logbookPdfPath(r.id) })),
     ].filter((r) => !onDisk.has(cachedDocName(r.id, r.cache_version)));
 
+    // ── PAGE ONE OF EACH PLAN, SO A SHEET CAN BE IDENTIFIED WITHOUT SIGNAL ──
+    //
+    // The manifest's `t` flag was written by the server and read by NOTHING —
+    // a signal produced correctly, carried correctly, and consumed nowhere.
+    // This is what it was written to gate.
+    //
+    // WHY IT IS NOT OPTIONAL UNDER THE RESIDENT RULING. The plan list draws a
+    // blank icon per row until a thumbnail arrives over the network. Offline,
+    // that is every row — so an admin in a basement can open a sheet but
+    // cannot tell WHICH sheet to open, which is the problem thumbnails exist
+    // to solve, reappearing exactly where it matters most.
+    //
+    // A SEPARATE LIST, DELIBERATELY, AND THE BUDGET IS THE REASON. `s` on the
+    // row is the PDF's size and says nothing about a thumbnail; folding these
+    // into `wanted` would have the space budget count a 30 MB plan twice and
+    // skip real sheets to make room for an image of a few kilobytes. They are
+    // ~400px JPEGs — roughly half a megabyte for a 164-sheet set against
+    // 100 MB of plans — so they ride AFTER the budget, on the same principle
+    // the reserve already covers logbook PDFs that have no size either.
+    //
+    // ONLY WHERE THE SERVER SAYS ONE EXISTS. `t !== 1` means the page was
+    // never indexed, or indexed by v1: the endpoint would fall back to
+    // rendering the source PDF, and a device is the wrong place to trigger
+    // that. An absent thumbnail is a blank icon, which is what the row already
+    // draws.
+    const wantedThumbs = nextFiles
+      .filter((r) => r.t === 1
+        && DOWNLOADABLE.has(String(r.e || '').toLowerCase())
+        && !onDisk.has(cachedDocName(r.id, r.cache_version, 'jpg')))
+      .map((r) => ({ ...r, url: fileThumbPath(projectId, r.id) }));
+
     // REFUSE BEFORE STARTING, rather than dying on file 9 with a half-filled
     // tablet and no way to know which half.
     //
@@ -833,7 +873,29 @@ export async function syncSiteManifest(projectId, opts = {}) {
       if (got) downloaded += 1;
     }
 
+    // ── THUMBNAILS LAST, AND THEY COUNT SEPARATELY ─────────────────────────
+    //
+    // AFTER the sheets, because a device interrupted halfway should hold
+    // documents it can open rather than pictures of documents it cannot. And
+    // counted apart from `downloaded` so the fraction readiness reports stays
+    // a fraction of RECORDS: mixing a few hundred kilobytes of images into
+    // "83 of 87" would make that number mean something fuzzier than it does
+    // now, on a banner whose whole value is that it is precise.
+    //
+    // NO expectedSize. The row's `s` is the PDF's length; passing it here
+    // would make getCachedDocFile reject every good thumbnail for being the
+    // wrong size, and cacheDocFile reject every good download.
+    let thumbs = 0;
+    for (const r of wantedThumbs.slice(0, opts.thumbLimit || DOWNLOADS_PER_RUN)) {
+      const got = await ensureCachedDocFile({
+        fileId: r.id, cacheVersion: r.cache_version, remoteUrl: r.url, ext: 'jpg',
+      });
+      if (got) thumbs += 1;
+    }
+
     return {
+      thumbs,
+      thumbsWanted: wantedThumbs.length,
       ok: true, complete: manifest.complete, swept, downloaded,
       files: nextFiles.length, logbooks: nextLogs.length,
       // `no-space` ONLY WHEN NOTHING FIT, `partial` when some did. A caller

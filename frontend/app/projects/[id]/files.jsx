@@ -13,6 +13,7 @@ import {
   Modal,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { readSiteReadiness } from '../../../src/utils/siteDeviceReadiness';
 import SiteReadinessNotice from '../../../src/components/SiteReadinessNotice';
 import { noteProjectOpened } from '../../../src/utils/adminPlanPrefetch';
@@ -60,6 +61,7 @@ import {
 } from '../../../src/utils/dropboxTree';
 import {
   listCachedDocs, cachedDocName, freeDiskBytes, cacheDocFile, sweepDocCache,
+  getCachedDocFile,
 } from '../../../src/utils/docCache';
 import {
   readinessOf, saveQueue, megabytes, hasRoomFor,
@@ -90,6 +92,77 @@ const isPdf = (filename) => extOf(filename) === 'pdf';
 // The on-disk name for a file row. Built through docCache so the strip and the
 // cache cannot disagree about what "saved" means.
 const nameOfFile = (f) => cachedDocName(f?.id || f?._id, f?.cache_version ?? 0);
+
+/**
+ * PAGE ONE OF A PLAN, IN THE LIST ROW.
+ *
+ * THE COST THIS REMOVES. The row draws a document icon, identical for every
+ * sheet in the set, so the only way to find out which sheet a row is is to
+ * open it — and an open costs the CP 20-30 seconds. Picking wrong costs it
+ * twice. The image itself has existed all along: the indexer renders every
+ * page at 250 DPI and stores it in R2, and nothing has ever served one here.
+ *
+ * FALLS BACK TO THE ICON, ALWAYS. No thumbnail for this file, no id to build a
+ * url from, no token, a 404, a decode failure — every one of them renders
+ * exactly what the row renders today. A list row must not be able to break
+ * because a picture did.
+ *
+ * NOT A PLACEHOLDER RECTANGLE while loading. The icon IS the placeholder, and
+ * it is the correct answer for most of these states anyway; swapping it for a
+ * grey box would make a plan with no thumbnail look like one that failed.
+ */
+function PlanThumb({ projectId, fileId, cacheVersion, fallback, style }) {
+  const [source, setSource] = useState(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    setSource(null);
+    if (!projectId || !fileId) return undefined;
+    (async () => {
+      // ── THE DEVICE'S OWN COPY FIRST, AND THAT IS THE WHOLE POINT ────────
+      //
+      // The prefetch pulls page one of every plan onto the device precisely so
+      // a sheet can be identified with no signal. Reaching for the network
+      // first would make that work invisible: offline, every row would fall
+      // back to the blank icon the thumbnail exists to replace, which is the
+      // failure exactly where it matters most.
+      //
+      // No token, no headers, no request — a `file://` uri an <Image> renders
+      // from disk.
+      try {
+        const local = await getCachedDocFile(fileId, cacheVersion ?? 0, 'jpg');
+        if (cancelled) return;
+        if (local) { setSource({ uri: local }); return; }
+      } catch (_e) { /* fall through to the network */ }
+
+      let token = null;
+      try { token = await AsyncStorage.getItem('blueview_token'); } catch (_e) { token = null; }
+      if (cancelled || !token) return;
+      const base = process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
+      // THE TOKEN GOES IN A HEADER, NEVER THE QUERY STRING. `/content` accepts
+      // `?token=` because an <iframe> cannot set headers; an <Image> can, and a
+      // url with a live bearer in it ends up in caches and logs.
+      setSource({
+        uri: `${base}/api/projects/${projectId}/files/${fileId}/thumbnail`,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, fileId, cacheVersion]);
+
+  if (failed || !source) return fallback;
+  return (
+    <Image
+      source={source}
+      style={style}
+      resizeMode="cover"
+      accessibilityIgnoresInvertColors
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 // File type icons and colors
 const getFileTypeInfo = (filename) => {
@@ -1185,18 +1258,28 @@ export default function ProjectFilesScreen() {
                         ]}
                         onPress={() => handleViewFile(file)}
                       >
-                        {/* File Icon */}
-                        <View
-                          style={[
-                            s.fileIconContainer,
-                            { backgroundColor: `${typeInfo.color}15` },
-                          ]}
-                        >
-                          <FileIcon size={22} strokeWidth={1.5} color={typeInfo.color} />
-                          <Text style={[s.fileTypeLabel, { color: typeInfo.color }]}>
-                            {typeInfo.label}
-                          </Text>
-                        </View>
+                        {/* File Icon — or page one of the plan, when we have
+                            it. Only PDFs have pages; everything else keeps the
+                            icon it always had. */}
+                        <PlanThumb
+                          projectId={projectId}
+                          fileId={typeInfo.label === 'PDF' ? (file.id || file._id) : null}
+                          cacheVersion={file.cache_version ?? 0}
+                          style={s.fileThumb}
+                          fallback={(
+                            <View
+                              style={[
+                                s.fileIconContainer,
+                                { backgroundColor: `${typeInfo.color}15` },
+                              ]}
+                            >
+                              <FileIcon size={22} strokeWidth={1.5} color={typeInfo.color} />
+                              <Text style={[s.fileTypeLabel, { color: typeInfo.color }]}>
+                                {typeInfo.label}
+                              </Text>
+                            </View>
+                          )}
+                        />
 
                         {/* File Info */}
                         <View style={s.fileInfo}>
@@ -1828,6 +1911,16 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.lg,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  // Same footprint as the icon it replaces, so a row with a thumbnail and a
+  // row without are the same height and the list does not jump as they load.
+  // White ground because a plan sheet is white and a transparent JPEG edge
+  // against a dark surface reads as a rendering fault.
+  fileThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: borderRadius.lg,
+    backgroundColor: '#ffffff',
   },
   fileTypeLabel: {
     fontSize: 9,
