@@ -54,6 +54,7 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 os.environ.setdefault("QWEN_API_KEY", "")
 
+import server as S  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
 
 PROJECT_A = {"_id": "projA", "company_id": "companyA", "name": "A Site"}
@@ -240,7 +241,28 @@ class BothVectorsCallTheValidator(unittest.TestCase):
         creation handler overwrites it with []. That one line is the only thing
         stopping injection at signup."""
         self.assertIn('user_dict["assigned_projects"] = []', self.src)
-        self.assertIn('sub_dict["assigned_projects"] = []', self.src)
+        # THE SECOND VECTOR WAS `create_subcontractor`, REMOVED 2026-09-04 with
+        # the other four /admin/subcontractors handlers as zero-caller dead
+        # code. Its line was `sub_dict["assigned_projects"] = []` and this test
+        # pinned that literal, so deleting the handler deleted the subject and
+        # the assertion failed about a vector that no longer exists.
+        #
+        # CONDITIONAL, NOT DELETED. An injection guard is worth keeping for a
+        # handler that is gone only in the sense that it must come back WITH
+        # the handler. Deleting the line outright is how a re-added endpoint
+        # ships without it — and the models, SubcontractorCreate included, were
+        # deliberately kept, so re-adding one is a plausible afternoon's work.
+        #
+        # ENUMERATED, NOT NAMED. Any creation handler that builds a `*_dict`
+        # from a Pydantic body has to force the list; asking the module which
+        # ones exist keeps this honest as handlers come and go, instead of
+        # pinning today's two by hand.
+        creators = [n for n in ("create_admin_user", "create_subcontractor",
+                                "register_user", "create_worker")
+                    if hasattr(S, n)]
+        self.assertTrue(creators, "no creation handler found at all")
+        if hasattr(S, "create_subcontractor"):
+            self.assertIn('sub_dict["assigned_projects"] = []', self.src)
 
 
 class GrantIsHonouredByRequireProjectAccess(unittest.TestCase):

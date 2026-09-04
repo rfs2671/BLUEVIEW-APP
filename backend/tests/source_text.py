@@ -27,6 +27,7 @@ prose, so the prose must be there.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 from typing import Union
@@ -197,3 +198,44 @@ def code_of(relative_path: Union[str, Path], *, raw: bool = False) -> str:
     if suffix == ".css":
         return strip_css(src)
     return src
+
+
+def inserted_doc_keys(collection: str, relative_path: str = "server.py") -> set:
+    """The literal keys of a `db.<collection>.insert_one({...})` document.
+
+    WHY THIS EXISTS. Two test files scoped the seeded subcontractor document by
+    slicing a FIXED 900 CHARACTERS from a marker comment. On 2026-09-04 somebody
+    added a comment inside that call, the budget ran out mid-comment, and both
+    files reported the seed "still omits email, contact_name" about a document
+    that carries both. The fields had not moved; the window had. Two copies of
+    the same brittle scope, failing together for a reason unrelated to their
+    subject.
+
+    That is a byte budget standing in for a syntactic block, the same family as
+    a line-number pin and as a leftmost `re.search` over a 41k-line file. A dict
+    is a dict, so it is read as one.
+
+    RAISES rather than returning an empty set when it finds no such call. Every
+    "is field X present" assertion downstream is vacuously satisfied by an empty
+    result, which is precisely how a check that stopped reaching its subject
+    reports success.
+    """
+    tree = ast.parse(code_of(relative_path, raw=True))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if not (isinstance(fn, ast.Attribute) and fn.attr == "insert_one"):
+            continue
+        target = fn.value
+        if not (isinstance(target, ast.Attribute) and target.attr == collection):
+            continue
+        if not (node.args and isinstance(node.args[0], ast.Dict)):
+            continue
+        return {k.value for k in node.args[0].keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+    raise AssertionError(
+        f"no db.{collection}.insert_one({{...}}) with a literal dict found in "
+        f"{relative_path}. The writer is gone or its shape changed — either is "
+        f"a real answer, and passing on zero keys is not one."
+    )
