@@ -36,6 +36,46 @@ import * as Sentry from '@sentry/react';
 
 let _initialized = false;
 
+// ── A TOTAL OUTAGE MUST NOT LOOK LIKE NOISE ────────────────────────────────
+//
+// `beforeSend` below used to `return null` for every "Network Error" /
+// "Failed to fetch", with a comment naming "misconfigured CORS preflights" as
+// the class being dropped. Axios raises precisely `Error: Network Error` when
+// a preflight blocks the request. Between 2026-08-28 and 2026-09-04 the web
+// build could not sign in — every request blocked before it was sent — and the
+// only client channel that could have seen it discarded every event, on
+// purpose, by a rule written by someone who had identified the category
+// correctly.
+//
+// THE RULE WAS NOT WRONG ABOUT ONE EVENT. A single "Network Error" with no
+// stack really does say nothing useful; a user in a tunnel produces them. It
+// failed on VOLUME — and volume is exactly what a predicate over a single
+// event cannot see. What separates an outage from the noise it resembles is
+// rate, breadth and duration, none of which is a property of the event in hand.
+//
+// So the filter is kept, and stops being silent:
+//
+//   ONE ISSUE, NOT THOUSANDS. A fixed fingerprint collapses every one of these
+//   into a single Sentry issue whose EVENT RATE is the signal. Alert on the
+//   rate of that issue; never on an event.
+//   LEVEL 'info', so it can never page anyone by existing. It is a graph to
+//   read, not an error to triage.
+//   SAMPLED, so the quota this file is careful about elsewhere
+//   (tracesSampleRate 0.1, replays off) survives an outage that generates one
+//   of these per request per user.
+//   COUNTED PER SESSION, and the count rides on the sampled event. "the 412th
+//   blocked request in this session" is not ambiguous the way one is.
+//
+// A breadcrumb was considered and rejected: a total blockade produces no other
+// event to carry it. The app never gets far enough to throw anything else,
+// which is why nothing surfaced for seven days.
+const BLOCKED_REQUEST_SAMPLE_RATE = 0.01;
+const BLOCKED_REQUEST_FINGERPRINT = 'client-request-blocked';
+let _blockedThisSession = 0;
+
+// Exported for the test, which executes this predicate rather than reading it.
+export function _blockedRequestCount() { return _blockedThisSession; }
+
 const ENV =
   (typeof process !== 'undefined' && process.env && (
     process.env.EXPO_PUBLIC_ENVIRONMENT ||
@@ -90,10 +130,10 @@ export function initSentry() {
       // Don't override the default integrations list — Sentry's
       // own defaults already filter known browser-extension noise.
       beforeSend(event) {
-        // Drop CORS noise that comes through with a generic
-        // "Network Error" message and no stack. These are almost
-        // always misconfigured CORS preflights or browser-blocked
-        // fetches that say nothing useful.
+        // A browser-blocked fetch — a refused CORS preflight, a dead network,
+        // a tunnel. Individually useless; in volume it is the app being down.
+        // See BLOCKED_REQUEST_SAMPLE_RATE above for why this is downgraded and
+        // sampled rather than dropped.
         try {
           const exc = (event && event.exception && event.exception.values) || [];
           for (const v of exc) {
@@ -103,7 +143,26 @@ export function initSentry() {
               t === 'error' &&
               (msg === 'network error' || msg === 'failed to fetch')
             ) {
-              return null;
+              _blockedThisSession += 1;
+              if (Math.random() >= BLOCKED_REQUEST_SAMPLE_RATE) return null;
+              // ONE ISSUE. The fingerprint is fixed, so every one of these
+              // collapses into a single Sentry issue and the issue's event
+              // rate — not any event — is what an alert reads.
+              event.fingerprint = [BLOCKED_REQUEST_FINGERPRINT];
+              event.level = 'info';
+              event.tags = {
+                ...(event.tags || {}),
+                client_request_blocked: 'true',
+              };
+              event.extra = {
+                ...(event.extra || {}),
+                // THE NUMBER THAT SEPARATES AN OUTAGE FROM A TUNNEL. One
+                // blocked request is a user with bad signal; four hundred in
+                // one session is an app that cannot reach its API at all.
+                blocked_this_session: _blockedThisSession,
+                sample_rate: BLOCKED_REQUEST_SAMPLE_RATE,
+              };
+              return event;
             }
           }
         } catch (_e) { /* fall through with original event */ }
