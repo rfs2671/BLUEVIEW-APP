@@ -1,5 +1,9 @@
 import NetInfo from '@react-native-community/netinfo';
 import { AppState } from 'react-native';
+// Lists go through docCache's chunked store; this is for ONE small fact that
+// is not a list and must not be able to fail a list write. Same shape as
+// draftSync's `logbook_finalize_errors` — a per-record note the UI reads back.
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from './api';
 import {
   cacheDocList,
@@ -92,6 +96,82 @@ export function manifestScopes(projectId) {
     files: `site_manifest_files:${pid}`,
     logbooks: `site_manifest_logs:${pid}`,
   };
+}
+
+/* ── THE ONE FACT A DIRECTORY READ CANNOT PRODUCE ──────────────────────────
+ *
+ * Readiness is otherwise assembled from things the device can see for itself:
+ * the stored lists, and a readDirectoryAsync. That is a deliberate property —
+ * it means readiness cannot be wrong about what is on disk.
+ *
+ * "The last fill was refused for space" is not visible that way. Missing files
+ * look identical whether they are on their way or will never come, and the
+ * difference is the whole point: one is a device filling itself correctly, the
+ * other is a device that has stopped and cannot say so. So the refusal is
+ * written down, keyed per project, and read back as an INPUT to the pure
+ * readiness function rather than inferred.
+ *
+ * A SEPARATE KEY, NOT A FIELD ON THE LISTS. The lists are generation-committed
+ * and purged; this is a fact about the DEVICE, it must outlive any particular
+ * generation, and it must never be able to make a list write fail.
+ */
+export function spaceShortfallKey(projectId) {
+  return `site_space_shortfall:${String(projectId || '')}`;
+}
+
+/**
+ * Record that a fill was refused for lack of room, with the numbers a person
+ * can act on. Never throws: a device that cannot write this is a device that
+ * reports the old state, which is the ordinary failure everywhere else here.
+ */
+export async function recordSpaceShortfall(projectId, { needed, free } = {}) {
+  if (!projectId) return false;
+  try {
+    await AsyncStorage.setItem(spaceShortfallKey(projectId), JSON.stringify({
+      needed: Number(needed) || 0,
+      free: Number(free) || 0,
+      at: Date.now(),
+    }));
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/** Drop the record — there is room again. */
+export async function clearSpaceShortfall(projectId) {
+  if (!projectId) return false;
+  try {
+    await AsyncStorage.removeItem(spaceShortfallKey(projectId));
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * What the last refusal said, or null.
+ *
+ * NULL FOR ANYTHING UNREADABLE, and that direction is chosen: a device that
+ * cannot read this key falls back to the states it had before, which under-
+ * reports a real problem rather than inventing one. Accusing a healthy tablet
+ * on the strength of a storage error is the worse failure — this banner is
+ * read by an inspector.
+ */
+export async function readSpaceShortfall(projectId) {
+  if (!projectId) return null;
+  try {
+    const raw = await AsyncStorage.getItem(spaceShortfallKey(projectId));
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (!p || typeof p !== 'object') return null;
+    const needed = Number(p.needed);
+    const free = Number(p.free);
+    if (!Number.isFinite(needed) || !Number.isFinite(free)) return null;
+    return { needed, free, at: Number(p.at) || null };
+  } catch (_e) {
+    return null;
+  }
 }
 
 // The tablet renders PDFs and nothing else — the site documents screen says so
@@ -623,12 +703,32 @@ export async function syncSiteManifest(projectId, opts = {}) {
     const needed = wanted.reduce((n, r) => n + (Number(r.s) || 0), 0);
     const free = await freeDiskBytes();
     if (free !== null && needed > Math.max(0, free - DISK_RESERVE_BYTES)) {
+      // ── THE REFUSAL IS RECORDED, NOT JUST RETURNED ────────────────────
+      //
+      // This return value goes nowhere. setupSiteManifestSync calls
+      // `Promise.resolve(run(pid)).catch(() => {})` and discards what it
+      // resolves to, so before this write the ONLY consumer of `no-space` in
+      // the whole app was a unit test.
+      //
+      // WHAT THAT COST. Readiness computes `filling` from a directory read —
+      // saved < expected — and never sees this result. A tablet that will
+      // NEVER download the last four sheets therefore reported "83 of 87 …
+      // Still saving this project to the tablet", indefinitely. That is worse
+      // than reporting itself ready: it tells a superintendent to wait for
+      // something that is not coming, and he waits, and then he walks into a
+      // cellar. The model had two facts to tell apart — NOT YET and NEVER —
+      // and words for only one of them.
+      await recordSpaceShortfall(projectId, { needed, free });
       return {
         ok: true, complete: manifest.complete, reason: 'no-space', swept,
         downloaded: 0, needed, free,
         files: nextFiles.length, logbooks: nextLogs.length,
       };
     }
+    // ROOM AGAIN. Cleared on the same pass that proves it, so a device that
+    // has space freed on it stops accusing itself without waiting for anything
+    // to be downloaded.
+    await clearSpaceShortfall(projectId);
 
     let downloaded = 0;
     for (const r of wanted.slice(0, opts.downloadLimit || DOWNLOADS_PER_RUN)) {
