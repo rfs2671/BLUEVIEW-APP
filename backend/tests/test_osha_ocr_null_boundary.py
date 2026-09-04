@@ -151,3 +151,103 @@ def test_the_coi_path_and_the_osha_path_share_the_rule():
     disagree about what "null" means."""
     from lib import coi_ocr
     assert coi_ocr._norm_str is norm_ocr_str
+
+
+# ══ 1c — THE CRASH THAT WOULD HAVE FOLLOWED THE DATA FIX ══════════════════
+#
+# Correcting a worker called "null" means writing `name: None`. Both preshift
+# renderers then hit `w.get("name", "").strip()` — and `.get(key, default)`
+# returns the default only on an ABSENT key, never on a present-but-None value.
+# None.strip() raises AttributeError, and in a renderer that does not skip a
+# row: it takes down the WHOLE PDF. A data fix meant to clean one name would
+# have stopped every filed roster from printing.
+#
+# This is why the code lands before the data, and why it is asserted rather
+# than assumed.
+
+import ast  # noqa: E402
+import inspect  # noqa: E402
+import textwrap  # noqa: E402
+
+
+def _roster_guard(row):
+    """The live guard, lifted from both renderers. If they diverge from this
+    line the source assertion below fails and this stops being a stand-in."""
+    return bool(str(row.get("name") or "").strip())
+
+
+def test_the_guard_survives_a_stored_none():
+    assert _roster_guard({"name": None}) is False
+    assert _roster_guard({}) is False
+    assert _roster_guard({"name": "   "}) is False
+    assert _roster_guard({"name": "Jose"}) is True
+
+
+def test_the_old_form_is_the_one_that_crashed():
+    """The precondition, so this file records WHY the change was needed rather
+    than only that it was made."""
+    try:
+        {"name": None}.get("name", "").strip()
+    except AttributeError:
+        return
+    raise AssertionError("the old form no longer raises — the premise moved")
+
+
+def test_neither_renderer_still_uses_the_unsafe_form():
+    src = inspect.getsource(server)
+    assert 'w.get("name", "").strip()' not in src, (
+        "a preshift renderer is back on the form that raises on a stored None"
+    )
+    assert src.count('if str(w.get("name") or "").strip():') == 2, (
+        "both preshift renderers must carry the safe guard"
+    )
+
+
+def test_a_none_cell_does_not_print_the_word_none():
+    """`_capitalize_first` is already None-safe, but the raw f-string cells
+    beside it were not: a stored None interpolates as the four characters
+    None, and a filed record naming a man's employer as "None" is the same
+    defect as naming him "null", one field over."""
+    assert server._capitalize_first(None) == ""
+    src = inspect.getsource(server)
+    assert 'w.get("osha_number", "")}' not in src, "an unguarded cell remains"
+    assert src.count('{_capitalize_first(w.get("name") or "")}') == 2
+    assert src.count('{_capitalize_first(w.get("company") or "")}') == 2
+
+
+# ══ 1d — AND THE REWRITE THAT WOULD HAVE UNDONE IT ════════════════════════
+#
+# `if name: update_fields["name"] = name` rewrites the stored worker name on
+# every returning check-in. Correcting the database first is undone at the
+# worker's next tap unless what arrives here is cleaned.
+
+def test_the_gate_normalises_the_name_it_is_posted():
+    src = inspect.getsource(server.register_and_checkin)
+    tree = ast.parse(textwrap.dedent(src))
+    normalised = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not (isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "norm_ocr_str"):
+            continue
+        for t in node.targets:
+            if isinstance(t, ast.Name):
+                normalised.add(t.id)
+    assert "name" in normalised, (
+        "the gate still takes the posted name raw, so a corrected worker is "
+        "renamed at his next tap"
+    )
+    assert "osha_number" in normalised, (
+        "osha_number reaches the OSHA register and the LL196 attestation"
+    )
+
+
+def test_a_nullish_name_leaves_the_stored_one_alone():
+    """`if name:` does the rest of the work once the value is normalised —
+    None is falsy, so nothing is written and the stored name survives."""
+    from lib.ocr_text import norm_ocr_str as n
+    for token in ("null", "N/A", "", "   ", None):
+        assert not n(token), token
+    assert n("Jose Ramirez") == "Jose Ramirez"

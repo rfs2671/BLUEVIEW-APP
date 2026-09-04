@@ -14337,7 +14337,23 @@ async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
     project_id = data.get("project_id")
     tag_id = data.get("tag_id")
-    name = data.get("name")
+    # NORMALISED AT THIS BOUNDARY TOO, and this is the half that makes a data
+    # correction stick. `if name: update_fields["name"] = name` below rewrites
+    # the stored worker name on EVERY returning check-in, so correcting a
+    # worker called "null" in the database is undone at his next tap unless the
+    # value that arrives here is cleaned first.
+    #
+    # THE GATE IS A SECOND MOUTH. upload-osha now returns a real None (see
+    # OshaCardOcrResult), but this endpoint takes a body, not that response:
+    # a cached gate page, a retried submit, a manual entry, or any future
+    # client can still post the string. Cleaning only the OCR response would
+    # fix the producer and leave the consumer open.
+    #
+    # `if name:` then does the rest of the work — None is falsy, so a nullish
+    # arrival leaves the stored name ALONE rather than overwriting it, which is
+    # also the right answer for a returning worker whose card would not read
+    # today.
+    name = norm_ocr_str(data.get("name"))
     phone = data.get("phone")
     trade = data.get("trade")
     company = data.get("company")
@@ -14346,7 +14362,9 @@ async def register_and_checkin(data: dict, request: Request):
     # liveness, no gate). Stored in R2 now, not inline — see _store_worker_selfie.
     selfie_image = data.get("selfie_image")
     osha_data = data.get("osha_data")  # OCR results dict
-    osha_number = data.get("osha_number")
+    # Same rule, same reason: osha_number reaches the OSHA register and the
+    # LL196 attestation, and a card number of "N/A" prints as one.
+    osha_number = norm_ocr_str(data.get("osha_number"))
     safety_orientation = data.get("safety_orientation")  # dict of checked items
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
@@ -19053,12 +19071,27 @@ async def generate_single_logbook_html(logbook: dict) -> str:
 
         w_rows = ""
         for w in workers:
-            if w.get("name", "").strip():
+            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
+            # A row storing `name: None` — which is exactly what correcting a
+            # worker called "null" produces — returns None, and None.strip()
+            # raises AttributeError. In a renderer, that does not skip a row:
+            # it takes down the WHOLE PDF, so a data fix meant to clean one
+            # name would have stopped every filed roster from printing.
+            #
+            # The safe form is already used twice in these same two functions
+            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
+            # Shipped, not invented.
+            if str(w.get("name") or "").strip():
                 # PR G: name/company short-entry; osha_number excluded (identifier).
+                # `or ""` ON EVERY CELL, for the same reason as the guard
+                # above: a stored None interpolates into an f-string as the
+                # four characters None, and a filed compliance record printing
+                # "None" for a man's employer is the same defect as printing
+                # "null" for his name, one field over.
                 w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
-                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
+                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
@@ -22975,7 +23008,8 @@ _SUBMIT_ROW_CONTENT_RULES = {
 #
 # It QUALIFIES on every technical ground: it is a record that is a list of
 # rows, and both renderers already gate a worker row on
-# `if w.get("name", "").strip()` — the rule is shipped, not invented, and the
+# `if str(w.get("name") or "").strip()` — the rule is shipped, not invented,
+# and the
 # editor counts the same thing into total_count.
 #
 # It is left out because the FORM has no client-side gate. preshift_signin.jsx
@@ -29121,12 +29155,27 @@ async def generate_combined_report(
         _affirm_n = await preshift_affirmation_count(db, project_id, date)
         w_rows = ""
         for w in pd.get("workers", []):
-            if w.get("name", "").strip():
+            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
+            # A row storing `name: None` — which is exactly what correcting a
+            # worker called "null" produces — returns None, and None.strip()
+            # raises AttributeError. In a renderer, that does not skip a row:
+            # it takes down the WHOLE PDF, so a data fix meant to clean one
+            # name would have stopped every filed roster from printing.
+            #
+            # The safe form is already used twice in these same two functions
+            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
+            # Shipped, not invented.
+            if str(w.get("name") or "").strip():
                 # PR G: name/company short-entry; osha_number excluded.
+                # `or ""` ON EVERY CELL, for the same reason as the guard
+                # above: a stored None interpolates into an f-string as the
+                # four characters None, and a filed compliance record printing
+                # "None" for a man's employer is the same defect as printing
+                # "null" for his name, one field over.
                 w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
-                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
+                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'

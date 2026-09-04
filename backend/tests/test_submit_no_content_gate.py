@@ -131,7 +131,22 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         """The rule preshift WOULD use is shipped in both renderers already —
         a worker row is real when it has a NAME. Pinned so the deferral stays a
         one-line change and does not need re-deriving later."""
-        self.assertEqual(_SRC.count('if w.get("name", "").strip():'), 2)
+        # COUNTED BY SHAPE, NOT BY SPELLING. This pinned the literal
+        # `if w.get("name", "").strip():`, which is the form that RAISES
+        # AttributeError on a stored `name: None` — the value correcting a
+        # worker called "null" produces. Fixing that took the literal with it
+        # and this assertion failed about a rule that had not changed.
+        #
+        # The invariant is "both preshift renderers gate a row on a non-blank
+        # name", and it is expressed as that now: any guard on w's name, in
+        # either safe or unsafe spelling, counted twice. A regression that
+        # DELETES a guard still fails; a rewording does not.
+        guards = re.findall(
+            r'if (?:str\()?w\.get\("name"(?:, "")?\)(?: or "")?\)?\.strip\(\):',
+            _SRC)
+        self.assertEqual(len(guards), 2, guards)
+        # And the unsafe spelling specifically must not come back.
+        self.assertNotIn('w.get("name", "").strip()', _SRC)
 
     def test_row_has_mirrors_the_renderers_has(self):
         """_row_has is a copy of a nested helper. If they diverge, the gate
