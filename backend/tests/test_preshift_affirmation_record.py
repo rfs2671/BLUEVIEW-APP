@@ -307,8 +307,18 @@ class TheWordingHasOneDefinitionOnEachSide(unittest.TestCase):
 
 class NothingElseOnTheSheetMoved(unittest.TestCase):
     def test_every_other_cell_still_reads_the_stored_row(self):
-        for cell in ('w.get("name", "")', 'w.get("had_injury")',
-                     'w.get("inspected_ppe")', 'w.get("osha_number", "")'):
+        # THE FIELD, NOT ITS DEFAULT FORM. These pinned `w.get("name", "")`
+        # and `w.get("osha_number", "")` — the two-argument spelling. That
+        # spelling returns the default only on an ABSENT key, so a stored
+        # `name: None` reached `.strip()` and raised, and a stored None
+        # interpolated into the cell as the four characters "None". Fixing
+        # both took the literals with them.
+        #
+        # The invariant here is "every cell still reads the STORED ROW `w`",
+        # which is about WHICH OBJECT is read, not about how the default is
+        # spelled. `w.get("<field>")` is the part that carries that meaning.
+        for cell in ('w.get("name")', 'w.get("had_injury")',
+                     'w.get("inspected_ppe")', 'w.get("osha_number")'):
             self.assertIn(cell, SRC)
 
     def test_both_renderers_show_the_footer(self):

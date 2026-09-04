@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from lib.ocr_text import norm_ocr_str
+
 
 logger = logging.getLogger(__name__)
 
@@ -299,13 +301,13 @@ def _parse_qwen_response(raw_text: str) -> CoiOcrResult:
     )
 
 
-def _norm_str(v) -> Optional[str]:
-    if v is None:
-        return None
-    s = str(v).strip()
-    if not s or s.lower() in ("null", "none", "n/a", "-"):
-        return None
-    return s
+# ONE ADDRESS, and this file is where the rule was written. It has moved to
+# lib/ocr_text.py unchanged in behaviour and widened by four tokens, because
+# the OSHA card path needed the same rule and a second copy is how two OCR
+# paths come to disagree about what "null" means — the reason lib/cert_vocab.py
+# exists. Kept as a name here so this module's callers and its tests are
+# untouched.
+_norm_str = norm_ocr_str
 
 
 def _norm_confidence(v) -> float:

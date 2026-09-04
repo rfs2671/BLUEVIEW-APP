@@ -1481,11 +1481,36 @@ async function handleOshaPhoto(input) {
 // Returns the critical field objects that OCR failed to read (empty = clean
 // read). Pure — depends only on OCR_CRITICAL_FIELDS — so it is unit-tested by
 // extracting it verbatim from this file (checkinCardGate.test.cjs).
+// A MODEL'S ANSWER OF "I COULD NOT READ THIS" IS SOMETIMES THE STRING "null".
+//
+// This read `!d[k] || String(d[k]).trim() === ''`. "null" is truthy and trims
+// to "null", so A TOTAL OCR FAILURE SCORED AS A COMPLETE READ: no retake was
+// offered, manual entry never opened, and the worker submitted a card whose
+// every field said the word null. It reached filed compliance PDFs as a
+// worker's name.
+//
+// DEFENCE IN DEPTH, NOT THE FIX. The server normalises at the boundary now
+// (lib/ocr_text.py, applied in _osha_ocr_payload), so this predicate is
+// already correct against the response it is handed today. It is hardened
+// anyway because this function ALSO scores manually typed values and whatever
+// a cached or future client hands it, and because the two sides agreeing on
+// what "nothing was read" means is the whole point of having one rule.
+//
+// KEPT IN SYNC WITH lib/ocr_text.py BY NAME, not by copy-and-hope: the token
+// list below is the same set, and the test asserts both sides carry it.
+const OCR_NULLISH = new Set([
+  'null', 'none', 'n/a', 'na', 'nil', '-', '--', 'undefined',
+]);
+
+function ocrValueIsBlank(v) {
+  if (v === null || v === undefined) return true;
+  const s = String(v).trim();
+  return s === '' || OCR_NULLISH.has(s.toLowerCase());
+}
+
 function ocrMissingCriticalFields(data) {
   const d = data || {};
-  return OCR_CRITICAL_FIELDS.filter(
-    (f) => !d[f.key] || String(d[f.key]).trim() === ''
-  );
+  return OCR_CRITICAL_FIELDS.filter((f) => ocrValueIsBlank(d[f.key]));
 }
 
 function hideRetakePrompt() {
