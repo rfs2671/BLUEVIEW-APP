@@ -8807,81 +8807,37 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Projects assigned successfully"}
 
-# ==================== ADMIN SUBCONTRACTORS ====================
-
-@api_router.get("/admin/subcontractors")
-async def get_subcontractors(
-    current_user = Depends(get_current_user),
-    limit: int = Query(50, ge=1, le=200),
-    skip: int = Query(0, ge=0),
-):
-    company_id = get_user_company_id(current_user)
-    
-    query = {"is_deleted": {"$ne": True}}
-    if company_id:
-        query["company_id"] = company_id
-    
-    result = await paginated_query(db.subcontractors, query, sort_field="company_name", sort_dir=1, limit=limit, skip=skip, projection={"password": 0})
-    return result
-@api_router.post("/admin/subcontractors", response_model=SubcontractorResponse)
-async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(get_admin_user)):
-    existing = await db.subcontractors.find_one({"email": sub_data.email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    sub_dict = sub_data.model_dump()
-    sub_dict["password"] = hash_password(sub_dict["password"])
-    now = datetime.now(timezone.utc)
-    sub_dict["created_at"] = now
-    sub_dict["updated_at"] = now
-    sub_dict["workers_count"] = 0
-    sub_dict["assigned_projects"] = []
-    sub_dict["company_id"] = admin.get("company_id")
-    sub_dict["is_deleted"] = False
-    
-    result = await db.subcontractors.insert_one(sub_dict)
-    sub_dict["id"] = str(result.inserted_id)
-    del sub_dict["password"]
-    
-    return SubcontractorResponse(**sub_dict)
-
-@api_router.get("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
-async def get_subcontractor(sub_id: str, current_user = Depends(get_current_user)):
-    sub = await db.subcontractors.find_one({"_id": to_query_id(sub_id), "is_deleted": {"$ne": True}}, {"password": 0})
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subcontractor not found")
-    return SubcontractorResponse(**serialize_id(sub))
-
-@api_router.put("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
-async def update_subcontractor(sub_id: str, sub_data: dict, admin = Depends(get_admin_user)):
-    ALLOWED_SUB_FIELDS = {"name", "company_name", "email", "phone", "trade", "license_number", "insurance_info", "password"}
-    update_data = {k: v for k, v in sub_data.items() if v is not None and k in ALLOWED_SUB_FIELDS and k != "password"}
-    if "password" in sub_data and sub_data["password"]:
-        update_data["password"] = hash_password(sub_data["password"])
-    
-    update_data["updated_at"] = datetime.now(timezone.utc)
-    
-    result = await db.subcontractors.update_one(
-        {"_id": to_query_id(sub_id)},
-        {"$set": update_data}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Subcontractor not found")
-    
-    sub = await db.subcontractors.find_one({"_id": to_query_id(sub_id)}, {"password": 0})
-    return SubcontractorResponse(**serialize_id(sub))
-
-@api_router.delete("/admin/subcontractors/{sub_id}")
-async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
-    # Soft delete
-    result = await db.subcontractors.update_one(
-        {"_id": to_query_id(sub_id)},
-        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Subcontractor not found")
-    return {"message": "Subcontractor deleted successfully"}
+# ==================== ADMIN SUBCONTRACTORS — ROUTES REMOVED ==============
+#
+# FIVE HANDLERS LIVED HERE — GET list, POST, GET by id, PUT, DELETE on
+# /admin/subcontractors — AND NOTHING HAS EVER CALLED THEM. No wrapper in
+# frontend/src/utils/api.js, zero references in frontend/, nothing in
+# checkin.html, scripts/ or lib/. Recorded as zero-callers at
+# docs/plans/cp-rebuild-research.md:70 before this removal.
+#
+# WHY REMOVED RATHER THAN FIXED. The list handler sorted `company_name` under
+# `{"password": 0}` — an EXCLUSION projection, the same shape that returned 500
+# twice on collections carrying inline base64. It was rated slow-only for one
+# reason: nothing stores base64 on `subcontractors` yet. An unreachable
+# endpoint carrying a broken projection is a defect waiting for a future caller
+# who assumes it works, and removing it is a smaller change than fixing it.
+#
+# WHAT IS DELIBERATELY KEPT, AND THIS IS NOT AN OVERSIGHT:
+#   * `db.subcontractors` itself, and every document in it.
+#   * SubcontractorCreate / SubcontractorResponse (models, ~line 3702).
+#   * the `email_1` unique index on the collection.
+#   * the startup seed row, and backend/tests/test_startup_seed_guard.py —
+#     the seed still runs and the guard still describes real behaviour, so it
+#     is not orphaned by removing these routes.
+#
+# Retiring the collection is a DATA decision, not a routing one, and
+# subcontractors sits beside the Subcontractor Compliance Graph on the future
+# feature list. Deleting the schema now means rebuilding it from memory later.
+# See docs/audits/followups.md, 2026-09-04.
+#
+# ANYTHING RE-ADDING THESE ROUTES: give the list handler an INCLUSION
+# projection from the start. The exclusion is what made this a defect rather
+# than merely dead code.
 
 # ==================== OWNER - COMPANY MANAGEMENT ====================
 
@@ -43026,7 +42982,9 @@ async def startup_event():
     # state, not about environment — so it ran against PRODUCTION on first
     # boot, and would run again on a fresh database, a restored backup, or a
     # rename. It has already done so: the malformed subcontractor row that
-    # 500s GET /admin/subcontractors/{id} is one of the documents it left.
+    # used to 500 the (since-removed) GET /admin/subcontractors/{id} is one of
+    # the documents it left. The route is gone; the ROW is still in production
+    # and the seed that wrote it still runs, which is what this check is for.
     #
     # FAILS CLOSED BY CONSTRUCTION. The variable must be explicitly set to a
     # truthy value for any insert below to happen. Unset, empty, misspelled,
@@ -43154,11 +43112,17 @@ async def startup_event():
             "name": "Test Electrical Sub",
             "company_name": "Spark Electric LLC",
             # REQUIRED by SubcontractorCreate, and therefore by
-            # SubcontractorResponse. Its absence here made
+            # SubcontractorResponse. Its absence here made the (since-removed)
             # GET /admin/subcontractors/{id} raise a ValidationError -> 500 for
             # this row alone. The model is right and every real writer already
-            # satisfies it; the seed was the only thing producing an invalid
+            # satisfied it; the seed was the only thing producing an invalid
             # document.
+            #
+            # STILL REQUIRED WITH THE ROUTES GONE. The models are kept on
+            # purpose (see the ADMIN SUBCONTRACTORS note above), so a seed row
+            # that cannot round-trip through them is still a malformed
+            # document — it just no longer has an endpoint to fail at, which
+            # makes it quieter rather than better.
             "contact_name": "Test Sub Contact",
             "company_id": test_company_id,
             "email": "sub@test.com",
