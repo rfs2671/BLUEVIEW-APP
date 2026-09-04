@@ -127,11 +127,51 @@ class TheColumnMakesNoAffirmationClaim(unittest.TestCase):
         self.assertIn("NO SIGNATURE ON FILE",
                       server._preshift_signature_cell(row))
 
-    def test_the_cell_takes_no_overlay_argument_at_all(self):
-        """Not merely unused -- gone, so nothing can pass one again."""
+    def test_the_cell_takes_no_AFFIRMATION_overlay(self):
+        """THE BAN IS ON THE CLAIM, NOT ON THE ARITY, and this test now says so.
+
+        It used to assert `params == ["w"]`. That was the right guard for the
+        defect it was written against -- a render-time overlay that resolved
+        AFFIRMATION from the day's check-ins and printed a claim the stored row
+        did not make. Nothing may pass that again.
+
+        A second parameter now exists and carries something different in kind:
+        `resolved`, a map of signin_id -> signature IMAGE bytes. It resolves
+        WHICH PICTURE TO DRAW, never whether a man affirmed. The filed sheet was
+        printing NO SIGNATURE ON FILE for men whose signature was in R2, because
+        the new gate stores a `signin_id` rather than an inline image -- an
+        accusation against a named man produced by a lookup this function never
+        made.
+
+        So the arity assertion is replaced by the two that carry the actual
+        rule: the parameter list is CLOSED at these two, and the affirmation
+        fields stay unreadable (test_it_reads_only_the_signature) with no
+        affirmation string printable in any state (the two tests above)."""
         params = list(inspect.signature(
             server._preshift_signature_cell).parameters)
-        self.assertEqual(params, ["w"])
+        self.assertEqual(params, ["w", "resolved"])
+
+    def test_a_junk_value_in_the_map_cannot_take_down_the_sheet(self):
+        """WRITTEN AS AN AFFIRMATION TEST AND IT FOUND A CRASH INSTEAD.
+
+        The first draft fed "AFFIRMED"/True/1 into the map to prove the overlay
+        could not sneak back through it. `True` reached `.startswith` and raised
+        AttributeError -- and a renderer that raises does not drop one row, it
+        takes down the entire filed PDF. The cell now accepts only a non-empty
+        string and falls through to the honest third state otherwise.
+
+        Kept as the crash guard it turned out to be."""
+        for value in (True, 1, None, [], {}, b"bytes", ""):
+            cell = server._preshift_signature_cell(
+                {"signin_id": "s1"}, {"s1": value})
+            self.assertIn("Signature on file", cell)
+            self.assertNotIn("NOT AFFIRMED", cell)
+
+    def test_a_resolved_image_still_renders(self):
+        cell = server._preshift_signature_cell(
+            {"signin_id": "s1"}, {"s1": "iVBORw0KGgo"})
+        self.assertIn("<img", cell)
+        self.assertNotIn("Affirmed", cell)
 
     def test_it_reads_only_the_signature(self):
         code = _code_only(server._preshift_signature_cell)
@@ -324,13 +364,18 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
     def test_both_renderers_show_the_footer(self):
         self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"), 2)
 
-    def test_and_neither_passes_an_overlay_to_the_cell(self):
-        self.assertNotIn("_preshift_signature_cell(w, ", SRC)
-        # THREE: the definition plus two CALL SITES. Counted as the call
-        # form, so the definition cannot be mistaken for a third caller.
+    def test_neither_renderer_passes_anything_but_the_signature_map(self):
+        """Both call sites pass the SAME second argument and nothing else.
+
+        The call form is still pinned -- an overlay smuggled in as a third
+        argument, or a different map at one of the two renderers, fails here.
+        What changed is which single argument is allowed: `_ps_sigs`, the
+        signin_id -> image map, resolved once per roster before the loop."""
         self.assertEqual(
-            SRC.count("{_preshift_signature_cell(w)}</td></tr>"), 2)
-        self.assertEqual(SRC.count("def _preshift_signature_cell(w)"), 1)
+            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"), 2)
+        self.assertNotIn("{_preshift_signature_cell(w)}</td></tr>", SRC)
+        self.assertEqual(
+            SRC.count("def _preshift_signature_cell(w, resolved=None)"), 1)
 
     def test_the_overlay_resolver_is_gone(self):
         self.assertNotIn("async def preshift_affirmations", SRC)

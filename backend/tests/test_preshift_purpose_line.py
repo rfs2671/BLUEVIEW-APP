@@ -262,8 +262,12 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
         affirmation in either direction, and the sheet points at the separate
         records in a footer instead. See test_preshift_affirmation_record.py."""
         self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"), 2)
+        # The cell now takes the signin_id -> signature IMAGE map as a second
+        # argument. That is not the overlay this test guards: it decides which
+        # picture to draw, never whether a man affirmed. See
+        # test_preshift_affirmation_record.py::test_the_cell_takes_no_AFFIRMATION_overlay.
         self.assertEqual(
-            SRC.count("{_preshift_signature_cell(w)}</td></tr>"), 2)
+            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"), 2)
 
     def test_the_column_headers_are_unchanged(self):
         self.assertEqual(

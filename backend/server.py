@@ -19093,6 +19093,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     elif log_type == "preshift_signin":
         type_title = "Pre-Shift Sign-In"
         workers = data.get("workers", [])
+        # ONE RESOLUTION FOR THE WHOLE ROSTER, and the SAME one the combined
+        # report does — two renderers print this sheet and a man who reads as
+        # signed on one and unsigned on the other is worse than either alone.
+        _ps_sigs = await _resolve_signin_signatures(workers)
         # THE SAME OVERLAY AS THE COMBINED REPORT. Two renderers print this
         # sheet, and a document that says AFFIRMED in one and NOT AFFIRMED in
         # the other is worse than one that is wrong in both.
@@ -19125,7 +19129,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w, _ps_sigs)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -28123,7 +28127,121 @@ def preshift_affirmation_footer(count: int) -> str:
     )
 
 
-def _preshift_signature_cell(w) -> str:
+async def _resolve_signin_signatures(workers) -> dict:
+    """`signin_id` -> base64 PNG, for roster rows whose signature lives in R2.
+
+    THE FILED SHEET WAS CALLING SIGNED MEN UNSIGNED. `preshift_signin.jsx`
+    persists `signin_id` on every row the new gate produces, and the merge that
+    builds those rows HARDCODES `worker_signature: None` in two of its three
+    passes — pass 1 with the comment "new system: frontend uses signin_id", and
+    pass 3 for compliance-alert rows. The app resolves the image through
+    `GET /api/signatures/{signin_id}`; this renderer only ever read
+    `worker_signature`. So every man who signed through the gate printed
+    "NO SIGNATURE ON FILE" on a filed compliance document while his signature
+    sat in the card-audit bucket. An inspector reading that page concludes he
+    did not sign.
+
+    RESOLVED SERVER-SIDE AND INLINED, not linked. The report is rendered to PDF
+    by WeasyPrint; an `<img src="/api/signatures/...">` would need it to make an
+    authenticated HTTP call back into this app, so the bytes are fetched here
+    and embedded as a data URI the same way every other signature on the sheet
+    already is.
+
+    THE SAME CHAIN THE ENDPOINT USES, so the two cannot diverge:
+        signin_id -> sign_ins -> (project_id, worker_enrollment_id, ET date)
+                  -> daily_signatures.signature_r2_key -> card-audit bucket
+    It is the CARD-AUDIT bucket, not R2_BUCKET_NAME — the endpoint says so and
+    falling through to the general bucket would silently find nothing.
+
+    BEST-EFFORT AND NEVER RAISES. A storage failure must not take down a filed
+    roster; an unresolved row is reported as UNRESOLVED and rendered as a third
+    state, never as an accusation. Bounded concurrency because a 60-man roster
+    is 60 object reads.
+    """
+    ids = []
+    for w in (workers or []):
+        if str(w.get("worker_signature") or w.get("signature") or "").strip():
+            continue                      # already inline; nothing to resolve
+        sid = str(w.get("signin_id") or "").strip()
+        if sid:
+            ids.append(sid)
+    if not ids:
+        return {}
+    out: dict = {}
+    try:
+        oids, by_oid = [], {}
+        for sid in set(ids):
+            try:
+                oid = ObjectId(sid)
+            except Exception:
+                continue
+            oids.append(oid)
+            by_oid[str(oid)] = sid
+        if not oids:
+            return {}
+        sign_ins = await db.sign_ins.find({"_id": {"$in": oids}}).to_list(2000)
+
+        from zoneinfo import ZoneInfo
+        _et = ZoneInfo("America/New_York")
+        wanted, key_to_sid = [], {}
+        for si in sign_ins:
+            ts = si.get("timestamp")
+            if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                date_ymd = ts.astimezone(_et).strftime("%Y-%m-%d")
+            else:
+                continue
+            k = (si.get("project_id"), si.get("worker_enrollment_id"), date_ymd)
+            wanted.append({
+                "project_id": k[0], "worker_enrollment_id": k[1], "calendar_date": k[2],
+            })
+            key_to_sid[k] = by_oid.get(str(si.get("_id")), "")
+        if not wanted:
+            return {}
+        sig_rows = await db.daily_signatures.find({"$or": wanted}).to_list(2000)
+
+        import card_audit as _ca
+        bucket = getattr(_ca, "CARD_AUDIT_BUCKET_NAME", "")
+        if not (_r2_client and bucket):
+            logger.warning("[preshift-sig] card-audit storage not configured; "
+                           f"{len(sig_rows)} signature(s) left unresolved")
+            return {}
+
+        sem = asyncio.Semaphore(8)
+
+        async def _fetch(row):
+            k = (row.get("project_id"), row.get("worker_enrollment_id"),
+                 row.get("calendar_date"))
+            sid = key_to_sid.get(k)
+            r2_key = row.get("signature_r2_key")
+            if not (sid and r2_key):
+                return
+            async with sem:
+                try:
+                    obj = await asyncio.to_thread(
+                        _r2_client.get_object, Bucket=bucket, Key=r2_key,
+                    )
+                    out[sid] = base64.b64encode(obj["Body"].read()).decode("ascii")
+                except Exception as e:
+                    logger.error(
+                        f"[preshift-sig] UNRESOLVED signin_id={sid} key={r2_key}: {e!r}"
+                    )
+
+        await asyncio.gather(*[_fetch(r) for r in sig_rows])
+    except Exception as e:
+        logger.error(f"[preshift-sig] signature resolution failed: {e!r}")
+        return out
+    _missing = len(set(ids)) - len(out)
+    if _missing > 0:
+        logger.warning(
+            f"[preshift-sig] {_missing} of {len(set(ids))} roster signature(s) "
+            "could not be resolved; those rows print as unavailable, NOT as unsigned"
+        )
+    return out
+
+
+def _preshift_signature_cell(w, resolved=None) -> str:
     """The Signature column. TWO STATES, AND NEITHER MENTIONS AFFIRMATION.
 
     THIS COLUMN USED TO ASSERT A CLAIM IT DID NOT OWN. It printed NOT AFFIRMED
@@ -28149,7 +28267,27 @@ def _preshift_signature_cell(w) -> str:
     """
     _sig = str(w.get("worker_signature") or w.get("signature") or "").strip()
     if not _sig:
-        return '<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>'
+        # ── THE THIRD STATE, AND WHY IT HAS TO EXIST ────────────────────────
+        # A row can carry `signin_id` instead of an inline image — that is what
+        # the new gate produces, and `_resolve_signin_signatures` fetches it.
+        # When the row HAS a signin_id and resolution failed, we do not know
+        # that the man is unsigned; we know we could not read his signature.
+        # Printing NO SIGNATURE ON FILE there is a finding against a named man
+        # from a lookup that failed, which is the same defect this function's
+        # docstring already forbids one dimension over. So it says what is true.
+        # isinstance, not truthiness: a non-string in the map would reach
+        # `.startswith` and raise, and a renderer that raises does not skip a
+        # row -- it takes down the whole filed PDF.
+        _b64 = (resolved or {}).get(str(w.get("signin_id") or "").strip())
+        if isinstance(_b64, str) and _b64.strip():
+            _sig = _b64.strip()
+        elif str(w.get("signin_id") or "").strip():
+            return (
+                '<span style="color:#b45309;">Signature on file '
+                '&mdash; image unavailable</span>'
+            )
+        else:
+            return '<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>'
     _src = _sig if _sig.startswith("data:") else f"data:image/png;base64,{_sig}"
     return (
         f'<img src="{_src}" alt="Signature" '
@@ -29604,6 +29742,10 @@ async def generate_combined_report(
         # Affirmation only. Every other cell below reads `w`, the stored row.
         # A COUNT FOR THE FOOTER, not an overlay onto a man's row.
         _affirm_n = await preshift_affirmation_count(db, project_id, date)
+        # Resolve R2-backed signatures ONCE for the whole roster, before the
+        # loop: the cell renderer is sync and a per-row await would serialise
+        # sixty object reads.
+        _ps_sigs = await _resolve_signin_signatures(pd.get("workers", []))
         w_rows = ""
         for w in pd.get("workers", []):
             # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
@@ -29629,7 +29771,7 @@ async def generate_combined_report(
                     f'<td {TD}>{w.get("osha_number") or ""}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w)}</td></tr>'
+                    f'<td {TD}>{_preshift_signature_cell(w, _ps_sigs)}</td></tr>'
                 )
 
         ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature", show_affirmation=False)
