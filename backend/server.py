@@ -38060,6 +38060,59 @@ def _cosine_similarity(a: list, b: list) -> float:
     return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
+async def _live_plan_file_ids(project_id: str) -> list:
+    """The `project_files` ids this project still has, as index `file_id`s.
+
+    ── WHY A SEARCH HAS TO ASK THIS ───────────────────────────────────────
+    DELETING A FILE DOES NOT DELETE ITS INDEX ROWS.
+    `DELETE /projects/{id}/files/{file_id}` removes the R2 source object and
+    hard-deletes the `project_files` row, and touches `document_page_index`
+    not at all. Production carries 44 such rows across 8 files today.
+    They are not inert: this retriever searches the index, so a WhatsApp
+    answer can name a sheet, offer its image, and tell a superintendent to
+    "open it in the Levelog app under Plans & Files" — where it does not
+    exist. A well-formed answer with nothing behind it, which is the same
+    failure as an attestation over a roster nobody read.
+
+    SILENTLY OMITTED, NOT REPORTED AS UNAVAILABLE. A result he cannot open is
+    worse than no result: "no matching sheet" sends him to look properly,
+    while "A-301, unavailable" reads as a system fault and invites a retry
+    that cannot succeed. The retriever already answers "couldn't find a
+    matching sheet" when the pool is empty, and that sentence is true here.
+
+    THIS IS THE READ-SIDE HALF ONLY. It does not delete anything and does not
+    stop new orphans arriving — the delete endpoint still leaves rows behind,
+    which is a separate change with a separate owner. This one holds even if
+    that sweep never runs.
+
+    CHEAP, AND MEASURED RATHER THAN ASSUMED: 26 live `project_files` rows
+    across the whole database against 287 index rows. One projected query per
+    plan question, on a path that already runs a vector search and a VLM call.
+    Not cached deliberately — a stale allow-list would either resurrect a
+    deleted sheet or hide a freshly uploaded one, and both are worse than the
+    query.
+
+    RETURNS None WHEN IT COULD NOT LOOK, and the caller then does not filter.
+    Neither of the other two options is acceptable: an empty list would read as
+    "every sheet in this project is deleted" and answer "couldn't find a
+    matching sheet" for a project whose drawings are all present, and RAISING
+    would be worse still — `_handle_plan_query` is launched with
+    `asyncio.create_task` and nothing awaits it, so an exception becomes an
+    unhandled task exception and the man who asked gets SILENCE. Falling back
+    to unfiltered is exactly today's behaviour, which is the one degradation
+    that cannot be worse than what shipped before this.
+    """
+    try:
+        rows = await db.project_files.find(
+            {"project_id": project_id, "is_deleted": {"$ne": True}},
+            {"_id": 1},
+        ).to_list(2000)
+        return [str(r["_id"]) for r in rows]
+    except Exception as e:
+        logger.warning(f"live plan file ids lookup failed for {project_id}: {e!r}")
+        return None
+
+
 async def _retrieve_plan_candidates(
     project_id: str,
     parsed: dict,
@@ -38078,12 +38131,21 @@ async def _retrieve_plan_candidates(
 
     Hard filters: discipline + floor (if extracted), and always exclude
     spec pages (is_spec_page=True or sheet_title='[SPECIFICATION PAGE]').
+
+    AND ALWAYS EXCLUDE A PAGE WHOSE FILE NO LONGER EXISTS. See
+    `_live_plan_file_ids` below — a citation to a deleted drawing is a
+    well-formed answer with nothing behind it.
     """
     base_filter: Dict[str, Any] = {
         "project_id":   project_id,
         "is_spec_page": {"$ne": True},
         "sheet_title":  {"$ne": "[SPECIFICATION PAGE]"},
     }
+    # None means the lookup failed; filtering on it would answer "no matching
+    # sheet" for a healthy project. Absent filter == today's behaviour.
+    live_ids = await _live_plan_file_ids(project_id)
+    if live_ids is not None:
+        base_filter["file_id"] = {"$in": live_ids}
 
     # Hard filters — normalize discipline to the 2-letter code stored in the
     # index ('ME', 'AR', 'ST', etc). The agent sometimes passes the full
