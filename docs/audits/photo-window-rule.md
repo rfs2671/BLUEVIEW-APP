@@ -60,7 +60,7 @@ further objections, any one of which is fatal:
 *idea* — it is the same predicate `sweep_stale_end_of_day_logs` uses, `date < eastern_date(now)`
 (`server.py:4368`) — but it is not the boundary the system actually observes. The sweep
 evaluates that predicate at 03:00, not at 00:00 (`CronTrigger(hour=3, minute=0,
-timezone="America/New_York")`, `server.py:41949`). So the instant a daily narrative really
+timezone="America/New_York")`, `server.py:42074`). So the instant a daily narrative really
 stops being live is already 03:00 on D+1. Choosing midnight would introduce a **second**
 boundary three hours before the one that already exists, and a CP would have to hold two
 different end-of-days in his head for the same document.
@@ -101,11 +101,11 @@ readers would have to consult, and `LOGBOOK_TIMING_CLASS` is not consulted at al
 ## 2. How the append endpoint lives under this rule
 
 `POST /api/logbooks/{id}/activity-photo` — `append_activity_photo`,
-`backend/server.py:23127-23130`.
+`backend/server.py:23208-23211`.
 
 **Today it is unbounded in every direction.** It is the one write path that reads status
 without gating on it — its own comment says so: "STATUS IS READ, NOT GATED ON"
-(`server.py:23120`). It accepts a draft, it accepts a submitted log, it accepts a log
+(`server.py:23201`). It accepts a draft, it accepts a submitted log, it accepts a log
 frozen by the sweep, and it accepts all of them for a log dated any number of years ago.
 The status is consulted only to decide whether to stamp `added_after_filing`. So the
 endpoint is currently the only way to change the content of a frozen compliance record, and
@@ -341,7 +341,7 @@ belongs to the operator, not to this change.
 
 ### B. `_logbook_photo_is_renderable` drops a missing photograph silently
 
-`backend/server.py:353-355`, consumed at `27432` (a count) and `27503` (the tile loop):
+`backend/server.py:353-355`, consumed at `27557` (a count) and `27628` (the tile loop):
 
 ```python
 if not _logbook_photo_is_renderable(_photo):
@@ -350,7 +350,7 @@ if not _logbook_photo_is_renderable(_photo):
 
 `_logbook_photo_sources` returns the list of surviving copies — enhanced, thumb, original,
 and the two base64 rungs. When all of them are gone the helper returns `False` and the
-report `continue`s past the tile with **no output of any kind**. The `photo_count` at 27432
+report `continue`s past the tile with **no output of any kind**. The `photo_count` at 27557
 excludes it too, so the count on page 1 and the grid agree with each other and both disagree
 with the signed record.
 
@@ -371,13 +371,13 @@ every surviving photograph are preserved, carrying:
 - no `<img>` and no URL. A broken-image glyph is a rendering failure; this is a statement of
   fact about the record and must not be able to look like a network problem.
 
-And **`photo_count` at 27432 must count it.** The count's job is to say how many photographs
+And **`photo_count` at 27557 must count it.** The count's job is to say how many photographs
 the record carries, not how many still resolve — the current behaviour quietly makes the
 count agree with the loss.
 
 Styling to match the existing tiles: inline styles only, no flex. The same string is emailed
 as HTML and rendered to PDF by WeasyPrint, and
-`_photo_added_after_filing_caption` (`server.py:377-405`) documents that constraint for the
+`_photo_added_after_filing_caption` (`server.py:378-405`) documents that constraint for the
 adjacent caption.
 
 **Not built here — the report renderer belongs to another worker.** Reported so it lands with
