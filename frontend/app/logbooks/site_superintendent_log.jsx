@@ -43,6 +43,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Plus, Trash2, Check, X, ChevronDown, ChevronRight } from 'lucide-react-native';
 
 import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
+import { chooseEditableLog } from '../../src/utils/logbookEditable';
 // THE TIME PICKER, AND IT IS THE ONE THIS REPO ALREADY OWNS. concrete,
 // crane, hot_work and toolbox_talk render this same component; a fifth screen
 // is not the moment to reach for a package. Every picker on npm carries a
@@ -558,21 +559,33 @@ export default function SiteSuperintendentLog() {
       const arr = await logbooksAPI.getByProject(projectId, LOG_TYPE, logDate);
       const list = Array.isArray(arr) ? arr : (arr?.items || []);
       // Prefer the EDITABLE document — an amendment child over its locked
-      // parent — the same rule every other editor's load applies.
-      const existing = list.find((l) => l.is_locked !== true) || list[0] || null;
+      // parent — through the SHARED rule, which is not what stood here.
+      //
+      // `l.is_locked !== true` is the server's dedupe filter for IMMEDIATE
+      // types, copied without the condition that makes it correct. THIS log is
+      // END_OF_DAY: it is submitted when the CP signs it and stays unlocked
+      // until the overnight sweep freezes it, so for the hours in between the
+      // old predicate picked a FILED statutory record and handed it to the
+      // editor as a draft — with `setLocked(false)`, so the form was live.
+      // Opening it is enough to rewrite it: hydrate populates the fields and
+      // they are all in the autosave deps.
+      //
+      // `chooseEditableLog` asks `status !== 'submitted' && !is_locked`, plus
+      // withdrawn. Every clause matters here and none of them was being asked.
+      const { log: existing, readOnly } = chooseEditableLog(list);
       if (existing) {
         setExistingLogId(existing.id || existing._id);
-        setLocked(existing.is_locked === true);
+        setLocked(readOnly);
         // AND THE LOCK IS RECORDED ON THE DEVICE. Without this the offline
         // finalize lock never engages for a log frozen on the server by
         // someone else's session, and a reopen with no signal would offer an
         // editable form over a filed statutory record.
-        if (existing.is_locked === true) markFinalized(_key);
+        if (readOnly) markFinalized(_key);
         hydrate(existing.data || {});
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       }
-      applyHeld(existing?.is_locked === true);
+      applyHeld(!!existing && readOnly);
     } catch (_e) {
       // A failed read is not an empty log. Leave the form as it is and let him
       // work offline — which now means something, because the draft above is

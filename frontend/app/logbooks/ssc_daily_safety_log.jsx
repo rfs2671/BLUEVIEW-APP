@@ -39,6 +39,7 @@ import { spacing, outdoor } from '../../src/styles/theme';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
+import { chooseEditableLog } from '../../src/utils/logbookEditable';
 
 /**
  * SSC / SSM DAILY SAFETY LOG — the daily narrative, on the shared stepper.
@@ -250,9 +251,15 @@ export default function SSCDailySafetyLog() {
       // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
       // locked original that shares (project, type, date).
       const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      const existing = arr.find((l) => !l.is_locked) || arr[0] || null;
+      // THE SHARED RULE, not a copy of the server's dedupe filter. What stood
+      // here -- `arr.find((l) => !l.is_locked)` -- is the IMMEDIATE-type
+      // exclusion lifted without the condition that makes it correct, and it
+      // selects a SUBMITTED-but-unlocked record as the editable one. See
+      // src/utils/logbookEditable.js: two filed records were overwritten that
+      // way, by opening them.
+      const { log: existing, readOnly } = chooseEditableLog(arr);
       if (existing) {
-        if (existing.is_locked) { setLocked(true); markFinalized(_key); }
+        if (readOnly) { setLocked(true); markFinalized(_key); }
         setExistingLogId(existing.id || existing._id);
         setDetails(detailsFromData(existing.data || {}));
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
