@@ -127,6 +127,16 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
   // now nobody else can see this log and no inspector can be shown it.
   const notOnServer = refusedSource === 'unsynced';
 
+  // AND A FIFTH. The content is on the server and the LOCK IS SIMPLY ABSENT —
+  // draftSync's drain reached a signed draft it was never asked to freeze
+  // (`draft.finalized` false) on a type nothing else closes. Both halves of
+  // `notLockedHint` are false here: the log is not "frozen on this device
+  // only" (the draft was never finalized locally either), and the server
+  // refused nothing, so there is no problem to fix and nothing for a retry to
+  // achieve. It shares the NOT LOCKED ON THE SERVER title, which is exactly
+  // true, and takes its own hint.
+  const freezeUnclaimed = refusedSource === 'unfrozen';
+
   // `undefined` = no refusal on record; `null` = refused with no recognised code.
   const notLockedBanner = refusedCode === undefined ? null : (
     <View style={s.warnBanner}>
@@ -147,7 +157,9 @@ export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, o
               ? t('notOnServerHint')
               : neverSaved
                 ? t('notPushedHint')
-                : t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
+                : freezeUnclaimed
+                  ? t('notLockedHintUnfrozen')
+                  : t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
         </Text>
       </View>
     </View>

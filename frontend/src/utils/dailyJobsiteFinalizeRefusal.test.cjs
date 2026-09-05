@@ -155,6 +155,8 @@ function loadDraftSync() {
       '@react-native-community/netinfo': { addEventListener: () => () => {} },
       './api': { logbooksAPI: {} },
       './logbookDrafts': {
+        // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+        markFinalized: async () => {},
         getPendingKeys: async () => [],
         readDraft: async () => null,
         setDraftBackendId: async () => {},

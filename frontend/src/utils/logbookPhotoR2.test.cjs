@@ -422,6 +422,8 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
           },
         },
         './logbookDrafts': {
+          // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+          markFinalized: async () => {},
           getPendingKeys: async () => ['logbook_draft:proj1:daily_jobsite:2026-08-07'],
           readDraft: async () => draft,
           setDraftBackendId: async () => {},
@@ -465,6 +467,8 @@ section('persistPhoto NO LONGER FAILS SILENTLY');
         '@react-native-community/netinfo': { addEventListener: () => () => {} },
         './api': { logbooksAPI: { update: async () => {}, finalize: async () => {} } },
         './logbookDrafts': {
+          // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+          markFinalized: async () => {},
           getPendingKeys: async () => ['logbook_draft:proj1:daily_jobsite:2026-08-07'],
           readDraft: async () => draft,
           setDraftBackendId: async () => {},

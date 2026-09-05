@@ -43,6 +43,8 @@ const RN_STUBS = {
   '@react-native-community/netinfo': { addEventListener: () => () => {} },
   './api': { logbooksAPI: {} },
   './logbookDrafts': {
+    // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+    markFinalized: async () => {},
     getPendingKeys: async () => [],
     readDraft: async () => null,
     setDraftBackendId: async () => {},
@@ -87,6 +89,8 @@ console.log('\n-- a relative import resolves FOR REAL --');
           },
         },
         './logbookDrafts': {
+          // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+          markFinalized: async () => {},
           ...RN_STUBS['./logbookDrafts'],
           getPendingKeys: async () => [KEY],
           readDraft: async () => ({
