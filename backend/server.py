@@ -28902,13 +28902,23 @@ def render_signature_html(sig, label="CP Signature", show_affirmation=True):
         )
 
     def _img(b64):
+        # NO BORDER. A signature is ink on the page, not a framed exhibit; the
+        # box read as a form field on a document whose whole point is that a
+        # person signed it.
         return ('<img src="data:image/png;base64,' + b64
-                + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+                + '" style="max-width:280px;height:auto;" />')
 
     if isinstance(sig, str):
         return _wrap(label, _img(sig))
     if isinstance(sig, dict):
-        signer = sig.get("signer_name") or sig.get("signerName") or ""
+        # THROUGH THE SAME NORMALISER AS EVERY OTHER NAME ON THIS DOCUMENT.
+        # `signer_name` is stamped onto the signature object at signing time
+        # from whatever the man typed; every other rendering of his name goes
+        # through `_capitalize_first(logbook["cp_name"])`. So one filed report
+        # carried "CP Signature (michael Cespedes):" beside "Michael Cespedes"
+        # -- two spellings of one man on one page, from two sources.
+        signer = _capitalize_first(
+            sig.get("signer_name") or sig.get("signerName") or "")
         full_label = f"{label} ({signer})" if signer else label
         data_b64 = sig.get("data")
         # 1) base64 raster (legacy path / pre-rendered).
@@ -29832,12 +29842,20 @@ async def generate_combined_report(
         sup_sig_html = ""
         sup_sig_raw = daily_log.get("superintendent_signature")
         if sup_sig_raw and isinstance(sup_sig_raw, dict):
-            sn = sup_sig_raw.get("signer_name", "Superintendent")
+            # THROUGH THE NORMALISER, like every other name on this page.
+            # These two blocks read signer_name raw, which is the same
+            # "michael Cespedes" beside "Michael Cespedes" defect the
+            # shared renderer just had, in the two places that do not use it.
+            sn = _capitalize_first(
+                sup_sig_raw.get("signer_name") or "Superintendent")
             sd = sup_sig_raw.get("data")
             inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(sd, str) and sd:
+                # NO BORDER, same as render_signature_html's _img. These two
+                # blocks are hand-rolled copies of that renderer and carried
+                # the frame it just lost.
                 inner = (f'<img src="data:image/png;base64,{sd}" '
-                         'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+                         'style="max-width:300px;height:auto;" />')
             if inner:
                 sup_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
@@ -29853,12 +29871,13 @@ async def generate_combined_report(
         cp_sig_html = ""
         cp_sig_raw = daily_log.get("competent_person_signature")
         if cp_sig_raw and isinstance(cp_sig_raw, dict):
-            cn = cp_sig_raw.get("signer_name", "Competent Person")
+            cn = _capitalize_first(
+                cp_sig_raw.get("signer_name") or "Competent Person")
             cd = cp_sig_raw.get("data")
             inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(cd, str) and cd:
                 inner = (f'<img src="data:image/png;base64,{cd}" '
-                         'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+                         'style="max-width:300px;height:auto;" />')
             if inner:
                 cp_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
@@ -30783,17 +30802,18 @@ async def generate_combined_report(
     <td style="background-color:#f8fafc;padding:20px 40px;border-bottom:1px solid #e2e8f0;" bgcolor="#f8fafc">
       <table cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr>
-          <td width="33%" valign="top" style="vertical-align:top;">
+          <td width="50%" valign="top" style="vertical-align:top;">
             <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">DATE</span><br />
             <span style="font-size:15px;color:#0A1929;font-weight:500;">{_pg1_date}</span>
           </td>
-          <td width="34%" valign="top" style="vertical-align:top;">
+          <!-- WORKERS AT THE GATE WAS THE THIRD CELL HERE. It is printed
+               again on page 2, where the roster it counts actually appears, so
+               on the cover it was a number with nothing under it. The two
+               remaining cells widen to fill the row rather than leaving the
+               gap the removal would otherwise make. -->
+          <td width="50%" valign="top" style="vertical-align:top;">
             <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">ADDRESS</span><br />
             <span style="font-size:15px;color:#0A1929;font-weight:500;">{project_address or 'N/A'}</span>
-          </td>
-          <td width="33%" valign="top" style="vertical-align:top;">
-            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">WORKERS AT THE GATE</span><br />
-            <span style="font-size:15px;color:#0A1929;font-weight:500;">{checkin_count}</span>
           </td>
         </tr>
       </table>
