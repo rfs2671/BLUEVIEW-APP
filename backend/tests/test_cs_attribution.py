@@ -321,14 +321,43 @@ class ItemTwoSaysWhereItCameFrom(unittest.TestCase):
         self.assertNotIn("daily_jobsite", code)
         self.assertNotIn("activities", code)
 
-    def test_the_document_prints_which_it_was(self):
-        for source, expected in (("adopted", "adopted from the daily jobsite log"),
-                                 ("own", "own account")):
+    def test_the_document_prints_NEITHER_because_the_flag_is_never_written(self):
+        """THE RENDER IS REMOVED, AND THIS TEST INVERTS RATHER THAN GOES.
+
+        It used to synthesise `source` by hand and assert the line appeared.
+        That passed for four values the application cannot produce: the
+        superintendent screen writes `progress: { summary }` and no third key,
+        so EVERY log ever filed resolves to PROVENANCE_UNMARKED and the line
+        never rendered on a real document.
+
+        Worse than unwritten, `adopted` is UNREACHABLE -- the flag separates the
+        CP's adopted text from the superintendent's own, and that screen never
+        fetches the CP's log, so there is nothing to adopt. A flag with one
+        reachable value carries no information, and printing a distinction the
+        data cannot make is the app asserting something it does not know.
+
+        The FIELD and `item_provenance` stay, correct and tested. Restore the
+        render with the adoption UI, not before."""
+        for source in ("adopted", "own"):
             html = server._superintendent_log_html({
                 "date": "2026-08-30",
                 "data": {"presence": {"printed_name": "M R"},
                          "progress": {"summary": "formwork", "source": source}}})
-            self.assertIn(expected, html)
+            self.assertNotIn("adopted from the daily jobsite log", html)
+            self.assertNotIn("own account", html)
+            # Sentence-cased by the renderer, which is why this reads
+            # "Formwork" -- the point is that item 2's TEXT is untouched;
+            # only the provenance line under it is gone.
+            self.assertIn("Formwork", html, "the summary itself still prints")
+
+    def test_the_resolver_is_kept_and_still_correct(self):
+        """Removing the render must not remove the logic the UI will need."""
+        self.assertEqual(
+            SL.item_provenance({"progress": {"source": "adopted"}}),
+            SL.PROVENANCE_ADOPTED)
+        self.assertEqual(
+            SL.item_provenance({"progress": {"summary": "x"}}),
+            SL.PROVENANCE_UNMARKED)
 
     def test_and_prints_NOTHING_for_an_unmarked_one(self):
         html = server._superintendent_log_html({

@@ -28987,19 +28987,33 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None,
         else:
             body = _cs_item_body(
                 item, block if isinstance(block, dict) else {}, cs_name)
-        # ITEM 2 SAYS WHERE IT CAME FROM. Adopted from the CP's log unedited,
-        # or his own once he changed it. Unmarked on a log filed before the
-        # flag existed -- NOT "adopted", because a record that predates the
-        # question has not answered it.
-        if item.get("provenance") and body and body != NOT_RECORDED:
-            _prov = cs_item_provenance(data)
-            _prov_text = {
-                PROVENANCE_ADOPTED: "adopted from the daily jobsite log",
-                PROVENANCE_OWN: "the superintendent&#39;s own account",
-            }.get(_prov)
-            if _prov_text:
-                body += ('<br /><span style="font-size:11px;color:#64748b;">'
-                         + _prov_text + '</span>')
+        # ── THE PROVENANCE LINE IS NOT PRINTED. THE CLIENT HALF WAS NEVER
+        #    BUILT, AND A FLAG WITH ONE REACHABLE VALUE CARRIES NOTHING. ─────
+        #
+        # Item 2 was to say where its text came from: "adopted from the daily
+        # jobsite log" unedited, or "the superintendent's own account" once he
+        # changed it. `item_provenance` reads `data["progress"]["source"]`, and
+        # NOTHING WRITES IT. The superintendent screen writes
+        # `progress: { summary }` and no third key -- so every log ever filed
+        # resolves to PROVENANCE_UNMARKED.
+        #
+        # AND IT IS UNREACHABLE, NOT MERELY UNWRITTEN. The flag distinguishes
+        # adopted text from his own, but that screen never fetches the CP's log
+        # at all, so there is no adoption to record. `PROVENANCE_ADOPTED` cannot
+        # be produced by any code path that exists.
+        #
+        # THE BACKEND WAS RIGHT AND THE CLIENT NEVER FOLLOWED, and the record of
+        # that belongs here. `superintendent_log.py` says provenance shipped
+        # first because "retrofitting provenance onto filed records is
+        # impossible" -- sound reasoning, and the consequence of the client half
+        # never landing is that every record filed in the interim is permanently
+        # unmarked. Exactly the outcome the comment was written to prevent.
+        #
+        # THE FIELD AND THE RESOLVER STAY. `item_provenance` is correct, tested,
+        # and handles all three values; it is the RENDER that was asserting a
+        # distinction the data cannot make. When the adoption UI lands -- fetch
+        # the CP's log, offer to adopt, track edited-since, and thread the flag
+        # through hydrate and snapshot/restore -- restore these six lines.
         cite = (item.get("citation") or "") if legal_record else ""
         rows += (
             f'<tr><td {_CS_TD} valign="top" width="34%">'
