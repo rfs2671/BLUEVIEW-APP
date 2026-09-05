@@ -572,7 +572,25 @@ export default function ScaffoldMaintenanceLog() {
                 key={opt}
                 label={opt}
                 selected={answers[q.key] === opt}
-                onPress={() => setAnswer(q.key, opt)}
+                // TAPPING THE SELECTED CHIP CLEARS IT.
+                //
+                // These were set-only, so a mis-tap was uncorrectable except by
+                // choosing a different answer -- and on this form "N/A" and
+                // "I have not answered this yet" are DIFFERENT facts. The
+                // renderers already tell all four states apart (blank -> "Not
+                // recorded", N/A -> "N/A", YES, NO); the control was the one
+                // place the fourth was unreachable once he had left it.
+                //
+                // '' RATHER THAN DELETING THE KEY: the renderers' `has()` treats
+                // an empty string as absent, so a cleared answer reads exactly
+                // like one never given -- which is what it is.
+                //
+                // NOT THE SAME AS THE SUPERINTENDENT'S "was it corrected?"
+                // chips, which siteSuperintendentSign.test.cjs deliberately
+                // forbids from untoggling: there a finding EXISTS, so leaving
+                // the question open is a gap. Here the question itself may
+                // simply not have been reached yet.
+                onPress={() => setAnswer(q.key, answers[q.key] === opt ? '' : opt)}
               />
             ))}
           </View>
