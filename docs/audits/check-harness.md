@@ -186,6 +186,85 @@ silently. Seven `server.py:NNNN` references drifted under six commits — one by
 4,221 lines — and one named a function that no longer existed. Cite the symbol;
 let the number be a hint.
 
+### The third payoff came from OVERLAP, not from replay
+
+The two above were caught by re-reading something that had already been
+combined. The third was caught before there was anything to re-read, and the
+mechanism is worth separating out.
+
+Two workers ran against disjoint assignments that both touched report
+rendering. One was porting the combined report's print block to
+`generate_single_logbook_html`. The other was measuring, in a container where
+WeasyPrint actually loads, why the combined report's cover page prints blank.
+
+The second measured that an unqualified `tr { break-inside: avoid }` matches the
+**outer layout table's single content row** — the one holding the whole document
+body. WeasyPrint will not split that row, so it relocates it to a fresh sheet
+and page 1 is left carrying only the header. Deleting that one rule moved a
+461px section off page 2 and back onto page 1: page-1 content bottom 265px →
+794px, seven pages → six.
+
+The first was, at that moment, copying that exact rule into a renderer whose
+shell is the same three-row shape. The port would have installed a measured
+defect on the inspector's PDF, and it would have read as a faithful port —
+because it *was* a faithful port.
+
+Neither worker could have found it alone. The measuring one was not touching the
+single-logbook renderer and had no reason to look at it. The porting one had no
+way to measure page geometry at all: WeasyPrint does not import on the authoring
+machine. **Running them in sequence would have shipped the defect and then found
+it.** Running them concurrently, on overlapping subject matter, found it before
+it landed.
+
+> Replay preserves text, not intent — so re-read. Concurrency surfaces what
+> neither party would have looked for — so let assignments overlap on subject
+> even when they are disjoint on files, and read the other one's result before
+> your own change lands.
+
+---
+
+## 8. A docstring is a claim about a relationship, and nothing checks it
+
+`generate_single_logbook_html` opened with:
+
+```python
+"""Generate standalone HTML for a single logbook entry.
+Reuses the same styling as the combined report."""
+```
+
+The second sentence was false for the whole life of the function, and it is what
+made the defect survive every read. A reader checking whether the print fix had
+reached both renderers had the answer handed to them in the docstring, and the
+answer was wrong.
+
+The defect it hid: the wrapper was `max-width:700px` on a ~794px A4 page, a dead
+strip down the right of every page of the PDF an inspector downloads. The
+combined report had found and fixed exactly this. The docstring asserted the
+relationship under which that fix would have applied here too.
+
+**And the 700px was itself borrowed from a medium this document does not have.**
+The combined report is genuinely dual-medium — it is emailed *and* handed to
+WeasyPrint — so its 680px column is a real constraint and the `@media print`
+release is a real compromise. `generate_single_logbook_html` has exactly one
+caller, which returns `application/pdf`. Nothing emails it. The column was a
+constraint inherited by resemblance, and the docstring is what carried the
+resemblance forward.
+
+This is the same family as §5's *fixtures assert a fidelity nothing checks* and
+the stale-comment corollary in §6: **prose that states a relationship, sitting
+where the next reader will trust it, with no mechanism that fails when the
+relationship stops holding.** A comment citing code as precedent, a fixture
+claiming to be production-shaped, a docstring claiming a shared implementation —
+one shape.
+
+> A docstring that says *this is like that* is an assertion. Either make it one
+> — a test that fails when the two diverge — or say what the code does and stop.
+
+The port that fixed it also refused to copy the combined report's `h2` and
+`.doc-section` rules, because this renderer emits neither. A rule for a selector
+that never appears reads on the next audit as a protection that is in place —
+the same defect as the false docstring, spelled in CSS.
+
 ---
 
 ## 7. Absent versus empty — four instances, one shape
@@ -234,3 +313,8 @@ Before a check is worth having:
       than a bare word?
 - [ ] If it names a fixture as production-shaped, has anyone queried
       production?
+- [ ] Does any prose in the change assert a RELATIONSHIP — "same as", "reuses",
+      "mirrors", "production-shaped"? If nothing fails when that stops being
+      true, either write the check or delete the claim.
+- [ ] Does the change add a rule for a selector, key or branch this code does
+      not actually emit? Dead protection reads as protection.
