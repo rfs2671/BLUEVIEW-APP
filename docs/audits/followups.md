@@ -4,6 +4,87 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-05 — one agent, one worktree. Never the primary checkout.
+
+**Two collisions in one day, and the second nearly shipped a roster picker
+inside another agent's documentation PR.** This is not a rule to remember; it is
+a working arrangement that has to change.
+
+**And the mechanism was already right.** Ten worktrees had been in use all day
+and none of them collided with anything. Both failures were in the PRIMARY
+checkout, by agents who had a working arrangement available and did not use it.
+That is a better finding than "we need isolation", and it is the one to keep:
+the tooling was not missing, the discipline was.
+
+
+### What happened
+
+**Collision 1 — the shared stash.** A control run used `git stash push` /
+`git stash pop` to test a fix against pre-fix code. Between the two, another
+agent pushed a stash of its own. The pop took *theirs*, leaving a conflicted
+`backend/server.py` in a tree that had no business holding one. Nothing was
+lost — their stash was still in the list, and the branch had no `server.py`
+commits, so the file was restored from HEAD.
+
+**Collision 2 — the shared checkout.** Between a `git checkout -b
+feat/preshift-worker-picker` and the `git commit` that followed it, the working
+tree was switched to `docs/homepage-source-of-truth`, a branch created by
+another agent. The commit landed on **their** branch, on top of **their**
+commit. The `git push -u origin feat/preshift-worker-picker` that followed
+reported success — because that branch existed and was up to date at `main`.
+
+**The near-miss, stated plainly:** had the branch pointer not been checked
+afterwards, the picker — a new endpoint, a new component and a change to the
+pre-shift editor — would have shipped inside a documentation PR. Nobody
+reviewing either would have seen it: the docs reviewer would have skimmed past
+seven unexplained files, and the picker would have had no PR at all.
+
+Recovery, for the record: tag the commit on a safety ref, `checkout` the correct
+branch, `cherry-pick`, then restore the other branch with `git branch -f` —
+which moves a ref without touching any working tree, and is safe precisely
+because that branch is no longer checked out.
+
+### What the arrangement should be
+
+**Worktrees already work here, and were already in use.** Ten existed in this
+session's own scratchpad while both collisions happened. Nothing in this repo
+assumes a single checkout — checked:
+
+| per-checkout thing | status |
+|---|---|
+| `node_modules` | symlinked from the primary; one install serves every worktree |
+| `.env` files | **none exist**; every secret comes from Railway's injected env |
+| Railway CLI link | linked at the **HOME** directory, not the repo — see below |
+| `frontend/dist`, `__pycache__`, `.expo` | build output, gitignored, per-worktree by nature |
+
+**THE RAILWAY LINK IS KEYED TO THE HOME DIRECTORY, NOT THE REPO**, and the
+assumption that it is per-directory is the one the next agent will make too —
+it was made here. `~/.railway/config.json` holds a single `projects` entry
+keyed `C:\Users\asddd`, so `railway run` and `railway ssh` resolve the linked
+project from anywhere beneath it. **Every production read taken today would
+have worked identically from a worktree**, including the ones under
+`AppData\Local\Temp`. There is nothing to re-link and nothing to copy.
+
+So the cost of one-worktree-per-agent is a `git worktree add` and a
+`node_modules` symlink. It was never a project; it was a habit.
+
+**The primary checkout is not a workspace.** Both collisions happened there. It
+should hold `main` and nothing else.
+
+### What a worktree does NOT fix
+
+`git stash` is **shared across every worktree** — `refs/stash` lives in the
+common git directory, not the per-worktree one. Collision 1 happened between a
+worktree and the primary checkout and would have happened between two
+worktrees. Separate *clones* would fix it, at the cost of a second object store;
+not using `git stash` fixes it for free.
+
+> For a control run against pre-fix code, use `git diff > x.patch` with
+> `git apply -R` / `git apply`, or a throwaway worktree at the parent commit.
+> Never `git stash` in a repository another agent can reach.
+
+---
+
 ## IDENTITY — 2026-09-05 — the stored worker name is rewritten on every returning tap
 
 **This is the mechanism that guarantees the duplicate-worker problem recurs, no

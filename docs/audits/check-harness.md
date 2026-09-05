@@ -15,6 +15,13 @@ wrong one, and both of those have happened here.
 
 ---
 
+> **If you read one section, read §10 — "Verify the pointer, not the report of
+> the action".** It is last only because `server.py` and
+> `test_weasyprint_break_inside_semantics.py` cite section numbers by number and
+> renumbering would break them. It generalises further than anything above it:
+> *a tool reporting its own success is describing its intent, not the world.*
+
+
 ## 1. Three patterns that work
 
 Named, so they can be cited instead of re-derived.
@@ -474,6 +481,45 @@ Not judgment, and not care. In every instance one mechanical step was skipped:
 
 ---
 
+## 10. Verify the pointer, not the report of the action
+
+Three instances, one shape: an operation reports success, and the only evidence
+it worked is the operation's own output.
+
+**`git push` said "Everything up-to-date".** It was — for the branch named. The
+commit had gone onto a *different* branch, because another agent switched the
+shared checkout between `checkout -b` and `commit`. `git log --oneline
+origin/<branch> -1` says where the branch actually points, and it costs two
+seconds. See followups.md for the arrangement that stops this at the source.
+
+**A merge is confirmed by `/api/version` reporting the squash SHA**, not by
+green CI. Green CI says the code would work if it were deployed.
+
+**A listing that returns 200 is not a listing.** `_r2_delete_prefix` read a
+`GET` that returned a CORS document as an empty page of results, and reported a
+successful sweep of nothing.
+
+> Ask what the OBSERVABLE STATE is after the action, and read that. A tool
+> reporting its own success is describing its intent, not the world.
+
+### The corollary: the test that already existed is the one that catches you
+
+Extracting `roster_for_window` out of `_roster_for_period` left `year` and
+`month` interpolated in an orphan-count warning — parameters that no longer
+existed on the function they were now inside. A `NameError` inside the LL196
+statutory attestation's own roster build, on any month with an orphaned
+check-in.
+
+Nothing in the new work would have found it: the picker never reaches that
+branch. `test_ll196_population` did, immediately — a test written for the defect
+that filing *already had*, catching a refactor that would have broken the filing
+a different way.
+
+> The argument for a test is rarely the bug it was written for. It is the next
+> person, changing something else.
+
+---
+
 ## Checklist
 
 Before a check is worth having:
@@ -505,3 +551,6 @@ Before a check is worth having:
       settles it.
 - [ ] If a population justifies the work, have you READ the set rather than
       only counted it? A real population can still be the wrong thing to act on.
+- [ ] After a push, a merge or a deploy, did you read the OBSERVABLE STATE —
+      the branch pointer, `/api/version`, the row count — or the command's own
+      report of itself?
