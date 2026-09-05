@@ -18802,7 +18802,15 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     # same fabrication in a different direction.
     #
     # False and 0 ARE captured values and render as captured.
-    NOT_RECORDED = "&mdash; Not recorded"
+    #
+    # THE LOCAL `NOT_RECORDED = "&mdash; Not recorded"` IS GONE. There were two
+    # constants with the same name and DIFFERENT literals -- this one and the
+    # module-level `"— Not recorded"` -- so the same absence read one way
+    # on the per-logbook PDF and another on the combined report, and each had a
+    # test pinning its own spelling. The module-level one wins because it is
+    # tied to the device: test_weather_display_and_chip_trade pins it against
+    # `fNotRecorded` in en.js, on the rule that one record must read the same in
+    # the app and in the PDF. The entity and the character render identically.
 
     def has(d, key):
         if not isinstance(d, dict) or key not in d:
@@ -19127,8 +19135,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
                     f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
                     f'<td {TD}>{w.get("osha_number") or ""}</td>'
-                    f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
-                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
+                    f'<td {TD}>{answer_label(w.get("had_injury"))}</td>'
+                    f'<td {TD}>{answer_label(w.get("inspected_ppe"))}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w, _ps_sigs)}</td></tr>'
                 )
 
@@ -19659,6 +19667,17 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 + cell(_osha_type_cell(e))
                 + cell(e.get("card_number"))
                 + cell(e.get("expiration"))
+                # LEFT AS IT IS, DELIBERATELY, AND THE CENSUS ENTRY STAYS OPEN.
+                # This column and its twin in the combined report spell "not
+                # signed" differently -- empty here, "&mdash;" there. Both
+                # attempts to unify them broke a documented rule of the
+                # document they were moved into: a bare "&mdash;" is banned in
+                # THIS renderer as indistinguishable from a placeholder, and
+                # "&mdash; Not recorded" is wrong on a REGISTER, whose own rule
+                # is that "the row is the record, and there is no unanswered
+                # form field" -- an absent tick is not an unanswered question.
+                # The divergence is cosmetic; breaking either convention to end
+                # it is not an improvement. Recorded rather than forced.
                 + cell("&#10003;" if e.get("signed") else "")
                 + "</tr>"
             )
@@ -19731,7 +19750,9 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 else:
                     v = checklist.get(k)
                     checked = bool(v.get("checked")) if isinstance(v, dict) else bool(v)
-                    val = "&#10003;" if checked else "No"
+                    # A tick against the word "No" mixed a glyph with a word
+                    # in one column. Both words now, through the one helper.
+                    val = answer_label(checked)
                 chk_rows += (
                     f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
                     f'<td {TD}>{val}</td></tr>'
@@ -22737,9 +22758,13 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     safety = log.get("safety_checklist", {}) or {}
     safety_html = ""
     for item_key, item_val in safety.items():
-        status = item_val.get("status", "N/A") if isinstance(item_val, dict) else str(item_val)
+        status = (answer_label(item_val.get("status"))
+                  if isinstance(item_val, dict) else answer_label(item_val))
         note = item_val.get("note", "") if isinstance(item_val, dict) else ""
-        safety_html += f"<tr><td>{item_key}</td><td>{status}</td><td>{note}</td></tr>"
+        # `item_key` reached paper as raw snake_case here, while the combined
+        # report's twin already title-cased it. Same key, two documents.
+        safety_html += (f'<tr><td>{item_key.replace("_", " ").title()}</td>'
+                        f"<td>{status}</td><td>{note}</td></tr>")
     
     corrective = log.get("corrective_actions", "N/A") if not log.get("corrective_actions_na") else "N/A"
     incident = log.get("incident_log", "N/A") if not log.get("incident_log_na") else "N/A"
@@ -27876,6 +27901,65 @@ def _display_sub_company(name):
 # and in the PDF.
 NOT_RECORDED = "— Not recorded"
 
+
+def answer_label(value, *, yes="Yes", no="No"):
+    """A stored answer as a LABEL, with absence stated rather than implied.
+
+    THREE ANSWERS, AND THE THIRD IS THE ONE THAT KEPT GETTING LOST: yes, no, and
+    "nobody answered". Twelve tables printed the raw stored value instead, which
+    produced, on filed compliance documents:
+
+        `no` under a column headed `Injury`, where it is unreadable as "no
+            injury" versus "the question was not asked"
+        the literal `True` in a Status column
+        `flag: True` inside a joined key/value cell
+        a tick against the WORD "No" in the same column
+
+    and worst, in `_cs_item_body`, an answered NO vanishing entirely -- its
+    guard was `value not in (None, "", False, [])`, and `False == 0` in Python,
+    so a false answer took the same branch as an absent one and the row read
+    "— Not recorded" on a BC 3301.13.13 statutory record.
+
+    THE MACHINERY EXISTED AND WAS SCOPE-TRAPPED. `_yn`, `has()` and
+    `toggle_map_rows` sit INSIDE `generate_single_logbook_html`, unreachable
+    from the combined report, `get_daily_log_pdf` and `_cs_item_body` -- eight
+    of the twelve sites. Their semantics were already right and already argued
+    in their own comments ("False and 0 ARE captured values and render as
+    captured"). Only their scope was wrong. This is that rule, at module level.
+
+    ABSENCE IS `None` OR AN EMPTY/WHITESPACE STRING, and nothing else. `False`
+    and `0` are answers and are rendered as answers -- that is the whole point.
+
+    CASE- AND TYPE-TOLERANT ON THE WAY IN, because the stored domain is wider
+    than any single writer: `preshift_signin.jsx` writes only lowercase
+    `'yes'`/`'no'`/`None` (verified against production: 329 rows, zero
+    capitalised, zero boolean), while test fixtures carry `"Yes"` and real
+    booleans. Reading tolerantly costs nothing; NORMALISING THE STORED VALUES
+    was ruled out, because the editor compares with strict lowercase equality
+    and a rewritten `"Yes"` would render as unselected and be silently
+    overwritten by the CP's first tap.
+
+    Anything it does not recognise is returned as written rather than guessed
+    at, so an unexpected value is visible instead of being flattened to "No".
+    """
+    if value is None:
+        return NOT_RECORDED
+    if isinstance(value, str):
+        v = value.strip()
+        if not v:
+            return NOT_RECORDED
+        low = v.casefold()
+        if low in ("yes", "y", "true", "checked"):
+            return yes
+        if low in ("no", "n", "false", "unchecked"):
+            return no
+        if low in ("na", "n/a"):
+            return "N/A"
+        return _capitalize_first(v)
+    if isinstance(value, bool):
+        return yes if value else no
+    return str(value)
+
 # The nine daily inspections, in the order the CP walks them. Order lives here
 # so the PDF does not print them in whatever order a dict happened to be built.
 # "Other" names no specific thing, so pass/fail says nothing about anything.
@@ -28651,15 +28735,29 @@ def _cs_item_body(item, block, cs_name):
         if isinstance(value, (list, tuple)):
             for entry in value:
                 if isinstance(entry, dict):
+                    # `if str(v or "").strip()` drops False and 0 for the same
+                    # reason the branch below did. A bool is an ANSWER.
                     parts = [f'<strong>{_capitalize_first(str(k).replace("_", " "))}:</strong> '
-                             f'{_sentence_case(str(v))}'
-                             for k, v in entry.items() if str(v or "").strip()]
+                             f'{answer_label(v) if isinstance(v, bool) else _sentence_case(str(v))}'
+                             for k, v in entry.items()
+                             if isinstance(v, bool) or str(v or "").strip()]
                     if parts:
                         rows.append(" &#183; ".join(parts))
                 elif str(entry or "").strip():
                     rows.append(_sentence_case(str(entry)))
         elif isinstance(value, str) and value.strip():
             rows.append(_sentence_case(value))
+        elif isinstance(value, bool):
+            # AN ANSWERED "NO" USED TO VANISH FROM A STATUTORY RECORD.
+            # The branch below reads `value not in (None, "", False, [])`, and
+            # `False == 0` in Python, so a false answer took the SAME path as an
+            # absent one: no row was appended, and if it was the item's only
+            # field the function returned NOT_RECORDED. The superintendent
+            # answered, and BC 3301.13.13 said he had not. `True` fared no
+            # better -- it printed the four characters `True`.
+            #
+            # Checked BEFORE that guard, because a bool must never reach it.
+            rows.append(answer_label(value))
         elif value not in (None, "", False, []):
             rows.append(str(value))
     if not rows:
@@ -29808,8 +29906,8 @@ async def generate_combined_report(
                     f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
                     f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
                     f'<td {TD}>{w.get("osha_number") or ""}</td>'
-                    f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
-                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td>'
+                    f'<td {TD}>{answer_label(w.get("had_injury"))}</td>'
+                    f'<td {TD}>{answer_label(w.get("inspected_ppe"))}</td>'
                     f'<td {TD}>{_preshift_signature_cell(w, _ps_sigs)}</td></tr>'
                 )
 
@@ -29850,7 +29948,8 @@ async def generate_combined_report(
         # Safety checklist
         safety_rows = ""
         for item_key, item_val in (daily_log.get("safety_checklist") or {}).items():
-            st = item_val.get("status", "N/A") if isinstance(item_val, dict) else str(item_val)
+            st = (answer_label(item_val.get("status"))
+                  if isinstance(item_val, dict) else answer_label(item_val))
             cb = item_val.get("checked_by", "") if isinstance(item_val, dict) else ""
             safety_rows += (
                 f'<tr><td {TD}>{item_key.replace("_", " ").title()}</td>'
@@ -30676,7 +30775,12 @@ async def generate_combined_report(
                 if isinstance(v, list):
                     v_str = ", ".join(str(item) if not isinstance(item, dict) else str(item) for item in v[:10])
                 else:
-                    v_str = ", ".join(f"{ik}: {iv}" for ik, iv in v.items() if iv)
+                    # `if iv` dropped False and 0; and a True printed as
+                    # `flag: True`. The bool branch below is the correct
+                    # rendering and was one level out of reach.
+                    v_str = ", ".join(
+                        f"{ik}: {answer_label(iv)}" for ik, iv in v.items()
+                        if isinstance(iv, bool) or iv)
             elif isinstance(v, bool):
                 v_str = "Yes" if v else "No"
             else:
