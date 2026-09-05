@@ -42268,16 +42268,45 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
     }
 
 
-@api_router.post("/projects/{project_id}/repair-file-names")
+@api_router.post(
+    "/projects/{project_id}/repair-file-names",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
 async def repair_file_names(project_id: str, current_user=Depends(get_admin_user)):
     """Fix existing project_files rows whose `name` / `r2_key` contain URL-encoded
     sequences (%20, %2F, etc.). Renames the R2 object and updates the DB record.
-    Safe to run repeatedly."""
+    Safe to run repeatedly.
+
+    ── THE PREMISE THAT MADE THIS A CROSS-TENANT WRITE ─────────────────────
+
+    The comment below used to end "the caller already matched project_id which
+    is scope enough", and NOTHING MATCHED IT. This route carried only
+    `Depends(get_admin_user)`, which admits any role in ("admin", "owner") --
+    and `register` gives every self-serve signup `role = "owner"`. There was no
+    `require_project_access` on the decorator and no `_assert_project_access`
+    in the body, so the path `project_id` went straight into the query and any
+    account that had registered could name ANOTHER TENANT'S project and drive
+    R2 `copy_object` + `delete_object` against its files.
+
+    A LEAKED READ IS RECOVERABLE. This was a WRITE to object storage, and the
+    delete half is not.
+
+    THE FIX IS THE DEPENDENCY THE NEXT ROUTE IN THIS FILE ALREADY CARRIES --
+    `POST /projects/{project_id}/reindex-document`, forty lines below, is
+    declared `dependencies=[Depends(require_approved), Depends(require_project_access)]`.
+    The correct pattern was adjacent the whole time. That is the ported-fix
+    shape again: applied to the route someone was reading.
+
+    THE company_id COMMENT'S OTHER HALF IS STILL TRUE and is kept: legacy rows
+    may carry no `company_id`, so filtering the ROWS by it would skip exactly
+    the ones needing repair. Scoping belongs on the CALLER, not on the row --
+    which is what the dependency now does.
+    """
     import urllib.parse as _urlparse
-    company_id = get_user_company_id(current_user)
-    # Do NOT filter by company_id — some legacy rows may have been written
-    # without a company_id field, and the caller already matched project_id
-    # which is scope enough.
+    # Row-level company filtering is deliberately absent: legacy rows may have
+    # been written without a company_id, and filtering on it would skip the
+    # very rows this repairs. The CALLER is scoped by require_project_access on
+    # the decorator above; the rows are scoped by project_id.
     query: Dict[str, Any] = {"project_id": project_id, "is_deleted": {"$ne": True}}
     files = await db.project_files.find(query).to_list(500)
     debug_info = []
