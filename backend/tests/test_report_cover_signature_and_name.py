@@ -54,6 +54,40 @@ class TheSignatureIsNotInABox(unittest.TestCase):
         self.assertIn("max-width:280px", html)
 
 
+class TheTwO_HAND_ROLLED_COPIES_TOO(unittest.TestCase):
+    """FOUND BY AN OVER-BROAD GREP DURING A REBASE RE-READ, WHICH IS THE POINT
+    OF DOING ONE.
+
+    `generate_combined_report` spells the signature block twice by hand for the
+    daily log's superintendent and competent-person signatures, instead of
+    calling `render_signature_html`. Both copies carried the border this change
+    removed from the shared renderer, and both read `signer_name` RAW — so
+    fixing the shared renderer alone would have left the same box and the same
+    two spellings on the daily-log section, one screen further down the same
+    document the operator was reading."""
+
+    def _block(self, marker):
+        i = _SRC.index(marker)
+        return _SRC[i:i + 1400]
+
+    def test_neither_hand_rolled_signature_has_a_border(self):
+        self.assertEqual(
+            _SRC.count("height:auto;border:1px solid #e2e8f0;border-radius:4px"), 0)
+
+    def test_both_normalise_the_signer_name(self):
+        for marker in ('sup_sig_raw.get("signer_name")',
+                       'cp_sig_raw.get("signer_name")'):
+            i = _SRC.index(marker)
+            self.assertIn("_capitalize_first", _SRC[max(0, i - 200):i + 60])
+
+    def test_the_defaults_survive_an_empty_name(self):
+        """`.get(k, default)` returns None for a stored null; `or default` is
+        what actually holds the fallback."""
+        for marker in ('sup_sig_raw.get("signer_name") or "Superintendent"',
+                       'cp_sig_raw.get("signer_name") or "Competent Person"'):
+            self.assertIn(marker, _SRC)
+
+
 class OneManHasOneSpelling(unittest.TestCase):
     def test_the_signer_name_is_capitalised_in_the_label(self):
         html = server.render_signature_html(

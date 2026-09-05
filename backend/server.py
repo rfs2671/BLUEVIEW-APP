@@ -29842,12 +29842,20 @@ async def generate_combined_report(
         sup_sig_html = ""
         sup_sig_raw = daily_log.get("superintendent_signature")
         if sup_sig_raw and isinstance(sup_sig_raw, dict):
-            sn = sup_sig_raw.get("signer_name", "Superintendent")
+            # THROUGH THE NORMALISER, like every other name on this page.
+            # These two blocks read signer_name raw, which is the same
+            # "michael Cespedes" beside "Michael Cespedes" defect the
+            # shared renderer just had, in the two places that do not use it.
+            sn = _capitalize_first(
+                sup_sig_raw.get("signer_name") or "Superintendent")
             sd = sup_sig_raw.get("data")
             inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(sd, str) and sd:
+                # NO BORDER, same as render_signature_html's _img. These two
+                # blocks are hand-rolled copies of that renderer and carried
+                # the frame it just lost.
                 inner = (f'<img src="data:image/png;base64,{sd}" '
-                         'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+                         'style="max-width:300px;height:auto;" />')
             if inner:
                 sup_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
@@ -29863,12 +29871,13 @@ async def generate_combined_report(
         cp_sig_html = ""
         cp_sig_raw = daily_log.get("competent_person_signature")
         if cp_sig_raw and isinstance(cp_sig_raw, dict):
-            cn = cp_sig_raw.get("signer_name", "Competent Person")
+            cn = _capitalize_first(
+                cp_sig_raw.get("signer_name") or "Competent Person")
             cd = cp_sig_raw.get("data")
             inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(cd, str) and cd:
                 inner = (f'<img src="data:image/png;base64,{cd}" '
-                         'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+                         'style="max-width:300px;height:auto;" />')
             if inner:
                 cp_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
