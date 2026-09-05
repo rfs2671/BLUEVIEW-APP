@@ -225,8 +225,24 @@ class EveryFiledDocumentStartsASheet(Base):
         self.assertIn("Pre-Shift Sign-In", tail)
 
     def test_every_section_asks_not_to_be_split(self):
+        """COUNTED ON THE WRAPPER, NOT ON THE PROPERTY.
+
+        This read `c.count("page-break-inside:avoid") == c.count(WRAPPER)`,
+        which held only while section wrappers were the ONLY thing in the
+        document using that property. They are not any more: each signature
+        block now carries it too, because a label and its image are separate
+        table rows and the print CSS permits a break between them -- a filed
+        report split "CP Signature (Michael Cespedes):" from his signature
+        across two pages.
+
+        A global count of a CSS property is a proxy for "every wrapper has it",
+        and the proxy broke the moment anything else legitimately used the same
+        property. The subject is the wrapper, so count the wrapper."""
         c = self.rendered_content()
-        self.assertEqual(c.count("page-break-inside:avoid"), c.count(WRAPPER))
+        self.assertGreater(c.count(WRAPPER), 0)
+        # WRAPPER already carries the property, so the real question is whether
+        # any section div exists WITHOUT it.
+        self.assertEqual(c.count('<div class="doc-section"'), c.count(WRAPPER))
 
     def test_an_UNFILED_log_claims_no_sheet(self):
         """A section with no document behind it renders "" -- it must not take
