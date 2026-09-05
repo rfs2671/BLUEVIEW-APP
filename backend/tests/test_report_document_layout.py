@@ -292,14 +292,10 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
         with the legal renderer and deliberately keeps its banner -- see
         test_the_superintendents_log_KEEPS_its_banner below."""
         c = self.rendered_content()
-        # The superintendent's section, cut out by its own page-break
-        # boundaries. "Tool Box Talk" also appears on page 1 (the compliance
-        # line names the logs filed today), so the second boundary is searched
-        # FORWARD from the first -- an index() from the start of the document
-        # found page 1 and cut out nothing at all, silently.
-        _a = c.index("Construction Superintendent Log")
-        _b = c.index(BREAK, _a)
-        c = c[:_a] + c[_b:]
+        # THE SUPERINTENDENT'S SECTION IS NO LONGER CUT OUT. It used to be
+        # excised here because it kept its banner by design; the ruling removed
+        # that exception, so the whole document is now asserted at once and the
+        # sibling test below covers the section specifically.
         self.assertNotIn("AFFIRMED for this document", c)
         self.assertNotIn("claimed ", c)
         self.assertNotIn("server-received", c)
@@ -318,15 +314,26 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
         self.assertIn("CP Signature", c)
         self.assertIn("data:image/png;base64,", c)
 
-    def test_the_superintendents_log_KEEPS_its_banner(self):
-        """One of the fourteen signatures on this report is rendered by
-        _superintendent_log_html, which both renderers share -- so the
-        superintendent's §3301.13.13 attestation carries its affirmation on
-        the investor report too. That is deliberate: it is the one signature
-        here that is also its own filed legal record."""
+    def test_the_superintendents_log_DROPS_its_banner_TOO(self):
+        """REVERSED BY RULING, AND THE OLD REASONING IS KEPT BECAUSE IT WAS NOT
+        AN OVERSIGHT.
+
+        This test used to assert the opposite, with a written rationale: the
+        superintendent's section shares its builder with the legal renderer, so
+        its affirmation "carries on the investor report too ... deliberate: it
+        is the one signature here that is also its own filed legal record."
+
+        The operator read a filed investor report and ruled against that. The
+        argument that lost is worth stating: sharing a builder is a fact about
+        the code, not about the reader. A lender does not need the §3301 audit
+        trail because the same bytes also serve an inspector -- the inspector
+        gets it from the per-logbook PDF, which still prints every banner.
+
+        So the fourteenth call site now forwards `legal_record`, and this is
+        the one section whose behaviour changed."""
         c = self.rendered_content()
         cs = c[c.index("Superintendent Signature"):]
-        self.assertIn("AFFIRMED for this document", cs)
+        self.assertNotIn("AFFIRMED for this document", cs)
 
     def test_the_per_logbook_PDF_keeps_every_banner(self):
         html = self.rendered_single(copy.deepcopy(TOOLBOX))
@@ -368,8 +375,13 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
         """The control. Passing the flag everywhere would satisfy the test
         above and destroy the audit trail on the document an inspector reads."""
         tree = ast.parse((_BACKEND / "server.py").read_text(encoding="utf-8"))
-        for name, n_expected in (("generate_single_logbook_html", 8),
-                                 ("_superintendent_log_html", 1)):
+        # `_superintendent_log_html` is no longer in this list: it now FORWARDS
+        # `legal_record` rather than passing nothing, so the legal PDF still
+        # gets the banner (default True) while the investor report does not.
+        # The control's point is unchanged -- a hardcoded False anywhere here
+        # would destroy the audit trail on the document an inspector reads --
+        # and it is asserted below in the form the code now takes.
+        for name, n_expected in (("generate_single_logbook_html", 8),):
             fn = next(n for n in ast.walk(tree) if getattr(n, "name", None) == name)
             calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
                      and isinstance(n.func, ast.Name)
@@ -377,6 +389,15 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
             self.assertEqual(len(calls), n_expected, name)
             for c in calls:
                 self.assertEqual([k.arg for k in c.keywords], [], f"{name}:{c.lineno}")
+        fn = next(n for n in ast.walk(tree)
+                  if getattr(n, "name", None) == "_superintendent_log_html")
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == "render_signature_html"]
+        self.assertEqual(len(calls), 1)
+        kw = {k.arg: k.value for k in calls[0].keywords}
+        self.assertIsInstance(kw.get("show_affirmation"), ast.Name)
+        self.assertEqual(kw["show_affirmation"].id, "legal_record")
 
 
 # ══════════════════════════════════════════════════════════════════════════
