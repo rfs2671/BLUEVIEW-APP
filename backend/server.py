@@ -30999,11 +30999,10 @@ async def generate_combined_report(
     # three. So the wrapper is load-bearing on a photo-heavy day and irrelevant
     # on a light one, and the `tr` rule is the dominant cause.
     #
-    # THE FIX IS NOT IN THIS COMMIT. Scoping that `tr` rule is a behaviour
-    # change to a filed document and it gets its own change with a measured
-    # before and after -- the same scoping the per-logbook PDF already carries
-    # (see generate_single_logbook_html's `tr.shell` exemption). This commit
-    # corrects the record only.
+    # THE FIX IS THE `tr.shell` EXEMPTION in the print block above, matching
+    # the scoping the per-logbook PDF already carries. The wrapper below stays:
+    # it is the rule that keeps a section together when a section CAN fit, and
+    # on a photo-heavy day it is load-bearing.
     #
     # WHY IT SURVIVED: no check in this repo renders a page. Every
     # page-geometry test asserts the CSS a renderer emits, so a false claim
@@ -31082,6 +31081,24 @@ async def generate_combined_report(
        wrapper cannot help a table that is genuinely taller than a page,
        which the pre-shift sheet on a busy day is. */
     tr {{ page-break-inside: avoid; break-inside: avoid; }}
+
+    /* EXCEPT THE FIVE SHELL ROWS, WHICH ARE THE PAGE AND NOT ITS CONTENT.
+       This document's outer markup is an email layout: a centring row, then
+       the wrapper's header, summary, CONTENT and footer rows. The rule above
+       matched the content row -- the one holding every section of the report
+       -- so WeasyPrint refused to split it and relocated the whole body to a
+       fresh sheet, leaving page 1 carrying the header and the summary and
+       nothing else. That is the blank cover.
+
+       Measured on production data, ablating this one rule and nothing else:
+       the 2026-08-25 report's first section moved from page 2 back onto page
+       1 (page-1 content bottom 265px -> 794px, 7 pages -> 6).
+
+       By class rather than a `> tbody >` combinator, so it does not depend on
+       where the parser puts an anonymous tbody. The nested roster and activity
+       tables inside the content cell are untouched and still refuse to split,
+       which is what the rule was written for. */
+    tr.shell {{ page-break-inside: auto; break-inside: auto; }}
     .doc-section {{ break-inside: avoid; }}
 
     /* One line of a paragraph stranded by itself reads as a fragment. */
@@ -31092,13 +31109,13 @@ async def generate_combined_report(
 <body class="body" style="margin:0;padding:0;background-color:#f0f4f8;font-family:{font};-webkit-font-smoothing:antialiased;" bgcolor="#f0f4f8">
 
 <table cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f0f4f8" style="background-color:#f0f4f8;">
-<tr><td align="center" style="padding:20px 0;">
+<tr class="shell"><td align="center" style="padding:20px 0;">
 
 <table cellpadding="0" cellspacing="0" border="0" width="680" class="wrapper" bgcolor="#ffffff"
   style="background-color:#ffffff;max-width:680px;width:100%;">
 
   <!-- HEADER -->
-  <tr>
+  <tr class="shell">
     <td style="background-color:#0A1929;padding:32px 40px;" bgcolor="#0A1929">
       <table cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr><td style="color:rgba(255,255,255,0.5);font-size:10px;letter-spacing:3px;text-transform:uppercase;padding-bottom:16px;font-family:{font};">LEVELOG</td></tr>
@@ -31109,7 +31126,7 @@ async def generate_combined_report(
   </tr>
 
   <!-- SUMMARY ROW -->
-  <tr>
+  <tr class="shell">
     <td style="background-color:#f8fafc;padding:20px 40px;border-bottom:1px solid #e2e8f0;" bgcolor="#f8fafc">
       <table cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr>
@@ -31133,14 +31150,14 @@ async def generate_combined_report(
   </tr>
 
   <!-- CONTENT -->
-  <tr>
+  <tr class="shell">
     <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
       {sections_html}
     </td>
   </tr>
 
   <!-- FOOTER -->
-  <tr>
+  <tr class="shell">
     <td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
       <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time}</span><br />
       <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;text-transform:uppercase;">LEVELOG CONSTRUCTION MANAGEMENT</span>
