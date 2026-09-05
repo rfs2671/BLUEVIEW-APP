@@ -28,6 +28,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import CompetentPersonPicker, { isSamePerson } from '../../src/components/CompetentPersonPicker';
 import LogbookLockBar from '../../src/components/LogbookLockBar';
 import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
@@ -254,6 +255,69 @@ export default function SubcontractorOrientation() {
   const [newOsha, setNewOsha] = useState('');
   const [newChecklist, setNewChecklist] = useState({});
   const [newOrientationNum, setNewOrientationNum] = useState('');
+
+  // ── THE TRAINER, WHO IS NOT NECESSARILY THE MAN HOLDING THE PHONE ────────
+  //
+  // `cp_name` on an orientation is the §3301.2 attestation that a named
+  // competent person DELIVERED the training. It is the one log type of eleven
+  // where that name is not derived server-side, precisely because the trainer
+  // may legitimately differ from the filer — so it was a free-text box, and
+  // 219 filed documents carry "michael" for an account that holds "Michael
+  // Cespedes", with 25 more carrying the digit "2".
+  //
+  // It is now a PICK by default. See CompetentPersonPicker for what it lists,
+  // why the project-scoped sources did not fit, and why no identity reference
+  // is written onto the document.
+  const [trainerPickerOpen, setTrainerPickerOpen] = useState(false);
+  // TRUE only after the CP takes the picker's explicit second tap. It unlocks
+  // the pad's name box; nothing is blocked, it is one tap further in.
+  const [trainerManual, setTrainerManual] = useState(false);
+  // The account the name came off, when it came off a record. LOCAL STATE
+  // ONLY — deliberately never written onto the filed document (the ruling on
+  // the pre-shift row: 244 documents already filed could never carry it, so an
+  // absent value would be ambiguous). It exists for exactly one purpose, the
+  // profile guard at the autoSave below.
+  const [trainerPicked, setTrainerPicked] = useState(null);
+
+  const pickTrainer = (person) => {
+    setTrainerPickerOpen(false);
+    if (!person) return;
+    setTrainerManual(false);
+    setTrainerPicked(person);
+    // FROM THE RECORD, NOT THE KEYBOARD — the whole point. The account's own
+    // spelling of its own name is what reaches `cp_name`.
+    setNewCpName(person.name || '');
+  };
+
+  const enterTrainerByHand = () => {
+    setTrainerPickerOpen(false);
+    setTrainerManual(true);
+    setTrainerPicked(null);
+  };
+
+  /**
+   * IS THE NAME ON THE PAD THIS DEVICE'S OWN USER?
+   *
+   * Only matters because of what happens after a successful create: `autoSave`
+   * writes cp_name AND the signature credential back into the FILER'S saved
+   * profile, and that profile is what pre-fills every logbook he opens next.
+   *
+   * Before this screen had a picker, naming another man was a thing a CP had
+   * to type on purpose. Making it the easy default without this guard would
+   * have taken a trainer's name — and, worse, a signature drawn by the
+   * trainer's hand — and stored them as the filer's reusable credential.
+   * Nothing else on the screen would have said so.
+   *
+   * So the profile is written only when the trainer IS the filer. An unpicked
+   * name (the ordinary case, and every hand-typed one) behaves exactly as it
+   * did before.
+   */
+  // NO PICK MEANS NO CHANGE. The ordinary case — the filer is the trainer, and
+  // his name arrived from his own profile — never touched the picker, so it
+  // behaves exactly as it did before this screen had one. Every hand-typed
+  // name lands here too, which is right: nothing about the picker should alter
+  // what typing already did.
+  const trainerIsSelf = () => !trainerPicked || isSamePerson(trainerPicked, user);
 
   useEffect(() => {
     fetchData();
@@ -790,7 +854,18 @@ export default function SubcontractorOrientation() {
       setShowAddForm(false);
       setDraftIdent(null);
       await writeDraftPointer(projectId, null);
-      await autoSave(newCpName, newCpSignature).catch(() => {});
+      // THE PROFILE IS THE FILER'S, NOT THE TRAINER'S — see trainerIsSelf.
+      if (trainerIsSelf()) {
+        await autoSave(newCpName, newCpSignature).catch(() => {});
+      }
+      // trainerUserId IS DELIBERATELY NOT CLEARED HERE, and the form reset
+      // above is exactly why. `newCpName` lives in useCpProfile, not in this
+      // form, so it SURVIVES the reset and stands in the pad for the next
+      // orientation — as it always has. trainerUserId is the statement of
+      // whose name that is, so clearing one without the other would leave a
+      // picked trainer's name on screen described as the filer's own, and the
+      // next save would write that name into the filer's profile. The two move
+      // together or not at all.
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not create orientation');
@@ -934,12 +1009,36 @@ export default function SubcontractorOrientation() {
                   <Text style={styles.autoSignText}>Auto-filled from your saved profile</Text>
                 </View>
               )}
+              {/* WHO DELIVERED THE ORIENTATION. A pick by default; free text
+                  one tap further in, inside the picker. */}
+              {trainerPickerOpen ? (
+                <CompetentPersonPicker
+                  onSelect={pickTrainer}
+                  onManual={enterTrainerByHand}
+                  onCancel={() => setTrainerPickerOpen(false)}
+                />
+              ) : (
+                <GlassButton
+                  title={newCpName
+                    ? `Trainer: ${newCpName} — change`
+                    : 'Choose who delivered this orientation'}
+                  icon={<User size={14} strokeWidth={1.5} color={colors.text.primary} />}
+                  onPress={() => setTrainerPickerOpen(true)}
+                  style={styles.trainerBtn}
+                />
+              )}
+
               <SignaturePad
                 title="Competent Person Signature"
                 signerName={newCpName}
                 onNameChange={setNewCpName}
                 existingSignature={newCpSignature}
                 onSignatureCapture={setNewCpSignature}
+                // The name box opens ONLY on the picker's explicit second tap.
+                // Left open, free text would be at zero taps and the pick at
+                // one, which is the wrong way round and is how "2" was filed
+                // 25 times as a competent person's name.
+                nameLocked={!trainerManual}
               />
 
               <View style={styles.formActions}>
@@ -1254,14 +1353,25 @@ export default function SubcontractorOrientation() {
 /**
  * Inline signature panel for adding CP sig to an existing orientation.
  * Separate component so each card can have its own signature state.
+ *
+ * THE SECOND WAY cp_name IS SET ON THIS SCREEN, and it gets the same picker.
+ * Leaving it as free text would have left the defect class alive on the very
+ * screen being fixed: this panel writes the same top-level `cp_name` — the
+ * same §3301.2 trainer attestation — onto the same document, and it FREEZES
+ * the record while doing it.
  */
 function OrientationSignaturePanel({ onSign }) {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
+  const { user } = useAuth();
   const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave: innerAutoSave } = useCpProfile();
   const tFinalize = useT('finalize');
   const hintKey = affirmationHintKey(cpSignature, profileLoaded);
   const [saving, setSaving] = useState(false);
+  // Same three pieces as the create form above, for the same reasons.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [manual, setManual] = useState(false);
+  const [picked, setPicked] = useState(null);
   // Same synchronous guard as handleCreateNew, and it matters MORE here.
   // This panel FREEZES the record — the signature is the freeze for an
   // IMMEDIATE type — so a second entry is not a duplicate draft, it is a
@@ -1280,7 +1390,13 @@ function OrientationSignaturePanel({ onSign }) {
       return;
     }
     try {
-      await innerAutoSave(cpName, cpSignature);
+      // THE PROFILE IS THE SIGNER'S, NOT THE TRAINER'S. Same guard as the
+      // create form: innerAutoSave stores cp_name and the signature CREDENTIAL
+      // as this device user's reusable profile, and a name picked off another
+      // competent person's account must not become his.
+      if (!picked || isSamePerson(picked, user)) {
+        await innerAutoSave(cpName, cpSignature);
+      }
       await onSign(cpSignature, cpName);
     } finally {
       savingRef.current = false;
@@ -1291,12 +1407,37 @@ function OrientationSignaturePanel({ onSign }) {
   return (
     <View style={s.signPanel}>
       <Text style={s.sectionTitle}>Add Your CP Signature</Text>
+      {pickerOpen ? (
+        <CompetentPersonPicker
+          onSelect={(person) => {
+            setPickerOpen(false);
+            if (!person) return;
+            setManual(false);
+            setPicked(person);
+            setCpName(person.name || '');
+          }}
+          onManual={() => {
+            setPickerOpen(false);
+            setManual(true);
+            setPicked(null);
+          }}
+          onCancel={() => setPickerOpen(false)}
+        />
+      ) : (
+        <GlassButton
+          title={cpName ? `Trainer: ${cpName} — change` : 'Choose who delivered this orientation'}
+          icon={<User size={14} strokeWidth={1.5} color={colors.text.primary} />}
+          onPress={() => setPickerOpen(true)}
+          style={s.trainerBtn}
+        />
+      )}
       <SignaturePad
         title="Competent Person Signature"
         signerName={cpName}
         onNameChange={setCpName}
         existingSignature={cpSignature}
         onSignatureCapture={setCpSignature}
+        nameLocked={!manual}
       />
       <GlassButton
         title={saving ? 'Signing...' : 'Sign This Orientation'}
@@ -1420,6 +1561,9 @@ function buildStyles(colors, isDark) {
   },
   autoSignText: { fontSize: 12, color: semantic.verified },
   formActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  // The trainer field. Both mounters use it — the create form and the inline
+  // sign panel — so it lives here with every other style in this screen.
+  trainerBtn: { marginTop: spacing.sm, marginBottom: spacing.sm },
   cancelBtn: { flex: 1 },
   saveBtn: {
     flex: 2,

@@ -81,6 +81,20 @@ const SignaturePad = ({
   // Default FALSE. The other six mounters - including the four correctly-themed
   // logbook screens - never pass it and render byte-identically to before.
   pinned = false,
+  // SIGNER NAME AS A DISPLAY ROW RATHER THAN AN OPEN TEXT BOX.
+  //
+  // Default FALSE, so all thirteen existing mounters render byte-identically
+  // to before - the same contract `pinned` and `autoLock` above are held to.
+  //
+  // Passed only by the subcontractor orientation, where the name in this field
+  // is the TRAINER'S §3301.2 ATTESTATION and is now chosen from a record by
+  // CompetentPersonPicker. Locking it is what makes that a fix rather than a
+  // decoration: an editable box sitting under the picked name would leave free
+  // text at zero taps and the pick at one, which is the wrong way round. The
+  // orientation screen sets this false again the moment the CP takes the
+  // picker's explicit "enter a trainer not on this list" branch, so nothing is
+  // blocked - it is one tap further in, which is the whole design.
+  nameLocked = false,
 }) => {
   // PINNED: render as this pad renders in LIGHT MODE, whatever the theme.
   //
@@ -346,7 +360,7 @@ const SignaturePad = ({
       {/* Name Input */}
       <View style={styles.nameSection}>
         <Text style={styles.label}>SIGNER NAME</Text>
-        {isSigned ? (
+        {isSigned || nameLocked ? (
           <View style={styles.nameDisplay}>
             <Text style={[styles.nameText, isSigned && styles.nameTextSigned]}>
               {signerName || 'No name'}
