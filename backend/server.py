@@ -36356,8 +36356,32 @@ async def get_company_roster(current_user=Depends(get_current_user)):
     """
     company_id = get_user_company_id(current_user)
     query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+    # ── THE TENANT FILTER WAS CONDITIONAL, AND THAT IS A LEAK ────────────────
+    #
+    # `if company_id:` ALONE meant a caller with NO company_id skipped the
+    # filter and received EVERY USER ON THE PLATFORM -- name, email and role,
+    # capped at 500 -- from an endpoint any authenticated caller may hit.
+    #
+    # AND THAT IS THE DEFAULT ACCOUNT STATE, NOT AN EXOTIC ONE. Self-serve
+    # registration sets company_id = None and a company is only attached later
+    # by POST /onboarding/company, so a trial signup could read the whole
+    # platform's user directory with nothing but a valid token.
+    #
+    # THIRD INSTANCE OF THIS SHAPE IN THIS FILE. `get_workers` was fixed after
+    # the same leak; `get_project_roster` was written with the guard. This one
+    # kept the pre-fix form -- the ported-fix pattern, on a tenant boundary.
+    #
+    # `_id: None`, NOT `company_id: None`. An unsatisfiable filter, so a caller
+    # who owns nobody gets the same empty list a company with no other users
+    # gets, and the response shape is unchanged. `company_id: None` would match
+    # precisely the orphan rows -- every other un-onboarded signup.
+    #
+    # The platform-operator carve-out is EXPLICIT and is never inferred from
+    # `role`: "owner" is what every self-serve signup receives.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
     # ── `password: 0` REMOVED, AND THAT WAS THE WHOLE DEFECT ────────────────
     #
     # MongoDB REJECTS a projection that mixes an exclusion with inclusions —
