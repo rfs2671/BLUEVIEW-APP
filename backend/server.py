@@ -28352,16 +28352,57 @@ def preshift_affirmation_footer(count: int) -> str:
 async def _resolve_signin_signatures(workers) -> dict:
     """`signin_id` -> base64 PNG, for roster rows whose signature lives in R2.
 
-    THE FILED SHEET WAS CALLING SIGNED MEN UNSIGNED. `preshift_signin.jsx`
-    persists `signin_id` on every row the new gate produces, and the merge that
-    builds those rows HARDCODES `worker_signature: None` in two of its three
-    passes — pass 1 with the comment "new system: frontend uses signin_id", and
-    pass 3 for compliance-alert rows. The app resolves the image through
-    `GET /api/signatures/{signin_id}`; this renderer only ever read
-    `worker_signature`. So every man who signed through the gate printed
-    "NO SIGNATURE ON FILE" on a filed compliance document while his signature
-    sat in the card-audit bucket. An inspector reading that page concludes he
-    did not sign.
+    ══════════════════════════════════════════════════════════════════════
+    THIS IS A GUARD FOR A GATE THAT IS NOT LIVE. IT IS NOT A WORKING PATH.
+    ══════════════════════════════════════════════════════════════════════
+
+    Measured 2026-09-05, in production:
+
+        sign_ins            0 rows
+        daily_signatures    0 rows
+        worker_enrollments  0 rows
+
+    All three are written ONLY by backend/card_audit.py, whose runtime flow is
+    route-shadowed (see server.py's collection note on the card_audit family).
+    Those routes never execute, so the collections have never held a row and
+    this function has never resolved anything.
+
+    NOR HAS ANYTHING EVER REACHED IT. `get_project_checkins_today` pass 1 --
+    the branch quoted below, the one that hardcodes `worker_signature: None` --
+    iterates enrollment ids derived from `db.sign_ins`. With zero sign-ins it
+    iterates nothing, so pass 1 has never produced a roster row. Across all 44
+    filed pre-shift documents, 329 worker rows: 231 carry an INLINE base64
+    signature, 98 carry none, and NOT ONE carries a truthy `signin_id`. The
+    nine images on the 2026-09-04 sheet are inline strings; the three rows that
+    print NO SIGNATURE ON FILE are hand-typed rows with no signature, which is
+    what that line is for.
+
+    `_preshift_signature_cell` reads the inline value FIRST and only consults
+    this resolver's map when it is empty, so nothing here has ever changed a
+    rendered document. Kept rather than deleted: if the card-audit gate is ever
+    routed, the chain is correct and ready. Read it as dormant, not as the
+    thing that puts signatures on the sheet.
+
+    WHAT THE ORIGINAL DIAGNOSIS SAID, kept because the code below implements
+    it: "`preshift_signin.jsx` persists `signin_id` on every row the new gate
+    produces, and the merge that builds those rows HARDCODES
+    `worker_signature: None` in two of its three passes -- pass 1 with the
+    comment 'new system: frontend uses signin_id', and pass 3 for
+    compliance-alert rows. So every man who signed through the gate printed
+    'NO SIGNATURE ON FILE' on a filed compliance document while his signature
+    sat in the card-audit bucket."
+
+    THAT REQUIRES A ROW FROM PASS 1, AND PASS 1 HAS NEVER PRODUCED ONE. The
+    mechanism was unreachable before the fix was written. Whether the men named
+    in the original report were the hand-typed rows -- which correctly print
+    NO SIGNATURE ON FILE -- or different men on a different date CANNOT NOW BE
+    ESTABLISHED: the pre-fix rendering is gone. Recorded as unresolved rather
+    than resolved in either direction.
+
+    THE ONE THING HERE THAT WAS REAL: a non-string in the resolution map
+    reached `.startswith` and raised, and a renderer that raises does not skip
+    a row -- it takes down the entire filed PDF. That `isinstance` guard in
+    `_preshift_signature_cell` stays whatever happens to this chain.
 
     RESOLVED SERVER-SIDE AND INLINED, not linked. The report is rendered to PDF
     by WeasyPrint; an `<img src="/api/signatures/...">` would need it to make an

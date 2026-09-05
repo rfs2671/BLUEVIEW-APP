@@ -400,6 +400,42 @@ The mechanism is real and the helper is right. The harm was asserted, never
 established, and then quoted as fact in a docstring that justified the fix —
 and cited onward from there.
 
+### The third: a fix ruled FIRST on a report nobody had checked
+
+**#428**, "a filed sheet called signed men unsigned". Its premise: every man who
+signed through the gate printed NO SIGNATURE ON FILE on a filed compliance
+document while his signature sat in the card-audit bucket. It was ruled *the
+worst item on the list — a filed document lying about a man* and sequenced
+ahead of everything else.
+
+The chain it resolves is `signin_id -> sign_ins -> daily_signatures -> the
+card-audit bucket`. All three collections hold **zero rows**, because their only
+writers live in a module whose routes are route-shadowed. The
+`/checkins-today` branch that produces `signin_id` rows iterates ids derived
+from `sign_ins`, so it has never produced a row. Across 44 filed sheets and 329
+worker rows, **not one carries a truthy `signin_id`**; 231 carry an inline
+signature and render from it, which is what has always put images on that page.
+
+Every line the fix added is unreachable. The code is correct, it broke nothing,
+and it found a real crash on the way in. But the harm it was ruled first for
+required a row that has never existed — and whether the men in the original
+report were the hand-typed rows, which correctly print NO SIGNATURE ON FILE,
+cannot now be established, because the pre-fix rendering is gone.
+
+**Three shipped fixes in one week, all correct code, none of the harm
+measured.** This entry was written from the first two. The third was already in
+the tree when the priority ruling was made.
+
+### The step, and whose it is
+
+The missing step is one query, and it kept being nobody's:
+
+> **The person ruling on priority is the one who must have seen the count.**
+> Not the person reporting it, and not "someone". Whoever says *do this first*
+> owns the number that justified it — because a report can be honest about a
+> mechanism and silent about its reach, and priority is exactly the decision
+> that reach should drive.
+
 ### A count is not a description of a set, and the number decides nothing
 
 "65 stranded logs" was carried for hours and repeated in briefs. The
