@@ -28068,7 +28068,27 @@ def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
     """
     wid = str((entry or {}).get("worker_id") or "")
     cn = str((entry or {}).get("card_number") or "")
-    reason = review_by_key.get((wid, cn)) if cn else None
+    # ── THE ROWS THIS COLUMN EXISTS FOR WERE THE ONES IT COULD NOT REACH ─────
+    #
+    # `osha_review_index` writes `review_by_key[(wid, cn)]` for every flagged
+    # cert INCLUDING those with no card number, where `cn` is "". This read was
+    # `... if cn else None`, so it declined to look up exactly those keys. The
+    # register's worst rows -- an unreadable class, no number, no expiry -- are
+    # precisely the ones with no card number, and they fell through to the grey
+    # "Not checked" instead of the amber "Class unverified". The column hid its
+    # own findings.
+    #
+    # THIS IS NOT THE PER-WORKER FALLBACK REJECTED ABOVE, and the difference is
+    # the whole reason it is safe: `(wid, "")` is an EXACT key for a cert that
+    # genuinely has no number. It cannot attribute a flag from the man's other
+    # certs to this row -- a clean OSHA 30 keyed `(wid, "12345")` is still
+    # unreachable from a row with no number, which is what the rejection was
+    # protecting.
+    #
+    # KNOWN LIMIT: two flagged no-number certs on one worker collide on
+    # `(wid, "")` and the last indexed wins. Both are flagged, so the column is
+    # right either way; only WHICH reason is shown is arbitrary.
+    reason = review_by_key.get((wid, cn)) if wid else None
     if reason is not None:
         label = OSHA_REVIEW_LABELS.get(reason, "Needs review")
         return f'<span style="color:#b45309;font-weight:600;">&#9888; {label}</span>'
@@ -28128,7 +28148,30 @@ def _osha_type_cell(entry) -> str:
     # STRINGIFIED: a stored None would otherwise print the word "None" on a
     # compliance register. Empty stays empty -- the call sites own what an empty
     # cell shows, and the two renderers do not agree about it.
-    return str(stored or "")
+    _label = str(stored or "")
+    # ── UNVERIFIED, FROM THE FILED ROW AND NOT FROM A LOOKUP ─────────────────
+    #
+    # `unverified` is frozen onto the entry from the check-in's `sst_status` at
+    # the moment the card was read. Printing it here does NOT break the rule
+    # this function is built around -- it is the stored snapshot speaking, the
+    # same source as the label beside it, not a classification composed at
+    # render time.
+    #
+    # WHY THE COLUMN NEEDED IT. A row reading "SST Unspecified / — / —" states a
+    # class it never established, and reads as a credential on file. The gate is
+    # unchanged and stays unchanged: a man is never refused for a card the app
+    # could not read. What changes is that the DOCUMENT stops saying the
+    # baseline was met. The LL196 attestation has always excluded these rows;
+    # this register was the surface that disagreed with it.
+    #
+    # ROWS FILED BEFORE THIS FIELD EXISTED CARRY NO FLAG AND GAIN NO MARKER --
+    # a filed document shows what was filed.
+    if isinstance(entry, dict) and entry.get("unverified") is True:
+        return (_label or "&mdash;") + (
+            '<br /><span style="color:#b45309;font-size:11px;font-weight:600;">'
+            "UNVERIFIED &#183; card could not be read</span>"
+        )
+    return _label
 
 
 async def preshift_affirmation_count(db_, project_id: str, day: str) -> int:

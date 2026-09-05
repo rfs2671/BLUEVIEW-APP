@@ -704,6 +704,10 @@ export default {
     // DENIED — never as a certification — because the one fact the gate
     // established is that he had none.
     deniedBadge: 'DENIED — MISSING OSHA (turned away at gate, not admitted)',
+    // NOT a refusal. He was admitted. This says the SYSTEM could not read
+    // his card, which the register was previously silent about -- the row
+    // showed a class it had not verified and read as a credential on file.
+    unverifiedBadge: 'UNVERIFIED — card could not be read (admitted; not a verified credential)',
 
     // Step 2 — review and sign.
     reviewHeading: 'Check this before you sign',

@@ -645,6 +645,22 @@ export default function OshaLogBook() {
             </View>
           )}
 
+          {/* ADMITTED, BUT THE CARD WAS NOT READ. Keyed on `unverified`, which
+              is frozen from the check-in's `sst_status` at the moment the card
+              was scanned and never recomputed -- so the register records what
+              was known THEN, not what a later lookup would say.
+
+              THE GATE IS UNCHANGED and stays unchanged: a man is never blocked
+              for a card the app could not read. What changes is that this
+              document stops presenting an unread card as a credential on file.
+              The LL196 attestation has always excluded these rows; this
+              register was the surface that disagreed. */}
+          {!entry.blocked && entry.unverified && (
+            <View style={[s.cardWarn, s.deniedBox]}>
+              <Text style={s.warnTitle}>{t('unverifiedBadge')}</Text>
+            </View>
+          )}
+
           {/* NOT A DUPLICATE — the same man's second card. Said out loud
               because a CP who reads two identical rows as a mistake types over
               one of them, which is exactly how a certification ended up filed
