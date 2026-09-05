@@ -8443,8 +8443,37 @@ async def get_admin_users(
     company_id = get_user_company_id(current_user)
     
     query = {"is_deleted": {"$ne": True}}
-    if current_user.get("role") != "owner" and company_id:
+    # ── `role == "owner"` IS NOT THE PLATFORM OPERATOR ───────────────────────
+    #
+    # THIS READ `if current_user.get("role") != "owner" and company_id:`, so
+    # ANY owner skipped the tenant filter and received every user on the
+    # platform -- name, email, PHONE, role, company and assigned projects, 500
+    # rows a page. It was written believing "owner" meant the platform
+    # operator. It does not.
+    #
+    # `register` sets `role = "owner"` and `company_id = None` on EVERY
+    # SELF-SERVE SIGNUP (server.py, search `user_dict["role"] = "owner"`), and
+    # `get_admin_user` admits any role in ("admin", "owner"). So the gate on
+    # this route and the carve-out inside it were satisfied by the same fact:
+    # having registered. A live account matched it -- an owner with a null
+    # company and no operator flag -- and could read a real CP's email and
+    # phone number.
+    #
+    # `is_platform_operator` IS THE FUNCTION THAT MEANS THIS, and it is now the
+    # only carve-out. The operator's cross-tenant view survives on the flag;
+    # everyone else is scoped to their company, and a caller with no company is
+    # scoped to nobody.
+    #
+    # `_id: None` RATHER THAN `company_id: None`: an unsatisfiable filter, so
+    # one code path and one response shape, and a caller who owns nobody gets
+    # what a company with no other users gets. `company_id: None` would match
+    # precisely the orphan rows -- every other un-onboarded signup.
+    if is_platform_operator(current_user):
+        pass                      # the cross-tenant view, on the flag alone
+    elif company_id:
         query["company_id"] = company_id
+    else:
+        query["_id"] = None
 
     # ── THE SORT BUFFER MUST NOT CARRY A SIGNATURE ──────────────────────────
     #
@@ -8462,14 +8491,19 @@ async def get_admin_users(
     # note ending "Remove this line when it lands." This is it landing.
     #
     # WHY A PROJECTION AND NOT AN INDEX, which is the usual answer here.
-    # `company_id` is added ONLY when the caller is not an owner, so the OWNER
-    # call -- the one that spans every tenant and matches the most rows -- has
-    # no equality predicate at all. `users_by_company_name` already serves the
-    # company-scoped call; nothing can serve the owner call except an index led
-    # by `name` alone, and that was ruled out as a whole second index to rescue
-    # one screen. An inclusion projection fixes BOTH calls at once, because
-    # Mongo pushes it below the SORT stage and the buffer then holds a few
-    # hundred bytes per user instead of a signature.
+    # `company_id` is absent from the query only for the PLATFORM OPERATOR, so
+    # that one call -- which spans every tenant and matches the most rows -- has
+    # no equality predicate. `users_by_company_name` already serves the
+    # company-scoped call; nothing can serve the operator's call except an index
+    # led by `name` alone, and that was ruled out as a whole second index to
+    # rescue one screen. An inclusion projection fixes BOTH calls at once,
+    # because Mongo pushes it below the SORT stage and the buffer then holds a
+    # few hundred bytes per user instead of a signature.
+    #
+    # THIS PARAGRAPH USED TO SAY "the OWNER call". That was the same mistaken
+    # premise as the filter above -- it read as a description of the platform
+    # operator and was true of every customer who had ever registered. The
+    # reasoning about the index is unchanged; only who makes that call is.
     #
     # THE FIELD LIST IS THE UNION OF WHAT THE THREE CALLERS ACTUALLY READ, and
     # nothing else -- admin/users.jsx (id, name, email, phone, role,
