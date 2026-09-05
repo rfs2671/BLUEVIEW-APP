@@ -1390,7 +1390,6 @@ export default {
     stepPresence: 'Presence',
     stepWork: 'Work & inspection',
     stepFindings: 'Findings & orders',
-    stepDob: 'DOB & incidents',
     stepSign: 'Scope & sign',
 
     presenceHeading: 'Your presence on site',
@@ -1421,13 +1420,14 @@ export default {
     progressLabel: 'GENERAL PROGRESS OF WORK',
     progressPlaceholder: 'What the job advanced today',
     activitiesLabel: 'WHAT YOU DID, AND WHERE',
-    activitiesPlaceholder: 'Areas and floors you inspected',
-    locationsLabel: 'AREAS AND FLOORS',
-    locationsPlaceholder: 'e.g. cellar, 2nd floor, north facade',
+    // ONE BOX NOW. The old placeholder here asked for the SECOND box's subject
+    // ("Areas and floors you inspected") while the second box's LABEL asked for
+    // it again -- the same question twice, in two controls, for one statutory
+    // item. The placeholder now describes the one answer wanted.
+    activitiesPlaceholder: 'What you inspected, and the areas and floors — e.g. shored the cellar, walked 2nd floor and the north facade',
 
     inspectionHeading: 'Daily inspection',
     inspectionNote: '1 RCNY 3301-04(f) needs three things on the record: when, where, and what you found.',
-    inspectedOn: 'DATE INSPECTED',
     inspectionLocation: 'LOCATION INSPECTED',
     inspectionResult: 'RESULT',
     inspectionResultPlaceholder: 'What the inspection found',

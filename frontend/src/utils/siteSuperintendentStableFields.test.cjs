@@ -221,15 +221,30 @@ console.log('\n4. NOTHING THE HOISTED COMPONENTS READ IS LEFT TO A CLOSURE');
     });
   });
 
-  // TWELVE, NOT FIFTEEN, AND THE THREE THAT LEFT ARE NAMED BELOW.
+  // TEN, NOT TWELVE, NOT FIFTEEN — AND EVERY DEPARTURE IS NAMED.
   //
   // The count is here to notice a call site that quietly stops passing `s` or
   // `locked` by disappearing, so it has to move whenever the screen's field
-  // list really changes — and it just did: `arrived_at`, `departed_at` and a
-  // finding's `observed_at` are TimeField pickers now, not free-text `Field`s.
-  // Lowering the number without the assertion under it would let a Field that
-  // was deleted for some other reason ride in on this change.
-  ok(callSites('Field').length === 12, `Field is used at 12 call sites (found ${callSites('Field').length})`);
+  // list really changes. It has now moved twice, and each time the reason is
+  // written down rather than the number simply lowered:
+  //
+  //   15 -> 12  `arrived_at`, `departed_at` and a finding's `observed_at`
+  //             became TimeField pickers, asserted on the line below.
+  //   12 ->  9  the PRINTED NAME, the INSPECTION DATE and the second
+  //             ACTIVITIES box were removed as duplicates. The name was asked at the top of the screen and
+  //             again on the signature pad, where it arrives prefilled from
+  //             the session and stays editable. The inspection date defaulted
+  //             to the log's own date at all three entry points and had no
+  //             reader anywhere outside this screen. The activities box asked
+  //             for what the box above it already asked for -- its own
+  //             placeholder said "Areas and floors you inspected" under a
+  //             label reading "WHAT YOU DID, AND WHERE".
+  //
+  // Both removals are asserted by their own tests — the name by the pad still
+  // receiving `onNameChange`, the date by `inspectedOn` being absent from the
+  // screen (siteSuperintendentSign.test.cjs section 5). Lowering the number
+  // without those would let a Field deleted for some other reason ride in.
+  ok(callSites('Field').length === 9, `Field is used at 9 call sites (found ${callSites('Field').length})`);
   ok(callSites('TimeField').length === 3,
     `and the three that left are TimeField pickers (found ${callSites('TimeField').length})`);
   // NOT A FREE-TEXT BOX ANYWHERE NEAR A TIME. `placeholder="HH:MM"` was the
