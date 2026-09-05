@@ -271,6 +271,14 @@ const ROUTES = [
   // The one editor that owns no stepper — so it renders DraftConflictNotice
   // itself, and is the only place that wiring can be executed at all.
   '/logbooks/preshift_signin?projectId=p1',
+  // THE ORIENTATION, WHICH THIS LIST HAD SIMPLY MISSED. The rule stated four
+  // comments up — this job is the only thing that executes a logbook screen,
+  // and it applies to all of them or to none — named eleven editors and then
+  // covered ten. The gap is not a small one: this is the MULTI-RECORD screen,
+  // the only editor that renders an inline sign panel per card as well as a
+  // create form, so it has two independent mount paths where the others have
+  // one, and it is the screen a first-day worker is oriented on AT THE GATE.
+  '/logbooks/subcontractor_orientation?projectId=p1',
   // THE CONSENT SCREEN. Reached only from a signing path, so nothing else in
   // CI would ever execute it — and it is the page a man reads before he signs
   // a statutory record. The stub returns {} for /api/esra-consent, so this
