@@ -1178,9 +1178,28 @@ export default function SubcontractorOrientation() {
                             log: signing already froze this row, so Finalize is
                             never offered (canFinalize false, and logType makes
                             the bar hide it regardless). A locked row shows the
-                            read-only banner + Amend (which mints a new child row). */}
+                            read-only banner + Amend (which mints a new child row).
+
+                            SIGNED COUNTS AS CLOSED, WHICH `is_locked` ALONE DOES
+                            NOT SAY. Nine filed orientations carry a status of
+                            `submitted` and a cp_signature but no `is_locked`
+                            key -- they were signed before the finalize endpoint
+                            existed, and nothing retro-locks an immediate type.
+                            On those rows this bar rendered as OPEN: no filed
+                            banner and, worse, NO AMEND BUTTON, so the one legal
+                            way to correct a filed orientation was missing from
+                            exactly the records most likely to need it.
+
+                            `isSigned` is the same pair the shared rule asks
+                            (`status === 'submitted'` plus a signature); the
+                            sign panel above already gates on it, and this line
+                            did not. Not `isOpenForEditing` here, deliberately:
+                            that rule would also close a SUBMITTED row with no
+                            signature, and the panel directly above still offers
+                            to sign one. Which of those two is right is a
+                            question about a filed record, and it is open. */}
                         <LogbookLockBar
-                          locked={isLocked}
+                          locked={isLocked || !!isSigned}
                           logId={orient.id || orient._id}
                           canFinalize={false}
                           logType={LOG_TYPE}

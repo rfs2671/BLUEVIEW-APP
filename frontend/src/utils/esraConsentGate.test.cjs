@@ -321,8 +321,22 @@ console.log('\n7b. HIS ENTRY SURVIVES THE TRIP, WITHOUT TRUSTING THE NAVIGATOR')
 
   ok(/if \(held && !isLocked\)/.test(applyHeld),
     'but never onto a FROZEN document, which is read-only');
+  // THE SERVER HALF NO LONGER SPELLS THE PREDICATE, AND MUST NOT.
+  //
+  // This pinned the literal `applyHeld(existing?.is_locked === true)`, and it
+  // failed on the change that made it correct: `is_locked` alone is the
+  // server's dedupe filter for IMMEDIATE types, and THIS log is END_OF_DAY —
+  // submitted at signature, unlocked until the overnight sweep — so for those
+  // hours it called a filed statutory record editable and let the stash land
+  // on it. The screen now asks `chooseEditableLog`, which is
+  // `status !== 'submitted' && !is_locked` plus withdrawn.
+  //
+  // The CLAIM is unchanged and is what is asserted: both sources say whether
+  // the document is frozen. A syntax pin failing a correct change is the shape
+  // followups.md warns about, so this asks for the frozen-ness rather than for
+  // one way of spelling it.
   ok(/applyHeld\(draft\.finalized === true\)/.test(load)
-     && /applyHeld\(existing\?\.is_locked === true\)/.test(load),
+     && /applyHeld\([^)]*readOnly[^)]*\)/.test(load),
   'and BOTH sources say whether the document is frozen — the local draft as '
   + 'well as the server, which is a case the single-branch load could not '
   + 'even express');
