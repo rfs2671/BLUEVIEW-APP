@@ -40,6 +40,7 @@ import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatureAffirmed';
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
+import WorkerPicker from '../../src/components/WorkerPicker';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -555,7 +556,41 @@ export default function PreShiftSignIn() {
     setWorkers(prev => prev.map((w, i) => i === index ? { ...w, [field]: value } : w));
   };
 
-  const addRow = () => {
+  /**
+   * + Add Row OPENS A PICKER. It used to push a blank row straight onto the
+   * roster, and a CP typing a name free-hand into a document where the gate
+   * already knows who is on site is how one man came to appear twice on one
+   * filed report. Nothing downstream can undo that: every rule that would
+   * unify two spellings is asserted against by a regression guard, because
+   * collapsing them deletes a man from the record of who was on site.
+   *
+   * Manual entry is still here, one tap further in, and carries NO flag on the
+   * row -- see WorkerPicker for why a provenance field was declined rather
+   * than introduced into a filed document.
+   */
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const addRow = () => setPickerOpen(true);
+
+  const addPickedWorker = (row) => {
+    setPickerOpen(false);
+    if (!row) return;
+    setWorkers(prev => [...prev, {
+      ...EMPTY_WORKER(),
+      // FROM THE RECORD, NOT THE KEYBOARD. worker_id is what makes this row a
+      // reference to a man rather than a string that resembles one.
+      worker_id: row.worker_id || null,
+      name: row.name || '',
+      company: row.company || '',
+      osha_number: row.osha_number || '',
+      // NOT auto_filled: that flag means "came from TODAY's check-ins, identity
+      // locked", and a picked man may not have checked in today. The fields
+      // stay editable; what changed is that their default is a record.
+    }]);
+  };
+
+  const addManualRow = () => {
+    setPickerOpen(false);
     setWorkers(prev => [...prev, EMPTY_WORKER()]);
   };
 
@@ -1200,12 +1235,21 @@ export default function PreShiftSignIn() {
               </View>
             ))}
 
-            <GlassButton
-              title="+ Add Row"
-              icon={<Plus size={14} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={addRow}
-              style={styles.addRowBtn}
-            />
+            {pickerOpen ? (
+              <WorkerPicker
+                projectId={projectId}
+                onSelect={addPickedWorker}
+                onManual={addManualRow}
+                onCancel={() => setPickerOpen(false)}
+              />
+            ) : (
+              <GlassButton
+                title="+ Add Row"
+                icon={<Plus size={14} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={addRow}
+                style={styles.addRowBtn}
+              />
+            )}
 
             {/* Total */}
             <View style={styles.totalRow}>

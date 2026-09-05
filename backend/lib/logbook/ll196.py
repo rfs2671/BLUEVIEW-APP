@@ -365,8 +365,41 @@ def _month_utc_window(year: int, month: int) -> Tuple[datetime, datetime]:
 async def _roster_for_period(
     db, *, project_id: str, year: int, month: int,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
-    """Every worker who was on THIS site during THIS month, plus each one's
+    """The month window of `roster_for_window`. See it for the join and why.
+
+    Kept as its own name because the attestation asks a calendar question and
+    the window arithmetic is Eastern-specific.
+    """
+    start_utc, end_utc = _month_utc_window(year, month)
+    return await roster_for_window(
+        db, project_id=project_id, start_utc=start_utc, end_utc=end_utc,
+    )
+
+
+async def roster_for_window(
+    db, *, project_id: str,
+    start_utc: Optional[datetime] = None,
+    end_utc: Optional[datetime] = None,
+    worker_filter: Optional[Dict[str, Any]] = None,
+    projection: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """Every worker who was on THIS site inside this window, plus each one's
     per-project trade. Returns (worker_documents, trade_by_worker_id).
+
+    ONE ANSWER TO "WHO WAS ON THIS SITE". The LL196 attestation and the
+    pre-shift roster picker both ask it, and two joins would let a statutory
+    filing and the sheet a CP fills disagree about the same men -- the shape
+    that put one worker on one report under two names. So the window is a
+    parameter and the join is not.
+
+    `start_utc` / `end_utc` are both optional: omit them for every check-in
+    ever recorded on the project, which is what a picker wants (a man who last
+    worked five weeks ago is exactly the row `+ Add Row` exists for).
+
+    `worker_filter` is merged with `$and` rather than into the query dict, so a
+    caller passing an unsatisfiable clause gets no rows instead of silently
+    replacing the `_id` term. `projection` keeps `osha_card_image` -- a base64
+    blob -- out of a list response.
 
     WHAT THIS REPLACED, and why it returned nothing:
 
@@ -407,19 +440,25 @@ async def _roster_for_period(
     is not; the cursor is iterated instead, with a projection so each row is
     three fields rather than a check-in document carrying base64 card images.
     """
-    start_utc, end_utc = _month_utc_window(year, month)
+    time_clause: Dict[str, Any] = {}
+    if start_utc is not None:
+        time_clause["$gte"] = start_utc
+    if end_utc is not None:
+        time_clause["$lt"] = end_utc
 
     worker_ids: List[str] = []
     seen: set = set()
     frozen_trade: Dict[str, str] = {}
     frozen_at: Dict[str, datetime] = {}
 
+    _checkin_query: Dict[str, Any] = {
+        "project_id": project_id,
+        "is_deleted": {"$ne": True},
+    }
+    if time_clause:
+        _checkin_query["check_in_time"] = time_clause
     cursor = db.checkins.find(
-        {
-            "project_id": project_id,
-            "is_deleted": {"$ne": True},
-            "check_in_time": {"$gte": start_utc, "$lt": end_utc},
-        },
+        _checkin_query,
         {"worker_id": 1, "worker_trade": 1, "check_in_time": 1, "_id": 0},
     )
     async for c in cursor:
@@ -471,19 +510,38 @@ async def _roster_for_period(
         if oid != wid:
             query_ids.append(wid)
 
-    workers = await db.workers.find({
+    _worker_query: Dict[str, Any] = {
         "_id": {"$in": query_ids},
         "is_deleted": {"$ne": True},
-    }).to_list(len(query_ids))
+    }
+    if worker_filter:
+        # $and, NOT dict-merge. A caller's `{"_id": None}` tenant fallback would
+        # otherwise REPLACE the `$in` term and return the wrong men rather than
+        # none of them.
+        _worker_query = {"$and": [_worker_query, worker_filter]}
+    workers = await (
+        db.workers.find(_worker_query, projection) if projection is not None
+        else db.workers.find(_worker_query)
+    ).to_list(len(query_ids))
 
     # A check-in whose worker document is gone or soft-deleted names nobody we
     # can attest about. It is not silently dropped: it is counted and logged,
     # because a register short by N men is the failure this whole change is
     # about.
+    #
+    # THE WINDOW IS PRINTED, NOT THE PERIOD. This used to interpolate `year`
+    # and `month`, which were parameters of the month-shaped function this was
+    # extracted from; the window is now the general fact and a caller with no
+    # window says so. A NameError here would have raised inside the
+    # attestation's own roster build.
     orphaned = len(worker_ids) - len(workers)
     if orphaned:
+        _window = (
+            f"{start_utc.isoformat()}..{end_utc.isoformat()}"
+            if start_utc is not None and end_utc is not None else "all time"
+        )
         logger.warning(
-            f"[ll196] project={project_id} period={year}-{month:02d}: "
+            f"[ll196] project={project_id} window={_window}: "
             f"{orphaned} of {len(worker_ids)} checked-in worker ids have no "
             f"live worker document; they are absent from the register",
         )
