@@ -260,6 +260,49 @@ one shape.
 > A docstring that says *this is like that* is an assertion. Either make it one
 > — a test that fails when the two diverge — or say what the code does and stop.
 
+### The worked example: nine seconds of measurement against a sound inference
+
+The docstring above was *stale* — a claim that may once have been true. This one
+was **never** true, and it is the better example precisely because the reasoning
+that produced it was good.
+
+A comment in `generate_combined_report` read:
+
+> A section taller than a page cannot honour it, and WeasyPrint drops the
+> request rather than leaving the sheet blank — which is what makes this safe on
+> a sixty-man pre-shift sheet.
+
+It is plausible. An unsatisfiable constraint being dropped is what a reasonable
+engine would do. It is also wrong: WeasyPrint relocates the block to a fresh
+sheet first and splits it there only when it has run out of anywhere else to put
+it. The blank sheet is exactly what you get, and it is worst on the case the
+comment called safe — the 2026-08-31 report's first section is ~1715px, taller
+than a whole page, and still began on page 2 with page 1 carrying the header
+alone.
+
+**And the same shape happened again, in the fix, in the same hour.** The question
+was whether CI could render a page at all, so that geometry could be asserted
+rather than described. The evidence said probably not: this repo's own
+mount-smoke job runs `playwright install --with-deps`, which apt-installs
+`libpango`, `libcairo2` and `libgdk-pixbuf` — the same libraries — implying the
+base image does not carry them. That inference was reported as strong but not
+settled, with an estimated cost of a 20–40s apt step.
+
+One throwaway branch, one probe workflow, **nine seconds**: `ubuntu-latest`
+renders WeasyPrint 69.0 with no apt step at all. `--with-deps` is passed
+unconditionally by Playwright and implies nothing about what was missing.
+
+> Reasoning from real evidence produced a wrong answer twice on one afternoon,
+> and measuring cost nine seconds both times. When the thing is measurable at
+> all, measure it. An inference is a hypothesis with a citation attached.
+
+A footnote from that probe, kept because it will otherwise bite the next person:
+`dpkg -s libglib2.0-0` reports **absent** on Ubuntu 24.04 while the library is
+present, because the time_t transition renamed the package `libglib2.0-0t64`
+and it merely *provides* the old name. A census run with production's package
+names reports a false negative — a measurement that is itself an inference about
+naming.
+
 The port that fixed it also refused to copy the combined report's `h2` and
 `.doc-section` rules, because this renderer emits neither. A rule for a selector
 that never appears reads on the next audit as a protection that is in place —

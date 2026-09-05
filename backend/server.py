@@ -30992,9 +30992,48 @@ async def generate_combined_report(
         additional_logbooks_html,
     )
     # page-break-inside ON THE WRAPPER, which is what stops a table splitting
-    # across the fold. A section taller than a page cannot honour it, and
-    # WeasyPrint drops the request rather than leaving the sheet blank -- which
-    # is what makes this safe on a sixty-man pre-shift sheet.
+    # across the fold.
+    #
+    # THE CLAIM THAT USED TO BE HERE WAS WRONG, AND IT NEVER HELD. It read:
+    # "A section taller than a page cannot honour it, and WeasyPrint drops the
+    # request rather than leaving the sheet blank -- which is what makes this
+    # safe on a sixty-man pre-shift sheet." WeasyPrint does not drop it. It
+    # RELOCATES the block to a fresh sheet first, and only then splits it
+    # because it has nowhere else to go. The blank sheet is exactly what you
+    # get.
+    #
+    # MEASURED, on this renderer, on production data, in a container where
+    # WeasyPrint loads (2026-09-05):
+    #
+    #   2026-08-25   first section  461px   page 1 ends y=265   7 pages
+    #   2026-09-04   first section  779px   page 1 ends y=265  12 pages
+    #   2026-08-31   first section ~1715px  page 1 ends y=426   9 pages
+    #
+    # A4 at 12mm margins gives a content box of y 45..1078. The 08-31 section
+    # is far taller than a whole page -- the exact case the old comment called
+    # safe -- and it still began on page 2. Page 1 carried the header and the
+    # summary row and nothing else, on all three.
+    #
+    # AND THIS WRAPPER IS ONLY HALF OF IT. Ablating one rule at a time on the
+    # same rendered HTML: removing `.doc-section { break-inside: avoid }` alone
+    # changed nothing on any of the three days. Removing the unqualified
+    # `tr { page-break-inside: avoid }` from the print block alone moved the
+    # light day's section back onto page 1 (page-1 bottom 265px -> 794px, 7
+    # pages -> 6), because that rule matches the outer layout table's single
+    # CONTENT row -- the one holding the entire body. Removing both moved all
+    # three. So the wrapper is load-bearing on a photo-heavy day and irrelevant
+    # on a light one, and the `tr` rule is the dominant cause.
+    #
+    # THE FIX IS NOT IN THIS COMMIT. Scoping that `tr` rule is a behaviour
+    # change to a filed document and it gets its own change with a measured
+    # before and after -- the same scoping the per-logbook PDF already carries
+    # (see generate_single_logbook_html's `tr.shell` exemption). This commit
+    # corrects the record only.
+    #
+    # WHY IT SURVIVED: no check in this repo renders a page. Every
+    # page-geometry test asserts the CSS a renderer emits, so a false claim
+    # about what WeasyPrint does with that CSS sits next to a suite that
+    # cannot contradict it. See docs/audits/check-harness.md section 8.
     sections_html = '<div style="page-break-after:always;"></div>'.join(
         f'<div class="doc-section" style="page-break-inside:avoid;">{_s}</div>'
         for _s in _SECTIONS if _s
