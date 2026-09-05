@@ -9335,8 +9335,15 @@ async def admin_list_filing_jobs(
                 detail=f"status must be one of {sorted(valid_statuses)}; got {status!r}",
             )
         query["status"] = status
+    # The tenant filter is not conditional -- see get_all_checkins. NOT IN THE
+    # first census pass: its `if company_id:` sits thirty lines below the
+    # assignment, past a status branch, so a "read the next few lines after
+    # get_user_company_id" sweep walked over it. Found by the AST census in
+    # test_tenant_scope_census.py, which is the argument for having one.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
 
     # Date range — accept ISO-8601 strings (with or without Z suffix).
     if created_after or created_before:
@@ -11651,10 +11658,27 @@ async def get_projects_dob_summary(
 
     # Resolve the in-scope project set (company-scoped, active).
     proj_query = dict(ACTIVE_PROJECT_FILTER)
-    if company_id:
-        proj_query["company_id"] = company_id
+    # The tenant filter is not conditional -- see get_all_checkins. This one
+    # returns only COUNTS, but it enumerates every ACTIVE PROJECT ID on the
+    # platform, which is the input every project-path route needs. A count that
+    # hands out the keys is not a count.
+    #
+    # ORDER MATTERS HERE, AND IT IS THE ONE PLACE IN THIS SWEEP IT DID. The
+    # `project_id` QUERY PARAMETER also writes `_id`. Applying the refusal
+    # first and this second would have let a caller with no company OVERWRITE
+    # the unsatisfiable `_id: None` simply by naming a project -- turning the
+    # guard off with the very parameter it needs to stop. So the caller-
+    # supplied narrowing goes FIRST and the tenant refusal LAST, where nothing
+    # can replace it.
+    #
+    # The two are compatible in the ordinary case: a company-scoped caller who
+    # names a project gets both keys, ANDed, which is the intended narrowing.
     if project_id:
         proj_query["_id"] = to_query_id(project_id)
+    if company_id:
+        proj_query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        proj_query["_id"] = None
     proj_docs = await db.projects.find(proj_query, {"_id": 1}).to_list(length=1000)
     project_ids = [str(p["_id"]) for p in proj_docs]
 
@@ -16529,8 +16553,32 @@ async def get_all_checkins(
     """Get all check-ins for the user's company"""
     company_id = get_user_company_id(current_user)
     query = {"is_deleted": {"$ne": True}}
+    # ── THE TENANT FILTER MUST NOT BE CONDITIONAL ───────────────────────────
+    #
+    # `if company_id:` ALONE let a caller with no company skip the filter and
+    # read EVERY TENANT'S rows. And `company_id = None` is the DEFAULT account
+    # state -- self-serve registration sets it, and a company is attached later
+    # by POST /onboarding/company -- so this was the ordinary path for a fresh
+    # account, not an edge case. What came back here is worker names, SST card
+    # numbers, and `source_ip` / `user_agent` / `device_fingerprint`: presence
+    # evidence about identified people.
+    #
+    # `_id: None` RATHER THAN `company_id: None`. Unsatisfiable, so there is one
+    # code path and one response shape and a caller who owns nobody gets what a
+    # company with no rows gets. `company_id: None` would match precisely the
+    # orphan rows -- every other un-onboarded signup.
+    #
+    # THE CARVE-OUT IS THE FLAG, NEVER THE ROLE. `register` gives every signup
+    # `role = "owner"`, so a role test here would be satisfied by having
+    # registered; `is_platform_operator` is the function that means this.
+    #
+    # This is the shape test_tenant_scope_census.py now asserts across every
+    # tenant-scoped read. Eleven of them carried it; two more were fixed on
+    # their own before the census existed.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
     if date:
         # Parse date as an Eastern Time day, convert to UTC range
         day_start_utc, day_end_utc = get_day_range_est(date)
@@ -17476,8 +17524,18 @@ async def get_daily_logs(
     company_id = get_user_company_id(current_user)
     
     query = {"is_deleted": {"$ne": True}}
+    # The tenant filter is not conditional. `if company_id:` alone let a
+    # caller with NO company read every tenant's rows, and that is the
+    # DEFAULT state after self-serve registration. `_id: None` is
+    # unsatisfiable, so one code path and one response shape;
+    # `company_id: None` would match precisely the orphan rows. The
+    # carve-out is the FLAG, never the `owner` role -- that role is what
+    # every signup receives. Reasoned in full on get_all_checkins and
+    # asserted by test_tenant_scope_census.py.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
     
     result = await paginated_query(db.daily_logs, query, sort_field="date", limit=limit, skip=skip)
     return result
@@ -18696,8 +18754,22 @@ async def list_cs_registrations(
     
     company_id = get_user_company_id(admin)
     query = {"is_deleted": {"$ne": True}}
+    # The tenant filter is not conditional. `if company_id:` alone let a
+    # caller with NO company read every tenant's rows, and that is the
+    # DEFAULT state after self-serve registration. `_id: None` is
+    # unsatisfiable, so one code path and one response shape;
+    # `company_id: None` would match precisely the orphan rows. The
+    # carve-out is the FLAG, never the `owner` role -- that role is what
+    # every signup receives. Reasoned in full on get_all_checkins and
+    # asserted by test_tenant_scope_census.py.
+    # WHAT THIS RETURNED: named licensed professionals -- full_name,
+    # license_number, nyc_id_email, sst_number -- platform-wide.
+    # `Depends(get_admin_user)` is NOT a mitigation: it admits any role in
+    # ("admin", "owner") and every self-serve signup is an owner.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(admin):
+        query["_id"] = None
     if project_id:
         query["project_id"] = project_id
     
@@ -18835,8 +18907,20 @@ async def get_compliance_alerts(
     
     company_id = get_user_company_id(admin)
     query = {}
+    # The tenant filter is not conditional. `if company_id:` alone let a
+    # caller with NO company read every tenant's rows, and that is the
+    # DEFAULT state after self-serve registration. `_id: None` is
+    # unsatisfiable, so one code path and one response shape;
+    # `company_id: None` would match precisely the orphan rows. The
+    # carve-out is the FLAG, never the `owner` role -- that role is what
+    # every signup receives. Reasoned in full on get_all_checkins and
+    # asserted by test_tenant_scope_census.py.
+    # WHAT THIS RETURNED: named workers and the reason each was refused at
+    # a gate, for every tenant.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(admin):
+        query["_id"] = None
     if resolved is not None:
         query["resolved"] = resolved
     
@@ -20051,8 +20135,21 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
     today_start, today_end = get_today_range_est()
     
     query = {"is_deleted": {"$ne": True}}
+    # The tenant filter is not conditional. `if company_id:` alone let a
+    # caller with NO company read every tenant's rows, and that is the
+    # DEFAULT state after self-serve registration. `_id: None` is
+    # unsatisfiable, so one code path and one response shape;
+    # `company_id: None` would match precisely the orphan rows. The
+    # carve-out is the FLAG, never the `owner` role -- that role is what
+    # every signup receives. Reasoned in full on get_all_checkins and
+    # asserted by test_tenant_scope_census.py.
+    # Counts only, no personal data -- and still wrong: it reported the
+    # whole platform's worker and project totals to a caller who had not
+    # onboarded.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
     
     total_workers = await db.workers.count_documents(query)
 
@@ -20248,8 +20345,18 @@ async def get_checklists(admin = Depends(get_admin_user)):
     """Get all checklists for the admin's company"""
     company_id = get_user_company_id(admin)
     query = {"is_deleted": {"$ne": True}}
+    # The tenant filter is not conditional. `if company_id:` alone let a
+    # caller with NO company read every tenant's rows, and that is the
+    # DEFAULT state after self-serve registration. `_id: None` is
+    # unsatisfiable, so one code path and one response shape;
+    # `company_id: None` would match precisely the orphan rows. The
+    # carve-out is the FLAG, never the `owner` role -- that role is what
+    # every signup receives. Reasoned in full on get_all_checkins and
+    # asserted by test_tenant_scope_census.py.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(admin):
+        query["_id"] = None
     
     checklists = await db.checklists.find(query).sort("created_at", -1).to_list(200)
     result = []
@@ -20361,13 +20468,42 @@ async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
 
 @api_router.post("/admin/checklists/{checklist_id}/assign")
 async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignmentCreate, admin = Depends(get_admin_user)):
-    """Assign a checklist to projects and users"""
-    checklist = await db.checklists.find_one({"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}})
-    if not checklist:
-        raise HTTPException(status_code=404, detail="Checklist not found")
-    
+    """Assign a checklist to projects and users.
+
+    ── THREE IDS FROM THE CALLER, NONE OF THEM AUTHORIZED ───────────────────
+
+    The checklist was fetched BY ID with no company scope, and the
+    `project_ids` and `user_ids` in the body were never checked against the
+    caller's tenant. `Depends(get_admin_user)` admits any role in
+    ("admin", "owner") and `register` gives every self-serve signup
+    `role = "owner"`, so an account that had merely registered could assign
+    another tenant's checklist onto another tenant's projects, naming another
+    tenant's users -- and the write lands in `checklist_assignments` with the
+    CALLER's company_id, which is how it stayed invisible.
+
+    All three are scoped here. The checklist and the projects are refused
+    outright when they are outside the caller's company; unknown user ids were
+    already dropped by the `if user:` below and are now dropped for being out
+    of company too, silently, because a partial assignment is better than
+    refusing the whole call over one stale id in a list.
+    """
     now = datetime.now(timezone.utc)
     company_id = get_user_company_id(admin)
+    _operator = is_platform_operator(admin)
+
+    _cl_query: Dict[str, Any] = {
+        "_id": to_query_id(checklist_id), "is_deleted": {"$ne": True},
+    }
+    if company_id:
+        _cl_query["company_id"] = company_id
+    elif not _operator:
+        _cl_query["_id"] = None
+    checklist = await db.checklists.find_one(_cl_query)
+    if not checklist:
+        # 404 AND NOT 403, DELIBERATELY. A 403 would confirm that a checklist
+        # with this id exists in some other tenant, which is the fact the
+        # scoping exists to withhold.
+        raise HTTPException(status_code=404, detail="Checklist not found")
     created_assignments = []
     
     # The [{id, name}] list the admin surfaces actually PRINT. It does not vary
@@ -20378,10 +20514,19 @@ async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignme
     assigned_users = []
     for user_id in assignment_data.user_ids:
         user = await db.users.find_one({"_id": to_query_id(user_id)})
-        if user:
+        # OUT-OF-COMPANY IDS ARE DROPPED, not refused: a stale id in a list
+        # must not fail the whole assignment, and naming a stranger must not
+        # put his name on this tenant's screen.
+        if user and (_operator or (company_id and
+                                   user.get("company_id") == company_id)):
             assigned_users.append({"id": user_id, "name": user.get("name", "")})
 
     for project_id in assignment_data.project_ids:
+        # THE PROJECT IS AUTHORIZED BEFORE ANYTHING IS WRITTEN AGAINST IT.
+        # Raises 403/404 from the shared gate rather than a local check, so
+        # this route cannot drift from the rule every other project write
+        # applies.
+        await _assert_project_access(project_id, admin)
         # Check if assignment already exists
         existing = await db.checklist_assignments.find_one({
             "checklist_id": checklist_id,
@@ -20583,8 +20728,21 @@ async def get_reports(current_user = Depends(get_current_user)):
     company_id = get_user_company_id(current_user)
     
     query = {"is_deleted": {"$ne": True}}
+    # The tenant filter is not conditional. `if company_id:` alone let a
+    # caller with NO company read every tenant's rows, and that is the
+    # DEFAULT state after self-serve registration. `_id: None` is
+    # unsatisfiable, so one code path and one response shape;
+    # `company_id: None` would match precisely the orphan rows. The
+    # carve-out is the FLAG, never the `owner` role -- that role is what
+    # every signup receives. Reasoned in full on get_all_checkins and
+    # asserted by test_tenant_scope_census.py.
+    # `db.reports` has no writer anywhere in backend/ -- only this reader
+    # and get_project_reports. Fixed by shape, not because anything is
+    # known to leak through it today.
     if company_id:
         query["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        query["_id"] = None
     
     reports = await db.reports.find(query).sort("created_at", -1).to_list(200)
     return serialize_list(reports)
@@ -22303,7 +22461,30 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
     }
 
 
-@api_router.get("/debug/bis-scraper-state")
+# OPERATOR-ONLY, BECAUSE SCOPING THIS ONE IS NOT POSSIBLE. Two of its four
+# reads are platform-wide BY CONSTRUCTION and were unscoped for EVERY caller,
+# company or not: `system_config` rows keyed `initial_scan_done:bis:*` (every
+# tenant's scan markers) and `insurance_fetch:*` (per-licence fetch counts,
+# carrying `license_number`). They are not per-company documents and cannot be
+# narrowed without inventing a mapping. The other two -- tracked projects and
+# scraper-sourced companies -- leaked only to a company-less caller and are
+# guarded below anyway.
+#
+# It is a `debug_` diagnostic whose whole subject is platform-level scraper
+# state, so the honest gate is the platform operator rather than a filter.
+#
+# THE INLINE ROLE CHECK BELOW WAS NOT ONE. `role in ("owner","admin")` is
+# satisfied by having registered -- `register` gives every self-serve signup
+# `role = "owner"`. It is kept as defence in depth, not as the gate.
+#
+# CAVEAT WORTH KNOWING: `require_platform_operator` only ENFORCES while
+# PLATFORM_GATES_ENFORCED is set. It defaults to "false", in which mode it logs
+# and returns the caller. Production sets it to true (verified 2026-09-05); a
+# new environment that does not would degrade this to the inline role check.
+@api_router.get(
+    "/debug/bis-scraper-state",
+    dependencies=[Depends(require_platform_operator)],
+)
 async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
     """Dump the state the BIS scraper has written to Mongo, so we can
     verify it's actually getting through DOB's Akamai gate without
@@ -22332,6 +22513,8 @@ async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
     }
     if company_id:
         proj_filter["company_id"] = company_id
+    elif not is_platform_operator(current_user):
+        proj_filter["_id"] = None
     tracked = await db.projects.find(
         proj_filter,
         {"name": 1, "nyc_bin": 1, "company_id": 1},
@@ -22376,6 +22559,8 @@ async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
     }
     if company_id:
         comp_filter["_id"] = to_query_id(company_id)
+    elif not is_platform_operator(current_user):
+        comp_filter["_id"] = None
     companies = await db.companies.find(comp_filter).to_list(200)
     company_rows = []
     for c in companies:
@@ -23360,7 +23545,12 @@ async def update_cp_profile(data: CPProfileUpdate, current_user = Depends(get_cu
 
 # ==================== LOGBOOK ENDPOINTS ====================
 
-@api_router.get("/logbooks/project/{project_id}")
+# A {project_id} IN THE PATH IS NOT AUTHORIZATION. Without this dependency the
+# path id went straight into the query and any authenticated caller could name
+# another tenant's project and read the LL196 statutory records, CP names and cp_signature. The company filter below cannot substitute for it:
+# a caller with a legitimate company could still name a project outside it.
+# Same dependency POST /projects/{project_id}/reindex-document already carries.
+@api_router.get("/logbooks/project/{project_id}", dependencies=[Depends(require_project_access)])
 async def get_project_logbooks(
     project_id: str,
     log_type: Optional[str] = None,
@@ -37616,9 +37806,15 @@ async def _handle_list_workers(
 ) -> str:
     """Return the full worker roster, optionally filtered by trade/company.
     Not limited to who's on site today — the full roster."""
-    query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
-    if company_id:
-        query["company_id"] = company_id
+    # A COMPANY-LESS CALLER HAS NO ROSTER, and this helper takes `company_id`
+    # as a PARAMETER rather than a user, so there is no
+    # `is_platform_operator(...)` to ask here. `if company_id:` alone returned
+    # every worker on the platform to the assistant. The caller resolves the
+    # company; if it could not, the honest answer is that there is nobody to
+    # list.
+    if not company_id:
+        return "No workers on file for this account."
+    query: Dict[str, Any] = {"is_deleted": {"$ne": True}, "company_id": company_id}
     workers = await db.workers.find(query).to_list(1000)
 
     def _match(w: dict) -> bool:
@@ -40721,12 +40917,17 @@ async def _get_checklist_candidates(
     Each entry: {id, kind: 'user'|'worker', name, trade, company}.
     """
     out = []
+    # A COMPANY-LESS CALLER HAS NOBODY TO ASSIGN TO. Same shape as
+    # _handle_list_workers: `company_id` arrives as a parameter, so there is no
+    # user to ask `is_platform_operator` about, and `if company_id:` alone
+    # returned every USER and every WORKER on the platform to the assistant.
+    if not company_id:
+        return out
 
     # Users
     try:
-        uq: Dict[str, Any] = {"is_deleted": {"$ne": True}}
-        if company_id:
-            uq["company_id"] = company_id
+        uq: Dict[str, Any] = {"is_deleted": {"$ne": True},
+                              "company_id": company_id}
         users = await db.users.find(uq, {"password": 0}).to_list(200)
         for u in users:
             role = (u.get("role") or "").lower()
@@ -40744,9 +40945,13 @@ async def _get_checklist_candidates(
 
     # Workers
     try:
-        wq: Dict[str, Any] = {"is_deleted": {"$ne": True}}
-        if company_id:
-            wq["company_id"] = company_id
+        # Unconditional, like the users query above. The early return at the
+        # top already makes a falsy company impossible here, so the old
+        # conditional was dead -- but a dead conditional of this exact shape is
+        # what the next reader copies, and moving that early return would
+        # revive it silently.
+        wq: Dict[str, Any] = {"is_deleted": {"$ne": True},
+                              "company_id": company_id}
         workers = await db.workers.find(wq).to_list(200)
         for w in workers:
             out.append({
@@ -42017,6 +42222,15 @@ async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
     if role not in ("admin", "owner"):
         raise HTTPException(status_code=403, detail="Admin access required")
     company_id = get_user_company_id(current_user)
+    if not company_id and not is_platform_operator(current_user):
+        # `company_id: None` IS NOT A TENANT FILTER -- it matches
+        # precisely the rows with no company, i.e. every OTHER
+        # un-onboarded signup, so a company-less caller was
+        # cross-linked to strangers rather than scoped to nobody.
+        raise HTTPException(
+            status_code=403,
+            detail="This account is not linked to a company yet.",
+        )
     codes = await db.whatsapp_link_codes.find({
         "company_id": company_id,
         "verified": False,
@@ -42092,6 +42306,15 @@ async def whatsapp_group_link_verify(
 async def whatsapp_get_groups(project_id: str, current_user=Depends(get_current_user)):
     """List linked WhatsApp groups for a project, with message counts + bot_config."""
     company_id = get_user_company_id(current_user)
+    if not company_id and not is_platform_operator(current_user):
+        # `company_id: None` IS NOT A TENANT FILTER -- it matches
+        # precisely the rows with no company, i.e. every OTHER
+        # un-onboarded signup, so a company-less caller was
+        # cross-linked to strangers rather than scoped to nobody.
+        raise HTTPException(
+            status_code=403,
+            detail="This account is not linked to a company yet.",
+        )
     groups = await db.whatsapp_groups.find({
         "project_id": project_id,
         "company_id": company_id,
@@ -42792,7 +43015,12 @@ async def debug_test_plan_image_send(
     return result
 
 
-@api_router.get("/projects/{project_id}/debug/indexed-pages")
+# A {project_id} IN THE PATH IS NOT AUTHORIZATION. Without this dependency the
+# path id went straight into the query and any authenticated caller could name
+# another tenant's project and read sheet numbers, titles, disciplines and AI summaries of another tenant's drawings. The company filter below cannot substitute for it:
+# a caller with a legitimate company could still name a project outside it.
+# Same dependency POST /projects/{project_id}/reindex-document already carries.
+@api_router.get("/projects/{project_id}/debug/indexed-pages", dependencies=[Depends(require_project_access)])
 async def debug_indexed_pages(
     project_id: str,
     current_user=Depends(get_current_user),
@@ -42835,7 +43063,12 @@ async def debug_indexed_pages(
     return {"count": len(out), "pages": out}
 
 
-@api_router.get("/projects/{project_id}/document-index-status")
+# A {project_id} IN THE PATH IS NOT AUTHORIZATION. Without this dependency the
+# path id went straight into the query and any authenticated caller could name
+# another tenant's project and read file names and page counts -- and it FETCHES EVERY MATCHED PDF FROM R2 to count pages, so an unauthorized caller also drove unmetered egress. The company filter below cannot substitute for it:
+# a caller with a legitimate company could still name a project outside it.
+# Same dependency POST /projects/{project_id}/reindex-document already carries.
+@api_router.get("/projects/{project_id}/document-index-status", dependencies=[Depends(require_project_access)])
 async def get_document_index_status(
     project_id: str,
     current_user=Depends(get_current_user),
@@ -42892,7 +43125,12 @@ async def get_document_index_status(
     }
 
 
-@api_router.get("/projects/{project_id}/whatsapp-checklists")
+# A {project_id} IN THE PATH IS NOT AUTHORIZATION. Without this dependency the
+# path id went straight into the query and any authenticated caller could name
+# another tenant's project and read extracted checklist items, completions and completed_by names. The company filter below cannot substitute for it:
+# a caller with a legitimate company could still name a project outside it.
+# Same dependency POST /projects/{project_id}/reindex-document already carries.
+@api_router.get("/projects/{project_id}/whatsapp-checklists", dependencies=[Depends(require_project_access)])
 async def list_project_whatsapp_checklists(
     project_id: str,
     group_id: Optional[str] = Query(None),
