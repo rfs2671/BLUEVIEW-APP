@@ -383,6 +383,204 @@ class AResolvedAlertMustBeContradictableTomorrow(unittest.TestCase):
         self.assertIs(seen[0].get("resolved"), False)
 
 
+# NOW is 07:00Z on the 18th = 3am ET. AFFIRMED above is stamped 09:00Z on the
+# 17th, which is 22 hours earlier — a signature made in the MORNING of the day
+# the log describes, left unfrozen through that whole working day and the
+# evening after it.
+SIGNED_AT_END_OF_HIS_DAY = {"affirmed": True, "affirmedAt": "2026-08-18T00:30:00Z"}
+# 8:30pm ET on the 17th: the ordinary END_OF_DAY case. Six and a half hours
+# before the sweep, and nothing is wrong with it.
+
+
+class ItRecordsAFreezeNobodyElseApplied(unittest.TestCase):
+    """THE SWEEP IS THE ONLY WITNESS TO ITS OWN BACKSTOP FIRING.
+
+    Two amendments to the same log, the same day, the same CP: one locked one
+    second after its signature via /finalize (`finalized_by` = the user), the
+    other waited nineteen hours for this sweep (`finalized_by_name` = "End-of-
+    day sweep"). Both are frozen and both look identical on the logbook list.
+    NOTHING ON EITHER SIDE RECORDED WHICH — the divergence is only visible if
+    somebody thinks to compare `finalized_by` across two rows.
+
+    draftSync's applyRemoteFreeze is where the client half is fixed. This is
+    the half that CANNOT BE REVERTED BY AN EDITOR CHANGE: it reads the
+    document, so a client that quietly stops applying the freeze is observed
+    from the outside rather than trusted to report on itself.
+
+    IT MUST NOT FIRE ON THE ORDINARY CASE. An END_OF_DAY log is supposed to be
+    signed and left open — that is the class. A CP who signs at 8:30pm and is
+    swept at 3am has done nothing wrong, and an alert on him buries the real
+    signal.
+    """
+
+    def test_a_log_signed_the_morning_before_raises_the_alert(self):
+        db = _DB([_log("a", sig=AFFIRMED)])
+        out = _run(db)
+        self.assertEqual(out["frozen"], 1)
+        self.assertEqual(out["late_freeze"], 1)
+        alert = db.compliance_alerts.inserted[0]
+        self.assertEqual(alert["alert_type"], "client_freeze_never_arrived")
+        self.assertEqual(alert["details"]["log_type"], "daily_jobsite")
+        self.assertEqual(alert["details"]["date"], "2026-08-17")
+        self.assertEqual(alert["details"]["logbook_id"], "a")
+        self.assertEqual(alert["details"]["hours_unfrozen"], 22)
+        self.assertIs(alert["resolved"], False)
+
+    def test_it_still_freezes_the_log(self):
+        """The alert is an observation about the freeze, never a substitute for
+        it. A detector that stopped the backstop would be worse than no
+        detector."""
+        db = _DB([_log("a", sig=AFFIRMED)])
+        _run(db)
+        self.assertIs(db.logbooks.docs[0]["is_locked"], True)
+        self.assertEqual(db.logbooks.docs[0]["finalized_by"], "system:eod_sweep")
+
+    def test_an_end_of_day_signature_raises_nothing(self):
+        db = _DB([_log("a", sig=SIGNED_AT_END_OF_HIS_DAY)])
+        out = _run(db)
+        self.assertEqual(out["frozen"], 1)
+        self.assertEqual(out["late_freeze"], 0)
+        self.assertEqual(db.compliance_alerts.inserted, [])
+
+    def test_an_unsigned_stale_log_raises_only_the_unsigned_alert(self):
+        """The two detectors describe different obligations and must not both
+        speak about one document. An unsigned log owes no freeze at all."""
+        db = _DB([_log("a", sig=None), _log("b", sig=EMPTY_SIG)])
+        out = _run(db)
+        self.assertEqual(out["late_freeze"], 0)
+        self.assertEqual(
+            {a["alert_type"] for a in db.compliance_alerts.inserted},
+            {"unsigned_stale_logbook"},
+        )
+
+    def test_a_signature_with_no_parseable_stamp_raises_nothing(self):
+        """The alert's entire content is an elapsed time. Raised on a signature
+        nobody can date, it would assert a number it invented."""
+        for sig in ({"affirmed": True},
+                    {"affirmed": True, "affirmedAt": "not a date"},
+                    {"affirmed": True, "affirmedAt": None, "timestamp": ""}):
+            with self.subTest(sig=sig):
+                db = _DB([_log("a", sig=sig)])
+                out = _run(db)
+                self.assertEqual(out["frozen"], 1, "it is still frozen")
+                self.assertEqual(out["late_freeze"], 0)
+                self.assertEqual(db.compliance_alerts.inserted, [])
+
+    def test_it_falls_back_to_timestamp_when_affirmedAt_is_absent(self):
+        """The same two fields in the same order ensure_signature_ledger_row
+        reads, so the two never disagree about when a signature happened."""
+        db = _DB([_log("a", sig={"affirmed": True,
+                                 "timestamp": "2026-08-17T09:00:00Z"})])
+        self.assertEqual(_run(db)["late_freeze"], 1)
+
+    def test_a_re_run_does_not_stack_duplicates(self):
+        """Normally unreachable — the freeze removes the document from the
+        selector for good — so this pins the dedupe for the one path that CAN
+        re-visit it: a freeze write that raised."""
+        db = _DB([_log("a", sig=AFFIRMED)])
+        real = db.logbooks.update_one
+
+        async def boom(q, u):
+            raise RuntimeError("write refused")
+        db.logbooks.update_one = boom
+        self.assertEqual(_run(db)["late_freeze"], 1)
+        self.assertEqual(_run(db)["late_freeze"], 0)
+        db.logbooks.update_one = real
+        self.assertEqual(len(db.compliance_alerts.inserted), 1)
+
+    def test_a_resolved_alert_does_not_suppress_a_re_verified_one(self):
+        """The `resolved: False` clause, for the same reason
+        _flag_unsigned_stale_log carries it: resolve is the only action the
+        admin screen offers, and without this it erases the record instead of
+        closing it."""
+        db = _DB([_log("a", sig=AFFIRMED)])
+
+        async def boom(q, u):
+            raise RuntimeError("write refused")
+        db.logbooks.update_one = boom
+        _run(db)
+        db.compliance_alerts.inserted[0]["resolved"] = True
+        _run(db)
+        self.assertEqual(len(db.compliance_alerts.inserted), 2)
+        self.assertIs(db.compliance_alerts.inserted[1]["resolved"], False)
+
+    def test_the_dedupe_query_names_resolved(self):
+        db = _DB([_log("a", sig=AFFIRMED)])
+        seen = []
+        real = db.compliance_alerts.find_one
+
+        async def spy(q=None, **k):
+            seen.append(q)
+            return await real(q, **k)
+        db.compliance_alerts.find_one = spy
+        _run(db)
+        self.assertTrue(seen)
+        self.assertIs(seen[0].get("resolved"), False)
+        self.assertEqual(seen[0]["alert_type"], "client_freeze_never_arrived")
+
+    def test_it_cannot_stop_the_freeze(self):
+        """It is a detector bolted to a backstop. If the alert write fails, the
+        lock still has to land."""
+        db = _DB([_log("a", sig=AFFIRMED)])
+
+        async def boom(doc):
+            raise RuntimeError("alerts unreachable")
+        db.compliance_alerts.insert_one = boom
+        out = _run(db)
+        self.assertEqual(out["frozen"], 1)
+        self.assertEqual(out["late_freeze"], 0)
+        self.assertIs(db.logbooks.docs[0]["is_locked"], True)
+
+    def test_it_uses_the_runs_own_clock_not_the_wall_clock(self):
+        """`now` already decides which day is stale. Reading the wall clock for
+        the elapsed-time half would make one sweep disagree with itself about
+        when it is happening — and would fire on every log in this file the
+        moment the suite is run on a later date."""
+        db = _DB([_log("a", sig=AFFIRMED)])
+        # Seventeen hours after the signature: inside the window.
+        out = _run(db, now=datetime(2026, 8, 18, 2, 0, tzinfo=timezone.utc))
+        self.assertEqual(out["late_freeze"], 0)
+
+
+class TheVisitClassIsOutOfThisSweepsReach(unittest.TestCase):
+    """SAID OUT LOUD RATHER THAN LEFT TO BE INFERRED.
+
+    site_superintendent_log is a VISIT log and is not in END_OF_DAY_LOG_TYPES,
+    so this sweep never returns one and the late-freeze detector is never
+    called for one. That exclusion is deliberate upstream — an overnight sweep
+    must not freeze a visit its author has not finished — and it means the
+    VISIT version of this defect is INVISIBLE here, and is the worse version:
+    there is no second actor at all, so a freeze the client skips is applied by
+    nothing and the log stays editable and unlocked while the screen shows it
+    signed.
+
+    The detector's docstring has to SAY that rather than imply coverage it does
+    not have, which is why the sentence is asserted and not just the behaviour.
+    """
+
+    def test_a_visit_log_is_neither_frozen_nor_alerted_on(self):
+        db = _DB([_log("v", log_type="site_superintendent_log", sig=AFFIRMED)])
+        out = _run(db)
+        self.assertEqual(out, {"frozen": 0, "unsigned": 0, "late_freeze": 0})
+        self.assertIs(db.logbooks.docs[0]["is_locked"], False)
+        self.assertEqual(db.compliance_alerts.inserted, [])
+
+    def test_the_detector_admits_it_does_not_cover_the_visit_class(self):
+        # raw=True on purpose, and source_text.py names this as the one case
+        # that earns it: the assertion IS about the prose. A detector whose
+        # docstring quietly implies it watches all three timing classes is the
+        # same defect as the comment this branch exists to correct.
+        raw = code_of("server.py", raw=True)
+        fn = raw[raw.index("async def _flag_late_client_freeze"):]
+        fn = fn[:fn.index("\n    try:")]
+        # Whitespace-collapsed: the sentence is wrapped to 79 columns, so a
+        # literal match would pin the line breaks rather than the claim.
+        flat = " ".join(fn.split())
+        self.assertIn("DOES NOT COVER THE VISIT CLASS", flat)
+        self.assertIn("site_superin", flat)
+        self.assertIn("there is no second actor at all", flat)
+
+
 class ItPagesRatherThanTruncating(unittest.TestCase):
     """A TIME BOMB WITH NO SYMPTOM.
 
@@ -486,7 +684,8 @@ class ItSurvivesBadInput(unittest.TestCase):
 
         class _DBBroken:
             logbooks = _Broken()
-        self.assertEqual(_run(_DBBroken()), {"frozen": 0, "unsigned": 0})
+        self.assertEqual(_run(_DBBroken()),
+                         {"frozen": 0, "unsigned": 0, "late_freeze": 0})
 
     def test_one_bad_document_does_not_stop_the_rest(self):
         db = _DB([_log("a", sig=AFFIRMED), _log("b", sig=AFFIRMED)])

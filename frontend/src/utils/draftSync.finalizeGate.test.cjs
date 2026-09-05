@@ -182,6 +182,8 @@ function loadDraftSync(env) {
       '@react-native-community/netinfo': env.NetInfo,
       './api': { logbooksAPI: env.logbooksAPI },
       './logbookDrafts': {
+        // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+        markFinalized: async () => {},
         getPendingKeys: env.getPendingKeys,
         readDraft: env.readDraft,
         setDraftBackendId: env.setDraftBackendId,
@@ -200,12 +202,32 @@ function loadDraftSync(env) {
 }
 
 const KEY = 'logbook_draft:proj1:hot_work:2026-08-04';
-function makeEnv({ finalizeError, hasBackendId = true } = {}) {
+const keyFor = (logType) => `logbook_draft:proj1:${logType}:2026-08-04`;
+
+/**
+ * `logType`, `finalized`, `signature` and `createResult` are overridable
+ * because the freeze gate is no longer a two-state thing.
+ *
+ *   finalized: false + a signed body  is the state the END_OF_DAY editors and
+ *     LogbookLockBar both leave behind, and it is what applyRemoteFreeze used
+ *     to answer with a bare `ok: true`.
+ *   logType    decides whether anything ELSE will ever apply that freeze —
+ *     the sweep excludes VISIT_LOG_TYPES, so site_superintendent_log is the
+ *     one class with no second actor.
+ *   createResult covers the 200-that-names-no-record shape.
+ */
+function makeEnv({
+  finalizeError, hasBackendId = true, logType = 'hot_work',
+  finalized = true, signature = { affirmed: true }, status = 'submitted',
+  createResult = { id: 'newlog9' },
+} = {}) {
   const store = {};              // AsyncStorage
   const calls = { cleared: [], finalized: [], updated: [], created: [], boundIds: [] };
+  const key = keyFor(logType);
   return {
     calls,
     store,
+    key,
     env: {
       console: { log: () => {}, warn: () => {} },
       NetInfo: { addEventListener: () => () => {} },
@@ -213,24 +235,24 @@ function makeEnv({ finalizeError, hasBackendId = true } = {}) {
         getItem: async (k) => (k in store ? store[k] : null),
         setItem: async (k, v) => { store[k] = v; },
       },
-      getPendingKeys: async () => [KEY],
+      getPendingKeys: async () => [key],
       readDraft: async () => ({
         data: { note: 'below-grade pre-work' },
         // AFFIRMED, not a bare string. The drain now asks the same question
         // the PDF renderer asks, so a fixture that merely has *something* in
         // cp_signature is refused before it reaches the transport this file is
         // about. See signatureAffirmed.test.cjs.
-        cp_signature: { affirmed: true },
+        cp_signature: signature,
         cp_name: 'CP',
-        status: 'submitted',
+        status,
         backend_id: hasBackendId ? 'log123' : null,
-        finalized: true,
+        finalized,
       }),
       setDraftBackendId: async (k, id) => { calls.boundIds.push(id); },
       clearPending: async (k) => { calls.cleared.push(k); },
       logbooksAPI: {
         update: async (id, body) => { calls.updated.push(id); return { id }; },
-        create: async (body) => { calls.created.push(body); return { id: 'newlog9' }; },
+        create: async (body) => { calls.created.push(body); return createResult; },
         finalize: async (id) => {
           calls.finalized.push(id);
           if (finalizeError) throw finalizeError;
@@ -314,6 +336,139 @@ const gateRejection = (code) => ({
       'success: the pending key is cleared exactly as before');
     ok(await mod.readFinalizeError('log123') === null,
       'success: a stale refusal record is cleared, so the banner goes away');
+  }
+
+  // ── 7b. A FREEZE THAT DID NOT HAPPEN NO LONGER REPORTS THAT IT DID ────────
+  //
+  // applyRemoteFreeze returned `{ ok: true }` for having sent nothing, and both
+  // call sites read `ok` alone. So "the draft is not finalized, there is
+  // nothing to lock" cleared the pending key and took the ON THIS DEVICE ONLY
+  // banner down with exactly the confidence of "I locked it on the server".
+  //
+  // The state is REACHED, not hypothetical, and by two routes at once: the two
+  // end-of-day editors deliberately do not markFinalized on the sign path
+  // (backend/tests/test_end_of_day_sweep.py asserts that absence), and
+  // LogbookLockBar calls logbooksAPI.finalize(logId) without ever setting it.
+  {
+    // (a) THE ORDINARY CASE MUST STAY SILENT. An unsigned autosave owes no
+    // freeze at all — a state that fired here would fire on most of the queue.
+    const h = makeEnv({ finalized: false, status: 'draft', signature: null });
+    const mod = loadDraftSync(h.env);
+    const res = await mod.syncPendingDrafts();
+    ok(res.synced === 1 && res.finalizeRefused === 0,
+      'no freeze owed: an unsigned draft still drains as a plain success');
+    ok(h.calls.cleared.length === 1 && h.calls.finalized.length === 0,
+      'no freeze owed: the key is cleared and /finalize was never called');
+  }
+  {
+    // (b) SIGNED, UNFINALIZED, AND SOMEBODY ELSE CLOSES IT. daily_jobsite is
+    // END_OF_DAY: the CP's Finalize or sweep_stale_end_of_day_logs applies the
+    // lock. The push is complete and must not be held pending — holding it
+    // would put a permanent banner on every daily narrative in the app.
+    const h = makeEnv({ finalized: false, logType: 'daily_jobsite' });
+    const mod = loadDraftSync(h.env);
+    const res = await mod.syncPendingDrafts();
+    ok(res.synced === 1 && res.finalizeRefused === 0,
+      'freeze deferred: an end-of-day log still drains as a success — the '
+      + 'sweep is a real second actor, not an excuse');
+    ok(h.calls.cleared.length === 1 && h.calls.finalized.length === 0,
+      'freeze deferred: cleared, and no /finalize was forced on a log the '
+      + 'device does not consider frozen');
+    ok(await mod.readFinalizeError('log123') === null,
+      'freeze deferred: no banner — nothing is wrong with this log');
+  }
+  {
+    // (c) SIGNED, UNFINALIZED, AND NOTHING WILL EVER CLOSE IT. This is the
+    // whole defect. sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES, so
+    // for a superintendent's visit log a skipped freeze is a freeze that never
+    // happens: editable and unlocked indefinitely, while the screen says
+    // signed, and previously with the banner cleared and the key dropped.
+    const h = makeEnv({ finalized: false, logType: 'site_superintendent_log' });
+    const mod = loadDraftSync(h.env);
+    const res = await mod.syncPendingDrafts();
+    ok(res.synced === 0 && res.finalizeRefused === 1,
+      'freeze unclaimed: a visit log nothing will freeze is NOT reported as '
+      + 'synced');
+    ok(h.calls.updated.length === 1,
+      'freeze unclaimed: the content still landed — the refusal is about the '
+      + 'seal, never about the words the CP typed');
+    ok(h.calls.cleared.length === 0,
+      'freeze unclaimed: the key stays PENDING');
+    const rec = await mod.readFinalizeError('log123');
+    ok(rec && rec.code === 'FREEZE_NEVER_APPLIED',
+      'freeze unclaimed: recorded against the logbook id, so LogbookLockBar '
+      + 'surfaces it at the next interaction with this exact log');
+    // `rec?.` and not `rec.`: a regression here leaves rec null, and a THROWN
+    // test stops the file — every assertion after it silently stops being run,
+    // which is the shape of a suite that reports less the more is broken.
+    ok(rec?.key === h.key, 'freeze unclaimed: the record carries the draft key');
+    // THE BANNER MUST NOT SAY THE DRAIN'S SENTENCE. `notLockedHint` tells the
+    // CP the log is frozen on this device and the server keeps refusing it
+    // until he fixes something; here the draft was never finalized locally and
+    // the server refused nothing, so both halves are false and the remedy it
+    // names (wait for the retry) does nothing at all.
+    ok(rec?.source === 'unfrozen',
+      'freeze unclaimed: recorded with its OWN source, so LogbookLockBar does '
+      + 'not assert a retry that cannot help');
+    ok(/notLockedHintUnfrozen/.test(barSrc)
+      && /refusedSource === 'unfrozen'/.test(barSrc),
+      'freeze unclaimed: LogbookLockBar has copy for that source');
+    for (const loc of I.LOCALES) {
+      const hint = I.translate('finalize', 'notLockedHintUnfrozen', loc);
+      ok(typeof hint === 'string' && hint.trim().length > 0
+        && hint !== 'notLockedHintUnfrozen',
+        `freeze unclaimed/${loc}: the hint is real prose, not the catalogue key`);
+    }
+    for (const code of ['FREEZE_NEVER_APPLIED', 'LOG_NOT_FILED']) {
+      // The two codes the DRAIN mints. Every other code_ here came off a
+      // server response, and gateCopy falls back to the generic "could not be
+      // finalized. Please try again" for one it does not know — which is the
+      // wrong sentence about a log that filed perfectly well.
+      ok(gateCopyFor('en')(code) !== GENERIC.en,
+        `${code}: has its own copy rather than the generic fallback`);
+    }
+  }
+  {
+    // (d) AND THE SAME LOG, ONCE THE CP PRESSES FINALIZE. The banner is not
+    // one that cannot come down: the server lock is mirrored onto the draft by
+    // fetchData, `finalized` goes true, and the next drain closes it out.
+    const h = makeEnv({ finalized: true, logType: 'site_superintendent_log' });
+    const mod = loadDraftSync(h.env);
+    const res = await mod.syncPendingDrafts();
+    ok(res.synced === 1 && h.calls.finalized.length === 1 && h.calls.cleared.length === 1,
+      'freeze unclaimed: has an exit — a finalized draft drains and clears');
+  }
+
+  // ── 7c. A 200 THAT NAMES NO RECORD IS NOT A FILED RECORD ──────────────────
+  //
+  // The other half of `if (!draft.finalized || !id)`, and a different defect
+  // sharing one early return: a create that resolved with no id fell through
+  // as "ok, nothing to freeze", clearPending dropped the only queued copy, the
+  // banner came down, and the drain counted a success for a response that
+  // never proved a document exists. create_logbook has that path — it returns
+  // serialize_id of a re-read that can miss its own write, which FastAPI
+  // renders as 200 `null`. site_superintendent_log.jsx throws
+  // NO_RECORD_RETURNED for it on the editor path; the drain had nothing.
+  for (const [label, createResult] of [
+    ['a null body', null],
+    ['a body with no id', { ok: true }],
+    ['an empty object', {}],
+  ]) {
+    const h = makeEnv({ hasBackendId: false, createResult });
+    const mod = loadDraftSync(h.env);
+    const res = await mod.syncPendingDrafts();
+    ok(res.synced === 0 && res.finalizeRefused === 1,
+      `${label}: the drain REFUSES rather than reporting success`);
+    ok(h.calls.cleared.length === 0,
+      `${label}: the key stays pending, so the create is retried`);
+    ok(h.calls.boundIds.length === 0,
+      `${label}: no server id is bound to the draft — there was none to bind`);
+    ok(h.calls.finalized.length === 0,
+      `${label}: and /finalize is never called on a record that may not exist`);
+    const rec = await mod.readFinalizeError(h.key);
+    ok(rec?.code === 'LOG_NOT_FILED',
+      `${label}: recorded against the DRAFT KEY — a create with no id leaves `
+      + 'no other handle, and that is the fallback LogbookLockBar already uses');
   }
 
   // ── 8. The swallow is gone from the source itself ─────────────────────────

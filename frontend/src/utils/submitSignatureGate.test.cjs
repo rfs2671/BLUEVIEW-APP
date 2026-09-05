@@ -371,6 +371,8 @@ function loadDraftSync(env) {
       '@react-native-community/netinfo': env.NetInfo,
       './api': { logbooksAPI: env.logbooksAPI },
       './logbookDrafts': {
+        // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+        markFinalized: async () => {},
         getPendingKeys: env.getPendingKeys,
         readDraft: env.readDraft,
         setDraftBackendId: env.setDraftBackendId,

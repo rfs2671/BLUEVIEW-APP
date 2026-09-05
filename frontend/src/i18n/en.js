@@ -91,12 +91,28 @@ export default {
     genericError: 'This log could not be finalized. Please try again.',
     code_FINALIZE_EMPTY_LOG: 'This log is empty. Fill it in before finalizing — a finalized log can only be corrected by an amendment.',
     code_FINALIZE_MISSING_CP_SIGNATURE: 'This log is not signed. Sign it before finalizing — a finalized log can only be corrected by an amendment.',
+    // The two codes the DRAIN mints itself (src/utils/draftSync.js). Every
+    // other code_ here came off a server response; these name conditions only
+    // the client can see, and they get real copy for the reason the note at
+    // line 154 gives — an unmapped code falls through to genericError, which
+    // says "could not be finalized. Please try again" about a log that was
+    // filed perfectly well and merely was not locked.
+    code_FREEZE_NEVER_APPLIED: 'This log is filed but NOT locked. Nothing else will lock it — press Finalize to close the record.',
+    code_LOG_NOT_FILED: 'The server did not confirm this log. It is still saved on this device and will be sent again — do not retype it.',
     // Shown when a log frozen on THIS DEVICE was refused by the server on the
     // reconnect drain. Persistent, not a toast: the drain runs in the
     // background with no screen, so this is the next place the CP can see it.
     notLockedTitle: 'NOT LOCKED ON THE SERVER',
     notLockedHint: 'This log is frozen on this device only. It stays queued and will retry, but the server keeps refusing it until the problem above is fixed.',
     notLockedHintEditor: 'The server refused this log, so it is NOT locked. Your draft is still editable — fix the problem above and submit again.',
+    // A FIFTH SOURCE, and the hint above is wrong for it in both halves. When
+    // the drain skips a freeze it never owed a request for, the log is NOT
+    // "frozen on this device only" — the draft was never finalized locally
+    // either — and the server refused nothing, so "the server keeps refusing
+    // it until the problem above is fixed" names a problem that does not
+    // exist and a remedy that does nothing. Retrying is not the answer here;
+    // one tap is.
+    notLockedHintUnfrozen: 'Your words are saved on the server. Only the lock is missing, and no background sync will apply it — tap Finalize when the visit is finished.',
     // The submit-time gate on create/update (server.py create_logbook and
     // update_logbook). Same machine-code convention as the finalize codes
     // above: the server names the condition, the client owns the wording.

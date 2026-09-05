@@ -4980,7 +4980,15 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
     unattended and a sweep that threw would take the detectors down with it.
     """
     today = eastern_date(now)
-    out = {"frozen": 0, "unsigned": 0}
+    # THE RUN'S OWN CLOCK, and it has to be the injected one. `now` already
+    # decides which day counts as stale; the late-freeze detector below asks a
+    # question about elapsed time against the same instant, so reading the wall
+    # clock there instead would make the two halves of one sweep disagree about
+    # when the sweep is happening.
+    swept_at = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+    if swept_at.tzinfo is None:
+        swept_at = swept_at.replace(tzinfo=timezone.utc)
+    out = {"frozen": 0, "unsigned": 0, "late_freeze": 0}
     selector = {
         "log_type": {"$in": list(END_OF_DAY_LOG_TYPES)},
         "date": {"$lt": today},
@@ -5030,6 +5038,16 @@ async def sweep_stale_end_of_day_logs(database, now=None) -> dict:
                     await _flag_unsigned_stale_log(database, doc)
                     carry += 1
                     continue
+                # ── THE FREEZE THIS SWEEP IS ABOUT TO APPLY IN SOMEBODY
+                #    ELSE'S PLACE ─────────────────────────────────────────
+                # Asked BEFORE the write and on the CONDITION, not on the
+                # outcome: the fact being recorded is that the document was
+                # signed long ago and reached this line still unfrozen. That
+                # is true whether or not the update_one below then succeeds,
+                # and a write that raises leaves the document in the selector
+                # so tomorrow's pass re-verifies and re-raises.
+                if await _flag_late_client_freeze(database, doc, swept_at):
+                    out["late_freeze"] += 1
                 stamp = datetime.now(timezone.utc)
                 await database.logbooks.update_one(
                     {"_id": doc["_id"], "is_locked": {"$ne": True}},
@@ -5157,6 +5175,151 @@ async def _flag_unsigned_stale_log(database, doc) -> None:
         })
     except Exception as e:
         logger.error(f"[eod-freeze] could not flag {doc.get('_id')}: {e!r}")
+
+
+# How long an affirmed signature may sit unfrozen before THIS sweep applying
+# the lock is evidence that nobody else ever did.
+#
+# WHY 18 AND NOT 1. An END_OF_DAY log is SUPPOSED to be signed and left open —
+# that is the whole class. It is closed either by the CP pressing Finalize on
+# LogbookLockBar or by this sweep, and a CP who signs at 20:00 ET and walks off
+# site is swept seven hours later having done nothing wrong. Alerting on him
+# would bury the real signal under the ordinary case, which is the failure mode
+# `_flag_unsigned_stale_log`'s selector note already names for the withdrawn
+# child ("would bury the real gaps under every unsigned draft").
+#
+# 18 hours puts the boundary before the working day the log describes. A
+# signature older than that was made in the MORNING of the log's own date or
+# earlier: the CP had the rest of that day and the whole evening to press
+# Finalize, and draftSync had every reconnect in that window to apply the
+# freeze, and neither happened. That is the divergence measured in production —
+# one amendment locked one second after its signature via /finalize, its twin
+# waiting nineteen hours for this sweep, with nothing on either side recording
+# which.
+#
+# IT IS NOT A CLAIM ABOUT CONNECTIVITY, and must never be read as one.
+# `_finalize_cp_signature` records that a CP may affirm hours before the log
+# files while perfectly online ("draft-all-day"), so lag says nothing about
+# signal. The claim here is narrower and is exactly what the sweep can see:
+# this document reached the freeze branch, so no client freeze arrived.
+_EOD_LATE_FREEZE_HOURS = 18
+
+
+async def _flag_late_client_freeze(database, doc, swept_at) -> bool:
+    """Record that the nightly sweep, not a client, closed a long-signed log.
+
+    ── WHY THIS IS A DETECTOR AND NOT A LINE IN THE EDITOR ────────────────────
+
+    The freeze is applied from three places and only one of them leaves a
+    trace: `finalized_by` says "system:eod_sweep" when this sweep does it and
+    names the user when /finalize does, and NOTHING ANYWHERE records that the
+    two happened to the same kind of document on the same day. A check written
+    on the client answers the question only while that client is deployed --
+    draftSync's `applyRemoteFreeze` skipping silently is precisely a client
+    that stopped answering it -- so the observation is made HERE, from the
+    document, where an editor change cannot revert it.
+
+    ── THE SAME SURFACE, THE SAME DEDUPE, THE SAME `resolved` CLAUSE ──────────
+
+    A `compliance_alerts` row keyed (project, log_type, date), matched against
+    `resolved: False`, exactly as `_flag_unsigned_stale_log` does and for the
+    reason its docstring gives: (project, log_type, date) alone matches a
+    RESOLVED row as readily as an open one, and resolve is the only action
+    /admin/compliance-alerts offers. No new screen, no new concept.
+
+    RE-RAISING IS NOT NOISE HERE EITHER, BUT IT IS RARER, AND THE DIFFERENCE IS
+    WORTH WRITING DOWN. `_flag_unsigned_stale_log`'s row comes back every night
+    because a stranded log never leaves the selector. This one normally fires
+    AT MOST ONCE PER DOCUMENT IN ITS LIFE: the freeze immediately below removes
+    it from the selector for good. A second row for the same key therefore
+    means the freeze write RAISED and the document was re-visited -- the
+    condition re-verified the hard way -- which is a fact worth hearing twice,
+    not a duplicate.
+
+    ── WHAT IT DOES NOT COVER, SAID PLAINLY RATHER THAN IMPLIED ───────────────
+
+    IT DOES NOT COVER THE VISIT CLASS, AND CANNOT FROM HERE. `site_superin-
+    tendent_log` is not in END_OF_DAY_LOG_TYPES, so this sweep's selector never
+    returns one and this function is never called for one. That is deliberate
+    upstream -- an overnight sweep must not freeze a visit its author has not
+    finished -- and it means the visit log's version of this defect is INVISIBLE
+    to this detector. It is also the worse version: for a visit log there is no
+    second actor at all, so a freeze the client skips is never applied by
+    anything and the log stays editable and unlocked indefinitely while the
+    screen shows it signed. That half is caught on the client, in draftSync's
+    `applyRemoteFreeze`, which now refuses to report success for having done
+    nothing. Do not widen this selector to reach it.
+
+    IT DOES NOT FIRE ON A DOCUMENT THAT OWES NO FREEZE. The caller has already
+    taken the unsigned branch and `continue`d, so only an AFFIRMED signature
+    reaches here; and a signature carrying no parseable stamp is passed over
+    rather than guessed at -- an alert whose whole content is an elapsed time
+    must not be raised on an elapsed time nobody can compute.
+
+    Returns True when a row was written, so the sweep can count it. Never
+    raises: this is an observation about a freeze, and it must not be able to
+    stop the freeze.
+    """
+    try:
+        sig = doc.get("cp_signature")
+        if not isinstance(sig, dict):
+            return False
+        # `affirmedAt` first, `timestamp` second -- the same precedence and the
+        # same two fields ensure_signature_ledger_row reads, so the two agree
+        # about when a signature happened.
+        signed_at = _parse_iso_dt(sig.get("affirmedAt") or sig.get("timestamp"))
+        if signed_at is None:
+            return False
+        hours = (swept_at - signed_at).total_seconds() / 3600.0
+        if hours < _EOD_LATE_FREEZE_HOURS:
+            return False
+
+        exists = await database.compliance_alerts.find_one({
+            "alert_type": "client_freeze_never_arrived",
+            "project_id": doc.get("project_id"),
+            "details.log_type": doc.get("log_type"),
+            "details.date": doc.get("date"),
+            # See the docstring: without this, resolve erases the only record
+            # that this freeze was applied by nobody.
+            "resolved": False,
+        })
+        if exists:
+            return False
+
+        await database.compliance_alerts.insert_one({
+            "alert_type": "client_freeze_never_arrived",
+            "severity": "medium",
+            "project_id": doc.get("project_id"),
+            "company_id": doc.get("company_id"),
+            "message": (
+                f"{doc.get('log_type')} for {doc.get('date')} was signed "
+                f"{int(hours)} hours before the overnight sweep locked it. "
+                "Nobody closed it in between - not the CP on the log screen "
+                "and not the app on reconnect. The record is now frozen and "
+                "correct; what needs looking at is why the lock was left to "
+                "the sweep."
+            ),
+            "details": {
+                "log_type": doc.get("log_type"),
+                "date": doc.get("date"),
+                "logbook_id": str(doc.get("_id")),
+                "signed_at": signed_at.isoformat(),
+                # Whole hours. The alert is read by a person deciding whether
+                # to look, and a float here would invite arithmetic the number
+                # cannot support -- `swept_at` is one instant for the whole
+                # run, not the instant this row was written.
+                "hours_unfrozen": int(hours),
+                "threshold_hours": _EOD_LATE_FREEZE_HOURS,
+            },
+            "resolved": False,
+            "created_at": datetime.now(timezone.utc),
+        })
+        return True
+    except Exception as e:
+        logger.error(
+            f"[eod-freeze] could not flag late freeze {doc.get('_id')}: {e!r}"
+        )
+        return False
 
 
 # How far back the nightly reconciliation looks. Bounded on purpose: an
@@ -45183,10 +45346,11 @@ async def startup_event():
             # daily-log writing window closes, which is exactly the window a
             # freeze must not run inside.
             _swept = await sweep_stale_end_of_day_logs(db)
-            if _swept["frozen"] or _swept["unsigned"]:
+            if _swept["frozen"] or _swept["unsigned"] or _swept["late_freeze"]:
                 logger.info(
-                    "[eod-freeze] froze %s stale signed log(s); flagged %s unsigned",
-                    _swept["frozen"], _swept["unsigned"],
+                    "[eod-freeze] froze %s stale signed log(s); flagged %s "
+                    "unsigned, %s left unfrozen past the client's window",
+                    _swept["frozen"], _swept["unsigned"], _swept["late_freeze"],
                 )
             # THE AUDIT-TRAIL RECONCILIATION, in the same tick and AFTER the
             # freeze: a log the freeze just sealed is one whose ledger row had

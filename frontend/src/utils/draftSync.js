@@ -6,6 +6,11 @@ import {
   uploadPendingActivityPhotos,
 } from './logbookDrafts';
 import { isAffirmedSignature } from './signatureAffirmed';
+// The timing CLASS, asked of the same mirror LogbookLockBar and the editors
+// ask. It is what tells a freeze this drain skipped from a freeze that will
+// never happen: sweep_stale_end_of_day_logs excludes VISIT_LOG_TYPES, so a
+// visit log nobody finalizes is finalized by nothing.
+import { isVisitLog } from './logbookTiming';
 
 /**
  * RECONNECT DRAIN for logbook drafts — the missing half of "draft + sync".
@@ -61,6 +66,28 @@ const SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log']);
 // { [logbookId]: { code, key, at } } — the last finalize the SERVER refused for
 // that logbook. See recordFinalizeError below for why this exists.
 const FINALIZE_ERROR_KEY = 'logbook_finalize_errors';
+
+// ── TWO CODES THIS DRAIN RAISES ITSELF ────────────────────────────────────
+//
+// Every other code in that store came off a server response. These two name
+// conditions only the CLIENT can observe, so they are minted here — and they
+// go through the same store, the same record shape and the same banner,
+// because inventing a second surface for a client-side refusal is how a CP
+// ends up with two kinds of warning that mean the same thing.
+//
+// Both have copy in the `finalize` namespace (en.js; that namespace is
+// EN_ONLY by design — see es.js). gateCopy falls back to the generic message
+// for a code it does not know, so a missing entry degrades rather than breaks
+// — which is exactly why the entry has to be written deliberately.
+
+// The push landed, the seal did not, and nothing else will apply it. Raised
+// only for the VISIT class; see applyRemoteFreeze.
+export const FREEZE_NEVER_APPLIED = 'FREEZE_NEVER_APPLIED';
+
+// A create that resolved 200 naming no record. Same name and same meaning as
+// site_superintendent_log.jsx's NO_RECORD_RETURNED ('LOG_NOT_FILED'), which is
+// the editor-path throw for this identical response shape.
+export const LOG_NOT_FILED = 'LOG_NOT_FILED';
 
 /** `logbook_draft:{projectId}:{logType}:{date}[:{workerId}]` -> parts, or null. */
 export function parseDraftKey(key) {
@@ -359,24 +386,133 @@ async function pushOne(key) {
   // /finalize is a request that carries no signature, so the server knows no
   // client write is in flight behind it and a missing row is a real gap.
   //
-  // WHICH IS WHY THIS CALL IS LOAD-BEARING FOR MORE THAN THE FREEZE. Every
-  // signed draft is locally finalized before it gets here — freezeIfImmediate
-  // -> markFinalized for the ten immediate types, an explicit markFinalized in
-  // daily_jobsite and ssc_daily_safety_log — so `draft.finalized` is the
-  // condition that also decides whether the ledger hears about this signature
-  // at all. A future change that narrows it must move the derivation trigger
-  // with it, or it silently reopens the gap.
+  // WHICH IS WHY THIS CALL IS LOAD-BEARING FOR MORE THAN THE FREEZE.
+  // `draft.finalized` is the condition that decides whether the ledger hears
+  // about this signature at all, so a future change that narrows it must move
+  // the derivation trigger with it, or it silently reopens the gap.
+  //
+  // ── AND IT IS NOT TRUE THAT EVERY SIGNED DRAFT ARRIVES HERE FINALIZED ────
+  //
+  // This comment used to say it was, in these words: "every signed draft is
+  // locally finalized before it gets here — freezeIfImmediate -> markFinalized
+  // for the ten immediate types, an explicit markFinalized in daily_jobsite
+  // and ssc_daily_safety_log". THE SECOND HALF OF THAT SENTENCE DESCRIBES CODE
+  // THAT WAS DELETED ON PURPOSE. backend/tests/test_end_of_day_sweep.py
+  // asserts the ABSENCE of markFinalized on both end-of-day sign paths — the
+  // END_OF_DAY class exists precisely so a daily narrative signed at 9am is
+  // not frozen at 9am — so those two types reach this line SIGNED and
+  // `finalized: false`, every time, by design. LogbookLockBar produces the
+  // same shape from the other direction: it calls logbooksAPI.finalize(logId)
+  // and never markFinalized, so a log the server locked can still sit here as
+  // an unfinalized draft.
+  //
+  // The gate is therefore correct and the sentence describing it was not, and
+  // the two are separable: what was wrong is that a skipped freeze RETURNED
+  // SUCCESS. Both call sites read `ok` alone, so "I had nothing to do"
+  // cleared the pending key and took the ON THIS DEVICE ONLY banner down with
+  // exactly the confidence of "I locked it on the server".
+  //
+  // ── THREE STATES, BECAUSE THERE ARE THREE THINGS THAT CAN HAPPEN ─────────
+  //
+  //   { ok: true,  skipped: false }             the freeze landed
+  //   { ok: true,  skipped: true, reason }      nothing was sent
+  //   { ok: false, code }                       the server refused
+  //
+  // A BARE `skipped: true` WOULD BE USELESS, and worse than nothing: it is the
+  // ordinary state of every unsigned autosave and every photo-only retry in
+  // the queue, so a caller acting on it would fire constantly and be tuned
+  // out. `reason` is what carries the distinction the caller actually needs —
+  // does this draft OWE a freeze — and it is answered with the same predicate
+  // the submit gate above and the PDF renderer ask, not with `!!signature`.
+  //
+  //   FREEZE_NOT_OWED       unsigned, still a draft, or a photo-only retry.
+  //                         There is no seal pending. Indistinguishable from
+  //                         today's behaviour, deliberately.
+  //   FREEZE_DEFERRED       signed, unfinalized, and SOMETHING ELSE CLOSES IT:
+  //                         an immediate type locks server-side on
+  //                         `status: submitted` (the update above already did
+  //                         it), and an end-of-day type is closed by the CP's
+  //                         Finalize or, failing that, by
+  //                         sweep_stale_end_of_day_logs. The push is complete;
+  //                         the freeze is somebody else's.
+  //   FREEZE_UNCLAIMED      signed, unfinalized, and NOTHING ELSE CLOSES IT.
+  //                         That is the VISIT class and only the VISIT class:
+  //                         sweep_stale_end_of_day_logs explicitly excludes
+  //                         VISIT_LOG_TYPES, so for a superintendent's visit
+  //                         log there is no second actor at all. Reporting
+  //                         success here leaves the record editable and
+  //                         unlocked indefinitely while the screen shows it
+  //                         signed, and nothing anywhere would say so.
+  //
+  // NOT SOLVED BY FREEZING IT ANYWAY. The device's own draft says it is not
+  // finalized; sending /finalize on that would re-introduce the exact bug
+  // END_OF_DAY was built to remove, for a type this drain cannot re-classify
+  // safely offline. So the drain reports rather than acts, and the remedy is
+  // the Finalize button LogbookLockBar already renders — which is reachable,
+  // because the id exists by then.
+  const FREEZE_NOT_OWED = 'no-freeze-owed';
+  const FREEZE_DEFERRED = 'freeze-owed-to-another-actor';
+  const FREEZE_UNCLAIMED = 'signed-and-nothing-will-freeze-it';
+
   const applyRemoteFreeze = async (id) => {
-    if (!draft.finalized || !id) return { ok: true, code: null };
+    if (!draft.finalized) {
+      const signed = body.status === 'submitted'
+        && isAffirmedSignature(body.cp_signature);
+      if (!signed) {
+        return { ok: true, skipped: true, reason: FREEZE_NOT_OWED, code: null };
+      }
+      return {
+        ok: true,
+        skipped: true,
+        code: null,
+        reason: isVisitLog(parsed.logType) ? FREEZE_UNCLAIMED : FREEZE_DEFERRED,
+      };
+    }
     try {
       await logbooksAPI.finalize(id);
       await clearFinalizeError(id);
-      return { ok: true, code: null };
+      return { ok: true, skipped: false, code: null };
     } catch (e) {
       const code = finalizeErrorCode(e);
       await recordFinalizeError(id, code, key);
-      return { ok: false, code };
+      return { ok: false, skipped: false, code };
     }
+  };
+
+  /**
+   * What a call site does with a freeze that did not happen.
+   *
+   * Returns a result object to RETURN when the push must not be reported as
+   * complete, or null to carry on to clearPending exactly as before.
+   *
+   * FREEZE_UNCLAIMED is the only one that stops the push, and it stops it the
+   * way this file already stops a refused finalize: the key stays PENDING and
+   * the record behind the banner is written, so LogbookLockBar surfaces it at
+   * the next interaction with this exact log. It is not a banner that cannot
+   * come down — the CP pressing Finalize locks it server-side, the next
+   * fetchData mirrors that lock onto the draft, and the drain after that
+   * finalizes and clears. That is the same test the FILED_LOG_DATA_IMMUTABLE
+   * note below applies: stay pending when the CP can fix it, drop it when he
+   * cannot.
+   */
+  const handleSkippedFreeze = async (frozen, logId, mode) => {
+    if (!frozen.skipped || frozen.reason === FREEZE_NOT_OWED) return null;
+    if (frozen.reason === FREEZE_DEFERRED) {
+      // Complete, and quiet by design. Said out loud only in the drain's own
+      // console line, which is diagnostic — this is the ordinary END_OF_DAY
+      // shape and the CP must never see it named as a problem.
+      console.log(`[draftSync] ${logId} (${parsed.logType}, ${mode}): content pushed, freeze not owed here — the server lock or the end-of-day sweep closes this one`);
+      return null;
+    }
+    // SOURCE 'unfrozen', not the default 'drain'. LogbookLockBar's drain hint
+    // says the log is frozen on this device and the server keeps refusing it;
+    // both halves are false here, and asserting a retry that cannot help is
+    // the same failure this whole branch is about.
+    await recordFinalizeError(logId, FREEZE_NEVER_APPLIED, key, 'unfrozen');
+    return {
+      key, ok: false, reason: 'freeze-unclaimed',
+      code: FREEZE_NEVER_APPLIED, logId, mode,
+    };
   };
 
   try {
@@ -386,6 +522,8 @@ async function pushOne(key) {
       if (!frozen.ok) {
         return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: draft.backend_id };
       }
+      const held = await handleSkippedFreeze(frozen, draft.backend_id, 'update');
+      if (held) return held;
       if (!photosStillPending) await clearPending(key);
       await clearUnsyncedBanner(key, draft.backend_id);
       return { key, ok: true, mode: 'update', photosPending: photosStillPending };
@@ -397,11 +535,42 @@ async function pushOne(key) {
       ...body,
     });
     const newId = created?.id || created?._id;
-    if (newId) await setDraftBackendId(key, newId);
+
+    // ── A 200 THAT NAMES NO RECORD IS NOT A FILED RECORD ────────────────────
+    //
+    // This was the other half of `if (!draft.finalized || !id)`, and it is a
+    // DIFFERENT DEFECT wearing the same early return. A create that resolved
+    // with no id fell through it as "ok: true, nothing to freeze", and the
+    // three lines below then ran on that: clearPending dropped the only queued
+    // copy of the push, clearUnsyncedBanner took down the ON THIS DEVICE ONLY
+    // banner, and the drain counted a success for a response that never proved
+    // a document exists. `setDraftBackendId` was already guarded, so the draft
+    // kept no server handle either — the log simply stopped being anywhere.
+    //
+    // THE SERVER HAS THAT PATH. create_logbook re-reads the row it just
+    // inserted and returns serialize_id(that read); a read that does not see
+    // its own write makes it None, which FastAPI renders as 200 `null`.
+    // site_superintendent_log.jsx:1060 throws NO_RECORD_RETURNED for exactly
+    // this shape on the EDITOR path, with the same reasoning — "a client that
+    // believes a body it did not check is one bad deploy from doing this
+    // again" — and the drain had no equivalent.
+    //
+    // REFUSED, NOT ABSORBED. The key stays PENDING, so the next drain retries
+    // the create; the draft still holds every word the CP typed; and the
+    // refusal is recorded against the DRAFT KEY, because a create that
+    // returned nothing left no logbook id to hang a banner on. That is the
+    // handle LogbookLockBar already falls back to.
+    if (!newId) {
+      await recordFinalizeError(key, LOG_NOT_FILED, key);
+      return { key, ok: false, reason: 'no-record-returned', code: LOG_NOT_FILED, logId: null };
+    }
+    await setDraftBackendId(key, newId);
     const frozen = await applyRemoteFreeze(newId);
     if (!frozen.ok) {
       return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: newId };
     }
+    const held = await handleSkippedFreeze(frozen, newId, 'create');
+    if (held) return held;
     if (!photosStillPending) await clearPending(key);
     await clearUnsyncedBanner(key, newId);
     return { key, ok: true, mode: 'create', photosPending: photosStillPending };
@@ -506,8 +675,13 @@ export async function syncPendingDrafts() {
     for (const key of keys) {
       const r = await pushOne(key);
       if (r.ok) synced += 1;
+      // `freeze-unclaimed` and `no-record-returned` join this list rather than
+      // getting a counter of their own: both leave a recorded refusal and a
+      // pending key, which is precisely what this branch already means. What
+      // they must NOT do is fall through to `synced`.
       else if (r.reason === 'finalize-refused' || r.reason === 'push-refused'
-        || r.reason === 'unsigned-submit' || r.reason === 'already-filed') {
+        || r.reason === 'unsigned-submit' || r.reason === 'already-filed'
+        || r.reason === 'freeze-unclaimed' || r.reason === 'no-record-returned') {
         refused += 1;
         // Diagnostic only. The user-visible surface is the banner LogbookLockBar
         // renders from the record written above — this drain has no screen.

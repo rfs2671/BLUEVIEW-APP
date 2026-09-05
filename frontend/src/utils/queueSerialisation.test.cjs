@@ -226,6 +226,8 @@ function loadDraftSync({ keys }) {
         },
       },
       './logbookDrafts': {
+        // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+        markFinalized: async () => {},
         getPendingKeys: async () => keys.slice(),
         readDraft: async () => ({
           data: { note: 'content' }, cp_signature: null, cp_name: null,
@@ -282,6 +284,8 @@ function phase5() {
         },
       },
       './logbookDrafts': {
+        // draftSync -> logbookTiming (isVisitLog) -> markFinalized.
+        markFinalized: async () => {},
         getPendingKeys: async () => [KEY],
         readDraft: async () => ({
           data: { note: 'content' }, cp_signature: null, cp_name: null,
