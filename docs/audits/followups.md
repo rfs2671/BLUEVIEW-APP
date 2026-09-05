@@ -4,6 +4,55 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## IDENTITY — 2026-09-05 — the stored worker name is rewritten on every returning tap
+
+**This is the mechanism that guarantees the duplicate-worker problem recurs, no
+matter what any normaliser does.** It is recorded rather than fixed because the
+rewrite is not obviously wrong on its own terms, and changing it is a decision
+about which spelling of a man's name is authoritative.
+
+`register_and_checkin` updates the stored worker on each returning check-in:
+
+```python
+if name:
+    update_fields["name"] = name
+```
+
+So `db.workers` holds the **most recent** spelling the gate saw. Meanwhile a
+`subcontractor_orientation` document is inserted behind
+`if not existing_orient_log:` — written once, at first registration, and never
+rewritten. It holds the **first** spelling, permanently.
+
+Two records of the same man, one frozen and one live, guaranteed to diverge
+over time with nobody doing anything wrong. Every filed report that prints both
+prints the divergence. That is what produced "Jose Castaneda" on the pre-shift
+roster beside "Jose Julio Castaneda" in the orientation table of one document,
+and it is why no downstream matching rule closes C1: the rule would have to
+reconcile two spellings the system itself created and both of which it believes.
+
+**Why no rule can close it.** The 2026-09-05 survey computed all six identity
+normalisers in the tree against those pairs. Every one of them splits the pairs,
+and the relaxations that would unite them — token-subset matching and
+edit-distance folding — are each asserted *against* by regression guards written
+after a production failure in that direction
+(`test_report_six_defects.py:356-357`: `_norm_key("Wilmer J Carrillo") !=
+_norm_key("Wilmer Carrillo")`, and `_norm_key("AAZ Construction") !=
+_norm_key("AAZ")` — which is `Arkon` / `Arkon Builders` in a different costume).
+Collapsing them deletes a man from the record of who was on site. A duplicate is
+visible and correctable; a deletion is invisible.
+
+**The product answer, not the algorithmic one.** The roster's `+ Add Row` accepts
+free-typed names into a document where the gate already knows who is on site.
+Making that field pick from the project's workers, with free text as a flagged
+last resort, removes the divergence at the source and requires none of the
+collapses the regression guards forbid. Costed separately.
+
+**Not to be confused with the fix that shipped the same day.** The empty-phone
+write-attractor (`_worker_by_phone`) was a different defect on the same path and
+is closed. This one is open.
+
+---
+
 ## PRACTICE — 2026-09-05 — the harness item, written: docs/audits/check-harness.md
 
 The follow-through on a promise this log has carried for two days. Everything in

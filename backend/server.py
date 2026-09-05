@@ -14351,6 +14351,44 @@ def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str
     return merged
 
 
+async def _worker_by_phone(phone, projection=None):
+    """Resolve a worker by phone, or None. NEVER MATCHES ON AN EMPTY PHONE.
+
+    THE DEFECT THIS CLOSES. The same three-variant lookup was spelled by hand
+    at three call sites. `format_phone("")` returns `""`, so a submission with
+    no phone built `{"phone": {"$in": ["", "", ""]}}` -- a query that matches
+    any worker whose stored phone is the empty string. One of the 61 live
+    worker records has exactly that, so on the unguarded site every phone-less
+    submission would have resolved to one specific named man.
+
+    AND RESOLVING HIM IS NOT A READ. `submit_checkin` follows the lookup with
+    `if worker.get("name") != checkin_data.name: update_fields["name"] = ...`,
+    so the wrong man's stored name is overwritten with the submitter's, and the
+    check-in is filed under his worker_id. A misattributed check-in and a
+    renamed worker, from an empty text field.
+
+    `register_and_checkin` already guarded this with `if phone:` and
+    `lookup_worker` 400s on a falsy phone upstream. `submit_checkin` did
+    neither. Rather than add a third hand-written guard, the query itself now
+    refuses to run without something to match on -- the guard cannot be
+    forgotten at a fourth call site because there is no longer a query to
+    copy.
+
+    An empty phone therefore falls through to worker CREATION, which is the
+    right direction on a document that records who was on site: a duplicate row
+    is visible and correctable, and attaching a man's check-in to someone else
+    -- while renaming that someone else -- is neither.
+    """
+    digits = ''.join(c for c in (phone or '') if c.isdigit())
+    if not digits:
+        return None
+    candidates = [v for v in (phone, digits, format_phone(digits)) if v]
+    query = {"phone": {"$in": candidates}, "is_deleted": {"$ne": True}}
+    if projection is not None:
+        return await db.workers.find_one(query, projection)
+    return await db.workers.find_one(query)
+
+
 @api_router.post("/checkin/register-and-checkin")
 async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
@@ -14495,11 +14533,7 @@ async def register_and_checkin(data: dict, request: Request):
     # whether the roster check runs at all. Read-only find_one, unchanged
     # query — creation of a brand-new worker still happens further down,
     # after the validation, exactly as before.
-    worker = None
-    if phone:
-        raw_digits = ''.join(c for c in phone if c.isdigit())
-        formatted = format_phone(raw_digits)
-        worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
+    worker = await _worker_by_phone(phone)
     if not worker and osha_number:
         worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
 
@@ -15226,14 +15260,7 @@ async def lookup_worker(data: dict):
     if not phone:
         raise HTTPException(status_code=400, detail="Phone required")
     
-    # Search by both raw digits and formatted version
-    raw_digits = ''.join(c for c in phone if c.isdigit())
-    formatted = format_phone(raw_digits)
-    
-    worker = await db.workers.find_one(
-        {"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}},
-        {"osha_card_image": 0}
-    )
+    worker = await _worker_by_phone(phone, {"osha_card_image": 0})
     
     if not worker:
         return {"found": False}
@@ -15350,9 +15377,7 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         # read-only query the create-or-update block below runs, hoisted
         # because the per-project pairing is keyed on their worker_id and
         # decides whether the roster check runs at all.
-        raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
-        formatted_phone = format_phone(raw_digits)
-        worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
+        worker = await _worker_by_phone(checkin_data.phone)
 
         # PER-PROJECT PAIRING: this worker already answered trade + company
         # on THIS project, so the answer stands — no re-prompt, no flag. On
