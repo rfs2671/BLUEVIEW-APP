@@ -223,6 +223,61 @@ it landed.
 
 ---
 
+## 7. Absent versus empty — and the mirror, in the query that was checking
+
+The most productive single family on this codebase. In each case a value that
+*was* an answer was treated as an absence:
+
+| site | the shape |
+|---|---|
+| `.get(k, "N/A")` over a stored empty string | the two-argument default fires only on a MISSING key, so `""` passes through |
+| `.get(k, "Superintendent")` over a stored `null` | same: `None` is present, so the default never held |
+| `_has_content` / `_cs_item_body` on `False` | `False == 0` in Python, so `value not in (None, "", False)` drops an answered "no" |
+| `"null"` as a truthy string | a name the model failed to read became a live dedupe key and collapsed distinct men |
+
+**The sharpest instance**, and the one to cite: `unsafe_conditions` with
+`{"corrected": False}` — a superintendent's answer to a statutory question —
+rendered as "— Not recorded" on a BC 3301.13.13 record. He answered, and the
+filed document said he had not.
+
+It was also **two bugs stacked**. `_cs_item_body` had the guard; fixing it alone
+changed nothing, because `_has_content` one level up made the identical mistake
+and refused the block before the renderer ever saw it. Only writing the test
+found that.
+
+> Ask of every default and every truthiness check: **is the falsy value a real
+> answer here?** If it is, `is None` and `key in d` are the tests you want, and
+> `or` and `not` are the ones that will lose it.
+
+### The mirror: an absent key read as a VALUE
+
+The four above are a stored value treated as an absence. One day produced the
+reverse three times, and twice inside the diagnostic rather than the code.
+
+**`{is_locked: false}` on a population of 32.** Asked to verify a claim about
+submitted-but-unlocked logbooks, that query returned **0**. Not one submitted
+log has `is_locked` set to `false`; on all 32 the key is **absent**, and
+`{field: false}` matches an explicit `false` and never a missing key. The
+verification reported a clean bill of health on a population that existed.
+
+**`{is_locked: {$ne: true}}` returning 66.** The query on the other side matched
+the missing keys correctly and then swept in 34 *drafts*, which are supposed to
+be unlocked. That is where the number 65 came from. Neither query was wrong
+about Mongo; both were wrong about the field.
+
+**`.get("amends_logbook_id")` on a key that never existed.** A probe script
+invented a plausible field name, `.get()` returned `None`, and the result was
+reported as "an amendment with no pointer to what it amends". The real field is
+`parent_logbook_id`, and it was set correctly. A dict `.get()` cannot
+distinguish *absent*, *null*, and *misspelled by the person asking*.
+
+> Before writing a query **about** a field, read the field's **distribution**.
+> One group-by over the whole collection catches all three: the `is_locked`
+> split is `True: 249 / absent: 32 / False: 29`, and `amends_logbook_id` has no
+> values at all because it has no keys.
+
+---
+
 ## 8. A docstring is a claim about a relationship, and nothing checks it
 
 `generate_single_logbook_html` opened with:
@@ -310,31 +365,76 @@ the same defect as the false docstring, spelled in CSS.
 
 ---
 
-## 7. Absent versus empty — four instances, one shape
+## 9. A mechanism is not an incident. A population is not an incident.
 
-The most productive single family on this codebase. In each case a value that
-*was* an answer was treated as an absence:
+Section 2 is about a check that can pass without examining anything. This is its
+twin one level up: a **finding** that can be believed without anything having
+been counted. Four instances in one day, and they cost real work.
 
-| site | the shape |
+### A code path is not evidence of harm
+
+**The empty-phone write-attractor.** `format_phone("")` returns `""`, so a
+phone-less submission built `{"phone": {"$in": ["", "", ""]}}` and matched the
+one live worker whose stored phone is the empty string. `submit_checkin` then
+writes the submitter's name onto whatever worker the lookup returned. Two
+corruptions from one empty text field, on a public unauthenticated endpoint.
+Every word of that is true, and it was relayed as *"check-ins are attaching to
+the wrong worker today"* — which was not.
+
+Queried before the fix: **0 check-ins, 0 enrollments, `updated_at ==
+created_at`.** The row had not been written to since it was created. The
+endpoint's only client is a screen that is not the live gate. Reachable by
+anyone with the URL; never reached.
+
+**And the canonical example is this doc's own neighbour.**
+`logbookEditable.js` opens with an incident: *"Two records at 588 Thomas were
+overwritten that way — and the CP changed nothing."* Its commit (`8c792aa8`,
+#215) names no ids, runs no query, and lists its verification as *"26
+assertions, behavioural… frontend suite green, backend green"* — every one of
+them about the module. When the claim was finally checked, ten candidate rows
+came back and **every one had `updated_at` exactly equal to `finalized_at`**:
+the only write after filing was the overnight lock. No `daily_jobsite` at that
+project shows a post-filing content write.
+
+The mechanism is real and the helper is right. The harm was asserted, never
+established, and then quoted as fact in a docstring that justified the fix —
+and cited onward from there.
+
+### A count is not a description of a set, and the number decides nothing
+
+"65 stranded logs" was carried for hours and repeated in briefs. The
+verification query said 0. The real figure was 31, and neither number counted
+the thing anyone cared about — see §7's mirror for why both were wrong.
+
+**Then reading the set made the question go away.** The 31 cluster in two
+blocks: fifteen filed in March on two projects, sixteen in the week `is_locked`
+was introduced. Zero submitted logs created after the feature landed have failed
+to lock. There is no code path to repair — they are records filed under the
+rules that existed at the time, and setting the flag now would assert a fact
+about their history that is not true.
+
+**The ruling was BUILD NOTHING, and no count would have produced it.** Not 65,
+not 31, not 0. The dates, the types and the field-set diff did.
+
+A worker had already been assigned to build a button for that population.
+Nothing was built, because that worker had not been started yet. That is luck,
+not diligence, and it is why this entry exists.
+
+### What the miss actually was
+
+Not judgment, and not care. In every instance one mechanical step was skipped:
+
+| the claim | the step not taken |
 |---|---|
-| `.get(k, "N/A")` over a stored empty string | the two-argument default fires only on a MISSING key, so `""` passes through |
-| `.get(k, "Superintendent")` over a stored `null` | same: `None` is present, so the default never held |
-| `_has_content` / `_cs_item_body` on `False` | `False == 0` in Python, so `value not in (None, "", False)` drops an answered "no" |
-| `"null"` as a truthy string | a name the model failed to read became a live dedupe key and collapsed distinct men |
+| "check-ins are attaching to the wrong worker" | count the check-ins on that worker |
+| "two records were overwritten" | one query for a post-filing content write |
+| "65 stranded logs" | read the field's distribution before querying it |
+| "so build the button" | read the set — dates, types, what distinguishes it |
 
-**The sharpest instance**, and the one to cite: `unsafe_conditions` with
-`{"corrected": False}` — a superintendent's answer to a statutory question —
-rendered as "— Not recorded" on a BC 3301.13.13 record. He answered, and the
-filed document said he had not.
-
-It was also **two bugs stacked**. `_cs_item_body` had the guard; fixing it alone
-changed nothing, because `_has_content` one level up made the identical mistake
-and refused the block before the renderer ever saw it. Only writing the test
-found that.
-
-> Ask of every default and every truthiness check: **is the falsy value a real
-> answer here?** If it is, `is None` and `key in d` are the tests you want, and
-> `or` and `not` are the ones that will lose it.
+> **A mechanism is a hypothesis about harm. A count is not a description of a
+> set.** Establish the harm with a query and read the set before anyone builds,
+> and the person relaying the number runs the query. A finding that travels
+> without its measurement gets acted on by the next person.
 
 ---
 
@@ -361,3 +461,11 @@ Before a check is worth having:
       true, either write the check or delete the claim.
 - [ ] Does the change add a rule for a selector, key or branch this code does
       not actually emit? Dead protection reads as protection.
+- [ ] Are you reporting HARM, or a code path that could cause it? If harm, name
+      the query that established it. If you have not run one, say "mechanism,
+      unmeasured".
+- [ ] Before querying a field, have you read its DISTRIBUTION? `{f: false}` and
+      `{f: {$ne: true}}` disagree about every absent key, and one group-by
+      settles it.
+- [ ] If a population justifies the work, have you READ the set rather than
+      only counted it? A real population can still be the wrong thing to act on.
