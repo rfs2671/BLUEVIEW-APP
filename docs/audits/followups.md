@@ -4,6 +4,50 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PRACTICE — 2026-09-05 — the harness item, written: docs/audits/check-harness.md
+
+The follow-through on a promise this log has carried for two days. Everything in
+it was learned from checks on this codebase that passed while the thing they
+described was broken, and every claim names a real instance so it can be read
+rather than believed.
+
+[`check-harness.md`](check-harness.md) holds:
+
+- **Three patterns as models, by name** — `test_the_two_halves_agree` (assert a
+  PROPERTY, not a case), the PRECONDITION assertion (prove the bug was there, so
+  the test cannot pass by accident), and the CALL-GRAPH WALK with its non-empty
+  guard.
+- **The general rule.** Any check that can be satisfied without running must
+  count its own executions and fail at zero — with the five instances that
+  produced a clean green meaning "nothing was examined".
+- **A keyword count cannot distinguish a deliberate omission from an accidental
+  one**, worked through the fourteenth `render_signature_html` call site. The
+  version of that story I reported twice was wrong: the site was CHOSEN, with a
+  written reason, and a test named it. Sixteen occurrences of the keyword was
+  consistent with both a complete fix and a deliberate exception. And the
+  decision had never rendered, because the log type had never been filed — a
+  design decision nobody can look at is not reviewable, however well argued.
+- **The synthetic-specimen rule**, plus the corollary found the same day: a
+  specimen that never reaches the code under test asserts nothing and looks
+  exactly like one that passes.
+- **Fixtures asserting fidelity nothing checks.** A comment reading "a row as
+  the filed sheet actually stores it" above a value the sheet has never stored.
+  It nearly bought a data migration on invented evidence.
+- **Re-read a clean rebase** — the two payoffs, `docCache`'s keep-set and
+  `generate_combined_report` spelling the signature block twice by hand.
+- **Absent versus empty, now four instances**, with the sharpest one named: a
+  superintendent's answer of "not corrected" to a statutory question rendering
+  as "— Not recorded" on a BC 3301.13.13 record. Two bugs stacked; fixing the
+  reported one alone changed nothing.
+
+### Why it went in ahead of the register work
+
+Everything else on the list changes what a document looks like tomorrow. This
+changes what happens next week. It had lost to building for two days, which is
+the ordinary way a thing like this never gets written.
+
+---
+
 ## PRACTICE — 2026-09-04 — a check that can be satisfied without running must count its own executions and fail at zero
 
 The general form of the class this week kept producing. Everything below is one
@@ -573,8 +617,9 @@ say that the fix may be to move the new code rather than to widen the bound.
 `test_signature_ink_predicate` was RIGHT to fail on 2026-09-04; the correct
 response was relocating two helpers, not raising 4000 to 6000.
 
-**Three shapes from this session are the models, and the harness item names
-them rather than re-describing the idea:**
+**Three shapes from this session are the models. They are now written up, with
+worked instances, in [`check-harness.md`](check-harness.md) — this list is the
+index:**
 
 - `test_the_two_halves_agree` — a PROPERTY, not a case. Sealing and
   asking-for-a-signature must be complements, or the row is wrong either way.
