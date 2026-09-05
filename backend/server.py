@@ -28771,13 +28771,42 @@ async def superintendent_projects_for(db_, user) -> list:
     return out
 
 
-def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
+def _superintendent_log_html(logbook, weekly_status=None, attribution=None,
+                             *, legal_record=True):
     """The whole section, built ONCE for both renderers.
 
     ONE BUILDER, TWO CALLERS. The OSHA register and the pre-shift sheet each
     drifted between the per-logbook PDF and the combined report -- the same
     stored document printing different things depending on which one you asked
     for -- and each had to be pulled back. This one starts that way.
+
+    ── legal_record ────────────────────────────────────────────────────────
+    ONE FLAG, THREE THINGS, AND THEY ARE ALL THE SAME THING: apparatus that a
+    DOB inspector needs and a lender does not.
+
+        the AFFIRMED / UNAFFIRMED banner under the signature
+        the BC 3301.13.13 / 1 RCNY citations under every item label
+        the attestation paragraph explaining what "none to report" means and
+            that the times are the superintendent's account, not observed
+
+    All three are the audit trail of a §3301 filing. On a progress report sent
+    to an investor they read as a system talking to itself, and the operator
+    ruled they come off it.
+
+    THE SAME SHAPE `render_signature_html`'s `show_affirmation` ALREADY HAS, and
+    deliberately not a second renderer: two builders for one stored document is
+    how the register and the pre-shift sheet drifted in the first place.
+
+    DEFAULT True, SO THE LEGAL PDF INHERITS IT. A new caller gets the filing's
+    behaviour unless it asks otherwise, which is the safe direction: a citation
+    printed to a lender is noise, a citation missing from a filing is a gap.
+
+    AND THIS IS THE CALL SITE THAT BROKE B4. The signature below never passed
+    `show_affirmation=False`, so the CS section was the one part of the investor
+    report still printing the affirmation banner -- and a check that counted
+    occurrences of the keyword could never have found it, because the defect was
+    a call site that OMITS the keyword. `test_report_legal_vs_investor.py` walks
+    the call graph instead.
     """
     data = (logbook or {}).get("data") or {}
     log_date = (logbook or {}).get("date")
@@ -28820,7 +28849,7 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
             if _prov_text:
                 body += ('<br /><span style="font-size:11px;color:#64748b;">'
                          + _prov_text + '</span>')
-        cite = item.get("citation") or ""
+        cite = (item.get("citation") or "") if legal_record else ""
         rows += (
             f'<tr><td {_CS_TD} valign="top" width="34%">'
             f'<strong>{item["number"]}. {item["label"]}</strong>'
@@ -28844,7 +28873,7 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
         + rows
         + '</table>'
         # ABOVE the signature: the claim, then the name that makes it.
-        + CS_LOG_ATTESTATION_HTML
+        + (CS_LOG_ATTESTATION_HTML if legal_record else "")
         # WHAT THE SYSTEM KNOWS ABOUT WHO SIGNED, stated as a fact and never as
         # an accusation. There are legitimate reasons a signer is not the
         # registered CS, and from 2027-01-01 the alternate licensed
@@ -28855,7 +28884,7 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None):
         + _cs_bold_para("Construction Superintendent", _capitalize_first(cs_name) or "N/A")
         + render_signature_html(
             presence.get("signature") or (logbook or {}).get("cp_signature"),
-            "Superintendent Signature")
+            "Superintendent Signature", show_affirmation=legal_record)
     )
 
 
@@ -29944,7 +29973,8 @@ async def generate_combined_report(
         cs_html = (
             section_title("Construction Superintendent Log (BC 3301.13.13)")
             # ONE BUILDER, BOTH RENDERERS. See _superintendent_log_html.
-            + _superintendent_log_html(cs_lb, attribution=_cs_attr)
+            + _superintendent_log_html(cs_lb, attribution=_cs_attr,
+                                       legal_record=False)
         )
 
     # ==========================================================
