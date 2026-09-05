@@ -15817,6 +15817,90 @@ class EsraConsentAgree(BaseModel):
     consent_version: str
 
 
+@api_router.get("/projects/{project_id}/roster")
+async def get_project_roster(project_id: str, current_user = Depends(get_current_user)):
+    """Every worker who has ever been on this project, for the pre-shift picker.
+
+    WHY THIS EXISTS. `+ Add Row` on the pre-shift sign-in sheet accepted a
+    hand-typed name into a document where the gate already knows who is on
+    site. That is how one man came to appear twice on one filed report -- once
+    as "Jose Castaneda" typed by a CP and once as "Jose Julio Castaneda" from
+    his orientation -- and no downstream matching rule can undo it, because
+    every rule that would unify those two is asserted AGAINST by a regression
+    guard written after a production failure in that direction
+    (test_report_six_defects.py: `_norm_key("Wilmer J Carrillo") !=
+    _norm_key("Wilmer Carrillo")`). The fix is upstream: pick the man.
+
+    ONE ANSWER TO "WHO WAS ON THIS SITE". This calls `roster_for_window`, the
+    same join the LL196 statutory attestation uses, with the month window
+    dropped. A second join would let the register and the sheet a CP fills
+    disagree about the same men, which is the defect this endpoint exists to
+    stop, one level up.
+
+    DUPLICATES ARE RETURNED, DELIBERATELY. A man who exists as two worker
+    documents appears twice. The CP is the only person who knows they are the
+    same man; a picker that silently collapsed them would perform in the UI
+    exactly the merge those regression guards forbid in a normaliser -- and
+    deleting a man from the record of who was on site is worse than showing
+    two rows, because a duplicate is visible and a deletion is not.
+
+    ── THE TENANT GUARD, WHICH IS THE WHOLE RISK HERE ──────────────────────
+
+    TWO GATES, because the company filter alone does not scope a PROJECT.
+    `_assert_project_access` runs first, against the path parameter: without
+    it a CP at a legitimate company could name any project id and read its
+    roster. Then the worker hydrate is company-scoped.
+
+    `company_id = None` IS THE DEFAULT ACCOUNT STATE, NOT AN EDGE CASE. Self-
+    serve registration sets it, and a company is only attached later by POST
+    /onboarding/company. `GET /workers` had `if company_id:` alone and that
+    was a leak, not a corner: every trial user received the whole platform's
+    worker roster -- names, phones, OSHA numbers and ids -- until they
+    onboarded. The same shape is refused here.
+
+    `_id: None` RATHER THAN `company_id: None`. An unsatisfiable filter, so a
+    caller who owns nobody gets the same empty list a company with no workers
+    gets. `company_id: None` would match precisely the orphan rows. It is
+    merged with `$and` inside `roster_for_window` so it cannot replace the
+    `_id: {$in: ...}` term.
+
+    The platform-operator carve-out is explicit and is never inferred from
+    `role`: "owner" is what every self-serve signup receives.
+    """
+    from lib.logbook.ll196 import roster_for_window
+
+    await _assert_project_access(project_id, current_user)
+
+    company_id = get_user_company_id(current_user)
+    if company_id:
+        worker_filter = {"company_id": company_id}
+    elif is_platform_operator(current_user):
+        worker_filter = None
+    else:
+        worker_filter = {"_id": None}
+
+    # NO CARD IMAGES. `osha_card_image` is base64 on the worker document and
+    # is what took GET /workers over Mongo's 32MB sort limit on a large
+    # roster. A picker needs four fields.
+    workers, trade_by_id = await roster_for_window(
+        db, project_id=project_id, worker_filter=worker_filter,
+        projection={"name": 1, "company": 1, "osha_number": 1, "_id": 1},
+    )
+
+    rows = []
+    for w in workers:
+        wid = str(w.get("_id"))
+        rows.append({
+            "worker_id": wid,
+            "name": w.get("name") or "",
+            "company": w.get("company") or "",
+            "osha_number": w.get("osha_number") or "",
+            "trade": trade_by_id.get(wid, ""),
+        })
+    rows.sort(key=lambda r: (r["name"] or "").casefold())
+    return {"workers": rows, "total": len(rows)}
+
+
 @api_router.get("/esra-consent")
 async def get_esra_consent(current_user = Depends(get_current_user)):
     """What this user has agreed to, and what is currently being asked.

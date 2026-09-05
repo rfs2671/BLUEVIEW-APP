@@ -190,11 +190,12 @@ class _Finding:
         return f"{self.file}:{self.line} assertNotIn({self.literal!r}, <string>)"
 
 
-def _scan() -> tuple[list[_Finding], int, int]:
-    """(bare findings, anchored count, unclassified count)."""
+def _scan() -> tuple[list[_Finding], int, int, int]:
+    """(bare findings, anchored count, unclassified count, total assertNotIn)."""
     bare: list[_Finding] = []
     anchored = 0
     unclassified = 0
+    total = 0
     for path in sorted(_TESTS.glob("test_*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -209,6 +210,7 @@ def _scan() -> tuple[list[_Finding], int, int]:
             if len(node.args) < 2:
                 continue
             needle, hay = node.args[0], node.args[1]
+            total += 1
             if not (isinstance(needle, ast.Constant) and isinstance(needle.value, str)):
                 continue
             if not _haystack_is_string(hay, names):
@@ -219,7 +221,7 @@ def _scan() -> tuple[list[_Finding], int, int]:
                 anchored += 1
             else:
                 bare.append(_Finding(path.name, node.lineno, literal))
-    return bare, anchored, unclassified
+    return bare, anchored, unclassified, total
 
 
 # ── BARE BY DESIGN ───────────────────────────────────────────────────────────
@@ -387,7 +389,7 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
     """Every string-haystack assertNotIn bans a construct, not a word."""
 
     def test_no_unjustified_bare_literal(self):
-        bare, _anchored, _unclassified = _scan()
+        bare, _anchored, _unclassified, _total = _scan()
         offenders = [
             f for f in bare
             if (f.file, f.literal) not in _BARE_BY_DESIGN
@@ -402,7 +404,7 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
 
     def test_the_allowlist_does_not_rot(self):
         """An entry that no longer matches anything is a stale rule."""
-        bare, _anchored, _unclassified = _scan()
+        bare, _anchored, _unclassified, _total = _scan()
         live = {(f.file, f.literal) for f in bare}
         stale = sorted(_BARE_BY_DESIGN - live)
         self.assertEqual(
@@ -419,7 +421,7 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
         recognise would silently empty this file out and leave it green. These
         two floors fail loudly instead.
         """
-        bare, anchored, unclassified = _scan()
+        bare, anchored, unclassified, total = _scan()
         self.assertGreater(
             anchored, 15,
             f"the scanner found only {anchored} anchored assertNotIn calls "
@@ -462,11 +464,35 @@ class AbsenceLiteralsAreSpecific(unittest.TestCase):
         # The honest alternative, if this trips again: assert the RATE rather
         # than the total (unclassified / total assertNotIn), which does not move
         # when the suite merely grows. Recorded rather than built.
+        # BUILT, ON THE THIRD TRIP. The note above recorded the alternative and
+        # left it unbuilt; the ceiling has now been tripped a third time, again
+        # by ONE assertion in a file with nothing to do with this one -- which
+        # is the shape the note itself complains about. A total is a
+        # hand-maintained number standing in for a structural property, and it
+        # goes stale in the direction nobody watches: every raise is invisible
+        # progress toward a guard that means nothing.
+        #
+        # THE RATE DOES NOT MOVE WHEN THE SUITE MERELY GROWS. What it still
+        # catches is the thing the total was for: a refactor that hides
+        # haystacks behind helpers, which raises unclassified WITHOUT raising
+        # total and so pushes the rate up. The floor is set from the measured
+        # value with headroom, and the measurement is printed in the failure so
+        # the next reader is not left computing it.
+        rate = unclassified / total if total else 0.0
         self.assertLess(
-            unclassified, 440,
-            f"{unclassified} assertNotIn haystacks could not be classified; "
-            "if this has grown a lot, the classifier needs the new binding shape",
+            rate, 0.60,
+            f"{unclassified} of {total} assertNotIn haystacks ({rate:.1%}) could "
+            "not be classified; a RISING RATE means haystacks are moving behind "
+            "helpers, not that the suite grew. The classifier needs the new "
+            "binding shape.",
         )
+
+    def test_the_rate_has_a_denominator(self):
+        """The empty-set guard. A scan that matched nothing gives rate 0.0 and
+        satisfies the assertion above, which is exactly the vacuous pass this
+        file exists to refuse elsewhere."""
+        _b, _a, _u, total = _scan()
+        self.assertGreater(total, 600, f"only {total} assertNotIn calls found")
 
     def test_an_anchored_literal_is_recognised_as_anchored(self):
         """The control: the rule must be able to tell the two apart."""
