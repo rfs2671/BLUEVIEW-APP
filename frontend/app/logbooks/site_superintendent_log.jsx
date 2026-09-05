@@ -40,7 +40,7 @@ import React, {
 } from 'react';
 import { View, Text, TextInput, Pressable, ScrollView } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Plus, Trash2, Check, X } from 'lucide-react-native';
+import { Plus, Trash2, Check, X, ChevronDown, ChevronRight } from 'lucide-react-native';
 
 import LogbookStepper from '../../src/components/logbookStepper/LogbookStepper';
 // THE TIME PICKER, AND IT IS THE ONE THIS REPO ALREADY OWNS. concrete,
@@ -112,7 +112,9 @@ import {
 } from '../../src/utils/csFindings';
 
 const LOG_TYPE = 'site_superintendent_log';
-const TOTAL_STEPS = 5;
+// FOUR, NOT FIVE. Findings/orders and DOB/incidents were two steps; they are
+// one screen of collapsible rows now. See stepFindings.
+const TOTAL_STEPS = 4;
 
 /**
  * The write answered, and answered with nothing that names a record.
@@ -260,6 +262,39 @@ const CorrectionChoice = ({ s, locked, t, label, note, value, onChange }) => (
 );
 
 /** A tickable list of typed entries — the DOB actions and the incidents. */
+/**
+ * One statutory item, collapsed to a row until he opens it.
+ *
+ * FOUR ITEMS WERE TWO WIZARD STEPS. Unsafe conditions, orders given, DOB
+ * actions and incidents each needed their own screen to answer "nothing to
+ * report" -- four taps through two steps to say nothing happened, which is the
+ * ordinary case on most days.
+ *
+ * MODULE SCOPE, NOT THE SCREEN BODY. A component declared inside a render
+ * function is a new TYPE every render, so React unmounts and remounts its
+ * subtree -- and a remounted TextInput is not a focused one. That is the exact
+ * defect siteSuperintendentStableFields.test.cjs exists to prevent, and it cost
+ * this screen a superintendent typing one character at a time.
+ *
+ * `summary` IS THE WHOLE POINT of the collapsed state: a row that says
+ * "None to report" or "2 entries" answers the question without opening.
+ */
+const CollapsibleItem = ({ s, title, summary, open, onToggle, children }) => (
+  <Card s={s}>
+    <Pressable
+      onPress={onToggle}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: !!open }}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+    >
+      {open ? <ChevronDown size={18} strokeWidth={2} /> : <ChevronRight size={18} strokeWidth={2} />}
+      <Text style={[s.reviewLabel, { flex: 1 }]}>{title}</Text>
+      {!open && summary ? <Text style={s.noteText}>{summary}</Text> : null}
+    </Pressable>
+    {open ? children : null}
+  </Card>
+);
+
 const EntryList = ({
   s, locked, t, heading, note, entries, setEntries, none, setNone, noneLabel,
 }) => (
@@ -381,8 +416,10 @@ export default function SiteSuperintendentLog() {
   const [printedName, setPrintedName] = useState('');
   const [progress, setProgress] = useState('');
   const [activities, setActivities] = useState('');
-  const [locations, setLocations] = useState('');
-  const [inspectedOn, setInspectedOn] = useState(logDate);
+  // WHICH ROW IS OPEN. Nothing is open on arrival: the common day is
+  // "nothing to report" on all four, and a screen that opens every editor
+  // makes him scroll past four empty forms to say so.
+  const [openItem, setOpenItem] = useState('');
   const [inspectionLocation, setInspectionLocation] = useState('');
   const [inspectionResult, setInspectionResult] = useState('');
   const [findings, setFindings] = useState([]);
@@ -591,9 +628,11 @@ export default function SiteSuperintendentLog() {
     setDepartedNextDay(g('presence').departed_next_day === true);
     setPrintedName(g('presence').printed_name || '');
     setProgress(g('progress').summary || '');
-    setActivities(g('cs_activities').summary || '');
-    setLocations(g('cs_activities').locations || '');
-    setInspectedOn(g('daily_inspection').inspected_on || logDate);
+    // ONE FIELD NOW, AND A STORED PAIR IS JOINED RATHER THAN HALVED.
+    // Records filed before the merge carry both keys; reopening one must
+    // show him everything he wrote, not the first half.
+    setActivities([g('cs_activities').summary, g('cs_activities').locations]
+      .map((x) => String(x || '').trim()).filter(Boolean).join('\n'));
     setInspectionLocation(g('daily_inspection').location || '');
     setInspectionResult(g('daily_inspection').result || '');
     setCompetentPersonName(g('competent_person').name || '');
@@ -648,8 +687,8 @@ export default function SiteSuperintendentLog() {
   // mount, which is exactly the class the mount smoke exists to catch.
 
   const snapshot = () => ({
-    arrivedAt, departedAt, departedNextDay, printedName, progress, activities, locations,
-    inspectedOn, inspectionLocation, inspectionResult,
+    arrivedAt, departedAt, departedNextDay, printedName, progress, activities,
+    inspectionLocation, inspectionResult,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, step,
   });
@@ -662,8 +701,6 @@ export default function SiteSuperintendentLog() {
     setPrintedName(v.printedName ?? '');
     setProgress(v.progress ?? '');
     setActivities(v.activities ?? '');
-    setLocations(v.locations ?? '');
-    setInspectedOn(v.inspectedOn ?? logDate);
     setInspectionLocation(v.inspectionLocation ?? '');
     setInspectionResult(v.inspectionResult ?? '');
     setFindings(Array.isArray(v.findings) ? v.findings : []);
@@ -675,7 +712,12 @@ export default function SiteSuperintendentLog() {
     setCompetentPersonName(v.competentPersonName ?? '');
     // BACK ON THE STEP HE LEFT. Returning him to step 1 after a five-step form
     // is its own small loss.
-    if (Number.isInteger(v.step) && v.step >= 1 && v.step <= TOTAL_STEPS) setStep(v.step);
+    // A DRAFT SAVED ON THE OLD STEP 5 IS THE SIGN STEP, WHICH IS NOW 4.
+    // Clamping alone would land him on the findings screen with the wizard
+    // saying he was signing. Migrated by meaning, not by number.
+    if (Number.isInteger(v.step) && v.step >= 1) {
+      setStep(v.step >= 5 ? TOTAL_STEPS : Math.min(v.step, TOTAL_STEPS));
+    }
   };
 
   // ── the document this screen would file ─────────────────────────────────
@@ -703,8 +745,17 @@ export default function SiteSuperintendentLog() {
         departed_next_day: departedNextDay === true,
       },
       progress: progress.trim() ? { summary: progress.trim() } : {},
-      cs_activities: (activities.trim() || locations.trim())
-        ? { summary: activities.trim(), locations: locations.trim() } : {},
+      // ONE STATUTORY ITEM, ONE INPUT. `locations` was a second box under a
+      // label that asked the same question the first box's own placeholder
+      // did -- "WHAT YOU DID, AND WHERE" above "Areas and floors you
+      // inspected", then "AREAS AND FLOORS" below it. Item 3 is one item and
+      // is cited once; the split was UI shape, not statute.
+      //
+      // THE KEY IS STILL WRITTEN, and `locations` is simply no longer one of
+      // them. Both renderers reach this block through a generic field loop, so
+      // records filed with the old pair keep printing both -- readers keep
+      // reading, the writer stops writing.
+      cs_activities: activities.trim() ? { summary: activities.trim() } : {},
       ...both,
       dob_actions: dobChosen.length
         ? { entries: dobChosen.map((e) => ({ text: e.text.trim(), source: e.source })) }
@@ -716,15 +767,14 @@ export default function SiteSuperintendentLog() {
         ? { name: competentPersonName.trim() } : {},
       daily_inspection: (inspectionLocation.trim() || inspectionResult.trim())
         ? {
-          inspected_on: inspectedOn.trim(),
           location: inspectionLocation.trim(),
           result: inspectionResult.trim(),
         } : {},
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     printedName, arrivedAt, departedAt, departedNextDay,
-    progress, activities, locations,
-    inspectedOn, inspectionLocation, inspectionResult, competentPersonName]);
+    progress, activities,
+    inspectionLocation, inspectionResult, competentPersonName]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────
   //
@@ -1243,7 +1293,15 @@ export default function SiteSuperintendentLog() {
     <Card s={s}>
       <StepHeaderBase s={s} title={t('presenceHeading')} />
       <Text style={s.noteText}>{t('presenceNote')}</Text>
-      <Field s={s} locked={locked} label={t('printedName')} value={printedName} onChangeText={setPrintedName} />
+      {/* THE PRINTED NAME IS NOT ASKED HERE ANY MORE.
+          It was asked twice: once at the top of the screen and again on the
+          signature pad, which is where it matters and where it now arrives
+          prefilled. `printedName` is unchanged as state -- the mount effect
+          above still resolves it from the authenticated session, `buildData`
+          still files it as presence.printed_name, and SignaturePad's own
+          `onNameChange={setPrintedName}` still lets the signer correct it at
+          the moment he signs. Only the duplicate INPUT is gone; nothing about
+          what is recorded changed. */}
       {/* TAPPED, NOT TYPED. These were `<Field placeholder="HH:MM">` — a free
           text box in which "7", "0730", "7:30pm" and "seven" were all
           acceptable, on the two fields BC 3301.13.13 exists to record. No
@@ -1302,8 +1360,6 @@ export default function SiteSuperintendentLog() {
           placeholder={t('progressPlaceholder')} multiline />
         <Field s={s} locked={locked} label={t('activitiesLabel')} value={activities} onChangeText={setActivities}
           placeholder={t('activitiesPlaceholder')} multiline />
-        <Field s={s} locked={locked} label={t('locationsLabel')} value={locations} onChangeText={setLocations}
-          placeholder={t('locationsPlaceholder')} />
       </Card>
       <Card s={s}>
         <StepHeaderBase s={s} title={t('inspectionHeading')} />
@@ -1313,7 +1369,21 @@ export default function SiteSuperintendentLog() {
             and are their own piece of work — but the DATE and the LOCATION
             are not optional prose. */}
         <Text style={s.noteText}>{t('inspectionNote')}</Text>
-        <Field s={s} locked={locked} label={t('inspectedOn')} value={inspectedOn} onChangeText={setInspectedOn} />
+        {/* THE DATE INSPECTED FIELD IS GONE.
+            It defaulted to the log's own date at all three entry points and
+            nothing outside this screen ever read it back -- verified three
+            ways, including an unfiltered recursive grep of backend/ and
+            frontend/. No query, no comparison against logbook.date, no
+            compliance rule, no report branch: both renderers reached it only
+            through a generic `for field in fields` loop that does not know
+            its name. A daily log signed on the day already carries its date.
+
+            THE STATUTORY CAVEAT IS RECORDED, NOT RESOLVED. 1 RCNY 3301-04(f)
+            asks for when, where and what was found. If the rule contemplates
+            an inspection recorded on a log dated differently, this field was
+            the only place to say so. That is a question for a lawyer, not a
+            reading of this repo, and it is written down here rather than
+            decided. */}
         <Field s={s} locked={locked} label={t('inspectionLocation')} value={inspectionLocation}
           onChangeText={setInspectionLocation} />
         <Field s={s} locked={locked} label={t('inspectionResult')} value={inspectionResult}
@@ -1323,9 +1393,30 @@ export default function SiteSuperintendentLog() {
     </>
   );
 
+  // ── FOUR STATUTORY ITEMS, ONE SCREEN ────────────────────────────────────
+  //
+  // THREE ROWS, NOT FOUR, AND THE REASON IS THE RULING ITSELF. Items 4 and 5 --
+  // unsafe conditions and orders given -- are answered by ONE findings editor
+  // and ONE "none to report" toggle whose label names both. Splitting them into
+  // two rows means splitting `noneBoth`, which is a data change: `hydrate`
+  // reads it as the AND of both blocks and `deriveConditionAndOrderBlocks` sets
+  // them together. The instruction was to KEEP the shared toggle and the
+  // tri-state, and those two are the same decision.
+  //
+  // The DOB and incidents rows keep their own EntryList and their own toggle,
+  // exactly as they were -- only the wrapper changed.
+  const _findingCount = findings.filter((f) => !findingIsEmpty(f)).length;
   const stepFindings = () => (
-    <Card s={s}>
-      <StepHeaderBase s={s} title={t('findingsHeading')} />
+    <>
+      <CollapsibleItem
+        s={s}
+        title={t('findingsHeading')}
+        summary={_findingCount
+          ? `${_findingCount}`
+          : (noneBoth ? t('noneBoth') : '')}
+        open={openItem === 'findings'}
+        onToggle={() => setOpenItem((v) => (v === 'findings' ? '' : 'findings'))}
+      >
       <Text style={s.noteText}>{t('findingsNote')}</Text>
 
       {findings.map((f, i) => (
@@ -1387,20 +1478,38 @@ export default function SiteSuperintendentLog() {
           <Text style={s.noteText}>{t('noneBothNote')}</Text>
         </>
       ) : null}
-    </Card>
-  );
+      </CollapsibleItem>
 
-  const stepDob = () => (
-    <>
-      <EntryList s={s} locked={locked} t={t}
-        heading={t('dobHeading')} note={t('dobNote')}
-        entries={dobEntries} setEntries={setDobEntries}
-        none={dobNone} setNone={setDobNone} noneLabel={t('dobNoneToReport')} />
-      <EntryList s={s} locked={locked} t={t}
-        heading={t('incidentsHeading')} note={t('incidentsNote')}
-        entries={incidentEntries} setEntries={setIncidentEntries}
-        none={incidentsNone} setNone={setIncidentsNone}
-        noneLabel={t('incidentsNoneToReport')} />
+      <CollapsibleItem
+        s={s}
+        title={t('dobHeading')}
+        summary={dobEntries.length
+          ? `${dobEntries.length}`
+          : (dobNone ? t('dobNoneToReport') : '')}
+        open={openItem === 'dob'}
+        onToggle={() => setOpenItem((v) => (v === 'dob' ? '' : 'dob'))}
+      >
+        <EntryList s={s} locked={locked} t={t}
+          heading="" note={t('dobNote')}
+          entries={dobEntries} setEntries={setDobEntries}
+          none={dobNone} setNone={setDobNone} noneLabel={t('dobNoneToReport')} />
+      </CollapsibleItem>
+
+      <CollapsibleItem
+        s={s}
+        title={t('incidentsHeading')}
+        summary={incidentEntries.length
+          ? `${incidentEntries.length}`
+          : (incidentsNone ? t('incidentsNoneToReport') : '')}
+        open={openItem === 'incidents'}
+        onToggle={() => setOpenItem((v) => (v === 'incidents' ? '' : 'incidents'))}
+      >
+        <EntryList s={s} locked={locked} t={t}
+          heading="" note={t('incidentsNote')}
+          entries={incidentEntries} setEntries={setIncidentEntries}
+          none={incidentsNone} setNone={setIncidentsNone}
+          noneLabel={t('incidentsNoneToReport')} />
+      </CollapsibleItem>
     </>
   );
 
@@ -1474,8 +1583,7 @@ export default function SiteSuperintendentLog() {
     { key: 1, label: t('stepPresence'), render: stepPresence },
     { key: 2, label: t('stepWork'), render: stepWork },
     { key: 3, label: t('stepFindings'), render: stepFindings },
-    { key: 4, label: t('stepDob'), render: stepDob },
-    { key: 5, label: t('stepSign'), render: stepSign },
+    { key: 4, label: t('stepSign'), render: stepSign },
   ];
 
   // THE SAME LABELS THE REFUSAL RENDERS. csItemLabels is what handleSubmit's

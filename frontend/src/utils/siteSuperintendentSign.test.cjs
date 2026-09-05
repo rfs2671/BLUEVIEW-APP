@@ -476,9 +476,24 @@ console.log('\n4. ITEMS 4 AND 5 ARE ONE ENTRY, TWO STATUTORY ITEMS');
 
 console.log('\n5. THE INSPECTION CARRIES WHAT 3301-04(f) NEEDS');
 {
-  for (const k of ['inspectedOn', 'inspectionLocation', 'inspectionResult']) {
+  // `inspectedOn` WAS IN THIS LIST AND IS DELIBERATELY OUT OF IT.
+  //
+  // The field is deleted. It defaulted to the log's own date at all three
+  // entry points and nothing outside the screen that wrote it ever read it
+  // back — verified three ways including an unfiltered recursive grep. A daily
+  // log signed on the day already carries its date, so asking again collected
+  // a value that could only agree with one already on the record.
+  //
+  // THE CAVEAT IS RECORDED RATHER THAN RESOLVED, here and on the screen: if
+  // 3301-04(f)'s "when" contemplates an inspection recorded on a log dated
+  // differently, this field was the only place to say so. That is a lawyer's
+  // question. The other two are untouched, and the rule is still named on
+  // screen — which is what makes the remaining fields read as required.
+  for (const k of ['inspectionLocation', 'inspectionResult']) {
     ok(CODE(SCREEN).includes(k), `${k} is collected explicitly, not as one blank box`);
   }
+  ok(!CODE(SCREEN).includes('inspectedOn'),
+    'and the duplicate inspection DATE is gone, not merely unused');
   ok(/3301-04\(f\)/.test(read('src', 'i18n', 'en.js')),
     'and the rule is named on screen, so the three fields read as required '
     + 'rather than arbitrary');
