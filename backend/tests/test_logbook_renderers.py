@@ -104,9 +104,17 @@ def body_of(html: str) -> str:
     return html[start:end] if start >= 0 and end > start else html
 
 
-# The ONE sanctioned way to say "the app has no value for this", copied from
-# the convention generate_combined_report already prints.
-NOT_RECORDED = "&mdash; Not recorded"
+# The ONE sanctioned way to say "the app has no value for this".
+#
+# WAS "&mdash; Not recorded", COPIED FROM A SECOND CONSTANT THAT NO LONGER
+# EXISTS. server.py held two `NOT_RECORDED`s with different literals -- an
+# entity inside generate_single_logbook_html and the em-dash CHARACTER at module
+# level -- so one absence read two ways depending on which document you asked
+# for, and each spelling had a test pinning it. They are now one, and the
+# character won because test_weather_display_and_chip_trade pins it against
+# `fNotRecorded` in en.js on the rule that one record must read the same on the
+# device and in the PDF. Both render identically as HTML.
+NOT_RECORDED = "— Not recorded"
 
 # Everything else that must NEVER appear for a key the CP did not fill.
 PLACEHOLDERS = ["N/A", "Not recorded", "&mdash;", "No data available"]

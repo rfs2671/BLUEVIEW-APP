@@ -362,6 +362,15 @@ def _has_content(item: Dict, block: Dict) -> bool:
         elif isinstance(value, dict):
             if any(str(v or "").strip() for v in value.values()):
                 return True
+        elif isinstance(value, bool):
+            # A BOOLEAN IS AN ANSWER, INCLUDING False.
+            # This read `value not in (None, "", False)`, so an item whose only
+            # field was False had "no content", resolved to NOT_REACHED, and
+            # rendered "— Not recorded" on a BC 3301.13.13 record the
+            # superintendent HAD answered. The renderer had the same bug one
+            # level down; fixing that alone changed nothing, because this
+            # check refused the block before the renderer ever saw it.
+            return True
         elif value not in (None, "", False):
             return True
     return False
@@ -369,7 +378,11 @@ def _has_content(item: Dict, block: Dict) -> bool:
 
 def _row_has_content(row) -> bool:
     if isinstance(row, dict):
-        return any(str(v or "").strip() for v in row.values())
+        # `str(v or "")` turns False and 0 into "" and drops them, for the same
+        # reason as above. A finding row whose only answer is "not corrected"
+        # is a row with content.
+        return any(isinstance(v, bool) or str(v or "").strip()
+                   for v in row.values())
     return bool(str(row or "").strip())
 
 
