@@ -32,7 +32,7 @@ export const CERT_TYPES = [
  */
 export const ENTRY_KEYS = Object.freeze([
   'worker_id', 'worker_name', 'company', 'certification_type',
-  'card_number', 'expiration', 'signed', 'date',
+  'card_number', 'expiration', 'signed', 'date', 'unverified',
 ]);
 
 /**
@@ -50,6 +50,8 @@ export const EMPTY_ENTRY = () => ({
   card_number: '',
   expiration: '',
   signed: false,
+  // A row the CP types by hand asserts nothing about a card the system read.
+  unverified: false,
   date: easternToday(),
 });
 
@@ -153,6 +155,9 @@ export function buildEntriesFromCheckins(checkins, date) {
         signed: false,
         blocked: true,
         blocks: c.blocks || [],
+        // NOT `unverified`. He was refused, which is a stronger and different
+        // statement than "the card could not be read"; DENIED already says it.
+        unverified: false,
         date,
       });
       continue;
@@ -169,6 +174,10 @@ export function buildEntriesFromCheckins(checkins, date) {
           card_number: (cert && cert.card_number) || c.osha_number || '',
           expiration: certExpiration(cert),
           signed: false,
+          // FROZEN AT THE GATE, NOT RESOLVED HERE. `sst_status` is written
+          // onto the check-in row at the moment the card was read and never
+          // recomputed, so the register records what was known THEN.
+          unverified: c.sst_status === 'unknown',
           date,
         });
       }
@@ -194,6 +203,7 @@ export function buildEntriesFromCheckins(checkins, date) {
         card_number: c.osha_number || '',
         expiration: '',
         signed: false,
+        unverified: c.sst_status === 'unknown',
         date,
       });
     }
