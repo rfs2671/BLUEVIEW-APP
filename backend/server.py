@@ -23904,6 +23904,52 @@ def _submit_missing_trade_detail(log_type, payload):
 # THE ONE THING THAT WOULD CHANGE THAT is ALLOW_LEGACY_NULL_STATUS. See the
 # stamp added to POST /admin/users, which is what keeps this gate off a CP's
 # filing path when that flag is eventually turned off.
+#: The one log type whose `cp_name` is NOT the filer.
+CP_NAME_IS_PER_ROW = ("subcontractor_orientation",)
+
+
+def _resolved_cp_name(log_type: str, submitted, user) -> Optional[str]:
+    """Who signed this log, decided by the ACCOUNT and not by the keyboard.
+
+    ── WHY THE CLIENT'S VALUE IS IGNORED ───────────────────────────────────
+
+    `cp_name` came from a free-text box beside the signature pad. Across 313
+    filed logbooks it holds EIGHT different values for what is meant to be one
+    identity: 219 say `michael`, 13 say `michael Cespedes`, one says
+    `Michael Cespedes`, 25 say `2`, eight say `Test CP`, 33 are null. The
+    account holds `Michael Cespedes` in two fields the whole time.
+
+    On a §3301.2 record the competent person is who the document says he is.
+    A digit is not a name, and a lowercase first name is not an identification.
+
+    ── EXCEPT ON AN ORIENTATION, WHERE THE TRAINER IS NOT THE FILER ────────
+
+    `cp_name` on a `subcontractor_orientation` is the TRAINER'S ATTESTATION --
+    the competent person who DELIVERED it, who on a real jobsite may not be the
+    man filing the paperwork. Forcing the account holder's name onto that would
+    put the wrong man's name on an attestation, which is worse than the defect
+    being fixed. That type keeps its per-row value; the orientation screen now
+    offers a picker over the company's competent persons instead of a text box.
+
+    ── FORWARD-ONLY ────────────────────────────────────────────────────────
+
+    Nothing rewrites the 233 records already filed on a live jobsite. They say
+    what was captured; `michael` is what he typed and what he signed under.
+    Rewriting a filed compliance document to a nicer spelling is the thing this
+    product does not do.
+
+    ── THE ORDER, AND WHY ──────────────────────────────────────────────────
+
+    `cp_name` before `full_name` before `name`: the first is the field the CP
+    profile screen writes for exactly this purpose, the other two are the
+    account's own. Any of them beats a typed string.
+    """
+    if log_type in CP_NAME_IS_PER_ROW:
+        return submitted
+    return (user.get("cp_name") or user.get("full_name")
+            or user.get("name") or submitted)
+
+
 @api_router.post("/logbooks", dependencies=[Depends(require_approved)])
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
@@ -24207,7 +24253,8 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         _set_ops = {
             "data": data.data,
             "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
-            "cp_name": data.cp_name,
+            # DERIVED, NOT SUBMITTED -- see _resolved_cp_name.
+            "cp_name": _resolved_cp_name(data.log_type, data.cp_name, current_user),
             "status": data.status,
             # Tier 1 (2): an immediate/pre-shift log freezes on submit
             # (sign-now-and-lock). No-op until counsel classifies a log.
@@ -24246,7 +24293,10 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "date": data.date,
         "data": data.data,
         "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
-        "cp_name": data.cp_name,
+        # DERIVED, NOT SUBMITTED -- see _resolved_cp_name. The orientation is
+        # the one type that keeps the client's value, because its cp_name is
+        # the trainer's attestation rather than the filer's.
+        "cp_name": _resolved_cp_name(data.log_type, data.cp_name, current_user),
         "status": data.status,
         # FREEZE MODEL: an IMMEDIATE log freezes the moment it is signed — the
         # signature IS the freeze, there is no separate finalize step for these.
@@ -24546,7 +24596,14 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         # _eff_name, not data.cp_name, for the same reason as _eff_sig above:
         # a submit that patches only `status` is judged on the name already
         # stored, not on a field the request happened not to carry.
-        _eff_name = data.cp_name if data.cp_name is not None else _cur.get("cp_name")
+        # DERIVED BEFORE IT IS JUDGED. `data.cp_name` is what the client sent;
+        # for the ten non-orientation types that value is ignored on the write,
+        # so gating on it would refuse a submit over a string that is never
+        # going to be stored.
+        _eff_name = (
+            _resolved_cp_name(_cur.get("log_type") or "", data.cp_name, current_user)
+            if data.cp_name is not None else _cur.get("cp_name")
+        )
         # AND THE NAME THAT WILL PRINT. Checked here, after the signature, for
         # the reason the comment below gives about ordering: a submit with no
         # signature is not a submit, so that is reported first. `cp_name` is
@@ -24590,7 +24647,21 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
             data.cp_signature, (_lb or {}).get("date"), now
         )
     if data.cp_name is not None:
-        update["cp_name"] = data.cp_name
+        # DERIVED FOR THE TEN, SUBMITTED FOR THE ORIENTATION -- see
+        # _resolved_cp_name. `existing_lb` is the stored document, so the log
+        # type comes from the RECORD rather than from the request: a PUT that
+        # omits log_type must not fall through to the per-row branch by
+        # accident.
+        #
+        # NOT `_lb`, which the first draft used. That name is bound only inside
+        # the `cp_signature is not None` branch above and is projected to
+        # `{"date": 1}`, so it would have raised UnboundLocalError on a
+        # name-only PUT and carried no log_type even when bound. Caught by
+        # test_filed_log_data_immutable's repair-path test, which exists for a
+        # different guarantee entirely.
+        update["cp_name"] = _resolved_cp_name(
+            (existing_lb or {}).get("log_type") or "", data.cp_name, current_user,
+        )
     if data.status is not None:
         update["status"] = data.status
         # Tier 1 (2): an immediate/pre-shift log freezes on submit (sign-now-lock).
@@ -30324,7 +30395,12 @@ async def generate_combined_report(
             + (bold_para("Visitors / Deliveries", _sentence_case(visitors)) if visitors else "")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="margin-top:16px;border-top:1px solid #e2e8f0;"><tr><td style="padding-top:12px;">'
-            + bold_para("CP", daily_jobsite.get("cp_name", "N/A"))
+            # _capitalize_first, LIKE THE OTHER SEVEN. This was the one raw
+            # site of eight: the per-logbook PDF and every other line in this
+            # report capitalised, so the two filed documents disagreed about
+            # the same record -- one printing "michael", the other "Michael".
+            # Display-time only; the stored value is untouched.
+            + bold_para("CP", _capitalize_first(daily_jobsite.get("cp_name", "N/A")))
             + cp_sig + sup_sig
             + '</td></tr></table>'
         )

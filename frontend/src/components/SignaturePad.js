@@ -95,6 +95,26 @@ const SignaturePad = ({
   // picker's explicit "enter a trainer not on this list" branch, so nothing is
   // blocked - it is one tap further in, which is the whole design.
   nameLocked = false,
+  //
+  // ── AND ON THE OTHER TWELVE SCREENS THE FIELD STAYS EDITABLE, ON PURPOSE ──
+  //
+  // The server now DERIVES `cp_name` from the account for every log type
+  // except the orientation (see `_resolved_cp_name` in backend/server.py), so
+  // on those twelve screens whatever is typed here is discarded on the write.
+  // A live input collecting an ignored value is the `progress.source` shape,
+  // and the honest options were to remove it or to say why it stays.
+  //
+  // IT STAYS, AND HERE IS WHY. Locking it would render the field READ-ONLY
+  // OVER WHATEVER THE SCREEN'S `cpName` STATE HOLDS -- which on a fresh log is
+  // the empty string, because the client has never been told the account's
+  // name. The result would be a blank, uneditable "Printed name" on twelve
+  // compliance screens: worse than a field whose value is politely ignored.
+  //
+  // Making it display-only properly needs the account name available on the
+  // client -- `/users/me` already returns it, but no editor reads it -- and
+  // that is a small separate piece rather than something to bolt on here. It
+  // is recorded rather than done, and the field is harmless in the meantime:
+  // the value cannot reach a filed document.
 }) => {
   // PINNED: render as this pad renders in LIGHT MODE, whatever the theme.
   //
