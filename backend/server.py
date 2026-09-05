@@ -18743,9 +18743,31 @@ async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, c
  
  
 async def generate_single_logbook_html(logbook: dict) -> str:
-    """Generate standalone HTML for a single logbook entry.
-    Reuses the same styling as the combined report."""
-    
+    """The per-logbook PDF an inspector downloads. ONE MEDIUM: PAPER.
+
+    THE STALE CLAIM THIS REPLACES: "Reuses the same styling as the combined
+    report." It does not, and the difference is the whole of this change.
+    `generate_combined_report` genuinely serves TWO media -- it is emailed AND
+    handed to WeasyPrint -- so its wrapper is 680px because that is the right
+    column for an email client, and a `@media print` block releases the width
+    for the sheet of paper. This renderer has exactly ONE caller,
+    `get_single_logbook_pdf` (server.py:18720), which hands the string straight
+    to WeasyPrint and returns application/pdf. Nothing emails it. Its 700px
+    wrapper was a constraint borrowed from a medium this document does not
+    have: 700px on a ~794px A4 page, leaving a dead strip down the right.
+
+    THE FIX WAS NEVER PORTED, AND THAT IS THE FINDING. The combined report
+    corrected exactly this defect -- same page size, same cause, same dead
+    strip -- and the correction stopped at the renderer someone was reading.
+    Two renderers print the same stored records; fixing one of them fixes one
+    document. The print block below is that block, ported.
+
+    The width release stays inside `@media print` rather than simply deleting
+    the 700px, so that a future email consumer of this string is not handed a
+    full-bleed table. WeasyPrint renders at media type `print`, so the release
+    applies on the only path that exists today.
+    """
+
     BASE_URL = "https://api.levelog.com"
     
     project_id = logbook.get("project_id")
@@ -19805,10 +19827,48 @@ async def generate_single_logbook_html(logbook: dict) -> str:
 <html><head><meta charset="utf-8"><title>{type_title} — {project_name} — {date}</title>
 <style>body{{font-family:Arial,sans-serif;margin:0;padding:0;color:#334155;background:#fff;}}
 table{{border-collapse:collapse;}}
+
+/* PRINT / PDF. Ported from generate_combined_report -- see this function's
+   docstring for why it was missing: the combined report fixed the 680px dead
+   strip on an A4 page and nobody carried the fix to the other renderer of the
+   same records. Only h3 and tr appear below because those are the only
+   selectors this renderer actually emits; the combined report's h2 and
+   .doc-section rules have nothing here to match. */
+@page {{ size: A4; margin: 12mm; }}
+@media print {{
+  .wrapper {{ width: 100% !important; max-width: 100% !important; }}
+
+  /* A HEADING MUST NOT BE THE LAST THING ON A PAGE. A sub-head alone at the
+     foot of a sheet with its content overleaf is the shape a reader takes
+     for a truncated document. */
+  h3 {{ page-break-after: avoid; break-after: avoid-page; }}
+
+  /* NEVER SPLIT A ROW. A man's name on one sheet and his check-in time on
+     the next is not a roster entry.
+
+     BUT NOT THE THREE SHELL ROWS, AND THIS IS THE HALF THE COMBINED REPORT
+     GOT WRONG. This document's outer table is an email-style layout shell:
+     header row, ONE content row holding the entire body, footer row. An
+     unqualified `tr` rule matches that content row, so WeasyPrint refuses to
+     split the whole document and relocates it to a fresh sheet -- leaving
+     page 1 carrying nothing but the header. That is measured, not predicted:
+     on the combined report, whose shell is the same shape, deleting this one
+     rule moved a 461px section off page 2 and back onto page 1.
+
+     The rule is wanted for the roster tables NESTED inside the content cell
+     and for nothing else, so the shell rows opt out by class rather than by
+     a `> tbody >` combinator that depends on where the parser puts an
+     anonymous tbody. */
+  tr {{ page-break-inside: avoid; break-inside: avoid; }}
+  tr.shell {{ page-break-inside: auto; break-inside: auto; }}
+
+  /* One line of a paragraph stranded by itself reads as a fragment. */
+  p, li {{ orphans: 3; widows: 3; }}
+}}
 </style></head>
 <body style="margin:0;padding:0;background-color:#ffffff;">
-<table cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:700px;margin:0 auto;">
-<tr><td style="background-color:#0A1929;padding:24px 40px;color:#fff;" bgcolor="#0A1929">
+<table cellpadding="0" cellspacing="0" border="0" width="100%" class="wrapper" style="max-width:700px;margin:0 auto;">
+<tr class="shell"><td style="background-color:#0A1929;padding:24px 40px;color:#fff;" bgcolor="#0A1929">
 <span style="font-size:10px;letter-spacing:3px;text-transform:uppercase;color:#60a5fa;">LEVELOG</span><br/>
 <span style="font-size:20px;font-weight:600;">{type_title}</span><br/>
 <span style="font-size:13px;color:#94a3b8;">{project_name} — {project_address}</span>
@@ -19817,11 +19877,11 @@ table{{border-collapse:collapse;}}
 <td style="vertical-align:top;"><span style="font-size:10px;text-transform:uppercase;color:#64748b;">STATUS</span><br/><span style="font-size:15px;color:#fff;">{logbook.get("status", "N/A").upper()}</span></td>
 </tr></table>
 </td></tr>
-<tr><td style="padding:24px 40px;background-color:#ffffff;" bgcolor="#ffffff">
+<tr class="shell"><td style="padding:24px 40px;background-color:#ffffff;" bgcolor="#ffffff">
 {section_title(type_title)}
 {body_html}
 </td></tr>
-<tr><td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
+<tr class="shell"><td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
 <span style="font-size:11px;color:#94a3b8;">Generated on {gen_time}</span><br/>
 <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;">LEVELOG CONSTRUCTION MANAGEMENT</span>
 </td></tr></table></body></html>"""
