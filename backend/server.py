@@ -409,18 +409,28 @@ def _photo_added_after_filing_caption(photo: dict) -> str:
     who = str(photo.get("added_by_name") or "").strip()
     if who:
         parts.append(who)
+    # 9px IS ILLEGIBLE IN PRINT WHATEVER THE CONTRAST. Both sub-captions go to
+    # 11px, which still fits the 160px of text width inside the 166px tile.
+    # #92400e keeps the amber warning semantics (the same family as the AMENDED
+    # RECORD band) and takes this from 5.02:1 to 7.09:1.
     out = (
-        '<span style="display:block;font-size:9px;line-height:1.35;'
-        'font-weight:700;color:#b45309;">&#9888; '
+        '<span style="display:block;font-size:11px;line-height:1.35;'
+        'overflow-wrap:anywhere;font-weight:700;color:#92400e;">&#9888; '
         f'{_h.escape(_PHOTO_ADDED_AFTER_FILING_LABEL)}</span>'
     )
     if parts:
         # Each part escaped on its own, THEN joined with the raw entity —
         # escaping the joined string would emit a literal "&middot;".
         _joined = " &middot; ".join(_h.escape(p) for p in parts)
+        # THE ONE OUTRIGHT FAILURE. #94a3b8 on white is 2.56:1 -- it fails AA
+        # (4.5:1) AND AA-large (3:1), and at 9px nothing qualifies as large
+        # text, so the 3:1 threshold never applied. #475569 is 7.58:1.
+        # `overflow-wrap` closes the one real wrap risk: an unbreakable
+        # attribution token longer than 160px would otherwise run into the
+        # neighbouring tile.
         out += (
-            '<span style="display:block;font-size:9px;line-height:1.35;'
-            f'color:#94a3b8;">{_joined}</span>'
+            '<span style="display:block;font-size:11px;line-height:1.35;'
+            f'overflow-wrap:anywhere;color:#475569;">{_joined}</span>'
         )
     return out
 
@@ -29060,7 +29070,19 @@ def render_signature_html(sig, label="CP Signature", show_affirmation=True):
 
     def _wrap(full_label, inner):
         return (
-            '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">'
+            # KEEP THE BLOCK TOGETHER. The label and the image are separate
+            # <tr>s, and the print CSS carries `tr { page-break-inside: avoid }`
+            # -- which protects each ROW and explicitly permits a break BETWEEN
+            # them. So "CP Signature (Michael Cespedes):" ended one page and his
+            # signature began the next, on a filed document whose whole point is
+            # that a named person signed it.
+            #
+            # ON THE TABLE, so it covers every one of this function's ~20 call
+            # sites at once. The .doc-section wrapper does not help: a section
+            # holding a sixty-man roster is already taller than a page, so the
+            # renderer drops its avoid request for the whole section.
+            '<table cellpadding="0" cellspacing="0" border="0" '
+            'style="margin-top:8px;page-break-inside:avoid;break-inside:avoid;">'
             '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
             + full_label + ':</td></tr>'
             '<tr><td>' + inner + '</td></tr>'
@@ -29559,7 +29581,12 @@ async def generate_combined_report(
             ] if _x
         )
         _pg1_photos += (
-            f'<p style="margin:12px 0 4px;font-size:12px;color:#64748b;">'
+            # SIZE, NOT CONTRAST, and the distinction is worth keeping:
+            # #64748b on white is 4.76:1, which PASSES AA. It was simply the
+            # smallest text near the photos. 13px is the report's own declared
+            # table-cell step and #475569 is its body colour, which takes this
+            # to 7.58:1 -- headroom instead of a 0.26 margin.
+            f'<p style="margin:12px 0 4px;font-size:13px;color:#475569;">'
             f'{_cap}</p><div>{_shots}</div>'
         )
 
@@ -30029,7 +30056,11 @@ async def generate_combined_report(
                          'style="max-width:300px;height:auto;" />')
             if inner:
                 sup_sig_html = (
-                    '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
+                    # Same break rule as render_signature_html's _wrap -- these
+                    # two blocks are hand-rolled copies of it and split the same
+                    # way.
+                    '<table cellpadding="0" cellspacing="0" border="0" '
+                    'style="margin-top:12px;page-break-inside:avoid;break-inside:avoid;">'
                     '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
                     f'Superintendent ({sn}):</td></tr>'
                     f'<tr><td>{inner}</td></tr>'
@@ -30051,7 +30082,11 @@ async def generate_combined_report(
                          'style="max-width:300px;height:auto;" />')
             if inner:
                 cp_sig_html = (
-                    '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
+                    # Same break rule as render_signature_html's _wrap -- these
+                    # two blocks are hand-rolled copies of it and split the same
+                    # way.
+                    '<table cellpadding="0" cellspacing="0" border="0" '
+                    'style="margin-top:12px;page-break-inside:avoid;break-inside:avoid;">'
                     '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
                     f'Competent Person ({cn}):</td></tr>'
                     f'<tr><td>{inner}</td></tr>'
