@@ -1185,6 +1185,12 @@ async def _flag_cors_preflight_refused(header: str, origin: str, count: int) -> 
     try:
         exists = await db.compliance_alerts.find_one({
             "alert_type": "cors_preflight_refused",
+            # AND ON `resolved`. A resolved row suppressed this for good while
+            # the server went on refusing the same header on every request. The
+            # header-name dedupe still does the work it was written for -- an
+            # outage cannot write thousands of rows, because the first
+            # UNRESOLVED one stops all the rest.
+            "resolved": False,
             "details.header": header,
         })
         if exists:
@@ -1519,6 +1525,13 @@ async def _flag_unique_index_not_enforced(collection, *, name: str, err) -> None
     try:
         exists = await db.compliance_alerts.find_one({
             "alert_type": "unique_index_not_enforced",
+            # AND ON `resolved`. The index stays unbuilt until somebody clears
+            # the duplicates and rebuilds it by hand -- an admin resolving the
+            # alert does neither, and without this clause resolving it hid a
+            # constraint that is still not in force, permanently. It re-raises
+            # on the next startup only because the build was attempted and
+            # failed again, which is a fresh statement of an unchanged fact.
+            "resolved": False,
             "details.index_name": name,
         })
         if exists:
@@ -34694,6 +34707,33 @@ async def nightly_compliance_check():
                         existing_alert = await db.compliance_alerts.find_one({
                             "alert_type": "missing_logbook", "project_id": pid,
                             "details.log_type": log_type, "details.date": today,
+                            # AND ON `resolved`, OR RESOLVE SILENCES A STATUTORY
+                            # GAP THAT IS STILL OPEN.
+                            #
+                            # (project, log_type, date) alone matched a RESOLVED
+                            # row as readily as an open one, and resolve is the
+                            # only action /admin/compliance-alerts offers. So an
+                            # admin clearing this alert destroyed the only
+                            # surviving statement that a required daily logbook
+                            # was never filed -- for a day that cannot come back,
+                            # on a document an inspector asks for by name.
+                            #
+                            # RE-RAISING IS NOT NOISE, BECAUSE THE CONDITION IS
+                            # RE-VERIFIED. This branch is reached only when the
+                            # `db.logbooks.find_one` above found NO submitted log
+                            # for that project, type and date. File it and the
+                            # alert stops on the next pass; nothing an admin can
+                            # do from the alert list changes that fact.
+                            #
+                            # NOT worker_cert_expiring'S SHAPE, and the
+                            # difference is the rule. That alert suppresses on an
+                            # unchanged `details.earliest_expiration` as well,
+                            # because ITS condition -- a cert 30 days out -- does
+                            # not change when the admin acts, so a bare
+                            # `resolved: False` would decay resolve into "cleared
+                            # for one night". Here the condition IS the filing,
+                            # and only filing it clears it.
+                            "resolved": False,
                         })
                         if not existing_alert:
                             severity = "high" if log_type == "ssc_daily_safety_log" else "medium"
