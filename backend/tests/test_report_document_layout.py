@@ -48,7 +48,9 @@ DATE = "2026-08-11"
 PROJECT = "proj_layout"
 
 BREAK = '<div style="page-break-after:always;"></div>'
-WRAPPER = '<div class="doc-section" style="page-break-inside:avoid;">'
+# THE INLINE `page-break-inside:avoid` IS GONE -- see the class docstring on
+# EveryFiledDocumentStartsASheet. The wrapper is now the class alone.
+WRAPPER = '<div class="doc-section">'
 
 
 def _match(doc, query):
@@ -224,25 +226,50 @@ class EveryFiledDocumentStartsASheet(Base):
         self.assertTrue(tail.startswith(WRAPPER), tail[:120])
         self.assertIn("Pre-Shift Sign-In", tail)
 
-    def test_every_section_asks_not_to_be_split(self):
-        """COUNTED ON THE WRAPPER, NOT ON THE PROPERTY.
+    def test_no_section_asks_not_to_be_split_any_more(self):
+        """THE RULE IS GONE, AND THIS IS THE INVERSION OF THE TEST THAT PINNED IT.
 
-        This read `c.count("page-break-inside:avoid") == c.count(WRAPPER)`,
-        which held only while section wrappers were the ONLY thing in the
-        document using that property. They are not any more: each signature
-        block now carries it too, because a label and its image are separate
-        table rows and the print CSS permits a break between them -- a filed
-        report split "CP Signature (Michael Cespedes):" from his signature
-        across two pages.
+        `page-break-inside:avoid` on the section wrapper was the SECOND cause of
+        the blank cover. WeasyPrint does not drop an unsatisfiable avoid: it
+        RELOCATES the block to a fresh sheet and splits it there anyway (proved
+        with a control in test_weasyprint_break_inside_semantics.py). So on any
+        day whose first section is taller than a page it moved the whole body to
+        page 2 and split it there regardless -- costing a sheet and buying
+        nothing.
 
-        A global count of a CSS property is a proxy for "every wrapper has it",
-        and the proxy broke the moment anything else legitimately used the same
-        property. The subject is the wrapper, so count the wrapper."""
+        AND IT WAS ALREADY INERT FOR EVERY SECTION BUT THE FIRST. A
+        `page-break-after:always` divider separates every pair of wrappers, so
+        sections 2..N each begin at the top of an empty sheet -- a block already
+        at a page top has nothing to be relocated past, and the rule cannot
+        fire. It only ever acted on the FIRST section, where it was either
+        unnecessary or harmful.
+
+        INVERTED RATHER THAN DELETED, so the removal is asserted rather than
+        merely unmentioned."""
         c = self.rendered_content()
         self.assertGreater(c.count(WRAPPER), 0)
-        # WRAPPER already carries the property, so the real question is whether
-        # any section div exists WITHOUT it.
         self.assertEqual(c.count('<div class="doc-section"'), c.count(WRAPPER))
+        self.assertNotIn('<div class="doc-section" style=', c)
+
+    def test_but_a_caption_still_cannot_strand_above_its_table(self):
+        """WHAT THE REMOVED RULE WAS SUPPOSED TO PROTECT, kept and widened.
+
+        The concern was a caption ending a sheet with its table overleaf. That
+        is `page-break-after: avoid` on the headings -- and the selector did NOT
+        reach `sub_title`, which emits a class-less <table> and produces the
+        very caption ("Activity Details") the rule's own comment cites. Nineteen
+        captions in this renderer go through it."""
+        # RAW source, not `code_of`. The anchor below is inside an f-string in
+        # a doubled-brace CSS block, and the stripped text does not carry it --
+        # the first draft of this test died on `substring not found` rather
+        # than on the claim.
+        src = (Path(__file__).resolve().parent.parent / "server.py").read_text(
+            encoding="utf-8")
+        i = src.index(":root {{ color-scheme: light only; }}")
+        block = src[i:src.index("</style>", i)]
+        self.assertIn(".doc-sub-title", block)
+        self.assertIn("page-break-after: avoid", block)
+        self.assertIn('class="doc-sub-title"', self.rendered_content())
 
     def test_an_UNFILED_log_claims_no_sheet(self):
         """A section with no document behind it renders "" -- it must not take

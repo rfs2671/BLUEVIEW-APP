@@ -19209,7 +19209,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         return (
             '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
             'style="margin:12px 0;"><tr><td style="background-color:#f1f5f9;'
-            f'padding:16px;border-radius:8px;color:#334155;" bgcolor="#f1f5f9">{content}</td></tr></table>'
+            f'padding:16px;border-radius:8px;color:#334155;" bgcolor="#f1f5f9">'
+            f'{_metadata_columns(content)}</td></tr></table>'
         )
 
     def sub_title(text):
@@ -29379,12 +29380,75 @@ _CS_TD = ('style="padding:10px 12px;border-bottom:1px solid #e2e8f0;'
           'color:#334155;"')
 
 
+def _metadata_columns(content: str, *, min_pairs: int = 4) -> str:
+    """Lay a `<br />`-joined run of `<strong>Label:</strong> value` fragments
+    out in TWO COLUMNS. Returns `content` unchanged when it is not that shape.
+
+    ── WHY THIS IS ONE FUNCTION AND NOT FIFTEEN EDITS ──────────────────────
+
+    Every metadata block in the combined report already arrives at `info_box`
+    as one string of `<br />`-joined fragments, each fragment a whole
+    label-and-value pair. Eight such runs are spelled by hand at the call
+    sites, carrying between two and eight labels each. Converting them
+    individually would have been eight chances to mistype a filed document;
+    doing it here changes all of them at once and leaves every call site
+    untouched.
+
+    ── THE LABEL AND ITS VALUE STAY IN ONE CELL ────────────────────────────
+
+    Each fragment becomes one `<td>`, intact. Splitting label and value into
+    separate cells would read better in a mock-up and would break the shared
+    `<strong style="color:#0A1929;">Label:</strong> value` shape that roughly
+    thirty tests assert and that `_cs_bold_para` and both `bold_para` closures
+    also emit.
+
+    ── A TABLE, NOT FLEXBOX OR GRID ────────────────────────────────────────
+
+    WeasyPrint renders this document. Tables it does well; `display:flex` and
+    `display:grid` it does not, and a layout that collapses in the PDF while
+    looking right in a browser is the worst of the available failures on a
+    filed record.
+
+    ── THE THRESHOLD, AND WHY IT IS NOT ONE ────────────────────────────────
+
+    Below `min_pairs` the block stays single-column. Two or three labels in
+    two columns leaves a ragged half-empty row that reads as a rendering
+    fault; the gain starts when the block is tall enough that halving it saves
+    a reader's eye a journey. Four is a judgement, not a measurement, and it is
+    the only number in this change that could reasonably be different.
+
+    ODD COUNTS: the last cell spans both columns rather than leaving a hole.
+    """
+    if not content or "<br />" not in content:
+        return content
+    parts = [f.strip() for f in content.split("<br />")]
+    parts = [f for f in parts if f]
+    # EVERY fragment must be a label/value pair. A block mixing prose with
+    # labels is not a metadata table, and columnising it would put a sentence
+    # beside a field.
+    if len(parts) < min_pairs or not all("<strong " in f for f in parts):
+        return content
+
+    cell = ("padding:0 18px 8px 0;vertical-align:top;"
+            "color:inherit;font-size:inherit;line-height:inherit;")
+    rows = []
+    for i in range(0, len(parts), 2):
+        pair = parts[i:i + 2]
+        if len(pair) == 2:
+            rows.append(f'<tr><td width="50%" style="{cell}">{pair[0]}</td>'
+                        f'<td width="50%" style="{cell}">{pair[1]}</td></tr>')
+        else:
+            rows.append(f'<tr><td colspan="2" style="{cell}">{pair[0]}</td></tr>')
+    return ('<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="border-collapse:collapse;">' + "".join(rows) + "</table>")
+
+
 def _cs_info_box(inner):
     return ('<table cellpadding="0" cellspacing="0" border="0" width="100%" '
             'style="margin:12px 0;" bgcolor="#f1f5f9"><tr><td '
             'style="background-color:#f1f5f9;padding:14px 18px;'
             'border-left:4px solid #f59e0b;font-size:15px;line-height:1.7;'
-            f'color:#475569;">{inner}</td></tr></table>')
+            f'color:#475569;">{_metadata_columns(inner)}</td></tr></table>')
 
 
 def _cs_bold_para(label, value):
@@ -30002,8 +30066,14 @@ async def generate_combined_report(
         tracked out, so it reads as a label rather than as a smaller heading
         competing with the section name above it."""
         return (
+            # `class="doc-sub-title"` SO THE PRINT BLOCK CAN SEE IT. This is a
+            # class-less <table>, so it matched none of `h2, h3,
+            # .doc-section-title` -- and "Activity Details" is emitted by THIS
+            # function, which is the caption that rule's own comment cites as
+            # the thing it stops stranding at the foot of a page. It never
+            # matched it. Nineteen captions in this renderer go through here.
             '<table cellpadding="0" cellspacing="0" border="0" '
-            f'style="margin:{_S_BLOCK} 0 {_S_TIGHT} 0;">'
+            f'class="doc-sub-title" style="margin:{_S_BLOCK} 0 {_S_TIGHT} 0;">'
             f'<tr><td style="font-size:{_T_LABEL};font-weight:700;'
             'color:#475569;text-transform:uppercase;letter-spacing:0.08em;">'
             f'{text}</td></tr></table>'
@@ -30028,7 +30098,7 @@ async def generate_combined_report(
             f'style="margin:{_S_HEAD} 0 0 0;" bgcolor="#f1f5f9">'
             '<tr><td style="background-color:#f1f5f9;padding:16px 20px;'
             'border-left:4px solid #1565C0;font-size:16px;line-height:1.7;color:#475569;">'
-            + content + '</td></tr></table>'
+            + _metadata_columns(content) + '</td></tr></table>'
         )
 
     def para(text):
@@ -31648,8 +31718,53 @@ async def generate_combined_report(
     # page-geometry test asserts the CSS a renderer emits, so a false claim
     # about what WeasyPrint does with that CSS sits next to a suite that
     # cannot contradict it. See docs/audits/check-harness.md section 8.
+    # ── OPTION (a): A SECTION MAY BREAK WHEN IT CANNOT FIT ──────────────────
+    #
+    # `page-break-inside:avoid` was here. WeasyPrint does not drop an
+    # unsatisfiable avoid -- it RELOCATES the block to a fresh sheet and splits
+    # it there anyway (proved with a control in
+    # test_weasyprint_break_inside_semantics.py), so on a section taller than a
+    # page it cost a sheet and bought nothing.
+    #
+    # AND REMOVING IT DOES NOT FIX THE HEAVY DAY. That was the expectation
+    # written here first, and the measurement says otherwise. Rendered against
+    # production with this change applied:
+    #
+    #   2026-08-25 (light)   6 pages, page 1 carries the Daily Progress Report
+    #   2026-08-31 (heavy)   9 pages, page 1 UNCHANGED -- header, summary and
+    #                        the amendment banner, exactly as before
+    #
+    # So this rule was not the binding constraint on a heavy day. Something
+    # else still relocates that section, and the likeliest candidate is the
+    # unqualified `tr { page-break-inside: avoid }` acting on the section's own
+    # first row -- the same rule whose SHELL half was scoped in #442, applied
+    # one level further in. NOT DIAGNOSED HERE, and deliberately not guessed
+    # at in code: it is reported as an open item rather than fixed on a hunch.
+    #
+    # What this change does buy, measured: the rule is gone from a document
+    # where it was inert for every section but the first (each later section
+    # already begins at the top of an empty sheet, where an avoid cannot fire),
+    # and the light day is unaffected.
+    #
+    # WHAT THE RULE WAS PROTECTING IS KEPT, AND ONE GAP IN IT IS CLOSED. The
+    # concern was a caption separating from its table. That is the job of
+    # `page-break-after: avoid` on the headings -- and the selector did NOT
+    # reach `sub_title`, which emits a class-less <table> and produces the very
+    # caption ("Activity Details") the rule's own comment cites. It now carries
+    # `class="doc-sub-title"` and the selector names it, so the claim this
+    # paragraph makes is true rather than assumed.
+    #
+    # AND THE RULE WAS ALREADY INERT FOR ALL BUT THE FIRST SECTION. Every pair
+    # of sections is separated by `page-break-after:always`, so sections 2..N
+    # each begin at the top of an empty sheet -- a block already at a page top
+    # has nothing to be relocated past, and `avoid` cannot fire. It only ever
+    # acted on the FIRST section, where it was either unnecessary (the section
+    # fits) or harmful (it does not, and the cover goes blank).
+    #
+    # Each section still STARTS its own sheet: the `page-break-after:always`
+    # join below is untouched.
     sections_html = '<div style="page-break-after:always;"></div>'.join(
-        f'<div class="doc-section" style="page-break-inside:avoid;">{_s}</div>'
+        f'<div class="doc-section">{_s}</div>'
         for _s in _SECTIONS if _s
     )
 
@@ -31707,7 +31822,7 @@ async def generate_combined_report(
        starts its own sheet, but the sub-heads inside one do not, and
        "Activity Details" alone at the foot of a page with its table
        overleaf is the shape a reader takes for a truncated document. */
-    h2, h3, .doc-section-title {{
+    h2, h3, .doc-section-title, .doc-sub-title {{
       page-break-after: avoid; break-after: avoid-page;
     }}
 
@@ -31739,7 +31854,6 @@ async def generate_combined_report(
        tables inside the content cell are untouched and still refuse to split,
        which is what the rule was written for. */
     tr.shell {{ page-break-inside: auto; break-inside: auto; }}
-    .doc-section {{ break-inside: avoid; }}
 
     /* One line of a paragraph stranded by itself reads as a fragment. */
     p, li {{ orphans: 3; widows: 3; }}
