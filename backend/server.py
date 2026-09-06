@@ -5337,10 +5337,26 @@ async def sweep_signature_ledger_gaps(database, now=None) -> dict:
     ── WHAT THIS STILL FINDS NOW THAT THE ROW IS DERIVED SERVER-SIDE ─────────
 
     ensure_signature_ledger_row writes a row for a signed document at
-    /finalize, which draftSync reaches for every signed draft it drains — so
-    the offline gap this was built to see should now be close to empty. THAT IS
-    NOT THE SAME AS THIS BEING VACUOUS, and it is deliberately left alone
-    rather than narrowed to suit its own fix. Four things still land here:
+    /finalize. This docstring used to add "which draftSync reaches for every
+    signed draft it drains — so the offline gap this was built to see should
+    now be close to empty", and that was the same false claim corrected on
+    ensure_signature_ledger_row itself: the END_OF_DAY editors do not
+    markFinalized on the sign path (test_end_of_day_sweep.py asserts the
+    absence), so an offline-signed `daily_jobsite` or `ssc_daily_safety_log`
+    never reaches /finalize at all.
+
+    IT MATTERED MOST HERE, because a detector told to expect "close to empty"
+    is a detector nobody investigates when it is not. The offline gap for those
+    two types is NOT closed, and rows landing here from them are the expected
+    consequence rather than a surprise.
+
+    THAT IS NOT THE SAME AS THIS BEING VACUOUS, and it is deliberately left
+    alone rather than narrowed to suit its own fix. FIVE things land here:
+
+      * AN OFFLINE-SIGNED END-OF-DAY LOG. No actor writes its ledger row: the
+        drain skips the freeze, and the sweep that locks it does a bare
+        update_one. This is the one the sentence above used to say would not
+        happen.
 
       * THE 33. They are not backfilled and never will be — a reconstructed
         content_snapshot would attest to content the signer never saw. They are
@@ -18340,12 +18356,39 @@ async def ensure_signature_ledger_row(logbook, written_by: str) -> str:
 
     Callers therefore pass `written_by` from a point where the signature is
     ALREADY STORED and the request did not bring it: /finalize, or a later
-    update. draftSync reaches such a point on every signed draft it drains —
-    applyRemoteFreeze calls /finalize for any locally-finalized draft, and
-    every signed draft is locally finalized (freezeIfImmediate -> markFinalized
-    for the ten immediate types, an explicit markFinalized in the two
-    end-of-day editors). The online path reaches it too, and finds the client's
-    row already there.
+    update. The online path reaches it and finds the client's row already
+    there.
+
+    ── AND THE OFFLINE PATH DOES NOT REACH IT FOR TWO LOG TYPES ───────────────
+
+    THE SENTENCE THAT USED TO STAND HERE WAS FALSE, and it was load-bearing:
+
+        "draftSync reaches such a point on every signed draft it drains --
+        applyRemoteFreeze calls /finalize for any locally-finalized draft, and
+        every signed draft is locally finalized (freezeIfImmediate ->
+        markFinalized for the ten immediate types, an explicit markFinalized in
+        the two end-of-day editors)."
+
+    The second half is the opposite of the truth. The END_OF_DAY editors
+    deliberately do NOT call markFinalized on the sign path, and
+    `backend/tests/test_end_of_day_sweep.py` asserts that ABSENCE by name --
+    it greps the sign handler and requires that `markFinalized(_key)` and
+    `logbooksAPI.finalize(` do not appear. The freeze for those two types is
+    the overnight sweep's job, by design.
+
+    So for `daily_jobsite` and `ssc_daily_safety_log`, a draft signed OFFLINE
+    drains with `finalized: false`, applyRemoteFreeze skips, /finalize is never
+    called, and THIS FUNCTION IS NEVER REACHED FOR IT. The sweep that freezes
+    the log hours later does a bare update_one and does not call it either. An
+    offline signature on an end-of-day log therefore gets no ledger row from
+    either actor -- which is the exact gap this function exists to close,
+    surviving inside its own explanation.
+
+    NOT FIXED HERE, DELIBERATELY. Wiring the sweep to this function is a change
+    to what the nightly pass writes on a filed record, and it wants its own
+    decision rather than riding along with a comment correction. What is fixed
+    is the claim: the guarantee is "every IMMEDIATE type, plus anything that
+    reaches /finalize", not "every signed draft".
 
     This is deliberately NOT a time-based guess. `_finalize_cp_signature`'s own
     docstring records that a CP may affirm hours before the log files while
@@ -25547,10 +25590,19 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     # signature — it acts on one already stored — so the client's window has
     # closed and a missing row is a real gap, not one in flight.
     #
-    # draftSync reaches this line for every signed draft it drains: a signed
-    # draft is always locally finalized (freezeIfImmediate -> markFinalized for
-    # the ten immediate types, an explicit markFinalized in the two end-of-day
-    # editors), and applyRemoteFreeze calls /finalize for any finalized draft.
+    # WHICH DRAFTS ACTUALLY REACH THIS LINE, corrected. It used to read "every
+    # signed draft draftSync drains", on the strength of "an explicit
+    # markFinalized in the two end-of-day editors". They have no such call --
+    # test_end_of_day_sweep.py asserts its ABSENCE by name, because the freeze
+    # for those two types is the overnight sweep's job.
+    #
+    # So: every IMMEDIATE type (freezeIfImmediate -> markFinalized -> the drain
+    # calls /finalize), plus any log a human finalizes from the lock bar. NOT
+    # an offline-signed daily_jobsite or ssc_daily_safety_log -- those drain
+    # with finalized:false, skip the freeze, and are swept hours later by a
+    # path that does not call this function. See ensure_signature_ledger_row's
+    # docstring for what that gap means and why it is recorded rather than
+    # closed here.
     await ensure_signature_ledger_row(existing, written_by="finalize_logbook")
     if existing.get("is_locked"):
         return serialize_id(existing)  # idempotent — already finalized
