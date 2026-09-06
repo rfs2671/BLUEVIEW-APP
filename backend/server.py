@@ -20941,6 +20941,36 @@ async def get_dropbox_status(current_user = Depends(get_current_user)):
 @api_router.get("/dropbox/auth-url")
 async def get_dropbox_auth_url(current_user = Depends(get_current_user)):
     """Get Dropbox OAuth authorization URL"""
+    # ── A DROPBOX CONNECTION BELONGS TO A COMPANY ───────────────────────────
+    #
+    # The stored row is keyed `{"company_id": company_id}`, and Mongo matches
+    # null AND absent -- so every account without a company shared ONE row
+    # holding a refresh token and an access token. A second such account could
+    # list the first's folder tree, silently overwrite the row by connecting
+    # (the status endpoint shows it "Not Connected", so the UI invites this),
+    # and revoke the first's connection outright.
+    #
+    # NOT AN INCIDENT: zero null-company rows have ever existed in production.
+    # Fixed because a token store shared across tenants is wrong by
+    # construction, and one live account is already in the shape that reaches
+    # it -- `onboarding_step` null escapes the RouteGuard redirect and can open
+    # /admin/integrations.
+    #
+    # THE REFUSAL IS ON THE WRITE, which is what closes it completely: if the
+    # row cannot be created, it cannot be shared. `get_valid_dropbox_token`
+    # carries the matching read guard, so the nine readers fail closed if this
+    # is ever bypassed.
+    #
+    # HE HAS NOT DONE ANYTHING WRONG, and the message says so: this is the
+    # next step, not an error.
+    #
+    # REFUSED HERE FIRST so the CP never reaches Dropbox's consent screen and
+    # comes back to a rejection. The two completion paths below refuse as well;
+    # this one only saves him the journey.
+    if not get_user_company_id(current_user):
+        raise HTTPException(status_code=409, detail={
+            "code": "COMPANY_REQUIRED", "message": "Complete company setup first, then connect Dropbox.",
+        })
     state = jwt.encode(
         {"user_id": current_user.get("id"), "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
         JWT_SECRET, algorithm=JWT_ALGORITHM
@@ -21026,6 +21056,19 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
     # Get user's company
     user = await db.users.find_one({"_id": to_query_id(user_id)})
     company_id = user.get("company_id") if user else None
+    # THE SAME REFUSAL, RENDERED. This route answers the browser after
+    # Dropbox's redirect, so a raw 409 would show as a blank error page. See
+    # get_dropbox_auth_url for why a company-less account must not create the
+    # row -- and note this path resolves the company from the STORED user
+    # rather than from a token claim, so it cannot be talked out of it.
+    if not company_id:
+        return HTMLResponse(
+            "<html><body style=\"font-family:sans-serif;padding:40px;"
+            "text-align:center\"><h2>Almost there</h2>"
+            "<p>Complete company setup first, then connect Dropbox.</p>"
+            "<script>setTimeout(()=>window.close(), 4000);</script>"
+            "</body></html>"
+        )
     
     now = datetime.now(timezone.utc)
     
@@ -21055,6 +21098,12 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
 @api_router.post("/dropbox/complete-auth")
 async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_user)):
     """Complete Dropbox OAuth with authorization code (alternative to callback)"""
+    # See get_dropbox_auth_url: the connection row is company-keyed, so an
+    # account with no company would create the shared one.
+    if not get_user_company_id(current_user):
+        raise HTTPException(status_code=409, detail={
+            "code": "COMPANY_REQUIRED", "message": "Complete company setup first, then connect Dropbox.",
+        })
     code = data.get("code")
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code required")
@@ -21141,6 +21190,21 @@ async def disconnect_dropbox(current_user = Depends(get_current_user)):
 
 async def get_valid_dropbox_token(company_id: str) -> str:
     """Get a valid Dropbox access token, proactively refreshing if expired or expiring within 30 min."""
+    # ── FAILS CLOSED, AND COVERS ALL NINE READERS AT ONCE ───────────────────
+    #
+    # `{"company_id": None}` is a MATCHING query in Mongo -- null and absent
+    # both hit -- so a falsy company here would have found the shared row
+    # rather than nothing. Every reader of a Dropbox connection funnels through
+    # this function or through `dropbox_api_call` beside it, including the two
+    # a call-site sweep did not name (register_dropbox_webhook and
+    # _generate_annotation_screenshot), so one guard here is the whole read
+    # surface.
+    #
+    # The write refusals on the three connect paths mean this row cannot exist
+    # any more. This is the belt to that pair of braces: if a future path
+    # writes one, nothing reads it.
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Dropbox not connected")
     connection = await db.dropbox_connections.find_one({
         "company_id": company_id, "is_deleted": {"$ne": True}
     })
