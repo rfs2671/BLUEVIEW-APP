@@ -14870,17 +14870,43 @@ async def register_and_checkin(data: dict, request: Request):
         # that names it. insert_one honours an explicit _id and returns it, so
         # `result.inserted_id` below is this same value.
         worker_oid = ObjectId()
-        # BOTH COPIES, DELIBERATELY, AND THE INLINE ONE IS NOT REDUNDANT.
-        # `_upload_to_r2` returning a URL proves the PUT returned, not that the
-        # object is readable — this project has produced an unreachable file that
-        # way before, and until something verifies the object the base64 is the
-        # only copy that is known to exist. Dropping it is its own PR, gated on a
-        # head_object check (the shape Track P used for the logbook photos).
+        # ── THE INLINE COPY IS NOW THE FALLBACK, NOT THE DEFAULT ──────────
+        #
+        # This wrote BOTH copies on every registration, and the comment here
+        # argued for it: a URL proves the PUT returned, not that the object is
+        # readable, so until something verified the object the base64 was the
+        # only copy known to exist. That was right, and it named its own exit —
+        # "dropping it is its own PR, gated on a head_object check". THAT PR
+        # HAS LANDED: backend/scripts/strip_inline_selfies.py HEADs every
+        # object and aborts the whole run rather than unset a single row it
+        # could not read back.
+        #
+        # So the inline copy stops being written when R2 HAS THE OBJECT, and is
+        # still written when it does not. `selfie_upload_failed` already
+        # separates the two states and was added for exactly this moment.
+        #
+        # WHAT THIS COSTS AT THE GATE: NOTHING. The selfie is optional there —
+        # checkin.html labels it "Optional — used for site verification only"
+        # and never blocks on it — and `_store_worker_selfie` returns on every
+        # failure path rather than raising. A man is never turned away because
+        # a photograph did not upload, before or after this change.
+        #
+        # 12.9MB of base64 across 30 worker documents, read by nothing: not a
+        # screen, not an endpoint, not checkin.html. It contributed to the sort
+        # that took `GET /workers` down for the platform operator on
+        # 2026-09-03. Leaving the writer in place while stripping the rows would
+        # regrow it — a migration that adds the new store without retiring the
+        # old leaves both, and the old one keeps costing.
         #
         # Returns {} when no selfie was offered; the key + url when it landed;
         # {"selfie_upload_failed": True} when a selfie was offered and no object
         # was stored. Never a pointer to something that is not there.
         selfie_fields = await _store_worker_selfie(str(worker_oid), selfie_image)
+        # THE ONLY COPY, OR NO COPY. When R2 holds the object the base64 is
+        # redundant; when it does not, this is the photograph.
+        _inline_selfie = ({} if selfie_fields.get("selfie_r2_key")
+                          else ({"selfie_image": selfie_image} if selfie_image
+                                else {}))
         worker = {
             "_id": worker_oid,
             "name": name,
@@ -14888,7 +14914,7 @@ async def register_and_checkin(data: dict, request: Request):
             "osha_number": osha_number or "",
             "osha_data": osha_data,
             "osha_card_image": osha_card_image,
-            "selfie_image": selfie_image,
+            **_inline_selfie,
             **selfie_fields,
             "signature": signature,
             "safety_orientations": [{
@@ -14917,12 +14943,13 @@ async def register_and_checkin(data: dict, request: Request):
         # nothing here backfills them, so the two shapes coexist and the reader
         # has to handle both. Only a worker with NEITHER gets a new upload.
         if selfie_image and not worker.get("selfie_image") and not worker.get("selfie_r2_key"):
-            # Same pairing as the create path: the inline copy is written
-            # unconditionally, the R2 fields only when there is a real key.
-            update_fields["selfie_image"] = selfie_image
-            update_fields.update(
-                await _store_worker_selfie(str(worker.get("_id")), selfie_image)
-            )
+            # Same pairing as the create path: the inline copy is the FALLBACK
+            # now, written only when R2 did not take the object.
+            _fields = await _store_worker_selfie(
+                str(worker.get("_id")), selfie_image)
+            update_fields.update(_fields)
+            if not _fields.get("selfie_r2_key"):
+                update_fields["selfie_image"] = selfie_image
         if osha_data:
             update_fields["osha_data"] = osha_data
         if osha_number:
