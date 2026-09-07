@@ -41,7 +41,7 @@ a check that never ran.
 > *"fine"*.
 
 
-## 1. Three patterns that work
+## 1. Four patterns that work
 
 Named, so they can be cited instead of re-derived.
 
@@ -63,7 +63,36 @@ side moves.
 Without it you get the control run's usual failure: the test passes, and nobody
 knows whether it would have failed before.
 
-### The CALL-GRAPH WALK — for "every X reachable from Y"
+### THE REMOVAL'S OWN REGRESSION — the first test to write when you go near it again
+
+> **When you reintroduce anything in the neighbourhood of a thing that was
+> removed, the FIRST test to write is the regression the removal was made
+> for.** The history already names the failure and the shape of it. You are not
+> guessing what might break; you are being told, by the last person who was
+> here.
+
+The worked example. An idle "keep the picture alive" crawl was removed from the
+marketing site's flight because it walked the film forward on its own: thirty-
+odd seconds of standing still advanced it three segments, so somebody who
+paused came back to a different part of the flight with the wrong caption up.
+The replacement was blunt and correct — scroll stops, video pauses.
+
+Months later the request was "settle to the nearest caption when scrolling
+stops". Which is a different feature, and is also *the film moving on its own*.
+
+The test written first, before any of it worked, was the removal's own: scroll,
+stop, wait thirty seconds, assert the film has not moved. **It failed on the
+first attempt** — pos 1 to pos 7, the whole film, because `onEnded` handed off
+to the next clip unconditionally, so any playback at all became
+self-sustaining and a stray scroll event could cancel the settle's deadline
+while leaving the chain running.
+
+Nothing else would have caught it. The feature's own tests all passed: the
+targets were right, the arithmetic was right, the settle went where it was
+asked. It was correct and it walked the film to the end.
+
+> A removal is a **claim about a failure mode**. Re-entering that
+> neighbourhood re-opens the claim, whatever the new feature is called.
 
 `backend/tests/test_report_legal_vs_investor.py`. From
 `generate_combined_report`, take the transitive closure of direct calls and
