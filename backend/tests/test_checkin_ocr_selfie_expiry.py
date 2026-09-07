@@ -331,7 +331,7 @@ class SelfieStorageTest(unittest.TestCase):
 
     # ── the happy path ──────────────────────────────────────────────────────
 
-    def test_selfie_goes_to_r2_and_the_inline_copy_is_kept(self):
+    def test_selfie_goes_to_r2_and_the_inline_copy_is_DROPPED(self):
         resp, worker_doc, calls = self._post(lambda b, k, c: "https://cdn.example/" + k)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertIsNotNone(worker_doc)
@@ -348,10 +348,20 @@ class SelfieStorageTest(unittest.TestCase):
         self.assertTrue(worker_id)
         self.assertEqual(key, "worker-selfies/" + worker_id + "/selfie.jpg")
 
-        # The document names the object AND still holds the image (Q2).
+        # THE DOCUMENT NAMES THE OBJECT AND NO LONGER HOLDS THE IMAGE.
+        #
+        # Q2 SAID THE BASE64 STAYS "until something verifies the object", and
+        # named its exit: "dropping it is a separate PR gated on head_object".
+        # That PR is backend/scripts/strip_inline_selfies.py, which HEADs every
+        # object and aborts the whole run rather than unset one row it could
+        # not read back. So the inline copy is the FALLBACK now, written only
+        # when R2 did not take the object -- see the failure tests below, where
+        # it is still asserted present.
         self.assertEqual(worker_doc.get("selfie_r2_key"), key)
         self.assertEqual(worker_doc.get("selfie_r2_url"), "https://cdn.example/" + key)
-        self.assertEqual(worker_doc.get("selfie_image"), self._SELFIE)
+        self.assertNotIn("selfie_image", worker_doc,
+                         "R2 holds the object; a second copy on the document "
+                         "is 12.9MB nothing reads")
 
     def test_the_bucket_is_never_the_object_locked_card_audit_one(self):
         """One bucket, distinct prefix. The card-audit bucket is object-locked
@@ -425,9 +435,12 @@ class SelfieStorageTest(unittest.TestCase):
         can, because it says an upload was attempted and did not land rather
         than saying a photo is somewhere.
 
-        Note the redundancy while Q2 holds: `selfie_image` currently separates
-        4 from 5 on its own. It stops doing so when the strip PR lands, which
-        is exactly why the flag is written now.
+        THE STRIP PR HAS LANDED, so the redundancy is gone: `selfie_image` is
+        no longer written when R2 takes the object, and the flag is now the
+        ONLY thing separating "declined" from "took one, upload failed". That
+        was the whole argument for writing it early -- the distinction had to
+        exist before the data that carried it was removed, because it could not
+        be reconstructed afterwards.
         """
         seen = {}
 
@@ -455,8 +468,8 @@ class SelfieStorageTest(unittest.TestCase):
 
         self.assertEqual(shape(seen["declined"]), (False, False, False),
                          "declined: nothing at all")
-        self.assertEqual(shape(seen["stored"]), (True, False, True),
-                         "stored: a real key, no failure flag")
+        self.assertEqual(shape(seen["stored"]), (True, False, False),
+                         "stored: a real key, no failure flag, NO inline copy")
         for s_ in ("unconfigured", "raised", "junk"):
             self.assertEqual(shape(seen[s_])[:2], (False, True),
                              f"{s_}: no pointer, attempt recorded")
@@ -483,13 +496,15 @@ class SelfieStorageTest(unittest.TestCase):
         for field in ("selfie_r2_key", "selfie_r2_url", "selfie_upload_failed"):
             self.assertNotIn(field, worker_doc, f"declined: {field} must be ABSENT")
 
-    def test_a_returning_worker_with_no_selfie_gets_BOTH_copies(self):
+    def test_a_returning_worker_with_no_selfie_gets_THE_R2_COPY_ONLY(self):
         """THE RETURNING PATH IS A SECOND WRITE SITE, and it was uncovered.
 
         A mutation that stripped the inline copy here survived the first run:
         the only existing-worker test covered a worker who ALREADY had a selfie,
-        so nothing exercised the branch that actually writes one. Q2 applies to
-        both write sites or to neither.
+        so nothing exercised the branch that actually writes one. The rule
+        applies to both write sites or to neither -- which is why this test
+        exists, and why it moved with the create path rather than being left
+        asserting the old shape.
         """
         db = _make_db()
         db.workers.set_find_one({
@@ -519,8 +534,13 @@ class SelfieStorageTest(unittest.TestCase):
         written = {}
         for _q, u in db.workers.updated:
             written.update(u.get("$set", {}))
-        self.assertEqual(written.get("selfie_image"), self._SELFIE,
-                         "Q2: the inline copy is written on the returning path too")
+        self.assertNotIn("selfie_image", written,
+                         "R2 took the object, so the returning path must not "
+                         "write a second copy either -- the rule applies to "
+                         "both write sites or to neither")
+        self.assertEqual(written.get("selfie_r2_key"),
+                         "worker-selfies/worker_existing/selfie.jpg",
+                         "and the pointer IS written")
         self.assertEqual(written.get("selfie_r2_key"),
                          "worker-selfies/worker_existing/selfie.jpg")
 
