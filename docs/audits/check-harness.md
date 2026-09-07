@@ -13,6 +13,19 @@ If such an edit exists, the test is pinned to a location, a spelling or a count
 rather than to the property. It will fail on a correct change and pass on a
 wrong one, and both of those have happened here.
 
+And the one rule worth carrying out of this whole document, because it
+generalises past this codebase entirely:
+
+> **Design the failure so a broken CHECK and a broken SUBJECT look the same.
+> Then you cannot be reassured by an instrument that is not working.**
+
+It is stated here rather than only in §12, where it was learned. The strip
+migration is the worked example: any failed verification aborts the entire run,
+so when its own R2 client turned out to be `None` — a broken instrument, not
+unreadable objects — it refused to delete anything and said so loudly. Had it
+skipped the rows it could not check, it would have printed a clean finish over
+a check that never ran.
+
 ---
 
 > **If you read one section, read §10 — "Verify the pointer, not the report of
@@ -701,6 +714,9 @@ loud, and refusing to delete.
 
 > Design the failure so a broken CHECK and a broken SUBJECT look the same. Then
 > you cannot be reassured by an instrument that is not working.
+
+That rule is repeated at the top of this document, because it is the one here
+that generalises past this codebase. This is where it was learned.
 
 And when a cross-check falls out of the data for free, **make it an assertion
 rather than a note**. The 0.75× size ratio between a base64 payload and its
