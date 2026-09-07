@@ -94,6 +94,18 @@ asked. It was correct and it walked the film to the end.
 > A removal is a **claim about a failure mode**. Re-entering that
 > neighbourhood re-opens the claim, whatever the new feature is called.
 
+**And the commit that first recorded this pattern demonstrated it.** The new
+section was inserted immediately before `### The CALL-GRAPH WALK` and consumed
+that heading, leaving its body dangling under the new one and §1 reading
+"Four patterns" over three headings — in the section about checks that verify
+the wrong thing. The verification was that the new text was present. It was.
+Nothing asserted that what was already there still was.
+
+> **AN INSERTION IS ALSO A CHECK THAT NOTHING WAS DISPLACED.** Adding is not
+> a safe operation. Whatever you write at a boundary, the assertion is not
+> *"my text is there"* — it is *"my text is there AND the neighbours are
+> unchanged"*. Diff the whole region, not the insertion.
+
 ### The CALL-GRAPH WALK — for "every X reachable from Y"
 
 `backend/tests/test_report_legal_vs_investor.py`. From
@@ -866,6 +878,48 @@ reported as being about the system.** Both halves of instance 11 were caught by
 something outside the workspace — CI ran the test the grep had missed, and the
 rebase pulled in the route the checkout did not have. Neither was caught by
 looking harder inside it, because inside it nothing was wrong.
+
+### THE WORKSPACE SUBSTITUTES ITS OWN BEHAVIOUR AND RETURNS THAT
+
+The sixth shape, and the worst, because it is the fifth with a plausible
+number attached. The workspace does not merely fail to observe the subject.
+It answers in place of the subject, in the subject's own units.
+
+Measured, on the marketing flight's parked settle. The question was whether a
+scroll-driven film holds still for thirty idle seconds. Two browser surfaces
+were available, and both were hidden tabs:
+
+| probe | what the code asks for | what the workspace returned |
+|---|---|---|
+| `requestAnimationFrame` | ~60 fps | **0 frames in 2 seconds**, both surfaces |
+| `setTimeout(fn, 100)` | 100 ms | **~1000 ms**, both surfaces |
+| `video.play()` | the film advances | resolved with **no error**; `readyState` 4; advanced **0.000 s in 3 s** |
+| `lenis.scrollTo(3000, {immediate: true})` | scroll to 3000 | stayed at **0** — Lenis commits inside the rAF loop |
+| `window.scrollTo(0, 3000)` | the flight advances | `scrollY` 3000, `lenis.scroll` **0**, `flight.pos` **0** |
+
+`IDLE_MS` is 140. In that workspace it cannot fire before ~1000 ms, so every
+duration measurable there is the browser's hidden-tab clamp wearing the code's
+name. A settle that looked correct in it would have been reporting on
+throttling.
+
+And the last two rows are why this shape is not merely §12 but §2 as well.
+**The idle test would have PASSED.** `pos` 0 before, `pos` 0 after, the film
+did not move — a green that means *the film cannot move here*, because the
+input path itself is rAF-gated: the flight reads Lenis, Lenis advances only
+inside a frame loop, and there are no frames. The assertion could not have
+failed, so it was never a test.
+
+Note also that `play()` is a clean instance of §10 in the small: it reported
+its own success and described its intent, not the world.
+
+> **BEFORE TRUSTING A TIMING OR MOTION RESULT, MEASURE THE INSTRUMENT'S OWN
+> CLOCK.** One `setTimeout` you know the answer to, and one rAF count. If the
+> workspace cannot reproduce the quantity the code is written in, the run is
+> about the workspace. And if the subject cannot move there at all, an
+> assertion that it did not move is not evidence — it is the empty set.
+
+The correct outcome was to leave it parked and say so, rather than ship a
+green from a room where the experiment cannot run.
 
 ### The positive case: make the failure LOUD and TOTAL
 
