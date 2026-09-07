@@ -112,9 +112,14 @@ import {
   CORRECTED, NOT_CORRECTED, NOT_YET, isCorrectionState,
 } from '../../src/utils/csFindings';
 import {
-  SOURCE_LOG_TYPE, adoptableSummary, progressBlock, progressSource,
+  adoptableSummary, progressBlock, progressSource,
   adoptedTextFromStored, PROVENANCE_ADOPTED,
 } from '../../src/utils/progressProvenance';
+import { SOURCE_LOG_TYPE } from '../../src/utils/dailyLogRecord';
+import { designatedCpDefault } from '../../src/utils/designatedCp';
+import CompetentPersonPicker, {
+  fetchCompetentPersons,
+} from '../../src/components/CompetentPersonPicker';
 
 const LOG_TYPE = 'site_superintendent_log';
 // FOUR, NOT FIVE. Findings/orders and DOB/incidents were two steps; they are
@@ -453,6 +458,18 @@ export default function SiteSuperintendentLog() {
   const [incidentEntries, setIncidentEntries] = useState([]);
   const [incidentsNone, setIncidentsNone] = useState(false);
   const [competentPersonName, setCompetentPersonName] = useState('');
+  // ── ITEM 8's PICKER ────────────────────────────────────────────────────
+  //
+  // THE ROSTER LIVES HERE, NOT IN THE PICKER, because the closed control has
+  // to show a NAME and only the roster maps the account id on the CP's daily
+  // log to one. One request serves the default and the list.
+  const [roster, setRoster] = useState(undefined);
+  const [cpPickerOpen, setCpPickerOpen] = useState(false);
+  // TRUE only after the picker's explicit second tap. Nothing is blocked --
+  // the competent person may be a subcontractor's man with no account here --
+  // but free text is one tap further in than the pick, which is the way round
+  // that stopped "2" being filed 25 times as a competent person's name.
+  const [cpManual, setCpManual] = useState(false);
 
   const prefilledArrival = useRef(false);
 
@@ -621,47 +638,74 @@ export default function SiteSuperintendentLog() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── ITEM 2 IS OFFERED THE CP'S SUMMARY FOR THIS DATE ──────────────────────
+  // ── WHAT THE CP'S RECORD FOR THIS DATE GIVES ITEMS 2 AND 8 ───────────────
+  //
+  // ONE READ, TWO ANSWERS. Both items derive from the same document -- the
+  // filed daily jobsite log for this project and date -- so fetching it twice
+  // would be two chances to disagree about which link of an amended chain is
+  // the record. See dailyLogRecord.js for that rule.
+  //
+  //   item 2  is OFFERED the CP's summary of the day, and the document records
+  //           whether he took it (progressProvenance.js)
+  //   item 8  OPENS ON the account that filed it, resolved against the roster
+  //           (designatedCp.js)
   //
   // A SEPARATE EFFECT, NOT A BRANCH INSIDE fetchData. That function has three
   // exits -- a device draft with content returns early, the server path
-  // hydrates, and "nothing usable" leaves the form blank -- and the offer
-  // belongs on all three. Putting it inside would have meant writing it twice
-  // and missing the third, which is how the twelve inline
+  // hydrates, and "nothing usable" leaves the form blank -- and both offers
+  // belong on all three. Putting them inside would have meant writing them
+  // twice and missing the third, which is how the twelve inline
   // `arr.find((l) => !l.is_locked)` pickers happened.
   //
-  // ONCE PER MOUNT, GUARDED BY A REF. `progress` is in the dependency array
-  // because the effect must not run until hydrate has settled, and setting it
-  // re-runs the effect -- so the ref is what stops the loop, not the value.
+  // ONCE PER MOUNT, GUARDED BY A REF. The values it reads are in the
+  // dependency array so it cannot run before hydrate has settled, and setting
+  // them re-runs the effect -- so the ref is what stops the loop, not the
+  // values.
   //
-  // NEVER OVER TYPED TEXT, AND NEVER ON A FILED LOG. A prefill that overwrote
-  // his sentence would be the app editing a statutory record; one that ran on
-  // a locked document would be worse.
+  // NEVER OVER WHAT HE HAS ENTERED, AND NEVER ON A FILED LOG. Each offer is
+  // guarded on ITS OWN field: a superintendent who typed his summary but not
+  // his competent person still gets item 8's default.
   //
-  // A FAILED READ IS NOT AN EMPTY DAY. Offline, or a 403, leaves the box
-  // blank and `adoptedText` empty -- so whatever he then types is recorded as
-  // `own`, which is exactly what it is: nothing was offered to him.
-  const adoptAttemptedRef = useRef(false);
+  // allSettled, NOT all. The roster and the daily log are independent
+  // questions and a failure of one must not silently cost him the other --
+  // Promise.all would have let a 403 on the roster suppress item 2's offer.
+  const dailyOfferRef = useRef(false);
   useEffect(() => {
-    if (loading || locked || adoptAttemptedRef.current) return;
-    adoptAttemptedRef.current = true;
-    if (String(progress || '').trim()) return;
+    if (loading || locked || dailyOfferRef.current) return undefined;
+    dailyOfferRef.current = true;
+    const wantSummary = !String(progress || '').trim();
+    const wantCp = !String(competentPersonName || '').trim();
     let alive = true;
     (async () => {
-      try {
-        const rows = await logbooksAPI.getByProject(
-          projectId, SOURCE_LOG_TYPE, logDate);
+      const [dayRes, rosterRes] = await Promise.allSettled([
+        logbooksAPI.getByProject(projectId, SOURCE_LOG_TYPE, logDate),
+        fetchCompetentPersons(),
+      ]);
+      if (!alive) return;
+      const rows = dayRes.status === 'fulfilled' ? dayRes.value : null;
+      // undefined vs [] IS THE DISTINCTION THE PICKER READS. `undefined` means
+      // the read failed and it says so; `[]` means the company genuinely has
+      // nobody registered. A failed read presented as an empty list would read
+      // as a fact about the company and push him straight to the keyboard.
+      const people = rosterRes.status === 'fulfilled' ? rosterRes.value : undefined;
+      setRoster(people);
+
+      if (wantSummary && rows) {
         const text = adoptableSummary(rows);
-        if (!alive || !text) return;
-        setProgress(text);
-        setAdoptedText(text);
-      } catch (_e) {
-        // Deliberately silent. He is not waiting on this and there is nothing
-        // for him to do about it; the box is simply his to fill.
+        if (text) { setProgress(text); setAdoptedText(text); }
+      }
+      // NO DEFAULT UNLESS THE APP KNOWS. designatedCpDefault returns null for
+      // an absent daily log, a log with no created_by, and an id that resolves
+      // to anything other than exactly one roster row. A wrong default on a
+      // statutory item is worse than none -- a name that looks right is not
+      // questioned.
+      if (wantCp && rows && people) {
+        const person = designatedCpDefault(rows, people);
+        if (person && person.name) setCompetentPersonName(person.name);
       }
     })();
     return () => { alive = false; };
-  }, [loading, locked, progress, projectId, logDate]);
+  }, [loading, locked, progress, competentPersonName, projectId, logDate]);
 
   // ── DOB autofill ────────────────────────────────────────────────────────
   // HE SHOULD NOT TYPE A VIOLATION NUMBER THE SYSTEM ALREADY HOLDS. These are
@@ -780,7 +824,7 @@ export default function SiteSuperintendentLog() {
     adoptedText,
     inspectionLocation, inspectionResult,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
-    competentPersonName, step,
+    competentPersonName, cpManual, step,
   });
 
   const restore = (v) => {
@@ -801,6 +845,10 @@ export default function SiteSuperintendentLog() {
     setIncidentEntries(Array.isArray(v.incidentEntries) ? v.incidentEntries : []);
     setIncidentsNone(v.incidentsNone === true);
     setCompetentPersonName(v.competentPersonName ?? '');
+    // WITHOUT THIS HE LOSES THE SECOND TAP. Returning from /consent with the
+    // typed name restored but `cpManual` false would show the picker button
+    // over a name he entered by hand, with no box to correct it in.
+    setCpManual(v.cpManual === true);
     // BACK ON THE STEP HE LEFT. Returning him to step 1 after a five-step form
     // is its own small loss.
     // A DRAFT SAVED ON THE OLD STEP 5 IS THE SIGN STEP, WHICH IS NOW 4.
@@ -1630,8 +1678,56 @@ export default function SiteSuperintendentLog() {
       <>
         <Card s={s}>
           <StepHeaderBase s={s} title={t('competentPersonHeading')} />
-          <Field s={s} locked={locked} label={t('competentPersonName')} value={competentPersonName}
-            onChangeText={setCompetentPersonName} />
+          {/* ── A PICK BY DEFAULT, FREE TEXT ONE TAP FURTHER IN ─────────────
+              Item 8 names the competent person DESIGNATED under BC 3301.13.12.
+              It was a free-text box, which is the shape that put 'michael' on
+              219 filed documents and the digit '2' on 25 more.
+
+              THE LOCKED BRANCH IS NOT DECORATIVE. On a filed log this must
+              render what was stored, as text. A picker over a frozen statutory
+              record would offer to change a document that cannot change. */}
+          {locked ? (
+            <Field s={s} locked={true} label={t('competentPersonName')}
+              value={competentPersonName} onChangeText={() => {}} />
+          ) : cpPickerOpen ? (
+            <CompetentPersonPicker
+              rows={roster}
+              manualLabel={t('cpEnterByHand')}
+              failedNote={t('cpRosterFailed')}
+              onSelect={(person) => {
+                setCpPickerOpen(false);
+                if (!person) return;
+                setCpManual(false);
+                // FROM THE RECORD, NOT THE KEYBOARD — the account's own
+                // spelling of its own name is what reaches the document.
+                setCompetentPersonName(person.name || '');
+              }}
+              onManual={() => { setCpPickerOpen(false); setCpManual(true); }}
+              onCancel={() => setCpPickerOpen(false)}
+            />
+          ) : (
+            <>
+              <Text style={s.reviewLabel}>{t('competentPersonName')}</Text>
+              <Pressable style={s.chip} onPress={() => setCpPickerOpen(true)}>
+                <Text style={s.chipText}>
+                  {competentPersonName
+                    ? `${competentPersonName} — ${t('cpChange')}`
+                    : t('cpChoose')}
+                </Text>
+              </Pressable>
+              {/* PRESELECTED, NEVER LOCKED. A value the app supplied and he
+                  did not check is a fabrication with his signature under it —
+                  the same class as the departure stamp that was taken off this
+                  screen. The note says where the name came from so that
+                  checking it is possible at all. */}
+              {cpManual ? (
+                <Field s={s} locked={false} label={t('cpTypedLabel')}
+                  value={competentPersonName}
+                  onChangeText={setCompetentPersonName}
+                  placeholder={t('cpTypedPlaceholder')} />
+              ) : null}
+            </>
+          )}
           <Text style={s.noteText}>{t('competentPersonNote')}</Text>
         </Card>
 
