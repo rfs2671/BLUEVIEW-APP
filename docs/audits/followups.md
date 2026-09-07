@@ -4,6 +4,45 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-07 — every seed script can only write to PRODUCTION
+
+Found while looking for a way to generate a demo compliance report for the
+marketing site. All three seed scripts hardcode the production API, with no
+environment override, no dry run and no confirmation prompt:
+
+    seed_demo_data.py:15        API = "https://api.levelog.com"
+    seed_blueview_demo.py:21    API = "https://api.levelog.com"
+    seed_blueview_history.py:9  API = "https://api.levelog.com"
+
+They authenticate as a real owner/admin and POST to `/api/projects`,
+`/api/workers`, `/api/daily-logs`, `/api/owner/admins`,
+`/api/projects/{pid}/dob-config` and `/api/checkins`. Running any of them
+writes demo projects, workers and fabricated daily logs into the database that
+holds every customer's statutory records.
+
+**A script that can only write to production is a script that will one day be
+run by someone who thought it would not.** There is nothing to mistype and no
+flag to forget: the destination is the only one there is.
+
+### What the fix costs
+
+Small, and the pattern already exists in this repo. `backend/lib/app_urls.py`
+made `APP_BASE_URL` required with no default for exactly this reason — a wrong
+default fails silently, a missing variable fails loudly in front of the person
+running it. The same shape here:
+
+    API = os.environ["SEED_API"]        # no default, KeyError names it
+
+Three one-line changes, plus a line in each docstring saying the variable is
+required and what to set it to for a local stack. Anyone who wants production
+then has to type `SEED_API=https://api.levelog.com` and has said so out loud.
+
+Deferred only because it was found mid-cutover and the immediate need was
+answered another way: the operator files a superintendent log on 857 Prescott,
+an existing project he already owns, rather than seeding anything.
+
+---
+
 ## OPEN — 2026-09-07 — /a/{id} is broken at four hops, not one
 
 Found during the levelog.com cutover, while checking which hardcoded URLs would
