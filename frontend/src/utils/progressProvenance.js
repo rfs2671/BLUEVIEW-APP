@@ -45,7 +45,7 @@
  * pre-shift sheet each came to print two different things.
  */
 
-import { chainHead } from './amendmentChain';
+import { filedDailyRecord } from './dailyLogRecord';
 
 // THE STRINGS THE SERVER RESOLVES. `item_provenance` in
 // backend/lib/logbook/superintendent_log.py reads exactly these two and treats
@@ -55,31 +55,19 @@ import { chainHead } from './amendmentChain';
 export const PROVENANCE_ADOPTED = 'adopted';
 export const PROVENANCE_OWN = 'own';
 
-/** The log type item 2 may be adopted from. */
-export const SOURCE_LOG_TYPE = 'daily_jobsite';
-
 /**
  * The CP's filed summary for this date, or '' if there is nothing to adopt.
  *
- * THROUGH `chainHead`, NOT A THIRD PICKER. An amended daily log is a chain,
- * and `GET /logbooks/project/...` returns every link; picking `rows[0]` would
- * adopt whichever link the server happened to list first. `chainHead` is the
- * rule this codebase already uses in two places and mirrors `_filed_log` on
- * the server: the newest FILED link, with withdrawn links out of the chain
- * entirely.
- *
- * A DRAFT IS NOT ADOPTABLE, and that falls out of `chainHead` rather than
- * being asserted here -- it returns an unsigned original when nothing is
- * filed, so the filed check is made explicitly below. The CP's unsigned draft
- * is not his account of the day; adopting it would put text on a signed
- * statutory record that its own author had not yet stood behind.
+ * THROUGH `filedDailyRecord`, NOT A PICKER OF ITS OWN. Item 8's default asks
+ * the same question about the same document -- which daily log IS the record
+ * for this date -- and both answers are wrong in the same way if the wrong
+ * link of an amended chain is taken. See dailyLogRecord.js for why that is
+ * chainHead rather than rows[0], and why an unsigned draft is not a record.
  */
 export function adoptableSummary(rows) {
-  const head = chainHead(Array.isArray(rows) ? rows : []);
-  if (!head) return '';
-  const filed = !!(head.is_locked || head.status === 'submitted');
-  if (!filed) return '';
-  const text = ((head.data || {}).general_description) || '';
+  const record = filedDailyRecord(rows);
+  if (!record) return '';
+  const text = ((record.data || {}).general_description) || '';
   return String(text).trim();
 }
 
@@ -136,6 +124,6 @@ export function adoptedTextFromStored(block) {
 }
 
 export default {
-  PROVENANCE_ADOPTED, PROVENANCE_OWN, SOURCE_LOG_TYPE,
+  PROVENANCE_ADOPTED, PROVENANCE_OWN,
   adoptableSummary, progressSource, progressBlock, adoptedTextFromStored,
 };

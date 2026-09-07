@@ -68,11 +68,20 @@ function loadEsm(source, injected = {}) {
     ...names.map((n) => injected[n]));
 }
 
+// TWO REAL MODULES DEEP, DELIBERATELY. `adoptableSummary` now goes through
+// `filedDailyRecord`, which goes through `chainHead` — item 8's default asks
+// the same question about the same document, so the rule moved into
+// dailyLogRecord.js rather than being written twice. Both are loaded for real:
+// a stub at either level would let this file pass while the screen adopted the
+// wrong link of an amended chain.
 const { chainHead } = loadEsm(
   fs.readFileSync(path.join(__dirname, 'amendmentChain.js'), 'utf8'));
+const { filedDailyRecord } = loadEsm(
+  fs.readFileSync(path.join(__dirname, 'dailyLogRecord.js'), 'utf8'),
+  { chainHead });
 const {
   progressSource, progressBlock, adoptedTextFromStored, adoptableSummary,
-} = loadEsm(SRC, { chainHead });
+} = loadEsm(SRC, { filedDailyRecord });
 
 console.log('\nthe rule');
 
@@ -169,22 +178,30 @@ ok('adoptedText is in buildData\'s dependency array',
 
 console.log('\nwhat the offer will not do');
 
-const effect = SCREEN.slice(SCREEN.indexOf('const adoptAttemptedRef'),
-  SCREEN.indexOf('const adoptAttemptedRef') + 1800);
+// ONE EFFECT SERVES ITEMS 2 AND 8. Both derive from the same document -- the
+// filed daily jobsite log for this date -- so fetching it twice would be two
+// chances to disagree about which link of an amended chain is the record.
+const effect = SCREEN.slice(SCREEN.indexOf('const dailyOfferRef'),
+  SCREEN.indexOf('const dailyOfferRef') + 2400);
 ok('the offer is present to inspect', effect.length > 500);
 ok('it never runs on a filed log', /if \(loading \|\| locked \|\|/.test(effect),
   'prefilling a locked document would be the app editing a statutory record');
 ok('it never overwrites typed text',
-  /if \(String\(progress \|\| ''\)\.trim\(\)\) return;/.test(effect));
-ok('it runs once per mount', /adoptAttemptedRef\.current = true;/.test(effect),
-  '`progress` is in the dependency array and the effect sets it — the ref is '
-  + 'what stops the loop');
+  /const wantSummary = !String\(progress \|\| ''\)\.trim\(\);/.test(effect)
+  && /if \(wantSummary && rows\)/.test(effect));
+ok('it runs once per mount', /dailyOfferRef\.current = true;/.test(effect),
+  'the values it reads are in the dependency array and the effect sets them '
+  + '— the ref is what stops the loop');
 ok('it reads the daily jobsite log through the shared constant',
-  /getByProject\(\s*projectId, SOURCE_LOG_TYPE, logDate\)/.test(effect));
+  /getByProject\(projectId, SOURCE_LOG_TYPE, logDate\)/.test(effect));
 ok('a failed read leaves the box his own',
-  /catch \(_e\) \{/.test(effect),
+  /Promise\.allSettled/.test(effect)
+  && /dayRes\.status === 'fulfilled' \? dayRes\.value : null/.test(effect),
   'offline must not block the log, and text typed after a failed read is '
   + 'genuinely his own');
+ok("and item 8's failure cannot suppress item 2's offer",
+  /Promise\.allSettled/.test(effect),
+  'Promise.all would let a 403 on the roster cost him the summary');
 
 console.log('\nthe note he reads');
 
@@ -256,9 +273,10 @@ ok('an unsigned amendment does not displace the filed original',
     data: { general_description: 'not filed yet' },
   })]) === 'carpentry');
 
-ok('the chain is collapsed through the existing rule, not a third picker',
-  /import \{ chainHead \} from '\.\/amendmentChain'/.test(SRC),
-  'rows[0] would adopt whichever link the server listed first');
+ok('the record is chosen through the shared rule, not a picker of its own',
+  /import \{ filedDailyRecord \} from '\.\/dailyLogRecord'/.test(SRC),
+  'rows[0] would adopt whichever link the server listed first, and item 8 '
+  + 'asks the same question about the same document');
 
 if (failures) {
   console.error(`\nprogressProvenance: ${failures} failure(s)`);

@@ -180,19 +180,53 @@ export function filterCompetentPersons(rows, query) {
   });
 }
 
+/**
+ * THE TWO SENTENCES THAT ARE ABOUT THE ORIENTATION AND NOT ABOUT THE LIST.
+ *
+ * This component lists the company's competent persons, which is the same
+ * population two different statutory questions need. Only the WORDS differ:
+ *
+ *   subcontractor_orientation   who DELIVERED the training (§3301.2)
+ *   superintendent log item 8   who was DESIGNATED (BC 3301.13.12)
+ *
+ * Defaulted to the orientation's wording so that screen is untouched by this
+ * change, and so a future third caller that forgets to pass them gets a
+ * sentence that is merely imprecise rather than one that is blank.
+ */
+const TRAINER_MANUAL_LABEL = 'Enter a trainer not on this list';
+const TRAINER_FAILED_NOTE =
+  "Could not load your company's competent persons. Check your signal, or "
+  + 'enter the trainer by hand below.';
+
 export default function CompetentPersonPicker({
   onSelect,
   onManual,
   onCancel,
   autoFocus = true,
+  manualLabel = TRAINER_MANUAL_LABEL,
+  failedNote = TRAINER_FAILED_NOTE,
+  // THE ROSTER, WHEN THE CALLER ALREADY HAS IT.
+  //
+  // The superintendent screen must resolve item 8's default BEFORE this
+  // component is ever opened -- it needs a NAME to show on the closed control,
+  // and only the roster maps the account id on the daily log to one. Letting
+  // it hand the list down means one request instead of two on a screen used at
+  // a gate with poor signal.
+  //
+  // OPTIONAL, so the orientation's two mounts keep self-fetching exactly as
+  // they do today. `undefined` means "fetch it yourself"; an empty ARRAY is a
+  // caller saying it looked and found nobody, which is a different fact and is
+  // shown as the empty state rather than as a failure.
+  rows: providedRows,
 }) {
   const { colors } = useTheme();
-  const [rows, setRows] = useState([]);
+  const [rows, setRows] = useState(providedRows || []);
   const [query, setQuery] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!providedRows);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (providedRows) { setRows(providedRows); return undefined; }
     let alive = true;
     (async () => {
       try {
@@ -211,7 +245,7 @@ export default function CompetentPersonPicker({
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [providedRows]);
 
   const matches = useMemo(() => filterCompetentPersons(rows, query), [rows, query]);
 
@@ -241,10 +275,7 @@ export default function CompetentPersonPicker({
       {loading ? <ActivityIndicator style={s.pad} /> : null}
 
       {!loading && failed ? (
-        <Text style={s.note}>
-          Could not load your company&apos;s competent persons. Check your
-          signal, or enter the trainer by hand below.
-        </Text>
+        <Text style={s.note}>{failedNote}</Text>
       ) : null}
 
       {!loading && !failed && rows.length === 0 ? (
@@ -281,7 +312,7 @@ export default function CompetentPersonPicker({
           than the default one. */}
       <Pressable style={s.manual} onPress={onManual}>
         <UserPlus size={14} strokeWidth={1.5} color={colors.text.secondary} />
-        <Text style={s.manualText}>Enter a trainer not on this list</Text>
+        <Text style={s.manualText}>{manualLabel}</Text>
       </Pressable>
     </View>
   );

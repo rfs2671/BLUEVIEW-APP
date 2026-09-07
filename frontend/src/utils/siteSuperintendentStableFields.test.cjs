@@ -230,6 +230,14 @@ console.log('\n4. NOTHING THE HOISTED COMPONENTS READ IS LEFT TO A CLOSURE');
   //
   //   15 -> 12  `arrived_at`, `departed_at` and a finding's `observed_at`
   //             became TimeField pickers, asserted on the line below.
+  //    9 -> 10  ITEM 8 GAINED A SECOND CALL SITE, NOT A REPLACEMENT. The
+  //             competent person is a PICK now, and the two Fields are the
+  //             two states a pick has: the read-only one on a filed log, and
+  //             the typed one behind the picker's explicit second tap. Both
+  //             carry `locked` -- the first as true because a picker over a
+  //             frozen statutory record would offer to change what cannot
+  //             change, the second as false because it only exists while he
+  //             is entering a name by hand.
   //   12 ->  9  the PRINTED NAME, the INSPECTION DATE and the second
   //             ACTIVITIES box were removed as duplicates. The name was asked at the top of the screen and
   //             again on the signature pad, where it arrives prefilled from
@@ -244,7 +252,7 @@ console.log('\n4. NOTHING THE HOISTED COMPONENTS READ IS LEFT TO A CLOSURE');
   // receiving `onNameChange`, the date by `inspectedOn` being absent from the
   // screen (siteSuperintendentSign.test.cjs section 5). Lowering the number
   // without those would let a Field deleted for some other reason ride in.
-  ok(callSites('Field').length === 9, `Field is used at 9 call sites (found ${callSites('Field').length})`);
+  ok(callSites('Field').length === 10, `Field is used at 10 call sites (found ${callSites('Field').length})`);
   ok(callSites('TimeField').length === 3,
     `and the three that left are TimeField pickers (found ${callSites('TimeField').length})`);
   // NOT A FREE-TEXT BOX ANYWHERE NEAR A TIME. `placeholder="HH:MM"` was the

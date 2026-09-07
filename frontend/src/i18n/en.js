@@ -1487,6 +1487,18 @@ export default {
 
     competentPersonHeading: 'Competent person',
     competentPersonName: 'NAME OF THE COMPETENT PERSON',
+    // ── ITEM 8's PICKER ──────────────────────────────────────────────────
+    // "Choose" rather than "Select the competent person": the control is one
+    // tap and the heading above it already says which item this is.
+    cpChoose: 'Choose the competent person',
+    cpChange: 'change',
+    // THE SECOND TAP. Named for what it is rather than for what it is not —
+    // a subcontractor's competent person with no account here is an ordinary
+    // case, not an exception being tolerated.
+    cpEnterByHand: 'Enter a competent person not on this list',
+    cpRosterFailed: "Could not load your company's competent persons. Check your signal, or enter the name by hand below.",
+    cpTypedLabel: 'NAME OF THE COMPETENT PERSON',
+    cpTypedPlaceholder: 'Their full name',
     competentPersonNote: 'Their name goes on the record. Their signature is not collected in this release — the log states that rather than leaving a blank a reader would take for "nobody was designated".',
 
     scopeHeading: 'Not collected in this release',
