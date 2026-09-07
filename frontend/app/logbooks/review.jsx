@@ -662,7 +662,10 @@ export default function CheckInReviewScreen() {
         </ScrollView>
 
         {/* Card zoom */}
-        <Modal visible={!!zoomImage} transparent animationType="fade">
+        <Modal visible={!!zoomImage} transparent
+          animationType="fade"
+          onRequestClose={() => setZoomImage(null)}
+        >
           <Pressable style={s.modalBackdrop} onPress={() => setZoomImage(null)}>
             {zoomImage && (
               <Image

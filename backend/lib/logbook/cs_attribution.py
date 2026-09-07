@@ -249,6 +249,56 @@ def attribution_sentence(result) -> str:
 CS_CAPABLE_STATES = (MATCHED_ACCOUNT, MATCHED_LICENCE)
 
 
+#: The states on which a filing is REFUSED. Exactly one, and the smallness is
+#: the design: everything else either affirms the signer or admits the system
+#: does not know, and neither is grounds to block a statutory record.
+CS_REFUSED_STATES = (NOT_REGISTERED_CS,)
+
+
+def cs_filing_refused(result) -> bool:
+    """Should this signer be REFUSED the superintendent's log?
+
+    A SECOND PREDICATE, NOT A REUSE OF `is_registered_cs`, AND THE MODULE SAYS
+    WHY. That one's docstring ends: "If this predicate is ever used to REFUSE a
+    filing, that reasoning collapses and the module's first rule -- IT NEVER
+    BLOCKS -- is broken." It answers a MENU question, where "nobody is
+    registered" is fairly read as "do not offer this shortcut". Reusing it here
+    would silently change what it means for its existing caller AND refuse on
+    absence, which is the wrong failure -- see below.
+
+    THE ONLY REFUSAL IS `NOT_REGISTERED_CS`: the project HAS said who its
+    construction superintendent is, and this is somebody else. That is the
+    whole finding. BC 3301.13.13 is the superintendent's own record, and a CP
+    signing it files a statutory document attributed to a role the signer does
+    not hold.
+
+    EVERY OTHER STATE PASSES, and each for its own reason:
+
+      MATCHED_ACCOUNT   he is the registered CS, bound by account id
+      MATCHED_LICENCE   corroborated by licence. Weaker evidence, but it is
+                        evidence FOR him, and the document records which.
+      NO_REGISTRATION   NOBODY HAS BEEN DESIGNATED. Refusing here would block a
+                        log that must be filed before he leaves the site over
+                        a field an admin has not filled in -- punishing the
+                        superintendent for the office's omission. The gap is
+                        instead made VISIBLE: attribution_sentence() prints on
+                        the filed document that nothing was checked.
+      REGISTERED_LATER  the registration postdates the log. He may well have
+                        been the CS on the day; the registration simply cannot
+                        speak to it. Refusing would be a finding drawn from a
+                        record that says it has none.
+      UNDETERMINED      the module's own "this cannot be recovered" state. A
+                        refusal built on it would be a guess wearing a gate.
+
+    SO THE FAILURE DIRECTION IS DELIBERATE: this refuses only where there is an
+    affirmative reason to, and lets every ambiguity through onto a document
+    that states the ambiguity. On a record that must exist before a man leaves
+    a jobsite, a wrongly-refused filing is worse than a filed one whose
+    attribution line says the signer was not the registered CS.
+    """
+    return isinstance(result, dict) and result.get("state") in CS_REFUSED_STATES
+
+
 def is_registered_cs(result) -> bool:
     """Does this attribution say the signer IS the registered CS?
 
