@@ -79,7 +79,12 @@ CS_LOG = "site_superintendent_log"
 #: Production shapes, verbatim.
 MICHAEL = {"id": "6a68b16ebe9c27dedf5cf47f", "name": "Michael Cespedes",
            "role": "cp"}
-WILSON = {"id": "6a5e15aac7ac7a6451aa2d34", "name": "wilson peleaz",
+# HIS REAL ID. The first draft invented one that merely differed from the
+# registration's, under a comment claiming these were production shapes
+# verbatim -- true of Michael, false of this line. The draft check that cleared
+# this change for merge is what surfaced it. A fixture that says it is
+# production-shaped and is not is §5, in a file written the same day.
+WILSON = {"id": "6a9e1635e755d35d29a41d17", "name": "wilson peleaz",
           "role": "cp"}
 REGISTRATION = {
     "project_id": PROJECT, "full_name": "Michael Cespedes",
