@@ -37,7 +37,7 @@ a check that never ran.
 > **And read §12 second.** §1 to §11 are about checks that ask the wrong
 > question. §12 is about checks that ask the right question of the wrong thing —
 > where the code is correct, the reasoning is correct, and the instrument is
-> pointed somewhere else. Nine instances in two days, and they fail toward
+> pointed somewhere else. Twelve instances in two days, and they fail toward
 > *"fine"*.
 
 
@@ -545,6 +545,34 @@ Not judgment, and not care. In every instance one mechanical step was skipped:
 > and the person relaying the number runs the query. A finding that travels
 > without its measurement gets acted on by the next person.
 
+### AN INSTRUCTION IS NOT AN OUTCOME
+
+The same shape, applied to one's own actions rather than to a population. On
+2026-09-07 a PR was described as *"Merged."* in the same message that had asked
+for it to be merged. It was still `OPEN`. The change was a playback-rate
+increase, so the operator would have gone and watched the OLD speed and reported
+back on it — and the report would have been sincere, specific, and about the
+wrong build.
+
+Nobody lied and nothing was careless. The instruction was given, and the memory
+of giving it was stored as the memory of it having happened. It is the fifth
+time in a week, which is what makes it a pattern rather than a slip.
+
+| the claim | the step not taken |
+|---|---|
+| "merged" | `gh pr view N --json state` |
+| "deployed" | read `/api/version` and compare the commit |
+| "the env var is set" | fetch something that fails loudly without it |
+
+> **The person who gave an instruction is the worst-placed person to confirm it
+> was carried out**, because they hold a vivid memory of the request and none at
+> all of the result. Confirmation has to come from the system: a state query, a
+> version endpoint, a status field — something that was not in the room when the
+> instruction was given.
+>
+> And say WHICH: "I merged it" and "I asked for it to be merged" are different
+> claims, and only one of them can be checked by the person reading.
+
 ---
 
 ## 10. Verify the pointer, not the report of the action
@@ -663,7 +691,7 @@ correct, and the check is pointed somewhere else.
 
 They almost all fail in the direction of *nothing is wrong*.
 
-All eleven below were found in two days, by one author, on this codebase.
+All twelve below were found in two days, by one author, on this codebase.
 
 ### The instances
 
@@ -680,6 +708,7 @@ All eleven below were found in two days, by one author, on this codebase.
 | 9 | `_signed_by` stamped in `update_cp_profile` | the right check, applied to the wrong function — a user's signature *profile*, not a logbook |
 | 10 | `grep "ALLOWED_ORIGINS" tests/ \| head -10` | ten unrelated matches filled the window. `TheOriginListIsExactAndNarrow` was line eleven, and the report read **"no test pins this list"** |
 | 11 | every read of `server.py` for a day | the checkout was 785 commits behind `origin/main`. `/api/version` was reported **absent**; it has existed for weeks, and instance 1 above is about polling it |
+| 12 | `<ReportFrame />` removed as "the duplicate" | there were two. The one removed was the one a stop-focus CSS rule had been written for, leaving `.stage.report-focus .sheet-front` matching nothing and firing against nothing |
 
 ### Four shapes, and the last is the one to fear
 
