@@ -53,6 +53,15 @@ export default {
     sentHomeToast: 'Sent-home decision recorded',
     viewCard: 'Tap card to enlarge',
     noCard: 'No card image on file',
+    // THE THIRD STATE. The card moved to R2 and is served as a short-lived
+    // signed URL, which can fail where base64 could not — expired, offline,
+    // object gone. <Image> fails SILENTLY, so without this the row would show
+    // an empty box under a "tap to enlarge" hint, or fall through to
+    // `noCard` — and "no card on file" is a different fact about a man from
+    // "his card is on file and the picture did not arrive". On the screen
+    // where an admin admits or refuses someone over an expired SST, those are
+    // different decisions.
+    cardUnreadable: 'Card on file — the image could not be loaded',
     checkedInAt: 'Checked in',
     refresh: 'Refresh',
     close: 'Close',

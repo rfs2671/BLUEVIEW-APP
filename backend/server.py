@@ -271,6 +271,56 @@ async def _store_worker_selfie(worker_id: str, selfie_image: str) -> dict:
     return {"selfie_r2_key": key, "selfie_r2_url": url}
 
 
+def _worker_osha_card_r2_key(worker_id: str) -> str:
+    return f"worker-osha-cards/{_logbook_photo_key_segment(worker_id)}/card.jpg"
+
+
+async def _store_worker_osha_card(worker_id: str, card_image: str) -> dict:
+    """Put an OSHA/SST card image in R2 and return the fields to write.
+
+    A MIRROR OF `_store_worker_selfie`, and deliberately not a generalisation of
+    it. The two differ in exactly one respect that matters -- a card is
+    EVIDENCE OF A CREDENTIAL and a selfie is a spot-check aid -- and the day
+    those need to diverge (retention, bucket, audit) a shared helper would have
+    to be split again under pressure. The shape is copied; the decisions are
+    made once per subject.
+
+    SAME REFUSALS, FOR THE SAME REASONS:
+      * a failed upload NEVER fails the check-in. The gate is where a man is
+        standing; object storage being down is not his problem.
+      * NO POINTER IS EVER INVENTED. No key, no URL, no empty string on
+        failure -- `""` is a value and reads as a fact about the image.
+      * `osha_card_upload_failed: True` records the EVENT, not a claim about
+        where the image is.
+
+    DIFFERENT PREFIX, ON PURPOSE. `worker-osha-cards/` is not the selfie prefix
+    and is not the object-locked card-audit bucket: that one carries 7-year
+    retention because those objects are the audit trail, and a working copy
+    written on every re-scan must not be created under a retention lock.
+    """
+    if not card_image:
+        return {}
+    raw = _decode_image_data_url(card_image)
+    if not raw:
+        logger.warning(
+            "[osha-card] worker=%s: payload was not decodable base64; not stored",
+            worker_id,
+        )
+        return {"osha_card_upload_failed": True}
+    key = _worker_osha_card_r2_key(worker_id)
+    try:
+        url = await asyncio.to_thread(_upload_to_r2, raw, key, "image/jpeg")
+    except Exception as e:
+        logger.error("[osha-card] worker=%s: R2 upload failed key=%s: %r",
+                     worker_id, key, e)
+        return {"osha_card_upload_failed": True}
+    if not url:
+        logger.warning("[osha-card] worker=%s: R2 not configured; not stored",
+                       worker_id)
+        return {"osha_card_upload_failed": True}
+    return {"osha_card_r2_key": key, "osha_card_r2_url": url}
+
+
 def _logbook_capture_photo_r2_key(project_id: str, activity_id: str, photo_id: str) -> str:
     """logbook-photos/{project_id}/{activity_id}/{photo_id}.jpg
 
@@ -594,6 +644,40 @@ def _presign_r2_get(r2_key: str, expires_in: int = 3600) -> str:
     except Exception as e:
         logger.error(f"R2 presign failed for {r2_key}: {e}")
         return ""
+
+def worker_card_image_fields(worker: dict) -> dict:
+    """What a reader should send a client for a worker's OSHA/SST card.
+
+    TWO SHAPES COEXIST AND WILL FOR AS LONG AS ANY UNMIGRATED ROW SURVIVES:
+
+        osha_card_image     the pre-R2 inline base64
+        osha_card_r2_key    the object, once it moved
+
+    THE INLINE COPY WINS WHERE IT EXISTS, because after the strip it only
+    exists where R2 REFUSED the object -- so it is the only copy, and
+    preferring it is preferring the copy that is known to be there.
+
+    A PRESIGNED URL, NOT THE STORED `osha_card_r2_url`. That field records what
+    the PUT returned; the bucket is private, so a client cannot fetch it. The
+    signed URL is minted per response and expires.
+
+    AND `osha_card_unavailable` IS RETURNED AS A FACT. A worker with a key we
+    cannot sign is not the same as a worker with no card, and the two must not
+    render alike: one is missing evidence, the other is an absence of evidence.
+    A URL that 404s is a claim this app cannot support -- the same rule the
+    selfie writer states -- so nothing is sent rather than a pointer that fails
+    in the client.
+    """
+    if worker.get("osha_card_image"):
+        return {"osha_card_image": worker.get("osha_card_image")}
+    key = worker.get("osha_card_r2_key")
+    if not key:
+        return {"osha_card_image": None}
+    url = _presign_r2_get(key)
+    if not url:
+        return {"osha_card_image": None, "osha_card_unavailable": True}
+    return {"osha_card_image": None, "osha_card_url": url}
+
 
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET')
@@ -3431,7 +3515,13 @@ def card_image_may_be_replaced(worker, new_image) -> bool:
     """
     if not new_image:
         return False
-    if not worker.get("osha_card_image"):
+    # "HAS A CARD ALREADY" IS NOW TWO FIELDS. The image moved to R2, so a
+    # worker whose card is stored there carries `osha_card_r2_key` and NO
+    # `osha_card_image`. Reading only the inline field would report every
+    # migrated worker as having no card at all -- and this function's answer to
+    # that is "yes, replace it", which would let any re-scan overwrite a
+    # VERIFIED card and defeat the whole guard below.
+    if not (worker.get("osha_card_image") or worker.get("osha_card_r2_key")):
         return True
     sst = [c for c in (worker.get("certifications") or [])
            if str(c.get("type") or "") in RECOGNIZED_SST_TYPES]
@@ -14902,6 +14992,13 @@ async def register_and_checkin(data: dict, request: Request):
         # {"selfie_upload_failed": True} when a selfie was offered and no object
         # was stored. Never a pointer to something that is not there.
         selfie_fields = await _store_worker_selfie(str(worker_oid), selfie_image)
+        # THE CARD TAKES THE SAME ROUTE. 37.8MB of base64 across 46 documents,
+        # and the same rule: R2 holds it, the inline copy is the fallback for
+        # when R2 did not.
+        card_fields = await _store_worker_osha_card(str(worker_oid), osha_card_image)
+        _inline_card = ({} if card_fields.get("osha_card_r2_key")
+                        else ({"osha_card_image": osha_card_image}
+                              if osha_card_image else {}))
         # THE ONLY COPY, OR NO COPY. When R2 holds the object the base64 is
         # redundant; when it does not, this is the photograph.
         _inline_selfie = ({} if selfie_fields.get("selfie_r2_key")
@@ -14913,7 +15010,8 @@ async def register_and_checkin(data: dict, request: Request):
             "phone": phone or "",
             "osha_number": osha_number or "",
             "osha_data": osha_data,
-            "osha_card_image": osha_card_image,
+            **_inline_card,
+            **card_fields,
             **_inline_selfie,
             **selfie_fields,
             "signature": signature,
@@ -14937,7 +15035,18 @@ async def register_and_checkin(data: dict, request: Request):
         # Update existing worker with new OSHA data if provided
         update_fields = {"updated_at": now}
         if card_image_may_be_replaced(worker, osha_card_image):
-            update_fields["osha_card_image"] = osha_card_image
+            _cf = await _store_worker_osha_card(
+                str(worker.get("_id")), osha_card_image)
+            update_fields.update(_cf)
+            if _cf.get("osha_card_r2_key"):
+                # A REPLACEMENT MUST NOT LEAVE THE OLD INLINE COPY STANDING.
+                # The readers prefer the inline field when it is present, so a
+                # stale base64 beside a fresh R2 object would keep serving the
+                # image the re-scan was meant to correct -- which is the exact
+                # defect card_image_may_be_replaced exists to fix.
+                update_fields["osha_card_image"] = None
+            else:
+                update_fields["osha_card_image"] = osha_card_image
         # A WORKER WHO ALREADY HAS ONE IS LEFT ALONE, whichever form it is in.
         # `selfie_image` is the pre-R2 inline copy: existing rows keep it and
         # nothing here backfills them, so the two shapes coexist and the reader
@@ -16634,7 +16743,9 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
     """Get worker's OSHA card image and data - for admin and site device"""
     worker = await db.workers.find_one(
         {"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}},
-		{"osha_card_image": 1, "osha_data": 1, "osha_number": 1, "safety_orientations": 1, "name": 1, "company_id": 1, "signature": 1}
+		{"osha_card_image": 1, "osha_card_r2_key": 1, "osha_data": 1,
+		 "osha_number": 1, "safety_orientations": 1, "name": 1,
+		 "company_id": 1, "signature": 1}
 	)
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
@@ -16657,7 +16768,10 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
 
     return {
         "name": worker.get("name"),
-        "osha_card_image": worker.get("osha_card_image"),
+        # ONE RESOLVER, BOTH READERS. The check-in review serialisation asks
+        # the same question about the same field, and two answers to it would
+        # be two screens disagreeing about whether a man has a card.
+        **worker_card_image_fields(worker),
         "osha_data": worker.get("osha_data"),
         "osha_number": worker.get("osha_number"),
         "safety_orientations": worker.get("safety_orientations", []),
@@ -17159,7 +17273,7 @@ async def get_flagged_project_checkins(
             _recorded_trade(s.get("worker_trade"))
             or _proj_trades.get(str(s.get("worker_id")), "")
         )
-        s["osha_card_image"] = worker.get("osha_card_image")
+        s.update(worker_card_image_fields(worker))
         s["osha_number"] = s.get("sst_card_number") or worker.get("osha_number")
         # Explicit reason list so the UI doesn't have to re-derive it.
         reasons = []
