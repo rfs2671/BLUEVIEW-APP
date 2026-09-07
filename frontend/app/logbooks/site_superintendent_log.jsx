@@ -111,6 +111,10 @@ import {
   emptyFinding, findingIsEmpty, findingGaps, deriveConditionAndOrderBlocks,
   CORRECTED, NOT_CORRECTED, NOT_YET, isCorrectionState,
 } from '../../src/utils/csFindings';
+import {
+  SOURCE_LOG_TYPE, adoptableSummary, progressBlock, progressSource,
+  adoptedTextFromStored, PROVENANCE_ADOPTED,
+} from '../../src/utils/progressProvenance';
 
 const LOG_TYPE = 'site_superintendent_log';
 // FOUR, NOT FIVE. Findings/orders and DOB/incidents were two steps; they are
@@ -416,6 +420,25 @@ export default function SiteSuperintendentLog() {
   const [departedNextDay, setDepartedNextDay] = useState(false);
   const [printedName, setPrintedName] = useState('');
   const [progress, setProgress] = useState('');
+  // ── THE TEXT THAT WAS OFFERED, HELD SO THE DOCUMENT CAN SAY WHERE IT CAME
+  //    FROM ──────────────────────────────────────────────────────────────
+  //
+  // Item 2 is the ONE item that overlaps with the CP's daily jobsite log, and
+  // BC 3301.13.13 does not require the superintendent to have COMPOSED it --
+  // compare item 3, which is expressly "the construction superintendent's
+  // activities". It requires the information to be in HIS log over HIS
+  // signature. So the CP's summary is offered, and the document records
+  // whether he took it or wrote his own.
+  //
+  // COMPARED AGAINST WHAT WAS OFFERED, NOT AGAINST THE CP'S LOG AS IT STANDS
+  // LATER. The flag has to be true at the moment of filing; re-deriving it
+  // afterwards from a record that can still be amended is what
+  // `item_provenance`'s docstring explicitly refuses.
+  //
+  // NOT IN buildData's OUTPUT, and never on the filed document as its own
+  // field. `source` lives inside the progress block where the server already
+  // looks for it; this string is the local evidence used to compute it.
+  const [adoptedText, setAdoptedText] = useState('');
   const [activities, setActivities] = useState('');
   // WHICH ROW IS OPEN. Nothing is open on arrival: the common day is
   // "nothing to report" on all four, and a screen that opens every editor
@@ -598,6 +621,48 @@ export default function SiteSuperintendentLog() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // ── ITEM 2 IS OFFERED THE CP'S SUMMARY FOR THIS DATE ──────────────────────
+  //
+  // A SEPARATE EFFECT, NOT A BRANCH INSIDE fetchData. That function has three
+  // exits -- a device draft with content returns early, the server path
+  // hydrates, and "nothing usable" leaves the form blank -- and the offer
+  // belongs on all three. Putting it inside would have meant writing it twice
+  // and missing the third, which is how the twelve inline
+  // `arr.find((l) => !l.is_locked)` pickers happened.
+  //
+  // ONCE PER MOUNT, GUARDED BY A REF. `progress` is in the dependency array
+  // because the effect must not run until hydrate has settled, and setting it
+  // re-runs the effect -- so the ref is what stops the loop, not the value.
+  //
+  // NEVER OVER TYPED TEXT, AND NEVER ON A FILED LOG. A prefill that overwrote
+  // his sentence would be the app editing a statutory record; one that ran on
+  // a locked document would be worse.
+  //
+  // A FAILED READ IS NOT AN EMPTY DAY. Offline, or a 403, leaves the box
+  // blank and `adoptedText` empty -- so whatever he then types is recorded as
+  // `own`, which is exactly what it is: nothing was offered to him.
+  const adoptAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (loading || locked || adoptAttemptedRef.current) return;
+    adoptAttemptedRef.current = true;
+    if (String(progress || '').trim()) return;
+    let alive = true;
+    (async () => {
+      try {
+        const rows = await logbooksAPI.getByProject(
+          projectId, SOURCE_LOG_TYPE, logDate);
+        const text = adoptableSummary(rows);
+        if (!alive || !text) return;
+        setProgress(text);
+        setAdoptedText(text);
+      } catch (_e) {
+        // Deliberately silent. He is not waiting on this and there is nothing
+        // for him to do about it; the box is simply his to fill.
+      }
+    })();
+    return () => { alive = false; };
+  }, [loading, locked, progress, projectId, logDate]);
+
   // ── DOB autofill ────────────────────────────────────────────────────────
   // HE SHOULD NOT TYPE A VIOLATION NUMBER THE SYSTEM ALREADY HOLDS. These are
   // SUGGESTIONS: nothing reaches the record until he ticks it, because the log
@@ -641,6 +706,13 @@ export default function SiteSuperintendentLog() {
     setDepartedNextDay(g('presence').departed_next_day === true);
     setPrintedName(g('presence').printed_name || '');
     setProgress(g('progress').summary || '');
+    // A STORED `adopted` SAYS ITS OWN SUMMARY IS THE ADOPTED TEXT, so
+    // reopening and changing nothing keeps `adopted` and the first edit flips
+    // it to `own` -- the same behaviour as the first visit. A log stored as
+    // `own`, or one filed before this existed, adopts nothing: returning its
+    // summary here would file a log he wrote himself as adopted from a record
+    // it never came from.
+    setAdoptedText(adoptedTextFromStored(g('progress')));
     // ONE FIELD NOW, AND A STORED PAIR IS JOINED RATHER THAN HALVED.
     // Records filed before the merge carry both keys; reopening one must
     // show him everything he wrote, not the first half.
@@ -701,6 +773,11 @@ export default function SiteSuperintendentLog() {
 
   const snapshot = () => ({
     arrivedAt, departedAt, departedNextDay, printedName, progress, activities,
+    // WITHOUT THIS, A TRIP TO /consent FILES AN ADOPTED SUMMARY AS HIS OWN.
+    // restore() puts the text back and `adoptedText` would come back empty, so
+    // progressSource would see text-with-nothing-offered and stamp `own` on a
+    // sentence he never wrote a word of.
+    adoptedText,
     inspectionLocation, inspectionResult,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, step,
@@ -713,6 +790,7 @@ export default function SiteSuperintendentLog() {
     setDepartedNextDay(v.departedNextDay === true);
     setPrintedName(v.printedName ?? '');
     setProgress(v.progress ?? '');
+    setAdoptedText(v.adoptedText ?? '');
     setActivities(v.activities ?? '');
     setInspectionLocation(v.inspectionLocation ?? '');
     setInspectionResult(v.inspectionResult ?? '');
@@ -757,7 +835,11 @@ export default function SiteSuperintendentLog() {
         // has to derive it from the two times.
         departed_next_day: departedNextDay === true,
       },
-      progress: progress.trim() ? { summary: progress.trim() } : {},
+      // `{summary, source}` THROUGH ONE BUILDER. An empty box still writes
+      // `{}` and claims nothing -- stamping `own` on a blank would assert he
+      // wrote something. See progressProvenance.js for why the flag exists and
+      // why it cannot be retrofitted onto the records already filed.
+      progress: progressBlock(progress, adoptedText),
       // ONE STATUTORY ITEM, ONE INPUT. `locations` was a second box under a
       // label that asked the same question the first box's own placeholder
       // did -- "WHAT YOU DID, AND WHERE" above "Areas and floors you
@@ -786,7 +868,7 @@ export default function SiteSuperintendentLog() {
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     printedName, arrivedAt, departedAt, departedNextDay,
-    progress, activities,
+    progress, adoptedText, activities,
     inspectionLocation, inspectionResult, competentPersonName]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────
@@ -1371,6 +1453,16 @@ export default function SiteSuperintendentLog() {
       <Card s={s}>
         <Field s={s} locked={locked} label={t('progressLabel')} value={progress} onChangeText={setProgress}
           placeholder={t('progressPlaceholder')} multiline />
+        {/* HE MUST SEE THAT IT WAS NOT HIM. A sentence that appeared in the
+            box with nothing saying where it came from is a sentence he will
+            sign as his own account of the day, and item 2 sits over his
+            signature. The note is driven by the SAME rule that writes the
+            flag, so the screen cannot say "adopted" while the document says
+            "own" -- it disappears the moment he edits, because at that moment
+            the document changes its mind too. */}
+        {progressSource(progress, adoptedText) === PROVENANCE_ADOPTED ? (
+          <Text style={s.noteText}>{t('progressAdoptedNote')}</Text>
+        ) : null}
         <Field s={s} locked={locked} label={t('activitiesLabel')} value={activities} onChangeText={setActivities}
           placeholder={t('activitiesPlaceholder')} multiline />
       </Card>
