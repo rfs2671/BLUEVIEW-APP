@@ -470,6 +470,13 @@ export default function SiteSuperintendentLog() {
   // but free text is one tap further in than the pick, which is the way round
   // that stopped "2" being filed 25 times as a competent person's name.
   const [cpManual, setCpManual] = useState(false);
+  // ── "NONE DESIGNATED", WHICH IS A CLAIM ABOUT WHERE HE WAS ─────────────
+  //
+  // 3301.13.12 requires a competent person whenever active work happens and
+  // the superintendent is NOT on site, so the absence of a designation is
+  // lawful in exactly one circumstance and the tick asserts that circumstance.
+  // It is not the bare "nothing to report" that items 4 to 7 carry.
+  const [cpNone, setCpNone] = useState(false);
 
   const prefilledArrival = useRef(false);
 
@@ -674,7 +681,9 @@ export default function SiteSuperintendentLog() {
     if (loading || locked || dailyOfferRef.current) return undefined;
     dailyOfferRef.current = true;
     const wantSummary = !String(progress || '').trim();
-    const wantCp = !String(competentPersonName || '').trim();
+    // NOT OVER A TICK EITHER. A superintendent who has already said nobody was
+    // designated must not find a name appearing under it.
+    const wantCp = !String(competentPersonName || '').trim() && !cpNone;
     let alive = true;
     (async () => {
       const [dayRes, rosterRes] = await Promise.allSettled([
@@ -705,7 +714,7 @@ export default function SiteSuperintendentLog() {
       }
     })();
     return () => { alive = false; };
-  }, [loading, locked, progress, competentPersonName, projectId, logDate]);
+  }, [loading, locked, progress, competentPersonName, cpNone, projectId, logDate]);
 
   // ── DOB autofill ────────────────────────────────────────────────────────
   // HE SHOULD NOT TYPE A VIOLATION NUMBER THE SYSTEM ALREADY HOLDS. These are
@@ -765,6 +774,7 @@ export default function SiteSuperintendentLog() {
     setInspectionLocation(g('daily_inspection').location || '');
     setInspectionResult(g('daily_inspection').result || '');
     setCompetentPersonName(g('competent_person').name || '');
+    setCpNone(g('competent_person').none_to_report === true);
     setNoneBoth(g('unsafe_conditions').none_to_report === true
       && g('orders_given').none_to_report === true);
     setDobNone(g('dob_actions').none_to_report === true);
@@ -824,7 +834,7 @@ export default function SiteSuperintendentLog() {
     adoptedText,
     inspectionLocation, inspectionResult,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
-    competentPersonName, cpManual, step,
+    competentPersonName, cpManual, cpNone, step,
   });
 
   const restore = (v) => {
@@ -849,6 +859,7 @@ export default function SiteSuperintendentLog() {
     // typed name restored but `cpManual` false would show the picker button
     // over a name he entered by hand, with no box to correct it in.
     setCpManual(v.cpManual === true);
+    setCpNone(v.cpNone === true);
     // BACK ON THE STEP HE LEFT. Returning him to step 1 after a five-step form
     // is its own small loss.
     // A DRAFT SAVED ON THE OLD STEP 5 IS THE SIGN STEP, WHICH IS NOW 4.
@@ -906,8 +917,14 @@ export default function SiteSuperintendentLog() {
       incidents: incChosen.length
         ? { entries: incChosen.map((e) => ({ text: e.text.trim() })) }
         : (incidentsNone ? { none_to_report: true } : {}),
+      // A NAME WINS OVER THE TICK, and they cannot both be filed. If he named
+      // somebody the designation happened, whatever a stale tick says; writing
+      // both would put a name on the record beside an assertion that nobody
+      // was named. The control below clears each when the other is set, so
+      // this is the backstop rather than the rule.
       competent_person: competentPersonName.trim()
-        ? { name: competentPersonName.trim() } : {},
+        ? { name: competentPersonName.trim() }
+        : (cpNone ? { none_to_report: true } : {}),
       daily_inspection: (inspectionLocation.trim() || inspectionResult.trim())
         ? {
           location: inspectionLocation.trim(),
@@ -917,7 +934,7 @@ export default function SiteSuperintendentLog() {
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     printedName, arrivedAt, departedAt, departedNextDay,
     progress, adoptedText, activities,
-    inspectionLocation, inspectionResult, competentPersonName]);
+    inspectionLocation, inspectionResult, competentPersonName, cpNone]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────
   //
@@ -1698,6 +1715,10 @@ export default function SiteSuperintendentLog() {
                 setCpPickerOpen(false);
                 if (!person) return;
                 setCpManual(false);
+                // PICKING A MAN RETRACTS "NOBODY WAS DESIGNATED". Leaving the
+                // tick set would leave a name beside an assertion that no name
+                // exists.
+                setCpNone(false);
                 // FROM THE RECORD, NOT THE KEYBOARD — the account's own
                 // spelling of its own name is what reaches the document.
                 setCompetentPersonName(person.name || '');
@@ -1726,6 +1747,35 @@ export default function SiteSuperintendentLog() {
                   onChangeText={setCompetentPersonName}
                   placeholder={t('cpTypedPlaceholder')} />
               ) : null}
+
+              {/* ── THE THIRD HONEST ANSWER ────────────────────────────────
+                  Item 8 could only say a name or "— Not recorded", and no
+                  way to say "nobody was designated because I was here" —
+                  which 3301.13.12 makes lawful and which on this jobsite is
+                  the likely answer. A blank could not be told from a gap.
+
+                  THE LABEL CARRIES THE CLAIM, deliberately. The absence of a
+                  designation is lawful only where he was on site whenever
+                  active work occurred, so a bare "none designated" would file
+                  an admission on one tap. He is asserting his presence and
+                  the control says so before he taps it. */}
+              <Pressable
+                style={[s.chip, cpNone && s.chipSelected]}
+                onPress={() => {
+                  const next = !cpNone;
+                  setCpNone(next);
+                  // TICKING IT CLEARS THE NAME, the other half of the rule in
+                  // buildData. A name left underneath would be filed instead
+                  // of the attestation, silently.
+                  if (next) { setCompetentPersonName(''); setCpManual(false); }
+                }}
+              >
+                {cpNone ? <Check size={13} strokeWidth={2} /> : null}
+                <Text style={[s.chipText, cpNone && s.chipTextSelected]}>
+                  {t('cpNoneDesignated')}
+                </Text>
+              </Pressable>
+              <Text style={s.noteText}>{t('cpNoneDesignatedNote')}</Text>
             </>
           )}
           <Text style={s.noteText}>{t('competentPersonNote')}</Text>

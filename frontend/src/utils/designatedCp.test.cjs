@@ -233,7 +233,7 @@ ok('free text is still reachable, one tap further in',
   /onManual=\{\(\) => \{ setCpPickerOpen\(false\); setCpManual\(true\); \}\}/
     .test(SCREEN));
 ok('and the second tap survives the trip to /consent',
-  /competentPersonName, cpManual, step,/.test(SCREEN)
+  /competentPersonName, cpManual, cpNone, step,/.test(SCREEN)
   && /setCpManual\(v\.cpManual === true\)/.test(SCREEN));
 ok('the picked name comes off the record',
   /setCompetentPersonName\(person\.name \|\| ''\)/.test(SCREEN));

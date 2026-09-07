@@ -186,7 +186,34 @@ ITEMS: List[Dict] = [
         "number": 8,
         "label": "Competent person",
         "citation": "BC 3301.13.12",
-        "attestable": False,
+        # ATTESTABLE, AND IT IS THE ONLY ITEM WHOSE "NONE" IS CONDITIONAL.
+        #
+        # Item 8 had two renderings -- a name, or "&mdash; Not recorded" -- and
+        # no way to say "none designated, I was on site myself", which under
+        # 3301.13.12 is lawful and on this product's first customer is the
+        # likely answer. The document could not tell "he did not answer" from
+        # "there was nothing to designate", which is the three-kinds-of-empty
+        # defect this whole module was built around, on the one collected item
+        # excluded from it.
+        #
+        # BUT A BARE "NONE DESIGNATED" IS AN ADMISSION. 3301.13.12: the CS
+        # "must designate a competent person ... and ensure such competent
+        # person is present at the designated job site at all times active work
+        # occurs WHEN THE CONSTRUCTION SUPERINTENDENT IS NOT AT THE SITE." The
+        # absence is lawful in exactly one circumstance, so the assertion has
+        # to carry that circumstance with it or the app files an admission on
+        # one tap. Hence `none_label` below rather than the generic wording
+        # items 4 to 7 share.
+        "attestable": True,
+        # WHAT THE ATTESTED-NONE PRINTS, where the generic "None to report" is
+        # wrong. Items 4 to 7 assert a bare negative; this one asserts a
+        # positive fact about his own presence, and the reader must be able to
+        # see which was claimed. The renderer falls back to the generic string
+        # for any item that does not carry this.
+        "none_label": (
+            "None designated &#183; {who} attests he was present at the job "
+            "site at all times active work occurred"
+        ),
         "collected": True,
         # SUNSETS. See item_applies: this item is rendered on a log dated before
         # COMPETENT_PERSON_SUNSET, forever, and not on one dated after.

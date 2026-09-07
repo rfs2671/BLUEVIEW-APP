@@ -29612,6 +29612,26 @@ def _cs_item_body(item, block, cs_name):
 
     if state == ATTESTED_NONE:
         who = _capitalize_first(str(cs_name or "").strip()) or "the superintendent"
+        # ── ONE ITEM'S "NONE" IS NOT THE OTHERS' ────────────────────────────
+        #
+        # Items 4 to 7 assert a BARE NEGATIVE -- nothing was observed, nothing
+        # was issued -- and "None to report &#183; attested by X" says all of
+        # it.
+        #
+        # ITEM 8 ASSERTS A POSITIVE FACT ABOUT HIS OWN PRESENCE, because
+        # 3301.13.12 requires a designation whenever active work happens and he
+        # is not on site. "None to report" there would file an admission
+        # wearing the same words as four routine negatives, and a reader could
+        # not tell which claim was made. So an item may carry its own
+        # `none_label`, and the generic string is the fallback for the four
+        # that do not.
+        #
+        # `{who}` RATHER THAN A CONCATENATION, so the name cannot drift to the
+        # wrong end of the sentence when a label is edited.
+        template = item.get("none_label")
+        if template:
+            return ('<span style="color:#15803d;">'
+                    + template.replace("{who}", who) + '</span>')
         return (f'<span style="color:#15803d;">None to report</span>'
                 f'<span style="color:#64748b;font-size:12px;"> &#183; attested by '
                 f'{who}</span>')

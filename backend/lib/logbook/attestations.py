@@ -94,10 +94,36 @@ _CS_LOG_V1 = (
     "of this log and editable by him; they are not observed by this system."
 )
 
+# ── THE CS LOG'S SECOND VERSION ────────────────────────────────────────────
+#
+# A NEW VERSION, NOT AN EDIT, AND THE DIFFERENCE MATTERS HERE MORE THAN
+# ANYWHERE. Item 8 became attestable, and its tick is not the same KIND of
+# statement as items 4 to 7's. _CS_LOG_V1 explains one form only:
+#
+#     An item marked "none to report" is his statement that he considered that
+#     item and had nothing to record; it is not an absence of information.
+#
+# Item 8's tick is a positive claim about where he was, not a statement that
+# there was nothing to record. The paragraph above does not cover it, so
+# printing it over a document carrying that tick would describe the signer's
+# assertion incorrectly.
+#
+# EDITING _CS_LOG_V1 IN PLACE WOULD CHANGE WHAT ALREADY-SIGNED DOCUMENTS SAY
+# THEY MEANT. The stored snapshot on every signature event names a version; if
+# the text behind that name changed, the record would claim the signer read a
+# sentence nobody showed him. That is the exact failure the append-only
+# registry exists to prevent, so V1 stays below, byte for byte, forever.
+_CS_LOG_V2 = _CS_LOG_V1 + (
+    " Where item 8 records that no competent person was designated, that is "
+    "his statement that he was present at the job site at all times active "
+    "work occurred, as Section 3301.13.12 requires when no competent person "
+    "is designated."
+)
+
 ATTESTATIONS: Dict[str, Dict[str, str]] = {
     "preshift_signin": {"version": "2026-08-31.1", "text": _PRESHIFT_V1},
     "osha_log": {"version": "2026-08-31.1", "text": _OSHA_V1},
-    "site_superintendent_log": {"version": "2026-08-31.1", "text": _CS_LOG_V1},
+    "site_superintendent_log": {"version": "2026-09-06.1", "text": _CS_LOG_V2},
 }
 
 # ── Every wording ever printed ──────────────────────────────────────────────
@@ -109,7 +135,12 @@ ATTESTATIONS: Dict[str, Dict[str, str]] = {
 HISTORY: Dict[str, str] = {
     f"preshift_signin/2026-08-31.1": _PRESHIFT_V1,
     f"osha_log/2026-08-31.1": _OSHA_V1,
+    # V1 STAYS, BYTE FOR BYTE, FOREVER. Every superintendent log signed before
+    # item 8 became attestable names this version, and the whole point of the
+    # registry is that a stored snapshot can be checked against what it claims
+    # to have said.
     f"site_superintendent_log/2026-08-31.1": _CS_LOG_V1,
+    f"site_superintendent_log/2026-09-06.1": _CS_LOG_V2,
 }
 
 

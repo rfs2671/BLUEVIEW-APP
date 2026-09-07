@@ -71,7 +71,18 @@ _JS = (_BACKEND.parent / "frontend" / "src" / "utils"
        / "superintendentLogModel.js").read_text(encoding="utf-8")
 
 #: Python key -> JavaScript key, for the ones spelled differently.
-_RENAMED = {"sunset_on": "sunsetOn", "starts_on": "startsOn"}
+#:
+#: `none_label` WAS ADDED HERE BECAUSE THIS FILE CAUGHT IT. Item 8 became
+#: attestable and gained a per-item attested-none wording; the Python spells it
+#: snake_case and the JavaScript camelCase, like the two before it, and the
+#: first run after the change failed on all three of
+#: `test_every_python_key_is_mirrored_or_named_as_server_only`,
+#: `test_and_the_values_match` and `test_the_javascript_declares_nothing_the_
+#: python_does_not`. That is the drift this file was written for, caught inside
+#: an hour of it being merged, and the fix is to DECLARE the mapping rather
+#: than to widen the comparison.
+_RENAMED = {"sunset_on": "sunsetOn", "starts_on": "startsOn",
+            "none_label": "noneLabel"}
 
 #: Keys the Python declares that the JavaScript deliberately does NOT carry,
 #: each with its reason. NAMED, never inferred from absence: a count cannot
