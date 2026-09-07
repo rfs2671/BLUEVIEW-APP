@@ -321,34 +321,59 @@ class ItemTwoSaysWhereItCameFrom(unittest.TestCase):
         self.assertNotIn("daily_jobsite", code)
         self.assertNotIn("activities", code)
 
-    def test_the_document_prints_NEITHER_because_the_flag_is_never_written(self):
-        """THE RENDER IS REMOVED, AND THIS TEST INVERTS RATHER THAN GOES.
+    def test_the_document_PRINTS_THE_LINE_now_that_the_flag_is_written(self):
+        """THIS TEST HAS NOW INVERTED TWICE, AND THAT IS THE POINT OF IT.
 
-        It used to synthesise `source` by hand and assert the line appeared.
-        That passed for four values the application cannot produce: the
-        superintendent screen writes `progress: { summary }` and no third key,
-        so EVERY log ever filed resolves to PROVENANCE_UNMARKED and the line
-        never rendered on a real document.
+        v1  synthesised `source` by hand and asserted the line APPEARED. It
+            passed for values the application could not produce: the
+            superintendent screen wrote `progress: { summary }` and no third
+            key, so every filed log resolved to PROVENANCE_UNMARKED and the
+            line never rendered on a real document. Worse, `adopted` was
+            UNREACHABLE -- the flag separates the CP's adopted text from the
+            superintendent's own, and that screen never fetched the CP's log.
 
-        Worse than unwritten, `adopted` is UNREACHABLE -- the flag separates the
-        CP's adopted text from the superintendent's own, and that screen never
-        fetches the CP's log, so there is nothing to adopt. A flag with one
-        reachable value carries no information, and printing a distinction the
-        data cannot make is the app asserting something it does not know.
+        v2  inverted to assert the line was ABSENT, and its docstring said:
+            "Restore the render with the adoption UI, not before."
 
-        The FIELD and `item_provenance` stay, correct and tested. Restore the
-        render with the adoption UI, not before."""
-        for source in ("adopted", "own"):
-            html = server._superintendent_log_html({
-                "date": "2026-08-30",
-                "data": {"presence": {"printed_name": "M R"},
-                         "progress": {"summary": "formwork", "source": source}}})
-            self.assertNotIn("adopted from the daily jobsite log", html)
-            self.assertNotIn("own account", html)
-            # Sentence-cased by the renderer, which is why this reads
-            # "Formwork" -- the point is that item 2's TEXT is untouched;
-            # only the provenance line under it is gone.
-            self.assertIn("Formwork", html, "the summary itself still prints")
+        v3  is this. The adoption UI landed -- the screen offers the CP's filed
+            summary for the date and records which way he went -- so `adopted`
+            is reachable, the flag is written on every new filing, and the line
+            is restored.
+
+        A TEST THAT PINS THE CURRENT STATE OF AN UNFINISHED FEATURE HAS TO MOVE
+        WHEN THE FEATURE LANDS, and the way to keep that honest is to make each
+        version say what changed rather than quietly editing the assertion.
+        """
+        for source, expected in (("adopted", "Adopted from the competent"),
+                                 ("own", "own account of the day")):
+            with self.subTest(source=source):
+                html = server._superintendent_log_html({
+                    "date": "2026-08-30",
+                    "data": {"presence": {"printed_name": "M R"},
+                             "progress": {"summary": "formwork",
+                                          "source": source}}})
+                self.assertIn(expected, html)
+                # Sentence-cased by the renderer, which is why this reads
+                # "Formwork" -- the line is an ADDITION to item 2's text, never
+                # a replacement of it.
+                self.assertIn("Formwork", html,
+                              "the summary itself still prints")
+
+    def test_but_a_log_filed_before_the_flag_still_prints_NOTHING(self):
+        """FORWARD-ONLY, asserted where the inversion happened.
+
+        `NOT_RECORDED` is the sanctioned string for a field the form OFFERED
+        and he left blank. Provenance was never offered on a log filed before
+        the flag existed, so the app has no statement to make about it rather
+        than a statement that it is missing. One such record exists.
+        """
+        html = server._superintendent_log_html({
+            "date": "2026-08-30",
+            "data": {"presence": {"printed_name": "M R"},
+                     "progress": {"summary": "formwork"}}})
+        self.assertNotIn("Adopted from the competent", html)
+        self.assertNotIn("own account of the day", html)
+        self.assertIn("Formwork", html)
 
     def test_the_resolver_is_kept_and_still_correct(self):
         """Removing the render must not remove the logic the UI will need."""
