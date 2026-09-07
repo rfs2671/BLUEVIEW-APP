@@ -2,11 +2,21 @@
  * THE ELEVEN ITEMS OF BC 3301.13.13, on the client.
  *
  * A MIRROR OF backend/lib/logbook/superintendent_log.py, and the parity is
- * asserted by superintendentLogModel.test.cjs, which reads the Python and
- * compares the two lists. Two hand-maintained copies of a statutory list would
- * drift, and this codebase has spent a week pulling apart pairs that did: the
- * OSHA register's row rule and the pre-shift sheet each printed different
- * things depending which renderer you asked.
+ * asserted by backend/tests/test_superintendent_model_parity.py, which imports
+ * the Python list and parses this one. Two hand-maintained copies of a
+ * statutory list would drift, and this codebase has spent a week pulling apart
+ * pairs that did: the OSHA register's row rule and the pre-shift sheet each
+ * printed different things depending which renderer you asked.
+ *
+ * THIS SENTENCE USED TO NAME `superintendentLogModel.test.cjs`, WHICH HAS
+ * NEVER EXISTED. Nothing compared the two lists for the whole life of this
+ * module, and they had already drifted on `provenance` — the one field whose
+ * own comment in the Python explains that it must ship EARLY because
+ * retrofitting it onto filed records is impossible. A docstring citing a check
+ * that was never written is worse than no docstring: the next reader stops
+ * looking. The check now exists, in Python rather than CommonJS, because
+ * CS_LOG_ITEMS is an ESM export and a .cjs test would have had to regex-parse
+ * BOTH sides instead of one.
  *
  * ── EVERY GATE READS THE RECORD'S OWN DATE ───────────────────────────────────
  *
@@ -34,7 +44,15 @@ export const COMPETENT_PERSON_SUNSET = '2027-01-01';
 
 export const CS_LOG_ITEMS = Object.freeze([
   { key: 'presence', number: 1, label: 'Superintendent presence', attestable: false, collected: true, fields: ['printed_name', 'signature', 'arrived_at', 'departed_at'] },
-  { key: 'progress', number: 2, label: 'General progress of work', attestable: false, collected: true, fields: ['summary'] },
+  // `provenance` — DECLARED ON BOTH SIDES, PRODUCED BY NEITHER YET. Item 2 is
+  // the one item that overlaps with the CP's daily jobsite log, and the flag
+  // records whether its text was ADOPTED from that log unedited or is the
+  // superintendent's OWN. See the long note on the Python item, which argues
+  // that the flag must exist before the adoption UI because provenance cannot
+  // be retrofitted onto records already filed. Nothing writes it today, so
+  // `item_provenance` resolves every filed log to `unmarked`, and one such log
+  // exists. Mirrored here so the two models agree while the client half lands.
+  { key: 'progress', number: 2, label: 'General progress of work', attestable: false, collected: true, provenance: true, fields: ['summary'] },
   { key: 'cs_activities', number: 3, label: 'Superintendent activities, areas and floors inspected', attestable: false, collected: true, fields: ['summary', 'locations'] },
   { key: 'unsafe_conditions', number: 4, label: 'Unsafe conditions observed', attestable: true, collected: true, fields: ['entries'] },
   { key: 'orders_given', number: 5, label: 'Orders and notices given', attestable: true, collected: true, fields: ['entries'] },
