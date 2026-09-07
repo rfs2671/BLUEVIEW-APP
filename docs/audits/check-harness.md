@@ -663,7 +663,7 @@ correct, and the check is pointed somewhere else.
 
 They almost all fail in the direction of *nothing is wrong*.
 
-All nine below were found in two days, by one author, on this codebase.
+All eleven below were found in two days, by one author, on this codebase.
 
 ### The instances
 
@@ -678,6 +678,8 @@ All nine below were found in two days, by one author, on this codebase.
 | 7 | `card_image_may_be_replaced` | read `osha_card_image`; the migration **removed that field** |
 | 8 | the strip's verifier | verified the data perfectly and never asked what the **running code** expected to find |
 | 9 | `_signed_by` stamped in `update_cp_profile` | the right check, applied to the wrong function — a user's signature *profile*, not a logbook |
+| 10 | `grep "ALLOWED_ORIGINS" tests/ \| head -10` | ten unrelated matches filled the window. `TheOriginListIsExactAndNarrow` was line eleven, and the report read **"no test pins this list"** |
+| 11 | every read of `server.py` for a day | the checkout was 785 commits behind `origin/main`. `/api/version` was reported **absent**; it has existed for weeks, and instance 1 above is about polling it |
 
 ### Four shapes, and the last is the one to fear
 
@@ -739,6 +741,40 @@ that had just deleted 37.8MB.
 **All three failed toward ALARM, which is why they were caught.** The dangerous
 half of this family is the one that fails toward reassurance — instances 1 and
 2 above, where a broken check and a healthy system are the same output.
+
+### THE WORKSPACE IS WRONG, so every answer inside it is true and irrelevant
+
+Instances 10 and 11, and the shallow clone the day before. A fifth shape, and it
+does not look like the other four: nothing here is a check at all. It is a
+**read** — a grep, a file opened, a route looked for — answering honestly about
+a workspace that is not the subject.
+
+- A `--depth=1` clone was used to author a change against `main`. It could not
+  see `flight-rebuild`, so a link it added in good faith was a blind duplicate
+  of one that already existed on another branch.
+- A branch was cut from a local `main` **785 commits behind** `origin/main`.
+  Every read inside it was accurate about a tree nobody deploys. It produced a
+  written, confident claim that `/api/version` is not a route — in a repository
+  where §12 instance 1 above is a story about polling it.
+- `grep … | head -10` truncated the one match that mattered. Same family as
+  instance 2's `tail -4` and the `tail -2` on the mount smoke: **the shell
+  discarded the answer and the exit status said nothing was wrong.**
+
+> **FETCH BEFORE YOU BRANCH, AND VERIFY THE BASE.** `git fetch` then
+> `git rev-list --left-right --count main...origin/main` before cutting a
+> branch. A clone is not current because it is a clone, and a checkout that
+> was correct last week answers this week's questions with last week's file.
+
+> **NEVER PIPE A SEARCH FOR ABSENCE THROUGH `head` OR `tail`.** "I found
+> nothing" and "I stopped looking" are the same output. If a claim is *no
+> occurrence exists*, the search that backs it must be unbounded — or counted
+> (`-c`, `-l`) so the number itself shows the window was not the limit.
+
+The tell is the same in all three: **the finding was about the workspace and was
+reported as being about the system.** Both halves of instance 11 were caught by
+something outside the workspace — CI ran the test the grep had missed, and the
+rebase pulled in the route the checkout did not have. Neither was caught by
+looking harder inside it, because inside it nothing was wrong.
 
 ### The positive case: make the failure LOUD and TOTAL
 
@@ -824,7 +860,13 @@ Before a check is worth having:
       neighbouring function — each answers honestly about something else. An
       error from your PROBE is not evidence about the subject.
 - [ ] Can the verdict be swallowed in transit? `cmd | tail` returns tail's exit
-      status. A prose assertion breaks on a line wrap.
+      status. A prose assertion breaks on a line wrap. A search for ABSENCE
+      piped through `head`/`tail` cannot tell "found nothing" from "stopped
+      looking" — leave it unbounded, or count with `-c`/`-l`.
+- [ ] Is the WORKSPACE the subject? `git fetch`, then
+      `git rev-list --left-right --count main...origin/main`, BEFORE cutting a
+      branch. A clone is not current because it is a clone, and every read
+      inside a stale tree is accurate about a tree nobody deploys.
 - [ ] If it bans a literal, can the correction that RETRACTS that literal still
       be written near it? Ask whether an occurrence is marked as retracted.
 - [ ] Does anything ELSE read the field this change moves or removes? A
