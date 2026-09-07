@@ -277,7 +277,10 @@ export default function PendingDeletionScreen() {
         </ScrollView>
 
         {/* Type-to-confirm: this is irreversible and cascades to storage. */}
-        <Modal visible={!!confirmTarget} transparent animationType="fade">
+        <Modal visible={!!confirmTarget} transparent
+          animationType="fade"
+          onRequestClose={() => { setConfirmTarget(null); setConfirmText(''); }}
+        >
           <View style={s.modalBackdrop}>
             <GlassCard variant="modal" style={s.modalCard}>
               <View style={s.itemHeader}>

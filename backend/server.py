@@ -6015,7 +6015,7 @@ from lib.logbook.daily_jobsite_source import (  # noqa: E402
 # The agreement to sign electronically, and the wording of every version of it.
 from lib.logbook.cs_attribution import (  # noqa: E402
     attribute_signer, attribution_sentence, normalise_licence,
-    is_registered_cs,
+    is_registered_cs, cs_filing_refused,
     MATCHED_ACCOUNT, MATCHED_LICENCE, NOT_REGISTERED_CS, NO_REGISTRATION,
     REGISTERED_LATER, UNDETERMINED,
 )
@@ -24381,6 +24381,63 @@ def _signed_by(cp_signature, current_user) -> dict:
     return {"signed_by": str(uid)}
 
 
+async def _refuse_if_not_the_superintendent(log_type, project_id, log_date,
+                                            current_user):
+    """Refuse a superintendent's log signed by somebody the project says is not
+    the superintendent.
+
+    BC 3301.13.13 IS THE CONSTRUCTION SUPERINTENDENT'S OWN RECORD. Until this
+    existed the only gates on the write path were project assignment and
+    project access -- neither of which knows what a log type is -- so ANY CP
+    assigned to the project could open, fill and sign it. On 588 Thomas that is
+    two accounts: the registered CS, and a temporary competent person.
+
+    NOT A ROLE CHECK, AND THE MODULE ALREADY SAID WHY. `role ==
+    "superintendent"` is held by NOBODY in production (admin 4, owner 3, cp 3),
+    and the registered CS on the one live project holds `cp`. A role gate would
+    refuse the only man who must file. The question is "is this the person the
+    project registered", and `cs_registrations` answers it.
+
+    THE REFUSAL IS NARROW ON PURPOSE. See `cs_filing_refused`: it fires only on
+    NOT_REGISTERED_CS -- the project HAS designated somebody and this is not
+    him. An absent registration does NOT gate, because refusing there would
+    block a log that must be filed before he leaves the site over a field an
+    admin has not filled in. That window is closed from the other side: the
+    activation flag now requires a registration.
+
+    READ-ONLY AND ORDERED LAST. It runs after the existing assignment and
+    project-access gates, so a caller who fails those still gets the answer
+    they got before, and it makes one query only for the one log type it
+    governs.
+    """
+    if log_type != "site_superintendent_log":
+        return
+    reg = await db.cs_registrations.find_one({
+        "project_id": str(project_id), "is_deleted": {"$ne": True},
+    })
+    if not reg:
+        return
+    result = attribute_signer(current_user, reg, log_date)
+    if not cs_filing_refused(result):
+        return
+    # THE NAME IS IN THE MESSAGE. A refusal that does not say who MAY file
+    # leaves the CP with nothing to do about it, and this is a log with a
+    # deadline -- 3301.13.13 requires it completed before he leaves the site.
+    who = reg.get("full_name") or "The registered superintendent"
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": "NOT_THE_REGISTERED_SUPERINTENDENT",
+            "message": (
+                "This is the construction superintendent's own log under "
+                f"BC 3301.13.13. {who} is registered on this project and is "
+                "the person who signs it."
+            ),
+            "registered_name": reg.get("full_name"),
+        },
+    )
+
+
 def _resolved_cp_name(log_type: str, submitted, user) -> Optional[str]:
     """Who signed this log, decided by the ACCOUNT and not by the keyboard.
 
@@ -24580,6 +24637,13 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
                     detail={"code": "SUBMIT_UNATTESTED_ITEMS",
                             "items": _unanswered},
                 )
+
+    # ── AND THE SUPERINTENDENT'S LOG IS HIS OWN ────────────────────────────
+    # Last of the gates, so a caller who fails assignment or project access
+    # still gets the answer they always got. See the helper for why the
+    # refusal is narrow and why it is not a role check.
+    await _refuse_if_not_the_superintendent(
+        data.log_type, data.project_id, data.date, current_user)
 
     # Check for existing entry same type+date (upsert logic).
     #
@@ -25110,6 +25174,16 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         _no_trade = _submit_missing_trade_detail(_cur.get("log_type"), _eff_data)
         if _no_trade:
             raise HTTPException(status_code=400, detail=_no_trade)
+        # THE SAME REFUSAL ON THE PATH THE CP ACTUALLY WALKS. Save Draft then
+        # Submit arrives here as a PUT, so a gate on create alone would let the
+        # wrong man file by taking the ordinary two-step route -- the identical
+        # hole SUBMIT_MISSING_CP_SIGNATURE was widened to cover.
+        #
+        # ON SUBMIT, NOT ON EVERY PUT: a draft is not a filed record, and
+        # refusing an autosave would strand work he can still hand over.
+        await _refuse_if_not_the_superintendent(
+            _cur.get("log_type"), _cur.get("project_id"), _cur.get("date"),
+            current_user)
 
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
@@ -26902,6 +26976,45 @@ async def set_logbook_activation(
             status_code=400,
             detail={"code": "ACTIVATION_STATE_REQUIRED", "log_type": log_type},
         )
+    # ── TURNING THE CS LOG ON REQUIRES SAYING WHO THE CS IS ─────────────────
+    #
+    # THE OTHER HALF OF THE FILING GATE, and neither half works alone.
+    # `_refuse_if_not_the_superintendent` deliberately does NOT refuse when a
+    # project has no registration -- blocking a log that must be filed before
+    # a man leaves the site, over a field an admin has not filled in, is the
+    # worse failure. That leaves an ungated state: flag on, nobody registered,
+    # anyone assigned may file.
+    #
+    # This closes it from the other side. The flag and the designation become
+    # ONE ACT, so the ungated state stops being reachable going forward.
+    #
+    # ON ACTIVATION ONLY, never on deactivation: switching the log OFF must
+    # always be possible, including on a project whose registration was
+    # removed. A gate that could trap a project in the on state would be worse
+    # than the one it replaces.
+    #
+    # 37 PROJECTS, ONE REGISTRATION, ONE FLAG ON -- and they are the same
+    # project only by coincidence today. This is what stops the second one
+    # diverging.
+    if active and entry["conditional"] == "superintendent_log_active":
+        _reg = await db.cs_registrations.find_one({
+            "project_id": str(project_id), "is_deleted": {"$ne": True},
+        })
+        if not _reg:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "ACTIVATION_REQUIRES_CS_REGISTRATION",
+                    "log_type": log_type,
+                    "message": (
+                        "Register the construction superintendent for this "
+                        "project first. BC 3301.13.13 is his own record, and "
+                        "the log cannot say whose it is until the project "
+                        "names him."
+                    ),
+                },
+            )
+
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
         {"$set": {entry["conditional"]: active,

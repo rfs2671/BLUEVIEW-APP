@@ -34,8 +34,7 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, Pressable, Modal, ScrollView } from 'react-native';
 import {
-  CalendarCheck, Lock, LockOpen, Pencil, FileWarning, Undo2,
-} from 'lucide-react-native';
+  CalendarCheck, Lock, LockOpen, Pencil, FileWarning, Undo2, X} from 'lucide-react-native';
 
 import { GlassCard } from './GlassCard';
 import GlassButton from './GlassButton';
@@ -291,11 +290,48 @@ export default function ProjectRetentionCard({ project, canEdit, onUpdated }) {
         )}
       </GlassCard>
 
-      <Modal visible={editing} transparent animationType="fade">
-        <View style={s.modalBackdrop}>
+      {/* ── THREE WAYS OUT, AND THIS HAD NONE THAT WORKED ─────────────────
+          The Close button existed, but as the LAST child of a ScrollView that
+          also holds two C of O inputs, a save button, the no-completion block
+          and the whole legal-hold block. On a phone it sat well below an
+          85%-height card, so the admin saw a modal with no exit, on a page he
+          uses daily.
+
+          `onRequestClose` was absent, so Android's hardware back did nothing;
+          the backdrop was a plain View, so tapping outside did nothing. The
+          only exit was the one he could not see.
+
+          THE HEADER X IS THE ACTUAL FIX. The other two are the affordances
+          that should have been there, and neither depends on the form's
+          length -- which is the thing that will keep growing. */}
+      <Modal
+        visible={editing}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !saving && setEditing(false)}
+      >
+        <Pressable
+          style={s.modalBackdrop}
+          onPress={() => !saving && setEditing(false)}
+        >
+          {/* STOPS THE TAP AT THE CARD. Without this, every press inside the
+              form bubbles to the backdrop and closes the modal mid-edit. */}
+          <Pressable style={s.modalCardWrap} onPress={(e) => e.stopPropagation()}>
           <GlassCard variant="modal" style={s.modalCard}>
             <ScrollView contentContainerStyle={s.modalScroll}>
-              <Text style={s.modalTitle}>Records & retention</Text>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>Records & retention</Text>
+                <Pressable
+                  onPress={() => !saving && setEditing(false)}
+                  disabled={saving}
+                  hitSlop={12}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
+                  style={s.headerClose}
+                >
+                  <X size={18} strokeWidth={2} color={colors.text.secondary} />
+                </Pressable>
+              </View>
 
               <Text style={s.fieldLabel}>Final certificate of occupancy</Text>
               <Text style={s.fieldHelp}>
@@ -456,7 +492,8 @@ export default function ProjectRetentionCard({ project, canEdit, onUpdated }) {
               </Pressable>
             </ScrollView>
           </GlassCard>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </>
   );
@@ -515,7 +552,13 @@ function buildStyles(colors) {
       flex: 1, backgroundColor: 'rgba(0,0,0,0.7)',
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
     },
-    modalCard: { width: '100%', maxWidth: 440, maxHeight: '85%' },
+    modalCardWrap: { width: '100%', maxWidth: 440, maxHeight: '85%' },
+    modalCard: { width: '100%', maxWidth: 440, maxHeight: '100%' },
+    modalHeader: {
+      flexDirection: 'row', alignItems: 'flex-start',
+      justifyContent: 'space-between', gap: spacing.sm,
+    },
+    headerClose: { padding: spacing.xs, marginTop: -spacing.xs },
     modalScroll: { padding: spacing.lg, gap: spacing.sm },
     modalTitle: {
       fontSize: 16, fontWeight: '700', color: colors.text.primary,
