@@ -157,6 +157,7 @@ export default function WorkerDetailScreen() {
 
   // OSHA & Safety Orientation (fetched from API)
   const [oshaCardImage, setOshaCardImage] = useState(null);
+  const [cardUnreadable, setCardUnreadable] = useState(false);
   const [oshaData, setOshaData] = useState(null);
   const [safetyOrientations, setSafetyOrientations] = useState([]);
   const [loadingOsha, setLoadingOsha] = useState(false);
@@ -300,7 +301,14 @@ export default function WorkerDetailScreen() {
   };
 
   const applyOsha = (data) => {
-    setOshaCardImage(data.osha_card_image || null);
+    // THE INLINE COPY, ELSE THE SIGNED URL. The card moved to R2; the base64
+    // is now the fallback the server sends only when R2 refused the object, so
+    // preferring it is preferring the copy known to exist.
+    setOshaCardImage(data.osha_card_image || data.osha_card_url || null);
+    // A CARD ON FILE WHOSE IMAGE WILL NOT LOAD IS NOT "NO CARD". <Image> fails
+    // silently — it renders nothing and this screen would show the empty state,
+    // which says the man has no card. He has one; we could not fetch it.
+    setCardUnreadable(!!data.osha_card_unavailable);
     setOshaData(data.osha_data || null);
     setSafetyOrientations(data.safety_orientations || []);
     // Only overwrite a signature we already have when this payload carries one.
@@ -693,13 +701,17 @@ export default function WorkerDetailScreen() {
                   <ActivityIndicator size="small" color={colors.text.muted} />
                   <Text style={s.emptyText}>Loading OSHA data...</Text>
                 </GlassCard>
-              ) : oshaCardImage ? (
+              ) : (oshaCardImage && !cardUnreadable) ? (
                 <GlassCard style={s.oshaCard}>
                   <Pressable onPress={() => setShowOshaCard(true)}>
                     <Image
                       source={{ uri: oshaCardImage }}
                       style={s.oshaCardImage}
                       resizeMode="contain"
+                      // SAYS SO RATHER THAN SHOWING A BLANK. A signed URL can
+                      // expire or point at an object that is gone, and neither
+                      // must read as "this worker has no card".
+                      onError={() => setCardUnreadable(true)}
                     />
                     <Text style={s.oshaCardTapHint}>Tap to enlarge</Text>
                   </Pressable>

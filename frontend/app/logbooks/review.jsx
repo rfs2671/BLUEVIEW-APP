@@ -133,6 +133,10 @@ export default function CheckInReviewScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [actingId, setActingId] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
+  // WHICH ROWS' CARD IMAGES FAILED TO LOAD, keyed by worker. Per-row
+  // because one dead link must not blank the card of every other man on
+  // the review screen.
+  const [cardFailed, setCardFailed] = useState({});
   // Project's configured trade roster, returned alongside the flagged list.
   const [roster, setRoster] = useState([]);
   // Which row currently has its trade picker open.
@@ -563,18 +567,39 @@ export default function CheckInReviewScreen() {
                   )}
 
                   {/* Card image for the decision */}
-                  {item.osha_card_image ? (
-                    <Pressable onPress={() => setZoomImage(item.osha_card_image)}>
-                      <Image
-                        source={{ uri: item.osha_card_image }}
-                        style={s.cardImage}
-                        resizeMode="contain"
-                      />
-                      <Text style={s.cardHint}>{t('viewCard')}</Text>
-                    </Pressable>
-                  ) : (
-                    <Text style={s.cardHint}>{t('noCard')}</Text>
-                  )}
+                  {/* ── THREE STATES, NOT TWO ────────────────────────────
+                      The card moved to R2, so `osha_card_image` is now the
+                      inline FALLBACK and `osha_card_url` a short-lived signed
+                      link. A link can fail where base64 could not — expired,
+                      offline, object gone — and <Image> FAILS SILENTLY: it
+                      renders nothing, keeps the "view card" hint under it, and
+                      never reaches the noCard branch.
+
+                      On the screen where an admin decides whether to admit a
+                      man with an expired or unknown SST, a blank box reads as
+                      a rendering glitch rather than as missing evidence. That
+                      would be worse than the base64 it replaced, so the
+                      failure is caught and SAID: "card on file, image could
+                      not be loaded" is a different fact from "no card". */}
+                  {(item.osha_card_image || item.osha_card_url)
+                    && !cardFailed[item.worker_id] ? (
+                      <Pressable onPress={() => setZoomImage(
+                        item.osha_card_image || item.osha_card_url)}>
+                        <Image
+                          source={{ uri: item.osha_card_image || item.osha_card_url }}
+                          style={s.cardImage}
+                          resizeMode="contain"
+                          onError={() => setCardFailed(
+                            (m) => ({ ...m, [item.worker_id]: true }))}
+                        />
+                        <Text style={s.cardHint}>{t('viewCard')}</Text>
+                      </Pressable>
+                    ) : (item.osha_card_image || item.osha_card_url
+                         || item.osha_card_unavailable) ? (
+                      <Text style={s.cardHint}>{t('cardUnreadable')}</Text>
+                    ) : (
+                      <Text style={s.cardHint}>{t('noCard')}</Text>
+                    )}
 
                   {/* Decision — for the expired-SST OR unknown-SST flag. On
                       unknown, "approved" ADMITS the worker but does NOT verify
