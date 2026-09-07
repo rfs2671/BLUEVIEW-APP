@@ -1435,6 +1435,13 @@ export default {
 
     progressLabel: 'GENERAL PROGRESS OF WORK',
     progressPlaceholder: 'What the job advanced today',
+    // SAYS WHOSE SENTENCE IT IS, AND WHAT SIGNING WILL MEAN. BC 3301.13.13
+    // item 2 does not require him to have composed it -- it requires the
+    // information to be in his log over his signature -- so adopting is
+    // legitimate and the note frames it as a check rather than a warning.
+    // "Edit it if the day looked different to you" invites the change without
+    // implying the CP got it wrong.
+    progressAdoptedNote: "Taken from the CP's daily jobsite log for this date. Signing makes it your account of the day — edit it if the day looked different to you.",
     activitiesLabel: 'WHAT YOU DID, AND WHERE',
     // ONE BOX NOW. The old placeholder here asked for the SECOND box's subject
     // ("Areas and floors you inspected") while the second box's LABEL asked for
