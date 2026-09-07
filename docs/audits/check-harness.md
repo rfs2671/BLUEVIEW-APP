@@ -13,6 +13,19 @@ If such an edit exists, the test is pinned to a location, a spelling or a count
 rather than to the property. It will fail on a correct change and pass on a
 wrong one, and both of those have happened here.
 
+And the one rule worth carrying out of this whole document, because it
+generalises past this codebase entirely:
+
+> **Design the failure so a broken CHECK and a broken SUBJECT look the same.
+> Then you cannot be reassured by an instrument that is not working.**
+
+It is stated here rather than only in §12, where it was learned. The strip
+migration is the worked example: any failed verification aborts the entire run,
+so when its own R2 client turned out to be `None` — a broken instrument, not
+unreadable objects — it refused to delete anything and said so loudly. Had it
+skipped the rows it could not check, it would have printed a clean finish over
+a check that never ran.
+
 ---
 
 > **If you read one section, read §10 — "Verify the pointer, not the report of
@@ -20,6 +33,12 @@ wrong one, and both of those have happened here.
 > `test_weasyprint_break_inside_semantics.py` cite section numbers by number and
 > renumbering would break them. It generalises further than anything above it:
 > *a tool reporting its own success is describing its intent, not the world.*
+
+> **And read §12 second.** §1 to §11 are about checks that ask the wrong
+> question. §12 is about checks that ask the right question of the wrong thing —
+> where the code is correct, the reasoning is correct, and the instrument is
+> pointed somewhere else. Nine instances in two days, and they fail toward
+> *"fine"*.
 
 
 ## 1. Three patterns that work
@@ -587,6 +606,135 @@ written into the test that depends on it rather than left to be rediscovered.
 ---
 
 
+## 12. A check whose TARGET or CHANNEL is wrong fails toward "fine"
+
+Every section above is about a check that asks the wrong QUESTION. This one is
+about checks that ask the right question **of the wrong thing**, or whose answer
+never arrives. None is a logic error, which is why none of the sections above
+holds them, and why they are hard to see: the code is correct, the reasoning is
+correct, and the check is pointed somewhere else.
+
+They almost all fail in the direction of *nothing is wrong*.
+
+All nine below were found in two days, by one author, on this codebase.
+
+### The instances
+
+| # | the check | what was actually wrong |
+|---|---|---|
+| 1 | deploy poll on `/api/version` | pointed at a dead host. Twelve polls returned `?`; the loop simply ran out |
+| 2 | `pytest tests/ \| tail -4` | the pipeline returned **tail's** status. A run with `1 failed` was reported `exit code 0` |
+| 3 | `assertNotIn("superintendentLogModel.test.cjs", …)` | failed on the correction that **retracts** the name |
+| 4 | `assertNotIn("SignaturePad", …)` | a bare substring, in a file whose subject is why no `SignaturePad` is there |
+| 5 | `assertIn("cannot run \`explain()\`", doc)` | defeated by a **line wrap** — the docstring reads `cannot run\n\`explain()\`` |
+| 6 | `get_workers`' own comment | *"what rescues that path is the projection"* — a check-shaped claim with nothing that could fail when it stopped being true |
+| 7 | `card_image_may_be_replaced` | read `osha_card_image`; the migration **removed that field** |
+| 8 | the strip's verifier | verified the data perfectly and never asked what the **running code** expected to find |
+| 9 | `_signed_by` stamped in `update_cp_profile` | the right check, applied to the wrong function — a user's signature *profile*, not a logbook |
+
+### Four shapes, and the last is the one to fear
+
+**THE TARGET IS WRONG.** 1, 4, 9. The check runs, answers honestly, and is
+looking at something else. A dead hostname returns `?` forever and `?` is not
+`false`.
+
+**THE CHANNEL SWALLOWS THE ANSWER.** 2, 5. The subject is fine and the verdict
+is lost in transit — a pipeline's exit status, a paragraph reflowed by an
+editor.
+
+> **An assertion about PROSE must not depend on formatting the author does not
+> control.** Reflowing a comment is not a change of meaning. Normalise
+> whitespace, or anchor to a construct.
+
+**THE CHECK CANNOT DISCUSS ITS OWN SUBJECT.** 3, 4. A ban on a literal fails on
+the sentence that retracts it, or on the comment explaining why the thing is
+absent — in a codebase that writes exactly those comments constantly.
+
+> Ask whether an occurrence is **marked as retracted**, not whether it occurs.
+> And *keep* the dead name inside the retraction: a correction that erases the
+> word the next person will grep for leaves their search empty, which reads as
+> **"no such problem"** rather than "already handled".
+
+**THE SUBJECT MOVED OUT FROM UNDER IT.** 6, 7, 8. The worst, because the check
+was right when written and nothing touched it. `card_image_may_be_replaced` was
+correct for a year and became wrong the moment an unrelated migration removed
+the field it reads — and *nothing in the migration's own checks could have seen
+it*. It was found by chance while reading the write path for another reason.
+
+> **A MIGRATION HAS TWO SUBJECTS AND THE VERIFIER ONLY EVER SEES ONE.** It
+> verifies the data. It does not verify the code that reads the data.
+>
+> Which gives the rule instance 8 cost: **a migration that changes a stored
+> shape is not done when the data is verified. It is done when the code that
+> reads the data is DEPLOYED. Strip last, never first.**
+
+Instance 8 is the sharpest illustration in this document of a check that was
+true and useless. Every verification run against the database was correct: 46
+objects HEADed, sizes matched at 0.75×, inline copies confirmed gone. And for
+the minutes between the strip and the merge, both card screens told an admin
+**"No card image on file"** for 46 workers who had one — on the screen where he
+decides whether to admit a man on an expired SST. The check was correct, the
+data was correct, and the two were correct **at different times**.
+
+### An error from the PROBE is not evidence about the SUBJECT
+
+Three in one sitting, and the tell is what saves you:
+
+- `AttributeError: module 'server' has no attribute 'worker_card_image_fields'`
+  — the probe ran from a checkout that did not have the change
+- `403` on `/workers/{id}/osha-card` — authenticated as the CP on an
+  admin-only route. **The gate working.**
+- `404` on a route path guessed rather than read
+
+Read as results, the first would have reported a broken reader on a migration
+that had just deleted 37.8MB.
+
+**All three failed toward ALARM, which is why they were caught.** The dangerous
+half of this family is the one that fails toward reassurance — instances 1 and
+2 above, where a broken check and a healthy system are the same output.
+
+### The positive case: make the failure LOUD and TOTAL
+
+The one place this went right is worth as much as the nine that went wrong.
+
+`strip_inline_worker_image.py` verifies every object before unsetting any, and
+**any failure aborts the whole run** — including the rows that already passed.
+On its first dry run, 26 of 26 HEADs reported *"R2 is not configured"* in an
+environment where all five `R2_*` variables were set: `server._r2_client` is
+assigned in `startup_event`, which a script never runs. **The verifier itself
+was broken.**
+
+It aborted having touched nothing.
+
+Had the rule been *"skip the rows that fail"*, it would have skipped all thirty,
+stripped nothing, and printed a clean finish — a silent success over a check
+that never ran, **on a job whose only safety IS that check**. Because any
+failure aborts, a broken verifier is indistinguishable from unreadable objects:
+loud, and refusing to delete.
+
+> Design the failure so a broken CHECK and a broken SUBJECT look the same. Then
+> you cannot be reassured by an instrument that is not working.
+
+That rule is repeated at the top of this document, because it is the one here
+that generalises past this codebase. This is where it was learned.
+
+And when a cross-check falls out of the data for free, **make it an assertion
+rather than a note**. The 0.75× size ratio between a base64 payload and its
+stored object was noticed by accident on one run and is now a required step: a
+HEAD proves an object is *there*, the ratio proves it is *this row's*
+photograph.
+
+### Why the bare-literal gate is the most productive check in this repo
+
+`test_absence_literals_are_specific.py` caught instances 3, 4 and 9's sibling,
+and a fourth the same day. Its failures are **almost all true** — every one was
+a real ambiguity, none was noise. That is rare enough to name: a check with a
+near-zero false-positive rate is one whose output people keep reading, which is
+the property §9 says a security check lives or dies by.
+
+---
+
+
 ## Checklist
 
 Before a check is worth having:
@@ -621,6 +769,21 @@ Before a check is worth having:
 - [ ] After a push, a merge or a deploy, did you read the OBSERVABLE STATE —
       the branch pointer, `/api/version`, the row count — or the command's own
       report of itself?
+- [ ] Is the check pointed at the RIGHT THING? A dead host, a stale checkout, a
+      neighbouring function — each answers honestly about something else. An
+      error from your PROBE is not evidence about the subject.
+- [ ] Can the verdict be swallowed in transit? `cmd | tail` returns tail's exit
+      status. A prose assertion breaks on a line wrap.
+- [ ] If it bans a literal, can the correction that RETRACTS that literal still
+      be written near it? Ask whether an occurrence is marked as retracted.
+- [ ] Does anything ELSE read the field this change moves or removes? A
+      migration has two subjects and the verifier only ever sees one — verify
+      the data, then verify the code that reads it is DEPLOYED.
+- [ ] If the check fails, does a broken CHECK look different from a broken
+      SUBJECT? If they look the same, good. If a broken check looks like
+      success, it is not a check.
+- [ ] Did a cross-check fall out of the data for free? Make it an assertion,
+      not a note.
 - [ ] Can anything written AFTER your refusal overwrite it? A guard expressed as
       a value is only as good as the last assignment to that key.
 - [ ] Does the guard you are relying on enforce in THIS environment? Read the
