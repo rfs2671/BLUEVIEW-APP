@@ -520,6 +520,73 @@ a different way.
 
 ---
 
+## 11. A refusal must be the LAST thing written, and its enforcement is a fact to check
+
+Two rules from one sweep, both about a guard that looks right and is not.
+
+### Caller-supplied narrowing first; the refusal last
+
+`get_projects_dob_summary` scopes a query two ways: the tenant filter, and an
+optional `project_id` **query parameter** that writes `_id`. The tenant refusal
+is also written to `_id`, as an unsatisfiable `_id: None`.
+
+Written in the obvious order — refusal, then the caller's narrowing — the second
+assignment **overwrites the first**. A company-less caller would have turned the
+guard off by supplying the very parameter it exists to stop:
+
+```python
+# WRONG
+if company_id:      q["company_id"] = company_id
+elif not operator:  q["_id"] = None
+if project_id:      q["_id"] = to_query_id(project_id)   # ← guard gone
+```
+
+```python
+# RIGHT
+if project_id:      q["_id"] = to_query_id(project_id)
+if company_id:      q["company_id"] = company_id
+elif not operator:  q["_id"] = None                      # ← nothing follows it
+```
+
+The two are compatible in the ordinary case: a scoped caller naming a project
+gets both keys, ANDed. It is only the refusal that must be unreachable by a
+later write. Where the order cannot be arranged — a filter built in a helper, a
+query assembled by a caller — use `$and` instead of merging, for the same
+reason: a merge lets a key be replaced, and `$and` does not.
+
+> A refusal expressed as a **value** can be overwritten. Write it last, or
+> express it as a **conjunction** that cannot be.
+
+### A gate's enforcement is a fact about the environment, not the code
+
+`require_platform_operator` reads as a hard gate. It is not, unconditionally:
+
+```python
+if not PLATFORM_GATES_ENFORCED:
+    logger.warning("[platform-gate SHADOW] would have blocked …")
+    return current_user
+```
+
+`PLATFORM_GATES_ENFORCED` defaults to `"false"`. In that mode the gate logs and
+**returns the caller**.
+
+A census written the same afternoon accepted that dependency as a guard equal to
+`require_project_access`. Reading only the default, the conclusion was that the
+census accepts a no-op — an alarm about a security check being hollow. Checking
+the deployed environment first: production sets it to `true`, and the gate does
+enforce there. The alarm was wrong.
+
+But the caveat is real for any environment that does not set it, so it is
+written into the test that depends on it rather than left to be rediscovered.
+
+> §9 applies to your own alarm. A guard's code says what it *would* do; the
+> environment says what it *does*. Read the deployed value before reporting that
+> a gate is hollow — and when it is conditional, put the condition in the test
+> that relies on it.
+
+---
+
+
 ## Checklist
 
 Before a check is worth having:
@@ -554,3 +621,8 @@ Before a check is worth having:
 - [ ] After a push, a merge or a deploy, did you read the OBSERVABLE STATE —
       the branch pointer, `/api/version`, the row count — or the command's own
       report of itself?
+- [ ] Can anything written AFTER your refusal overwrite it? A guard expressed as
+      a value is only as good as the last assignment to that key.
+- [ ] Does the guard you are relying on enforce in THIS environment? Read the
+      deployed value of any flag it consults before trusting it — or before
+      reporting that it is hollow.
