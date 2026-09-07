@@ -94,6 +94,8 @@ asked. It was correct and it walked the film to the end.
 > A removal is a **claim about a failure mode**. Re-entering that
 > neighbourhood re-opens the claim, whatever the new feature is called.
 
+### The CALL-GRAPH WALK — for "every X reachable from Y"
+
 `backend/tests/test_report_legal_vs_investor.py`. From
 `generate_combined_report`, take the transitive closure of direct calls and
 require every `render_signature_html` reached along the way to pass
