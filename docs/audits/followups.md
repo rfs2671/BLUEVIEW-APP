@@ -4218,3 +4218,31 @@ error message.
 duplicate and had to be reverted; the other nearly justified keeping an item on
 a nav bar measured at one point of headroom. A wrong diagnosis does not cost
 nothing just because the code turns out to be fine.
+
+## OPEN — 2026-09-07 — the OSHA card on the REVIEW screen has never been observed
+
+`GET /checkins/project/{id}/flagged` serialises a worker's card for
+`app/logbooks/review.jsx`, and after #466 it serves a short-lived signed R2 URL
+instead of inline base64. **That path has not been watched render.**
+
+WHAT WAS VERIFIED, AND WHAT WAS NOT. The sibling reader
+(`GET /workers/{id}/osha-card` -> `app/workers/[id].jsx`) was checked end to end
+against live production: 200, a presigned URL, and the URL FOLLOWED and its
+bytes read — 71,104 bytes, JPEG magic present. The review reader goes through
+the SAME `worker_card_image_fields`, so it is verified BY SHARED CODE PATH.
+
+It could not be observed because that endpoint only returns workers flagged on
+an expired or unknown SST, and on the day of the change there were none. It
+returned 200 with zero rows.
+
+WHAT TO LOOK FOR ON THE FIRST FLAGGED CHECK-IN. The row should show the card
+image. If it shows **"Card on file — the image could not be loaded"**, the
+presign or the object is the problem, not the screen — that message is the
+honest third state and it is working as designed. If it shows **"No card image
+on file"** for a worker who has one, the resolver is not reaching that
+serialisation and that IS the defect.
+
+WHY THIS IS WRITTEN DOWN RATHER THAN LEFT. Verification by shared code path is
+weaker than observation, and the difference disappears from memory in a week.
+Whoever sees the first flagged check-in should know to look, rather than
+assuming it was covered.

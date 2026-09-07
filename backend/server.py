@@ -24345,6 +24345,42 @@ def _submit_missing_trade_detail(log_type, payload):
 CP_NAME_IS_PER_ROW = ("subcontractor_orientation",)
 
 
+def _signed_by(cp_signature, current_user) -> dict:
+    """THE ACCOUNT WHOSE REQUEST CARRIED THE SIGNATURE, or nothing.
+
+    WHY THIS IS NOT `finalized_by`, MEASURED. Of 266 submitted logbooks only 51
+    carry `finalized_by`, and of those 29 DISAGREE with `created_by` -- every
+    one of them reading `system:eod_sweep`. That field records whoever FROZE
+    the record, and for the two END_OF_DAY types the freezer is the overnight
+    sweep. A machine is not a signer, and a field answering "who signed" with a
+    cron job is worse than one answering nothing.
+
+    WHY NOT `created_by` EITHER. It is stamped when the DRAFT is created. On a
+    shared site device the man who opens the form and the man who signs it can
+    differ -- precisely the two-competent-persons case item 8's default exists
+    for. Measured, they have never diverged (38 of 38), but "has not happened"
+    is not "cannot happen", and item 8 reads this to put a name on a
+    BC 3301.13.12 designation.
+
+    SO IT IS WRITTEN WHERE THE SIGNATURE ARRIVES, from the authenticated
+    session and never from the body. A client cannot claim to be someone else
+    by sending a different id, because it is not asked for one.
+
+    NOTHING IS WRITTEN WITHOUT A SIGNATURE. An unsigned draft has no signer,
+    and stamping the account that saved it would assert one -- the
+    absence-read-as-a-claim shape this file keeps closing.
+
+    FORWARD-ONLY. Nothing backfills the 266 filed records; they say what they
+    recorded, and designatedCp.js falls back to `created_by` for them.
+    """
+    if not cp_signature:
+        return {}
+    uid = (current_user or {}).get("id") or (current_user or {}).get("_id")
+    if not uid:
+        return {}
+    return {"signed_by": str(uid)}
+
+
 def _resolved_cp_name(log_type: str, submitted, user) -> Optional[str]:
     """Who signed this log, decided by the ACCOUNT and not by the keyboard.
 
@@ -24692,6 +24728,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
             # DERIVED, NOT SUBMITTED -- see _resolved_cp_name.
             "cp_name": _resolved_cp_name(data.log_type, data.cp_name, current_user),
+            **_signed_by(data.cp_signature, current_user),
             "status": data.status,
             # Tier 1 (2): an immediate/pre-shift log freezes on submit
             # (sign-now-and-lock). No-op until counsel classifies a log.
@@ -24730,6 +24767,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "date": data.date,
         "data": data.data,
         "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
+        **_signed_by(data.cp_signature, current_user),
         # DERIVED, NOT SUBMITTED -- see _resolved_cp_name. The orientation is
         # the one type that keeps the client's value, because its cp_name is
         # the trainer's attestation rather than the filer's.
@@ -25083,6 +25121,9 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         update["cp_signature"] = _finalize_cp_signature(
             data.cp_signature, (_lb or {}).get("date"), now
         )
+        # THE PATH THE CP ACTUALLY WALKS. Save Draft then Submit arrives here
+        # as a PUT, so a stamp on create alone would miss most real signings.
+        update.update(_signed_by(data.cp_signature, current_user))
     if data.cp_name is not None:
         # DERIVED FOR THE TEN, SUBMITTED FOR THE ORIENTATION -- see
         # _resolved_cp_name. `existing_lb` is the stored document, so the log

@@ -88,20 +88,40 @@
  * Those are different claims, and on a shared site device with two CPs — the
  * case this default exists for — one man creating a draft and another signing
  * it is the ordinary way they diverge. Measured, they never have (38 of 38).
- * The durable answer is a server-set `signed_by` on the logbook at finalize;
- * when it exists, `ANCHOR_FIELD` moves and nothing else here changes.
+ * THAT IS NOW CLOSED, and not where this note expected. `signed_by` is stamped
+ * where the SIGNATURE ARRIVES, not at finalize -- because `finalized_by`
+ * already existed and measuring it showed what it really holds: 29 of the 51
+ * rows that carry it read `system:eod_sweep`, the overnight freeze rather than
+ * a person. Finalize is the wrong moment; the signing request is the right one.
+ *
+ * `created_by` remains the fallback for the 266 records filed before it, which
+ * are not rewritten.
  */
 
 import { filedDailyRecord } from './dailyLogRecord';
 import { isSamePerson } from '../components/CompetentPersonPicker';
 
 /**
- * The field on the filed daily log that names the account.
+ * The fields that name the account, in order of preference.
  *
- * NAMED RATHER THAN INLINE because it is the thing that changes when
- * `signed_by` lands: the anchor moves, the rule does not.
+ * `signed_by` FIRST, AND IT HAS NOW LANDED. It is stamped server-side where
+ * the SIGNATURE arrives, from the authenticated session -- so it answers "who
+ * put his name to this day" rather than "who opened the form". On a shared
+ * site device those can differ, which is exactly the two-competent-persons
+ * case this default exists for.
+ *
+ * `created_by` SECOND, AND IT STAYS FOREVER. 266 logbooks were filed before
+ * `signed_by` existed and NOTHING BACKFILLS THEM -- a filed compliance record
+ * is not rewritten to a shape that reads better. For those days the draft's
+ * creator remains the best available answer, and it was measured against the
+ * signature ledger at 38 of 38 with zero disagreements.
+ *
+ * NOT `finalized_by`, and the measurement is the reason: 51 of 266 rows carry
+ * it and 29 of those disagree with `created_by`, every one reading
+ * `system:eod_sweep`. It names whoever FROZE the record, which for the two
+ * END_OF_DAY types is the overnight sweep. A cron job is not a signer.
  */
-export const ANCHOR_FIELD = 'created_by';
+export const ANCHOR_FIELDS = ['signed_by', 'created_by'];
 
 /**
  * The roster row item 8 should open on, or null.
@@ -120,7 +140,13 @@ export function designatedCpDefault(rows, roster) {
   const record = filedDailyRecord(rows);
   if (!record) return null;
 
-  const account = String(record[ANCHOR_FIELD] || '').trim();
+  // FIRST FIELD THAT HAS A VALUE, not a merge of them. If a log carries both,
+  // `signed_by` is the more specific claim and wins outright; falling through
+  // to `created_by` when it is present would answer a question about signing
+  // with a fact about drafting.
+  const account = ANCHOR_FIELDS
+    .map((f) => String(record[f] || '').trim())
+    .find(Boolean) || '';
   if (!account) return null;
 
   const matches = (Array.isArray(roster) ? roster : [])

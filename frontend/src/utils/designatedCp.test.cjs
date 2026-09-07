@@ -68,7 +68,7 @@ const isSamePerson = (() => {
   // eslint-disable-next-line no-new-func
   return new Function(`${PICKER.slice(i, j + 2).replace('export ', '')}\nreturn isSamePerson;`)();
 })();
-const { designatedCpDefault, ANCHOR_FIELD } = loadEsm(
+const { designatedCpDefault, ANCHOR_FIELDS } = loadEsm(
   read('designatedCp.js'), { filedDailyRecord, isSamePerson });
 
 // ── FIXTURES, FROM PRODUCTION ──────────────────────────────────────────────
@@ -206,9 +206,27 @@ ok('identity goes through the shared rule',
   /import \{ isSamePerson \} from '\.\.\/components\/CompetentPersonPicker'/
     .test(read('designatedCp.js')),
   'a hand-rolled id comparison would be a second identity rule');
-ok('the anchor field is named rather than inlined',
-  ANCHOR_FIELD === 'created_by',
-  'it moves to signed_by when that exists, and nothing else changes');
+// ── THE ANCHOR MOVED, AND BOTH HALVES MATTER ──────────────────────────────
+ok('signed_by is preferred over created_by',
+  ANCHOR_FIELDS[0] === 'signed_by' && ANCHOR_FIELDS[1] === 'created_by',
+  'signed_by answers "who put his name to this day"; created_by answers "who '
+  + 'opened the form", and on a shared device those differ');
+ok('a log carrying BOTH resolves on signed_by',
+  designatedCpDefault(
+    [daily({ created_by: MICHAEL.id, signed_by: WILSON.id })], ROSTER) === WILSON,
+  'falling through to created_by when signed_by is present would answer a '
+  + 'question about signing with a fact about drafting');
+ok('and a log with only created_by still resolves',
+  designatedCpDefault([daily({ created_by: MICHAEL.id })], ROSTER) === MICHAEL,
+  '266 logbooks were filed before signed_by existed and NOTHING backfills '
+  + 'them — the fallback is permanent, not transitional');
+ok('an empty signed_by falls through rather than blocking',
+  designatedCpDefault(
+    [daily({ created_by: MICHAEL.id, signed_by: '  ' })], ROSTER) === MICHAEL);
+ok('finalized_by is NOT an anchor',
+  !ANCHOR_FIELDS.includes('finalized_by'),
+  '29 of the 51 rows carrying it read system:eod_sweep — it names whoever '
+  + 'FROZE the record, which for END_OF_DAY types is the overnight sweep');
 
 console.log('\nthe screen');
 
