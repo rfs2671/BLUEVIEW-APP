@@ -39027,7 +39027,7 @@ async def _handle_project_info(project_id: str) -> str:
     return "\n".join(lines)
 
 
-APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://app.levelog.com")
+from lib.app_urls import APP_BASE_URL  # single definition; see lib/app_urls.py
 
 
 def _permit_renewal_deep_link(project_id: str, permit_id: str) -> str:

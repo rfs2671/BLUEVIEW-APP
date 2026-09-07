@@ -71,10 +71,11 @@ NOTIFICATION_FROM_ADDRESS = os.environ.get(
     "Levelog <notifications@levelog.com>",
 )
 
-# Frontend base URL for action_link generation. Mirrors APP_BASE_URL
-# in server.py:_permit_renewal_deep_link. Override per environment
-# (preview vs production) via env var.
-APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://www.levelog.com")
+# Frontend base URL for action_link generation. Defined once, in
+# lib/app_urls.py. This file and server.py used to declare it separately, and
+# the two defaults had drifted apart — www here, app there — which nothing
+# could see while the environment variable was set.
+from lib.app_urls import APP_BASE_URL  # noqa: E402
 
 # Idempotency window — slightly less than 24h so a daily cron at 7am
 # still dedups when it drifts a few minutes late. See module docstring.
