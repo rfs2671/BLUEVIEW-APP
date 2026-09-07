@@ -389,6 +389,53 @@ The port that fixed it also refused to copy the combined report's `h2` and
 that never appears reads on the next audit as a protection that is in place —
 the same defect as the false docstring, spelled in CSS.
 
+### THE POSITIVE CASE: a comment that says what a thing must NOT be used for
+
+Every instance above is a claim that was false, or that went stale. This one is
+a **true claim, written by someone who anticipated the misuse, doing its job on
+the day.** The section needs it, or it reads as an argument for writing fewer
+comments.
+
+`is_registered_cs` in `lib/logbook/cs_attribution.py` answers "does this
+attribution say the signer IS the registered CS". Its docstring ends:
+
+> THIS IS SAFE ONLY BECAUSE IT GATES A SHORTCUT. The log stays reachable from
+> the CP dashboard for anyone assigned to the project, so a superintendent whose
+> registration an admin has not yet filled in loses a menu entry, not the
+> ability to record his visit. **If this predicate is ever used to REFUSE a
+> filing, that reasoning collapses and the module's first rule — IT NEVER
+> BLOCKS — is broken.**
+
+Months later a role gate was ruled for the superintendent's log: a competent
+person could file a BC 3301.13.13 record, and only the registered construction
+superintendent should. `is_registered_cs` is the obvious predicate — named for
+the question, already imported, returning a boolean that reads correctly at the
+call site.
+
+**It returns `False` for `NO_REGISTRATION`.** Using it would have refused every
+filing on a project whose registration an admin had not yet created, blocking a
+log that must be completed before a man leaves the site over a missing office
+field. The ruling that commissioned the gate had named that exact failure as the
+one to avoid, and the obvious implementation would have caused it.
+
+**Nothing else would have caught it.** There is no check for "this predicate was
+used somewhere its author excluded". The type is right, the name is right, and
+on the one live project the two answers coincide, so the tests would have been
+green. The docstring was the only thing between a correct ruling and its
+opposite.
+
+> **A COMMENT THAT STATES WHAT A THING MUST NOT BE USED FOR IS WORTH MORE THAN
+> ONE THAT STATES WHAT IT DOES.**
+>
+> What it does is recoverable by reading it. What its author knew would break if
+> it were used elsewhere is not.
+
+The fix was a **second predicate** — `cs_filing_refused`, with the opposite
+answer on exactly that state — rather than a widening of the first. Widening it
+would have silently changed what it means for its existing menu caller, which is
+the rest of this section: that caller's claim would have become false without one
+line of it changing.
+
 ---
 
 ## 9. A mechanism is not an incident. A population is not an incident.
@@ -756,6 +803,10 @@ Before a check is worth having:
 - [ ] Does any prose in the change assert a RELATIONSHIP — "same as", "reuses",
       "mirrors", "production-shaped"? If nothing fails when that stops being
       true, either write the check or delete the claim.
+- [ ] Does the thing you are about to reuse say what it must NOT be used for?
+      A predicate named for your question can still answer a different one —
+      `is_registered_cs` returns False for "nobody is registered", which is
+      right for a menu and catastrophic for a gate.
 - [ ] Does the change add a rule for a selector, key or branch this code does
       not actually emit? Dead protection reads as protection.
 - [ ] Are you reporting HARM, or a code path that could cause it? If harm, name
