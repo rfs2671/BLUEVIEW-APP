@@ -4,6 +4,51 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OPEN — 2026-09-07 — /a/{id} is broken at four hops, not one
+
+Found during the levelog.com cutover, while checking which hardcoded URLs would
+break when the apex became the marketing site. The annotation short link looked
+like a one-line domain fix. It is not: **every hop in the chain is already
+broken, and was before the cutover.**
+
+`server.py::annotation_short_link` serves an HTML page that tries a deep link
+and falls back to a web URL.
+
+1. `web_url = f"https://levelog.com/plans?annotation={annotation_id}"` —
+   **`/plans` is not a route.** There is no `plans` file anywhere in the Expo
+   Router tree under `frontend/app/`. Before the cutover this served the app
+   shell; after it, the marketing homepage. Repointing it at `app.levelog.com`
+   moves the 404, it does not fix it.
+2. `deep_link = f"levelog://annotation/{annotation_id}"` — **nothing handles
+   that scheme path.** `grep -rn "levelog://"` finds exactly one occurrence in
+   the repo: this line, generating it. No route, no linking config, no handler
+   consumes it.
+3. **The handler never loads the annotation.** It has an id and builds strings
+   from it. Annotations are viewed per PROJECT, so any working URL needs a
+   `project_id` the handler does not fetch and does not have.
+4. **`frontend/app/projects/[id]/files.jsx` reads no `annotation` param.** It
+   takes `{ id: projectId }` from `useLocalSearchParams` and nothing else. A
+   correct URL arriving there today would open the files screen and ignore
+   which annotation was asked for.
+
+### What it should point at
+
+`{APP_BASE_URL}/projects/{project_id}/files?annotation={annotation_id}` — which
+needs a lookup in the handler to resolve annotation → project, and a param
+reader in `files.jsx` to focus it. Two changes across two repos, plus a decision
+about the deep link: either register the scheme or drop it and stop emitting a
+URL nothing answers.
+
+### Why it is deferred rather than fixed
+
+It is a feature, not a cutover regression. The link was equally dead the day
+before the domains moved; the cutover only changed WHICH wrong page it reaches.
+Recorded here so the next person who sees `https://levelog.com/plans` in
+`server.py` and reaches for a find-and-replace knows that three more things are
+waiting behind it.
+
+---
+
 ## PRACTICE — 2026-09-05 — one agent, one worktree. Never the primary checkout.
 
 **Two collisions in one day, and the second nearly shipped a roster picker
