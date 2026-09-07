@@ -43,6 +43,15 @@ test, not during it).
 """
 
 import os
+
+# APP_BASE_URL has no default any more (lib/app_urls.py): a wrong default puts a
+# dead link in a customer's email and nothing goes red, so the variable is
+# required and the process refuses to start without it. The suite supplies its
+# own here, before any test module imports server.
+os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
+
+
+import os
 import sys
 from pathlib import Path
 

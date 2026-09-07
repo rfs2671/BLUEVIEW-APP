@@ -53,6 +53,8 @@ jobs:
           JWT_SECRET: "smoke_test"
           QWEN_API_KEY: ""
           ELIGIBILITY_REWRITE_MODE: "off"
+          # No default any more - see backend/lib/app_urls.py
+          APP_BASE_URL: "https://app.levelog.com"
         run: |
           set -e
           # Mirror Railway's Dockerfile: cwd = repo root, import
@@ -68,6 +70,8 @@ jobs:
           JWT_SECRET: "smoke_test"
           QWEN_API_KEY: ""
           ELIGIBILITY_REWRITE_MODE: "off"
+          # No default any more - see backend/lib/app_urls.py
+          APP_BASE_URL: "https://app.levelog.com"
         run: |
           set -e
           # Mirror Railway's Procfile: `cd backend && uvicorn ...`.
