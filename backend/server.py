@@ -15910,6 +15910,31 @@ async def get_workers(
     # does not help: Mongo must sort the whole matched set before it can take
     # the first fifty.
     #
+    # ── AND THE PROJECTION DOES NOT FIX THE SORT. IT NEVER DID. ────────────
+    #
+    # This returned 500 again from 2026-09-03, and the reason is that the fix
+    # above was only ever half a fix while its comment claimed to be whole.
+    # The plan, taken against production:
+    #
+    #     PROJECTION_SIMPLE  <-  SORT  <-  COLLSCAN
+    #
+    # The projection sits ABOVE the sort. Mongo sorts WHOLE DOCUMENTS and
+    # applies the projection to the fifty that survive, so the images leave the
+    # RESPONSE and never leave the SORT. What actually rescued the
+    # company-scoped callers was the INDEX `workers_by_company_name`, which
+    # removes the sort stage entirely; the projection reduced bytes on the wire
+    # and nothing else.
+    #
+    # The platform operator has no company_id, so that index cannot serve his
+    # query, and until `workers_by_name` was added he had no index at all. His
+    # path stopped failing in September only because the collection had briefly
+    # fallen under 32MB, and it crossed back on 2026-09-03 11:45.
+    #
+    # THE PROJECTION STAYS. It is correct and it is what keeps a 51MB
+    # collection from being serialised into a response. It is simply not what
+    # makes the sort possible, and the comment that said it was is why nobody
+    # added the index.
+    #
     # That made it DATA-DEPENDENT, not request-dependent: it began the moment
     # that company crossed the limit and then failed on every load, for every
     # admin on that company, on every device. The sibling call in the same
@@ -45284,13 +45309,60 @@ async def startup_event():
     # cannot serve a `name` sort, so this is a new key rather than a duplicate.
     #
     # NOT A COMPLETE FIX ON ITS OWN. The platform-operator path queries with no
-    # company_id at all, so this index cannot serve that sort either. What
-    # rescues that path is the projection -- with the images gone the sort fits
-    # in memory regardless of whether an index is used.
+    # company_id at all, so this index cannot serve that sort either. THE
+    # SENTENCE THAT USED TO FOLLOW WAS FALSE, and it is why the endpoint broke
+    # again: it said the projection rescues that path, "with the images gone
+    # the sort fits in memory regardless of whether an index is used".
+    #
+    # THE PLAN SAYS OTHERWISE. Against production, for the operator's query:
+    #
+    #     stages: ['PROJECTION_SIMPLE', 'SORT', 'COLLSCAN']
+    #
+    # PROJECTION_SIMPLE sits ABOVE SORT. The sort holds WHOLE DOCUMENTS and the
+    # projection is applied to the fifty that survive it, so the images are
+    # gone from the RESPONSE and never from the SORT. That path was never
+    # fixed; it merely stopped failing, because the collection was under 32MB
+    # on the day. It crossed 32MB again on 2026-09-03 11:45 -- 61 workers, 51.7
+    # MB, 848KB per document -- and every load by the platform operator has
+    # returned 500 since.
+    #
+    # `workers_by_name` below is what the operator's path actually needed, and
+    # is the same mechanism as the compound above with the prefix dropped.
     await _ensure_index_resilient(
         db.workers,
         keys=[("company_id", 1), ("name", 1)],
         name="workers_by_company_name",
+    )
+    # ── THE SAME SORT, WITHOUT THE COMPANY PREFIX ──────────────────────────
+    #
+    # The platform operator has no company_id, so GET /workers issues
+    # `{is_deleted: {$ne: True}}` sorted on `name` with NO equality prefix --
+    # and `(company_id, name)` cannot serve that, because an index only
+    # provides ordering on `name` once `company_id` is pinned by equality.
+    # The planner has nothing else offering name-order, so it takes a COLLSCAN
+    # and a BLOCKING in-memory SORT over every worker document on the
+    # platform.
+    #
+    # A PLAIN `name` KEY, NOT A PARTIAL ONE. `workers_active_by_company` above
+    # is partial on `is_deleted: {$eq: False}`, which cannot serve this query:
+    # the filter is `$ne: True`, which MATCHES DOCUMENTS WITH NO is_deleted
+    # FIELD, and a partial index on `$eq: False` excludes exactly those. An
+    # index that silently omits the rows the query wants is worse than none.
+    #
+    # AND `is_deleted` IS NOT IN THE KEY, for the reason given above: a $ne is
+    # not selective, and putting it before `name` would break the ordering the
+    # sort depends on.
+    #
+    # THIS FIXES THE CRASH, NOT THE DISEASE. The documents are 848KB on average
+    # because `osha_card_image` (37.8MB) and `selfie_image` (12.9MB) are stored
+    # as base64 ON the worker row -- and 26 of the 30 selfies ALSO have a
+    # `selfie_r2_url`, so the object is already in R2 and the base64 is a
+    # second copy. Moving them out is the real answer and it is a migration,
+    # not a hotfix. See docs/audits/followups.md.
+    await _ensure_index_resilient(
+        db.workers,
+        keys=[("name", 1)],
+        name="workers_by_name",
     )
     await db.checkins.create_index(
         [("project_id", 1), ("status", 1)],
