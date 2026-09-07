@@ -1497,6 +1497,12 @@ export default {
     // case, not an exception being tolerated.
     cpEnterByHand: 'Enter a competent person not on this list',
     cpRosterFailed: "Could not load your company's competent persons. Check your signal, or enter the name by hand below.",
+    // THE CLAIM IS IN THE LABEL, not only in the note. 3301.13.12 makes the
+    // absence of a designation lawful ONLY where the superintendent was on
+    // site whenever active work occurred, so a bare "none designated" would
+    // be an admission filed on one tap. Wording approved by the operator.
+    cpNoneDesignated: 'No competent person designated — I was on site at all times active work occurred',
+    cpNoneDesignatedNote: '3301.13.12 requires a competent person whenever active work happens and you are not on site. This is your statement that you were here throughout — not a blank.',
     cpTypedLabel: 'NAME OF THE COMPETENT PERSON',
     cpTypedPlaceholder: 'Their full name',
     competentPersonNote: 'Their name goes on the record. Their signature is not collected in this release — the log states that rather than leaving a blank a reader would take for "nobody was designated".',

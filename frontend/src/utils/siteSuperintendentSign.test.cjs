@@ -240,6 +240,12 @@ console.log('\n3b. A LOG CANNOT FILE WITH EITHER TIME BLANK');
     orders_given: { none_to_report: true },
     dob_actions: { none_to_report: true },
     incidents: { none_to_report: true },
+    // ITEM 8 JOINED THE ATTESTABLE SET, so it has to be answered here or this
+    // fixture stops isolating what the test is about. The subject is the
+    // PRESENCE TIMES: csUnanswered cannot name them however blank they are,
+    // because item 1 is `attestable: false`. An unanswered item 8 leaking into
+    // the result would make this pass or fail for the wrong reason.
+    competent_person: { none_to_report: true },
   };
   ok(M.csUnanswered(blankPresence, '2026-09-03').length === 0,
     'csUnanswered names NOTHING for a log with both times blank — the gate '

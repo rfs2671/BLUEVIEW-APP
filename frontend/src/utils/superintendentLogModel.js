@@ -58,7 +58,13 @@ export const CS_LOG_ITEMS = Object.freeze([
   { key: 'orders_given', number: 5, label: 'Orders and notices given', attestable: true, collected: true, fields: ['entries'] },
   { key: 'dob_actions', number: 6, label: 'Violations, stop work orders and summonses', attestable: true, collected: true, fields: ['entries'] },
   { key: 'incidents', number: 7, label: 'Incidents or damage, including to adjoining property', attestable: true, collected: true, fields: ['entries'] },
-  { key: 'competent_person', number: 8, label: 'Competent person', attestable: false, collected: true, sunsetOn: COMPETENT_PERSON_SUNSET, fields: ['name', 'signature'] },
+  // ATTESTABLE, and the ONLY item whose "none" is conditional. 3301.13.12
+  // makes the absence of a designation lawful in exactly one circumstance --
+  // the superintendent was on site whenever active work occurred -- so the
+  // tick asserts that presence and `noneLabel` says so on the document. A bare
+  // "none designated" would be an admission filed on one tap. See the long
+  // note on the Python item.
+  { key: 'competent_person', number: 8, label: 'Competent person', attestable: true, noneLabel: 'None designated &#183; {who} attests he was present at the job site at all times active work occurred', collected: true, sunsetOn: COMPETENT_PERSON_SUNSET, fields: ['name', 'signature'] },
   { key: 'cs_changes', number: 9, label: 'Superintendent changes', attestable: false, collected: false, startsOn: COMPETENT_PERSON_SUNSET, fields: [] },
   { key: 'weekly_meeting', number: 10, label: 'Weekly safety meeting', attestable: false, collected: false, fields: [] },
   { key: 'daily_inspection', number: 11, label: 'Daily inspection', attestable: false, collected: true, fields: ['inspected_on', 'location', 'result'] },

@@ -99,10 +99,38 @@ class TheElevenItems(unittest.TestCase):
         for i in SL.ITEMS:
             self.assertTrue(i.get("citation"), i["key"])
 
-    def test_the_four_attestable_items_are_the_ones_empty_most_days(self):
+    def test_the_attestable_items_are_the_ones_that_can_be_honestly_empty(self):
+        """FOUR BECAME FIVE, AND THE FIFTH IS A DIFFERENT KIND OF CLAIM.
+
+        Items 4 to 7 are empty on most days and their "none" is a BARE
+        NEGATIVE: nothing was observed, nothing was issued.
+
+        ITEM 8 JOINED THEM because it could say only a name or "&mdash; Not
+        recorded", with no way to record "nobody was designated, I was on site
+        myself" -- which 3301.13.12 makes lawful and which on this product's
+        first customer is the likely answer. The document could not tell "he
+        did not answer" from "there was nothing to designate": the
+        three-kinds-of-empty defect this module was built around, surviving on
+        the one collected item excluded from it.
+
+        ITS "NONE" IS CONDITIONAL, WHICH IS WHY IT CARRIES ITS OWN WORDING.
+        3301.13.12 requires a designation whenever active work occurs and the
+        superintendent is NOT at the site, so the absence is lawful in exactly
+        one circumstance and the attestation states that circumstance. A bare
+        "none designated" would be an admission filed on one tap. See
+        `none_label` on the item and test_item_8_can_say_none_designated.py.
+        """
         self.assertEqual(
             SL.ATTESTABLE_KEYS,
-            ("unsafe_conditions", "orders_given", "dob_actions", "incidents"))
+            ("unsafe_conditions", "orders_given", "dob_actions", "incidents",
+             "competent_person"))
+
+    def test_only_item_8_carries_its_own_attested_none_wording(self):
+        """The other four share the generic string, and must keep sharing it --
+        a per-item label on a bare negative would be four ways of saying the
+        same thing, which is how a reader stops reading them."""
+        labelled = [i["key"] for i in SL.ITEMS if i.get("none_label")]
+        self.assertEqual(labelled, ["competent_person"])
 
     def test_incidents_and_adjoining_property_are_ONE_item(self):
         """Adjoining-property damage is a SUBSET of incidents, not a parallel
