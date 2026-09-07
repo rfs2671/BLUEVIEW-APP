@@ -298,12 +298,21 @@ class TheSignatureIsSTILLNotCollected(unittest.TestCase):
         self.assertIn("signature", item["fields"])
 
     def test_and_nothing_on_any_screen_can_produce_one(self):
+        """ANCHORED TO THE MOUNT, NOT TO THE WORD.
+
+        `test_absence_literals_are_specific.py` failed this on the bare
+        literal, and it was right: a plain "SignaturePad" is satisfied -- or
+        BROKEN -- by anything containing it, and this codebase writes
+        explanatory comments constantly. A comment in this region saying "no
+        SignaturePad here, and here is why" would have failed the test that
+        exists to notice a pad being ADDED. `<SignaturePad` is the mount.
+        """
         screen = (_BACKEND.parent / "frontend" / "app" / "logbooks"
                   / "site_superintendent_log.jsx").read_text(encoding="utf-8")
         i = screen.index("competentPersonHeading")
         j = screen.index("signHeading", i)
-        self.assertNotIn("SignaturePad", screen[i:j],
-                         "if a pad has been added here, item 8 can now be "
+        self.assertNotIn("<SignaturePad", screen[i:j],
+                         "if a pad has been mounted here, item 8 can now be "
                          "complete and this file's premise has changed")
 
 
