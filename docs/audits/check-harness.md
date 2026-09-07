@@ -37,7 +37,7 @@ a check that never ran.
 > **And read §12 second.** §1 to §11 are about checks that ask the wrong
 > question. §12 is about checks that ask the right question of the wrong thing —
 > where the code is correct, the reasoning is correct, and the instrument is
-> pointed somewhere else. Twelve instances in two days, and they fail toward
+> pointed somewhere else. Thirteen instances in two days, and they fail toward
 > *"fine"*.
 
 
@@ -691,7 +691,7 @@ correct, and the check is pointed somewhere else.
 
 They almost all fail in the direction of *nothing is wrong*.
 
-All twelve below were found in two days, by one author, on this codebase.
+All thirteen below were found in two days, by one author, on this codebase.
 
 ### The instances
 
@@ -709,6 +709,7 @@ All twelve below were found in two days, by one author, on this codebase.
 | 10 | `grep "ALLOWED_ORIGINS" tests/ \| head -10` | ten unrelated matches filled the window. `TheOriginListIsExactAndNarrow` was line eleven, and the report read **"no test pins this list"** |
 | 11 | every read of `server.py` for a day | the checkout was 785 commits behind `origin/main`. `/api/version` was reported **absent**; it has existed for weeks, and instance 1 above is about polling it |
 | 12 | `<ReportFrame />` removed as "the duplicate" | there were two. The one removed was the one a stop-focus CSS rule had been written for, leaving `.stage.report-focus .sheet-front` matching nothing and firing against nothing |
+| 13 | PII scan of a report PDF, `\b\d{7,}\b` for card numbers | SST cards are ALPHANUMERIC — `KSPNNWEFJ4`. The scan reported clean on a document carrying ten of them. Reading page 9 found them |
 
 ### Four shapes, and the last is the one to fear
 
@@ -770,6 +771,36 @@ that had just deleted 37.8MB.
 **All three failed toward ALARM, which is why they were caught.** The dangerous
 half of this family is the one that fails toward reassurance — instances 1 and
 2 above, where a broken check and a healthy system are the same output.
+
+### A SCAN FOR A FORMAT IS NOT A SCAN FOR THE THING
+
+Instance 13, and it is the one that mattered most in the exercise it came from.
+
+Two filed compliance PDFs were checked for personal data before any of it could
+reach a public marketing page. The scan looked for phone numbers, emails, long
+digit runs, Mongo ObjectIds and URLs — a careful list, written by someone
+thinking about PII. **It reported clean.**
+
+The document carried ten SST card numbers. They look like `KSPNNWEFJ4` and
+`6UF0B6KSQR`: alphanumeric, no fixed length, no separator, nothing a
+digit-run pattern can see. It also carried ten worker names, which no regex was
+ever going to find. Reading page 9 found all of it in about four seconds.
+
+> **The scan encoded what the author expected the thing to LOOK like, and the
+> subject was defined by what it MEANS.** A card number is not a number. A name
+> has no format at all. Any check written as "find things shaped like X" is
+> only as good as the guess about X, and it returns the same confident empty
+> result whether the guess was wrong or the document was clean.
+
+Two rules that fall out of it:
+
+> When the question is *"is there anything sensitive in here"*, a pattern scan
+> is a FIRST pass and never the answer. Read the artifact. For anything with a
+> page count small enough to read, reading it is both cheaper and correct.
+
+> A negative result from a pattern scan must be reported as **"no matches for
+> these patterns"**, never as "clean". The first is true and invites the next
+> question; the second closes the subject on the strength of a guess.
 
 ### THE WORKSPACE IS WRONG, so every answer inside it is true and irrelevant
 
