@@ -1028,6 +1028,16 @@ ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ
     "https://levelog.com",
     "https://www.levelog.com",
     "https://api.levelog.com",
+    # The app moves to its own subdomain at the cutover, when levelog.com becomes
+    # the marketing site. This lands BEFORE app.levelog.com resolves, on purpose:
+    # today it is an origin nobody can send from, so it changes no behaviour, and
+    # on the day DNS moves the reader is already in place. Adding it afterwards
+    # means every existing user is locked out for one deploy cycle.
+    #
+    # APPENDED, NEVER PREPENDED. ALLOWED_ORIGINS[0] is the postMessage target
+    # origin for the Dropbox OAuth callback below — putting a new entry first
+    # would silently retarget that message at a host that is not serving yet.
+    "https://app.levelog.com",
     # Mozilla's hosted pdf.js viewer is embedded in the native WebView to render
     # PDFs — its JS fetches the file via cross-origin GET, so the backend must
     # allow its origin on the streaming endpoint.

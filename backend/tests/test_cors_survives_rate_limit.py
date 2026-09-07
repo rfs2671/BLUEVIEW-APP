@@ -29,10 +29,17 @@ Two guarantees:
   resource; counting it means a browser spends two of its allowance where the
   native app spends one, and the one refused is the preflight.
 
-The origin list is NOT widened by any of this and is pinned below: the two
-hosts we own, plus the pdf.js viewer and localhost. No wildcard, no
+The origin list is NOT widened by any of this and is pinned below: the hosts we
+own, plus the pdf.js viewer and localhost. No wildcard, no
 `allow_origin_regex` — a pattern here is how `www.levelog.com.evil.example`
 eventually gets in.
+
+`app.levelog.com` is on that list before it resolves. It is where the app moves
+at the cutover, when the apex becomes the marketing site, and the allowlist has
+to be able to read from it on the day DNS changes rather than a deploy later.
+Until then it is an origin nobody can send from. It is pinned here for the same
+reason as the rest: so that widening the list stays a decision somebody makes
+on purpose, not something that drifts in.
 """
 
 from __future__ import annotations
@@ -58,6 +65,8 @@ from lib import rate_limits  # noqa: E402
 
 WWW = "https://www.levelog.com"
 APEX = "https://levelog.com"
+# Not resolving yet. See the note in the module docstring.
+APP = "https://app.levelog.com"
 
 
 class TheOriginListIsExactAndNarrow(unittest.TestCase):
@@ -66,6 +75,22 @@ class TheOriginListIsExactAndNarrow(unittest.TestCase):
         self.assertIn(APEX, server.ALLOWED_ORIGINS)
         self.assertIn(WWW, server.ALLOWED_ORIGINS)
 
+    def test_the_app_subdomain_is_allowed_before_it_resolves(self):
+        """The reader lands before the data moves, not after.
+
+        Adding this on cutover day instead would lock every existing user out
+        of the app for one deploy cycle.
+        """
+        self.assertIn(APP, server.ALLOWED_ORIGINS)
+
+    def test_the_apex_is_still_first(self):
+        """ALLOWED_ORIGINS[0] is the postMessage target origin for the Dropbox
+        OAuth callback, so the ORDER of this list is load-bearing and not only
+        its contents. An entry prepended here retargets that message silently,
+        at a host that may not be serving yet.
+        """
+        self.assertEqual(server.ALLOWED_ORIGINS[0], APEX)
+
     def test_nothing_unexpected_is_allowed(self):
         self.assertEqual(
             sorted(server.ALLOWED_ORIGINS),
@@ -73,6 +98,7 @@ class TheOriginListIsExactAndNarrow(unittest.TestCase):
                 APEX,
                 WWW,
                 "https://api.levelog.com",
+                APP,
                 # pdf.js in the native WebView fetches cross-origin.
                 "https://mozilla.github.io",
                 "http://localhost:8081",
