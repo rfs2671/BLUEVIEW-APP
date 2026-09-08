@@ -1709,6 +1709,16 @@ export default function SiteSuperintendentLog() {
           ) : cpPickerOpen ? (
             <CompetentPersonPicker
               rows={roster}
+              // ── THE INK, ON A CANVAS THIS SCREEN PINNED ─────────────────
+              // This screen does not take the theme (see buildStepperStyles
+              // at the top): LogbookStepper paints the light `outdoor`
+              // gradient whatever the CP has set, because a compliance log is
+              // filled outdoors. The picker asked useTheme() and the app's
+              // default theme is DARK, so it painted white names onto the
+              // white card at 1.02:1 — invisible, not merely dim. Same prop
+              // AnimatedBackground and SignaturePad already carry, passed by
+              // the same screens; this was the one mount that never got it.
+              pinned
               manualLabel={t('cpEnterByHand')}
               failedNote={t('cpRosterFailed')}
               onSelect={(person) => {

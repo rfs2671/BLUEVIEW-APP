@@ -81,7 +81,70 @@ import { Search, UserPlus, X } from 'lucide-react-native';
 
 import { usersAPI } from '../utils/api';
 import { useTheme } from '../context/ThemeContext';
-import { spacing, borderRadius, typography } from '../styles/theme';
+import { spacing, borderRadius, typography, outdoor } from '../styles/theme';
+
+/**
+ * THE INK, WHEN THE CANVAS UNDER IT IS PINNED LIGHT.
+ *
+ * MEASURED, NOT EYEBALLED. On the superintendent log this component renders
+ * inside a `Card`, whose fill is the `outdoor` gradient — a light card painted
+ * whatever theme the CP has set, because a compliance log is filled outdoors
+ * in direct sun. The picker asked `useTheme()`, and the app's default theme is
+ * DARK, so every row was painted in dark-mode ink:
+ *
+ *   ink                          worst   best   AA 4.5:1
+ *   text.primary  rgba(255,255,255,0.9)   1.02   1.26   FAIL   the names
+ *   text.secondary rgba(255,255,255,0.6)  1.01   1.17   FAIL   role · email
+ *   text.subtle   rgba(255,255,255,0.3)   1.01   1.08   FAIL   the border
+ *
+ *   outdoor.text     #0A1929              13.75  17.39  PASS
+ *   outdoor.textSoft rgba(10,25,41,0.75)   6.84   7.82  PASS
+ *   outdoor.textDim  rgba(10,25,41,0.65)   4.99   5.50  PASS
+ *
+ * 1.02:1 is not "low contrast". It is INVISIBLE — white on white, across all
+ * six surfaces (two card gradient stops over three page gradient stops). The
+ * operator could read the static paragraph BELOW the card and nothing inside
+ * it, which is exactly the shape of a component that brought its own palette
+ * onto somebody else's canvas.
+ *
+ * ── SAME PROP, SAME NAME, SAME REASONING AS SignaturePad ────────────────────
+ *
+ * `AnimatedBackground` and `SignaturePad` already carry `pinned` for this, and
+ * both are mounted by the same twelve screens. This is the third, and it was
+ * the one nobody passed it to — the picker arrived on the superintendent log
+ * AFTER the pinning convention existed, from a screen (`subcontractor_
+ * orientation`) that is correctly themed and where it therefore looked right.
+ *
+ * DEFAULT FALSE, so the orientation's two mounts render byte-identically.
+ *
+ * `text.tertiary` IS NOT IN EITHER PALETTE, and this table is where that
+ * surfaced. `styles()` read `colors.text.tertiary` for the search
+ * placeholder; neither `_dark` nor `_light` declares the key, so the value
+ * handed to `placeholderTextColor` has always been `undefined` — on both
+ * screens, in both themes, falling through to whatever the platform picks.
+ * Fixed at the call site rather than by inventing a token: `text.subtle` is
+ * the app's declared placeholder colour and says so in theme.js.
+ *
+ * outdoorMatchesLight.test.cjs already asserts `text.primary/secondary/muted`
+ * and `border.subtle` are identical to `_light`'s, so on those four a pinned
+ * picker renders EXACTLY what an unpinned one renders in light mode.
+ *
+ * `subtle` IS THE ONE THAT IS NOT A PAIR, and it is darkened on purpose.
+ * `_light.text.subtle` is 0.50 alpha and `outdoor` has no counterpart, so this
+ * maps it to `textDim` (0.65) — the same substitution SignaturePad makes, for
+ * the same reason: the value is only ever a border here, and erring toward
+ * more contrast on a screen read in direct sun is the right direction to be
+ * wrong in.
+ */
+const PINNED_COLORS = {
+  border: { subtle: outdoor.line },
+  text: {
+    primary: outdoor.text,
+    secondary: outdoor.textSoft,
+    muted: outdoor.textDim,
+    subtle: outdoor.textDim,
+  },
+};
 
 /**
  * WHO MAY BE NAMED AS THE TRAINER.
@@ -218,8 +281,18 @@ export default function CompetentPersonPicker({
   // caller saying it looked and found nobody, which is a different fact and is
   // shown as the empty state rather than as a failure.
   rows: providedRows,
+  // THE CANVAS UNDER THIS IS PINNED LIGHT — see PINNED_COLORS above.
+  //
+  // Passed by the superintendent log, whose Card fill is the `outdoor`
+  // gradient whatever theme the CP has set. Default FALSE, so the
+  // orientation's two mounts are unchanged.
+  pinned = false,
 }) {
-  const { colors } = useTheme();
+  // THE HOOK STILL RUNS WHEN PINNED, for the reason AnimatedBackground states:
+  // it is what re-renders this subtree on a theme toggle, and a pinned child
+  // inside an unpinned tree must keep re-rendering with the rest of it.
+  const { colors: liveColors } = useTheme();
+  const colors = pinned ? PINNED_COLORS : liveColors;
   const [rows, setRows] = useState(providedRows || []);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(!providedRows);
@@ -264,7 +337,10 @@ export default function CompetentPersonPicker({
           onChangeText={setQuery}
           autoFocus={autoFocus}
           placeholder="Search your company's competent persons"
-          placeholderTextColor={colors.text.tertiary}
+          // `text.subtle`, NOT `text.tertiary`. The latter is in neither
+          // palette, so this prop has always received `undefined` — see
+          // PINNED_COLORS. `subtle` is the app's declared placeholder colour.
+          placeholderTextColor={colors.text.subtle}
           style={s.input}
         />
         <Pressable onPress={onCancel} hitSlop={8} accessibilityLabel="Close">
