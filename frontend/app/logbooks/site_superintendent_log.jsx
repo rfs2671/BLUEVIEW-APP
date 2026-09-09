@@ -115,6 +115,9 @@ import {
   adoptableSummary, progressBlock, progressSource,
   adoptedTextFromStored, PROVENANCE_ADOPTED,
 } from '../../src/utils/progressProvenance';
+import {
+  adoptableFindings, anyFindingStillAdopted,
+} from '../../src/utils/adoptedFindings';
 import { SOURCE_LOG_TYPE } from '../../src/utils/dailyLogRecord';
 import { designatedCpDefault } from '../../src/utils/designatedCp';
 import CompetentPersonPicker, {
@@ -535,6 +538,10 @@ export default function SiteSuperintendentLog() {
   const [inspectionLocation, setInspectionLocation] = useState('');
   const [inspectionResult, setInspectionResult] = useState('');
   const [findings, setFindings] = useState([]);
+  // WHAT WAS OFFERED FOR ITEMS 4/5, held so the note can say the rows are not
+  // his. The mirror of item 2's `adoptedText`, and like it this is NOT the
+  // CP's log as it stands now -- it is what he was shown.
+  const [adoptedFindings, setAdoptedFindings] = useState([]);
   const [noneBoth, setNoneBoth] = useState(false);
   const [dobEntries, setDobEntries] = useState([]);
   const [dobNone, setDobNone] = useState(false);
@@ -831,6 +838,14 @@ export default function SiteSuperintendentLog() {
     // NOT OVER A TICK EITHER. A superintendent who has already said nobody was
     // designated must not find a name appearing under it.
     const wantCp = !String(competentPersonName || '').trim() && !cpNone;
+    // ── AND ITEMS 4/5 ARE OFFERED FROM THE SAME DOCUMENT ──────────────────
+    //
+    // NOT OVER ANYTHING HE HAS ENTERED, AND NOT OVER THE TICK. `findingIsEmpty`
+    // is the same predicate the collapsed row's count uses, so "empty" means
+    // one thing on this screen. A superintendent who already said there was
+    // nothing to report must not find conditions appearing underneath it.
+    const wantFindings = !noneBoth
+      && findings.filter((f) => !findingIsEmpty(f)).length === 0;
     let alive = true;
     (async () => {
       const [dayRes, rosterRes] = await Promise.allSettled([
@@ -859,9 +874,18 @@ export default function SiteSuperintendentLog() {
         const person = designatedCpDefault(rows, people);
         if (person && person.name) setCompetentPersonName(person.name);
       }
+      // AN OFFERED FINDING IS NEVER COMPLETE, by construction: an observation
+      // carries no location and `findingGaps` requires one. He fills WHERE,
+      // and usually whether it was corrected, before the step will pass. See
+      // adoptedFindings.js for why that is right rather than a shortfall.
+      if (wantFindings && rows) {
+        const offered = adoptableFindings(rows);
+        if (offered.length) { setFindings(offered); setAdoptedFindings(offered); }
+      }
     })();
     return () => { alive = false; };
-  }, [loading, locked, progress, competentPersonName, cpNone, projectId, logDate]);
+  }, [loading, locked, progress, competentPersonName, cpNone, projectId, logDate,
+    findings, noneBoth]);
 
   // ── DOB autofill ────────────────────────────────────────────────────────
   // HE SHOULD NOT TYPE A VIOLATION NUMBER THE SYSTEM ALREADY HOLDS. These are
@@ -1751,6 +1775,16 @@ export default function SiteSuperintendentLog() {
         onToggle={() => setOpenItem((v) => (v === 'findings' ? '' : 'findings'))}
       >
       <Text style={s.noteText}>{t('findingsNote')}</Text>
+      {/* HE MUST SEE THAT IT WAS NOT HIM, the same rule item 2 carries. A
+          condition that appeared in the list with nothing saying where it came
+          from is one he signs as his own observation, and items 4 and 5 sit
+          over his signature. It names the missing half too: an observation
+          carries no location, so every offered row needs one from him before
+          the step will pass. Disappears as he rewrites what was seen -- at
+          that moment the row stops being the CP's account. */}
+      {anyFindingStillAdopted(findings, adoptedFindings) ? (
+        <Text style={s.noteText}>{t('findingsAdoptedNote')}</Text>
+      ) : null}
 
       {findings.map((f, i) => (
         <View key={f.id} style={s.cardFill}>
