@@ -120,7 +120,15 @@ export default function WorkerPicker({
           onChangeText={setQuery}
           autoFocus={autoFocus}
           placeholder="Search this site's workers"
-          placeholderTextColor={colors.text.tertiary}
+          // `text.subtle`, NOT `text.tertiary`. THE CENSUS FOUND THIS, not a
+          // report: neither palette declares `tertiary`, so this prop has
+          // received `undefined` since the component shipped and the
+          // placeholder has been whatever the platform chose. Not the
+          // white-on-white defect CompetentPersonPicker had — this component
+          // is only mounted by THEMED screens (preshift_signin), so its list
+          // rows are correct — but the same unchecked read, and it was one
+          // mount away from the same outcome.
+          placeholderTextColor={colors.text.subtle}
           style={s.input}
         />
         <Pressable onPress={onCancel} hitSlop={8} accessibilityLabel="Close">
