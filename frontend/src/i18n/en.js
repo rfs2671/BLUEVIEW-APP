@@ -1465,6 +1465,7 @@ export default {
     inspectionResultPlaceholder: 'What the inspection found',
 
     findingsHeading: 'Unsafe conditions and the orders you gave',
+    findingsAdoptedNote: 'These came from the competent person’s daily log for this date, not from you. His form records only WHAT HE SAW and WHO WAS RESPONSIBLE. Where it was seen, and what you ordered, are yours to add on every row — and so is whether it was corrected, unless he ticked that he fixed it on the spot.',
     findingsNote: 'One entry per thing you saw. Items 4 and 5 of the log are two statutory items but one thing that happens — you saw something and you did something about it.',
     findingAdd: 'Add a finding',
     findingLocation: 'WHERE',
