@@ -659,5 +659,140 @@ console.log('\n8. THE NAV');
     'and the pill height is still composed from padding and icon only');
 }
 
+console.log('\n9. "NOTHING TO REPORT" IS ANSWERABLE FROM THE COLLAPSED ROW');
+{
+  const csCode = CODE(SCREEN);
+
+  // THE OPERATOR: each of the three rows had to be OPENED just to tick the
+  // ordinary answer. The row now carries the attestation itself.
+  // NOT `braceBlock`. This component's parameter is a DESTRUCTURED OBJECT, so
+  // the first `{` after the anchor opens the prop list and the balanced block
+  // closes on it -- returning the signature alone. Every "it takes `x`"
+  // assertion below passed against that fragment while every assertion about
+  // the RENDER failed, which is what named the slicing bug rather than a
+  // missing feature. Sliced to the next top-level declaration instead.
+  const itemAt = csCode.indexOf('const CollapsibleItem = (');
+  const item = itemAt < 0 ? ''
+    : csCode.slice(itemAt, csCode.indexOf('\nconst ', itemAt + 10));
+  ok(item.length > 800 && item.includes('onPress={onToggle}'),
+    'CollapsibleItem is present to inspect, RENDER AND ALL');
+  for (const prop of ['hasEntries', 'none', 'setNone', 'noneLabel', 'locked']) {
+    ok(new RegExp(`\\b${prop}\\b`).test(item), `it takes \`${prop}\``);
+  }
+
+  // ── THE CONTRADICTION IS UNREACHABLE FROM THE ROW ──────────────────────
+  //
+  // Entries plus "nothing to report" is a contradiction the opened form has
+  // always prevented by withholding its own toggle at the first non-empty
+  // entry. In one tap from a collapsed row it would be strictly worse.
+  ok(/!open && !hasEntries && noneLabel/.test(item),
+    'the inline attestation is offered ONLY while collapsed and ONLY on an '
+    + 'empty row');
+
+  // NOT NESTED IN THE HEADER. A pressable inside the disclosure pressable
+  // would make one mistap both file a claim and hide the control that
+  // retracts it.
+  const header = item.slice(item.indexOf('onPress={onToggle}'));
+  ok(header.indexOf('accessibilityRole="checkbox"')
+     > header.indexOf('</Pressable>'),
+    'the attestation chip sits OUTSIDE the disclosure pressable');
+
+  ok(/accessibilityRole="checkbox"/.test(item)
+     && /accessibilityState=\{\{ checked: !!none \}\}/.test(item),
+    'the state is available to a screen reader, not only to someone who can '
+    + 'see the fill');
+  ok(/disabled=\{locked\}/.test(item),
+    'and a filed log offers nothing to tap');
+
+  // IT TOGGLES. A mistap on an attestation must be retractable without
+  // opening the row he tapped it to avoid opening.
+  ok(/onPress=\{\(\) => setNone\(!none\)\}/.test(item),
+    'tapping a set attestation clears it');
+
+  // "+ ADD AN ISSUE" IS DELIBERATELY NOT THERE. Two targets, not three: the
+  // 56pt floor, a 41-character title and a 49-character attestation do not
+  // share a 390pt row. Asserted so the third control is a decision rather
+  // than a drift.
+  ok(!/setEntries/.test(item) && !/dobAddManual/.test(item),
+    'the row carries no add control — he must open the row to type into it '
+    + 'anyway, so it would buy one tap and cost the title');
+  ok(/TWO TARGETS, NOT THREE/.test(SCREEN),
+    'and the arithmetic that decided it is written down');
+
+  // ── ONE COUNT PER ROW, FEEDING BOTH THE SUMMARY AND THE CONTROL ────────
+  //
+  // Two expressions would let a row report a count while still offering
+  // "nothing to report" underneath it.
+  for (const [row, count] of [
+    ['findingsHeading', '_findingCount'],
+    ['dobHeading', '_dobCount'],
+    ['incidentsHeading', '_incidentCount'],
+  ]) {
+    const at = csCode.indexOf(`title={t('${row}')}`);
+    const tag = at < 0 ? '' : csCode.slice(at, csCode.indexOf('\n      >', at));
+    ok(tag.length > 50, `the ${row} row was located`);
+    ok(new RegExp(`summary=\\{${count} \\? `).test(tag)
+       && new RegExp(`hasEntries=\\{${count} > 0\\}`).test(tag),
+      `${row}: the summary and the attestation read the SAME count`);
+    for (const prop of ['locked=', 'none=', 'setNone=', 'noneLabel=']) {
+      ok(tag.includes(prop), `${row}: passes ${prop}`);
+    }
+  }
+
+  // ── THE ENTRY RULE IS ONE FUNCTION, AND IT IS RUN ──────────────────────
+  //
+  // The DOB feed seeds suggestions with `included: false`, so a row can hold
+  // three entries and file none. The inline control must agree EXACTLY with
+  // EntryList's own copy of that rule, so there is now one copy. Lifted and
+  // called rather than grepped: a comment saying it filters is not evidence
+  // that it does.
+  ok(/const chosenEntries = /.test(csCode), 'the rule is a named function');
+  ok(!/entries\.filter\(\(e\) => e\.included && e\.text\.trim\(\)\)/.test(csCode),
+    'and no inline copy of it survives');
+  ok((csCode.match(/chosenEntries\(/g) || []).length >= 5,
+    'every reader goes through it — EntryList, both buildData lists, and '
+    + 'both collapsed counts');
+
+  // LIFTED DEFENSIVELY. The control run against the unfixed screen CRASHED
+  // here rather than failing: with no `chosenEntries` to lift, the constructed
+  // function threw and the twenty assertions after it never reported at all. A
+  // check that aborts instead of failing tells you less on the run that
+  // matters most, so a missing subject is now one named failure and the rest
+  // still speak.
+  const chosenEntries = (() => {
+    try {
+      const i = csCode.indexOf('const chosenEntries = ');
+      if (i < 0) return null;
+      const src = csCode.slice(i, csCode.indexOf(';', csCode.indexOf('.trim())', i)));
+      // eslint-disable-next-line no-new-func
+      return new Function(`${src}\nreturn chosenEntries;`)();
+    } catch (_e) { return null; }
+  })();
+  ok(typeof chosenEntries === 'function',
+    'chosenEntries could be lifted and called');
+  // THE ABSENT-SUBJECT SENTINEL IS `-1`, NOT AN EMPTY OR ONE-ITEM ARRAY.
+  // The first version returned `[null]`, and the control run reported two of
+  // these cases as PASSING with no function to call: length 1 happens to be
+  // the expected answer for two of the five. A stand-in that can satisfy the
+  // assertion is a check that passes on absence.
+  const call = (v) => (chosenEntries ? chosenEntries(v) : { length: -1 });
+  const cases = [
+    [[], 0, 'an empty list'],
+    [[{ included: false, text: 'DOB violation 12345' }], 0,
+      'a DOB suggestion he has NOT confirmed — the row is still empty and the '
+      + 'attestation must still be offered'],
+    [[{ included: true, text: '   ' }], 0, 'a ticked but blank row'],
+    [[{ included: true, text: 'x' }], 1, 'a ticked, typed row'],
+    [[{ included: true, text: 'a' }, { included: false, text: 'b' }], 1,
+      'one of each'],
+  ];
+  for (const [input, want, label] of cases) {
+    ok(call(input).length === want,
+      `chosenEntries: ${label} counts ${want}`);
+  }
+  ok(call(null).length === 0 && call(undefined).length === 0,
+    'and a missing list is not a crash on a screen filled at a gate');
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS' : `${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

@@ -271,6 +271,31 @@ const CorrectionChoice = ({ s, locked, t, label, note, value, onChange }) => (
   </View>
 );
 
+/**
+ * THE ENTRIES THAT WOULD ACTUALLY REACH THE DOCUMENT.
+ *
+ * TICKED AND NON-BLANK. The DOB feed seeds this list with suggestions carrying
+ * `included: false` -- "HIS to confirm. Never pre-ticked." -- so a row can hold
+ * three entries and file none of them.
+ *
+ * EXTRACTED BECAUSE A FOURTH READER ARRIVED. The rule was written twice
+ * (`buildData` for both lists) and a third time inverted inside `EntryList`,
+ * which uses it to decide whether the "nothing to report" toggle may be
+ * offered. The inline attestation on the collapsed row is the fourth, and it
+ * MUST agree with `EntryList`'s copy exactly: a control offered on the row and
+ * withheld inside it -- or the reverse -- is one boolean with two opinions
+ * about whether it may be set.
+ *
+ * IT ALSO CORRECTS THE COLLAPSED COUNT, and that is a deviation worth naming.
+ * The DOB and incident rows summarised `entries.length`, so a project with one
+ * unconfirmed violation in the feed read "1" on a row whose document would file
+ * nothing. The findings row never had this -- it counts through
+ * `findingIsEmpty` -- so the three rows disagreed about what a count means.
+ * They now all report what would be filed.
+ */
+const chosenEntries = (entries) => (Array.isArray(entries) ? entries : [])
+  .filter((e) => e.included && String(e.text || '').trim());
+
 /** A tickable list of typed entries — the DOB actions and the incidents. */
 /**
  * One statutory item, collapsed to a row until he opens it.
@@ -288,8 +313,48 @@ const CorrectionChoice = ({ s, locked, t, label, note, value, onChange }) => (
  *
  * `summary` IS THE WHOLE POINT of the collapsed state: a row that says
  * "None to report" or "2 entries" answers the question without opening.
+ *
+ * ── AND NOW IT IS ANSWERABLE FROM THE ROW, NOT ONLY READABLE ────────────────
+ *
+ * THE OPERATOR: each row had to be OPENED just to tick "nothing to report",
+ * which is the ordinary answer on most days. That is the same complaint that
+ * turned four wizard steps into these three rows, one level further in.
+ *
+ * TWO TARGETS, NOT THREE, and the touch-target arithmetic is what settles it.
+ * These screens use a 56pt floor (gloved, outdoors). The longest title is 41
+ * characters and the longest attestation is 49. A chevron, a title, an N/A
+ * control and a "+ add an issue" control do not fit one 390pt row without
+ * squeezing the title to nothing. "+ add" saves ONE tap on the rare path and
+ * he must open the row to type into it anyway; N/A is the common path and
+ * ends the interaction. So N/A is inline and "+ add" is not.
+ *
+ * THE CONTROL CARRIES THE WHOLE ATTESTATION, ON ITS OWN LINE. A row-right
+ * "N/A" chip would fit, and would file "No unsafe conditions observed and no
+ * orders given" on one tap without ever showing him that sentence. Item 8's
+ * `cpNone` control settled this shape already: the label carries the claim.
+ * So the chip sits BELOW the header at full width rather than beside it, which
+ * also removes the wrapping arithmetic entirely.
+ *
+ * IT DISAPPEARS THE MOMENT THE ROW HAS ENTRIES. Entries plus "nothing to
+ * report" is a contradiction, and the opened form has always prevented it by
+ * hiding its own toggle at the first non-empty entry. Reachable in one tap
+ * from a collapsed row would be strictly worse than reachable in three, so the
+ * inline control obeys the identical rule -- `hasEntries` is passed by the
+ * caller from the SAME expression that feeds `summary`, so the count and the
+ * control cannot disagree about whether the row is empty.
+ *
+ * AND ONLY WHILE COLLAPSED. Open, the form's own toggle is on screen; two
+ * controls for one boolean, both visible, is how a screen teaches that they
+ * are different things.
+ *
+ * THE CHIP IS OUTSIDE THE HEADER Pressable. Nested pressables would make the
+ * attestation also toggle the disclosure, so a mistap would both file a claim
+ * and hide the control that retracts it.
  */
-const CollapsibleItem = ({ s, title, summary, open, onToggle, children }) => (
+const CollapsibleItem = ({
+  s, title, summary, open, onToggle, children,
+  locked, hasEntries, none, setNone, noneLabel,
+}) => (
   <Card s={s}>
     <Pressable
       onPress={onToggle}
@@ -301,6 +366,24 @@ const CollapsibleItem = ({ s, title, summary, open, onToggle, children }) => (
       <Text style={[s.reviewLabel, { flex: 1 }]}>{title}</Text>
       {!open && summary ? <Text style={s.noteText}>{summary}</Text> : null}
     </Pressable>
+    {!open && !hasEntries && noneLabel ? (
+      <Pressable
+        disabled={locked}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: !!none }}
+        accessibilityLabel={noneLabel}
+        // TOGGLES, because a mistap on an attestation must be retractable
+        // without opening the row he tapped it to avoid opening.
+        onPress={() => setNone(!none)}
+        style={[s.chip, none && s.chipSelected, { marginTop: spacing.sm }]}
+      >
+        {/* THE SAME TICK THE OPENED FORM DRAWS. A literal glyph here would be
+            a second opinion about what "selected" looks like, on the same
+            boolean, six lines from the control it mirrors. */}
+        {none ? <Check size={13} strokeWidth={2} /> : null}
+        <Text style={[s.chipText, none && s.chipTextSelected]}>{noneLabel}</Text>
+      </Pressable>
+    ) : null}
     {open ? children : null}
   </Card>
 );
@@ -332,7 +415,7 @@ const EntryList = ({
       onPress={() => { setNone(false); setEntries((p) => [...p, { id: `m_${Date.now()}`, text: '', source: 'manual', included: true }]); }}>
       <Text style={s.secondaryBtnText}>{t('dobAddManual')}</Text>
     </Pressable>
-    {entries.filter((e) => e.included && e.text.trim()).length === 0 ? (
+    {chosenEntries(entries).length === 0 ? (
       <Pressable disabled={locked} onPress={() => setNone((v) => !v)}
         style={[s.chip, none && s.chipSelected, { marginTop: spacing.sm }]}>
         {none ? <Check size={13} strokeWidth={2} /> : null}
@@ -942,8 +1025,8 @@ export default function SiteSuperintendentLog() {
   // is not something to keep for symmetry.
   const buildData = useCallback(() => {
     const both = deriveConditionAndOrderBlocks(findings, noneBoth);
-    const dobChosen = dobEntries.filter((e) => e.included && e.text.trim());
-    const incChosen = incidentEntries.filter((e) => e.included && e.text.trim());
+    const dobChosen = chosenEntries(dobEntries);
+    const incChosen = chosenEntries(incidentEntries);
     return {
       presence: {
         printed_name: printedName.trim(),
@@ -1639,15 +1722,31 @@ export default function SiteSuperintendentLog() {
   //
   // The DOB and incidents rows keep their own EntryList and their own toggle,
   // exactly as they were -- only the wrapper changed.
+  // ONE COUNT PER ROW, READ BY BOTH THE SUMMARY AND THE INLINE ATTESTATION.
+  // Two expressions would let a row report a count while still offering
+  // "nothing to report" beneath it -- the contradiction the opened form has
+  // always prevented, reachable from the collapsed row in one tap.
   const _findingCount = findings.filter((f) => !findingIsEmpty(f)).length;
+  const _dobCount = chosenEntries(dobEntries).length;
+  const _incidentCount = chosenEntries(incidentEntries).length;
   const stepFindings = () => (
     <>
       <CollapsibleItem
         s={s}
         title={t('findingsHeading')}
-        summary={_findingCount
-          ? `${_findingCount}`
-          : (noneBoth ? t('noneBoth') : '')}
+        // THE SUMMARY NO LONGER ECHOES THE TICK. The inline control below the
+        // header now shows that state, selected, in the attestation's own
+        // words -- and a row that said "None to report" beside a chip saying
+        // the same thing is one place for the two to drift apart.
+        summary={_findingCount ? `${_findingCount}` : ''}
+        // ONE EXPRESSION FEEDS BOTH. `_findingCount` decides the summary AND
+        // whether the inline attestation may be offered, so the count and the
+        // control cannot disagree about whether this row is empty.
+        hasEntries={_findingCount > 0}
+        locked={locked}
+        none={noneBoth}
+        setNone={setNoneBoth}
+        noneLabel={t('noneBoth')}
         open={openItem === 'findings'}
         onToggle={() => setOpenItem((v) => (v === 'findings' ? '' : 'findings'))}
       >
@@ -1717,9 +1816,12 @@ export default function SiteSuperintendentLog() {
       <CollapsibleItem
         s={s}
         title={t('dobHeading')}
-        summary={dobEntries.length
-          ? `${dobEntries.length}`
-          : (dobNone ? t('dobNoneToReport') : '')}
+        summary={_dobCount ? `${_dobCount}` : ''}
+        hasEntries={_dobCount > 0}
+        locked={locked}
+        none={dobNone}
+        setNone={setDobNone}
+        noneLabel={t('dobNoneToReport')}
         open={openItem === 'dob'}
         onToggle={() => setOpenItem((v) => (v === 'dob' ? '' : 'dob'))}
       >
@@ -1732,9 +1834,12 @@ export default function SiteSuperintendentLog() {
       <CollapsibleItem
         s={s}
         title={t('incidentsHeading')}
-        summary={incidentEntries.length
-          ? `${incidentEntries.length}`
-          : (incidentsNone ? t('incidentsNoneToReport') : '')}
+        summary={_incidentCount ? `${_incidentCount}` : ''}
+        hasEntries={_incidentCount > 0}
+        locked={locked}
+        none={incidentsNone}
+        setNone={setIncidentsNone}
+        noneLabel={t('incidentsNoneToReport')}
         open={openItem === 'incidents'}
         onToggle={() => setOpenItem((v) => (v === 'incidents' ? '' : 'incidents'))}
       >
