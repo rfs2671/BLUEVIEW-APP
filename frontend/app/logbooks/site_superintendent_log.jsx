@@ -125,9 +125,31 @@ import CompetentPersonPicker, {
 } from '../../src/components/CompetentPersonPicker';
 
 const LOG_TYPE = 'site_superintendent_log';
-// FOUR, NOT FIVE. Findings/orders and DOB/incidents were two steps; they are
-// one screen of collapsible rows now. See stepFindings.
-const TOTAL_STEPS = 4;
+// THREE, AND IT HAS BEEN FIVE AND FOUR. Findings/orders and DOB/incidents
+// were two steps and became one screen of collapsible rows; then "Work &
+// inspection" went, because every field on it was answered somewhere else.
+//
+// WHAT THAT STEP HELD, AND WHERE IT WENT. The operator read it as redundant
+// and he was three-quarters right:
+//
+//   General progress of work   item 2   MOVED to the sign step
+//   What you did, and where    item 3   MOVED to the sign step
+//   Location inspected         item 11  MOVED to the sign step
+//   Result                     item 11  REMOVED
+//
+// ONLY `result` IS ACTUALLY GONE. Items 2 and 3 are required BC 3301.13.13
+// items with no counterpart anywhere: `areas_visited` on the CP's daily log is
+// empty on all 55 filed records, so item 3 has nothing to adopt and nothing to
+// merge into. Dropping either would print "&mdash; Not recorded" against a
+// statutory item on every log, forever -- and he fills both on two of the
+// three logs he has filed.
+//
+// `result` GOES BECAUSE THE LOCATION CARRIES THE WEIGHT. 1 RCNY 3301-04(f)
+// wants the inspection recorded; `{location}` alone still reads PRESENT, which
+// is the assertion that he inspected. On all three filed logs the result read
+// "All good" / "All good here" / "" while items 4 to 7 all read
+// `none_to_report` -- the same fact, twice. See buildData.
+const TOTAL_STEPS = 3;
 
 /**
  * The write answered, and answered with nothing that names a record.
@@ -570,7 +592,6 @@ export default function SiteSuperintendentLog() {
   // makes him scroll past four empty forms to say so.
   const [openItem, setOpenItem] = useState('');
   const [inspectionLocation, setInspectionLocation] = useState('');
-  const [inspectionResult, setInspectionResult] = useState('');
   const [findings, setFindings] = useState([]);
   // WHAT WAS OFFERED FOR ITEMS 4/5, held so the note can say the rows are not
   // his. The mirror of item 2's `adoptedText`, and like it this is NOT the
@@ -977,7 +998,11 @@ export default function SiteSuperintendentLog() {
     setActivities([g('cs_activities').summary, g('cs_activities').locations]
       .map((x) => String(x || '').trim()).filter(Boolean).join('\n'));
     setInspectionLocation(g('daily_inspection').location || '');
-    setInspectionResult(g('daily_inspection').result || '');
+    // `result` IS NOT READ BACK, and nothing rewrites the records that carry
+    // it. Three filed logs hold one; `superintendentLogModel.js` and
+    // `superintendent_log.py` both still DECLARE the field, so every renderer
+    // keeps printing it off a stored document. The writer stops, the readers
+    // do not -- the same forward-only shape `locations` took on item 3.
     setCompetentPersonName(g('competent_person').name || '');
     setCpNone(g('competent_person').none_to_report === true);
     setNoneBoth(g('unsafe_conditions').none_to_report === true
@@ -1037,9 +1062,13 @@ export default function SiteSuperintendentLog() {
     // progressSource would see text-with-nothing-offered and stamp `own` on a
     // sentence he never wrote a word of.
     adoptedText,
-    inspectionLocation, inspectionResult,
+    inspectionLocation,
     findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     competentPersonName, cpManual, cpNone, step,
+    // WHICH LAYOUT `step` IS COUNTED IN. Without it a stored 2 is ambiguous:
+    // under the four-step form it was "Work & inspection", under this one it
+    // is the findings screen. See restore().
+    steps: TOTAL_STEPS,
   });
 
   const restore = (v) => {
@@ -1052,7 +1081,6 @@ export default function SiteSuperintendentLog() {
     setAdoptedText(v.adoptedText ?? '');
     setActivities(v.activities ?? '');
     setInspectionLocation(v.inspectionLocation ?? '');
-    setInspectionResult(v.inspectionResult ?? '');
     setFindings(Array.isArray(v.findings) ? v.findings : []);
     setNoneBoth(v.noneBoth === true);
     setDobEntries(Array.isArray(v.dobEntries) ? v.dobEntries : []);
@@ -1065,13 +1093,33 @@ export default function SiteSuperintendentLog() {
     // over a name he entered by hand, with no box to correct it in.
     setCpManual(v.cpManual === true);
     setCpNone(v.cpNone === true);
-    // BACK ON THE STEP HE LEFT. Returning him to step 1 after a five-step form
-    // is its own small loss.
-    // A DRAFT SAVED ON THE OLD STEP 5 IS THE SIGN STEP, WHICH IS NOW 4.
-    // Clamping alone would land him on the findings screen with the wizard
-    // saying he was signing. Migrated by meaning, not by number.
+    // BACK ON THE STEP HE LEFT, AND THE NUMBER ALONE NO LONGER SAYS WHICH.
+    //
+    // This has now been renumbered twice, and clamping was survivable the
+    // first time only because the step that went was the LAST one. It is not
+    // survivable here: under the four-step form step 2 was "Work &
+    // inspection" and step 3 was findings, and under this one step 2 IS
+    // findings. Clamping a stored 2 lands him on findings while he was
+    // filling the work step, and a stored 3 lands him on findings while he was
+    // signing.
+    //
+    // SO THE SNAPSHOT SAYS WHICH LAYOUT IT COUNTED IN. `steps` is written by
+    // snapshot() from TOTAL_STEPS; a draft that carries the current number is
+    // read as-is, and anything else is migrated BY MEANING:
+    //
+    //   old 1  presence           -> 1  presence
+    //   old 2  work & inspection  -> 3  the sign step, where those fields are
+    //   old 3  findings           -> 2  findings
+    //   old 4  sign               -> 3  sign
+    //   old 5  (the five-step form's sign) -> 3  sign
+    //
+    // A draft with NO `steps` key predates this change and is migrated, which
+    // is the correct default: every draft written before today lacks it.
     if (Number.isInteger(v.step) && v.step >= 1) {
-      setStep(v.step >= 5 ? TOTAL_STEPS : Math.min(v.step, TOTAL_STEPS));
+      const current = v.steps === TOTAL_STEPS;
+      const migrated = { 1: 1, 2: TOTAL_STEPS, 3: 2, 4: TOTAL_STEPS }[v.step]
+        || TOTAL_STEPS;
+      setStep(current ? Math.min(v.step, TOTAL_STEPS) : migrated);
     }
   };
 
@@ -1130,16 +1178,33 @@ export default function SiteSuperintendentLog() {
       competent_person: competentPersonName.trim()
         ? { name: competentPersonName.trim() }
         : (cpNone ? { none_to_report: true } : {}),
-      daily_inspection: (inspectionLocation.trim() || inspectionResult.trim())
-        ? {
-          location: inspectionLocation.trim(),
-          result: inspectionResult.trim(),
-        } : {},
+      // ── ITEM 11 IS THE LOCATION, AND `result` IS NO LONGER WRITTEN ────
+      //
+      // 1 RCNY 3301-04(f) wants the daily inspection recorded. `{location}`
+      // alone reads PRESENT to `item_state`, and the location IS the assertion
+      // that he inspected somewhere -- he has already filed exactly that shape
+      // once, on 2026-09-04.
+      //
+      // THE RESULT WAS SAYING WHAT STEP 3 HAD ALREADY SAID. On all three filed
+      // logs items 4 to 7 read `none_to_report` and the result read "All good"
+      // / "All good here" / "". That is the quiet day, which is most days.
+      //
+      // AND IT IS NOT THE WHOLE ITEM, which is why the location stays rather
+      // than the item going: items 4 to 7 record EXCEPTIONS, and "nothing to
+      // report" says he saw nothing -- which is also true of a superintendent
+      // who never walked the site. Item 11 is the one place the log says he
+      // inspected at all.
+      //
+      // FORWARD-ONLY. The key is simply no longer written; both models still
+      // declare it and every renderer keeps printing it off the records that
+      // have one.
+      daily_inspection: inspectionLocation.trim()
+        ? { location: inspectionLocation.trim() } : {},
     };
   }, [findings, noneBoth, dobEntries, dobNone, incidentEntries, incidentsNone,
     printedName, arrivedAt, departedAt, departedNextDay,
     progress, adoptedText, activities,
-    inspectionLocation, inspectionResult, competentPersonName, cpNone]);
+    inspectionLocation, competentPersonName, cpNone]);
 
   // ── AUTOSAVE ────────────────────────────────────────────────────────────
   //
@@ -1718,7 +1783,12 @@ export default function SiteSuperintendentLog() {
     </Card>
   );
 
-  const stepWork = () => (
+  // ── THE THREE FIELDS THAT OUTLIVED STEP 2 ───────────────────────────────
+  //
+  // They open the sign step, ABOVE item 8 and the signature, because they are
+  // the last things he writes and the first things a reader of the filed
+  // document meets. See TOTAL_STEPS for what went and what did not.
+  const stepRecord = () => (
     <>
       <Card s={s}>
         <Field s={s} locked={locked} label={t('progressLabel')} value={progress} onChangeText={setProgress}
@@ -1729,41 +1799,25 @@ export default function SiteSuperintendentLog() {
             signature. The note is driven by the SAME rule that writes the
             flag, so the screen cannot say "adopted" while the document says
             "own" -- it disappears the moment he edits, because at that moment
-            the document changes its mind too. */}
+            the document changes its mind too.
+
+            AND IT MATTERS MORE HERE THAN IT DID ON STEP 2. The field is now
+            inches from the signature pad, so the one place the app says "these
+            are not your words" sits on the same screen as the act that makes
+            them his. */}
         {progressSource(progress, adoptedText) === PROVENANCE_ADOPTED ? (
           <Text style={s.noteText}>{t('progressAdoptedNote')}</Text>
         ) : null}
         <Field s={s} locked={locked} label={t('activitiesLabel')} value={activities} onChangeText={setActivities}
           placeholder={t('activitiesPlaceholder')} multiline />
-      </Card>
-      <Card s={s}>
+        {/* ITEM 11, DOWN TO THE ONE FIELD THAT CARRIES IT. The heading and the
+            note stay with it: it is a different statutory instrument from the
+            two fields above, and an unlabelled third box under "what you did"
+            would read as more of item 3. */}
         <StepHeaderBase s={s} title={t('inspectionHeading')} />
-        {/* 1 RCNY 3301-04(f) NEEDS THREE THINGS, so it asks for three rather
-            than one blank box: when, where, what was found. A freeform result
-            is accepted for now — the 3310-01 tables are the eventual answer
-            and are their own piece of work — but the DATE and the LOCATION
-            are not optional prose. */}
         <Text style={s.noteText}>{t('inspectionNote')}</Text>
-        {/* THE DATE INSPECTED FIELD IS GONE.
-            It defaulted to the log's own date at all three entry points and
-            nothing outside this screen ever read it back -- verified three
-            ways, including an unfiltered recursive grep of backend/ and
-            frontend/. No query, no comparison against logbook.date, no
-            compliance rule, no report branch: both renderers reached it only
-            through a generic `for field in fields` loop that does not know
-            its name. A daily log signed on the day already carries its date.
-
-            THE STATUTORY CAVEAT IS RECORDED, NOT RESOLVED. 1 RCNY 3301-04(f)
-            asks for when, where and what was found. If the rule contemplates
-            an inspection recorded on a log dated differently, this field was
-            the only place to say so. That is a question for a lawyer, not a
-            reading of this repo, and it is written down here rather than
-            decided. */}
         <Field s={s} locked={locked} label={t('inspectionLocation')} value={inspectionLocation}
           onChangeText={setInspectionLocation} />
-        <Field s={s} locked={locked} label={t('inspectionResult')} value={inspectionResult}
-          onChangeText={setInspectionResult}
-          placeholder={t('inspectionResultPlaceholder')} multiline />
       </Card>
     </>
   );
@@ -1930,6 +1984,7 @@ export default function SiteSuperintendentLog() {
       .filter((it) => csItemState(it.key, data, logDate) === 'not_collected');
     return (
       <>
+        {stepRecord()}
         <Card s={s}>
           <StepHeaderBase s={s} title={t('competentPersonHeading')} />
           {/* ── A PICK BY DEFAULT, FREE TEXT ONE TAP FURTHER IN ─────────────
@@ -2077,11 +2132,13 @@ export default function SiteSuperintendentLog() {
     );
   };
 
+  // `stepRecord` IS NOT A STEP. It is rendered by `stepSign`, which is what
+  // puts item 2 on the same screen as the signature that adopts it. Listing it
+  // here would put it back into the wizard as a fourth pip.
   const STEPS = [
     { key: 1, label: t('stepPresence'), render: stepPresence },
-    { key: 2, label: t('stepWork'), render: stepWork },
-    { key: 3, label: t('stepFindings'), render: stepFindings },
-    { key: 4, label: t('stepSign'), render: stepSign },
+    { key: 2, label: t('stepFindings'), render: stepFindings },
+    { key: 3, label: t('stepSign'), render: stepSign },
   ];
 
   // THE SAME LABELS THE REFUSAL RENDERS. csItemLabels is what handleSubmit's

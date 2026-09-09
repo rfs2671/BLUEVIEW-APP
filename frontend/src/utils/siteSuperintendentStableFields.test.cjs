@@ -252,7 +252,17 @@ console.log('\n4. NOTHING THE HOISTED COMPONENTS READ IS LEFT TO A CLOSURE');
   // receiving `onNameChange`, the date by `inspectedOn` being absent from the
   // screen (siteSuperintendentSign.test.cjs section 5). Lowering the number
   // without those would let a Field deleted for some other reason ride in.
-  ok(callSites('Field').length === 10, `Field is used at 10 call sites (found ${callSites('Field').length})`);
+  //   10 ->  9  THE INSPECTION `RESULT` BOX WENT, and nothing replaced it.
+  //             It duplicated step 3 rather than another field: on all three
+  //             filed logs items 4 to 7 read `none_to_report` while the result
+  //             read "All good". The LOCATION stays and carries item 11 --
+  //             `{location}` alone reads PRESENT, which is the assertion that
+  //             he inspected at all, and that is the one thing step 3 cannot
+  //             say. Asserted by its own test, section 5 of
+  //             siteSuperintendentSign.test.cjs, which now also checks that
+  //             both models still DECLARE the field so filed records keep
+  //             printing it.
+  ok(callSites('Field').length === 9, `Field is used at 9 call sites (found ${callSites('Field').length})`);
   ok(callSites('TimeField').length === 3,
     `and the three that left are TimeField pickers (found ${callSites('TimeField').length})`);
   // NOT A FREE-TEXT BOX ANYWHERE NEAR A TIME. `placeholder="HH:MM"` was the
