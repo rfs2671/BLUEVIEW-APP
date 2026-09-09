@@ -59,7 +59,7 @@ import TimeField, { parseClock, toClock } from '../../src/components/logbookStep
 import { buildStepperStyles } from '../../src/components/logbookStepper/styles';
 import { Card, StepHeaderBase } from '../../src/components/logbookStepper/primitives';
 import SignaturePad from '../../src/components/SignaturePad';
-import { outdoor, spacing } from '../../src/styles/theme';
+import { outdoor, spacing, touchTarget } from '../../src/styles/theme';
 import { useToast } from '../../src/components/Toast';
 import { useT } from '../../src/i18n';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
@@ -363,7 +363,41 @@ const CollapsibleItem = ({
       onPress={onToggle}
       accessibilityRole="button"
       accessibilityState={{ expanded: !!open }}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+      // ── THE DISCLOSURE MUST CLEAR THE SAME FLOOR AS THE ATTESTATION ──────
+      //
+      // MEASURED ON A 390pt PHONE, as shipped:
+      //
+      //     button    32pt   UNSAFE CONDITIONS AND THE ORDERS YOU GAVE
+      //     checkbox  60pt   No unsafe conditions observed and no orders given
+      //     button    32pt   VIOLATIONS, STOP WORK ORDERS AND SUMMONSES
+      //     checkbox  56pt   None issued or received today
+      //     button    18pt   INCIDENTS OR DAMAGE
+      //     checkbox  56pt   No incidents or damage today
+      //
+      // The chevron always worked. What did not is that the row it sits on
+      // was 18 to 32 points tall -- the text's own height, because this
+      // Pressable set no minimum -- while the attestation added beneath it is
+      // a compliant 56. So each row offered one control the thumb can hit and
+      // one it cannot, and the one it cannot is the only way IN. The
+      // superintendent reported he could tick N/A and could not add a
+      // finding, which is exactly what those numbers describe.
+      //
+      // THE SHORTEST TITLE HAD THE SMALLEST TARGET. "INCIDENTS OR DAMAGE" fits
+      // one line and measured 18pt; the two that wrap measured 32. Nothing
+      // about that is a decision anybody made -- it is text height, which is
+      // why the floor has to be stated rather than arrived at.
+      //
+      // 56 IS THIS SCREEN'S OWN NUMBER, not a new one: `touchTarget.min`,
+      // "a gloved thumb outdoors, not the component". The collapsed row was
+      // never held to it because until the attestation arrived it was the only
+      // thing on the row, and an undersized target with no competition is a
+      // nuisance rather than a block.
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        minHeight: touchTarget.min,
+      }}
     >
       {open ? <ChevronDown size={18} strokeWidth={2} /> : <ChevronRight size={18} strokeWidth={2} />}
       <Text style={[s.reviewLabel, { flex: 1 }]}>{title}</Text>

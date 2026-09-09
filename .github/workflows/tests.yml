@@ -198,3 +198,11 @@ jobs:
       - name: Mount every route, fail on console errors
         working-directory: frontend
         run: node scripts/smoke-mount.cjs --dist dist --port 5810
+
+      # THE HALF THE MOUNT SMOKE CANNOT ASK. It proves every screen paints; it
+      # does not press Next, so everything past step 1 of a four-step editor is
+      # unexecuted -- which is where the 18pt disclosure row shipped. Reuses
+      # the dist and the Chromium the step above already installed.
+      - name: Every tap target clears the 56pt floor
+        working-directory: frontend
+        run: node scripts/touch-targets.cjs --dist dist --port 5811
