@@ -3,7 +3,7 @@ import { View, StyleSheet, Text, Pressable, PanResponder, TextInput, Platform } 
 import { Trash2, Check, PenTool, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { outdoor } from '../styles/theme';
-import { spacing, borderRadius, typography } from '../styles/theme';
+import { spacing, borderRadius, typography, touchTarget } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { useT, useLocale } from '../i18n';
 import { isAffirmedSignature, hasSignatureInk } from '../utils/signatureAffirmed';
@@ -521,9 +521,25 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       gap: spacing.sm,
     },
+    // ── 56, AND NOT 44 PLUS A PROP THAT DOES NOTHING ON WEB ───────────────
+    //
+    // FOUND BY scripts/touch-targets.cjs ON ITS FIRST RUN, on all ten editors
+    // that reach a signature step. It measured 44 against this app's own 56pt
+    // floor -- "a gloved thumb outdoors, not the component".
+    //
+    // The control carries `hitSlop={16}`, which on native makes the real
+    // target 76 and would have made this a false positive. IT IS NOT.
+    // react-native-web implements `hitSlop` in the legacy `Touchable` ONLY,
+    // not in `Pressable` -- CONFIRMED BY CLICKING, not by reading the module:
+    // a click 8px outside the 44x44 box does not toggle the language, and the
+    // same click inside does. So on app.levelog.com the target really is 44.
+    //
+    // Raising the box fixes both platforms and stops the size depending on a
+    // prop that is silently inert on one of them. `hitSlop` stays: on native
+    // it still widens a small control, which is what it is for.
     langToggle: {
-      minWidth: 44,
-      minHeight: 44,
+      minWidth: touchTarget.min,
+      minHeight: touchTarget.min,
       alignItems: 'center',
       justifyContent: 'center',
       paddingHorizontal: spacing.sm,
