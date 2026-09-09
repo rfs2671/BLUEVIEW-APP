@@ -98,8 +98,13 @@ function slice(src, from, to) {
   return src.slice(a, b);
 }
 
+// FROM `isAPerson`, WHICH IS DECLARED FIRST. The slice used to start at
+// ROLE_LABELS; anchoring it there again would lift the label table and leave
+// `isAPerson` outside the lifted source, so the TAIL below would export a name
+// that does not exist -- which is what it did, as a ReferenceError rather than
+// a failed assertion.
 const rolesSrc = slice(pickerSrc,
-  'export const ROLE_LABELS',
+  'export const isAPerson',
   'export async function fetchCompetentPersons');
 const sameSrc = slice(pickerSrc,
   'export function isSamePerson',
@@ -116,12 +121,12 @@ if (rolesSrc === null || sameSrc === null || filterSrc === null) {
 }
 
 const mod = { exports: {} };
-const TAIL = '\n;module.exports = { ROLE_LABELS, '
+const TAIL = '\n;module.exports = { ROLE_LABELS, isAPerson, '
   + 'isSamePerson, filterCompetentPersons };';
 // eslint-disable-next-line no-new-func
 new Function('module', 'exports',
   (rolesSrc + sameSrc + filterSrc).replace(/^export /gm, '') + TAIL)(mod, mod.exports);
-const { ROLE_LABELS, isSamePerson, filterCompetentPersons } = mod.exports;
+const { ROLE_LABELS, isAPerson, isSamePerson, filterCompetentPersons } = mod.exports;
 
 // ── THE ROLE FILTER IS GONE, AND IT WAS EXCLUDING NOBODY ───────────────────
 //
@@ -152,11 +157,41 @@ ok('and a role nobody declared still renders as itself',
   'the row reads `ROLE_LABELS[role] || role`, so an unknown role shows its own '
   + 'name rather than a blank second line');
 
-// THE ONE CASE THE REMOVAL ADMITS, NAMED IN THE COMPONENT. A `site_device`
-// account is a provisioned tablet, not a man; zero exist, so nothing is live,
-// but the exclusion that covered it is what has just gone.
-ok('the component says so rather than deviating quietly',
-  /site_device` IS THE ONE CASE THIS NOW ADMITS/.test(pickerSrc));
+// ── A PROVISIONED TABLET IS NOT A MAN, AND THAT IS ONE PREDICATE ──────────
+//
+// `site_device` is the gate tablet's own account. BC 3301.13.12 designates a
+// COMPETENT PERSON, and no arrangement of facts makes that a tablet -- so this
+// is a statement about the DOMAIN, not a revived judgement about which people
+// are eligible. Zero such accounts exist; it is written prospectively, because
+// the eligibility list that covered the case by accident has gone and the
+// first provisioned tablet is not the moment to notice.
+ok('a site device is not a person', isAPerson({ role: 'site_device' }) === false);
+ok('and the check is case-tolerant, as the roster is not the only writer',
+  isAPerson({ role: 'SITE_DEVICE' }) === false);
+
+// EVERY OTHER ROLE PASSES, INCLUDING THE ONES THE OLD LIST REFUSED. That is
+// the difference between this and the filter it replaces: `worker` is back in,
+// because a laborer who is also a designated competent person is the
+// SUPERINTENDENT'S call, not the app's.
+for (const role of ['cp', 'admin', 'owner', 'superintendent', 'worker', 'ssc']) {
+  ok(`a ${role} is a person`, isAPerson({ role }) === true);
+}
+ok('a roleless row is a person', isAPerson({}) === true,
+  'absence is not evidence of a tablet — an account with no role recorded is '
+  + 'still somebody, and refusing it here would be the absence-read-as-a-claim '
+  + 'shape this file already refuses twice');
+ok('a null row does not throw', isAPerson(null) === true);
+
+// AND IT IS ONE PREDICATE, NOT A LIST. A second name in it is the eligibility
+// filter growing back under a different heading.
+const personSrc = /const isAPerson = [^;]+;/.exec(pickerSrc);
+ok('the rule is present to read', personSrc !== null);
+ok('it names exactly one role', personSrc !== null
+  && (personSrc[0].match(/'[a-z_]+'/g) || []).length === 1,
+  `it now names ${personSrc && (personSrc[0].match(/'[a-z_]+'/g) || []).join(', ')} `
+  + '— a second entry is the role list coming back under another heading');
+ok('and the component says why it is not that list',
+  /THIS IS NOT THE ROLE FILTER COMING BACK/.test(pickerSrc));
 
 const PEOPLE = [
   { id: 'u1', name: 'Michael Cespedes', email: 'michael@arkon.com', role: 'cp' },
@@ -231,10 +266,13 @@ ok('offline and empty are distinguishable states',
   'the "none registered" copy must be reachable only when the server answered');
 ok('the source is the company roster',
   /usersAPI\.companyRoster\(\)/.test(picker));
-ok('and nothing filters it by role any more',
-  !/\.filter\(isTrainerEligible\)/.test(picker),
+ok('and no eligibility list filters it any more',
+  !/\.filter\(isTrainerEligible\)/.test(picker)
+  && !/TRAINER_ELIGIBLE_ROLES/.test(picker),
   'the roster is already scoped to the company and already drops deleted '
-  + 'users; this component adds only the blank-name rule');
+  + 'users; what remains is the blank-name rule and the one domain fact');
+ok('the fetch drops accounts that are not people',
+  /\.filter\(isAPerson\)/.test(picker));
 ok('the blank-name rule stays',
   /String\(r\?\.name \|\| ''\)\.trim\(\)\.length > 0/.test(picker),
   'company-roster falls back to the email when an account has no name, so a '
