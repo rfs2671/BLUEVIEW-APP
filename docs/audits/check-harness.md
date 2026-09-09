@@ -754,7 +754,7 @@ All thirteen below were found in two days, by one author, on this codebase.
 | 12 | `<ReportFrame />` removed as "the duplicate" | there were two. The one removed was the one a stop-focus CSS rule had been written for, leaving `.stage.report-focus .sheet-front` matching nothing and firing against nothing |
 | 13 | PII scan of a report PDF, `\b\d{7,}\b` for card numbers | SST cards are ALPHANUMERIC — `KSPNNWEFJ4`. The scan reported clean on a document carrying ten of them. Reading page 9 found them |
 
-### Four shapes, and the last is the one to fear
+### Five shapes, and the fourth is the one to fear
 
 **THE TARGET IS WRONG.** 1, 4, 9. The check runs, answers honestly, and is
 looking at something else. A dead hostname returns `?` forever and `?` is not
@@ -797,6 +797,38 @@ the minutes between the strip and the merge, both card screens told an admin
 **"No card image on file"** for 46 workers who had one — on the screen where he
 decides whether to admit a man on an expired SST. The check was correct, the
 data was correct, and the two were correct **at different times**.
+
+**THE ANCHOR IS A LOCATION, AND LOCATIONS MOVE.** Four instances of its own,
+and it is the target-is-wrong shape at the smallest scale. A source-reading
+check slices its subject out of a file by naming a landmark; when the landmark
+moves, or when a second thing matches it, the slice holds something ADJACENT to
+the subject and answers honestly about that.
+
+| the anchor | what the slice actually held |
+|---|---|
+| `.slice(0, 400)` from `label={t('departedAt')}` | ran past the closing `/>` into the `departedNextDay` Pressable, which carries `disabled={locked}` and always has |
+| `braceBlock(src, 'const CollapsibleItem = (')` | the component's parameter is a DESTRUCTURED OBJECT, so the first `{` opened the prop list and the balanced block closed on it — the signature, not the render |
+| "the offer effect ends at the next `useEffect(`" | the DOB effect that follows opens identically, so the slice ended INSIDE the effect it was slicing |
+| `slice(pickerSrc, 'export const ROLE_LABELS', …)` | the declaration it needed had moved ABOVE that landmark, so the lifted source did not contain the function its own `module.exports` tail names |
+
+None is a logic error, and none of the SUBJECTS was wrong.
+
+**Three of the four were caught by the control run, by a specific tell: an
+assertion failing that describes code nobody touched, or a block of assertions
+splitting in a way the change cannot explain.** The `braceBlock` one is
+clearest — every "it takes prop `x`" passed while every assertion about the
+render failed, which is not what a missing feature looks like. The fourth did
+not fail at all: it threw a `ReferenceError`, which is this section's own
+lesson about a broken check and a broken subject needing to look different.
+
+> **A CHECK MUST BE ABLE TO SAY IT FOUND ITS SUBJECT**, as its own assertion,
+> before anything is asserted ABOUT the subject. `ok(slice.length > 800 &&
+> slice.includes('onPress={onToggle}'))` is one line, and it converts every
+> silent wrong answer above into a named failure.
+>
+> Prefer an anchor the subject cannot drift past — a closing tag, a dependency
+> array, the next top-level declaration. **A character count is not an anchor,
+> and a landmark that appears twice is not an anchor.**
 
 ### An error from the PROBE is not evidence about the SUBJECT
 
@@ -1092,6 +1124,10 @@ Before a check is worth having:
 - [ ] Is the check pointed at the RIGHT THING? A dead host, a stale checkout, a
       neighbouring function — each answers honestly about something else. An
       error from your PROBE is not evidence about the subject.
+- [ ] If it SLICES its subject out of a file, does it assert that it FOUND the
+      subject before asserting anything about it? An anchor is a location, and
+      locations move — prefer a closing tag or the next top-level declaration
+      over a character count or a landmark that appears twice.
 - [ ] Can the verdict be swallowed in transit? `cmd | tail` returns tail's exit
       status. A prose assertion breaks on a line wrap. A search for ABSENCE
       piped through `head`/`tail` cannot tell "found nothing" from "stopped
