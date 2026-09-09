@@ -478,13 +478,32 @@ export default function SiteSuperintendentLog() {
   // It is not the bare "nothing to report" that items 4 to 7 carry.
   const [cpNone, setCpNone] = useState(false);
 
+  // ── A CLOCK PREFILL IS ONLY HONEST ON THE DAY THE LOG IS FOR ─────────────
+  //
+  // `nowClock()` READS THE CLOCK AND KNOWS NOTHING ABOUT `logDate`. This
+  // effect had no date guard, so opening YESTERDAY'S log this morning
+  // prefilled THIS MORNING'S time onto yesterday's record — a value from the
+  // wrong day, in a field that gates the submit, on a licensed signature. It
+  // was live on arrival before departure ever prefilled anything; departure
+  // would have doubled it.
+  //
+  // OFF-DAY, NOTHING IS SUGGESTED. The required mark and the submit gate
+  // already name a blank time, which is the honest outcome: the app does not
+  // know when he arrived on a day that is not today, and a wrong suggestion he
+  // did not retap is worse than a blank one he must fill.
+  //
+  // AMERICA/NEW_YORK ON BOTH SIDES. `todayISO` and `nowClock` read the same
+  // timezone, so the guard cannot disagree with the value it is guarding —
+  // a UTC "today" would open the gate for an hour every evening.
+  const prefillableDay = logDate === todayISO();
+
   const prefilledArrival = useRef(false);
 
   useEffect(() => {
-    if (prefilledArrival.current) return;
+    if (prefilledArrival.current || !prefillableDay) return;
     prefilledArrival.current = true;
     setArrivedAt((v) => v || nowClock());
-  }, []);
+  }, [prefillableDay]);
 
   // PREFILLED FROM THE SESSION, NOT THE CACHED PROFILE.
   //
@@ -676,6 +695,51 @@ export default function SiteSuperintendentLog() {
   // allSettled, NOT all. The roster and the daily log are independent
   // questions and a failure of one must not silently cost him the other --
   // Promise.all would have let a 403 on the roster suppress item 2's offer.
+  // ── DEPARTURE IS SUGGESTED WHEN HE REACHES THE SIGN STEP ────────────────
+  //
+  // THE OPERATOR'S POINT: he signs the log before he leaves the site, so the
+  // moment he signs is the departure. He should not type it.
+  //
+  // AND THE MOMENT IT IS WRITTEN IS THE WHOLE RULING. `handleSubmit` once
+  // read `departedAt.trim() || nowHHMM()` and stamped the clock into the
+  // payload AT THE TAP. That was retracted, and its retraction names the
+  // reason this effect fires HERE instead:
+  //
+  //     Arrival's prefill lands in a VISIBLE field he can correct for as long
+  //     as he is filling the log; this one landed in the payload at the
+  //     instant of filing, where he never saw it and could never correct it.
+  //
+  // Arriving at step 4 puts the value on screen, above the signature, with
+  // the field still live. He confirms it or he retaps it — and the note over
+  // both fields already says the times are his statement and not a
+  // measurement the app made. A stamp at the tap would be the same fabrication
+  // coming back through a different door.
+  //
+  // HE MAY SIGN AT THE TRAILER AND LEAVE TWENTY MINUTES LATER, so nothing
+  // locks. `TimeField` is exactly the control it was, with no `locked` prop.
+  //
+  // NEVER OVER A VALUE HE ENTERED, and never on a filed log. `!departedAt` is
+  // asked at the moment the effect runs rather than in the ref, so a man who
+  // typed 16:00 on step 1 keeps 16:00 when he reaches step 4.
+  //
+  // GUARDED ON `loading` FOR AN ORDERING REASON, not a cosmetic one. A
+  // restored draft can open the screen straight onto step 4, and `hydrate`
+  // writes `departed_at || ''` unconditionally — so an effect that fired
+  // before the load settled would prefill, then be wiped back to blank by
+  // hydrate, and the ref would stop it ever running again. Waiting for
+  // `loading` to clear is what makes the ref safe.
+  //
+  // AND IT NEVER TOUCHES `departedNextDay`. That flag is his statement that
+  // the shift crossed midnight; deriving it from a clock reading is the exact
+  // inference `departedNextDay`'s own note refuses.
+  const prefilledDeparture = useRef(false);
+  useEffect(() => {
+    if (loading || locked || prefilledDeparture.current) return;
+    if (step < TOTAL_STEPS || !prefillableDay) return;
+    prefilledDeparture.current = true;
+    setDepartedAt((v) => v || nowClock());
+  }, [loading, locked, step, prefillableDay]);
+
   const dailyOfferRef = useRef(false);
   useEffect(() => {
     if (loading || locked || dailyOfferRef.current) return undefined;
