@@ -963,6 +963,94 @@ the property §9 says a security check lives or dies by.
 ---
 
 
+## 13. A tool that follows links destroys things outside what you asked it to remove
+
+§12 is about a check pointed at the wrong subject. This is its operational
+twin: a COMMAND pointed at the wrong subject, where the wrong subject is a
+shared resource and the blast radius is everything else in the checkout.
+
+### The instance
+
+Worktrees have no `node_modules`, so the mount-smoke recipe junctions the main
+checkout's:
+
+```bash
+cmd //c mklink //J <worktree>/frontend/node_modules <main>/frontend/node_modules
+```
+
+Cleaning up afterwards:
+
+```bash
+git worktree remove <worktree> --force     # and `rm -rf` behaves identically
+```
+
+**Git-bash `rm -rf` and `git worktree remove --force` both RECURSE THROUGH a
+Windows junction.** They do not unlink it. They walk into the target and delete
+the real packages, in the main checkout, which every other worktree and every
+other session is also using. `@babel/core` went, among others.
+
+### The tell is the finding, not the deletion
+
+Sixty test files failed at once, immediately after a source edit.
+
+That reads as **"the edit broke everything"**. It is not: the edit was fine and
+the dependency tree was gone. The real signature is `MODULE_NOT_FOUND` on a
+build-time package across many unrelated files simultaneously — as against an
+assertion failure in one. Minutes go to reading a diff that has nothing wrong
+with it, which is the same cost §12's instances impose and for the same reason:
+**the failure points at the wrong cause.**
+
+It is also the mechanism behind "work reverting between passes". A shared
+mutable resource, clobbered by the cleanup of something unrelated, produces
+regressions in things previously reported done — and nothing in the reverted
+work's own history explains it.
+
+### The rule
+
+**Unlink before you remove.** `cmd //c rmdir` on a junction removes the LINK
+and leaves the target alone; nothing else here does.
+
+```bash
+cmd //c rmdir "$(cygpath -w <worktree>/frontend/node_modules)"   # unlink ONLY
+git worktree remove <worktree> --force
+```
+
+Then verify the shared resource survived, because the whole point is that the
+command reports success either way:
+
+```bash
+ls <main>/frontend/node_modules/@babel/core && ls <main>/frontend/node_modules | wc -l
+```
+
+`npm install` in the main checkout restores it. Check `package.json` and
+`package-lock.json` are still clean afterwards — a repair that edits the
+manifest has changed the repo, not just the environment.
+
+### The general shape
+
+A junction is one instance. The rule is about any tool whose reach exceeds its
+argument:
+
+- **symlinks and junctions** — `rm -rf`, `--force`, and most recursive walkers
+  follow them; the argument names a link and the damage lands somewhere else
+- **`git clean -xdf`** in a worktree whose ignored paths point outward
+- **a bind mount or a shared volume** removed with the container that mounted it
+- **a `--force` push** to a branch another worktree has checked out
+
+The question to ask before any destructive command: **is every path this will
+touch inside the thing I named?** If any of them is a link, the answer is no
+until you have unlinked it.
+
+And the corollary, which is what makes this a harness section rather than a
+shell tip: **a destructive command reports on what it was asked to do, never on
+what it reached.** `git worktree remove` said it removed the worktree. It had.
+That statement was true and useless. This is §10 — verify the pointer, not the
+report of the action — applied to deletion, where the observable state is the
+resource you did not name.
+
+---
+
+
 ## Checklist
 
 Before a check is worth having:
@@ -1027,3 +1115,11 @@ Before a check is worth having:
 - [ ] Does the guard you are relying on enforce in THIS environment? Read the
       deployed value of any flag it consults before trusting it — or before
       reporting that it is hollow.
+- [ ] Before a destructive command: is every path it will touch INSIDE the
+      thing you named? A junction or symlink means no. Unlink first, then
+      remove, then read the shared resource back — the command reports on what
+      it was asked to do, never on what it reached.
+- [ ] When many unrelated checks fail at once right after one edit, ask whether
+      the ENVIRONMENT moved before reading the diff. MODULE_NOT_FOUND across
+      files with nothing in common is a deleted dependency tree, not sixty
+      broken tests.
