@@ -181,15 +181,36 @@ const PINNED_COLORS = {
  * scopes to the caller's company and drops deleted users; this component adds
  * only the blank-name rule below.
  *
- * ── AND `site_device` IS THE ONE CASE THIS NOW ADMITS ───────────────────────
+ * ── `site_device` IS EXCLUDED, AND IT IS NOT A ROLE FILTER ─────────────────
  *
- * A `site_device` account is a PROVISIONED TABLET AT THE GATE, not a man, and
- * naming one in a BC 3301.13.12 designation would be false. ZERO such accounts
- * exist today, so nothing is live -- but the exclusion that used to cover it
- * is what has just been removed, and this is the note that says so rather than
- * a silent deviation from the ruling. If it should be excluded by name, that
- * is a one-line change here.
+ * See `isAPerson`. It is one predicate about ONE role because that role is not
+ * a person; it is not the eligibility list coming back under another name.
  */
+
+/**
+ * A PROVISIONED TABLET IS NOT A MAN.
+ *
+ * `site_device` is the gate tablet's own account -- a fixed device an inspector
+ * reads, which files check-ins and holds a project. BC 3301.13.12 designates a
+ * COMPETENT PERSON, and no arrangement of facts makes that a tablet. Filing
+ * "the designated competent person was: Gate Tablet 1" would be false on a
+ * signed statutory record, and false in a way nobody would question, because
+ * the name would have come off a real account.
+ *
+ * THIS IS NOT THE ROLE FILTER COMING BACK. That list read
+ * ['cp', 'admin', 'owner', 'superintendent'] and was a judgement about which
+ * PEOPLE are competent to be named -- which is the superintendent's judgement,
+ * not the app's, and it excluded nobody. This is a statement that one account
+ * type is not a person at all. If a `worker` account ever exists it appears in
+ * this list, and that is correct: a laborer who is also a designated competent
+ * person is the superintendent's call to make.
+ *
+ * PROSPECTIVE, AND THAT IS WHEN TO WRITE IT. Zero `site_device` accounts exist
+ * today, so this excludes nothing and changes no pixel. It is written now
+ * because the eligibility list that used to cover the case by accident has
+ * gone, and the first provisioned tablet is not the moment to notice.
+ */
+export const isAPerson = (row) => String(row?.role || '').toLowerCase() !== 'site_device';
 
 /**
  * Human label for the row's second line, so the CP picks knowingly.
@@ -220,6 +241,7 @@ export const ROLE_LABELS = {
 export async function fetchCompetentPersons() {
   const rows = await usersAPI.companyRoster();
   return (Array.isArray(rows) ? rows : [])
+    .filter(isAPerson)
     .filter((r) => String(r?.name || '').trim().length > 0);
 }
 
