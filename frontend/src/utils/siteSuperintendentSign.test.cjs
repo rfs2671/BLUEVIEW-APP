@@ -600,14 +600,49 @@ console.log('\n5. THE INSPECTION CARRIES WHAT 3301-04(f) NEEDS');
   // differently, this field was the only place to say so. That is a lawyer's
   // question. The other two are untouched, and the rule is still named on
   // screen — which is what makes the remaining fields read as required.
-  for (const k of ['inspectionLocation', 'inspectionResult']) {
-    ok(CODE(SCREEN).includes(k), `${k} is collected explicitly, not as one blank box`);
+  // AND `inspectionResult` IS NOW OUT OF IT TOO, for a different reason from
+  // the date. The date was a duplicate of the log's own; the result was a
+  // duplicate of STEP 3. On all three filed logs items 4 to 7 read
+  // `none_to_report` and the result read "All good" / "All good here" / "" --
+  // the same fact stated twice, on the quiet day, which is most days.
+  //
+  // THE LOCATION IS WHAT SURVIVES, AND IT CARRIES THE ITEM. `{location}` alone
+  // reads PRESENT to `item_state`, and the location IS the assertion that he
+  // inspected somewhere -- the one thing items 4 to 7 cannot say, because
+  // "nothing to report" is also true of a superintendent who never walked the
+  // site. He has already filed exactly that shape, on 2026-09-04.
+  ok(CODE(SCREEN).includes('inspectionLocation'),
+    'inspectionLocation is collected explicitly, not as one blank box');
+  ok(!CODE(SCREEN).includes('inspectionResult'),
+    'and the RESULT box is gone from the writer');
+  ok(!/result: inspectionResult/.test(CODE(SCREEN)),
+    'nothing writes `result` onto the document any more');
+
+  // FORWARD-ONLY, AND BOTH MODELS STILL DECLARE THE FIELD. Three filed logs
+  // carry a result; every renderer reaches it through a generic field loop off
+  // these declarations, so the readers keep reading while the writer stops.
+  // Deleting it from the models would blank it on the records that have one.
+  // NAMED, BOTH OF THEM. Two identically-labelled assertions cannot say which
+  // side drifted, and these two are the pair a parity test already keeps in
+  // step -- so a failure here is exactly the interesting case where one moved.
+  for (const [where, f] of [
+    ['superintendentLogModel.js', read('src', 'utils', 'superintendentLogModel.js')],
+    ['superintendent_log.py', fs.readFileSync(path.join(FRONTEND, '..',
+      'backend', 'lib', 'logbook', 'superintendent_log.py'), 'utf8')],
+  ]) {
+    const i = f.indexOf('daily_inspection');
+    ok(i > 0 && (f.slice(i, i + 400).includes("'result'")
+       || f.slice(i, i + 400).includes('"result"')),
+      `${where} still DECLARES daily_inspection.result, so filed records `
+      + 'keep printing it');
   }
+
   ok(!CODE(SCREEN).includes('inspectedOn'),
     'and the duplicate inspection DATE is gone, not merely unused');
   ok(/3301-04\(f\)/.test(read('src', 'i18n', 'en.js')),
-    'and the rule is named on screen, so the three fields read as required '
-    + 'rather than arbitrary');
+    'and the rule is named on screen, so the ONE remaining field reads as '
+    + 'required rather than arbitrary — it matters more now than it did '
+    + 'beside two others');
 }
 
 console.log('\n6. THE DOB LIST IS A SUGGESTION, NOT A COPY');
@@ -657,6 +692,55 @@ console.log('\n8. THE NAV');
   ok(/numberOfLines=\{1\}/.test(CODE(nav)), 'the nav label is still single-line');
   ok(/CP_NAV_PILL_HEIGHT =\n?\s*spacing\.sm \* 2/.test(nav),
     'and the pill height is still composed from padding and icon only');
+}
+
+console.log('\n8b. STEP 2 IS GONE, AND ONLY `result` WENT WITH IT');
+{
+  const csCode = CODE(SCREEN);
+
+  // THE OPERATOR READ STEP 2 AS REDUNDANT AND WAS THREE-QUARTERS RIGHT.
+  // Items 2 and 3 are required BC 3301.13.13 items with NO counterpart --
+  // `areas_visited` on the CP's daily log is empty on all 55 filed records --
+  // so dropping either would print "not recorded" against a statutory item on
+  // every log, forever. They moved; they did not go.
+  ok(/const TOTAL_STEPS = 3;/.test(csCode), 'three steps');
+  ok(!/stepWork/.test(csCode), 'the work step is gone');
+  const steps = csCode.slice(csCode.indexOf('const STEPS = ['),
+    csCode.indexOf('];', csCode.indexOf('const STEPS = [')));
+  ok((steps.match(/render:/g) || []).length === 3,
+    'and the stepper lists three, so the pips match the count');
+  ok(!/stepRecord/.test(steps),
+    'stepRecord is NOT a step — it is rendered by the sign step, which is '
+    + 'what puts item 2 beside the signature that adopts it');
+
+  // BOTH SURVIVING FIELDS ARE ON THE SIGN STEP, AND THE ADOPTION NOTE WITH
+  // THEM. Item 2 can arrive pre-filled from the CP's log; the one sentence
+  // that says "these are not your words" has to be on the screen where he
+  // signs them.
+  const rec = csCode.slice(csCode.indexOf('const stepRecord = () => ('),
+    csCode.indexOf('const stepFindings'));
+  ok(rec.length > 200, 'stepRecord is present to inspect');
+  for (const f of ['progressLabel', 'activitiesLabel', 'inspectionLocation']) {
+    ok(rec.includes(f), `it carries ${f}`);
+  }
+  ok(rec.includes('progressAdoptedNote'),
+    'the adoption note moved with item 2');
+  ok(/\{stepRecord\(\)\}/.test(csCode), 'and the sign step renders it');
+
+  // ── THE RENUMBER NEEDS A MIGRATION, AND CLAMPING IS NOT ONE ─────────────
+  //
+  // This is the SECOND renumber. The first was survivable by clamping because
+  // the step that went was the LAST one. This one is not: under the four-step
+  // form step 2 was work and step 3 was findings; under this one step 2 IS
+  // findings. A clamped 2 lands him on findings while he was filling the work
+  // step, and a clamped 3 lands him on findings while he was signing.
+  ok(/steps: TOTAL_STEPS,/.test(csCode),
+    'the snapshot records WHICH layout its `step` is counted in');
+  ok(/const current = v\.steps === TOTAL_STEPS;/.test(csCode),
+    'and a draft carrying the current number is read as-is');
+  ok(/\{ 1: 1, 2: TOTAL_STEPS, 3: 2, 4: TOTAL_STEPS \}/.test(csCode),
+    'while anything else is migrated BY MEANING — old work -> sign, old '
+    + 'findings -> 2, old sign -> sign');
 }
 
 console.log('\n9. "NOTHING TO REPORT" IS ANSWERABLE FROM THE COLLAPSED ROW');
