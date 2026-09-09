@@ -99,7 +99,7 @@ function slice(src, from, to) {
 }
 
 const rolesSrc = slice(pickerSrc,
-  'export const TRAINER_ELIGIBLE_ROLES',
+  'export const ROLE_LABELS',
   'export async function fetchCompetentPersons');
 const sameSrc = slice(pickerSrc,
   'export function isSamePerson',
@@ -116,30 +116,47 @@ if (rolesSrc === null || sameSrc === null || filterSrc === null) {
 }
 
 const mod = { exports: {} };
-const TAIL = '\n;module.exports = { TRAINER_ELIGIBLE_ROLES, isTrainerEligible, '
+const TAIL = '\n;module.exports = { ROLE_LABELS, '
   + 'isSamePerson, filterCompetentPersons };';
 // eslint-disable-next-line no-new-func
 new Function('module', 'exports',
   (rolesSrc + sameSrc + filterSrc).replace(/^export /gm, '') + TAIL)(mod, mod.exports);
-const { isTrainerEligible, isSamePerson, filterCompetentPersons } = mod.exports;
+const { ROLE_LABELS, isSamePerson, filterCompetentPersons } = mod.exports;
 
-// WHO MAY BE NAMED AS THE TRAINER. A laborer is not a competent person and a
-// provisioned tablet is not a man; naming either in a §3301.2 attestation
-// would be a worse defect than the typing this replaces.
-ok('a competent person is eligible', isTrainerEligible({ role: 'cp' }) === true);
-ok('a superintendent is eligible', isTrainerEligible({ role: 'superintendent' }) === true);
-ok('an owner is eligible', isTrainerEligible({ role: 'owner' }) === true,
-  'self-serve signup makes every founding account an owner — excluding them '
-  + 'would empty the list for a small company and push the CP to type');
-ok('an admin is eligible', isTrainerEligible({ role: 'admin' }) === true);
-ok('a WORKER is not eligible', isTrainerEligible({ role: 'worker' }) === false,
-  'a laborer named as the man who delivered the orientation is a false '
-  + 'attestation, not a spelling improvement');
-ok('a SITE DEVICE is not eligible', isTrainerEligible({ role: 'site_device' }) === false,
-  'a provisioned tablet cannot deliver an orientation');
-ok('an unknown role is not eligible', isTrainerEligible({ role: 'ssc' }) === false);
-ok('a roleless row is not eligible', isTrainerEligible({}) === false);
-ok('a null row does not throw', isTrainerEligible(null) === false);
+// ── THE ROLE FILTER IS GONE, AND IT WAS EXCLUDING NOBODY ───────────────────
+//
+// THIS BLOCK USED TO ASSERT THE OPPOSITE, at length: a worker is not eligible,
+// a site device is not eligible, an unknown role is not eligible. Every one of
+// those was true and none of them ever fired. MEASURED AGAINST PRODUCTION:
+//
+//     owner 3   admin 3   cp 3        every account on the platform
+//     not in the eligible list: []    the filter removed nothing
+//
+// The filing superintendent's own company holds three accounts and all three
+// were already listed -- which is what his screenshot shows. So the assertions
+// were describing a rule whose effect was zero, and the rule went for the
+// reason the operator gave: one that excludes nothing is one nobody remembers
+// when the first `worker` account appears, and by then it is a silent
+// exclusion rather than a decision.
+//
+// WHAT REPLACES THEM IS THE LABEL TABLE, because that is now the only thing
+// standing between a raw role slug and a superintendent choosing a competent
+// person.
+ok('every role the app issues has a human label',
+  ['cp', 'admin', 'owner', 'superintendent', 'worker', 'site_device']
+    .every((r) => typeof ROLE_LABELS[r] === 'string' && ROLE_LABELS[r]),
+  'without one the row falls back to the slug, and "site_device" under a name '
+  + 'is worse than "Site device (tablet)"');
+ok('and a role nobody declared still renders as itself',
+  ROLE_LABELS.ssc === undefined,
+  'the row reads `ROLE_LABELS[role] || role`, so an unknown role shows its own '
+  + 'name rather than a blank second line');
+
+// THE ONE CASE THE REMOVAL ADMITS, NAMED IN THE COMPONENT. A `site_device`
+// account is a provisioned tablet, not a man; zero exist, so nothing is live,
+// but the exclusion that covered it is what has just gone.
+ok('the component says so rather than deviating quietly',
+  /site_device` IS THE ONE CASE THIS NOW ADMITS/.test(pickerSrc));
 
 const PEOPLE = [
   { id: 'u1', name: 'Michael Cespedes', email: 'michael@arkon.com', role: 'cp' },
@@ -214,6 +231,15 @@ ok('offline and empty are distinguishable states',
   'the "none registered" copy must be reachable only when the server answered');
 ok('the source is the company roster',
   /usersAPI\.companyRoster\(\)/.test(picker));
+ok('and nothing filters it by role any more',
+  !/\.filter\(isTrainerEligible\)/.test(picker),
+  'the roster is already scoped to the company and already drops deleted '
+  + 'users; this component adds only the blank-name rule');
+ok('the blank-name rule stays',
+  /String\(r\?\.name \|\| ''\)\.trim\(\)\.length > 0/.test(picker),
+  'company-roster falls back to the email when an account has no name, so a '
+  + 'blank here means genuinely blank — and a row that renders as an empty '
+  + 'line is not something a CP can attest to having picked');
 ok('free text is reachable from inside the picker',
   /onManual/.test(picker));
 

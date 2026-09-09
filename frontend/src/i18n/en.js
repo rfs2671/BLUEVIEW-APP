@@ -1505,7 +1505,7 @@ export default {
     // THE SECOND TAP. Named for what it is rather than for what it is not —
     // a subcontractor's competent person with no account here is an ordinary
     // case, not an exception being tolerated.
-    cpEnterByHand: 'Enter a competent person not on this list',
+    cpEnterByHand: 'A competent person from another company, with no account here',
     cpRosterFailed: "Could not load your company's competent persons. Check your signal, or enter the name by hand below.",
     // THE CLAIM IS IN THE LABEL, not only in the note. 3301.13.12 makes the
     // absence of a designation lawful ONLY where the superintendent was on

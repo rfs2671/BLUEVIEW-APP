@@ -70,6 +70,21 @@
  * reason. Nothing blocks a filing: a competent person from a subcontractor
  * with no account here can have delivered the orientation.
  *
+ * IT WAS PROPOSED FOR REMOVAL AND KEPT, and the label is why it was proposed.
+ * "Enter a competent person not on this list" reads as covering account
+ * holders, so it looked like a redundant escape hatch beside a complete list
+ * -- and a man without an account cannot use the app, so what would it be for?
+ *
+ * THE ANSWER IS THAT ITEM 8 DOES NOT RECORD WHO FILES. It records who was
+ * DESIGNATED under BC 3301.13.12, and the designee never touches this app: the
+ * superintendent files. A subcontractor's competent person, or a specialist in
+ * for one day, is lawfully designatable and will never hold an account.
+ * Removing this would leave him naming the wrong man or ticking "I was on site
+ * at all times active work occurred" -- a false statement about his own
+ * presence, on a signed record.
+ *
+ * So the label now says who it is for, in both mounters' own words.
+ *
  * Same structure and the same refusals as WorkerPicker, including the one that
  * matters most: A FAILED READ IS NOT AN EMPTY LIST.
  */
@@ -147,26 +162,51 @@ const PINNED_COLORS = {
 };
 
 /**
- * WHO MAY BE NAMED AS THE TRAINER.
+ * THE ROLE FILTER IS GONE, AND IT WAS EXCLUDING NOBODY.
  *
- * The same four roles backend/server.py already treats as one class for acting
- * on a logbook. `worker` is excluded because a laborer is not a competent
- * person, and `site_device` because it is a provisioned tablet, not a man —
- * naming either in a §3301.2 attestation would be worse than the free text.
+ * It read `['cp', 'admin', 'owner', 'superintendent']` and argued, correctly,
+ * that a laborer is not a competent person. MEASURED AGAINST PRODUCTION, every
+ * account on the platform holds one of exactly three roles:
+ *
+ *     owner 3   admin 3   cp 3
+ *     not in the eligible list: []
+ *
+ * The filing superintendent's own company holds three accounts and ALL THREE
+ * were already listed. So the filter cost a fetch-time pass and removed
+ * nothing, which is the shape the operator named: a filter that excludes
+ * nothing is one nobody remembers when the first `worker` account appears --
+ * and by then it is a silent exclusion rather than a decision.
+ *
+ * SO THE LIST IS EVERY ACCOUNT THE ROSTER RETURNS. `company-roster` already
+ * scopes to the caller's company and drops deleted users; this component adds
+ * only the blank-name rule below.
+ *
+ * ── AND `site_device` IS THE ONE CASE THIS NOW ADMITS ───────────────────────
+ *
+ * A `site_device` account is a PROVISIONED TABLET AT THE GATE, not a man, and
+ * naming one in a BC 3301.13.12 designation would be false. ZERO such accounts
+ * exist today, so nothing is live -- but the exclusion that used to cover it
+ * is what has just been removed, and this is the note that says so rather than
+ * a silent deviation from the ruling. If it should be excluded by name, that
+ * is a one-line change here.
  */
-export const TRAINER_ELIGIBLE_ROLES = ['cp', 'admin', 'owner', 'superintendent'];
 
-/** Human label for the row's second line, so the CP picks knowingly. */
+/**
+ * Human label for the row's second line, so the CP picks knowingly.
+ *
+ * `worker` and `site_device` ARE NAMED even though nothing holds them today.
+ * Without a label the row falls back to the raw slug, and "site_device" under
+ * a name is a worse thing to put in front of a superintendent choosing a
+ * competent person than "Site device (tablet)".
+ */
 export const ROLE_LABELS = {
   cp: 'Competent Person',
   admin: 'Admin',
   owner: 'Owner',
   superintendent: 'Superintendent',
+  worker: 'Worker',
+  site_device: 'Site device (tablet)',
 };
-
-export function isTrainerEligible(row) {
-  return TRAINER_ELIGIBLE_ROLES.includes(String(row?.role || '').toLowerCase());
-}
 
 /**
  * Fetch the company's competent persons. Exported so a caller can warm it and
@@ -180,7 +220,6 @@ export function isTrainerEligible(row) {
 export async function fetchCompetentPersons() {
   const rows = await usersAPI.companyRoster();
   return (Array.isArray(rows) ? rows : [])
-    .filter(isTrainerEligible)
     .filter((r) => String(r?.name || '').trim().length > 0);
 }
 
@@ -256,7 +295,8 @@ export function filterCompetentPersons(rows, query) {
  * change, and so a future third caller that forgets to pass them gets a
  * sentence that is merely imprecise rather than one that is blank.
  */
-const TRAINER_MANUAL_LABEL = 'Enter a trainer not on this list';
+const TRAINER_MANUAL_LABEL =
+  'A trainer from another company, with no account here';
 const TRAINER_FAILED_NOTE =
   "Could not load your company's competent persons. Check your signal, or "
   + 'enter the trainer by hand below.';
