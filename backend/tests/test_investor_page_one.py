@@ -196,16 +196,27 @@ class ItAnswersTheQuestionThatWasAsked(Base):
     def test_the_machine_date_is_not_on_page_1(self):
         self.assertNotIn("2026-08-11", self.page1())
 
-    def test_weather_is_NOT_on_the_cover(self):
-        """It was, and it was a second copy with no document behind it.
+    def test_weather_IS_on_the_cover__reversing_an_earlier_ruling(self):
+        """THIS ASSERTED THE OPPOSITE AND THE OPERATOR REVERSED IT.
 
-        Weather is a §3301-02 field of the DAILY JOBSITE LOG and it is printed
-        there, in that log's own info box. On the cover it was the first line
-        of a progress report answering a question nobody with $2M in the ground
-        was asking, and a reader counting fields on a compliance document reads
-        a repeat as a discrepancy. `_display_weather` is untouched -- the
-        assertion below is that the fact moved, not that it was dropped."""
-        self.assertNotIn("Sunny", self.page1())
+        The old reasoning, kept because a correction that erases what it
+        corrects leaves the next reader's grep empty:
+
+            weather is NOT on the cover. It was, and it was a second copy with
+            no document behind it ... the first line of a progress report
+            answering a question nobody with $2M in the ground was asking, and
+            a reader counting fields on a compliance document reads a repeat
+            as a discrepancy.
+
+        THE REVERSAL IS A PROMOTION, NOT A MOVE, and that is what makes the two
+        readings compatible rather than one of them simply wrong. The daily
+        jobsite log KEEPS its weather box, where 3301-02 asks for it -- the
+        next test asserts exactly that, unchanged. What the cover gains is the
+        frame the rest of the page sits in: eight men on a roof means one thing
+        in the dry and another in 30mph wind, and that is a lender's question
+        rather than an inspector's.
+        """
+        self.assertIn("Sunny", self.page1())
 
     def test_and_it_is_still_on_the_daily_jobsite_log(self):
         h = self.html()
@@ -380,8 +391,11 @@ class HeadcountComesFromCheckIns(Base):
         self.assertIn(">5", p1.replace(" ", "").replace("\n", ""))
 
     def test_and_it_breaks_down_by_subcontractor(self):
+        """The sub-head was "Headcount by subcontractor" and is now "Workforce
+        breakdown" -- the mockup's name for the same table, from the same
+        source. The LABEL moved; the claim did not."""
         p1 = self.page1()
-        self.assertIn("Headcount by subcontractor", p1)
+        self.assertIn("Workforce breakdown", p1)
         self.assertIn("Kestrel Electric", p1)
         self.assertIn("Air Star Mechanical", p1)
 

@@ -116,14 +116,23 @@ class TestWeatherIsNeverBlank(unittest.TestCase):
     def test_every_daily_jobsite_renderer_goes_through_the_helper(self):
         """The three call sites must not drift back to their own defaults."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
-        # WAS 5. The investor cover's call site is gone -- weather is a field
-        # of the daily jobsite log and is printed in that log's section, not
-        # twice on one document. The helper itself and its three REAL call
-        # sites are untouched, which is what this assertion is for.
+        # THE LEDGER, BOTH WAYS ROUND, because it has now moved twice and the
+        # second move reverses the first:
+        #
+        #   5 -> 4  "the investor cover's call site is gone -- weather is a
+        #            field of the daily jobsite log and is printed in that
+        #            log's section, not twice on one document"
+        #   4 -> 5  the operator reversed it. The cover carries a weather panel
+        #           again, as a PROMOTION: the daily jobsite section KEEPS its
+        #           own, so the helper gained a caller rather than moving one.
+        #
+        # What this assertion is for is unchanged -- that no renderer drifts
+        # back to its own defaults -- and the earlier reasoning is kept rather
+        # than deleted, so a reader who greps it finds the reversal.
         self.assertEqual(
-            src.count('_display_weather('), 4,
-            "expected 1 definition + 3 call sites: the two PDF renderers' "
-            "daily jobsite sections and the SSC section",
+            src.count('_display_weather('), 5,
+            "expected 1 definition + 4 call sites: the two PDF renderers' "
+            "daily jobsite sections, the SSC section, and the investor cover",
         )
         # The exact bug shape, gone.
         self.assertNotIn('f\'{data.get("weather", "N/A")} ', src)

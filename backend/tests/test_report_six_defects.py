@@ -867,7 +867,11 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         # own section. The count is the claim: EVERY section resolves its
         # document through _filed_log, so none can quietly reach past the
         # amendment resolver and render a superseded original.
-        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 13)
+        # 13 -> 14: the investor cover's SAFETY STATUS tile reads the
+        # superintendent's log through the same resolver, so a tile and a
+        # section cannot disagree about which link of an amended chain is the
+        # record. The count moves with a reason rather than being lowered.
+        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 14)
         self.assertNotIn('next((l for l in logbooks', _REPORT)
 
 
@@ -969,7 +973,15 @@ class TestPageOneReadsLikeSomethingSentToALender(unittest.TestCase):
         """Only where it disambiguates. The page is a summary, not a schedule,
         and a fact nobody asked for on every row is noise."""
         html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
-        work = html[html.index("Work today"):html.index('page-break-after:always')]
+        # SLICED TO THE PER-SUB LINES, not to the rest of the page. The
+        # sub-head is "Today's work" now, and the slice ran to the page break
+        # -- so it also swallowed Visual progress, whose BAND HEADER carries
+        # the trade on purpose ("Arkon Builders (Framers)", per the mockup).
+        # This assertion is about the per-subcontractor LINES, where a trade
+        # nobody asked for on every row is noise; it is not about the band.
+        work = html[html.index("Today's work"):html.index("Visual progress")
+                    if "Visual progress" in html
+                    else html.index('page-break-after:always')]
         self.assertIn("AAZ", work)
         self.assertNotIn("Concrete", work)
 
