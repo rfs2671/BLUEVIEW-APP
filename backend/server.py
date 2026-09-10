@@ -43722,6 +43722,199 @@ def _public_temp_media_url(token: str) -> str:
     return f"{base}/api/public/temp-media/{token}"
 
 
+# ── A FILED RECORD OPENS FOR SOMEBODY WITH NO LOGIN ─────────────────────────
+#
+# WHY THIS EXISTS. The investor report is getting a PROJECT RECORD page: eight
+# cards, each naming one filed logbook, each with a View Document button. Today
+# the report EMBEDS every logbook in full, so a lender reading the attachment
+# already has the content. The button is a MECHANISM CHANGE, not an access
+# change -- it replaces twenty pages of embedded record with eight links.
+#
+# `get_single_logbook_pdf` is `Depends(get_current_user)`, and its `token`
+# query parameter is a JWT for that same authenticated user. An investor
+# opening the emailed PDF and clicking a card gets a 401. That is what this
+# closes.
+#
+# ── IT REUSES temp-media's PATTERN AND NOT ITS RESOLVER ─────────────────────
+#
+# `_mint_temp_media_token` maps a token to an R2 KEY and streams that object.
+# A per-logbook PDF is not an R2 object -- it is RENDERED ON DEMAND from the
+# stored document. Putting one in R2 per report would be eight renders and
+# eight uploads a day per project, storing a second copy of something that
+# regenerates deterministically from the record.
+#
+# So the payload differs and everything else is the same, deliberately: the
+# opaque `token_urlsafe(24)`, the `expires_at` TTL index that DELETES the row,
+# the mount on `app` rather than `api_router` so no auth dependency runs, and
+# the rule that made those safe -- THE TOKEN IS THE AUTH.
+#
+# ── NINETY DAYS, AND WHY IT IS NOT PERMANENT ────────────────────────────────
+#
+# temp-media defaults to 3600 seconds because WaAPI HEADs and GETs a URL within
+# seconds of being handed it. A report is read weeks later, so that default is
+# wrong here by orders of magnitude -- and "then make it permanent" is the
+# wrong correction.
+#
+# AN EMBEDDED PDF AND A LINK DIFFER IN ONE RESPECT: THE LINK KEEPS WORKING AND
+# IT FORWARDS. A PDF in an inbox is a copy of what the recipient was sent. A
+# URL is a live door into a statutory record, it survives being pasted into a
+# group chat, and nothing about it decays. Ninety days is what bounds that
+# difference: it covers a quarterly reading cycle with margin, and a leaked
+# link dies.
+#
+# EXPIRY IS ENFORCED BY DELETION, NOT BY A CHECK. The TTL index removes the row
+# and the route 404s on a token it cannot find. There is no predicate anybody
+# has to remember to write, and no code path that can forget to consult one --
+# which is the property that makes this an access control rather than a
+# convention.
+#
+# If a recipient needs a record after ninety days they ask, and that is the
+# right amount of friction on a compliance document: it produces a conversation
+# instead of silent indefinite access.
+SHARED_LOGBOOK_TTL_SECONDS = 90 * 24 * 3600
+
+
+async def _mint_logbook_share_token(
+    logbook_id: str, ttl_seconds: int = SHARED_LOGBOOK_TTL_SECONDS,
+) -> Optional[str]:
+    """Store a logbook id under an opaque token; return the token, or None.
+
+    RETURNS None RATHER THAN RAISING. This is called while rendering a report
+    that is about to be emailed. A failed insert must cost the reader one
+    button, not the whole document -- the caller omits the link and the card
+    still names the record.
+    """
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    try:
+        await db.logbook_share_tokens.insert_one({
+            "token":      token,
+            "logbook_id": str(logbook_id),
+            "created_at": now,
+            "expires_at": now + timedelta(seconds=ttl_seconds),
+        })
+        try:
+            await db.logbook_share_tokens.create_index(
+                "expires_at", expireAfterSeconds=0, name="logbook_share_ttl"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"logbook_share_tokens insert failed: {e}")
+        return None
+    return token
+
+
+async def _resolve_logbook_share_token(token: str) -> Optional[dict]:
+    """The row, or None for unknown AND for expired.
+
+    THE EXPIRY IS CHECKED HERE AS WELL AS BY THE INDEX. MongoDB's TTL monitor
+    runs about once a minute, so a row is readable for up to a minute after it
+    expires. One minute is nothing against ninety days -- but a resolver that
+    trusts the sweep is a resolver that returns a stale grant, and the whole
+    point of the index is that nothing has to remember. This is the same
+    belt-and-braces `_resolve_temp_media_token` already applies.
+    """
+    try:
+        row = await db.logbook_share_tokens.find_one({"token": token})
+    except Exception:
+        return None
+    if not row:
+        return None
+    exp = row.get("expires_at")
+    if isinstance(exp, datetime):
+        exp_aware = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+        if exp_aware < datetime.now(timezone.utc):
+            return None
+    return row
+
+
+def _public_logbook_url(token: str) -> str:
+    """The URL a View Document button points at."""
+    base = os.environ.get("PUBLIC_BASE_URL", "https://api.levelog.com").rstrip("/")
+    return f"{base}/api/public/logbook/{token}"
+
+
+# ON `app`, NOT `api_router`. Same reason temp-media's two routes are: the
+# router carries an auth dependency, and a recipient of the report has no
+# account to authenticate as.
+@app.get("/api/public/logbook/{token}")
+async def public_logbook_pdf(token: str):
+    """Render one filed logbook as a PDF for a holder of a valid token.
+
+    NOTHING IS TRUSTED FROM THE URL EXCEPT THE TOKEN. The logbook id comes from
+    the stored row, so a token cannot be pointed at a different record by
+    editing the link -- which is the failure a `?logbook_id=` parameter beside
+    a token would invite.
+    """
+    row = await _resolve_logbook_share_token(token)
+    if not row:
+        # ONE ANSWER FOR UNKNOWN AND EXPIRED. Distinguishing them tells a
+        # holder of a guessed token that it was once real.
+        raise HTTPException(status_code=404, detail="Not found or expired")
+
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(row.get("logbook_id") or ""),
+        "is_deleted": {"$ne": True},
+    })
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Not found or expired")
+
+    # ── EVERY FETCH IS RECORDED ─────────────────────────────────────────────
+    #
+    # Nothing else in this system would show that a statutory record was read
+    # by somebody with no account. The authenticated readers leave a session;
+    # this route leaves nothing unless it writes something.
+    #
+    # BEFORE THE RENDER, so a fetch that fails to render is still recorded as a
+    # fetch. What is interesting is that the door was opened, not that the PDF
+    # came back.
+    #
+    # NEVER RAISES. An audit write that can 500 the read turns a logging
+    # feature into an availability risk on somebody else's document.
+    try:
+        await db.logbook_share_reads.insert_one({
+            "token":      token,
+            "logbook_id": str(row.get("logbook_id") or ""),
+            "project_id": str(logbook.get("project_id") or ""),
+            "log_type":   logbook.get("log_type"),
+            "date":       logbook.get("date"),
+            "read_at":    datetime.now(timezone.utc),
+            # NO IP, NO USER AGENT. Neither identifies anyone here and both are
+            # personal data on a record about a construction site.
+        })
+    except Exception as e:
+        logger.warning(f"logbook_share_reads insert failed: {e}")
+
+    html = await generate_single_logbook_html(logbook)
+    try:
+        from weasyprint import HTML
+
+        def _render_pdf(h: str) -> bytes:
+            return HTML(string=h).write_pdf()
+
+        pdf_bytes = await asyncio.to_thread(_render_pdf, html)
+    except Exception as e:
+        logger.error(f"public logbook PDF render failed for {row.get('logbook_id')}: {e}")
+        raise HTTPException(status_code=500, detail="PDF generation failed")
+
+    project = await db.projects.find_one(
+        {"_id": to_query_id(logbook.get("project_id"))})
+    project_name = (project.get("name", "report") if project else "report").replace(" ", "_")
+    type_label = str(logbook.get("log_type") or "log").replace("_", "-")
+    filename = f"Levelog_{type_label}_{project_name}_{logbook.get('date')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        # INLINE, NOT ATTACHMENT. The authenticated route downloads because an
+        # admin is filing it; a lender who clicked a button in a report wants
+        # to LOOK at the page, and a download that lands in a folder is a
+        # worse answer to "show me the record".
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 @api_router.post("/debug/probe-waapi-endpoints")
 async def debug_probe_waapi_endpoints(
     body: dict,
