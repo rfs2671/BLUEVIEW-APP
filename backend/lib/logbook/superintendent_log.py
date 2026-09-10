@@ -427,3 +427,75 @@ def unanswered_attestable(data: Optional[dict], log_date: Optional[str] = None) 
         if item_applies(key, log_date)
         and item_state(key, data, log_date) == NOT_REACHED
     ]
+
+
+# ── THE SAFETY ITEMS, AND THE ONE WORD A COVER CAN SAY ABOUT THEM ───────────
+#
+# WHY THIS LIVES HERE AND NOT IN THE REPORT. The investor cover carries a
+# SAFETY STATUS tile derived from four of the eleven items. The first draft
+# named those four in `generate_combined_report`, and
+# `test_superintendent_log.py::OneBuilderBothRenderers` refused it -- correctly:
+# "neither builds its own item list". A second copy of these keys is a copy
+# that goes quietly out of date. Rename an item here and the report's tuple
+# stops matching, the tile reads "not stated" forever, and nothing fails.
+#
+# So the keys stay where they are declared, and the report asks a question.
+SAFETY_ITEM_KEYS: Tuple[str, ...] = (
+    "unsafe_conditions", "orders_given", "dob_actions", "incidents",
+)
+
+#: The investor cover's wording for each, as a TICK -- what a lender reads
+#: when the superintendent attested "none to report".
+#:
+#: IT LIVES BESIDE THE KEYS RATHER THAN IN THE REPORT, and that is the whole
+#: reason this constant exists. A dict in the renderer would name the four keys
+#: a second time; a positional list zipped against the tuple above would pair
+#: silently wrong the day somebody reorders it. Here a rename moves the key and
+#: its words together, in one edit, in the file that owns both.
+#:
+#: NOT the statutory `label`. "Unsafe conditions observed" is the item's name
+#: on a DOB form; "No unsafe conditions observed" is the claim a tick makes on
+#: a cover, and the two are not interchangeable -- one is a heading and the
+#: other is an attestation.
+SAFETY_TICK_WORDS: Dict[str, str] = {
+    "unsafe_conditions": "No unsafe conditions observed",
+    "orders_given":      "No orders or notices given",
+    "dob_actions":       "No violations or stop work orders",
+    "incidents":         "No incidents or damage reported",
+}
+
+SAFETY_CLEAR = "clear"
+SAFETY_ATTENTION = "attention"
+SAFETY_UNKNOWN = "unknown"
+
+
+def safety_status(data: Optional[dict], log_date: Optional[str] = None,
+                  flagged: bool = False) -> str:
+    """One word for the four safety items, or the honest absence of one.
+
+        ATTENTION  something is PRESENT on any of the four, or the CP flagged
+                   an observation or a failed inspection on his own log
+        CLEAR      all four attested "none to report", and nothing flagged
+        UNKNOWN    no superintendent log, or the items were never reached
+
+    UNKNOWN IS NOT A DEGRADED "CLEAR" AND MUST NOT RENDER AS ONE. The
+    superintendent's log is active on ONE of thirty-seven projects; on the rest
+    NO DOCUMENT ANSWERS THIS QUESTION. A cover reading "Clear" there would be
+    an attestation nobody made -- which is the not_reached-versus-attested_none
+    distinction this whole module is built around, arriving on the one surface
+    a lender actually reads.
+
+    `flagged` IS THE CP'S OWN RECORD, not the superintendent's. It covers what
+    items 4 to 7 do not: an observation or a failed inspection on the daily
+    jobsite log. All four items can be honestly attested "none" on a day the CP
+    still recorded something, and a tile that said Clear over it would be true
+    about the superintendent's log and wrong about the site.
+    """
+    if data is None:
+        return SAFETY_ATTENTION if flagged else SAFETY_UNKNOWN
+    states = [item_state(k, data, log_date) for k in SAFETY_ITEM_KEYS]
+    if flagged or any(s == PRESENT for s in states):
+        return SAFETY_ATTENTION
+    if states and all(s == ATTESTED_NONE for s in states):
+        return SAFETY_CLEAR
+    return SAFETY_UNKNOWN

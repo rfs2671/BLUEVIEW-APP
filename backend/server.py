@@ -6036,6 +6036,9 @@ from lib.logbook.superintendent_log import (  # noqa: E402
     COMPETENT_PERSON_SUNSET, applicable_items as cs_applicable_items,
     item_state as cs_item_state, unanswered_attestable,
     ATTESTED_NONE, NOT_REACHED, NOT_COLLECTED, PRESENT,
+    SAFETY_ITEM_KEYS as CS_SAFETY_ITEM_KEYS, safety_status as cs_safety_status,
+    SAFETY_TICK_WORDS as CS_SAFETY_TICK_WORDS,
+    SAFETY_CLEAR, SAFETY_ATTENTION,
 )
 from lib.esra_consent import (  # noqa: E402
     ESRA_CONSENT_TEXT, ESRA_CONSENT_VERSION,
@@ -30831,13 +30834,74 @@ async def generate_combined_report(
 
     _dj = ((daily_jobsite or {}).get("data") or {}) if daily_jobsite else {}
     _dj_id = str(daily_jobsite["_id"]) if daily_jobsite else ""
-    # NO WEATHER ON THE COVER. It is a fact about the DAILY JOBSITE LOG and it
-    # is printed there, in that log's own info box, where §3301-02 asks for it.
-    # On the investor cover it was a second copy of the same string with no
-    # document behind it -- the first line of a progress report answering a
-    # question nobody with $2M in the ground was asking. `_display_weather` is
-    # untouched and still has three call sites: both PDF renderers' daily
-    # jobsite sections and the SSC section.
+    # ── WEATHER IS ON THE COVER, AND THIS REVERSES A RULING ─────────────────
+    #
+    # THE OLD REASONING, QUOTED SO A READER FINDS THE CORRECTION RATHER THAN AN
+    # EMPTY GREP:
+    #
+    #     NO WEATHER ON THE COVER. It is a fact about the DAILY JOBSITE LOG and
+    #     it is printed there, in that log's own info box, where 3301-02 asks
+    #     for it. On the investor cover it was a second copy of the same string
+    #     with no document behind it -- the first line of a progress report
+    #     answering a question nobody with $2M in the ground was asking.
+    #
+    # THE OPERATOR HAS REVERSED IT, and the reversal is a PROMOTION rather than
+    # a move: the daily jobsite log keeps its own weather box, where 3301-02
+    # asks for it, and the cover gains one. Two copies of one fact is what the
+    # old note objected to; on a cover a lender reads, conditions are the
+    # frame the rest of the page sits in -- eight men on a roof means one
+    # thing in the dry and another in 30mph wind.
+    #
+    # `_display_weather` is unchanged and now has four call sites.
+    _weather_panel = ""
+    if _dj:
+        _w = _display_weather(_dj)
+        if _w:
+            _weather_panel = (
+                '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+                'style="margin:0;border:1px solid #e2e8f0;border-radius:6px;" '
+                'bgcolor="#f8fafc"><tr><td style="padding:14px 16px;">'
+                f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
+                'text-transform:uppercase;letter-spacing:0.08em;'
+                'padding-bottom:6px;">Weather</div>'
+                '<div style="font-size:16px;color:#0A1929;line-height:1.6;">'
+                f'{_w}</div></td></tr></table>'
+            )
+
+    # ── THE COVER STRIP: FOUR TILES ─────────────────────────────────────────
+    #
+    # FOUR, NOT FIVE. The mockup's fifth reads ACTIVE FLOORS "2, 5, 6 + ROOF"
+    # and there is no source for it: `location_ids` across ALL 110 activity
+    # rows in production is 71 free-text `other:` strings and 40 empty, with
+    # ZERO floor chips -- three spellings of the same two floors in three
+    # consecutive days ("1 floor", "1st 2nd floor", "1st and 2nd floor").
+    # Parsing that into a list is inventing one. The operator ruled the tile
+    # OUT rather than permanently "&mdash;": a cover tile that always reads as
+    # missing advertises a number the product does not have.
+    #
+    # TRADES COMES FROM THE GATE, NOT THE LOG. `trade` is blank on 50 of 110
+    # activity rows; every one of the 217 check-ins carries one.
+    _trades = sorted({
+        " ".join(str(_c.get("trade") or "").split())
+        for _c in (checkins or []) if _c.get("blocked") is not True
+    } - {""})
+
+    # `_stat_tile`, NOT `_tile`. The photo loop below binds a LOCAL named
+    # `_tile` for each photograph's HTML, and it runs BEFORE this is used --
+    # so a function called `_tile` is a string by the time the cover is
+    # assembled, and the failure is `'str' object is not callable` on a live
+    # render rather than anything a reader would connect to a photo loop 400
+    # lines away. Found by rendering, not by reading.
+    def _stat_tile(value, label):
+        return (
+            f'<td width="25%" valign="top" style="vertical-align:top;'
+            'padding:0 10px;border-left:1px solid #e2e8f0;">'
+            f'<div style="font-size:30px;font-weight:700;color:#0A1929;'
+            f'line-height:1.1;">{value}</div>'
+            f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
+            'text-transform:uppercase;letter-spacing:0.08em;padding-top:6px;">'
+            f'{label}</div></td>'
+        )
 
     # Headcount, by sub and total. From CHECK-INS, as ruled.
     _sub_rows = "".join(
@@ -31119,6 +31183,27 @@ async def generate_combined_report(
                 '<li style="margin:0 0 6px;">Failed inspection: '
                 f'{_inspection_label(_k)}{" - " + _note if _note else ""}</li>'
             )
+    # ── SAFETY STATUS: THREE STATES, AND THE THIRD IS NOT "FINE" ───────────
+    #
+    # THE FOUR KEYS ARE NOT NAMED HERE. They are declared in
+    # superintendent_log.py and `cs_safety_status` reads them there --
+    # `test_superintendent_log.py::OneBuilderBothRenderers` refuses a renderer
+    # that builds its own item list, and it was right to: a second copy of
+    # those keys goes quietly out of date, the tile reads "not stated"
+    # forever, and nothing fails.
+    #
+    # `flagged` CARRIES THE CP'S OWN RECORD, which items 4 to 7 do not: all
+    # four can be honestly attested "none" on a day the CP still logged an
+    # observation or a failed inspection.
+    _cs_log = _filed_log(logbooks, "site_superintendent_log")
+    _cs_data = (_cs_log or {}).get("data") if _cs_log else None
+    _safety = cs_safety_status(_cs_data, date, flagged=bool(_flags))
+    _safety_value = {
+        SAFETY_CLEAR: "Clear",
+        SAFETY_ATTENTION: "Attention",
+    }.get(_safety, "&mdash;")
+    _safety_label = "Safety status"
+
     _flags_html = (
         sub_head("Flagged today")
         + '<ul style="margin:0 0 8px;padding-left:20px;font-size:15px;'
@@ -31224,6 +31309,99 @@ async def generate_combined_report(
     # is that nobody has classified the building — not that the site is failing.
     _compliance += _unassessed_note
 
+    # ── THE COVER FOOTER: TWO COLUMNS ───────────────────────────────────────
+    #
+    # SAFETY & COMPLIANCE is a tick per statement, and each tick is a fact off
+    # a filed record -- never a decoration. A statement whose document was not
+    # filed does not get a tick and does not get a cross: it gets the em dash,
+    # because "no incidents reported" and "nobody said" are different claims
+    # and only one of them is an attestation.
+    #
+    #   tick     the superintendent attested "none to report" on that item
+    #   cross    something IS recorded against it
+    #   dash     no superintendent log, or the item was never reached
+    #
+    # THE COMPLIANCE LINE IS THE FIFTH ROW, and it is the only one that reads
+    # off a different source -- the required-set arithmetic rather than an
+    # attestation. When it is not clean it renders `_compliance` in full, so
+    # WHICH log is missing survives the move out of the body.
+    # KEYED OFF THE MODEL'S OWN TUPLE, in its order, so a renamed or reordered
+    # item cannot leave a tick pointing at nothing. The WORDS are the report's
+    # -- a lender reads "No violations or stop work orders", not the item's
+    # statutory label -- but the KEYS are never restated.
+    _CS_TICK_LABELS = [
+        (_k, CS_SAFETY_TICK_WORDS[_k]) for _k in CS_SAFETY_ITEM_KEYS
+    ]
+
+    def _tick_row(mark, colour, text):
+        return (
+            '<tr><td width="18" valign="top" style="vertical-align:top;'
+            f'padding:0 6px 8px 0;color:{colour};font-size:16px;'
+            f'line-height:1.6;">{mark}</td>'
+            '<td valign="top" style="vertical-align:top;padding:0 0 8px 0;'
+            f'font-size:16px;line-height:1.6;color:#334155;">{text}</td></tr>'
+        )
+
+    _ticks = ""
+    for _key, _label in _CS_TICK_LABELS:
+        _st = cs_item_state(_key, _cs_data, date) if _cs_log else None
+        if _st == "attested_none":
+            _ticks += _tick_row("&#10003;", "#15803d", _label)
+        elif _st == "present":
+            _ticks += _tick_row("&#10007;", "#b91c1c",
+                                _label.replace("No ", "Recorded: ", 1))
+        else:
+            # NOT A TICK AND NOT A CROSS. Nobody made this statement.
+            _ticks += _tick_row("&mdash;", "#64748b",
+                                f"{_label} &mdash; not stated")
+    # ── THE COMPLIANCE ROW CARRIES THE RATIO, CLEAN OR NOT ─────────────────
+    #
+    # The first draft rendered "All required daily logs filed and signed" on
+    # the clean path, and `test_investor_page_one` refused it -- correctly, and
+    # for a reason older than this change. That sentence used to read "All 9
+    # required logs filed and signed" where the 9 was a count of the documents
+    # that happened to exist, compared against itself: A SENTENCE THAT COULD
+    # NOT FAIL. The ratio is what fixed it, and putting "All required" back on
+    # the clean path is that defect returning as a tick.
+    #
+    # So the WORDS are always `_compliance` -- "5 of 5 required daily logs
+    # filed and signed", with its deficiency clauses when there are any -- and
+    # only the MARK changes. The tile says the same ratio in two characters;
+    # this row is where a reader learns WHICH log is missing.
+    _clean = bool(_due) and len(_done) == len(_due)
+    _ticks += _tick_row(
+        "&#10003;" if _clean else "&mdash;",
+        "#15803d" if _clean else "#64748b",
+        _compliance,
+    )
+
+    _open_items = (
+        f'<ul style="margin:0;padding-left:18px;font-size:16px;'
+        f'line-height:1.6;color:#334155;">{_flags}</ul>' if _flags
+        else '<p style="margin:0;font-size:16px;line-height:1.6;color:#64748b;">'
+             '&mdash;&nbsp; None</p>'
+    )
+
+    def _col_head(text):
+        return (f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
+                'text-transform:uppercase;letter-spacing:0.08em;'
+                f'padding-bottom:10px;">{text}</div>')
+
+    _cover_footer_html = (
+        '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:26px 0 0 0;border-top:1px solid #e2e8f0;'
+        'padding-top:18px;"><tr>'
+        '<td width="55%" valign="top" style="vertical-align:top;'
+        'padding:18px 16px 0 0;">'
+        + _col_head("Safety &amp; compliance")
+        + '<table cellpadding="0" cellspacing="0" border="0" width="100%">'
+        + _ticks + '</table></td>'
+        '<td width="45%" valign="top" style="vertical-align:top;'
+        'padding:18px 0 0 16px;">'
+        + _col_head("Attention / open items") + _open_items
+        + '</td></tr></table>'
+    )
+
     # ONE HEADER. The address and the date are printed by the document header
     # above this section and are NOT repeated here.
     #
@@ -31233,15 +31411,42 @@ async def generate_combined_report(
     # project_address, i.e. the same string twice inside one line, formatted as
     # though they were two different facts. A reader counting fields on a
     # compliance document reads a repeat as a discrepancy.
+    # ── THE TILE STRIP AND THE WEATHER PANEL ────────────────────────────────
+    #
+    # NO EXECUTIVE SUMMARY. The mockup gives a paragraph beside the weather;
+    # the operator ruled it out and ruled out inventing one to fill the space.
+    # The AI line stays exactly where it is, feeding the per-subcontractor
+    # sentences in Today's Work -- which is a sentence per sub, each one
+    # through the verifier, rather than one paragraph about the day that
+    # nothing on the record supports.
+    _tiles_html = (
+        '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+        'style="margin:20px 0 0 0;border-top:1px solid #e2e8f0;'
+        'border-bottom:1px solid #e2e8f0;"><tr>'
+        + _stat_tile(_sub_total, "Workers onsite").replace(
+            'border-left:1px solid #e2e8f0;', 'padding-left:0;')
+        + _stat_tile(len(_trades), "Trades")
+        + _stat_tile(_safety_value, _safety_label)
+        + _stat_tile(f"{len(_done)} of {len(_due)}" if _due else "&mdash;",
+                     "Daily logs filed")
+        + '</tr></table>'
+    )
+
     progress_html = (
         '<h2 style="color:#0A1929;margin:0 0 4px;font-size:30px;'
         'font-weight:700;line-height:1.2;letter-spacing:-0.02em;">'
         'Daily Progress Report</h2>'
+        + _tiles_html
+        + (f'<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+           f'style="margin:20px 0 0 0;"><tr><td width="50%" valign="top" '
+           f'style="vertical-align:top;padding-right:10px;">{_weather_panel}'
+           f'</td><td width="50%"></td></tr></table>'
+           if _weather_panel else "")
         + info_box(
             '<strong style="color:#0A1929;">'
             f'Workers checked in at the gate:</strong> {_sub_total}'
         )
-        + sub_head("Headcount by subcontractor")
+        + sub_head("Workforce breakdown")
         + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
           'style="border-collapse:collapse;margin:8px 0 0 0;font-size:15px;">'
         + f'<tr><th {TH}>Subcontractor</th>'
@@ -31250,12 +31455,25 @@ async def generate_combined_report(
         + f'<tr><td {TD}><strong>Total</strong></td>'
           f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
         + '</table>'
-        + ((sub_head("Work today") + _pg1_lines + _pg1_ai_note)
+        + ((sub_head("Today's work") + _pg1_lines + _pg1_ai_note)
            if _pg1_lines else "")
-        + ((sub_head("Photos") + _pg1_photos) if _pg1_photos else "")
-        + _flags_html
-        + '<p style="margin:22px 0 0;font-size:16px;line-height:1.6;color:#334155;">'
-          f'<strong style="color:#0A1929;">Compliance:</strong> {_compliance}</p>'
+        + ((sub_head("Visual progress") + _pg1_photos) if _pg1_photos else "")
+        # ── TWO COLUMNS, AND LOOK AHEAD IS NOT ONE OF THEM ──────────────────
+        #
+        # The mockup has three: safety ticks, attention/open items, and LOOK
+        # AHEAD. The third is ruled out and not built -- NOTHING IN THIS APP
+        # RECORDS WHAT IS PLANNED, and a column of five bullets about tomorrow
+        # would be the only invented content on a document whose entire claim
+        # is that every field comes off a filed record.
+        #
+        # THE COMPLIANCE SENTENCE LEFT THE BODY. It was a paragraph reading
+        # "5 of 5 required daily logs filed and signed" directly beneath a tile
+        # reading "5 of 5" and a tick reading "All required daily logs filed
+        # and signed" -- the same fact three times on one page. The tile
+        # carries the ratio, the tick carries the words, and the DEFICIENCY
+        # CLAUSES survive: `_compliance` still names which log is missing or
+        # unaffirmed, and that is what the tick renders when it is not a tick.
+        + _cover_footer_html
         # THE BREAK USED TO BE EMITTED HERE and it was the only one in the
         # report. It is now emitted BETWEEN every pair of sections by the
         # joiner in the final assembly -- keeping a copy here as well would put
