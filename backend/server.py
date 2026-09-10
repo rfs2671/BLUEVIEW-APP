@@ -30443,8 +30443,123 @@ def _filed_log(logbooks, log_type):
     return same_type[0]
 
 
+# ── REPORT #N — ISSUED ONCE, PER PROJECT, AT SEND ──────────────────────────
+#
+# WHAT N COUNTS: the Nth report ISSUED for this project. Not the Nth generated
+# (a preview is not an issue), and not the Nth day the site filed a daily log.
+#
+# THE ORDINAL WAS THE OBVIOUS ANSWER AND IT IS WRONG. "The 30th day this site
+# filed" is meaningful and is a pure function of (project, date, history), so
+# regenerating a report cannot change it -- which is the property that was
+# asked for, and it holds. What it is NOT stable under is the history itself:
+# file a daily log for a past date, or withdraw one, and every LATER report
+# renumbers, INCLUDING ONES ALREADY SENT. Two people holding two PDFs of the
+# same day would see it under two numbers.
+#
+# So it is derived once and stored, never recomputed -- the shape `signed_by`
+# took. See docs/audits/followups.md: "stable under X" is not "stable".
+#
+# ── SEEDED FROM THE SEND LOG, WHICH IS READ AND NEVER WRITTEN ──────────────
+#
+# `report_emails` already holds one row per (project_id, date) at send time --
+# 28 of them for 588 Thomas. Those reports were sent before this existed and
+# KEEP NO NUMBER: numbering them would mean writing to a send log for reports
+# already in somebody's inbox, and the number would be new information about an
+# old event.
+#
+# `base` is that count, frozen by `$setOnInsert` on the first assignment;
+# `issued` counts what this scheme has handed out. N = base + issued, so 588
+# Thomas starts at 29 and a project with three sent reports starts at 4. A
+# project that has never sent starts at 1.
+#
+# ONE `find_one_and_update`, so the seed and the increment cannot interleave.
+# `ReturnDocument` is imported HERE rather than at module scope: pymongo is
+# already a dependency of motor, and a local import keeps the one symbol this
+# block needs next to the one call that needs it.
+from pymongo import ReturnDocument as _ReturnDocument
+
+REPORT_NUMBER_COUNTERS = "report_number_counters"
+
+
+async def _issued_report_number(project_id: str, date: str) -> Optional[int]:
+    """The number already issued for this (project, date), or None.
+
+    None means BOTH "never sent" and "sent before numbering existed", and the
+    two are deliberately not distinguished HERE -- the caller renders the same
+    thing for both, because in both cases there is no number to show.
+    """
+    try:
+        row = await db.report_emails.find_one(
+            {"project_id": str(project_id), "date": str(date)},
+            {"report_number": 1},
+        )
+    except Exception:
+        return None
+    n = (row or {}).get("report_number")
+    return int(n) if isinstance(n, int) else None
+
+
+async def _next_report_number(project_id: str) -> Optional[int]:
+    """Issue the next number for this project. Returns None if it cannot.
+
+    CHECK FIRST, INCREMENT ONLY IF UNNUMBERED -- and that check is the CALLER'S
+    (`_issued_report_number`), because this function is what burns a value.
+    Incrementing and then discovering the row already carries a number leaves a
+    hole in the sequence, and the sequence's whole promise is that every number
+    belongs to a report that went to somebody.
+
+    RETURNS None RATHER THAN RAISING. A counter that cannot be read must not
+    stop a compliance report being sent; the cover renders without a number,
+    which is the same thing a preview renders.
+    """
+    try:
+        base = await db.report_emails.count_documents({"project_id": str(project_id)})
+    except Exception as e:
+        logger.warning(f"report number: send-log count failed for {project_id}: {e}")
+        return None
+    try:
+        row = await db[REPORT_NUMBER_COUNTERS].find_one_and_update(
+            {"_id": str(project_id)},
+            # `base` IS WRITTEN ONCE AND ONLY ONCE. On every later call the
+            # count above is larger -- it now includes the rows this scheme
+            # created -- and using it would double-count. `$setOnInsert` is
+            # what makes the seed a fact about the day the scheme started.
+            {"$inc": {"issued": 1}, "$setOnInsert": {"base": int(base)}},
+            upsert=True,
+            return_document=_ReturnDocument.AFTER,
+        )
+    except Exception as e:
+        logger.warning(f"report number: counter update failed for {project_id}: {e}")
+        return None
+    if not row:
+        return None
+    return int(row.get("base") or 0) + int(row.get("issued") or 0)
+
+
+async def _release_report_number(project_id: str, number: Optional[int]) -> None:
+    """Give a number back when the send it was issued for did not happen.
+
+    THE NUMBER IS ISSUED BEFORE THE RENDER, because the render prints it. If
+    the send then fails, the row is never written and the value would be spent
+    on a report nobody received -- a gap. This hands it back.
+
+    BEST EFFORT, AND ONE HOLE IS NAMED RATHER THAN CLAIMED SHUT: a process that
+    DIES between issue and insert never reaches this, and that number is gone.
+    A gap is the honest cost of a crash; the alternative is claiming the
+    sequence is exact when it is not.
+    """
+    if not isinstance(number, int):
+        return
+    try:
+        await db[REPORT_NUMBER_COUNTERS].update_one(
+            {"_id": str(project_id)}, {"$inc": {"issued": -1}})
+    except Exception as e:
+        logger.warning(f"report number: release failed for {project_id}: {e}")
+
+
 async def generate_combined_report(
     project_id: str, date: str, diagnostics: bool = False,
+    report_number: Optional[int] = None,
 ) -> str:
     """Generate email-safe HTML report. Uses table-based layout, bgcolor attrs,
     and URL-based images for Gmail/Outlook/Apple Mail compatibility.
@@ -30457,6 +30572,25 @@ async def generate_combined_report(
     """
 
     BASE_URL = "https://api.levelog.com"
+
+    # THE SEND PASSES THE NUMBER IT JUST ISSUED; EVERY OTHER CALLER ASKS.
+    #
+    # A preview of a date that WAS sent shows the number that went out, which
+    # is what makes the preview a preview OF that report rather than a
+    # look-alike. A preview of a date that was not shows the line below, and
+    # NEVER a provisional number: one that later differs from the sent one is
+    # worse than none, because a reader has no way to know which they are
+    # holding.
+    if report_number is None:
+        report_number = await _issued_report_number(project_id, date)
+    _report_no_line = (
+        f"Report #{report_number}" if isinstance(report_number, int)
+        # AN ABSENCE WITH ITS REASON, not a blank. A blank field on a cover
+        # reads as a missing datum or a bug; this says the field is not YET
+        # meaningful, which is true. Same distinction the superintendent log
+        # draws between not_reached and attested_none.
+        else "Report number assigned when sent"
+    )
 
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     project_name = project.get("name", "Unknown") if project else "Unknown"
@@ -32369,6 +32503,7 @@ async def generate_combined_report(
         <tr><td style="color:rgba(255,255,255,0.5);font-size:10px;letter-spacing:3px;text-transform:uppercase;padding-bottom:16px;font-family:{font};">LEVELOG</td></tr>
         <tr><td style="color:#ffffff;font-size:22px;font-weight:600;letter-spacing:0.5px;padding-bottom:4px;font-family:{font};">Daily Construction Report</td></tr>
         <tr><td style="color:rgba(255,255,255,0.7);font-size:13px;font-weight:400;font-family:{font};">{_header_project_line}</td></tr>
+        <tr><td style="color:rgba(255,255,255,0.5);font-size:11px;letter-spacing:1.5px;text-transform:uppercase;padding-top:8px;font-family:{font};">{_report_no_line}</td></tr>
       </table>
     </td>
   </tr>
@@ -37120,6 +37255,12 @@ async def check_and_send_reports():
         except Exception as e:
             logger.warning(f"Data check failed for {project_name}, sending anyway: {e}")
 
+        # BOUND BEFORE THE TRY so the handler can hand it back whatever failed.
+        # This read `locals().get("report_number")`, which works and says
+        # nothing about WHY the name might be unbound -- and would keep working
+        # silently if the assignment below were moved or deleted.
+        report_number: Optional[int] = None
+
         try:
             # DELIVERABILITY — the report DOCUMENT is no longer the email body.
             #
@@ -37131,7 +37272,18 @@ async def check_and_send_reports():
             # reach the inbox from the SAME domain and sender, so the template
             # was the only variable — the body now uses their exact
             # render_for_trigger path and the document rides as a PDF.
-            report_html = await generate_combined_report(project_id, today)
+            # ── THE NUMBER IS ISSUED HERE, BEFORE THE RENDER PRINTS IT ──
+            #
+            # The `already_sent` guard above means this date has never been
+            # sent, so there is nothing to check first -- the caller-side
+            # "check first" is that guard. A resend cannot reach this line.
+            #
+            # Issued BEFORE the render because the cover prints it, and handed
+            # back in the except below if the send does not happen. See
+            # _release_report_number for the one hole that leaves.
+            report_number = await _next_report_number(project_id)
+            report_html = await generate_combined_report(
+                project_id, today, report_number=report_number)
 
             # Render the PDF off the event loop: weasyprint is CPU-bound and
             # fetches every photo over HTTP, so doing it inline would stall the
@@ -37216,12 +37368,22 @@ async def check_and_send_reports():
                 "sent_at": now,
                 "recipients": email_list,
                 "actually_sent_to": sent_to,
+                # OMITTED WHEN THE COUNTER COULD NOT BE READ, rather than
+                # written as null. An absent key reads as "this row has no
+                # number" -- which is also what the 28 rows sent before this
+                # existed look like, and they ARE the same fact.
+                **({"report_number": report_number}
+                   if isinstance(report_number, int) else {}),
             })
             logger.info(
                 f"Report dispatched for {project_name} to {len(email_list)} "
                 f"recipient(s); {len(sent_to)} actually sent (rest deduped or suppressed)"
             )
         except Exception as e:
+            # THE NUMBER GOES BACK. It was issued for a report that did not
+            # reach anybody, and a spent value with no row behind it is exactly
+            # the gap this sequence promises not to have.
+            await _release_report_number(project_id, report_number)
             logger.error(f"Failed to send report for {project_name}: {e}")
 
 # ==================== DOCUMENT ANNOTATIONS (PLAN NOTES) ====================

@@ -202,9 +202,24 @@ class TestCombinedReportDropsFlagState(unittest.TestCase):
         _assert_clean(self, html, "generate_combined_report")
 
     def test_emailed_report_renders_that_same_html(self):
+        """THE CLAIM IS THE RELATIONSHIP, NOT THE ARGUMENT LIST.
+
+        This pinned the call VERBATIM -- `generate_combined_report(project_id,
+        today)` -- and broke the day that call gained a third argument. The
+        thing it exists to protect did not change: the emailed report is still
+        rendered by the function the leak proof above tests. Only the
+        signature moved.
+
+        An anchor is a location, and locations move. What must be asserted is
+        that the CALL is there; who it passes is the caller's business.
+
+        `assertTrue` WITH A SHORT MESSAGE because the container is all of
+        server.py, and `assertIn` prints its container -- a one-line failure
+        arriving as megabytes buries the fact.
+        """
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertIn(
-            "report_html = await generate_combined_report(project_id, today)", src,
+        self.assertTrue(
+            "report_html = await generate_combined_report(" in src,
             "the daily email no longer renders generate_combined_report — the "
             "leak proof above stops covering the emailed report path",
         )
