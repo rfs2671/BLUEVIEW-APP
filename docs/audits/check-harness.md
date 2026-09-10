@@ -842,6 +842,92 @@ lesson about a broken check and a broken subject needing to look different.
 > array, the next top-level declaration. **A character count is not an anchor,
 > and a landmark that appears twice is not an anchor.**
 
+### DO NOT ASSERT ON PROSE — and this one removes the shape rather than describing it
+
+Everything above about anchors is a preference: *prefer structure to location*.
+**A prose assertion has no structure to prefer.** The text IS the subject, so
+there is nothing else to anchor to, and every technique in this section fails
+against it.
+
+THE EVIDENCE IS THE RATE, NOT THE INSTANCES. Five anchor failures landed in one
+session. **Three of them were written AFTER the section describing the failure,
+two of them by its author while writing it** — and not carelessly. Each was an
+attempt to preserve a reason:
+
+| the assertion | what defeated it |
+|---|---|
+| `"bare siblings" in above.lower()` | the phrase wrapped across two comment lines |
+| the same, whitespace-flattened | the `#` on the continuation line — `bare # siblings` |
+| `assertNotIn("Generate email-safe HTML report", d)` | the docstring **quotes** the sentence in order to retract it |
+
+Knowing about the shape did not prevent it, twice in a row, minutes apart. That
+is the signal: **a rule that has to be remembered at the moment of writing is
+not a rule, it is a hope.**
+
+#### The resolution
+
+> **If a claim matters enough to check, it is a NAMED CONSTANT, and the
+> assertion checks the constant. A sentence in a comment or a docstring cannot
+> be pinned by any means that survives reformatting.**
+
+Which splits every "assert the words" case cleanly in two:
+
+**PROSE THAT IS THE PRODUCT — assert it, at its constant.** A refusal message,
+a button label, a consent paragraph, an i18n value. The sentence is the
+deliverable; changing it *is* a change of meaning, and it already lives in a
+table (`en.js`, `CS_LOG_ATTESTATION_HTML`, `_PHOTO_ADDED_AFTER_FILING_LABEL`).
+Assert against **the constant**, never against a rendered blob and never
+against the source file that happens to contain it.
+
+**PROSE THAT IS RATIONALE — do not assert it at all.** A comment explaining
+*why* a rule exists has no constant, cannot have one, and is not the product.
+There is no correct way to check it. That a reason stays written down is a
+**review** responsibility, and pretending otherwise buys a check that fails on
+a reflow while never once catching a deleted rationale.
+
+#### The population is small, which is why this is cheap
+
+Measured across the repo — every `assertIn`/`assertNotIn` whose needle is two
+or more words of English with no code punctuation:
+
+    552  backend/tests/*.py          }  672 total
+    120  frontend **/*.test.cjs      }
+
+    512  search RENDERED OUTPUT, an i18n table or an API payload   <- correct
+     26  search SOURCE TEXT (_SRC, src, body, code)                <- the shape
+
+And most of those 26 are not prose at all — the scan counts
+`except DuplicateKeyError:`, `const TRANSLATIONS` and `--execute requires
+--keep`, which are constructs that happen to contain a space. **The genuine
+population is about a dozen.**
+
+So the shape does not recur because the codebase is full of it. It recurs
+because writing one is the natural reflex when you want a reason to survive,
+and it gets written **fresh** every time. The rule is nearly free to adopt and
+it is the only item in this section that removes the failure instead of
+teaching people to spot it.
+
+### A correction QUOTES what it corrects, and never deletes it
+
+Stated once here because it is now the pattern for every correction in this
+codebase, arrived at three separate times:
+
+- `test_absence_literals_are_specific` flagged a ban on a filename that failed
+  on the sentence retracting that filename
+- `_photo_added_after_filing_caption` keeps the dead field name inside its own
+  note
+- `generate_combined_report`'s docstring now **quotes** "Generate email-safe
+  HTML report … Fits in email box" and marks it `USED TO SAY THE OPPOSITE` /
+  `NONE OF IT IS NOW`
+
+> A correction that ERASES the words it corrects leaves the next person's grep
+> empty — and **an empty result reads as "no such problem", not as "already
+> handled".**
+
+The corollary for checks: assert that an occurrence is **marked as retracted**,
+not that it is absent. A ban on the old words fails on the paragraph that
+retracts them, which is how this rule keeps being rediscovered.
+
 ### An assertion's failure output is part of the assertion
 
 A check nobody will run twice is not a check, and the fastest way to earn that
@@ -1176,6 +1262,13 @@ Before a check is worth having:
 - [ ] Will its FAILURE be readable? `assertIn` prints its container — if that
       is a whole source file, use `assertTrue(x in y, "short message")`. A
       check that makes its own failure unreadable is one nobody runs twice.
+- [ ] Is it asserting on PROSE? If the sentence is the PRODUCT, assert it at
+      its named constant. If it is RATIONALE in a comment, do not assert it at
+      all — no anchoring survives a reflow, and that is a review
+      responsibility.
+- [ ] If the change CORRECTS something, does the correction still contain the
+      words it corrects? An erased claim leaves the next grep empty, and empty
+      reads as "no such problem".
 - [ ] Can the verdict be swallowed in transit? `cmd | tail` returns tail's exit
       status. A prose assertion breaks on a line wrap. A search for ABSENCE
       piped through `head`/`tail` cannot tell "found nothing" from "stopped
