@@ -4330,3 +4330,41 @@ WHY THIS IS WRITTEN DOWN RATHER THAN LEFT. Verification by shared code path is
 weaker than observation, and the difference disappears from memory in a week.
 Whoever sees the first flagged check-in should know to look, rather than
 assuming it was covered.
+
+
+## A derived ordinal is stable under regeneration and unstable under backfill
+
+RECORDED FROM THE INVESTOR-REPORT SCOPING, BEFORE IT WAS BUILT. The operator
+ruled that the report number "must mean something and must not renumber if a
+report is regenerated". The obvious answer satisfies both halves of that
+sentence and is still wrong:
+
+    N = the ordinal of this date among the dates this project filed a daily log
+
+It is meaningful — "the 30th day this site filed" — and it is a PURE FUNCTION
+of (project, date, filed history), so regenerating a report cannot change it.
+That is the property that was asked for, and it holds.
+
+WHAT IT IS NOT STABLE UNDER IS THE HISTORY ITSELF. File a daily log for a past
+date, or withdraw one, and every LATER report renumbers — including reports
+already sent and sitting in an investor's inbox. Two people holding two PDFs of
+the same day would see it under two numbers.
+
+The forbidden failure was renumbering. Regeneration was the door that was
+named. Backfill is a second door into the same room, and only the first one was
+obvious — the definition was checked against the stated constraint and passed,
+because the constraint described a TRIGGER rather than the property.
+
+THE GENERAL FORM, which is why this is written down rather than just decided:
+
+    "stable under X" is not "stable". Ask what ELSE moves the inputs.
+
+A derived value is only as fixed as the least fixed thing it reads. If it must
+be permanent, DERIVE IT ONCE AND STORE IT — `$setOnInsert` on the key that
+identifies the thing, so a second write cannot revise the first. That is the
+same shape `signed_by` took: written where the event happens, never
+recomputed, never backfilled.
+
+Related: the same reasoning is why `item_provenance` reads only what was
+RECORDED and never compares the text against the CP's log as it stands now —
+"the whole point of the flag is that it was true at the moment of filing."
