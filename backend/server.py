@@ -29669,6 +29669,25 @@ _MONTHS = [
 ]
 
 
+def _norm_company(name) -> str:
+    """The key a gate company and a log company are matched on.
+
+    CASE AND WHITESPACE ONLY, AND THAT IS THE WHOLE RULE. Folding case and
+    collapsing runs of space is MATCHING -- "Arkon Builders" and "arkon
+    builders " are one company by any reading. It is not NORMALISING: nothing
+    here makes "Arkon" and "Arkon Builders" the same, and BOTH ARE ON RECORD at
+    588 Thomas, one check-in against the short form and thirty-three against
+    the long one.
+
+    A prefix or fuzzy match would join them, and would be the UI deciding that
+    two names are one company -- the same decision `filterCompetentPersons`
+    refuses to make about two accounts and one man. The superintendent is the
+    only person who knows, and the report says what it can see instead of
+    guessing.
+    """
+    return " ".join(str(name or "").split()).casefold()
+
+
 def _headcount_by_sub(checkins) -> "Tuple[List[Tuple[str, int]], int]":
     """Workers per subcontractor, and the total — FROM CHECK-INS.
 
@@ -30561,14 +30580,44 @@ async def generate_combined_report(
     project_id: str, date: str, diagnostics: bool = False,
     report_number: Optional[int] = None,
 ) -> str:
-    """Generate email-safe HTML report. Uses table-based layout, bgcolor attrs,
-    and URL-based images for Gmail/Outlook/Apple Mail compatibility.
+    """The investor report. RENDERED FOR PRINT, not for an email client.
 
-    Fixes:
-      1) White background forced (Gmail dark mode defeated via bgcolor + color-scheme)
-      2) Fits in email box (table layout, zero flexbox)
-      3) Photos render (base64 -> absolute URLs to public image endpoints)
-      4) Full report content (CP logbook activity photos + all sections)
+    THIS DOCSTRING USED TO SAY THE OPPOSITE, and correcting it is the first
+    thing this redesign does because it is the sentence that would otherwise
+    stop the next person. It read:
+
+        Generate email-safe HTML report. Uses table-based layout, bgcolor
+        attrs, and URL-based images for Gmail/Outlook/Apple Mail compatibility.
+        ... 2) Fits in email box (table layout, zero flexbox)
+
+    Every one of those was true and load-bearing when it was written. NONE OF
+    IT IS NOW. The scheduled send stopped using this HTML as the message body:
+    "the body now uses their exact render_for_trigger path and THE DOCUMENT
+    RIDES AS A PDF." Gmail never sees this string.
+
+    WHAT ACTUALLY RENDERS IT, all three:
+
+        the scheduled send   -> WeasyPrint -> a PDF attachment
+        GET .../report/pdf   -> WeasyPrint -> a PDF
+        GET .../report       -> a browser, admin preview only
+
+    So the audience is WeasyPrint and a browser, and the email-safe
+    compromises -- nested tables where a div would do, `bgcolor` beside every
+    background, zero flexbox, a 680px shell -- are legacy. They are not wrong;
+    they are answers to a question nobody is asking any more, and a redesign
+    that treats them as constraints cannot be built at all.
+
+    THE ONE THING THAT IS STILL TRUE: photos are absolute URLs to public image
+    endpoints, because WeasyPrint fetches them over HTTP exactly as a mail
+    client would have.
+
+    -- WHAT IS A LEGAL DOCUMENT AND WHAT IS NOT --
+
+    This is an INVESTOR communication: no statutory weight, never read by an
+    inspector, and it may INDEX rather than CONTAIN. The per-logbook PDF is the
+    filed record and is rendered elsewhere
+    (`generate_single_logbook_html`). test_report_legal_vs_investor.py is the
+    boundary between them and nothing here may cross it.
     """
 
     BASE_URL = "https://api.levelog.com"
@@ -30925,12 +30974,31 @@ async def generate_combined_report(
             f'{_rows}</div>'
         )
 
-    # Photos, grouped by subcontractor, captioned from what the CP tapped.
-    # ALL of them: four subs at five to seven each is the ordinary day and it
-    # fits. Same URL scheme and the same renderable test the logbook section
-    # uses, so a photo that vanishes there vanishes here - never a broken image
-    # standing in for evidence.
+    # ── VISUAL PROGRESS: ONE NUMBERED BAND PER SUBCONTRACTOR ───────────────
+    #
+    # Photos grouped by subcontractor, captioned from what the CP tapped. ALL
+    # of them. Same URL scheme and the same renderable test the logbook section
+    # uses, so a photo that vanishes there vanishes here -- never a broken
+    # image standing in for evidence.
+    #
+    # THE BAND HEADER CARRIES THREE FACTS FROM TWO SOURCES, and which comes
+    # from where is the whole design:
+    #
+    #   company, trade, floors   THE LOG. Photos attach to activity rows, so
+    #                            the log is the only thing that can attribute
+    #                            them, and a band is a group of photographs.
+    #   worker count             THE GATE. `worker_count` on an activity row is
+    #                            None on ALL 110 rows in production -- it has
+    #                            never once been filled in -- and the gate has
+    #                            the real number.
+    #
+    # A COMPANY THE GATE SAW AND THE LOG DID NOT gets a row in the workforce
+    # table on page 1 and NO BAND. That is truthful rather than a gap: those
+    # men were on site and the CP logged no work for them. MQ Steel is the live
+    # instance -- 3 workers at the gate on 2026-09-09, no activity row.
+    _headcounts = {_norm_company(_co): _n for _co, _n in _subs}
     _pg1_photos = ""
+    _band_no = 0
     for _ai, _a in enumerate(_dj.get("activities") or []):
         _shots = ""
         for _pi, _photo in enumerate(_a.get("photos") or []):
@@ -30949,7 +31017,9 @@ async def generate_combined_report(
                 f'<img src="{_thumb}" width="160" height="120" '
                 'style="width:160px;height:120px;object-fit:cover;'
                 'border-radius:4px;border:1px solid #e2e8f0;'
-                'display:inline-block;margin:3px;" /></a>'
+                'display:inline-block;margin:3px;'
+                # A PHOTOGRAPH IS NOT SPLIT ACROSS TWO SHEETS.
+                'page-break-inside:avoid;break-inside:avoid;" /></a>'
             )
             # A PHOTOGRAPH ADDED AFTER THE CP SIGNED IS LABELLED AS ONE.
             # Unlabelled photos are emitted exactly as before — the wrapper
@@ -30966,21 +31036,66 @@ async def generate_combined_report(
             _shots += _tile
         if not _shots:
             continue
-        _cap = " - ".join(
+        _band_no += 1
+        _company = _capitalize_first(_display_sub_company(_a.get("company")))
+        _trade = _sentence_case(_a.get("trade") or "")
+        # THE COUNT IS THE GATE'S, MATCHED BY NAME -- OR AN EM DASH.
+        #
+        # NOTHING IS NORMALISED INTO A MATCH. `_norm_company` folds case and
+        # collapses whitespace, which is matching; it does NOT make "Arkon"
+        # and "Arkon Builders" the same company, and both are on record at 588
+        # Thomas. A band whose company the gate never saw shows a dash and
+        # says nothing further: the discrepancy is legible on page 1, where
+        # the workforce table lists every company the gate DID see, and a band
+        # that editorialised about a name mismatch would be the report arguing
+        # with its own data.
+        _n = _headcounts.get(_norm_company(_a.get("company")))
+        _facts = " &nbsp;|&nbsp; ".join(
             _x for _x in [
-                _capitalize_first(_display_sub_company(_a.get("company"))),
-                _sentence_case(_a.get("work_description") or ""),
+                f"{_company}" + (f" ({_trade})" if _trade else ""),
+                (f"{_n} worker" + ("s" if _n != 1 else "")) if _n is not None
+                else "&mdash;",
                 _capitalize_first(_a.get("work_locations") or ""),
             ] if _x
         )
         _pg1_photos += (
-            # SIZE, NOT CONTRAST, and the distinction is worth keeping:
-            # #64748b on white is 4.76:1, which PASSES AA. It was simply the
-            # smallest text near the photos. 13px is the report's own declared
-            # table-cell step and #475569 is its body colour, which takes this
-            # to 7.58:1 -- headroom instead of a 0.26 margin.
-            f'<p style="margin:12px 0 4px;font-size:13px;color:#475569;">'
-            f'{_cap}</p><div>{_shots}</div>'
+            # ── THE HEADER AND ITS PHOTOGRAPHS DO NOT SEPARATE ─────────────
+            #
+            # THE DEFECT THIS FIXES, reported live on the 2026-09-09 report:
+            # appended photographs "render in a single unattributed block after
+            # a page break, with the subcontractor's own photo section left
+            # empty above."
+            #
+            # The data was never wrong. `append_activity_photo` pushes into
+            # `data.activities.$[act].photos` keyed on activity_id, so all 21
+            # appended photographs in production sit inside their own
+            # subcontractor's row -- 8 of the 12 on that date, all Arkon
+            # Builders. There is exactly ONE photo-rendering site in this
+            # report and it has always grouped by activity.
+            #
+            # WHAT WAS WRONG IS THAT THE CAPTION AND THE GRID WERE BARE
+            # SIBLINGS. A `<p>` and a `<div>` with no break rule between them,
+            # while the print block protects only `h2, h3, .doc-section-title,
+            # .doc-sub-title` -- none of which either is. The caption stranded
+            # at the foot of one page and the tiles flowed onto the next, and
+            # the caption IS the attribution. Eight amber "added after filing"
+            # markers roughly doubled the block's height, which is why it
+            # surfaced on that date and not before.
+            #
+            # `page-break-after: avoid` ON THE HEADER, not `page-break-inside:
+            # avoid` on the band. A band of twelve tiles can be taller than
+            # what is left of a page; forbidding it to break would push the
+            # whole thing overleaf and leave a hole. The header may not be the
+            # last thing on a page -- that is the actual rule -- and each tile
+            # is unbreakable so a photograph never splits across a sheet.
+            #
+            # 13px #475569 is 7.58:1 on white. It was 11px #64748b at 4.76:1 --
+            # which PASSES AA and was simply the smallest text near the photos.
+            f'<p class="band-head" style="margin:16px 0 6px;font-size:13px;'
+            f'color:#475569;page-break-after:avoid;break-after:avoid-page;">'
+            f'<strong style="color:#0A1929;">{_band_no}</strong>&nbsp;&nbsp;'
+            f'{_facts}</p>'
+            f'<div>{_shots}</div>'
         )
 
     # Anything flagged. Safety observations the CP recorded, and inspections he

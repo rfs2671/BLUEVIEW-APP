@@ -127,11 +127,36 @@ class TheCaptionsAreLegible(unittest.TestCase):
 
     def test_the_caption_is_still_emitted_at_all(self):
         """The absence rule: a legibility fix that removed the caption would
-        satisfy every assertion above."""
+        satisfy every assertion above.
+
+        ── RE-ANCHORED, AND THE CLAIM NEVER MOVED ──────────────────────────
+
+        This read 200 characters after `_pg1_photos += (` and looked for
+        `{_cap}`. Both were shapes, not the claim:
+
+          * `{_cap}` was the caption's variable name. The group caption is now
+            the BAND HEADER -- company, trade, the gate's worker count, floors
+            -- built in `_facts`. It says strictly more than `_cap` did.
+          * 200 characters was a distance, and a comment recording why the
+            header must not be orphaned from its photographs now sits in it.
+
+        THE CLAIM IS THAT A GROUP CAPTION IS STILL EMITTED, AT 13px, CARRYING
+        THE COMPANY. That was true before and is true now, so the assertion is
+        re-anchored on the header it describes rather than on a character
+        count and a variable name.
+        """
         self.assertIn("_photo_added_after_filing_caption", _SRC)
-        i = _SRC.index("_pg1_photos += (")
-        self.assertIn("font-size:13px", _SRC[i:i + 200])
-        self.assertIn("{_cap}", _SRC[i:i + 200])
+        i = _SRC.index('f\'<p class="band-head"')
+        head = _SRC[i:i + 400]
+        self.assertTrue("font-size:13px" in head,
+                        "the group caption is no longer 13px")
+        self.assertTrue("{_facts}" in head,
+                        "the band header no longer renders the company line")
+        # AND THE COMPANY IS IN IT, which is what makes it an attribution
+        # rather than a decoration.
+        j = _SRC.index("_facts = ")
+        self.assertTrue("_display_sub_company" in _SRC[j - 700:j + 400],
+                        "the band header no longer names the subcontractor")
 
 
 if __name__ == "__main__":
