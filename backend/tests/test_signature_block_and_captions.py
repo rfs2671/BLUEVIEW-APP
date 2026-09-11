@@ -77,18 +77,28 @@ class TheSignatureBlockStaysTogether(unittest.TestCase):
         for sig in ({"data": _PNG}, _PNG):
             self.assertIn("break-inside:avoid", server.render_signature_html(sig))
 
-    def test_the_two_hand_rolled_copies_carry_it_too(self):
-        """`generate_combined_report` spells this table twice by hand for the
-        daily log's superintendent and competent-person signatures. Fixing only
-        the shared renderer would leave those two splitting."""
+    def test_there_are_NO_hand_rolled_copies_left(self):
+        """It used to say TWO, and they were both inside the "Site
+        Superintendent Log" section -- the daily log's superintendent and
+        competent-person signatures, spelled by hand instead of calling
+        `render_signature_html`. That section rendered from db.daily_logs,
+        whose last row is dated 16 April 2026, so it had not appeared on a
+        report in five months and was removed.
+
+        THE INVARIANT GOT STRONGER, NOT WEAKER. "two copies also carry the
+        rule" is a statement about two places that could drift; "there are no
+        copies" is a statement that only the shared renderer exists. Asserting
+        ZERO is what stops a third being hand-rolled."""
         self.assertEqual(
             _SRC.count("style=\"margin-top:12px;page-break-inside:avoid;break-inside:avoid;\""),
-            2)
+            0)
 
     def test_no_signature_table_was_left_without_it(self):
-        """The census: every signature-block table in the file, counted."""
+        """The census: every signature-block table in the file, counted. Three
+        until the two hand-rolled copies were retired with their section; the
+        one that remains is the shared renderer's, which is the point."""
         tables = re.findall(r'<table[^>]*margin-top:(?:8|12)px[^>]*>', _SRC)
-        self.assertEqual(len(tables), 3)
+        self.assertEqual(len(tables), 1)
         for t in tables:
             self.assertIn("break-inside:avoid", t)
 

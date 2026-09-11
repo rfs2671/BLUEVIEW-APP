@@ -148,9 +148,11 @@ class TheSuperintendentsAnsweredNoSurvives(unittest.TestCase):
 class TheTablesThatHadNoCoverage(unittest.TestCase):
     """SITES 3, 4, 7 and 8 -- zero tests existed for any of them."""
 
-    def test_site3_the_superintendent_checklist_status_is_a_label(self):
-        i = _CODE.index("safety_rows = ")
-        self.assertIn("answer_label(", _CODE[i:i + 400])
+    # SITE 3 IS GONE. It read `safety_rows`, the checklist inside the "Site
+    # Superintendent Log" section of the combined report. That section rendered
+    # from db.daily_logs -- last row 16 April 2026 -- so it had not appeared on
+    # a report in five months, and it was removed. The RULE is unchanged and
+    # site 4 below still carries it on the daily-log PDF, which stays.
 
     def test_site4_the_daily_log_pdf_checklist_too(self):
         i = _CODE.index("safety_html = ")

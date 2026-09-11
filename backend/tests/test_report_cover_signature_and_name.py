@@ -74,18 +74,45 @@ class TheTwO_HAND_ROLLED_COPIES_TOO(unittest.TestCase):
         self.assertEqual(
             _SRC.count("height:auto;border:1px solid #e2e8f0;border-radius:4px"), 0)
 
-    def test_both_normalise_the_signer_name(self):
+    def test_there_is_nothing_left_to_normalise_BY_HAND(self):
+        """Both hand-rolled blocks lived in the "Site Superintendent Log"
+        section, which rendered from db.daily_logs -- last row 16 April 2026 --
+        and so had not appeared on a report in five months. The section is
+        gone and they went with it.
+
+        assertTrue, NOT assertIn: `_SRC` is 2.3MB and assertIn PRINTS ITS
+        CONTAINER. Running this file after the removal cost exactly that.
+        docs/audits/check-harness.md section 12."""
         for marker in ('sup_sig_raw.get("signer_name")',
                        'cp_sig_raw.get("signer_name")'):
-            i = _SRC.index(marker)
-            self.assertIn("_capitalize_first", _SRC[max(0, i - 200):i + 60])
+            self.assertTrue(
+                marker not in _SRC,
+                f"a hand-rolled signer-name read is back: {marker}. The shared "
+                "renderer normalises the name; a second spelling is how the "
+                "two drifted the first time.")
 
-    def test_the_defaults_survive_an_empty_name(self):
-        """`.get(k, default)` returns None for a stored null; `or default` is
-        what actually holds the fallback."""
-        for marker in ('sup_sig_raw.get("signer_name") or "Superintendent"',
-                       'cp_sig_raw.get("signer_name") or "Competent Person"'):
-            self.assertIn(marker, _SRC)
+    def test_the_fallback_LIVES_IN_THE_SHARED_RENDERER_NOW(self):
+        """These two hand-rolled blocks held the `or default` fallback that a
+        stored null needs -- `.get(k, default)` returns None for one. Both were
+        inside the retired "Site Superintendent Log" section, so the assertion
+        moves to the renderer that is left rather than being deleted: the rule
+        is about what a document PRINTS for a nameless signature, and that
+        document still prints one.
+
+        EXECUTED, not read. The old pair scanned source text; this renders."""
+        html = server.render_signature_html({"paths": [[{"x": 1, "y": 2},
+                                                        {"x": 3, "y": 4}]],
+                                             "signerName": ""},
+                                            "CP Signature")
+        self.assertTrue(html, "a signature with no name rendered nothing at all")
+        # ANCHORED ON THE CONSTRUCT. A bare ban on "None" is four characters:
+        # "None recorded" and "Nonentity" both satisfy it, and the bare-literal
+        # gate refuses it for exactly that. What must not appear is the NAME
+        # SLOT holding a null, which is parenthesised.
+        self.assertNotIn("(None)", html,
+                         "a stored null reached the page in the name slot")
+        self.assertNotIn(": None", html,
+                         "a stored null reached the page as the signer")
 
 
 class OneManHasOneSpelling(unittest.TestCase):

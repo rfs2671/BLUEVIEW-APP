@@ -30924,12 +30924,6 @@ async def generate_combined_report(
         "is_deleted": {"$ne": True},
     }).to_list(100)
 
-    daily_log = await db.daily_logs.find_one({
-        "project_id": project_id,
-        "date": date,
-        "is_deleted": {"$ne": True},
-    })
-
     day_start, day_end = get_day_range_est(date)
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -32147,146 +32141,33 @@ async def generate_combined_report(
             + ps_sig
         )
 
-    # ==========================================================
-    #  SITE SUPERINTENDENT LOG  (daily_log)
-    # ==========================================================
-    site_html = ""
-    if daily_log:
-        # Subcontractor cards
-        sub_rows = ""
-        for card in (daily_log.get("subcontractor_cards") or []):
-            # PR G: company/trade short-entry; description prose; hours/workers excluded.
-            sub_rows += (
-                f'<tr><td {TD}>{_capitalize_first(card.get("company_name", "N/A"))}</td>'
-                f'<td {TD}>{_capitalize_first(card.get("trade", "N/A"))}</td>'
-                f'<td {TD}>{card.get("num_workers", 0)}</td>'
-                f'<td {TD}>{card.get("hours", "N/A")}</td>'
-                f'<td {TD}>{_sentence_case(card.get("description", "N/A"))}</td></tr>'
-            )
-
-        # Safety checklist
-        safety_rows = ""
-        for item_key, item_val in (daily_log.get("safety_checklist") or {}).items():
-            st = (answer_label(item_val.get("status"))
-                  if isinstance(item_val, dict) else answer_label(item_val))
-            cb = item_val.get("checked_by", "") if isinstance(item_val, dict) else ""
-            safety_rows += (
-                f'<tr><td {TD}>{item_key.replace("_", " ").title()}</td>'
-                f'<td {TD}>{st}</td><td {TD}>{cb}</td></tr>'
-            )
-
-        # PR G: corrective actions / incident log / work performed are prose.
-        corrective_na = daily_log.get("corrective_actions_na", False)
-        corrective_text = "N/A" if corrective_na else (_sentence_case(daily_log.get("corrective_actions", "")) or "None recorded")
-
-        incident_na = daily_log.get("incident_log_na", False)
-        incident_text = "N/A" if incident_na else (_sentence_case(daily_log.get("incident_log", "")) or "None recorded")
-
-        work_performed = _sentence_case(daily_log.get("work_performed", ""))
-        work_html = (sub_title("Work Performed") + para(work_performed)) if work_performed else ""
-
-        # Superintendent signature
-        sup_sig_html = ""
-        sup_sig_raw = daily_log.get("superintendent_signature")
-        if sup_sig_raw and isinstance(sup_sig_raw, dict):
-            # THROUGH THE NORMALISER, like every other name on this page.
-            # These two blocks read signer_name raw, which is the same
-            # "michael Cespedes" beside "Michael Cespedes" defect the
-            # shared renderer just had, in the two places that do not use it.
-            sn = _capitalize_first(
-                sup_sig_raw.get("signer_name") or "Superintendent")
-            sd = sup_sig_raw.get("data")
-            inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=150)
-            if not inner and isinstance(sd, str) and sd:
-                # NO BORDER, same as render_signature_html's _img. These two
-                # blocks are hand-rolled copies of that renderer and carried
-                # the frame it just lost.
-                inner = (f'<img src="data:image/png;base64,{sd}" '
-                         'style="max-width:300px;height:auto;" />')
-            if inner:
-                sup_sig_html = (
-                    # Same break rule as render_signature_html's _wrap -- these
-                    # two blocks are hand-rolled copies of it and split the same
-                    # way.
-                    '<table cellpadding="0" cellspacing="0" border="0" '
-                    'style="margin-top:12px;page-break-inside:avoid;break-inside:avoid;">'
-                    '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
-                    f'Superintendent ({sn}):</td></tr>'
-                    f'<tr><td>{inner}</td></tr>'
-                    '</table>'
-                )
-            elif sn:
-                sup_sig_html = bold_para("Superintendent", sn + " (signed)")
-
-        # CP signature
-        cp_sig_html = ""
-        cp_sig_raw = daily_log.get("competent_person_signature")
-        if cp_sig_raw and isinstance(cp_sig_raw, dict):
-            cn = _capitalize_first(
-                cp_sig_raw.get("signer_name") or "Competent Person")
-            cd = cp_sig_raw.get("data")
-            inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=150)
-            if not inner and isinstance(cd, str) and cd:
-                inner = (f'<img src="data:image/png;base64,{cd}" '
-                         'style="max-width:300px;height:auto;" />')
-            if inner:
-                cp_sig_html = (
-                    # Same break rule as render_signature_html's _wrap -- these
-                    # two blocks are hand-rolled copies of it and split the same
-                    # way.
-                    '<table cellpadding="0" cellspacing="0" border="0" '
-                    'style="margin-top:12px;page-break-inside:avoid;break-inside:avoid;">'
-                    '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
-                    f'Competent Person ({cn}):</td></tr>'
-                    f'<tr><td>{inner}</td></tr>'
-                    '</table>'
-                )
-            elif cn:
-                cp_sig_html = bold_para("Competent Person", cn + " (signed)")
-
-        # The daily_log_photos collection and its four endpoints were removed:
-        # nothing in the app ever wrote to it, so this section was always empty
-        # and its <img> pointed at an auth-required endpoint that an email
-        # client could never load. CP site photos come from the logbook
-        # activity photos above, which DO have a public image endpoint.
-        photos_section = ""
-
-        not_signed_super = bold_para("Superintendent", "Not signed")
-        not_signed_cp = bold_para("Competent Person", "Not signed")
-
-        site_html = (
-            section_title("Site Superintendent Log")
-            + info_box(
-                f'<strong style="color:#0A1929;">Weather:</strong> '
-                f'{daily_log.get("weather", "N/A")} '
-                f'{daily_log.get("weather_temp", "") or ""} '
-                f'{daily_log.get("weather_wind", "") or ""}<br />'
-                f'<strong style="color:#0A1929;">Workers on Site:</strong> {daily_log.get("worker_count", 0)}<br />'
-                f'<strong style="color:#0A1929;">Notes:</strong> {daily_log.get("notes", "N/A")}'
-            )
-            + work_html
-            + sub_title("Subcontractor Activity")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Company</th><th {TH}>Trade</th><th {TH}>Workers</th>'
-              f'<th {TH}>Hours</th><th {TH}>Description</th></tr>'
-            + (sub_rows or EMPTY_5) + '</table>'
-            + sub_title("Safety Checklist")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Item</th><th {TH}>Status</th><th {TH}>Checked By</th></tr>'
-            + (safety_rows or EMPTY_3) + '</table>'
-            + sub_title("Corrective Actions") + para(corrective_text)
-            + sub_title("Incident Log") + para(incident_text)
-            + photos_section
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="margin-top:20px;border-top:2px solid #e2e8f0;"><tr><td style="padding-top:16px;">'
-            + sub_title("Signatures")
-            + (sup_sig_html or not_signed_super)
-            + (cp_sig_html or not_signed_cp)
-            + '</td></tr></table>'
-        )
-
+    # ── THE SECTION TITLED "Site Superintendent Log" IS GONE, AND IT WAS
+    #    ALREADY INVISIBLE ──────────────────────────────────────────────────
+    #
+    # The title is quoted above in the casing it had, so a grep for the section
+    # someone remembers lands HERE rather than on nothing.
+    #
+    # About 110 lines rendered weather, worker count, notes, work performed,
+    # subcontractor cards, a safety checklist, corrective actions, an incident
+    # log and two signatures -- all from `db.daily_logs`, behind `if daily_log:`.
+    #
+    # That collection's last row is dated 16 April 2026. The daily record moved
+    # to the logbook system that month, so the lookup returned None for every
+    # report since and the section simply did not appear. NOBODY HAS BEEN
+    # READING A BLANK BOX: a rendered report from production was checked and
+    # the section is absent while its successors are present.
+    #
+    # IT IS DELETED RATHER THAN RE-POINTED, and that is the decision worth
+    # recording. `as_daily_log_row` exists -- get_report_preview already uses it
+    # to read the filed daily_jobsite logbook in this shape -- so this section
+    # COULD have been fed from the logbook instead. It must not be: the same
+    # document already renders `jobsite_html` (Daily Jobsite Log) and `cs_html`
+    # (Construction Superintendent Log) from the logbooks, and feeding this one
+    # too would print one record three times under three headings.
+    #
+    # The collection, its read routes and its PDF route are untouched. Ninety-two
+    # records from April are a legal record; retiring a renderer is not dropping
+    # data.
     # ==========================================================
     #  CONSTRUCTION SUPERINTENDENT LOG  (BC 3301.13.13)
     # ==========================================================
@@ -33066,7 +32947,7 @@ async def generate_combined_report(
     _SECTIONS = (
         progress_html,
         jobsite_html, cs_html, toolbox_html, preshift_html,
-        site_html, osha_html, hot_work_html, crane_html, exc_html,
+        osha_html, hot_work_html, crane_html, exc_html,
         scaffold_html, fp_html, orientation_html, ssc_html, concrete_html,
         additional_logbooks_html,
         _record_html,
@@ -38066,18 +37947,20 @@ async def check_and_send_reports():
                 "status": "submitted",
                 "is_deleted": {"$ne": True},
             })
-            has_daily_log = await db.daily_logs.find_one({
-                "project_id": project_id,
-                "date": today,
-                "is_deleted": {"$ne": True},
-            })
+            # THE `has_daily_log` TERM IS GONE AND NOTHING CHANGES. It read
+            # db.daily_logs, whose last row is dated 16 April 2026, so it has
+            # been None on every evaluation since -- a dead read on the path
+            # every scheduled send takes. The filed daily record is a
+            # daily_jobsite LOGBOOK and is already counted by `logbook_count`
+            # below, so the skip decision is unaffected. Same collection and
+            # the same correction get_report_preview already made.
             day_start, day_end = get_day_range_est(today)
             checkin_count = await db.checkins.count_documents({
                 "project_id": project_id,
                 "check_in_time": {"$gte": day_start, "$lt": day_end},
                 "is_deleted": {"$ne": True},
             })
-            if not logbook_count and not has_daily_log and not checkin_count:
+            if not logbook_count and not checkin_count:
                 logger.info(
                     f"Report skipped for {project_name} — no data for {today}"
                 )
