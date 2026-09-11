@@ -278,8 +278,20 @@ class EveryFiledDocumentStartsASheet(Base):
         full = self.rendered_content()
         self.db.logbooks.docs = [copy.deepcopy(JOBSITE)]
         one = self.rendered_content()
-        self.assertEqual(one.count(BREAK), 1)      # cover, then the log
-        self.assertEqual(one.count(WRAPPER), 2)
+        # 1 -> 2 AND 2 -> 3: THE PROJECT RECORD IS A THIRD SHEET, AND IT IS
+        # NOT AN UNFILED LOG TAKING A BLANK PAGE.
+        #
+        # What this test forbids is a section with NO DOCUMENT behind it
+        # claiming a sheet -- a three-document day printing as sixteen with
+        # thirteen looking like filings that went missing. The record page is
+        # the opposite: it is the index, it always has content, and its whole
+        # job is to name the logs that are absent so a reader does not have to
+        # infer them from missing sections.
+        #
+        # The claim is unchanged and the arithmetic moves with the document:
+        # cover, the one filed log, and the index.
+        self.assertEqual(one.count(BREAK), 2)      # cover, the log, the index
+        self.assertEqual(one.count(WRAPPER), 3)
         self.assertGreater(full.count(WRAPPER), one.count(WRAPPER))
 
     def test_the_cover_is_still_the_first_page(self):

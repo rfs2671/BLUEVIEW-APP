@@ -31243,6 +31243,15 @@ async def generate_combined_report(
     def _log_label(_t):
         return _FREQ.get(_t, (_t, None))[0]
 
+    # THE CITATION, FROM THE REGISTRY THAT DECLARES IT. Built the same way and
+    # in the same place as `_FREQ`, off the same rows, so a type cannot have a
+    # label here and a citation somewhere else. `dob_reference` is present on
+    # every required type -- §3301.2, §3301.13.13, OSHA 1926.21, LL196,
+    # OSHA 1926, §3314 -- and these are authoritative where the mockup's are
+    # approximate: it prints "§3301-02" for what the registry calls §3301.2.
+    _CITE = {t["key"]: (t.get("dob_reference") or "")
+             for t in LOGBOOK_TYPE_REGISTRY}
+
     if project:
         _required = list(project.get("required_logbooks") or [])
         if not _required:
@@ -31386,6 +31395,156 @@ async def generate_combined_report(
         return (f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
                 'text-transform:uppercase;letter-spacing:0.08em;'
                 f'padding-bottom:10px;">{text}</div>')
+
+    # ── PAGE 4: THE PROJECT RECORD ──────────────────────────────────────────
+    #
+    # ONE CARD PER REQUIRED LOG TYPE, derived from the project's own required
+    # set. NOT eight: the mockup's eighth card reads "Additional Records --
+    # permits, deliveries, visitors, etc." and there is nothing behind it.
+    # Visitors and deliveries are FIELDS ON THE DAILY JOBSITE LOG, already
+    # inside card 01, and a card promising records that live in another card is
+    # worse than seven cards.
+    #
+    # THE COUNT IS PER PROJECT, so the grid flows 4-up rather than pretending
+    # to be 4x2: across the five live projects the required set is 0, 5, 5, 7
+    # and 7, and a Major A/B job carries more.
+    #
+    # THE CITATIONS ARE OURS. The registry carries a `dob_reference` for every
+    # type -- §3301.2, §3301.13.13, OSHA 1926.21, LL196, OSHA 1926, §3314 --
+    # and they are authoritative where the mockup's are approximate ("§3301-02"
+    # for what the registry calls §3301.2).
+    #
+    # ── THREE STATES, BECAUSE A REQUIRED LOG CAN BE MISSING ─────────────────
+    #
+    # It was put to me that one cannot be, "there's no way to submit without it
+    # anyway". MEASURED ACROSS EVERY PROJECT AND DATE IN PRODUCTION: 38 days
+    # where fewer were filed than were due, against 6 complete. On 588 Thomas
+    # the superintendent log and the scaffold log are absent from nearly every
+    # day before 2026-09-04, which is when they were switched on.
+    #
+    # The belief came from three weeks of complete days. There is no gate and
+    # there could not be: each logbook is an independent document with its own
+    # Submit, and "the day ended" is not an event this app owns.
+    # `daily_required_logbooks` is a REQUIREMENT, NOT AN ENFORCEMENT.
+    #
+    #   filed              thumbnail + View document
+    #   due today, absent  "Not filed" -- the same words the cover's tick row
+    #                      uses for the same fact, so the two surfaces agree
+    #   not due today      "Not due today" -- a weekly or as-needed type is not
+    #                      a deficiency on a date it was not owed
+    #
+    # OMITTING THE ABSENT ONES WAS THE ALTERNATIVE AND IT IS WORSE: page 4
+    # would show five cards on a project requiring seven, and a reader counting
+    # cards would get a different answer from the cover's "3 of 5".
+    _CARD_BLURBS = {
+        "daily_jobsite": "Daily on-site work log",
+        "site_superintendent_log": "Superintendent site record",
+        "toolbox_talk": "Safety meeting record",
+        "preshift_signin": "Daily workforce record",
+        "osha_log": "Worker certification status",
+        "scaffold_maintenance": "Sidewalk shed and scaffold",
+        "subcontractor_orientation": "Site orientation records",
+    }
+
+    _cards = []
+    for _n, _t in enumerate(_required, start=1):
+        _doc = _by_type.get(_t)
+        _thumb = await _logbook_thumbnail_url(_doc) if _doc else None
+        _link = ""
+        if _doc:
+            _tok = await _mint_logbook_share_token(str(_doc.get("_id") or ""))
+            if _tok:
+                _link = _public_logbook_url(_tok)
+        _cards.append({
+            "n": _n,
+            "title": _log_label(_t),
+            "cite": _CITE.get(_t, ""),
+            "blurb": _CARD_BLURBS.get(_t, ""),
+            "thumb": _thumb,
+            "link": _link,
+            "state": ("filed" if _doc else
+                      ("missing" if _t in _due else "not_due")),
+        })
+
+    def _card_html(c):
+        # A PICTURE IS AN ILLUSTRATION, NOT THE RECORD. When the raster fails
+        # -- poppler absent, a PDF it cannot parse, R2 refusing the write --
+        # `_logbook_thumbnail_url` returns None and this renders a plain panel
+        # in its place. The title, the citation and the button are untouched.
+        _pic = (
+            f'<img src="{c["thumb"]}" width="240" '
+            'style="width:100%;max-width:240px;height:auto;display:block;'
+            'border:1px solid #e2e8f0;border-radius:3px;" />'
+            if c["thumb"] else
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="border:1px solid #e2e8f0;border-radius:3px;" '
+            'bgcolor="#f8fafc"><tr><td height="150" align="center" '
+            'style="height:150px;color:#94a3b8;font-size:12px;">'
+            'Document</td></tr></table>'
+        )
+        if c["state"] == "filed" and c["link"]:
+            _foot = (
+                f'<a href="{c["link"]}" '
+                'style="display:block;text-align:center;text-decoration:none;'
+                'background-color:#0A1929;color:#ffffff;border-radius:4px;'
+                'padding:10px 8px;font-size:12px;font-weight:700;'
+                'letter-spacing:0.08em;text-transform:uppercase;">'
+                'View document</a>'
+            )
+        else:
+            # NO BUTTON AND NO CROSS. The reason sits where the button would
+            # be, in the words the cover already uses.
+            _foot = (
+                '<div style="text-align:center;border:1px solid #e2e8f0;'
+                'border-radius:4px;padding:10px 8px;font-size:12px;'
+                'font-weight:700;letter-spacing:0.08em;'
+                'text-transform:uppercase;color:#64748b;">'
+                + ("Not filed" if c["state"] == "missing"
+                   else ("Not due today" if c["state"] == "not_due"
+                         else "Unavailable"))
+                + '</div>'
+            )
+        return (
+            '<td width="25%" valign="top" style="vertical-align:top;'
+            'padding:0 8px 20px 8px;">'
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="border:1px solid #e2e8f0;border-radius:6px;" '
+            'bgcolor="#ffffff"><tr><td style="padding:12px;">'
+            f'<div style="font-size:{_T_LABEL};font-weight:700;color:#94a3b8;'
+            f'padding-bottom:4px;">{c["n"]:02d}</div>'
+            '<div style="font-size:14px;font-weight:700;color:#0A1929;'
+            f'line-height:1.3;">{_html.escape(c["title"])}</div>'
+            + (f'<div style="font-size:11px;color:#64748b;padding-top:2px;">'
+               f'{_html.escape(c["cite"])}</div>' if c["cite"] else "")
+            + f'<div style="padding:10px 0;">{_pic}</div>'
+            + (f'<div style="font-size:12px;color:#475569;padding-bottom:10px;'
+               f'line-height:1.4;">{_html.escape(c["blurb"])}</div>'
+               if c["blurb"] else "")
+            + _foot
+            + '</td></tr></table></td>'
+        )
+
+    # 4-UP, FLOWING. A row is padded with empty cells so the last row's cards
+    # keep the same width as the first's -- seven cards render 4 + 3, not 4 + 3
+    # stretched across the page.
+    _rows = ""
+    for _i in range(0, len(_cards), 4):
+        _chunk = _cards[_i:_i + 4]
+        _rows += ('<tr>' + "".join(_card_html(_c) for _c in _chunk)
+                  + '<td width="25%"></td>' * (4 - len(_chunk)) + '</tr>')
+    _record_html = (
+        (section_title("Project record")
+         # THE DOCUMENT'S OWN INTRO BUILDER, not a hand-rolled paragraph.
+         # `info_box` carries the header-to-description gap that
+         # test_report_document_layout asserts every section has, and a
+         # paragraph with its own margin is a fourth relationship rendered
+         # like the other three.
+         + info_box('<strong style="color:#0A1929;">'
+                    'Regulatory, safety and workforce documentation</strong>')
+         + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+           f'style="margin:{_S_HEAD} 0 0 0;">{_rows}</table>')
+        if _cards else ""
+    )
 
     _cover_footer_html = (
         '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
@@ -32631,11 +32790,27 @@ async def generate_combined_report(
     # renders "" and is dropped before the join, so a three-document day is
     # three sheets and not sixteen -- thirteen of them blank, each looking like
     # a filing that went missing.
+    # THE PROJECT RECORD IS LAST, which is where the mockup numbers it -- page
+    # 4 of 4, after the cover and the two progress pages. The index is the end
+    # of the investor document, and the full logbook sections that follow it
+    # today are what it will eventually replace: the report MAY index rather
+    # than contain, so when those go this lands exactly where the mockup puts
+    # it. Nothing is removed here, so a reader who scrolls past it still finds
+    # every log in full.
+    #
+    # AND PUTTING IT SECOND BROKE TWO TESTS THAT WERE RIGHT. Both anchor on the
+    # FIRST occurrence of "Daily Jobsite Log" to find that section's header and
+    # measure its type and its gaps. A card bearing the same title, earlier in
+    # the document, moved the anchor onto the card -- the leftmost-match shape
+    # this codebase already carries a note about for source-text tests, here in
+    # a rendered document. The claim they defend never moved.
     _SECTIONS = (
-        progress_html, jobsite_html, cs_html, toolbox_html, preshift_html,
+        progress_html,
+        jobsite_html, cs_html, toolbox_html, preshift_html,
         site_html, osha_html, hot_work_html, crane_html, exc_html,
         scaffold_html, fp_html, orientation_html, ssc_html, concrete_html,
         additional_logbooks_html,
+        _record_html,
     )
     # page-break-inside ON THE WRAPPER, which is what stops a table splitting
     # across the fold.
@@ -44323,6 +44498,137 @@ async def _resolve_logbook_share_token(token: str) -> Optional[dict]:
         if exp_aware < datetime.now(timezone.utc):
             return None
     return row
+
+
+# ── A CARD'S THUMBNAIL IS RENDERED ONCE, EVER ───────────────────────────────
+#
+# The project record page shows each filed logbook as a card with a picture of
+# its first page. Rendering that on every report would be SEVEN WeasyPrint
+# renders plus seven rasterisations per project per day, each fetching its
+# photographs over HTTP -- roughly eight times the current cost, daily, for a
+# document that cannot change.
+#
+# A FILED LOG IS FROZEN, so the thumbnail is a pure function of it. The cache
+# key is (logbook_id, updated_at): `updated_at` moves when a photograph is
+# appended -- the only write `append_activity_photo` is allowed outside
+# photos[] -- so an appended photograph produces a new key and a new picture,
+# and nothing else does.
+#
+# STORED IN R2 AND SERVED BY TOKEN. WeasyPrint fetches images over HTTP like a
+# mail client, so the bytes need a URL. `_mint_temp_media_token` maps a token
+# to an R2 key and streams it from a route with no auth dependency, which is
+# exactly this: a public URL to an R2 object. The default one-hour TTL is
+# right here and wrong for a document link -- the fetch happens DURING the
+# render, seconds after the mint, not weeks later by a reader.
+#
+# ── FIRST LIVE USE OF POPPLER IN THIS CODEBASE ──────────────────────────────
+#
+# `pdf2image` is in requirements.txt and `poppler-utils` is in both the
+# Dockerfile and nixpacks.toml, but the only existing caller is the annotation
+# screenshot behind `SCREENSHOT_ENABLED = False`. Nothing exercises it in
+# production today. So every failure path below returns None rather than
+# raising, and the card renders without a picture: A MISSING THUMBNAIL COSTS AN
+# IMAGE, NEVER THE CARD.
+THUMBNAIL_DPI = 72
+THUMBNAIL_WIDTH = 240
+
+
+def _logbook_thumb_r2_key(logbook_id: str, stamp: str) -> str:
+    return f"report-thumbs/{logbook_id}/{stamp}.png"
+
+
+def _render_logbook_thumbnail(pdf_bytes: bytes) -> Optional[bytes]:
+    """Page one of a PDF as a small PNG, or None. NEVER raises.
+
+    OFF THE EVENT LOOP BY ITS CALLER -- poppler forks a process and Pillow is
+    CPU-bound, so this is run through asyncio.to_thread like every other
+    rasterisation in this file.
+    """
+    try:
+        from pdf2image import convert_from_bytes
+        from PIL import Image
+    except Exception as e:
+        logger.warning(f"thumbnail: pdf2image/Pillow unavailable: {e}")
+        return None
+    try:
+        pages = convert_from_bytes(
+            pdf_bytes, first_page=1, last_page=1, dpi=THUMBNAIL_DPI)
+        if not pages:
+            return None
+        img = pages[0]
+        if img.width > THUMBNAIL_WIDTH:
+            h = max(1, int(img.height * THUMBNAIL_WIDTH / img.width))
+            img = img.resize((THUMBNAIL_WIDTH, h), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception as e:
+        # POPPLER MISSING FROM THE CONTAINER LANDS HERE, and so does a PDF it
+        # cannot parse. Both are "no picture", and neither may reach the caller
+        # as an exception.
+        logger.warning(f"thumbnail: raster failed: {e}")
+        return None
+
+
+async def _logbook_thumbnail_url(logbook: dict) -> Optional[str]:
+    """A public URL for this logbook's first page, or None.
+
+    THE CACHE IS CHECKED BEFORE ANYTHING IS RENDERED, which is the whole point:
+    on every day after the first, this is one indexed read and one token mint.
+    """
+    lb_id = str(logbook.get("_id") or "")
+    if not lb_id or not _r2_client or not R2_BUCKET_NAME:
+        return None
+    _u = logbook.get("updated_at")
+    stamp = re.sub(r"[^0-9A-Za-z]", "", str(_u or logbook.get("date") or "x"))[:32]
+    key = _logbook_thumb_r2_key(lb_id, stamp)
+
+    try:
+        cached = await db.logbook_thumbnails.find_one({"_id": key})
+    except Exception:
+        cached = None
+
+    if not cached:
+        try:
+            html = await generate_single_logbook_html(logbook)
+
+            # NAMED `_render_pdf` LIKE THE OTHER THREE, and the name is load
+            # bearing: test_close_external_review asserts that every
+            # `write_pdf` in this file sits inside a helper called
+            # `_render_pdf` or `_default_pdf_renderer`. This call WAS already
+            # offloaded -- `asyncio.to_thread` two lines down -- so the check
+            # was refusing a convention rather than a defect, which is exactly
+            # what it is for: the convention is how the next inline render is
+            # caught.
+            def _render_pdf(h: str) -> bytes:
+                from weasyprint import HTML
+                return HTML(string=h).write_pdf()
+
+            pdf_bytes = await asyncio.to_thread(_render_pdf, html)
+            png = await asyncio.to_thread(_render_logbook_thumbnail, pdf_bytes)
+            if not png:
+                return None
+            await asyncio.to_thread(
+                _upload_to_r2, png, key, "image/png")
+            # THE ROW IS WRITTEN AFTER THE OBJECT, never before: a cache entry
+            # naming an object R2 does not have would serve a broken image
+            # every day thereafter, and nothing would retry it.
+            await db.logbook_thumbnails.update_one(
+                {"_id": key},
+                {"$set": {"r2_key": key, "logbook_id": lb_id,
+                          "created_at": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning(f"thumbnail: build failed for {lb_id}: {e}")
+            return None
+
+    try:
+        tok = await _mint_temp_media_token(key, "image/png", ttl_seconds=3600)
+    except Exception as e:
+        logger.warning(f"thumbnail: token mint failed for {lb_id}: {e}")
+        return None
+    return _public_temp_media_url(tok) if tok else None
 
 
 def _public_logbook_url(token: str) -> str:
