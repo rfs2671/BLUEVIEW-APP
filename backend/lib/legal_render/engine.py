@@ -16,13 +16,20 @@ NO LOGO, NO SEAL, NO FORM NUMBER. The citations are ours and they are real.
 
 ── PAGINATION IS CONTENT-DRIVEN, AND THE DOCUMENT NEVER SCALES ───────────────
 
-Four rules, and each was verified against WeasyPrint 69.0 in the production
-container rather than assumed:
+Four rules, and each was MEASURED in the production container rather than
+assumed -- WeasyPrint 70.0, on the largest real orientation group there: 16
+filed records, three pages.
 
   a table header repeats           thead{display:table-header-group}
   a page says which it is          @bottom-right counter(page)/counter(pages)
   a later page names its subject   position:running() in @top-left
   a heading is never orphaned      break-after:avoid on the section bar
+
+What the laid-out pages actually said: the attendee header reprinted on pages
+2 and 3, every page carried `Page N of 3`, every page carried the continuation
+header naming the record and the job, and the masthead appeared on page 1 only.
+The container's version is read at the top of that probe rather than recalled;
+an earlier note in this file said 69.0, which was already out of date.
 
 A row never splits and a certification never splits, both by `break-inside:
 avoid` on the element itself rather than on a wrapper -- a section taller than

@@ -25,9 +25,23 @@ citations are ours and they are real -- they come from the type registry's
 
 A captured signature is a transparent handwritten stroke laid on the paper. No
 box, no background, no fixed-height container, true aspect ratio, and it may
-overlap the baseline as a real one does. 297 of 303 signatures in production
-are VECTOR STROKE PATHS, so this is polylines with `fill="none"` and no
-backdrop -- transparent by construction rather than by a trick.
+overlap the baseline as a real one does.
+
+BOTH KINDS REACH THIS SHEET, AND THE FIELD DECIDES WHICH. `cp_signature` is
+vector stroke paths -- 297 of 303 of them -- and renders as polylines with
+`fill="none"`, transparent by construction. `data.worker_signature` is NOT:
+72 of those are raster data URIs written by the gate, and the first real sheet
+rendered in production was 16 rasters against one vector certification.
+
+Reporting that census as "297 of 303 signatures are vector, zero base64" was a
+field-scoped count stated as a global claim, and it is recorded as one in the
+harness document. The raster path is not a fallback to tolerate; it is what
+most attendee rows on a real sheet are made of.
+
+Both are transparent in the end, for different reasons: the vector by having
+no backdrop, and the raster because all 16 PNGs on that sheet carry an alpha
+channel. The white box that used to sit behind a signature came from the SVG
+wrapper's style string, which `boxed=False` removes -- it was never the ink.
 
 The reconstruction is NOT duplicated here. `server._signature_paths_to_svg`
 already turns stroke paths into an SVG and is used by every other renderer; it
