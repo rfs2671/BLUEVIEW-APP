@@ -35,6 +35,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # any sibling/subpackage import can resolve. (Step 4 regression,
 # fixed: f5cb4eb. CI smoke test enforces this going forward.)
 from lib.server_http import ServerHttpClient
+# ONE LEGAL-DOCUMENT ENGINE. Fifteen schemas, not fifteen designs -- see
+# lib/legal_render/. A type named in CONVERTED_TYPES renders through it;
+# every other type falls through to the branch chain, unchanged.
+from lib import legal_render
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
 # one is edited, and this one is both printed on a compliance document and
@@ -19636,6 +19640,61 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     )
     cp_sig_block = render_signature_html(logbook.get("cp_signature"), "CP Signature")
 
+    # ── THE PER-TYPE SWITCH ─────────────────────────────────────────────
+    #
+    # A type with a schema renders through the one engine. Everything else
+    # falls through to the chain below, which is untouched -- that is the whole
+    # safety of converting one type at a time, and it is asserted byte-for-byte
+    # rather than assumed.
+    #
+    # REMOVING A NAME FROM CONVERTED_TYPES IS THE ROLLBACK: one line, no revert.
+    # And a converted type's old branch is deleted in the FOLLOWING change,
+    # once it has rendered in production and been read. Required, not optional:
+    # "we will delete it later" is how one `if` acquired thirteen branches.
+    if log_type in legal_render.CONVERTED_TYPES:
+        _decl = legal_render.SCHEMAS[log_type]
+        _records = [logbook]
+        if (_decl.get("source") or {}).get("kind") == "group":
+            # ONE SHEET PER (PROJECT, DATE), DRAWN FROM MANY FILED RECORDS.
+            # They are not merged: each stays its own separately signed
+            # document and contributes its own row carrying its own signature.
+            try:
+                _found = await db.logbooks.find({
+                    "project_id": project_id,
+                    "date": date,
+                    "log_type": log_type,
+                    "is_deleted": {"$ne": True},
+                }).to_list(500)
+                # SORTED IN PYTHON, NOT BY MONGO. `.sort("created_at", 1)` on
+                # `logbooks` is an UNSERVED SORT ON A BASE64 COLLECTION, and the
+                # sort ratchet refused it -- correctly: this collection holds
+                # photographs, and an unindexed sort loads the matched set into
+                # memory to order it. The group is one project on one date, so
+                # ordering a few dozen rows in Python costs nothing.
+                _found.sort(key=lambda r: str(r.get("created_at") or ""))
+            except Exception as _e:
+                logger.warning(f"legal_render group read failed: {_e}")
+                _found = []
+            # THE REQUESTED RECORD MUST BE ON THE SHEET. A draft, or a row the
+            # group query cannot see, would otherwise produce a document that
+            # does not contain the log somebody actually asked for.
+            if any(str(_r.get("_id")) == str(logbook.get("_id")) for _r in _found):
+                _records = _found
+        _sheet = legal_render.render(log_type, _records, {
+            "project":    project or {},
+            "contractor": ((project or {}).get("company_name")
+                           or (project or {}).get("name") or ""),
+            "address":    project_address or project_name,
+            "date":       date,
+            "date_line":  f"Date: {date}",
+            # ONE STROKE RECONSTRUCTION, PASSED IN. A second copy of that
+            # geometry inside the engine would drift from this one, and this
+            # file has been bitten by exactly that twice.
+            "signature_svg": _signature_paths_to_svg,
+        })
+        if _sheet:
+            return _sheet
+
     if log_type == "daily_jobsite":
         type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
         weather_str = _display_weather(data)
@@ -29977,7 +30036,8 @@ def _display_weather(data):
     return f"{body} — Wind: {wind}" if wind else body
 
 
-def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140, max_height=60):
+def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140,
+                            max_height=60, boxed=True):
     """Reconstruct an inline SVG from SignaturePad stroke paths.
 
     SignaturePad (frontend) stores a signature as {paths, signerName, timestamp}
@@ -30058,7 +30118,13 @@ def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140, max_he
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb_w:.0f} {vb_h:.0f}" '
         f'width="{disp_w:.0f}" height="{disp_h:.0f}" '
         'preserveAspectRatio="xMidYMid meet" '
-        'style="border:1px solid #e2e8f0;border-radius:4px;background:#ffffff;">'
+        # BOXED IS THE DEFAULT, SO EVERY EXISTING CALLER IS BYTE-FOR-BYTE
+        # UNCHANGED. `boxed=False` is the legal engine's: a signature there is
+        # ink on paper, and a border plus an OPAQUE WHITE BACKGROUND is what
+        # made a transparent overlay impossible. The polylines were always
+        # fill="none"; only this style string stood in the way.
+        + ('style="border:1px solid #e2e8f0;border-radius:4px;'
+           'background:#ffffff;">' if boxed else 'style="display:block;">')
         + "".join(polylines) + '</svg>'
     )
 
