@@ -30494,6 +30494,19 @@ def _filed_log(logbooks, log_type):
 # Thomas starts at 29 and a project with three sent reports starts at 4. A
 # project that has never sent starts at 1.
 #
+# ── #29 AND #30 ARE DIFFERENT DOCUMENTS, AND THAT IS NOT A DEFECT ──────────
+#
+# 588 Thomas #29 was sent by the scheduled sweep at 00:00 UTC on 2026-09-11.
+# The project-record page shipped 44 minutes later. So #29 is the LAST report
+# with no project record and #30 is the first with one, and anyone comparing
+# two consecutive numbers sees the document change shape with nothing in the
+# document to explain it.
+#
+# Recorded here because the number is what invites the comparison. A sequence
+# promises "these are the same report, later"; it does not promise the report
+# never changed. Nothing is wrong with #29 -- it is a true record of its day,
+# rendered by the code that existed when it was sent.
+#
 # ONE `find_one_and_update`, so the seed and the increment cannot interleave.
 # `ReturnDocument` is imported HERE rather than at module scope: pymongo is
 # already a dependency of motor, and a local import keeps the one symbol this
