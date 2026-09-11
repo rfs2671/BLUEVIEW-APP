@@ -252,10 +252,15 @@ export default function ReportsScreen() {
         }
       } else {
         // On mobile, open report URL in device browser
-        const baseURL = apiClient.defaults.baseURL || '';
-        const token = await getToken();
-        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}?token=${token || ''}`;
-        await Linking.openURL(url);
+        // A GRANT, NOT THE SESSION TOKEN. Linking.openURL hands this string
+        // to the system browser, so it lands in the platform's request log,
+        // in browser history and in anything the user shares. It used to be
+        // the session JWT, which lives for 720 hours; the grant names one
+        // project and one date and dies in two minutes.
+        const { data } = await apiClient.get(
+          `/api/reports/project/${projectId}/date/${previewDate}/view-grant`,
+        );
+        await Linking.openURL(data.url);
       }
     } catch (err) {
       console.error('Failed to load report:', err);
@@ -284,10 +289,16 @@ export default function ReportsScreen() {
         toast.success('Downloaded', 'PDF saved to your downloads');
       } else {
         // On mobile, open PDF URL in device browser (triggers native PDF viewer / download)
-        const baseURL = apiClient.defaults.baseURL || '';
-        const token = await getToken();
-        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}/pdf?token=${token || ''}`;
-        await Linking.openURL(url);
+        // A GRANT, NOT THE SESSION TOKEN. Linking.openURL hands this string
+        // to the system browser, so it lands in the platform's request log,
+        // in browser history and in anything the user shares. It used to be
+        // the session JWT, which lives for 720 hours; the grant names one
+        // project and one date and dies in two minutes.
+        const { data } = await apiClient.get(
+          `/api/reports/project/${projectId}/date/${previewDate}/view-grant`,
+          { params: { pdf: true } },
+        );
+        await Linking.openURL(data.url);
       }
     } catch (err) {
       console.error('Failed to download PDF:', err);
