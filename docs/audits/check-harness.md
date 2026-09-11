@@ -40,6 +40,23 @@ a check that never ran.
 > pointed somewhere else. Thirteen instances in two days, and they fail toward
 > *"fine"*.
 
+> **THESE RULES ARE NOT BEING FORGOTTEN. THEY ARE BEING OUTRUN.** Three rules
+> written this week were each broken by their own author within hours of being
+> written: §12's *do not assert on prose*, §12's *do not let an assertion print
+> its container*, and §14's *every path must end in an assertion*. The last two
+> in the same day as the sentence that forbids them — an `assertIn` against a
+> multi-thousand-character `ast.dump`, and a probe that defined its work and
+> exited zero without running it.
+>
+> Knowing a trap by name does not slow the hand down. The reflex reaches for
+> `assertIn` before the knowledge arrives, which means a rule that lives only in
+> this file is a rule that will be broken again. **Anything here worth obeying
+> under time pressure needs a gate, a lint or a checklist item — something that
+> fires at the moment of writing rather than a paragraph that fires when
+> somebody reads back.** The checklist at the end is that mechanism for as long
+> as it is actually run; the bare-literal gate is the better one, because
+> nothing has to remember it.
+
 
 ## 1. Four patterns that work
 
