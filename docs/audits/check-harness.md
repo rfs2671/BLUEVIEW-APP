@@ -56,6 +56,18 @@ a check that never ran.
 > somebody reads back.** The checklist at the end is that mechanism for as long
 > as it is actually run; the bare-literal gate is the better one, because
 > nothing has to remember it.
+>
+> **THE COUNT IS NOW THE FINDING, NOT THE INSTANCES.** By the end of that same
+> day the tally was FOUR: the unreadable-failure rule alone was broken three
+> times after being written — an `assertIn` against an `ast.dump`, one against
+> a 2.3MB source string in a new test, and one found in an existing test while
+> repairing it — plus the probe that never ran. Every one by the author of the
+> rule, on the day it was written.
+>
+> Four is not a run of bad luck and it will not be fixed by care. It is a
+> measurement of what a paragraph is worth against a reflex, and the answer is
+> nothing. **A rule that has been broken by its own author on its own day is
+> not a rule yet. It is a note about a gate somebody still has to build.**
 
 
 ## 1. Four patterns that work
@@ -1559,6 +1571,69 @@ it*.
 ---
 
 
+## 16. Which of these can become a gate, and what each one would cost
+
+§15 says work that is never proposed does not exist. This says something
+narrower and more uncomfortable: a rule that lives only in this document is
+obeyed only when nobody is in a hurry, and the preamble now carries a measured
+rate for that — four breaches in one day, all by the author, all of rules
+written that day.
+
+So the useful question is not "which rules matter" but **which can be made to
+fire while somebody is typing**. Two already do, and they have not recurred:
+the bare-literal gate reads every `assertNotIn` in the backend suite, and the
+frontend's assertions-can-fail check reads every marker-derived subject. The
+commit-message guard (§14) joined them, and it is the model: pure logic in a
+script, a hook that only execs it, and a refusal measured against real history
+before it was allowed to refuse anything.
+
+### The next conversion, and it is not a close call
+
+**The unreadable-failure rule.** It is the most-broken rule in this document —
+three times in one day — and it is the most mechanically detectable thing here.
+`assertIn(needle, haystack)` prints the haystack; the defect is an assertion
+whose second argument is a whole source file and whose third argument is
+missing.
+
+MEASURED BEFORE PROPOSING, which is the standard the commit-msg guard set:
+
+    assertIn / assertNotIn against a whole-source haystack, no message
+      sites : 78
+      files : 37
+
+So it cannot ship as "fail at zero" without 78 hand-written messages, and a
+generated message is worse than none — it would satisfy the gate while telling
+the reader nothing, which is the shape §12 calls a check that fails toward
+"fine".
+
+**It ships as a total that can only FALL**, which this repository has already
+proven twice: the bypass sweep and the bare-literal allowlist are both pinned
+in exactly one place, with every other file asserting agreement rather than
+restating the number. A new site fails immediately; the existing 78 come down
+on touch, the way the seventeen indexing sites do.
+
+### The rest, honestly
+
+| rule | gateable? |
+|---|---|
+| do not let an assertion print its container | **yes** — 78 sites, pinned-falling total |
+| every path ends in an assertion | **partly** — the indexing shape is detectable (17 sites); a probe that never runs is not |
+| do not assert on PROSE | **yes, and expensive** — `code_of` exists and is used in 33 of 348 backend test files; requiring it means auditing the other 315, most of which are merely unconverted rather than wrong |
+| a keyword count cannot distinguish deliberate from accidental | no — it is a judgement about intent |
+| a docstring is a claim about a relationship | no — the claim is prose by definition |
+| verify the pointer, not the report of the action | no — it is about what you do next, not what you wrote |
+| an error from the PROBE is not evidence about the SUBJECT | no — only the reader can tell which is which |
+| unlink before remove | no — §13 established that a pathspec checkout and a recursive delete fire no hook |
+| commit before the control run | **already done, indirectly** — the restore itself cannot be hooked, but the commit whose message outruns its diff can, and §14's guard does that |
+
+Three of the nine are convertible and one of those is nearly free. That is the
+honest ceiling: most of this document is judgement, and judgement cannot be
+gated. Which is the argument for converting the three that can be, rather than
+for writing the paragraphs more forcefully.
+
+---
+
+
 ## Checklist
 
 Before a check is worth having:
@@ -1609,7 +1684,9 @@ Before a check is worth having:
       added and the claim it defends never moved.
 - [ ] Will its FAILURE be readable? `assertIn` prints its container — if that
       is a whole source file, use `assertTrue(x in y, "short message")`. A
-      check that makes its own failure unreadable is one nobody runs twice.
+      check that makes its own failure unreadable is one nobody runs twice. This
+      one has been broken three times in a day BY THE AUTHOR OF THE RULE, so
+      treat it as a reflex to be gated rather than a habit to be kept — see §16.
 - [ ] Is it asserting on PROSE? If the sentence is the PRODUCT, assert it at
       its named constant. If it is RATIONALE in a comment, do not assert it at
       all — no anchoring survives a reflow, and that is a review
