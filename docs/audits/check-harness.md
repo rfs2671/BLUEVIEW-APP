@@ -1573,6 +1573,23 @@ it*.
 
 ## 16. Which of these can become a gate, and what each one would cost
 
+> **TWO THIRDS OF THIS DOCUMENT CANNOT BE ENFORCED, AND THAT IS THE FINDING.**
+> Three of the nine paragraph-only rules below can become gates. The other six
+> are judgement: a keyword count cannot be distinguished from intent, a
+> docstring's claim is prose by definition, and §13 established that the
+> destructive commands fire no hook at all.
+>
+> Read the gated ones as gates and the rest as **judgement you have to exercise
+> yourself**, because nothing else will exercise it for you. A document that
+> knows which of its own rules are enforceable is more useful than one that
+> implies all of them are, since the second kind lets a reader believe the
+> suite is watching where it is not.
+>
+> **And do not answer a broken judgement rule by writing it more forcefully.**
+> All six are already written forcefully. Four were broken by their own author
+> on the day they were written.
+
+
 §15 says work that is never proposed does not exist. This says something
 narrower and more uncomfortable: a rule that lives only in this document is
 obeyed only when nobody is in a hurry, and the preamble now carries a measured
