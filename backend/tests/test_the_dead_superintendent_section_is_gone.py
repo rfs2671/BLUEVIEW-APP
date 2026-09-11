@@ -122,7 +122,10 @@ class TheSUCCESSORSStillRender(unittest.TestCase):
         the filed daily_jobsite log. That is the tempting fix and it is wrong:
         the same record already has two sections in this document."""
         src = ast.unparse(_fn("generate_combined_report"))
-        self.assertNotIn("as_daily_log_row", src,
+        # ANCHORED AS A CALL. A bare ban on the identifier is substring
+        # containment, so `as_daily_log_row_v2` would satisfy it -- which is
+        # what test_absence_literals_are_specific refused, correctly.
+        self.assertNotIn("as_daily_log_row(", src,
                          "the retired section is being fed from the logbook, "
                          "which prints one record under a third heading")
 

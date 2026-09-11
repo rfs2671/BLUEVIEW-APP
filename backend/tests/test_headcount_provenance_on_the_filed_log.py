@@ -138,6 +138,23 @@ def _fn(name):
     raise AssertionError(f"{name} not found")
 
 
+def _enclosing_function(target):
+    """The FunctionDef that contains `target`, or None.
+
+    A loop's iterable is often a local bound a line or two earlier, so a filter
+    that reads only `node.iter` sees a different renderer than the one that is
+    there. The function is the unit that actually holds the subject.
+    """
+    best = None
+    for fn in ast.walk(TREE):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if fn.lineno <= target.lineno <= (fn.end_lineno or fn.lineno):
+            if best is None or fn.lineno > best.lineno:
+                best = fn
+    return best
+
+
 class BothRenderersUseIt(unittest.TestCase):
     """READ AS CODE. The helper's docstring names num_workers,
     gate_num_workers and "(CP)", so a substring search of the file would match
@@ -194,7 +211,17 @@ class BothRenderersUseIt(unittest.TestCase):
                 continue
             if not (isinstance(node.target, ast.Name) and node.target.id == "card"):
                 continue
-            if "subcontractor_cards" not in ast.unparse(node.iter):
+            # FOLLOW THE BINDING, DO NOT MATCH THE SPELLING. This required
+            # "subcontractor_cards" in the loop's ITERABLE, which fitted the
+            # combined report's `for card in (daily_log.get("subcontractor_
+            # cards") or [])` exactly -- and could not see the daily-log PDF's
+            # `sub_cards = log.get("subcontractor_cards")` two lines above its
+            # `for card in sub_cards`. When the combined report's section was
+            # retired the filter matched NOTHING and this test reported the
+            # renderers had disappeared. They had not; one had been invisible
+            # to the filter all along.
+            _fn = _enclosing_function(node)
+            if _fn is None or "subcontractor_cards" not in ast.unparse(_fn):
                 continue
             loops.append(node)
 
@@ -217,7 +244,21 @@ class BothRenderersUseIt(unittest.TestCase):
                         and isinstance(node.args[0], ast.Constant)):
                     keys.add(node.args[0].value)
             with self.subTest(line=loop.lineno):
-                self.assertIn("num_workers", keys)
+                # EITHER SPELLING OF THE SAME QUANTITY. The retired combined-
+                # report loop read `num_workers`; the daily-log PDF's loop,
+                # which is the one that remains, reads `worker_count`. Pinning
+                # the first word made this assertion about a renderer rather
+                # than about the rule -- and it only showed once that renderer
+                # was gone. What it is FOR is the vacuity guard: prove this is
+                # really a card renderer reading a headcount before concluding
+                # anything from the two absences below.
+                self.assertTrue(
+                    keys & {"num_workers", "worker_count"},
+                    f"loop at {loop.lineno} reads no headcount at all, so the "
+                    f"absences below prove nothing. Keys: {sorted(keys)}")
+                # THE POINT. A card carrying the activity row's provenance
+                # marker would mean the two logs had converged and the
+                # exclusion above had gone stale.
                 self.assertNotIn("num_workers_source", keys)
                 self.assertNotIn("gate_num_workers", keys)
 
