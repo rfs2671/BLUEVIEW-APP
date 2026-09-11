@@ -77,12 +77,39 @@ def _calls_in(fn):
     return out
 
 
+#: THE ONE PLACE THE WALK STOPS, AND WHY IT IS NOT A HOLE.
+#:
+#: `_logbook_thumbnail_url` renders the PER-LOGBOOK LEGAL PDF and rasterises
+#: page one into a PNG for a card on the project record. That PDF is the filed
+#: record and MUST carry its full apparatus -- the affirmed banner, the
+#: citations, the attestation -- because the card links to exactly that
+#: document and a picture showing something else would misrepresent what the
+#: reader is about to open.
+#:
+#: THE WALK FOLLOWS HTML COMPOSITION INTO THE INVESTOR PAGE. This function
+#: composes nothing: it returns a URL. Its output reaches the report as
+#: `<img src=...>`, and an image of a legal document is not the investor report
+#: asserting the apparatus -- it is the index showing what it indexes.
+#:
+#: EXEMPTED BY NAME, WITH THE CLAIM ASSERTED. The alternative was to render the
+#: thumbnail with `legal_record=False`, which would make the picture and the
+#: link disagree. A named exemption whose premise is checked is better than a
+#: silently weakened rule -- the same structure `find-unpinned-palette-keys`
+#: uses for Toast.
+_RENDERS_TO_AN_IMAGE = {"_logbook_thumbnail_url"}
+
+
 def _reachable(root: str, seen=None) -> set:
-    """Transitive closure of direct calls from `root`, within this module."""
+    """Transitive closure of direct calls from `root`, within this module.
+
+    Stops at `_RENDERS_TO_AN_IMAGE` -- see the note above it.
+    """
     seen = seen if seen is not None else set()
     if root in seen or root not in _FUNCS:
         return seen
     seen.add(root)
+    if root in _RENDERS_TO_AN_IMAGE:
+        return seen
     for name in _calls_in(_FUNCS[root]):
         _reachable(name, seen)
     return seen
@@ -136,6 +163,28 @@ class EverySignatureReachableFromTheInvestorReportIsSilenced(unittest.TestCase):
             f"only {len(found)} signature calls reached; the walk is not "
             "seeing the report's sections",
         )
+
+    def test_the_exemption_is_ONE_function_and_its_premise_holds(self):
+        """A named exemption is only as good as the claim behind it, so the
+        claim is checked: it renders to an IMAGE, it is embedded as one, and it
+        is the only name on the list."""
+        self.assertEqual(_RENDERS_TO_AN_IMAGE, {"_logbook_thumbnail_url"},
+                         "a second exemption is the rule being weakened")
+        body = _SRC[_SRC.index("async def _logbook_thumbnail_url("):]
+        body = body[:body.index("\ndef ")]
+        self.assertIn("_render_logbook_thumbnail", body,
+                      "the exempt function no longer rasterises anything")
+        self.assertIn("return _public_temp_media_url", body,
+                      "it no longer returns a URL, so it may be composing "
+                      "HTML into the investor page after all")
+        self.assertIn('<img src="{c["thumb"]}"', _SRC,
+                      "its output is not embedded as an image")
+
+    def test_the_exempt_function_IS_reached__it_is_not_dead(self):
+        """An exemption for something nothing calls proves nothing. This is
+        the vacuity guard on the guard."""
+        self.assertIn("_logbook_thumbnail_url",
+                      _calls_in(_FUNCS["generate_combined_report"]))
 
     def test_the_shared_builder_is_the_one_that_broke_it(self):
         """Named, so a future reader knows which call site the walk exists
