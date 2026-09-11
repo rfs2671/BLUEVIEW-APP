@@ -139,6 +139,7 @@ Instances on this codebase:
 | Query D | compared 0 to 0 on 27 of 35 groups |
 | `test_the_gate_actually_asks_the_predicate` | the first control run PASSED — ten tests were driving the predicate directly and none noticed the call site had been reverted |
 | `inserted_doc_keys` | now RAISES rather than returning an empty set, which is the fix in code |
+| `db.report_numbers` | **the same miss as row 1, later.** Numbers live on `report_emails.report_number`; the zero it returned was also the answer a working gate would give (§14) |
 
 Cheapest habit that catches most of them: **run the query once with the filter
 removed.** If that is also zero, the filter was never the question.
@@ -1211,6 +1212,167 @@ resource you did not name.
 ---
 
 
+## 14. An assertion that can crash before it asserts has two outcomes and only one of them is informative
+
+A check exists to return a verdict about its subject: pass, or fail with a
+reason. Three things it can return instead, all of which have now happened
+here:
+
+- it can **raise**, and print a stack trace about its own plumbing
+- it can **answer a different question**, and return the reassuring answer
+- it can **not run at all**, and exit zero
+
+None of these is a verdict. All three are indistinguishable, at a glance, from
+a healthy subject — which is the only moment the distinction matters.
+
+The third is the sharpest, so it goes first.
+
+### The probe that defined its work and never did it
+
+A verification script for the production thumbnail path: connect, initialise
+the R2 client, count the cache rows before and after a render, print the render
+time and the delta. Roughly 800 bytes of correct code. It ended like this:
+
+```python
+async def main():
+    ...
+    print('SECOND RENDER  seconds: %.1f  thumbs: %d  rows: %d -> %d' % ...)
+
+#  ← asyncio.run(main()) was never written
+```
+
+`RC=0`. Nothing on stdout. Nothing on stderr. The output was being piped
+through a `grep` that dropped WeasyPrint's logging, so the silence read as "the
+filter is too tight" — and three further runs went into loosening the filter,
+capturing stderr separately, and shipping the script a different way, before
+anyone read the script's last line.
+
+**It ran green, in the same session as §2's rule about checks that pass without
+running.** The empty-set guard is written for precisely this and was not
+applied, because a hand-run probe does not feel like a check. It is one. It
+produces a fact that a decision is then made on, which is the whole definition.
+
+The repair is one line, and it is not the missing call:
+
+```python
+asyncio.run(main())
+print("PROBE REACHED THE END")
+```
+
+A terminal marker converts "no output" from ambiguous to decisive: silence now
+means the probe did not finish, and anything else means it did. Every probe in
+that session afterwards carried one. None of them has yet failed silently, so
+the marker is a guard that has not been tested in anger — which is worth saying
+plainly rather than claiming a save it did not make.
+
+### The wrong collection returned exactly the answer that would have confirmed the gate
+
+The question was whether GENERATING a report burns a report number. The rule is
+that a number is issued at send and never at generation, and three test renders
+had just been run against production — so if the rule were wrong, three numbers
+were gone.
+
+The probe read `db.report_numbers`, found nothing, and printed:
+
+    total issued: 0
+
+Which is precisely what a working gate looks like. Issued numbers live on
+`report_emails.report_number`; `report_numbers` is a collection that has never
+existed, and **Mongo does not object to a query against a collection that was
+never created** — a missing collection and an empty one return the same cursor.
+
+**This is the first row of §2's table, hit again.** `db.audit_log` against
+`audit_logs` sits at the top of this document, and the shape was repeated
+anyway — in the same week as, and by the same hand as, two new sections of the
+document that records it. Knowing a trap by name does not stop you walking into
+it. So the misspelt-collection half is not what makes this instance worth a
+section of its own.
+
+What is new is the COINCIDENCE. In the `audit_log` case the zero was merely
+uninformative. Here the zero was *the answer being hoped for* — the gate
+holding, no numbers burned by three test renders — which is the one condition
+under which nobody looks twice at a query. A wrong check is most dangerous when
+its wrong answer is also the welcome one.
+
+The only reason it was caught is that the line above it disagreed. The counter
+document said `issued: 1`, the probe said zero, and two numbers that cannot
+both be true are worth four minutes. What settled it was not the probe at all:
+`_next_report_number` has exactly one call site and it is in the send path,
+while `generate_combined_report` calls only `_issued_report_number`, which
+reads. **The call graph answered a question the query could not.**
+
+### The anchor moved, and four assertions raised instead of failing
+
+`_tiles()` parsed the cover's tile strip by matching `font-size:26px`. The
+tiles then moved onto the report's declared type scale, the pattern matched
+nothing, and the helper returned `[]`. Downstream:
+
+```python
+self.assertEqual(_tiles(self.html)[0][0], "16")
+```
+
+`IndexError: list index out of range`. Not *"the cover no longer reports 16
+workers onsite"* — a stack trace about a subscript, raised from a file whose
+entire subject is what the cover says. The anchor repair is §12's (bind to
+`<td width="25%">`, the structure, not to a type size, a shape). The outcome
+repair is separate and is this section: the helper can legitimately return
+nothing, and every caller indexed it as though it could not.
+
+### The rule
+
+> **Every path through a check must end in an assertion.** If it can raise,
+> return early, or terminate without asserting, it has outcomes that are
+> neither pass nor fail — and a check with a third outcome is not a check on
+> the runs where it takes it.
+
+Three forms it takes, and the repair for each:
+
+- **Indexing a parse result.** Assert the shape before you read into it, in the
+  same test that reads into it. A sibling `test_there_are_exactly_four` does
+  not protect `test_workers_onsite`; unittest runs them independently and one
+  can pass while the other raises.
+
+  ```python
+  tiles = _tiles(self.html)
+  self.assertEqual(len(tiles), 4, "the tile strip did not parse")
+  self.assertEqual(tiles[0][0], "16")
+  ```
+
+- **A probe or script.** Print a terminal marker and require it. No output is
+  then a finding rather than an ambiguity.
+
+- **A query standing in for a gate.** Ask whether the empty result has a second
+  cause. A collection that does not exist, a filter that matches nothing and a
+  subject with nothing to report are one answer; prefer the call graph, the
+  index, or a deliberate non-empty control that proves the query can see
+  anything at all.
+
+**The relationship to the rest of this document.** §2 asks whether a check can
+pass on an empty set. §12 asks whether it is pointed at the right thing. This
+section asks a narrower question that neither covers: *when this check goes
+wrong, does it produce a verdict?* A check can be aimed correctly and guarded
+against vacuity and still, on the day the subject changes, hand you a
+traceback — and a traceback is read as "the test is broken", which is the one
+conclusion that stops the investigation.
+
+> A broken check and a broken subject must not look the same. A crash looks
+> like neither, which is worse: it looks like the harness's problem, not the
+> product's.
+
+### The population, measured rather than asserted
+
+Seventeen assertions across four backend test files index a parse helper's
+result inside the assertion itself — `test_the_cover_is_four_tiles_and_two_columns.py`,
+`test_checkins_today_resolves_pairing.py`, `test_filed_log_photo_append.py` and
+`test_no_cross_project_trade_bleed.py`. Each raises rather than fails if its
+helper stops matching. They are listed here because a rule whose own repository
+has seventeen live counterexamples is a rule with an exemption nobody wrote
+down, and naming the count is the difference between a known gap and an
+unknown one.
+
+---
+
+
 ## Checklist
 
 Before a check is worth having:
@@ -1300,3 +1462,9 @@ Before a check is worth having:
       the ENVIRONMENT moved before reading the diff. MODULE_NOT_FOUND across
       files with nothing in common is a deleted dependency tree, not sixty
       broken tests.
+- [ ] Does EVERY path through it end in an assertion? A check that can raise,
+      return early or exit without asserting has a third outcome, and a
+      traceback reads as "the test is broken" — the one conclusion that stops
+      the investigation. Assert the shape before indexing a parse result; give
+      a probe a terminal marker so silence is a finding; and ask what ELSE
+      could make a query come back empty.
