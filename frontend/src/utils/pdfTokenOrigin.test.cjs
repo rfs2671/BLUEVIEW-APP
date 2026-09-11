@@ -273,5 +273,32 @@ for (const rel of [NATIVE, WEB]) {
   ok(defs === 1, `${rel}: exactly one loadPdf definition`);
 }
 
+// ── A GRANT URL IS ALREADY A CREDENTIAL AND MUST NOT BE GIVEN A SECOND ──────
+//
+// The server now answers a file-view request with
+// `/api/public/view/<grant>` instead of the authenticated proxy path. That
+// url is first-party but it is NOT the proxy path, so `authorizedPdfUrl`
+// leaves it bare -- which is the correct behaviour and is the whole reason no
+// viewer needed changing. It holds by CONSEQUENCE of PROXY_PATH_RE rather
+// than by intent, so it is pinned here: a regex widened to cover
+// `/api/public/...` would silently start appending a 30-day session token to
+// a link designed to be worth nothing.
+{
+  const base = 'https://api.levelog.com';
+  const grant = base + '/api/public/view/abc123';
+  ok(M.authorizedPdfUrl(grant, { apiBase: base, token: 'SESSION' }) === grant,
+     'a grant url is returned bare, with no session token appended');
+  ok(!String(M.authorizedPdfUrl(grant, { apiBase: base, token: 'SESSION' }))
+        .includes('SESSION'),
+     'no part of the session token reaches a grant url');
+
+  // The other half: the proxy path still gets one, or this test proves
+  // nothing about the distinction.
+  const proxy = base + '/api/projects/p1/files/f1/content';
+  ok(String(M.authorizedPdfUrl(proxy, { apiBase: base, token: 'SESSION' }))
+        .includes('token=SESSION'),
+     'the authenticated proxy path still carries its token');
+}
+
 console.log(`\n  ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

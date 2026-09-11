@@ -22870,6 +22870,25 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
         raise HTTPException(status_code=403, detail="Access denied to this file")
 
     if file_rec and file_rec.get("r2_key"):
+        # A GRANT, NOT THE AUTHENTICATED PROXY PATH. The viewer cannot set a
+        # header, so whatever this returns ends up in a URL -- and the caller
+        # used to append the SESSION JWT to it. The grant names this one
+        # object, expires in two minutes and confers nothing else, so the
+        # string that reaches the platform log is worth nothing by the time
+        # anyone reads it.
+        #
+        # THE OLD PROXY PATH REMAINS THE FALLBACK, not a second convention:
+        # if the grant cannot be stored the screen still opens the file
+        # through the authenticated route it always used.
+        _grant = await _mint_view_grant(
+            "r2_object",
+            r2_key=file_rec.get("r2_key") or "",
+            content_type=file_rec.get("content_type") or "",
+            filename=file_rec.get("name") or "file",
+        )
+        if _grant:
+            return {"url": _public_view_url(_grant), "cached": False,
+                    "source": "grant"}
         proxy = f"/api/projects/{project_id}/files/{str(file_rec['_id'])}/content"
         return {"url": proxy, "cached": False, "source": "r2_proxy"}
     if file_rec and file_rec.get("r2_url"):
@@ -33301,6 +33320,30 @@ async def generate_combined_report(
 </body>
 </html>"""
     return html
+
+@api_router.get("/reports/project/{project_id}/date/{date}/view-grant",
+                dependencies=[Depends(require_project_access)])
+async def mint_report_view_grant(project_id: str, date: str, pdf: bool = False,
+                                 current_user = Depends(get_current_user)):
+    """A short-lived URL for the report, so the SESSION token stays out of it.
+
+    SAME GUARD AS THE ROUTE IT REPLACES: `require_project_access`, which is
+    what the two sibling report routes carry. The grant is minted only after
+    that has admitted the caller, and it names one project and one date.
+
+    THE GRANT IS THE WHOLE CREDENTIAL. It is not an additional permission on
+    top of a session -- the public route takes no session at all -- so a link
+    that leaks discloses one day's report for two minutes rather than an
+    account for a month.
+    """
+    token = await _mint_view_grant(
+        "report_pdf" if pdf else "report_html",
+        project_id=str(project_id), date=str(date))
+    if not token:
+        raise HTTPException(status_code=503, detail="Could not create a link")
+    return {"url": _public_view_url(token),
+            "expires_in": VIEW_GRANT_TTL_SECONDS}
+
 
 @api_router.get("/reports/project/{project_id}/date/{date}")
 async def get_combined_report(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
@@ -44580,6 +44623,175 @@ async def reindex_all_project_files(
 # HEAD), so WaAPI rejects them. We side-step by handing WaAPI a URL that
 # points to OUR backend — it accepts both HEAD and GET and proxies the bytes
 # from R2. Token is opaque and rows TTL-auto-expire via whatsapp_conversation_state.
+
+
+# -- A VIEW URL CARRIES A GRANT, NEVER A SESSION -----------------------------
+#
+# An <iframe> and a system browser cannot set an Authorization header, so a
+# document URL has to carry its own credential in the query string. What it
+# carried was the SESSION JWT, and JWT_EXPIRATION_HOURS is 720 -- a thirty-day
+# credential for the whole account, in a string that is logged verbatim.
+#
+# MEASURED, NOT INFERRED: a request with a marker in its query string was sent
+# to production and the marker read back out of the platform log as
+# `/api/version?probe=<marker>`. So every document open wrote a live 30-day
+# bearer token into a month of log retention, plus the browser history of
+# whoever opened it and any link they copied.
+#
+# -- THE CREDENTIAL HALF OF A LESSON THIS REPO ALREADY LEARNED ---------------
+#
+# frontend/src/utils/pdfSrc.js exists because Android used to url-encode a
+# token-bearing URL into `mozilla.github.io/pdf.js/web/viewer.html?file=...`,
+# putting the same 30-day token into a THIRD PARTY's request log. That fix
+# changed the DESTINATION -- token only for our own origin, Android never gets
+# a remote URL -- and left the credential exactly as it was. It was the right
+# fix for the incident and only half the lesson.
+#
+# DO NOT READ pdfSrc.js AND CONCLUDE THIS WAS SOLVED. It bounds where the URL
+# goes. This bounds what the URL is worth.
+#
+# A GRANT IS SINGLE-PURPOSE AND SHORT-LIVED. It names one R2 object or one
+# rendered report, it expires in seconds, and it confers nothing else. The
+# token is opaque and random, never derived from the thing it names.
+VIEW_GRANTS = "view_grants"
+VIEW_GRANT_TTL_SECONDS = 120
+
+
+async def _mint_view_grant(kind: str, ttl_seconds: int = VIEW_GRANT_TTL_SECONDS,
+                           **payload) -> Optional[str]:
+    """An opaque token naming ONE thing to serve. None if it cannot be stored.
+
+    RETURNS None RATHER THAN RAISING, and every caller treats that as "no
+    link": a document that cannot be granted must not take down the screen
+    that lists it.
+    """
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    try:
+        await db[VIEW_GRANTS].insert_one({
+            "token": token, "kind": kind, "payload": payload,
+            "created_at": now,
+            "expires_at": now + timedelta(seconds=int(ttl_seconds)),
+        })
+        try:
+            await db[VIEW_GRANTS].create_index(
+                "expires_at", expireAfterSeconds=0, name="view_grant_ttl")
+            await db[VIEW_GRANTS].create_index("token", name="view_grant_token")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"view grant insert failed: {e}")
+        return None
+    return token
+
+
+async def _resolve_view_grant(token: str) -> Optional[dict]:
+    """The row, or None. EXPIRY IS CHECKED HERE AS WELL AS BY THE INDEX.
+
+    A TTL index is a background sweep, not a guarantee: mongod runs it about
+    once a minute, so a row can outlive its own expiry by up to that long. On
+    a credential measured in seconds that is the difference between the stated
+    lifetime and the real one.
+    """
+    try:
+        row = await db[VIEW_GRANTS].find_one({"token": token})
+    except Exception:
+        return None
+    if not row:
+        return None
+    exp = row.get("expires_at")
+    if isinstance(exp, datetime):
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= datetime.now(timezone.utc):
+            return None
+    return row
+
+
+def _public_view_url(token: str) -> str:
+    # SAME BASE AS _public_temp_media_url, read the same way. Two spellings of
+    # one host is how a link starts pointing at the wrong deployment.
+    base = os.environ.get("PUBLIC_BASE_URL", "https://api.levelog.com").rstrip("/")
+    return f"{base}/api/public/view/{token}"
+
+
+@app.get("/api/public/view/{token}")
+async def public_view_grant(token: str):
+    """Serve exactly what one grant names, and nothing else.
+
+    STREAMED IN CHUNKS, NOT BUFFERED. `public_temp_media_get` reads its whole
+    object into memory, which is right for a thumbnail and wrong here: the
+    largest project file in production is 37.9MB and there are 171MB across 26
+    of them, so a buffered read is that spike per concurrent viewer.
+
+    NOT `Cache-Control: public`. The token is opaque and short-lived, but the
+    BYTES are a private project document and a shared cache must not keep
+    them. `private, no-store` costs nothing on a URL that dies in two minutes.
+    """
+    from fastapi.responses import HTMLResponse
+
+    row = await _resolve_view_grant(token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found or expired")
+    kind = row.get("kind")
+    data = row.get("payload") or {}
+    _no_store = {"Cache-Control": "private, no-store"}
+
+    if kind == "r2_object":
+        r2_key = data.get("r2_key") or ""
+        if not r2_key or not _r2_client or not R2_BUCKET_NAME:
+            raise HTTPException(status_code=404, detail="File not stored in R2")
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=r2_key)
+        except Exception as e:
+            logger.error(f"view grant R2 get failed {r2_key}: {e}")
+            raise HTTPException(status_code=502, detail="Storage fetch failed")
+        body = obj["Body"]
+
+        def _iter():
+            try:
+                for chunk in iter(lambda: body.read(65536), b""):
+                    yield chunk
+            finally:
+                try:
+                    body.close()
+                except Exception:
+                    pass
+
+        fname = str(data.get("filename") or "file").replace('"', "")
+        return StreamingResponse(
+            _iter(),
+            media_type=(obj.get("ContentType")
+                        or data.get("content_type")
+                        or "application/octet-stream"),
+            headers={**_no_store,
+                     "Content-Disposition": f'inline; filename="{fname}"'},
+        )
+
+    if kind in ("report_html", "report_pdf"):
+        html = await generate_combined_report(
+            str(data.get("project_id") or ""), str(data.get("date") or ""))
+        if kind == "report_html":
+            return HTMLResponse(content=html, headers=_no_store)
+
+        def _render_pdf(h: str) -> bytes:
+            from weasyprint import HTML
+            return HTML(string=h).write_pdf()
+
+        try:
+            pdf_bytes = await asyncio.to_thread(_render_pdf, html)
+        except Exception as e:
+            logger.error(f"view grant PDF render failed: {e}")
+            raise HTTPException(status_code=500, detail="PDF generation failed")
+        return Response(
+            content=pdf_bytes, media_type="application/pdf",
+            headers={**_no_store,
+                     "Content-Disposition": 'inline; filename="report.pdf"'},
+        )
+
+    raise HTTPException(status_code=404, detail="Not found or expired")
 
 
 async def _mint_temp_media_token(r2_key: str, content_type: str = "image/jpeg",
