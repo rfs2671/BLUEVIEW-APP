@@ -21752,6 +21752,52 @@ def _path_is_under_allowed_subfolder(
     return False
 
 
+def _is_site_device(current_user: dict) -> bool:
+    """The two spellings a session carries, depending on how it was built."""
+    return bool(current_user.get("site_mode")
+                or current_user.get("role") == "site_device")
+
+
+def _site_device_may_retrieve(project: dict, current_user: dict,
+                              file_path: str) -> bool:
+    """May THIS caller RETRIEVE this path? Non-devices: always.
+
+    ── THE ALLOW-LIST WAS ENFORCED, AND ONLY ON THE WAY OUT ────────────────
+    #
+    DO NOT READ THIS AS "the allow-list does nothing". Two LISTING paths apply
+    it -- the file list and the manifest the tablet syncs from -- through the
+    same `_path_is_under_allowed_subfolder` helper, deliberately, so the rule
+    cannot drift into two copies. (`list_dropbox_subfolders` is the admin
+    PICKER: it reads the stored selection to draw the checkboxes and filters
+    nothing.) What an admin ticks is exactly what a device DOWNLOADS, and that
+    belief was correct.
+
+    The gap was RETRIEVAL. `stream_project_file` and `get_dropbox_file_url`
+    never asked, so a device that learned a file id or a path by any route --
+    the document index hands out both -- could fetch a file the admin had not
+    ticked. This closes that half and nothing else.
+
+    AN EMPTY ALLOW-LIST MEANS NOTHING, NOT EVERYTHING. The underlying helper
+    returns False for an empty list, so a device on a project where no folder
+    was ever ticked retrieves nothing at all. The default is closed, which is
+    the right way round; it is stated here because "no restriction set" reads
+    like "no restriction".
+
+    THE THREE LISTING SITES STILL SPELL THE DEVICE TEST INLINE. They each
+    rebuild `is_site_device` and `_normalize_subfolder_names` before calling
+    the shared helper. Folding them onto this function is right and is NOT
+    done here: this change is a boundary fix, and rewriting three working
+    read paths inside one is how a security change acquires a regression.
+    """
+    if not _is_site_device(current_user):
+        return True
+    return _path_is_under_allowed_subfolder(
+        file_path or "",
+        project.get("dropbox_folder_path") or "",
+        _normalize_subfolder_names(project.get("site_device_subfolders") or []),
+    )
+
+
 @api_router.get("/projects/{project_id}/dropbox-subfolders")
 async def list_dropbox_subfolders(
     project_id: str, current_user = Depends(get_admin_user)
@@ -22795,22 +22841,58 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
     file_rec = await db.project_files.find_one({
         "project_id": project_id, "company_id": company_id, "dropbox_path": file_path
     })
+
+    # ── THE FALLTHROUGH IS GONE, AND IT IS THE WHOLE OF THIS CHANGE ────────
+    #
+    # `file_path` is a CALLER-SUPPLIED STRING. When no indexed record matched
+    # it, this function used to hand that string straight to
+    # `dropbox_api_call(company_id, ...)` -- which authenticates with the
+    # COMPANY's Dropbox refresh token. So the reach was not one folder and not
+    # one project: it was anything that connection could see, including
+    # folders never indexed, never synced and belonging to no project. A gate
+    # tablet is provisioned against a project and carries that project's
+    # company_id, so a tablet on a fence could address the company's whole
+    # Dropbox.
+    #
+    # NOTHING LEGITIMATE RELIED ON IT. Every caller passes `file.path` from a
+    # listing this server produced (api.js getFileUrl -> documents.jsx,
+    # files.jsx, PDFViewer.native.jsx). All 26 project_files rows in production
+    # carry an `r2_key`, so the listing gives every one of them a proxy URL and
+    # the screens skip this call entirely when a file has one. The five rows
+    # with no `dropbox_path` are direct uploads whose listed `path` is the
+    # empty string, which never matched this lookup either. The fallthrough has
+    # not served a correct response; it has only ever served an unindexed one.
+    if not file_rec:
+        raise HTTPException(
+            status_code=404, detail="File not found on this project")
+    if not _site_device_may_retrieve(project, current_user,
+                                     file_rec.get("dropbox_path") or ""):
+        raise HTTPException(status_code=403, detail="Access denied to this file")
+
     if file_rec and file_rec.get("r2_key"):
         proxy = f"/api/projects/{project_id}/files/{str(file_rec['_id'])}/content"
         return {"url": proxy, "cached": False, "source": "r2_proxy"}
     if file_rec and file_rec.get("r2_url"):
         return {"url": file_rec["r2_url"], "cached": True, "source": "r2"}
 
+    # THE STORED PATH, NEVER THE CALLER'S. Both are equal here today, because
+    # the lookup above matched on it -- and writing the stored one is what
+    # keeps that true if the lookup is ever widened. A record is the subject
+    # from this line on; the request parameter was only ever how it was named.
+    stored_path = file_rec.get("dropbox_path") or ""
+
     # Check in-memory Dropbox URL cache
-    cached_url = _get_cached_url(company_id, file_path)
+    cached_url = _get_cached_url(company_id, stored_path)
     if cached_url:
         return {"url": cached_url, "cached": True, "source": "dropbox_cache"}
 
-    # Fall back to Dropbox temporary link
+    # Fall back to Dropbox temporary link for a record that is INDEXED but has
+    # no R2 copy yet -- a real state between the sync writing the row and the
+    # bytes landing.
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/get_temporary_link",
-        json={"path": file_path}
+        json={"path": stored_path}
     )
 
     if response.status_code != 200:
@@ -22818,7 +22900,7 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
 
     data = response.json()
     url = data.get("link", "")
-    _set_cached_url(company_id, file_path, url)
+    _set_cached_url(company_id, stored_path, url)
     return {"url": url, "cached": False, "source": "dropbox"}
 
 
@@ -23340,7 +23422,8 @@ async def get_project_file_page_base(
     )
 
 
-@api_router.get("/projects/{project_id}/files/{file_id}/content")
+@api_router.get("/projects/{project_id}/files/{file_id}/content",
+                dependencies=[Depends(require_project_access)])
 async def stream_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
     """Stream a project file from R2 through the backend.
 
@@ -23359,6 +23442,30 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     # when rec["company_id"] was falsy, which is a property of the row rather
     # than of the caller.
     _same_company_or_403(rec, current_user)
+
+    # ── THE COMPANY WAS THE ONLY TENANCY TERM, AND A DEVICE IS NARROWER ────
+    #
+    # `project_id` arrives from the CALLER and only had to agree with the row.
+    # A site device carries the company_id of the project it was provisioned
+    # for, so the check above passed for any file of any project in that
+    # company -- the one confinement a gate tablet has, its own project, was
+    # not applied here. `Depends(require_project_access)` on the route is that
+    # confinement, and it is the same dependency every other project-scoped
+    # route uses.
+    #
+    # THEN THE ALLOW-LIST, because project access is not folder access. The
+    # document index hands a device file ids for every PDF on its own project,
+    # ticked or not, so learn-an-id-then-stream was the whole bypass.
+    # READ THE PROJECT ONLY WHEN THE ANSWER CAN DEPEND ON IT. A human is
+    # admitted by the route dependency and the allow-list is a DEVICE rule, so
+    # fetching the project on every stream would be a database round trip per
+    # file download that changes no outcome. An existing test caught it.
+    if _is_site_device(current_user):
+        _project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not _site_device_may_retrieve(_project or {}, current_user,
+                                         rec.get("dropbox_path") or ""):
+            raise HTTPException(
+                status_code=403, detail="Access denied to this file")
 
     r2_key = rec.get("r2_key", "")
     if not r2_key or not _r2_client or not R2_BUCKET_NAME:
@@ -45105,6 +45212,20 @@ async def get_document_index_status(
         _io = None        # type: ignore
 
     files = await db.project_files.find(query).to_list(500)
+
+    # A DEVICE IS NOT TOLD ABOUT WHAT IT MAY NOT FETCH. This returned
+    # `file_id` and `file_name` for every PDF on the project regardless of the
+    # allow-list, which is how a device learned the ids it then streamed. The
+    # names alone are a disclosure -- a drawing register is a list of what the
+    # job is building -- so the filter is here and not only on the stream.
+    if _is_site_device(current_user):
+        _project_doc = await db.projects.find_one({"_id": to_query_id(project_id)})
+        files = [
+            fr for fr in files
+            if _site_device_may_retrieve(_project_doc or {}, current_user,
+                                         fr.get("dropbox_path") or "")
+        ]
+
     for fr in files:
         file_id = str(fr.get("_id"))
         total_pages = 0
