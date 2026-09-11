@@ -92,9 +92,9 @@ const SITES = [
   // The model is a sibling of dates.js, so its import is './dates'.
   ['TIER 1', 'src/utils/oshaLogModel.js', /date: easternToday\(\)/, /from '\.\/dates'/],
   ['TIER 1', 'app/logbooks/osha_log.jsx', /EMPTY_ENTRY/, /from '.*utils\/oshaLogModel'/],
-  ['TIER 2', 'app/daily-log.jsx', /const todayISO = \(\) => easternToday\(\)/],
+  // app/daily-log.jsx and app/site/daily-logs.jsx retired with their
+  // editors; the rule still covers every remaining TIER 2 screen.
   ['TIER 2', 'app/logbooks/subcontractor_orientation.jsx', /const todayISO = \(\) => easternToday\(\)/],
-  ['TIER 2', 'app/site/daily-logs.jsx', /const todayStr = \(\) => easternToday\(\)/],
   ['TIER 2', 'app/site/index.jsx', /const today = easternToday\(\)/],
   ['TIER 2', 'app/reports.jsx', /useState\(easternToday\(\)\)/],
 ];

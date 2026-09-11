@@ -325,20 +325,10 @@ for (const [name, serverCall] of Object.entries(SERVER_CALL)) {
     'daily_jobsite: it adopts the id and binds it, so the next open does not have to ask again');
 }
 
-// The two daily-log screens keep their server read (they need the list and the
-// id binding) and guard the FORM instead. Same ruling, different mechanism, so
-// it is asserted differently rather than forced into the shape above.
-{
-  const dl = strip(fs.readFileSync(path.join(FRONTEND, 'app', 'daily-log.jsx'), 'utf8'));
-  ok(dl.length > 0, 'daily-log.jsx read and non-empty');
-  ok(/if \(!draft\) populateFormFromLog\(todayLog\);/.test(dl),
-    'daily-log.jsx: the server hydrates the form ONLY when there is no local draft');
-  const sdl = strip(fs.readFileSync(
-    path.join(FRONTEND, 'app', 'site', 'daily-logs.jsx'), 'utf8'));
-  ok(sdl.length > 0, 'site/daily-logs.jsx read and non-empty');
-  ok(/hasDraftData/.test(sdl),
-    'site/daily-logs.jsx: an empty server response does not wipe a draft-backed form');
-}
+// The two daily-log screens guarded the FORM rather than the read, and were
+// asserted separately here. Both are RETIRED with their editors, so the
+// subject is gone; the ruling they served is unchanged and is asserted for
+// every logbook screen above.
 
 console.log('\n── Q2: both reasons, one banner, two wordings ──');
 
@@ -420,59 +410,11 @@ ok(/queued|sync/i.test(serverHint),
 ok(/safe/i.test(serverHint) && !/safe/i.test(localHint),
   'only the unsynced hint calls his work safe, which is the difference between them');
 
-console.log('\n── the two daily-log screens, in their own idiom ──');
-
-// NEITHER HAS A STEPPER OR A LOCK BAR, so Q1's submit gate and Q2's banner have
-// nowhere to live as built. What they DO have is a persistent in-page badge,
-// which is the same instrument for the same reason — it survives him walking
-// away. Both already carried the SECOND reason ("Saved on device", driven by
-// the pending-push queue). Neither carried the first, and its absence was the
-// gap: the local-save failure was a toast and nothing else.
-for (const rel of ['daily-log.jsx', path.join('site', 'daily-logs.jsx')]) {
-  const src = strip(fs.readFileSync(path.join(FRONTEND, 'app', rel), 'utf8'));
-  ok(src.length > 0, `${rel}: source read and non-empty`);
-
-  // Q3 — the autosave reports both modes. These two were missed by the first
-  // pass, which only reached their SUBMIT saves.
-  ok(/\.then\(\(_ok\) => setLocalSaveFailed\(!_ok\)\)/.test(src),
-    `${rel}: the autosave reads its boolean`);
-  ok(/\.catch\(\(\) => setLocalSaveFailed\(true\)\)/.test(src),
-    `${rel}: and catches a throw as the same answer`);
-  const stmts = src.split('writeDraft(').slice(1)
-    .map((c) => c.slice(0, c.indexOf(';') + 1));
-  ok(stmts.length > 0, `${rel}: found writeDraft statements`);
-  ok(stmts.filter((st) => st.includes('.catch(() => {})')).length === 0,
-    `${rel}: no writeDraft swallows its own failure`);
-
-  // Q2/Q5 — a DURABLE state for the first reason, not just a toast.
-  ok(/const \[localSaveFailed, setLocalSaveFailed\] = useState\(false\);/.test(src),
-    `${rel}: owns a sticky not-saved-on-this-device state`);
-  ok(/setLocalSaveFailed\(!localSaved\);/.test(src),
-    `${rel}: which the submit path sets from the same result it branches on`);
-  ok(/NOT saved on (this )?device/.test(src),
-    `${rel}: and renders it in words, persistently`);
-
-  // THE WORSE OF THE TWO WINS THE SLOT, and ORDER DOES NOT PROVE IT. The first
-  // version of this asserted only that the failure branch appears first in the
-  // source, and a mutation removing the `!localSaveFailed` guard from the
-  // reassuring banner survived: both were then renderable at once, in source
-  // order, with the CP reading "Saved on this device" underneath "NOT saved on
-  // this device". What has to hold is MUTUAL EXCLUSION.
-  //
-  // The two screens express it differently and both are checked as written:
-  // daily-log guards its sibling block, site/daily-logs makes it the else-arm
-  // of the same ternary. Neither is refactored to match the other — each is the
-  // shape that screen already had.
-  const EXCLUSION = {
-    'daily-log.jsx': /\{!localSaveFailed && draftPending && \(/,
-    [['site', 'daily-logs.jsx'].join(path.sep)]:
-      /\{localSaveFailed \? \([\s\S]*?\) : pendingSync \? \(/,
-  };
-  ok(EXCLUSION[rel] !== undefined, `${rel}: has a declared exclusion shape`);
-  ok(EXCLUSION[rel].test(src),
-    `${rel}: the reassuring badge is UNREACHABLE while the failure is set — not `
-    + `merely rendered after it`);
-}
+// THE TWO DAILY-LOG SCREENS ARE RETIRED, and this section went with them.
+// It asserted their own idiom for the same ruling -- a persistent in-page
+// badge instead of Q1's submit gate and Q2's lock bar, because neither
+// screen had a stepper. The ruling is unchanged and every screen that
+// still exists is asserted above.
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

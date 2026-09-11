@@ -214,10 +214,10 @@ console.log('\n-- the six other mounters are byte-identical --');
   // `showSignaturePad` flag over its own inline signature UI. Neither mounts
   // the component, so neither belongs in a list about how it is mounted.
   const OTHERS = [
-    'app/daily-log.jsx',
+    // app/daily-log.jsx and app/site/daily-logs.jsx retired with their
+    // editors. Every remaining screen that pins a light card is still here.
     'app/logbooks/preshift_signin.jsx',
     'app/logbooks/subcontractor_orientation.jsx',
-    'app/site/daily-logs.jsx',
   ];
   for (const f of OTHERS) {
     const src = code(read(f));
@@ -229,7 +229,9 @@ console.log('\n-- the six other mounters are byte-identical --');
 
 console.log('\n-- every render site is accounted for, pinned or live --');
 {
-  // 15 render sites: 11 pinned, 4 live. Pinned so a NEW one cannot appear
+  // 13 render sites: 11 pinned, 2 live. It was 15 and 4 until the two
+  // legacy daily-log editors were retired; both rendered a LIVE pad, so
+  // the live half is what fell. Pinned so a NEW one cannot appear
   // without someone deciding which half it belongs to - which is exactly
   // the decision that was never made for the canvas.
   //
@@ -247,10 +249,10 @@ console.log('\n-- every render site is accounted for, pinned or live --');
     .map((f) => [f, code(fs.readFileSync(f, 'utf8'))])
     .filter(([, src]) => /<SignaturePad[\s>]/.test(src));
   const live = sites.filter(([, src]) => !/<SignaturePad\s+pinned/.test(src));
-  ok(sites.length === 15,
-    'ANCHOR: 15 render sites (' + sites.length + ')');
-  ok(live.length === 4,
-    'exactly four stay live: ' + JSON.stringify(live.map(([f]) => path.basename(f))));
+  ok(sites.length === 13,
+    'ANCHOR: 13 render sites (' + sites.length + ')');
+  ok(live.length === 2,
+    'exactly two stay live: ' + JSON.stringify(live.map(([f]) => path.basename(f))));
 }
 
 console.log('\n-- and every pinned editor that mounts a pad pins it --');
