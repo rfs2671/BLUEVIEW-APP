@@ -257,7 +257,10 @@ async function mountAuthProvider({ token, storedUser, meAnswers }) {
   {
     const SITE = path.join(__dirname, '..', '..', 'app', 'site');
     const screens = ['index.jsx', 'logbooks.jsx', 'documents.jsx',
-      'checkins.jsx', 'daily-logs.jsx'];
+      // 'daily-logs.jsx' RETIRED with its editor: app/site/ no longer
+      // holds it. The rule -- every site screen renders from cache on an
+      // expired session -- still covers the four that remain.
+      'checkins.jsx'];
     const GUARD = /if\s*\(\s*!\s*isAuthenticated\s*\)\s*\{\s*router\.replace\('\/login'\)/;
 
     for (const screen of screens) {

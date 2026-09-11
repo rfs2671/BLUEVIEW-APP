@@ -437,8 +437,11 @@ const renderSites = allSource.filter((p) => /<SignaturePad/.test(fs.readFileSync
 // pin the pad's affirmation copy on all twelve at once — the exact app-wide
 // reach the reconnection removed. Unset means "follow the app-wide locale",
 // and that is what a CP switching the app to Spanish must get here too.
-ok(renderSites.length === 16,
-  `16 files render <SignaturePad> (got ${renderSites.length})`);
+// 16 -> 14: app/daily-log.jsx and app/site/daily-logs.jsx were retired with
+// the legacy daily-log editors, and each rendered a pad. The total is designed
+// to FALL as screens go; it is pinned so a pad appearing somewhere NEW is seen.
+ok(renderSites.length === 14,
+  `14 files render <SignaturePad> (got ${renderSites.length})`);
 const passLang = renderSites.filter((p) => /<SignaturePad[\s\S]{0,1200}?\blang=/.test(fs.readFileSync(p, 'utf8')));
 ok(passLang.length === 0,
   `zero render sites pass lang= — the app locale is the only path to Spanish${passLang.length ? ` — ${JSON.stringify(passLang)}` : ''}`);

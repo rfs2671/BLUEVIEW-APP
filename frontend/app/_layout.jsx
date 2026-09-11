@@ -21,6 +21,7 @@ import { setupAdminPlanPrefetch } from '../src/utils/adminPlanPrefetch';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
+import UnfiledDailyLogNotice from '../src/components/UnfiledDailyLogNotice';
 
 // Phase C1: initialize Sentry at module top-level so any error
 // during AuthProvider / ThemeProvider / DatabaseProvider mounting
@@ -402,6 +403,11 @@ function AppShell() {
       <RouteGuard />
       <SiteManifestSync />
       <AdminPlanPrefetch />
+      {/* Tells a man ONCE that a daily log saved on this device was never
+          filed. The retired editors left those drafts behind and there is no
+          server-side trace of one, so the device is the only place the
+          question can be asked. Headless until it has something to say. */}
+      <UnfiledDailyLogNotice />
       {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
     </View>
   );

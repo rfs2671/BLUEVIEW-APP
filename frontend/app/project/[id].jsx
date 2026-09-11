@@ -635,7 +635,16 @@ export default function ProjectDetailScreen() {
 
   const quickActions = [
     { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/files`, color: '#3b82f6' },
-    { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
+    // THE DAILY LOG TILE IS GONE, AND NO CAPABILITY WENT WITH IT.
+    // It opened app/daily-log.jsx, which wrote to db.daily_logs -- a
+    // collection whose last row is dated 16 April 2026. The daily record
+    // moved to the logbook system that month and is filed through Log
+    // Books, which is what the compliance gate and the report read. The
+    // retired screen also promised an offline save would 'sync when you
+    // reconnect', and draftSync refuses that type outright, so it never
+    // did. Someone reading a removed tile should not conclude the app
+    // lost something: this was the wrong door to a room that is still
+    // open.
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
     // sits ABOVE the legacy DOB Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },

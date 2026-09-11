@@ -322,7 +322,10 @@ const ROUTES = [
   '/site',
   '/site/logbooks',
   '/site/documents',
-  '/site/daily-logs',
+  // '/site/daily-logs' RETIRED with its editor. Leaving it here is not a
+  // harmless stale entry: this smoke MOUNTS every route it lists, and an
+  // expo-router path with no file renders the developer "Unmatched Route"
+  // page -- which is precisely what this run caught.
   '/site/checkins',
 ];
 

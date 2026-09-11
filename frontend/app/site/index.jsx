@@ -7,7 +7,6 @@ import {
   FolderOpen,
   UserCheck,
   Building2,
-  PenTool,
   LogOut,
   Lock,
 } from 'lucide-react-native';
@@ -191,19 +190,14 @@ export default function SiteDeviceHomeScreen() {
               </GlassCard>
             </Pressable>
 
-            {!isLocked && (
-              <Pressable
-                style={s.buttonCard}
-                onPress={() => handleNavigate('/site/daily-logs')}
-              >
-                <GlassCard style={s.buttonInner}>
-                  <View style={[s.iconContainer, { backgroundColor: 'rgba(139, 92, 246, 0.2)' }]}>
-                    <PenTool size={64} strokeWidth={1.5} color="#8b5cf6" />
-                  </View>
-                  <Text style={s.buttonLabel}>Daily Logs</Text>
-                </GlassCard>
-              </Pressable>
-            )}
+            {/* THE DAILY LOGS TILE IS GONE, AND THE TABLET LOST NOTHING.
+                It opened app/site/daily-logs.jsx, which posted to
+                /api/daily-logs -- a collection whose last row is dated 16
+                April 2026. The Log Books tile above is the daily record the
+                compliance gate and the report actually read, so this was a
+                second door to the same room and it led to a dead one. It also
+                told a man an offline save would sync on reconnect, which
+                draftSync refuses for that type, so it never did. */}
           </View>
 
           {/* Bottom Row: Documents + Worker Sign In */}

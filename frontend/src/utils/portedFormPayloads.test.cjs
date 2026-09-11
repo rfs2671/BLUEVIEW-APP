@@ -1663,20 +1663,12 @@ ok(!/if \(!cpSignature\) \{/.test(SSC_SCREEN),
     ok(/if \(!localSaved\)|if \(localSaved\)|localSaved \?/.test(src),
       `${name}: and READS it — a captured-and-ignored value is the same silence`);
   }
-  // The two daily-log screens live outside app/logbooks and carry the same gate.
-  // Both print "Saved on this device" as a SUCCESS toast when the push fails,
-  // which is the most direct statement in the app of the thing writeDraft may
-  // not have done.
-  for (const rel of ['daily-log.jsx', path.join('site', 'daily-logs.jsx')]) {
-    const src = stripComments(fs.readFileSync(path.join(FRONTEND, 'app', rel), 'utf8'));
-    ok(src.length > 0, `${rel}: source read and non-empty`);
-    ok(/localSaved = await writeDraft\(/.test(src),
-      `${rel}: the submit save CAPTURES what writeDraft returned`);
-    ok(/\} catch \(_e\) \{[\s\S]*?localSaved = false;/.test(src),
-      `${rel}: and a THROW is treated as the same false`);
-    ok(/if \(!localSaved\) \{[\s\S]*?return;/.test(src),
-      `${rel}: and refuses to announce \"Saved on this device\" without one`);
-  }
+  // The two daily-log screens carried this same gate and were asserted
+  // here separately, being outside app/logbooks. Both are RETIRED with
+  // their editors -- and the 'Saved on this device' toast that made them
+  // the sharpest case went with them, since it promised a sync draftSync
+  // refuses for those types. The gate itself is unchanged and is asserted
+  // for every logbook screen in the loop above.
 }
 
 // ═══ THE KIOSK INSPECTOR ═════════════════════════════════════════════════════
