@@ -704,10 +704,22 @@ def logbook_with(photos, log_type="daily_jobsite"):
     }
 
 
-def preview(logbooks, role="admin", company_id="co_a"):
+def preview(logbooks, role="admin", company_id="co_a", assigned=("proj1",)):
+    # `assigned` IS A PARAMETER NOW, and that is the whole of this edit.
+    #
+    # It was hard-coded to ["proj1"] for every caller, which made
+    # `test_an_admin_from_another_company_still_403s` assert something other
+    # than its own name: its user was not merely from another company, he was
+    # EXPLICITLY ASSIGNED to this project. `project_access_ok` admits an
+    # assigned user regardless of company -- deliberately, because historical
+    # assignments predate the same-company validation -- so the sibling routes
+    # `get_combined_report` and `get_combined_report_pdf`, which carry
+    # `Depends(require_project_access)` and no inline company term, have always
+    # served that same caller the WHOLE report and its PDF. The lighter preview
+    # refusing him was the inconsistency, not the rule.
     db = _PreviewDb(logbooks)
     user = {"_id": "u1", "id": "u1", "role": role, "company_id": company_id,
-            "full_name": "Ada Admin", "assigned_projects": ["proj1"]}
+            "full_name": "Ada Admin", "assigned_projects": list(assigned)}
 
     async def _fake_user():
         return user
@@ -764,9 +776,34 @@ class FailedPhotoCountTest(unittest.TestCase):
                 self.assertNotIn("failed_photo_count", resp.text)
 
     def test_an_admin_from_another_company_still_403s(self):
-        resp = preview([logbook_with([photo("failed")])], company_id="co_b")
+        """A STRANGER, which now means what the name says: another company AND
+        no assignment to this project."""
+        resp = preview([logbook_with([photo("failed")])],
+                       company_id="co_b", assigned=())
         self.assertEqual(resp.status_code, 403, resp.text)
         self.assertNotIn("failed_photo_count", resp.text)
+
+    def test_an_un_onboarded_OWNER_403s__this_is_the_leak_that_was_open(self):
+        """`register` sets role=owner and company_id=None on every self-serve
+        signup, and this route used to gate cross-company reads on
+        `role == "admin"`, which an owner never reaches. So any account that
+        had merely registered could read this."""
+        resp = preview([logbook_with([photo("failed")])],
+                       role="owner", company_id=None, assigned=())
+        self.assertEqual(resp.status_code, 403, resp.text)
+        self.assertNotIn("failed_photo_count", resp.text)
+
+    def test_an_ASSIGNED_admin_from_another_company_is_ADMITTED(self):
+        """THE WIDENING, asserted rather than left to be discovered.
+
+        `project_access_ok` admits an explicitly assigned user whatever his
+        company, and this route now uses that predicate instead of its own.
+        The same caller could already fetch the whole combined report and its
+        PDF from two sibling routes in this family, so refusing him the
+        preview was never a boundary -- only an inconsistency."""
+        resp = preview([logbook_with([photo("failed")])],
+                       company_id="co_b", assigned=("proj1",))
+        self.assertEqual(resp.status_code, 200, resp.text)
 
 
 # ══════════════════════════════════════════════════════════════════════════
