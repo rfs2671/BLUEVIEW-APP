@@ -109,11 +109,17 @@ class TheThreeConsumersAgree(unittest.TestCase):
         """Anchored on the call, not on a recomputation. The old code inlined
         its own `re.sub` on `updated_at`; a second inlining would drift from
         the client silently."""
+        # assertTrue, NOT assertIn. `ast.dump` of this function is thousands of
+        # characters and assertIn PRINTS ITS CONTAINER, so the one fact that
+        # matters would arrive buried in a screen of AST. See
+        # docs/audits/check-harness.md section 12.
         body = ast.dump(_func("_logbook_thumbnail_url"))
-        self.assertIn("_logbook_cache_version", body,
-                      "the thumbnail rebuilt the version instead of asking")
-        self.assertNotIn("report-thumbs", body,
-                         "the key is spelled out here as well as in the helper")
+        self.assertTrue("_logbook_cache_version" in body,
+                        "the thumbnail rebuilds the version instead of asking "
+                        "_logbook_cache_version for it")
+        self.assertTrue("report-thumbs" not in body,
+                        "the R2 key is spelled out in the thumbnail as well as "
+                        "in _logbook_thumb_r2_key")
 
     def test_the_manifest_sends_rv_AND_LEAVES_v_ALONE(self):
         """THE SAFETY PROPERTY OF THE WHOLE CHANGE, asserted on the dict the
