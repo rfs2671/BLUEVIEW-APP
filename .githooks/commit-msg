@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# THE MESSAGE AND THE DIFF MUST AGREE.
+#
+# Refuses a commit whose message names a file that has uncommitted changes and
+# is not staged, or a path git does not know. Prints — never blocks — the paths
+# a message cites that this commit does not touch, because half this repo's
+# messages cite a file deliberately and refusing on that was measured at a 50%
+# false-positive rate.
+#
+# The logic lives in scripts/commit_msg_guard.py so it can be run and tested
+# without a commit:  python scripts/commit_msg_guard.py --selftest
+#
+# Bypass, when you mean it:  git commit --no-verify
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+GUARD="$ROOT/scripts/commit_msg_guard.py"
+[ -f "$GUARD" ] || exit 0          # nothing to enforce on a tree without it
+
+for PY in python3 python py; do
+    if command -v "$PY" >/dev/null 2>&1; then
+        exec "$PY" "$GUARD" "$1"
+    fi
+done
+exit 0                              # no interpreter: never block the commit
