@@ -21752,6 +21752,12 @@ def _path_is_under_allowed_subfolder(
     return False
 
 
+def _is_site_device(current_user: dict) -> bool:
+    """The two spellings a session carries, depending on how it was built."""
+    return bool(current_user.get("site_mode")
+                or current_user.get("role") == "site_device")
+
+
 def _site_device_may_retrieve(project: dict, current_user: dict,
                               file_path: str) -> bool:
     """May THIS caller RETRIEVE this path? Non-devices: always.
@@ -21783,8 +21789,7 @@ def _site_device_may_retrieve(project: dict, current_user: dict,
     done here: this change is a boundary fix, and rewriting three working
     read paths inside one is how a security change acquires a regression.
     """
-    if not (current_user.get("site_mode")
-            or current_user.get("role") == "site_device"):
+    if not _is_site_device(current_user):
         return True
     return _path_is_under_allowed_subfolder(
         file_path or "",
@@ -23451,10 +23456,16 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     # THEN THE ALLOW-LIST, because project access is not folder access. The
     # document index hands a device file ids for every PDF on its own project,
     # ticked or not, so learn-an-id-then-stream was the whole bypass.
-    _project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    if not _site_device_may_retrieve(_project or {}, current_user,
-                                     rec.get("dropbox_path") or ""):
-        raise HTTPException(status_code=403, detail="Access denied to this file")
+    # READ THE PROJECT ONLY WHEN THE ANSWER CAN DEPEND ON IT. A human is
+    # admitted by the route dependency and the allow-list is a DEVICE rule, so
+    # fetching the project on every stream would be a database round trip per
+    # file download that changes no outcome. An existing test caught it.
+    if _is_site_device(current_user):
+        _project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not _site_device_may_retrieve(_project or {}, current_user,
+                                         rec.get("dropbox_path") or ""):
+            raise HTTPException(
+                status_code=403, detail="Access denied to this file")
 
     r2_key = rec.get("r2_key", "")
     if not r2_key or not _r2_client or not R2_BUCKET_NAME:
@@ -45207,12 +45218,13 @@ async def get_document_index_status(
     # allow-list, which is how a device learned the ids it then streamed. The
     # names alone are a disclosure -- a drawing register is a list of what the
     # job is building -- so the filter is here and not only on the stream.
-    _project_doc = await db.projects.find_one({"_id": to_query_id(project_id)})
-    files = [
-        fr for fr in files
-        if _site_device_may_retrieve(_project_doc or {}, current_user,
-                                     fr.get("dropbox_path") or "")
-    ]
+    if _is_site_device(current_user):
+        _project_doc = await db.projects.find_one({"_id": to_query_id(project_id)})
+        files = [
+            fr for fr in files
+            if _site_device_may_retrieve(_project_doc or {}, current_user,
+                                         fr.get("dropbox_path") or "")
+        ]
 
     for fr in files:
         file_id = str(fr.get("_id"))

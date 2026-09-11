@@ -141,19 +141,30 @@ class TheThreeRoutesAsk(unittest.TestCase):
         whole connected account. It must be the STORED path, read back from the
         record, never the request parameter."""
         fn = _fn("get_dropbox_file_url")
+        # IDENTIFIERS OFF THE AST, not a substring of unparsed code. `in` on a
+        # string is substring containment, so a ban on "file_path" is also
+        # satisfied -- or broken -- by `stored_file_path`, `file_path_hint` or
+        # a keyword that merely contains it. ast.Name.id is the whole name.
+        # docs/audits/check-harness.md §12.
         for node in ast.walk(fn):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id == "dropbox_api_call"):
-                sent = " ".join(ast.unparse(k.value) for k in node.keywords)
-                self.assertNotIn("file_path", sent,
-                                 "the caller's own string is sent to Dropbox")
-                self.assertIn("stored_path", sent,
-                              "the path sent to Dropbox is not read off the "
-                              "record")
+                names = {n.id for k in node.keywords for n in ast.walk(k.value)
+                         if isinstance(n, ast.Name)}
+                self.assertNotIn(
+                    "file_path", names,
+                    "the CALLER'S OWN request parameter is sent to Dropbox, "
+                    "which authenticates with the company's token")
+                self.assertIn(
+                    "stored_path", names,
+                    "the path sent to Dropbox is not the one read back off "
+                    f"the record (names passed: {sorted(names)})")
                 return
-        # Deleting the call entirely is also a correct fix; say so rather than
-        # failing on an absence that means the hole is gone.
-        self.assertNotIn("dropbox_api_call", ast.unparse(fn))
+        # Deleting the call entirely is also a correct fix, so an absence here
+        # means the hole is gone rather than the check being wrong.
+        called = {n.func.id for n in ast.walk(fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        self.assertNotIn("dropbox_api_call", called)
 
 
 class TheListingHalfIsUNCHANGED(unittest.TestCase):
