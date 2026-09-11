@@ -1099,6 +1099,41 @@ its own success and described its intent, not the world.
 The correct outcome was to leave it parked and say so, rather than ship a
 green from a room where the experiment cannot run.
 
+### THE SCOPE OF THE QUERY WAS NARROWER THAN THE SCOPE OF THE CLAIM
+
+The seventh shape, and it needs no broken tooling at all. The database was
+reachable, the query ran, the counts were exact, and the sentence built out of
+them was false.
+
+A census of stored signatures in production counted three fields —
+`cp_signature`, `data.superintendent_signature` and `data.presence.signature` —
+across 303 filed logbooks, and reported: *"every real signature is vector
+stroke paths, 297 of 303, zero base64."* That was TRUE of the three fields it
+counted. A fourth field, `data.worker_signature`, was never in the query. It
+holds **72 raster signatures stored as full data URIs**, 14KB to 33KB each.
+
+The conclusion drawn from the census was that base64 handling was effectively
+dead code and the transparency work was therefore cheap. It was wrong, and it
+was wrong in the direction of reassurance: the raster path turned out to carry
+a live rendering defect on 72 filed legal records.
+
+Same shape as the sweep that missed a directory, the clone that fetched one
+branch, and the query against a collection that does not exist — the answer was
+true about what was examined and irrelevant to what was asserted. The only
+difference is where the narrowing sat. Here it was in the FIELD LIST rather
+than in the tree or the connection, which is what makes it invisible: a field
+the query never named cannot come back as a zero, it comes back as nothing at
+all, and nothing looks the same as none.
+
+> **A census must report the SCOPE IT ACTUALLY COVERED in the same sentence as
+> its result.** "297 of 303 `cp_signature` values are vector" is true and
+> useful. "Every signature is vector" is a different claim, and the same query
+> cannot support it.
+
+> When the subject is *all X*, ENUMERATE WHERE X CAN LIVE BEFORE COUNTING, and
+> say which of those places were searched. The enumeration is the work; the
+> count is the easy part.
+
 ### The positive case: make the failure LOUD and TOTAL
 
 The one place this went right is worth as much as the nine that went wrong.
@@ -1390,6 +1425,101 @@ unknown one.
 ---
 
 
+## 15. Work that is DONE and not PROPOSED does not exist
+
+Every other section in this document is about a check that fails to detect
+something. This one is not a check failing. The code was correct, the tests
+were written and passing, and the work simply left the system.
+
+A complete fix for a live defect — a doubled `data:image/png;base64,` prefix
+that made every worker acknowledgment signature a broken image on 72 filed
+orientation PDFs — was written and committed on 2 September 2026 on
+`fix/orientation-pdf-signature`, together with 289 lines of tests. **No pull
+request was ever opened.** The branch sat 136 commits behind main. The defect
+stayed live for nine days and was found only because unrelated design work
+happened to render one of those documents and read the image source back.
+
+### It is not one branch
+
+A survey found **26 remote branches** carrying commits whose patches are
+genuinely absent from main — verified with `git cherry`, not a commit count, so
+squash-merged work is not miscounted — and which never had a pull request.
+**18 of the 26 share a single date, 2 September 2026.** That is one session's
+output committed and abandoned, not 26 independent oversights.
+
+### Nothing in this document covers it, and the reason is structural
+
+Eleven workflows live in `.github/workflows/`. Their triggers are exhaustively
+`pull_request`, `push` to `main`, and `workflow_dispatch`. The three that gate
+anything — `tests.yml`, `architectural-rules.yml`, `backend-import-smoke.yml` —
+are each `push: branches: [main]` plus `pull_request`. There is no `schedule:`
+key in any of the eleven.
+
+Two consequences, and the second is the whole section:
+
+- A push to `fix/orientation-pdf-signature` ran **nothing**. Not the suite, not
+  the architectural rules, not the import smoke. Its 289 lines of tests have
+  never executed in CI.
+- **A gate that runs on a pull request cannot see work that never became one.**
+  There is no event to hang it on. Every rule above this line assumes a change
+  arrives for review; this failure is defined by the change never arriving.
+
+So the only mechanism that can observe it is one that runs on a clock and reads
+the whole ref namespace rather than one event's payload.
+
+### The detection
+
+Verified, and in this order:
+
+```sh
+git for-each-ref --format='%(refname:short)' refs/remotes/origin
+gh pr list --state all --limit 500 --json headRefName
+git cherry origin/main <branch>
+```
+
+Enumerate the remote refs, drop every branch that appears as a `headRefName` on
+any pull request — open, closed or merged — then run `git cherry` on what is
+left and keep only the branches with `+` lines. **The `git cherry` step is not
+optional.** A commit count reports a squash-merged branch as ahead of main
+forever; patch equivalence is the only thing that separates work that landed
+under a different SHA from work that never landed at all.
+
+### A branch title is not a finding
+
+Of the branches spot-checked, one's defect had **already been fixed in main by
+an entirely different commit**, and another's premise no longer matched main's
+text. A branch name and a commit subject describe what their author believed on
+the day they wrote them, about a tree that has moved since.
+
+> **An unproposed branch is a QUESTION, not a finding.** The sweep's output is
+> *these need a look*; the look is `git cherry` and then reading main, never
+> reading the title.
+
+### Where it belongs: a periodic sweep, not CI
+
+It cannot be a failing check, and the reason is false positives rather than
+mechanism. Experiment branches, probes and abandoned spikes are the normal
+output of working, and on the wire they are indistinguishable from the
+orientation fix: commits not in main, no pull request. No query can tell them
+apart, because the difference is intent and intent is not in the ref.
+
+A gate that fails on all of them fails constantly and correctly-but-uselessly,
+and §12 already names the property that kills such a check: the bare-literal
+gate earns its keep because almost every failure it raises is real. Invert that
+and you get a red mark people learn to click past.
+
+> A sweep of this kind reports a **LIST TO TRIAGE** and never a failure.
+
+That is what places it outside CI. CI answers pass/fail about a change under
+review; here there is no change under review and no defensible fail. The right
+home is a scheduled job — a `schedule:` workflow, which this repository does
+not yet have, or a command someone runs on a cadence — whose output is the
+list, dated, for a human to sort into *land it*, *already landed*, or *delete
+it*.
+
+---
+
+
 ## Checklist
 
 Before a check is worth having:
@@ -1485,3 +1615,9 @@ Before a check is worth having:
       the investigation. Assert the shape before indexing a parse result; give
       a probe a terminal marker so silence is a finding; and ask what ELSE
       could make a query come back empty.
+- [ ] Is the work PROPOSED? Every workflow in this repository triggers on
+      `pull_request`, `push` to `main`, or by hand — so a branch with commits
+      and no pull request runs no gate at all, and finished-and-unmerged is
+      indistinguishable from never written. Before you close out a session,
+      check `git for-each-ref refs/remotes/origin` against
+      `gh pr list --state all --json headRefName`.
