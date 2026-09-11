@@ -33237,7 +33237,38 @@ async def get_combined_report_pdf(project_id: str, date: str, token: Optional[st
     )
 
 
-@api_router.get("/reports/project/{project_id}/preview/{date}")
+# ── THE ROLE WAS THE GATE, AND "owner" WALKED PAST IT ───────────────────────
+#
+# These three routes gated cross-company access on
+#
+#     if role == "admin" and project.get("company_id") != current_user.get(...)
+#
+# and `role == "owner"` never reaches the comparison. "owner" is not a rare
+# elevated role: `/auth/register` sets it on EVERY self-serve signup. So any
+# account that had merely registered could name a project id belonging to
+# another company and read this route's answer about it.
+#
+# THE GATE IS THE DEPENDENCY NOW, not a line in the body.
+# `require_project_access` is what every other project-scoped route uses; it
+# 404s an unknown or deleted project before the body runs and 403s a caller
+# `project_access_ok` refuses. The three sibling routes in this family carry it
+# in their SIGNATURE rather than the decorator, which is the same requirement
+# spelled differently -- a check that knows only one spelling reports the other
+# as a violation.
+#
+# THE OLD LINE COULD NOT BE REPAIRED IN PLACE, which is why it is deleted
+# rather than widened. Dropping `role == "admin"` from it would make company
+# equality the whole rule -- and company equality is NOT the rule. A user
+# EXPLICITLY ASSIGNED to a project of another company is admitted by
+# `project_access_ok` branch 3, deliberately, because historical assignments
+# predate the same-company validation. An unconditional comparison would start
+# refusing those users, trading a read leak for a lockout.
+#
+# THIS IS A WIDENING AS WELL AS A CLOSING, and it is deliberate: these three
+# routes now admit exactly whom every other project route admits. An assigned
+# user from another company could not read them before and can now; an
+# un-onboarded owner could read them before and cannot now.
+@api_router.get("/reports/project/{project_id}/preview/{date}", dependencies=[Depends(require_project_access)])
 async def get_report_preview(project_id: str, date: str, current_user = Depends(get_current_user)):
     """Get report preview metadata for a date — shows what has been filled so far (midday check).
     Returns summary of logbooks, checkins, daily log status without full HTML."""
@@ -33250,8 +33281,8 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # (tenancy is enforced by Depends(require_project_access) on the route --
+    # see the note above get_report_preview for why the old line is gone.)
 
     # Gather all data for the date
     logbooks = await db.logbooks.find({
@@ -33641,7 +33672,7 @@ async def update_report_settings(project_id: str, data: dict, current_user = Dep
         "report_send_time": updated_project.get("report_send_time", "18:00"),
     }
 
-@api_router.get("/reports/project/{project_id}/history")
+@api_router.get("/reports/project/{project_id}/history", dependencies=[Depends(require_project_access)])
 async def get_report_history(
     project_id: str,
     current_user = Depends(get_current_user),
@@ -33660,8 +33691,8 @@ async def get_report_history(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # (tenancy is enforced by Depends(require_project_access) on the route --
+    # see the note above get_report_preview for why the old line is gone.)
     
     # Get report emails (automatic scheduler sends)
     history = await db.report_emails.find({
@@ -33680,7 +33711,7 @@ async def get_report_history(
     }
 
 
-@api_router.get("/reports/project/{project_id}/logs")
+@api_router.get("/reports/project/{project_id}/logs", dependencies=[Depends(require_project_access)])
 async def get_submitted_logs(
     project_id: str,
     current_user = Depends(get_current_user),
@@ -33700,8 +33731,8 @@ async def get_submitted_logs(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
-        raise HTTPException(status_code=403, detail="Access denied")
+    # (tenancy is enforced by Depends(require_project_access) on the route --
+    # see the note above get_report_preview for why the old line is gone.)
     
     # Build query
     query = {
