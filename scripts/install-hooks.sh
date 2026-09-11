@@ -32,6 +32,7 @@ git config core.hooksPath .githooks
 # `git clone --filter=...` or on Windows where chmod +x on a fresh
 # clone is a noop) may have it as 0644.
 chmod +x .githooks/pre-commit 2>/dev/null || true
+chmod +x .githooks/commit-msg 2>/dev/null || true
 
 echo "✓ Git hooks path set to .githooks"
 echo
@@ -41,6 +42,11 @@ echo
 echo "  The pre-commit hook now runs on every commit. It is fast (< 1s)"
 echo "  for commits that don't touch requirements.txt, and runs a"
 echo "  clean-venv pip resolution check (~5-10s) for commits that do."
+echo
+echo "  The commit-msg hook refuses a commit whose message names a file"
+echo "  that has uncommitted changes and is not staged, or a path git does"
+echo "  not know. It PRINTS, and never blocks on, files a message merely"
+echo "  cites -- refusing on those was measured at 50% of real commits."
 echo
 echo "  See docs/operations/runbook.md \"Dependency Hygiene\" for the"
 echo "  Phase C2.1 post-mortem that motivated the hook."
