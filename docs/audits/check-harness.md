@@ -1411,6 +1411,45 @@ conclusion that stops the investigation.
 > like neither, which is worse: it looks like the harness's problem, not the
 > product's.
 
+### A FOURTH OUTCOME: the subject was removed between the commit and the run
+
+The three above are a check that raises, a check that answers the wrong
+question, and a check that never runs. Here is one where the check ran
+perfectly and the SUBJECT was gone.
+
+A tenancy fix was written in a worktree and NOT committed. The control run
+then swapped in the pre-fix file the ordinary way:
+
+```bash
+git checkout origin/main -- backend/server.py    # control: expect failures
+# ... run, see the failures, good ...
+git checkout HEAD      -- backend/server.py      # restore
+```
+
+`HEAD` was still `origin/main`, because nothing had been committed. So the
+second command did not restore the fix, it re-applied the defect, and the
+uncommitted work was destroyed by the step meant to put it back. The full suite
+then ran for eight minutes and reported **6213 passed, 2 failed** — and the two
+failures were the new tests, correctly reporting a defect that was present
+again.
+
+**The green was real and it was about the wrong tree.** A suite that passes
+against code you believe you fixed, because the fix is no longer there, is the
+most expensive version of this family: it costs a full run, and the two red
+lines read as "my new tests are wrong" rather than "my change is missing".
+
+> **COMMIT BEFORE THE CONTROL RUN.** The control run's whole method is to put
+> the old code back and then take it away again, and `git checkout HEAD -- <f>`
+> can only restore what a commit holds. Uncommitted work has no restore point,
+> so the technique that proves the fix is also the technique that deletes it.
+
+This is `git stash`'s hazard arriving through a different door, and the
+standing rule against stash does not cover it. The tell is the same one §12
+gives for the workspace family: **before believing a result, ask what tree it
+was produced from.** `git status --short` after a restore answers it in one
+line — a working tree that is clean when it should carry your change is the
+finding.
+
 ### The population, measured rather than asserted
 
 Seventeen assertions across four backend test files index a parse helper's
@@ -1609,6 +1648,10 @@ Before a check is worth having:
       the ENVIRONMENT moved before reading the diff. MODULE_NOT_FOUND across
       files with nothing in common is a deleted dependency tree, not sixty
       broken tests.
+- [ ] Before a CONTROL RUN, is the work COMMITTED? The control swaps the old
+      file in and then restores — and `git checkout HEAD -- <file>` restores
+      only what a commit holds, so on an uncommitted tree the restore step
+      deletes the fix and the next full run is green about the wrong code.
 - [ ] Does EVERY path through it end in an assertion? A check that can raise,
       return early or exit without asserting has a third outcome, and a
       traceback reads as "the test is broken" — the one conclusion that stops
