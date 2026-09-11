@@ -32827,36 +32827,32 @@ async def generate_combined_report(
             bold_para("Worker acknowledgments signed", f"{n_signed} of {n_today} filed today")
             if n_today else ""
         )
-        # ORIENTED TODAY IS OFTEN EMPTY, AND THAT IS NOT A FINDING.
+        # THE "ORIENTED TODAY" TABLE IS GONE, AND IT WAS THE THIRTEENTH
+        # REPRODUCED DOCUMENT HIDING BEHIND A SUMMARY.
         #
-        # An orientation is due ONCE PER WORKER, before he starts. Most days
-        # bring no new workers, so most days have nothing to put in this table
-        # — and it printed anyway, five headers over one cell reading "No
-        # orientations filed today". A section that reports nothing on a
-        # compliance document teaches a reader to skip it, and the row beneath
-        # it is the one that matters.
+        # This section survived the removal of the other twelve because the two
+        # lines above it are a coverage check computed from the gate rather than
+        # a reproduction of a filed log. The table underneath them was not:
+        # worker, trade, date, conducting CP and a signature column, one row per
+        # filed record — the same shape as every section that came out, and on
+        # the 2026-08-27 record it ran to sixteen rows across two pages.
         #
-        # THE COVERAGE LINE IS NOT SUPPRESSED WITH IT. "2 on-site workers with
-        # no orientation on file" is the LL196 first-timer check, and it is a
-        # real deficiency on exactly the days nobody was oriented — which is
-        # why the section renders on any day somebody checked in, not only when
-        # an orientation was filed. Dropping the whole section on a quiet day
-        # would delete the warning along with the empty table.
-        oriented_today_html = (
-            sub_title("Oriented Today")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Worker</th><th {TH}>Trade / Company</th>'
-              f'<th {TH}>Orientation Date</th><th {TH}>Conducted By (CP)</th>'
-              f'<th {TH}>Worker Signature</th></tr>'
-            + orient_rows
-            + '</table>'
-        ) if orient_rows else ""
+        # IT ALSO PRINTED THE DUPLICATES. Those sixteen rows are five men.
+        # Ivan Ramirez three times, Italo Guangasi five, on a document that goes
+        # to an investor. See docs/audits/followups.md, the entry dated today on
+        # duplicate orientation rows.
+        #
+        # AND THE "Signed" CELL GOES WITH IT. A green word where a signature
+        # belongs was the last place in either renderer that printed a verdict
+        # in place of a mark; the per-logbook PDF draws the ink.
+        #
+        # `n_signed` and `orient_rows` are still computed above. `signed_line`
+        # reads the first; the rows now have no reader, and they come out in the
+        # following change with the twelve builders.
         orientation_html = (
             section_title("Subcontractor Safety Orientation")
             + bold_para("First-time orientation on file", coverage_value)
             + signed_line
-            + oriented_today_html
         )
 
     # ==========================================================

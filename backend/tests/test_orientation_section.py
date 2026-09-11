@@ -209,14 +209,34 @@ class TheGapWarningSurvives(Base):
         self.assertNotIn("no orientation on file", self.section())
 
 
-class TheTableReturnsWhenThereIsSomethingInIt(Base):
+class TheTableDoesNotReturn(Base):
+    """RULED OUT AFTER THE OPERATOR READ THE PAGE, AND THE OLD CLAIM IS KEPT
+    BECAUSE IT WAS RIGHT ABOUT THE WRONG THING.
 
-    def test_an_orientation_filed_today_renders_the_table(self):
+    This class asserted that the table comes back when there is something to
+    put in it, and the surrounding suppression logic was correct: an empty
+    five-column table on a quiet day teaches a reader to skip the section.
+
+    What nobody checked was the table on a BUSY day. Worker, trade, date,
+    conducting CP and a signature column, one row per filed record -- the same
+    shape as the twelve sections removed for reproducing a filed document, and
+    on the 2026-08-27 record it ran to sixteen rows across two pages of a
+    report that is supposed to be an index. It was the thirteenth reproduction,
+    hiding under two lines of genuine summary.
+
+    THE TWO LINES STAY. They are the LL196 first-timer coverage check and the
+    signed count, and neither is a reproduction of anything.
+    """
+
+    def test_an_orientation_filed_today_renders_NO_table(self):
         self.db.logbooks.docs = [_orientation("w1", "Wilmer Carrillo")]
         sec = self.section()
-        self.assertIn("Oriented Today", sec)
-        self.assertIn(">Conducted By (CP)<", sec)
-        self.assertIn("Wilmer Carrillo", sec)
+        self.assertNotIn("Oriented Today", sec)
+        self.assertNotIn(">Conducted By (CP)<", sec)
+        self.assertNotIn(
+            "Wilmer Carrillo", sec,
+            "the attendee roster is back on the investor report; the worker's "
+            "own name belongs on his own sheet, which the index links to")
 
     def test_the_signed_count_appears_only_when_something_was_filed(self):
         self.assertNotIn("Worker acknowledgments signed", self.section())
@@ -225,21 +245,34 @@ class TheTableReturnsWhenThereIsSomethingInIt(Base):
 
     def test_an_unsigned_acknowledgment_is_still_called_out(self):
         """worker_signature is hardcoded null on manual entries; an unattested
-        acknowledgment must never read as complete."""
+        acknowledgment must never read as complete.
+
+        THE COUNT CARRIES IT NOW. The per-row UNSIGNED marker went with the
+        table -- and so did the green word "Signed" that stood in a signature
+        column where a mark belongs, which was the last place either renderer
+        printed a verdict instead of ink. "0 of 1" makes the same statement
+        about the same record, and the man's own sheet shows UNSIGNED where his
+        signature would be.
+        """
         self.db.logbooks.docs = [_orientation("w1", "Wilmer Carrillo", signed=False)]
         sec = self.section()
-        self.assertIn("UNSIGNED", sec)
         self.assertIn("0 of 1 filed today", sec)
+        self.assertNotIn(">Signed<", sec)
 
-    def test_a_row_that_names_nobody_still_reaches_the_table(self):
-        """NOT the Group 1 rule. An orientation is ONE DOCUMENT PER WORKER, not
-        a row in a roster, so a nameless one is a malformed record rather than
-        a spare row — and dropping it would hide it. It renders with an em dash
-        and the reader can see there is a document that names no one."""
+    def test_a_record_that_names_nobody_is_still_COUNTED(self):
+        """NOT the Group 1 rule, and the reason survives the table.
+
+        An orientation is ONE DOCUMENT PER WORKER, so a nameless one is a
+        malformed record rather than a spare row, and dropping it would hide
+        it. The table showed it with an em dash; the count includes it, so a
+        reader still sees that a document exists which names no one.
+        """
         doc = _orientation("w3", "")
         doc["data"]["worker_name"] = ""
         self.db.logbooks.docs = [doc]
-        self.assertIn("Oriented Today", self.section())
+        sec = self.section()
+        self.assertNotIn("Oriented Today", sec)
+        self.assertIn("of 1 filed today", sec)
 
 
 if __name__ == "__main__":

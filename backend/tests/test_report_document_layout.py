@@ -274,21 +274,30 @@ class EveryFiledDocumentStartsASheet(Base):
         block = src[i:src.index("</style>", i)]
         self.assertIn(".doc-sub-title", block)
         self.assertIn("page-break-after: avoid", block)
-        # ON A SECTION THAT STILL EMITS ONE. `sub_title` was reached through
-        # the embedded documents; with those gone the live caller is the LL196
-        # coverage section's "Oriented Today" table, which needs somebody
-        # through the gate and an orientation filed to render at all.
-        self.db.checkins.docs = [{"worker_id": "w1", "worker_name": "Ann Worker",
-                                  "company": "Hudson", "status": "checked_in"}]
-        self.db.logbooks.docs = [copy.deepcopy(d) for d in self.DOCS] + [{
-            "_id": "lb_or", "log_type": "subcontractor_orientation",
-            "project_id": PROJECT, "date": DATE, "status": "submitted",
-            "cp_name": "daniel kaplan",
-            "data": {"worker_name": "Ann Worker", "worker_company": "Hudson",
-                     "worker_trade": "Carpenter",
-                     "completed_at": "2026-08-12T07:00:00Z"},
-        }]
-        self.assertIn('class="doc-sub-title"', self.rendered_content())
+        # THE LIVE CLASS IS `band-head`, NOT `doc-sub-title`.
+        #
+        # Every `sub_title` call site belonged to a section that reproduced a
+        # filed document, and all thirteen are gone -- so `doc-sub-title` is no
+        # longer emitted by this renderer at all. The rule it carried is not
+        # gone with it: the caption over the visual-progress bands carries the
+        # same `page-break-after: avoid`, on its own class, and it is the one
+        # caption on the document that can still strand above its content.
+        # THE BANDS NEED A PHOTOGRAPH. The caption is the band head, and a
+        # band with no pictures under it is not drawn at all -- so the fixture
+        # has to carry one or this asserts the absence of a section that was
+        # never going to render.
+        docs = [copy.deepcopy(d) for d in self.DOCS]
+        docs[0]["data"]["activities"][0]["photos"] = [
+            {"original_r2_key": "k/1.jpg", "enhance_status": "done"}]
+        self.db.logbooks.docs = docs
+        c = self.rendered_content()
+        self.assertIn('class="band-head"', c)
+        i = c.index('class="band-head"')
+        self.assertIn("page-break-after:avoid", c[i:i + 400])
+        self.assertNotIn(
+            'class="doc-sub-title"', c,
+            "a caption class the print block scopes is back on the report "
+            "without a test naming which section emits it")
 
     def test_an_UNFILED_log_claims_no_sheet(self):
         """A section with no document behind it renders "" -- it must not take
@@ -621,7 +630,10 @@ class TheTypeHasRanks(Base):
         i = c.index(self.ANCHOR)
         section = c[i - 400:i + 900]
         self.assertIn("margin:40px 0 0 0", section)   # between documents
-        self.assertIn("margin:8px 0 0 0", section)    # label to its table
+        # LABEL-TO-TABLE IS NOT ASSERTED ON THE PAGE EITHER, for the same
+        # reason as header-to-description: it separated a caption from the
+        # table beneath it inside a reproduced document, and the report carries
+        # none. The scale is asserted against the renderer just below.
         # HEADER-TO-DESCRIPTION IS NOT ASSERTED HERE, and the reason is that
         # no surviving section has a description. That 14px gap separated a
         # document's name from its summary line inside the embedded sections,
@@ -632,14 +644,22 @@ class TheTypeHasRanks(Base):
                       "the header-to-description gap is gone from the scale")
 
     def test_the_table_label_is_a_caption_not_a_smaller_heading(self):
-        """"Activity Details" was the anchor and it belonged to the embedded
-        daily jobsite log. The live caption on this document is "Oriented
-        Today", over the LL196 coverage table -- the same helper, the same
-        rule, on the section that still calls it."""
-        c = self._with_an_orientation()
-        i = c.index("Oriented Today")
-        self.assertIn("text-transform:uppercase", c[i - 300:i])
-        self.assertIn("letter-spacing:0.08em", c[i - 300:i])
+        """ASSERTED AGAINST THE HELPER, because nothing calls it any more.
+
+        "Activity Details" was the anchor and it belonged to the embedded daily
+        jobsite log. Every one of `sub_title`'s thirteen call sites was inside a
+        section that reproduced a filed document, so the helper is now
+        unreachable and comes out with those builders in the following change.
+
+        The rule is kept on the helper rather than deleted with its last
+        caller: it is a decision about how a caption is set, the helper still
+        exists, and a test that vanishes the moment its subject goes quiet is
+        how a rule gets re-litigated from scratch a year later.
+        """
+        i = _REPORT_SRC.index("def sub_title(text):")
+        body = _REPORT_SRC[i:_REPORT_SRC.index("def sub_head(text):", i)]
+        self.assertIn("text-transform:uppercase", body)
+        self.assertIn("letter-spacing:0.08em", body)
 
 
 # ══════════════════════════════════════════════════════════════════════════
