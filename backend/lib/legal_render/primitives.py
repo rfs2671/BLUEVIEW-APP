@@ -24,8 +24,19 @@ citations are ours and they are real -- they come from the type registry's
 ── SIGNATURES ARE NOT LIKE ANY OTHER VALUE ───────────────────────────────────
 
 A captured signature is a transparent handwritten stroke laid on the paper. No
-box, no background, no fixed-height container, true aspect ratio, and it may
-overlap the baseline as a real one does.
+box, no background, true aspect ratio, and it may overlap the baseline as a
+real one does.
+
+AND IT SITS IN ITS LINE. UNBOXED IS NOT UNBOUNDED, which is how the first
+sheet came out: the vector path capped at 140x60 and the raster path capped
+width only and left height automatic, so ink drawn at a median of 88px stood
+beside 10.5px text and SET the row height rather than sitting inside it. Rows
+that hold only text are 16.3px; attendee rows were 91 to 104.
+
+`_INK_MAX_H` is the cap, applied to both paths, and aspect is preserved in
+both: the vector by passing it as the SVG's height bound, the raster by giving
+the image a height and an automatic width. Neither draws a container -- the
+height is a bound on the ink, not a box around it.
 
 BOTH KINDS REACH THIS SHEET, AND THE FIELD DECIDES WHICH. `cp_signature` is
 vector stroke paths -- 297 of 303 of them -- and renders as polylines with
@@ -63,6 +74,14 @@ _SECTION = ("font:700 10px Helvetica,Arial,sans-serif;letter-spacing:0.08em;"
             "text-transform:uppercase")
 _BODY = "font:400 10.5px Helvetica,Arial,sans-serif"
 _LABEL = "font:400 8px Helvetica,Arial,sans-serif;letter-spacing:0.04em;color:#555"
+
+#: HOW TALL INK MAY BE. Body text is 10.5px and a text-only row is 16.3px, so
+#: this is roughly the height of the line the signature sits in -- which is
+#: where a signature sits on the paper this document imitates. Both the vector
+#: and the raster path are bound by it, and both keep their aspect.
+_INK_MAX_H = 22
+#: The width bound, reached only by ink wider than about 6:1.
+_INK_MAX_W = 140
 
 _RULE = "1px solid #9a9a9a"
 _HAIRLINE = "1px solid #c8c8c8"
@@ -317,14 +336,23 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
                 'letter-spacing:0.06em;color:#555;">UNSIGNED</span>')
     to_svg = ctx.get("signature_svg")
     if isinstance(sig, dict) and sig.get("paths") and to_svg:
-        svg = to_svg(sig.get("paths"), boxed=False)
+        # THE HEIGHT IS THE BINDING CAP, and the width bound is deliberately
+        # generous so it only takes over for ink wider than about 6:1 -- at
+        # which point capping the width is the only way to keep it on the page.
+        svg = to_svg(sig.get("paths"), boxed=False,
+                     max_width=_INK_MAX_W, max_height=_INK_MAX_H)
         if svg:
             return svg
     data = sig.get("data") if isinstance(sig, dict) else sig
     if isinstance(data, str) and data:
         src = data if data.startswith("data:") else f"data:image/png;base64,{data}"
+        # HEIGHT FIXED, WIDTH AUTOMATIC: the browser and WeasyPrint both derive
+        # the width from the image's own aspect, so this preserves it rather
+        # than asserting it. `max-width` guards the 6:1 case the vector path
+        # guards by its width bound.
         return (f'<img src="{src}" alt="" '
-                'style="max-width:190px;height:auto;display:block;" />')
+                f'style="height:{_INK_MAX_H}px;width:auto;'
+                f'max-width:{_INK_MAX_W}px;display:block;" />')
     return ""
 
 
@@ -339,7 +367,7 @@ def signature(sec: Dict, rec: Any, ctx: Dict) -> str:
     who = FORMATTERS["name"](_get(rec, sec.get("name_path", "")))
     return (
         '<div style="break-inside:avoid;padding:6px;">'
-        f'<div style="min-height:38px;">{mark}</div>'
+        f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div>'
         f'<div style="border-top:{_RULE};padding-top:2px;">'
         f'<span style="{_BODY}">{who}</span>'
         f'<span style="{_LABEL};padding-left:8px;">'
@@ -368,7 +396,7 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         f'<td style="border:{_HAIRLINE};padding:3px 6px;width:34%;'
         'vertical-align:bottom;">'
         f'<div style="{_LABEL}">Signature</div>'
-        f'<div style="min-height:34px;">{mark}</div></td>'
+        f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div></td>'
         '</tr></table></div>')
 
 

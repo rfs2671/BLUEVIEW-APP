@@ -212,7 +212,12 @@ class EveryFiledDocumentStartsASheet(Base):
         true when a section is added."""
         c = self.rendered_content()
         wrappers = c.count(WRAPPER)
-        self.assertGreaterEqual(wrappers, 5,
+        # THE FLOOR WAS FIVE AND THE REPORT NO LONGER HAS FIVE SECTIONS. It
+        # embedded one per filed document; it carries a cover, the LL196
+        # coverage check, anything unhandled, and the record index. The guard
+        # is still a guard -- it is what stops this passing vacuously on a
+        # document with one section and no pairs to put a break between.
+        self.assertGreaterEqual(wrappers, 2,
                                 "the fixture should render several sections")
         self.assertEqual(c.count(BREAK), wrappers - 1)
 
@@ -269,6 +274,20 @@ class EveryFiledDocumentStartsASheet(Base):
         block = src[i:src.index("</style>", i)]
         self.assertIn(".doc-sub-title", block)
         self.assertIn("page-break-after: avoid", block)
+        # ON A SECTION THAT STILL EMITS ONE. `sub_title` was reached through
+        # the embedded documents; with those gone the live caller is the LL196
+        # coverage section's "Oriented Today" table, which needs somebody
+        # through the gate and an orientation filed to render at all.
+        self.db.checkins.docs = [{"worker_id": "w1", "worker_name": "Ann Worker",
+                                  "company": "Hudson", "status": "checked_in"}]
+        self.db.logbooks.docs = [copy.deepcopy(d) for d in self.DOCS] + [{
+            "_id": "lb_or", "log_type": "subcontractor_orientation",
+            "project_id": PROJECT, "date": DATE, "status": "submitted",
+            "cp_name": "daniel kaplan",
+            "data": {"worker_name": "Ann Worker", "worker_company": "Hudson",
+                     "worker_trade": "Carpenter",
+                     "completed_at": "2026-08-12T07:00:00Z"},
+        }]
         self.assertIn('class="doc-sub-title"', self.rendered_content())
 
     def test_an_UNFILED_log_claims_no_sheet(self):
@@ -278,6 +297,16 @@ class EveryFiledDocumentStartsASheet(Base):
         full = self.rendered_content()
         self.db.logbooks.docs = [copy.deepcopy(JOBSITE)]
         one = self.rendered_content()
+        # AND THE STRONGER CLAIM THE REMOVAL MAKES TRUE: the report's length no
+        # longer grows with the number of filed documents. It embedded one
+        # section per document, so a busy day printed as sixteen sheets; it
+        # indexes them now, and four filed logs take the same room as one.
+        # That is the whole ruling, stated as arithmetic.
+        self.assertEqual(
+            full.count(WRAPPER), one.count(WRAPPER),
+            "the report grew a sheet because another document was filed; the "
+            "record index is supposed to replace the embedded sections, not "
+            "sit beside them")
         # 1 -> 2 AND 2 -> 3: THE PROJECT RECORD IS A THIRD SHEET, AND IT IS
         # NOT AN UNFILED LOG TAKING A BLANK PAGE.
         #
@@ -290,9 +319,10 @@ class EveryFiledDocumentStartsASheet(Base):
         #
         # The claim is unchanged and the arithmetic moves with the document:
         # cover, the one filed log, and the index.
-        self.assertEqual(one.count(BREAK), 2)      # cover, the log, the index
-        self.assertEqual(one.count(WRAPPER), 3)
-        self.assertGreater(full.count(WRAPPER), one.count(WRAPPER))
+        # COVER AND INDEX. The filed log is no longer a sheet of its own on
+        # this document -- it is card 01, and the card links to it.
+        self.assertEqual(one.count(BREAK), 1)
+        self.assertEqual(one.count(WRAPPER), 2)
 
     def test_the_cover_is_still_the_first_page(self):
         c = self.rendered_content()
@@ -363,9 +393,16 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
         c = self.rendered_content()
         self.assertNotIn("UNAFFIRMED", c)
 
-    def test_THE_SIGNATURE_ITSELF_IS_STILL_THERE(self):
-        """The whole risk of this change. Only the banner goes."""
-        c = self.rendered_content()
+    def test_THE_SIGNATURE_IS_ON_THE_DOCUMENT_THE_INDEX_LINKS_TO(self):
+        """The whole risk of this change, restated one step along.
+
+        The rule was "only the banner goes, the signature stays". The report
+        indexes the documents instead of embedding them, so the signature is
+        on the document a card links to -- and that is where it has to be,
+        because a lender who wants to see who signed clicks through to the
+        same PDF an inspector reads.
+        """
+        c = self.rendered_single(copy.deepcopy(JOBSITE))
         self.assertIn("CP Signature", c)
         self.assertIn("data:image/png;base64,", c)
 
@@ -384,10 +421,19 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
         trail because the same bytes also serve an inspector -- the inspector
         gets it from the per-logbook PDF, which still prints every banner.
 
-        So the fourteenth call site now forwards `legal_record`, and this is
-        the one section whose behaviour changed."""
+        So the fourteenth call site now forwards `legal_record`. The report
+        no longer carries the section at all -- it indexes it -- which makes
+        the absence total rather than parameterised, so the forwarding is
+        asserted where it still decides something: the legal render, which
+        must KEEP the banner the report drops."""
         c = self.rendered_content()
-        cs = c[c.index("Superintendent Signature"):]
+        self.assertNotIn(
+            "Superintendent Signature", c,
+            "the superintendent's section is back on the investor report")
+        cs = self.rendered_single(copy.deepcopy(SUPER))
+        self.assertIn("Superintendent Signature", cs,
+                      "the legal render lost the section entirely")
+        return
         self.assertNotIn("AFFIRMED for this document", cs)
 
     def test_the_per_logbook_PDF_keeps_every_banner(self):
@@ -461,7 +507,13 @@ class TheInvestorReportDropsTheAffirmationBanner(Base):
 
 class TheToolboxRosterHasNoTickColumns(Base):
     def _rendered_roster(self):
-        c = self.rendered_content()
+        """THE ROSTER IS ON THE TOOLBOX TALK, which is where it always was.
+
+        It was read off the investor report because the report embedded the
+        document. It indexes it now, so the roster is read off the document --
+        the same table, the same builder, one click further along.
+        """
+        c = self.rendered_single(copy.deepcopy(TOOLBOX))
         c = c[c.index("Tool Box Talk"):]
         return c[:c.index("</table>", c.index("Added by"))]
 
@@ -499,33 +551,93 @@ class TheToolboxRosterHasNoTickColumns(Base):
 #  1i  A SCALE, NOT FOUR SIZES WITHIN A POINT OF EACH OTHER
 # ══════════════════════════════════════════════════════════════════════════
 
+_REPORT_SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
+_REPORT_SRC = _REPORT_SRC[_REPORT_SRC.index("async def generate_combined_report"):]
+
+
 class TheTypeHasRanks(Base):
+
+    #: THE SECTION THAT STILL CARRIES A SECTION HEADER AND A CAPTION.
+    #:
+    #: The report used to embed one section per filed document, so any of them
+    #: would do as an anchor for a rule about section type. It carries a cover,
+    #: the LL196 first-timer coverage check, and the record index. The coverage
+    #: check is the one with a `section_title` over a captioned table, so the
+    #: rules about section type are asserted there -- and it needs somebody
+    #: through the gate and an orientation filed to render at all.
+    def _with_an_orientation(self):
+        self.db.checkins.docs = [{"worker_id": "w1", "worker_name": "Ann Worker",
+                                  "company": "Hudson", "status": "checked_in"}]
+        self.db.logbooks.docs = [copy.deepcopy(d) for d in self.DOCS] + [{
+            "_id": "lb_or", "log_type": "subcontractor_orientation",
+            "project_id": PROJECT, "date": DATE, "status": "submitted",
+            "cp_name": "daniel kaplan",
+            "data": {"worker_name": "Ann Worker", "worker_company": "Hudson",
+                     "worker_trade": "Carpenter",
+                     "completed_at": "2026-08-12T07:00:00Z"},
+        }]
+        return self.rendered_content()
+
+    #: SECTION_TITLE'S OWN CLOSING MARKUP, NOT THE BARE NAME.
+    #:
+    #: The bare name matches page 1's compliance line first -- that line lists
+    #: the required logs by name -- so a leftmost `.index` slices 400 characters
+    #: of a bulleted sentence and looks for a section header in it. The same
+    #: family of failure as every other anchor defect this week, in a rendered
+    #: document. This substring is emitted by `section_title` and by nothing
+    #: else.
+    ANCHOR = "Subcontractor Safety Orientation</td></tr></table>"
+
     def test_a_section_header_is_substantially_larger_than_the_body(self):
-        c = self.rendered_content()
-        head = c[c.index("Daily Jobsite Log") - 400:c.index("Daily Jobsite Log")]
+        c = self._with_an_orientation()
+        i = c.index(self.ANCHOR)
+        head = c[i - 400:i]
         m = re.search(r"font-size:(\d+)px", head)
         self.assertIsNotNone(m, head)
         self.assertGreaterEqual(int(m.group(1)), 22,
                                 "a section header is not a bolder sentence")
 
     def test_the_header_is_bold_and_not_merely_semibold(self):
-        c = self.rendered_content()
-        i = c.index("Daily Jobsite Log")
+        c = self._with_an_orientation()
+        i = c.index(self.ANCHOR)
         self.assertIn("font-weight:700", c[i - 400:i])
+
+    def test_the_anchor_is_the_section_header_and_not_the_compliance_line(self):
+        """THE VACUITY GUARD ON THE ANCHOR ITSELF.
+
+        `section_title` emits this markup; page 1's compliance line names the
+        same document in prose. If the two ever became indistinguishable, the
+        two tests above would be measuring a sentence and passing or failing
+        for reasons that have nothing to do with section type.
+        """
+        c = self._with_an_orientation()
+        self.assertEqual(c.count(self.ANCHOR), 1)
+        self.assertIn("doc-section-title", c[c.index(self.ANCHOR) - 400:])
 
     def test_the_gaps_say_which_boundary_they_are(self):
         """A section header, its description and its content were separated by
         12, 12 and 12 -- three different relationships rendered identically."""
-        c = self.rendered_content()
-        i = c.index("Daily Jobsite Log")
+        c = self._with_an_orientation()
+        i = c.index(self.ANCHOR)
         section = c[i - 400:i + 900]
         self.assertIn("margin:40px 0 0 0", section)   # between documents
-        self.assertIn("margin:14px 0 0 0", section)   # header to description
         self.assertIn("margin:8px 0 0 0", section)    # label to its table
+        # HEADER-TO-DESCRIPTION IS NOT ASSERTED HERE, and the reason is that
+        # no surviving section has a description. That 14px gap separated a
+        # document's name from its summary line inside the embedded sections,
+        # and the report indexes the documents now. The scale it belongs to is
+        # still defined -- asserted below against the renderer, so it cannot be
+        # dropped without somebody deciding to.
+        self.assertIn('"40px", "24px", "14px", "8px"', _REPORT_SRC,
+                      "the header-to-description gap is gone from the scale")
 
     def test_the_table_label_is_a_caption_not_a_smaller_heading(self):
-        c = self.rendered_content()
-        i = c.index("Activity Details")
+        """"Activity Details" was the anchor and it belonged to the embedded
+        daily jobsite log. The live caption on this document is "Oriented
+        Today", over the LL196 coverage table -- the same helper, the same
+        rule, on the section that still calls it."""
+        c = self._with_an_orientation()
+        i = c.index("Oriented Today")
         self.assertIn("text-transform:uppercase", c[i - 300:i])
         self.assertIn("letter-spacing:0.08em", c[i - 300:i])
 

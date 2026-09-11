@@ -429,6 +429,71 @@ def _logbook_photo_is_renderable(photo: dict) -> bool:
 _PHOTO_ADDED_AFTER_FILING_LABEL = "Added after filing"
 
 
+def _appended_photo_notice(data: dict) -> str:
+    """The filing apparatus for photographs appended after the CP signed.
+
+    A STATEMENT, NOT A CAPTION, BECAUSE THIS DOCUMENT HAS NO PHOTOGRAPHS. The
+    per-logbook PDF has never printed the pictures -- only the record. So the
+    marker cannot ride on a tile here the way it did on the investor report,
+    and it says the thing directly instead: how many, when, and by whom.
+
+    That is the whole content of the apparatus anyway. The flag is the claim
+    and the attribution is a courtesy, and an inspector reading a filed log
+    needs to know that four of its photographs were added afterwards far more
+    than he needs to see them.
+
+    PUTTING THE PICTURES ON THIS DOCUMENT IS A SEPARATE DECISION and has not
+    been made. This adds no photograph to a legal render; it adds the sentence
+    that was missing from one.
+    """
+    import html as _h
+
+    rows = []
+    for _ai, _a in enumerate((data or {}).get("activities") or []):
+        for _pi, _p in enumerate((_a or {}).get("photos") or []):
+            if not isinstance(_p, dict) or not _p.get("added_after_filing"):
+                continue
+            _when = _p.get("added_at")
+            if isinstance(_when, str) and _when:
+                try:
+                    _when = datetime.fromisoformat(_when.replace("Z", "+00:00"))
+                except Exception:
+                    _when = None
+            _parts = []
+            if isinstance(_when, datetime):
+                # THE NEW YORK DAY, for the same reason the caption reads it
+                # that way: `added_at` is a UTC instant and 21:00 EDT is
+                # already tomorrow in UTC.
+                try:
+                    _when = _as_eastern_instant(_when)
+                except ValueError:
+                    pass
+                _parts.append(f"{_when.strftime('%b')} {_when.day}, {_when.year}")
+            _who = str(_p.get("added_by_name") or "").strip()
+            if _who:
+                _parts.append(_who)
+            rows.append(
+                f'<li style="margin:0 0 4px;">Photograph {len(rows) + 1}'
+                + (f' &mdash; {" &middot; ".join(_h.escape(x) for x in _parts)}'
+                   if _parts else "")
+                + "</li>"
+            )
+    if not rows:
+        return ""
+    return (
+        '<div style="margin:16px 0 0;padding:8px 10px;border:1px solid #92400e;'
+        'background:#fffbeb;">'
+        '<p style="margin:0 0 6px;font-size:13px;font-weight:700;'
+        f'color:#92400e;">&#9888; {_h.escape(_PHOTO_ADDED_AFTER_FILING_LABEL)}'
+        '</p>'
+        '<p style="margin:0 0 6px;font-size:12px;color:#334155;">'
+        'The photographs listed below were added to this record after it was '
+        'filed and are not part of what was attested to at signing.</p>'
+        '<ul style="margin:0;padding-left:18px;font-size:12px;color:#334155;">'
+        + "".join(rows) + "</ul></div>"
+    )
+
+
 def _photo_added_after_filing_caption(photo: dict) -> str:
     """The caption HTML for an appended photograph, or '' for an original.
 
@@ -19799,6 +19864,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Inspected", check_list or "None")
             + obs_html
             + (bold_para("Visitors / Deliveries", _sentence_case(visitors)) if visitors else "")
+            + _appended_photo_notice(data)
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + cp_sig + sup_sig
         )
@@ -31404,18 +31470,22 @@ async def generate_combined_report(
                 # A PHOTOGRAPH IS NOT SPLIT ACROSS TWO SHEETS.
                 'page-break-inside:avoid;break-inside:avoid;" /></a>'
             )
-            # A PHOTOGRAPH ADDED AFTER THE CP SIGNED IS LABELLED AS ONE.
-            # Unlabelled photos are emitted exactly as before — the wrapper
-            # exists only where there is something to say, so the ordinary
-            # grid is untouched.
-            _added_note = _photo_added_after_filing_caption(_photo)
-            if _added_note:
-                _tile = (
-                    '<span style="display:inline-block;vertical-align:top;'
-                    'width:166px;margin:0 0 6px;">'
-                    f'{_tile}<span style="display:block;padding:0 3px;">'
-                    f'{_added_note}</span></span>'
-                )
+            # THE "ADDED AFTER FILING" MARKER USED TO BE CAPTIONED HERE, AND
+            # THIS REPORT IS THE ONE DOCUMENT IT MUST NOT BE ON.
+            #
+            # It is filing apparatus: it answers "was this photograph part of
+            # what the CP attested to", which is a DOB inspector's question and
+            # not a lender's. The affirmation banner and the BC 3301.13.13
+            # citations were ruled off this report for exactly that reason and
+            # this was left behind, because it takes no flag and so no
+            # convention could refuse it.
+            #
+            # IT WAS ALSO INVERTED. It rendered eight times on the 2026-09-09
+            # report and zero times on the per-logbook PDF, which is where it
+            # was ruled to stay -- that renderer carried no reference to the
+            # flag at all. It is on the legal PDF now, and on the site device,
+            # and a registry test asserts both halves against rendered output
+            # rather than against a call-site convention.
             _shots += _tile
         if not _shots:
             continue
@@ -32964,6 +33034,22 @@ async def generate_combined_report(
                 data_rows += f'<tr><td {TD} style="font-weight:600;width:35%;padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;">{field_label}</td><td {TD}>{v_str}</td></tr>'
 
         sig_html = render_signature_html(logbook.get("cp_signature"), "Signature", show_affirmation=False)
+        # A FRESH SHEET PER DOCUMENT, HERE TOO.
+        #
+        # The `page-break-after:always` join below separates SECTIONS, and this
+        # is one section holding every log type the branches above do not
+        # handle -- so two such logs were stacked with nothing between them.
+        # The rule is that no two filed documents share a page, and it was true
+        # of this report everywhere except inside this loop.
+        #
+        # LATENT, NOT LIVE: no project-day on production carries two unhandled
+        # types, so nothing has ever rendered this way. It is a page-break rule
+        # and it costs one line, which is a better trade than a note saying it
+        # cannot fire yet.
+        if additional_logbooks_html:
+            additional_logbooks_html += (
+                '<div style="page-break-after:always;"></div>'
+            )
         additional_logbooks_html += (
             section_title(f"{label}")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
@@ -33010,11 +33096,55 @@ async def generate_combined_report(
     # the document, moved the anchor onto the card -- the leftmost-match shape
     # this codebase already carries a note about for source-text tests, here in
     # a rendered document. The claim they defend never moved.
+    # THE THIRTEEN EMBEDDED LOGBOOK SECTIONS ARE GONE, AND THAT WAS THE POINT
+    # OF THE RECORD INDEX ALL ALONG.
+    #
+    # The index was ruled in to REPLACE the embedded documents. It was built
+    # beside them, and nobody rendered the result: the report went from 10
+    # pages to 13, and eight of those thirteen were documents printed in full
+    # with an index on page 12 pointing at the five immediately above it.
+    #
+    # MEASURED, same record, same container, frozen clock:
+    #
+    #   before the redesign (bada9533)   10 pages   6 sections   no index
+    #   with the index added beside      13 pages   7 sections   index p.12
+    #   with the documents removed        5 pages   3 sections   index p.3
+    #
+    # NOTHING IS LOST. Every card on the index carries a link to the filed
+    # document, and that link is the per-logbook PDF -- the legal render, with
+    # the affirmation banner and the citations that were ruled off this report.
+    # A lender reads the summary; an inspector clicks through to the filing.
+    # Those are different documents for different readers and this stops
+    # pretending to be both.
+    #
+    # TWELVE, NOT THIRTEEN, AND THE LINE BETWEEN THEM IS STRUCTURAL RATHER
+    # THAN A JUDGEMENT CALL.
+    #
+    # `orientation_html` STAYS. Every other section here is gated on
+    # `_filed_log(...)` returning a document -- it exists because a log was
+    # filed, and it reproduces that log. The orientation section is gated on
+    # `checkin_count > 0 or orientation_today`, so it renders on days when NO
+    # orientation was filed at all. It is not a reproduction of anything: it is
+    # the LL196 first-timer coverage check, computed from who checked in.
+    #
+    #     "3 of 5 on-site workers -- 2 on-site worker(s) with no orientation
+    #      on file"
+    #
+    # That is a DEFICIENCY, it appears nowhere else, and it appears on exactly
+    # the days nobody was oriented. The record index cannot carry it: a card
+    # reads filed or not filed for one document, and this is a statement about
+    # the workforce. Removing it with the reproductions would have deleted a
+    # compliance warning to shorten a report, which is the wrong trade in the
+    # one direction that matters.
+    #
+    # THE TWELVE BUILDERS STILL RUN and their output is now unused. They come
+    # out in the FOLLOWING change, once this has rendered in production and
+    # been read -- the same rule the legal engine's converted branches follow,
+    # and for the same reason: a deletion is easier to judge against a document
+    # somebody has looked at.
     _SECTIONS = (
         progress_html,
-        jobsite_html, cs_html, toolbox_html, preshift_html,
-        osha_html, hot_work_html, crane_html, exc_html,
-        scaffold_html, fp_html, orientation_html, ssc_html, concrete_html,
+        orientation_html,
         additional_logbooks_html,
         _record_html,
     )

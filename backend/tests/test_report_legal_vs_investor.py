@@ -35,6 +35,20 @@ WHAT WAS GENUINELY INVISIBLE was the rendering. `_filed_log(logbooks,
 was ever filed, so no report anyone had read contained the section at all. The
 decision was made in code and never seen on paper until the day it was.
 
+── WHAT THIS FILE DOES NOT COVER, AND WHERE THAT LIVES ───────────────────────
+
+SIGNATURES, NOT MARKERS. This walk works by asserting a keyword argument, so it
+can only hold things that take one. "Added after filing" is a photograph
+caption produced from a flag on the photograph; it takes no argument, there was
+no convention for it to violate, and it rendered on the investor report through
+two rulings against it -- eight times on the 2026-09-09 report -- while
+rendering zero times on the per-logbook PDF where it was ruled to stay.
+
+`test_the_legal_apparatus_markers.py` holds that class: a registry of markers
+checked against RENDERED OUTPUT, each one asserted absent from the investor
+render and present on the legal one. Read them together; this file's title
+promises more than a call-graph walk can deliver on its own.
+
 THE FLAG. `legal_record=True` on `_superintendent_log_html` gates three things
 that are one thing — the AFFIRMED banner, the BC 3301.13.13 citations, and the
 attestation paragraph. All are the audit trail of a §3301 filing: what a DOB

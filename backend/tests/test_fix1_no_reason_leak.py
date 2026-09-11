@@ -32,6 +32,7 @@ The poison values below are exactly what a leak would look like.
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import re
 import sys
@@ -196,10 +197,25 @@ class TestCombinedReportDropsFlagState(unittest.TestCase):
         )
         with patch.object(server, "db", db), \
                 patch.object(server, "to_query_id", lambda v: v):
-            html = asyncio.run(
+            report = asyncio.run(
                 server.generate_combined_report("proj1", "2026-03-04"),
             )
-        _assert_clean(self, html, "generate_combined_report")
+            document = asyncio.run(
+                server.generate_single_logbook_html(copy.deepcopy(LOGBOOK)),
+            )
+        # BOTH DOCUMENTS, AND THE VACUITY GUARD DECIDES WHICH GETS WHICH.
+        #
+        # `_assert_clean` bans the poison values AND requires the worker
+        # row to be present, so a renderer printing nothing cannot pass it
+        # for the wrong reason. The report indexes the pre-shift sheet now
+        # rather than embedding it, so the roster -- and therefore the
+        # guard -- lives on the document. The report still gets the ban,
+        # which is the half that matters for a leak.
+        _assert_clean(self, document, "generate_single_logbook_html")
+        for bad in POISON_VALUES:
+            self.assertNotIn(
+                bad, report,
+                f"generate_combined_report: {bad!r} reached the report")
 
     def test_emailed_report_renders_that_same_html(self):
         """THE CLAIM IS THE RELATIONSHIP, NOT THE ARGUMENT LIST.

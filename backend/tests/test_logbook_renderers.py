@@ -473,18 +473,24 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
                 html = render(doc(log_type, SPARSE[log_type], cp_name=None))
                 assert_field_not_recorded(self, html, label)
 
-    def test_the_orientation_sheet_states_an_absent_trade_in_its_column(self):
-        """Case (a) after the restyle. Same rule, new shape: the sheet carries
-        a Trade column and the row for a worker whose trade was never recorded
-        says so in the one sanctioned phrase. A blank cell there would leave an
-        inspector unable to tell "not asked" from "asked and left empty"."""
+    def test_the_orientation_sheet_states_an_absent_trade(self):
+        """Case (a) after the restyle. Same rule, shape moved TWICE.
+
+        It was a field line, became a table column when the sheet was a roster,
+        and is a field-grid cell now that the sheet is one worker's. The rule
+        has not moved at all: the app has no value for the trade and the
+        document says exactly that, so an inspector can tell "not asked" from
+        "asked and left empty".
+        """
         html = render(doc("subcontractor_orientation",
                           SPARSE["subcontractor_orientation"], cp_name=None))
-        self.assertIn(">Trade</th>", html, "the Trade column is gone")
         self.assertRegex(
-            html, r">Solo worker</td>(<td[^>]*>[^<]*</td>){1}<td[^>]*>"
-                  + re.escape(NOT_RECORDED),
-            "the attendee's absent trade did not render " + repr(NOT_RECORDED))
+            html, r">Trade</div>\s*<div[^>]*>" + re.escape(NOT_RECORDED),
+            "the worker's absent trade did not render " + repr(NOT_RECORDED))
+        self.assertNotIn(
+            ">Trade</th>", html,
+            "the worker section is a table again; one row with blank rows "
+            "beneath it is the wrong primitive for a one-worker sheet")
 
     def test_a_row_only_type_has_no_field_absences_to_state(self):
         """osha_log renders rows and nothing else. Its empty CELLS stay empty:

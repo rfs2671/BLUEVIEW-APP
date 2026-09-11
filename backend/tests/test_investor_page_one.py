@@ -170,6 +170,11 @@ class Base(unittest.TestCase):
         return self.loop.run_until_complete(
             server.generate_combined_report(PROJECT, DATE))
 
+    def rendered_single(self, logbook):
+        """The per-logbook PDF -- the document the report's index links to."""
+        return self.loop.run_until_complete(
+            server.generate_single_logbook_html(logbook))
+
     # THE DIVIDER, not the two words. This searched for "page-break-after"
     # anywhere in the document and took the first hit, which was fine while the
     # only occurrence was the divider itself. The print stylesheet now carries
@@ -219,8 +224,10 @@ class ItAnswersTheQuestionThatWasAsked(Base):
         self.assertIn("Sunny", self.page1())
 
     def test_and_it_is_still_on_the_daily_jobsite_log(self):
-        h = self.html()
-        self.assertIn("Sunny", h[h.index("Daily Jobsite Log"):])
+        """The weather is a field of the filed log and the report summarises
+        it. The report indexes that log rather than embedding it now, so this
+        reads the document -- which is the one place the field has to be."""
+        self.assertIn("Sunny", self.rendered_single(copy.deepcopy(DAILY_JOBSITE)))
 
     def test_a_line_per_subcontractor_with_what_they_did(self):
         p1 = self.page1()
@@ -437,15 +444,22 @@ class PageTwoIsUntouched(Base):
     """The filing is the legal record. Page 1 sits in front of it and changes
     nothing about it."""
 
-    def test_the_logbook_section_still_renders_after_the_break(self):
+    def test_the_RECORD_INDEX_renders_after_the_break(self):
+        """The filing used to be printed after page 1. It is INDEXED after
+        page 1 now, and the card is what carries the reader to it -- so what
+        must follow the break is the index naming the log, not the log."""
         h = self.html()
         tail = h[h.find(self.BREAK):]
-        self.assertIn("Daily Jobsite Log (NYC DOB 3301-02)", tail)
+        self.assertIn("Project record", tail)
+        self.assertIn("Daily Jobsite Log", tail)
+        self.assertNotIn("Daily Jobsite Log (NYC DOB 3301-02)", tail,
+                         "the filed document is embedded after the break "
+                         "again; the index is supposed to replace it")
 
     def test_page_1_comes_FIRST(self):
         h = self.html()
         self.assertLess(h.find("Daily Progress Report"),
-                        h.find("Daily Jobsite Log (NYC DOB 3301-02)"))
+                        h.find("Project record"))
 
     def test_the_payload_keys_the_renderers_read_are_untouched(self):
         code = code_of("server.py")
