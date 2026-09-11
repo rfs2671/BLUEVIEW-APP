@@ -343,7 +343,13 @@ const NEST_DEPTH = 3;
 // and guessing wrong deletes a file someone is relying on underground — so it
 // keeps the name for EVERY version this cache could have written for that id.
 // The extra names cost nothing: a name no file bears keeps no file.
-const VERSION_FIELDS = ['cache_version', 'updated_at', 'submitted_at', 'created_at'];
+// `renderer_version` IS THE MANIFEST'S `rv`. The server sends the legal PDF's
+// cache version beside the timestamp rather than instead of it, because OTA and
+// Railway cannot land together and an old client still names its files from the
+// timestamp. Reading BOTH means the keep-set holds every name either client
+// could have written, and this list can only ever ADD names: a name no file
+// bears keeps no file, so a wrong guess here leaks a file, it never deletes one.
+const VERSION_FIELDS = ['cache_version', 'renderer_version', 'updated_at', 'submitted_at', 'created_at'];
 
 function addRecordNames(keep, rec) {
   const id = rec.id || rec._id;

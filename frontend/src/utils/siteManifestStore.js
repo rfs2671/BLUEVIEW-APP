@@ -271,6 +271,14 @@ function toStoredRow(row) {
   // of ten thousand rows to say nothing. Absent already means "no thumbnail
   // known", which is exactly what the download path tests for.
   if (row.t === 1) stored.t = 1;
+  // `rv` — the legal renderer's cache version, present only from a server that
+  // sends it. Stored under the name docCache's keep-set reads, for the same
+  // reason `v` is stored as `cache_version`: the wire shape is compact, the
+  // stored shape is docCache's. Omitted when absent rather than defaulted, so
+  // an older server costs these rows nothing.
+  if (row.rv !== undefined && row.rv !== null && row.rv !== '') {
+    stored.renderer_version = row.rv;
+  }
   return stored;
 }
 
