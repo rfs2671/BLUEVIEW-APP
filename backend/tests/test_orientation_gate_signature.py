@@ -272,8 +272,19 @@ class OrientationPdfUsesItsOwnSignatureTest(unittest.TestCase):
         or to any other document."""
         html = self._render(_GATE_SIG)
         self.assertNotIn("ENROLLMENTNOTTHEGATEMARK", html)
-        # `projects` is the only collection the orientation branch may consult.
-        self.assertEqual(self.db.touched, ["projects"])
+        # THE BAN IS ON `workers`, NOT AN ALLOW-LIST OF `projects`.
+        #
+        # An allow-list stated the rule as a coincidence of the implementation:
+        # the orientation sheet now draws every attendee for the project and
+        # date, so it legitimately reads `logbooks` too, and the test refused a
+        # change it had no opinion about. What it has an opinion about is the
+        # refuted reading -- that the renderer reaches into the worker's
+        # enrolment record for a mark the log does not carry.
+        self.assertNotIn(
+            "workers", self.db.touched,
+            "the orientation sheet read the workers collection; the signature "
+            "on the page must be the one on the record, never an enrolment "
+            "mark borrowed from elsewhere")
 
     def test_orientation_pdf_makes_no_inheritance_claim(self):
         html = self._render(_GATE_SIG)

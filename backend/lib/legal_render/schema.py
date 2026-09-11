@@ -41,6 +41,42 @@ values are the three kinds this product already distinguishes:
                      the category
     blank_rows       the paper has empty rows and is still valid; a roster with
                      four names on a twenty-row sheet is not a deficiency
+
+── VALIDATE PROVES A SCHEMA IS WELL-FORMED, NOT THAT IT IS CORRECT ───────────
+
+These are two different questions and NEITHER SUBSTITUTES FOR THE OTHER.
+
+`validate` answers: does this declaration have the shape the engine can read?
+Named primitive, named formatter, a declared `empty`, no callable anywhere. It
+is a grammar check, and it runs at import so a malformed schema cannot reach
+production.
+
+Whether the sheet carries the values the record actually holds is answered by
+the RENDERER TESTS, against a real record, comparing the field set before and
+after. `validate` cannot answer it: a schema may be perfectly well-formed and
+still bind the wrong path, name a formatter that is real but wrong for the
+value, or omit a field entirely. All three are grammatical.
+
+THE FIRST ORIENTATION SCHEMA LOST FOUR THINGS AND validate PASSED ALL FOUR:
+
+    the worker's gate signature, declared "text" -- a real formatter -- so it
+        printed as the escaped characters of its own data URI
+    the UNSIGNED marker for a worker who never signed
+    the OSHA number, the orientation number, and the completion stamp
+    every kiosk checklist line, because the kiosk keys that map by the item's
+        full English sentence and the label set keys it by the short name
+
+EVERY ONE OF THE FOUR FAILED TOWARD LOOKING FINE. Not one produced a stack
+trace, a blank page, or a visibly broken sheet. The signature became plausible
+text; the missing columns left a tidy narrower table; the dropped checklist
+left a section that simply had fewer lines. A reader who had not seen the old
+sheet would have had no reason to look twice at any of them.
+
+That is not coincidence -- it is the failure mode of this whole class of
+change. A restyle can only lose content quietly, because anything it loses
+loudly would not have shipped. So the check that catches it cannot be "does it
+render"; it has to be "does it still say the same things", asserted against
+the old output, every time.
 """
 
 from __future__ import annotations
@@ -54,6 +90,20 @@ EMPTY_KINDS = ("omit", "none_documented", "blank_rows")
 #: this list is what a schema is allowed to ask for.
 PRIMITIVES = ("field_grid", "table", "checklist", "narrative", "signature",
               "certification")
+
+#: FORMATTER NAMES A PRIMITIVE HANDLES ITSELF, not value formatters.
+#:
+#: `signature_ink` cannot be one of those: a formatter takes a value and
+#: returns a string, and ink needs the stroke reconstruction that arrives in
+#: the render context. Naming it here is what lets a schema ASK for ink in a
+#: table column while keeping the formatter registry honest about what it is.
+#:
+#: THE FIRST DRAFT OF THE ORIENTATION SCHEMA SAID "text" IN THAT COLUMN, and
+#: validate accepted it because "text" is a real formatter. The worker's gate
+#: signature printed as the escaped characters of its own data URI. An existing
+#: test caught it -- the one that exists because that signature had already
+#: been broken once.
+PRIMITIVE_FORMATTERS = ("signature_ink",)
 
 #: Named label sets a checklist may point at, so the sentences a worker agreed
 #: to live in ONE place rather than in each schema that shows them.
@@ -111,7 +161,13 @@ def callables_in(decl: Any) -> List[str]:
 
 
 def validate(log_type: str, decl: Dict[str, Any]) -> None:
-    """Refuse a declaration rather than render it badly. Raises SchemaError."""
+    """Refuse a declaration rather than render it badly. Raises SchemaError.
+
+    A GRAMMAR CHECK, NOT A CORRECTNESS CHECK. Passing here means the engine can
+    read the declaration; it says nothing about whether the sheet carries what
+    the record holds. See the module docstring: four content losses passed this
+    function, and all four failed toward looking fine.
+    """
     from .formatters import FORMATTERS
 
     bad = callables_in(decl)
@@ -152,7 +208,7 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
         for col in (sec.get("fields") or []) + (sec.get("columns") or []):
             if len(col) != 3:
                 raise SchemaError(f"{where}: a field is (path, label, formatter)")
-            if col[2] not in FORMATTERS:
+            if col[2] not in FORMATTERS and col[2] not in PRIMITIVE_FORMATTERS:
                 raise SchemaError(
                     f"{where}: unknown formatter {col[2]!r}. The set is closed "
                     f"on purpose -- add one to formatters.py and name it here. "
@@ -214,12 +270,22 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                 # records are drawn together rather than merged.
                 "n": 4, "title": "Attendees", "primitive": "table",
                 "scope": "each", "empty": "blank_rows", "min_rows": 10,
+                # EVERY FIELD THE RECORD CARRIES. The first draft of this
+                # schema dropped `osha_number`, `orientation_number` and the
+                # completion stamp, and the existing renderer tests caught all
+                # three -- which is the field-set rule working exactly as it
+                # was meant to: APPEARANCE MAY CHANGE, THE RECORDED VALUES MAY
+                # NOT. The spec's warning against adding OSHA numbers "because
+                # they appeared in a mockup" does not apply: this app collects
+                # one, on 80 of 85 filed records, and the old sheet printed it.
                 "columns": [
                     ("data.worker_name", "Name (Print)", "name"),
                     ("data.worker_company", "Company", "name"),
                     ("data.worker_trade", "Trade", "name"),
-                    ("data.worker_signature", "Signature", "text"),
-                    ("date", "Date", "date_long"),
+                    ("data.osha_number", "OSHA / SST #", "raw_text"),
+                    ("data.orientation_number", "Orientation #", "raw_text"),
+                    ("data.completed_at", "Completed", "datetime_stamp"),
+                    ("data.worker_signature", "Signature", "signature_ink"),
                 ],
             },
             {

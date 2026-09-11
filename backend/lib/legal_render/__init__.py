@@ -9,6 +9,8 @@ one-line rollback.
 """
 
 from .engine import render
+from .formatters import NOT_RECORDED
 from .schema import CONVERTED_TYPES, SCHEMAS, SchemaError, validate
 
-__all__ = ["render", "CONVERTED_TYPES", "SCHEMAS", "SchemaError", "validate"]
+__all__ = ["render", "CONVERTED_TYPES", "NOT_RECORDED", "SCHEMAS",
+           "SchemaError", "validate"]

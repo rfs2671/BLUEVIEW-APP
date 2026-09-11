@@ -19664,7 +19664,14 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                     "date": date,
                     "log_type": log_type,
                     "is_deleted": {"$ne": True},
-                }).sort("created_at", 1).to_list(500)
+                }).to_list(500)
+                # SORTED IN PYTHON, NOT BY MONGO. `.sort("created_at", 1)` on
+                # `logbooks` is an UNSERVED SORT ON A BASE64 COLLECTION, and the
+                # sort ratchet refused it -- correctly: this collection holds
+                # photographs, and an unindexed sort loads the matched set into
+                # memory to order it. The group is one project on one date, so
+                # ordering a few dozen rows in Python costs nothing.
+                _found.sort(key=lambda r: str(r.get("created_at") or ""))
             except Exception as _e:
                 logger.warning(f"legal_render group read failed: {_e}")
                 _found = []

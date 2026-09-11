@@ -447,7 +447,12 @@ ABSENT_FIELD = {
     "concrete_operations": "Supplier",
     "scaffold_maintenance": "Scaffold Erector",
     "ssc_daily_safety_log": "Project Address",
-    "subcontractor_orientation": "Trade",
+    # subcontractor_orientation is NOT here. It renders through the legal
+    # engine now, where the worker's trade is a COLUMN of the attendee table
+    # rather than a field line, so the label and the value are a header and a
+    # cell rather than neighbours in the markup. The content rule is unchanged
+    # and is asserted directly below; only the shape the assertion looks for
+    # moved, which is what a restyle is.
 }
 
 
@@ -467,6 +472,19 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
             with self.subTest(log_type=log_type):
                 html = render(doc(log_type, SPARSE[log_type], cp_name=None))
                 assert_field_not_recorded(self, html, label)
+
+    def test_the_orientation_sheet_states_an_absent_trade_in_its_column(self):
+        """Case (a) after the restyle. Same rule, new shape: the sheet carries
+        a Trade column and the row for a worker whose trade was never recorded
+        says so in the one sanctioned phrase. A blank cell there would leave an
+        inspector unable to tell "not asked" from "asked and left empty"."""
+        html = render(doc("subcontractor_orientation",
+                          SPARSE["subcontractor_orientation"], cp_name=None))
+        self.assertIn(">Trade</th>", html, "the Trade column is gone")
+        self.assertRegex(
+            html, r">Solo worker</td>(<td[^>]*>[^<]*</td>){1}<td[^>]*>"
+                  + re.escape(NOT_RECORDED),
+            "the attendee's absent trade did not render " + repr(NOT_RECORDED))
 
     def test_a_row_only_type_has_no_field_absences_to_state(self):
         """osha_log renders rows and nothing else. Its empty CELLS stay empty:

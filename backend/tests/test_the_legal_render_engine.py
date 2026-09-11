@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -60,7 +61,10 @@ def _logbook(log_type, worker="alex rivera"):
         "data": {"worker_name": worker, "worker_company": "Premier Builders Inc.",
                  "worker_trade": "carpenter", "language_provided": "English",
                  "completed_at": "2026-09-09T07:00:00",
-                 "checklist": {"hard_hats": True, "safety_boots": True},
+                 # ALL THREE STATES IN ONE RECORD: ticked, explicitly
+                 # answered no, and -- by omission -- never asked.
+                 "checklist": {"hard_hats": True, "safety_boots": True,
+                               "no_horseplay": False},
                  "entries": [], "activities": [], "attendees": [],
                  "signins": [], "workers": []},
     }
@@ -257,9 +261,23 @@ class TheOrientationSheetSaysWhatTheSchemaDeclares(unittest.TestCase):
                        "<img src=\"data:image/png;base64,ivborw0kggoaaaansuheugaaa"):
             self.assertNotIn(banned, low)
 
-    def test_the_checkboxes_are_paper_checkboxes(self):
-        self.assertIn("&#9746;", self.html)   # ticked
-        self.assertIn("&#9744;", self.html)   # not ticked
+    def test_the_checkboxes_are_paper_checkboxes_AND_THERE_ARE_THREE_STATES(self):
+        """Ticked, answered no, and never asked -- and the third is words.
+
+        An empty box against an item the record never carried is a silent "No"
+        the CP never gave, which on a compliance sheet is a claim nobody made.
+        The two boxes are one axis; the absence is a different kind of answer
+        and is drawn as one.
+        """
+        self.assertIn("&#9746;", self.html)   # hard_hats: True
+        self.assertIn("&#9744;", self.html)   # no_horseplay: False
+        # ladder_safety is in the label set and not in the record.
+        self.assertRegex(
+            self.html,
+            r"Three-point contact on ladders at all times</td><td[^>]*>"
+            + re.escape(legal_render.NOT_RECORDED),
+            "an item the record never carried was drawn as an unticked box, "
+            "which reads as a No the CP never gave")
 
     def test_the_attendee_table_repeats_its_header_and_cannot_split_a_row(self):
         self.assertIn("display:table-header-group", self.html)
@@ -339,10 +357,32 @@ class TheSignatureIsInkNotAnExhibit(unittest.TestCase):
 
     def test_the_engine_does_not_carry_its_OWN_reconstruction(self):
         """One geometry, passed in through the context. Two copies of it have
-        drifted in this repository twice."""
+        drifted in this repository twice.
+
+        THE TOKEN IS ANCHORED BEFORE IT IS BANNED, TWICE OVER.
+
+        `preserveAspectRatio=" is a stand-in for "this file builds a signature
+        SVG". Banned as a bare word it would also fire on any longer name that
+        merely contains it, and -- worse -- it would go quiet if the real
+        reconstruction ever stopped emitting it, leaving a test that passes
+        because it is looking for nothing. So it carries its attribute syntax,
+        and the one real reconstruction is asked to produce it first.
+        """
+        real = server._signature_paths_to_svg([[{"x": 0, "y": 0},
+                                                {"x": 4, "y": 4}]])
+        self.assertIn(
+            'preserveAspectRatio="', real,
+            "the marker this test bans no longer appears in the one real "
+            "reconstruction, so banning it proves nothing -- pick a token the "
+            "reconstruction actually emits")
+
         src = Path(legal_render.__file__).parent
+        checked = sorted(f.name for f in src.glob("*.py"))
+        self.assertIn("primitives.py", checked,
+                      f"scanned the wrong directory: {src} held {checked}")
         for f in src.glob("*.py"):
-            self.assertNotIn("preserveAspectRatio", f.read_text(encoding="utf-8"),
+            self.assertNotIn('preserveAspectRatio="',
+                             f.read_text(encoding="utf-8"),
                              f"{f.name} rebuilds the signature SVG itself")
 
 

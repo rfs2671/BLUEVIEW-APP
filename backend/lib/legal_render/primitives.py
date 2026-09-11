@@ -70,6 +70,25 @@ def _get(rec: Any, path: str) -> Any:
     return cur
 
 
+def _has(rec: Any, path: str) -> bool:
+    """Whether the record CARRIES the key at all, null or not.
+
+    `_get` cannot answer this -- it returns None for both -- and for a
+    signature the difference is the whole meaning. The manual-entry path writes
+    `worker_signature: null`, and an acknowledgment that was asked for and left
+    unsigned must say UNSIGNED. A record that never had the key was filled on a
+    form that never asked, and printing UNSIGNED there would be this renderer
+    making an accusation the record does not support.
+    """
+    parts = str(path).split(".")
+    cur = rec
+    for part in parts[:-1]:
+        if not isinstance(cur, dict):
+            return False
+        cur = cur.get(part)
+    return isinstance(cur, dict) and parts[-1] in cur
+
+
 def _fmt(rec: Any, path: str, formatter: str) -> str:
     return FORMATTERS[formatter](_get(rec, path))
 
@@ -147,7 +166,7 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
                  f'width:22px;color:#555;">{idx}</td>')
         for path, _lbl, formatter in cols:
             if formatter == "signature_ink":
-                cell = ink(_get(rec, path), ctx)
+                cell = ink(_get(rec, path), ctx, present=_has(rec, path))
             else:
                 cell = _fmt(rec, path, formatter)
             body += (f'<td style="{_BODY};border:{_HAIRLINE};'
@@ -175,39 +194,73 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
 
 
 def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
-    """Real paper checkboxes, three to a row. Not switches, not pills, not
-    green ticks -- the underlying record is a set of booleans and a paper form
-    is what it becomes.
+    """Real paper checkboxes, topic and mark, two pairs to a row.
 
-    AN UNTICKED BOX AND AN ABSENT ANSWER ARE DRAWN THE SAME, deliberately: the
-    stored shape cannot tell them apart, and inventing a third mark would be
-    the renderer claiming to know something the record does not say.
+    THREE STATES, NOT TWO, AND THE THIRD IS WHY THIS IS NOT JUST BOXES:
+
+        ticked      the CP reviewed the item
+        unticked    the CP answered and the answer was no
+        absent      nobody was asked, and the sheet SAYS SO in the one
+                    sanctioned phrase rather than drawing an empty box
+
+    An empty box for an item the record never carried is a silent "No" the CP
+    never gave, on a document an inspector reads as a statement of what was
+    covered. The old renderer drew this line and a test names it. The box is a
+    glyph and the absence is words on purpose: they are different KINDS of
+    answer, not two values on one axis, and the one time a glyph and a word
+    shared an axis here it had to be undone.
+
+    THE LABEL SET APPLIES ONLY TO A RECORD FILLED ON THAT FORM. The kiosk keys
+    this map by the item's full English sentence and carries NONE of the short
+    keys; dragging the eighteen in-app items onto such a sheet would invent
+    eighteen absences against a document filled on a different form. So when
+    the record shares no key with the label set, only what it stores renders --
+    verbatim, because title-casing a stored sentence once turned a compliance
+    line into nonsense.
     """
     stored = _get(rec, sec.get("path", "")) or {}
     labels = LABEL_SETS[sec["labels"]]
-    cells = ""
-    for i in range(0, len(labels), 3):
-        cells += "<tr>"
-        for key, text in labels[i:i + 3]:
-            v = stored.get(key)
-            if isinstance(v, dict):
-                v = v.get("checked")
-            # The kiosk keys this map by the item's full English sentence; the
-            # in-app editor keys it by the short key. Both shapes render.
-            if v is None:
-                v = stored.get(text)
-                if isinstance(v, dict):
-                    v = v.get("checked")
-            box = "&#9746;" if v else "&#9744;"
-            cells += (f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
-                      f'width:33%;vertical-align:top;">'
-                      f'<span style="font-size:12px;">{box}</span> '
-                      f'{_html.escape(text)}</td>')
-        for _ in range(3 - len(labels[i:i + 3])):
-            cells += f'<td style="border:{_HAIRLINE};"></td>'
-        cells += "</tr>"
+    known = dict(labels)
+
+    known_present = any(k in stored for k, _t in labels)
+    items: List = list(labels) if known_present else []
+    items += [(k, str(k)) for k in stored if k not in known]
+    if not items:
+        return ""
+
+    def _mark(key: Any) -> str:
+        if key not in stored:
+            return NOT_RECORDED
+        v = stored.get(key)
+        if isinstance(v, dict):
+            v = v.get("checked")
+        return ('<span style="font-size:12px;">'
+                + ("&#9746;" if v else "&#9744;") + "</span>")
+
+    rows = ""
+    for i in range(0, len(items), 2):
+        rows += "<tr>"
+        for key, text in items[i:i + 2]:
+            rows += (f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                     f'width:36%;vertical-align:top;">{_html.escape(text)}</td>'
+                     f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                     f'width:14%;vertical-align:top;white-space:nowrap;">'
+                     f'{_mark(key)}</td>')
+        for _ in range(2 - len(items[i:i + 2])):
+            rows += (f'<td style="border:{_HAIRLINE};"></td>'
+                     f'<td style="border:{_HAIRLINE};"></td>')
+        rows += "</tr>"
+
+    head = ("".join(
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">Topic</th>'
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">Reviewed</th>' for _ in range(2)))
+
     return (f'<table style="width:100%;border-collapse:collapse;'
-            f'border:{_RULE};">{cells}</table>')
+            f'border:{_RULE};">'
+            f'<thead style="display:table-header-group;"><tr>{head}</tr>'
+            f'</thead><tbody>{rows}</tbody></table>')
 
 
 def narrative(sec: Dict, rec: Any, ctx: Dict) -> str:
@@ -219,16 +272,35 @@ def narrative(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'padding:5px 6px;line-height:1.45;">{body}</div>')
 
 
-def ink(sig: Any, ctx: Dict) -> str:
+def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
     """A signature, with NO BOUNDARY.
 
     No box, no background, no fixed-height container, true aspect ratio, free
     to overlap the baseline. The stroke reconstruction is the one every other
     renderer uses -- passed in through `ctx` rather than copied, because two
     copies of that geometry would drift.
+
+    `present` is whether the record CARRIES the key, which is not the same as
+    whether it holds a signature -- see `_has`, and the two tests that pin the
+    two halves of it.
     """
     if not sig:
-        return ""
+        # ASKED AND UNSIGNED IS NOT THE SAME AS NEVER ASKED.
+        #
+        # The manual-entry path writes null here, and an acknowledgment nobody
+        # signed must say so on a document that certifies they did -- so a
+        # PRESENT-AND-EMPTY key prints the word. A key the record does not
+        # carry prints nothing at all: this renderer does not get to accuse a
+        # record filled on a form that never asked.
+        #
+        # The old renderer drew exactly this line and a test names both sides
+        # of it. The first draft of this function collapsed them, because
+        # `_get` returns None for both -- a content loss that failed toward
+        # looking fine, like the other four.
+        if not present:
+            return ""
+        return ('<span style="font:700 8px Helvetica,Arial,sans-serif;'
+                'letter-spacing:0.06em;color:#555;">UNSIGNED</span>')
     to_svg = ctx.get("signature_svg")
     if isinstance(sig, dict) and sig.get("paths") and to_svg:
         svg = to_svg(sig.get("paths"), boxed=False)
@@ -248,7 +320,8 @@ def signature(sec: Dict, rec: Any, ctx: Dict) -> str:
     The line is under the stroke and the stroke may cross it, which is what
     happens when somebody signs paper.
     """
-    mark = ink(_get(rec, sec.get("path", "")), ctx)
+    _p = sec.get("path", "")
+    mark = ink(_get(rec, _p), ctx, present=_has(rec, _p))
     who = FORMATTERS["name"](_get(rec, sec.get("name_path", "")))
     return (
         '<div style="break-inside:avoid;padding:6px;">'
@@ -268,7 +341,8 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         f'<div style="{_LABEL}">{_html.escape(lbl)}</div>'
         f'<div style="{_BODY}">{_fmt(rec, path, f)}</div></td>'
         for path, lbl, f in (sec.get("fields") or []))
-    mark = ink(_get(rec, sec.get("signature_path", "")), ctx)
+    _p = sec.get("signature_path", "")
+    mark = ink(_get(rec, _p), ctx, present=_has(rec, _p))
     return (
         '<div style="break-inside:avoid;page-break-inside:avoid;">'
         f'<div style="{_BODY};border:{_RULE};border-top:none;padding:5px 6px;'

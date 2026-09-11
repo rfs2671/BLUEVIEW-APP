@@ -42,7 +42,8 @@ from __future__ import annotations
 import html as _html
 from typing import Any, Dict, List, Optional
 
-from .primitives import PRIMITIVE_FNS, _empty_note, _section_close, _section_open
+from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _section_close,
+                         _section_open)
 from .schema import SCHEMAS
 
 _PAGE_CSS = """
@@ -82,6 +83,14 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
         return not records
     if sec.get("scope") == "project":
         return not ctx.get("project")
+    if sec.get("primitive") == "checklist":
+        # THE ONE EXCEPTION, AND IT IS ABOUT MEANING RATHER THAN VALUES. A
+        # checklist with no stored map has no items to draw three states over,
+        # so drawing it would print an empty grid the label set invented. The
+        # record establishes that no topics were documented, and the section
+        # SAYS that -- which is what `none_documented` is for.
+        return not (_get(records[0] if records else {},
+                         sec.get("path", "")) or {})
     return not records
 
 

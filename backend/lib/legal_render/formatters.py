@@ -25,7 +25,14 @@ from typing import Any, Callable, Dict
 #: What a field renders when the record has nothing there. NOT the same as a
 #: section being empty -- that is declared per section and handled by the
 #: engine. This is one cell with no value in a record that otherwise exists.
-NOT_RECORDED = "&mdash; Not recorded"
+#:
+#: THE LITERAL EM DASH, NOT `&mdash;`, AND THE SAME BYTES AS server.py's
+#: NOT_RECORDED. The two must be one string: a test strips the sanctioned
+#: phrase and then bans `&mdash;` outright, so an entity-escaped copy reads as
+#: an unsanctioned placeholder to the very check that exists to catch invented
+#: values. server.py carries a comment at the old local copy's grave saying
+#: there were two of these once; this is not the place to make it two again.
+NOT_RECORDED = "— Not recorded"
 
 _BOROUGHS = {"1": "Manhattan", "2": "Bronx", "3": "Brooklyn",
              "4": "Queens", "5": "Staten Island"}
@@ -106,6 +113,19 @@ def time_of_day(v: Any) -> str:
     return _html.escape(s)
 
 
+def datetime_stamp(v: Any) -> str:
+    """`2026-08-07T13:22:04Z` -> `2026-08-07 13:22:04`.
+
+    THE STORED INSTANT, READABLE, NOT REINTERPRETED. The old orientation PDF
+    printed exactly this and a test names the string, which is the field-set
+    rule doing its job: appearance may change, the recorded value may not.
+    """
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    return _html.escape(s[:19].replace("T", " "))
+
+
 def bbl_borough(v: Any) -> str:
     """Borough from the first digit of a BBL.
 
@@ -146,6 +166,7 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "name": name,
     "sentence": sentence,
     "date_long": date_long,
+    "datetime_stamp": datetime_stamp,
     "time_of_day": time_of_day,
     "bbl_borough": bbl_borough,
     "bbl_block": bbl_block,
