@@ -19367,6 +19367,56 @@ async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, c
     )
  
  
+# ── THE CACHE KEY HAS TO CARRY THE RENDERER, NOT JUST THE RECORD ────────────
+#
+# Two caches serve the legal PDF and BOTH key on the record alone: the site
+# device names its offline copy `{id}.{version}.pdf` from the log's own
+# timestamp, and `_logbook_thumbnail_url` keys its R2 object on `updated_at`.
+# Neither moves when this renderer changes, so a restyle would be invisible on
+# exactly the two surfaces that matter -- the tablet an inspector reads from,
+# and the thumbnails on the project record -- on every document that did not
+# change. Which is every filed document, because a filed document cannot.
+#
+# BUMP THIS WHENEVER THE RENDERED APPEARANCE CHANGES. Not when the data
+# changes: the record's own timestamp already covers that. This number exists
+# for changes the record cannot see.
+LEGAL_RENDERER_VERSION = 1
+
+
+def _logbook_record_stamp(logbook: dict) -> str:
+    """The record half of a cache version: first timestamp that exists.
+
+    SAME PRECEDENCE AS THE CLIENT'S, deliberately -- docCache keys a logbook
+    PDF on `updated_at || submitted_at || created_at` and the site screen
+    writes the file under exactly that name. A different precedence here would
+    name the same file twice and leave both on the tablet for ever.
+
+    NORMALISED TO ALPHANUMERICS rather than passed through as an ISO string.
+    The client sanitises the version into a filename the same way, and a raw
+    datetime reaches it through a JSON encoder and a `new Date()` -- two
+    conversions that have each produced a second on-disk copy before. A string
+    with nothing in it to convert cannot.
+    """
+    for field in ("updated_at", "submitted_at", "created_at", "date"):
+        v = logbook.get(field)
+        if v is None or v == "":
+            continue
+        return re.sub(r"[^0-9A-Za-z]", "", str(v))[:32] or "0"
+    return "0"
+
+
+def _logbook_cache_version(logbook: dict) -> str:
+    """The name every cache of this logbook's PDF must agree on.
+
+    ONE FUNCTION, THREE CONSUMERS -- the thumbnail's R2 key, the site
+    manifest's `rv`, and the `cache_version` on a submitted-log row. They are
+    not allowed to disagree: the manifest builds the sweep's KEEP-SET and the
+    submitted row names the FILE, so a mismatch is not a stale picture, it is
+    the sweep deleting the offline record an inspector came to read.
+    """
+    return f"{_logbook_record_stamp(logbook)}r{LEGAL_RENDERER_VERSION}"
+
+
 async def generate_single_logbook_html(logbook: dict) -> str:
     """The per-logbook PDF an inspector downloads. ONE MEDIUM: PAPER.
 
@@ -22350,8 +22400,27 @@ async def get_project_manifest(
         .skip(logbooks_skip)
         .limit(limit)
     ).to_list(limit)
+    # `rv` IS ADDED BESIDE `v`. IT DOES NOT REPLACE IT, AND THAT IS THE WHOLE
+    # SAFETY OF THIS CHANGE.
+    #
+    # The stored row (siteManifestStore.toStoredRow) carries ONLY
+    # `cache_version`, built from `v`, and docCache's keep-set is built from
+    # that. So a server that changed `v` in place would hand an OLD client --
+    # one that still names its files from the timestamp, because OTA and
+    # Railway cannot land together -- a keep-set naming a file that does not
+    # exist, while every file that does exist is missing from it. The next
+    # sweep from any screen would delete the lot. That is not hypothetical:
+    # this module records it happening once already, when the keep-set came
+    # back empty for logbooks and opening the Plans screen deleted the
+    # superintendent's offline records.
+    #
+    # Sending BOTH means the keep-set only ever GROWS. An old client ignores
+    # `rv` and keeps its old name, which `v` still covers. A new client writes
+    # the versioned name, which `rv` covers. A name no file bears keeps no
+    # file, so the extra entry costs nothing and cannot delete anything.
     log_rows = [
-        {"id": str(rec.get("_id", "")), "v": _manifest_version(rec)}
+        {"id": str(rec.get("_id", "")), "v": _manifest_version(rec),
+         "rv": _logbook_cache_version(rec)}
         for rec in log_page
         if rec.get("_id")
     ]
@@ -33458,7 +33527,15 @@ async def get_submitted_logbooks(
 
     by_date: Dict[str, List] = {k: [] for k in page}
     for log in logbooks:
-        by_date[_submitted_date_key(log.get("date"))].append(serialize_id(dict(log)))
+        # SAFE FOR AN OLD CLIENT WITHOUT A SECOND FIELD, unlike the manifest
+        # above. These rows are whole documents, so they still carry
+        # `updated_at`/`submitted_at`/`created_at` -- all three are in
+        # docCache's VERSION_FIELDS -- and the keep-set therefore holds the
+        # old name AND this one. The compact manifest row carries neither,
+        # which is why it needed `rv`.
+        _row = serialize_id(dict(log))
+        _row["cache_version"] = _logbook_cache_version(log)
+        by_date[_submitted_date_key(log.get("date"))].append(_row)
     return {
         "dates": by_date,
         "complete": complete,
@@ -44546,8 +44623,11 @@ THUMBNAIL_DPI = 72
 THUMBNAIL_WIDTH = 240
 
 
-def _logbook_thumb_r2_key(logbook_id: str, stamp: str) -> str:
-    return f"report-thumbs/{logbook_id}/{stamp}.png"
+def _logbook_thumb_r2_key(logbook_id: str, cache_version: str) -> str:
+    # `cache_version` CARRIES THE RENDERER, not just the record -- see
+    # LEGAL_RENDERER_VERSION. A key on the record alone would serve the old
+    # picture for ever after a restyle, because a filed log never changes.
+    return f"report-thumbs/{logbook_id}/{cache_version}.png"
 
 
 def _render_logbook_thumbnail(pdf_bytes: bytes) -> Optional[bytes]:
@@ -44592,9 +44672,7 @@ async def _logbook_thumbnail_url(logbook: dict) -> Optional[str]:
     lb_id = str(logbook.get("_id") or "")
     if not lb_id or not _r2_client or not R2_BUCKET_NAME:
         return None
-    _u = logbook.get("updated_at")
-    stamp = re.sub(r"[^0-9A-Za-z]", "", str(_u or logbook.get("date") or "x"))[:32]
-    key = _logbook_thumb_r2_key(lb_id, stamp)
+    key = _logbook_thumb_r2_key(lb_id, _logbook_cache_version(logbook))
 
     try:
         cached = await db.logbook_thumbnails.find_one({"_id": key})

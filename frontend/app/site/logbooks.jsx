@@ -223,7 +223,19 @@ export default function SiteLogbooksViewer() {
   // cached bytes on it so a corrected record re-downloads instead of serving
   // a stale PDF. Works on a stored identity row as well as on a whole
   // document: the row keeps `updated_at` for exactly this reason.
-  const pdfVersion = (log) => String(log?.updated_at || log?.submitted_at || log?.created_at || '0');
+  // THE SERVER'S VERSION WINS WHEN IT SENDS ONE. It folds the legal renderer's
+  // version into the record's timestamp, so a restyle renames the cached file
+  // and the tablet re-downloads once; without it a filed log's PDF, which can
+  // never change, would serve the old design for ever.
+  //
+  // THE FALLBACK IS WHAT MAKES THE DEPLOY ORDER IRRELEVANT. This screen ships
+  // over the air and the API ships to Railway, so one is always ahead. A new
+  // client against an old server finds no `cache_version` and names the file
+  // exactly as it does today; an old client against a new server ignores the
+  // field entirely. Neither combination breaks, and neither is stale for longer
+  // than the gap between the two deploys.
+  const pdfVersion = (log) => String(
+    log?.cache_version || log?.updated_at || log?.submitted_at || log?.created_at || '0');
 
   // The full-day report's cache identity comes from siteLogbookHistory, which
   // is also what WRITES it onto the stored row — so the file this screen opens
