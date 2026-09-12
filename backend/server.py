@@ -19716,6 +19716,37 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     )
     cp_sig_block = render_signature_html(logbook.get("cp_signature"), "CP Signature")
 
+    # ── AN AMENDED RECORD SAYS SO, ON ITS OWN FACE ──────────────────────
+    #
+    # `amendment_sentence` reads the CHILD document -- amendment_reason,
+    # created_by_name, created_at -- and never the clock, so an amendment
+    # filed in September for an August log reads the same in December.
+    #
+    # IT PRINTS HERE AND NOT ON THE INVESTOR REPORT. The report indexes the
+    # filing; the filing carries its own audit trail. The old placement was
+    # the report's header, which reached the daily jobsite log and no other
+    # type -- an amended toolbox talk or OSHA register said nothing anywhere.
+    #
+    # ESCAPED LOCALLY. The reason is operator-supplied text on its way into
+    # an HTML document.
+    #
+    # COMPOSED ABOVE THE PER-TYPE SWITCH, WHICH RETURNS. This sat below the
+    # switch, and a type rendering through the engine returned before ever
+    # reaching it -- so the orientation sheet stopped carrying it the day it
+    # was converted, on 15 amended records, and nothing said so. Every
+    # renderer of this document now gets the same composed banner.
+    import html as _amend_esc
+    _amend_line = amendment_sentence(amendment_state(logbook))
+    amendment_html = (
+        f'<div style="margin-top:16px;padding:12px 14px;'
+        f'background-color:#fffbeb;border-left:3px solid #b45309;">'
+        f'<span style="font-size:10px;text-transform:uppercase;'
+        f'letter-spacing:1.5px;color:#b45309;font-weight:600;">'
+        f'AMENDED RECORD</span><br />'
+        f'<span style="font-size:13px;color:#0A1929;">'
+        f'{_amend_esc.escape(_amend_line)}</span></div>'
+    ) if _amend_line else ""
+
     # ── THE PER-TYPE SWITCH ─────────────────────────────────────────────
     #
     # A type with a schema renders through the one engine. Everything else
@@ -19767,6 +19798,15 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # geometry inside the engine would drift from this one, and this
             # file has been bitten by exactly that twice.
             "signature_svg": _signature_paths_to_svg,
+            # AND THE SAME ARGUMENT FOR THE AFFIRMATION BANNER, which the
+            # engine's first version simply did not draw. `ink` appends what
+            # this returns beneath every mark, so the sheet says whether the
+            # signature under it was affirmed FOR THIS DOCUMENT -- and, when it
+            # was not, prints the deficiency rather than a clean-looking blank.
+            "signature_affirmation": _signature_affirmation_html,
+            # CONTENT, NOT CHROME. Composed above this switch for the reason
+            # written there.
+            "amendment_html": amendment_html,
         })
         if _sheet:
             return _sheet
@@ -20557,31 +20597,6 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     else:
         type_title = log_type.replace("_", " ").title()
         body_html = bold_para("Status", logbook.get("status", "N/A"))
-
-    # ── AN AMENDED RECORD SAYS SO, ON ITS OWN FACE ──────────────────────
-    #
-    # `amendment_sentence` reads the CHILD document -- amendment_reason,
-    # created_by_name, created_at -- and never the clock, so an amendment
-    # filed in September for an August log reads the same in December.
-    #
-    # IT PRINTS HERE AND NOT ON THE INVESTOR REPORT. The report indexes the
-    # filing; the filing carries its own audit trail. The old placement was
-    # the report's header, which reached the daily jobsite log and no other
-    # type -- an amended toolbox talk or OSHA register said nothing anywhere.
-    #
-    # ESCAPED LOCALLY. The reason is operator-supplied text on its way into
-    # an HTML document.
-    import html as _amend_esc
-    _amend_line = amendment_sentence(amendment_state(logbook))
-    amendment_html = (
-        f'<div style="margin-top:16px;padding:12px 14px;'
-        f'background-color:#fffbeb;border-left:3px solid #b45309;">'
-        f'<span style="font-size:10px;text-transform:uppercase;'
-        f'letter-spacing:1.5px;color:#b45309;font-weight:600;">'
-        f'AMENDED RECORD</span><br />'
-        f'<span style="font-size:13px;color:#0A1929;">'
-        f'{_amend_esc.escape(_amend_line)}</span></div>'
-    ) if _amend_line else ""
 
     # Wrap in full HTML document
     html = f"""<!DOCTYPE html>

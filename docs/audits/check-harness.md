@@ -766,6 +766,57 @@ They almost all fail in the direction of *nothing is wrong*.
 
 All thirteen below were found in two days, by one author, on this codebase.
 
+### The sharpest instance: a control run that was correct, complete, and answered a different question
+
+Put first because it is the clearest example of the whole class, and because it
+cost the most.
+
+The orientation sheet was the first log type moved onto the declarative
+renderer. Before its old branch was deleted, a control run rendered all **92
+production records** through the live build and compared each whole document
+against the engine's sheet. **92 of 92 byte-for-byte identical.** No skips, no
+gaps, every record, run against production data.
+
+It proved that the old branch was unreachable. That was a real question and the
+answer was right.
+
+**It said nothing about whether the sheet still said what the old sheet said,
+because both sides of the comparison were the new engine.** The document was
+being diffed against itself.
+
+Three things were gone, and they had been gone in production for three days:
+
+| | lost | measured |
+|---|---|---|
+| the signature affirmation banner | AFFIRMED, with a claimed and a server-received time | 89 records |
+| the same banner's other half | **UNAFFIRMED — no affirmation record for this document** | 79 records |
+| the AMENDED RECORD banner | who amended it, when, and why | 15 records |
+| the record's status | **DRAFT** or SUBMITTED in the old header | 3 draft records |
+
+**The second row is the one to read twice.** UNAFFIRMED is a deficiency
+marker: it states that no affirmation record exists for that mark. Removing it
+does not make a document look broken. It makes a **deficient document look
+clean**, on a filed BC 3301.13.13 record about a named man. The fourth row is
+the same shape — a draft that no longer announces itself as one.
+
+A loss that fails toward looking *better* is the one nobody reports.
+
+**Why it was invisible to a reviewer.** All three live *outside* the per-type
+branch, in the function that wraps it, below the line where a converted type
+has already returned. Reading the schema, the engine and the old branch side by
+side — which is exactly what review does — shows nothing missing.
+
+**The rule this sets for every conversion that follows.** The comparison is
+**old branch output against new engine output, on the same record, captured
+before the branch is deleted.** Not new against new. For every type still
+unconverted the baseline is capturable today, because the branch is still the
+renderer — and it is never cheaper than now.
+
+*(Two smaller traps inside the diff itself, worth knowing before running one: a
+case-sensitive word diff reported the job address as missing when the engine had
+merely uppercased it, and base64 image payloads must be replaced by a token or
+the diff is megabytes of ink.)*
+
 ### The instances
 
 | # | the check | what was actually wrong |
@@ -783,6 +834,7 @@ All thirteen below were found in two days, by one author, on this codebase.
 | 11 | every read of `server.py` for a day | the checkout was 785 commits behind `origin/main`. `/api/version` was reported **absent**; it has existed for weeks, and instance 1 above is about polling it |
 | 12 | `<ReportFrame />` removed as "the duplicate" | there were two. The one removed was the one a stop-focus CSS rule had been written for, leaving `.stage.report-focus .sheet-front` matching nothing and firing against nothing |
 | 13 | PII scan of a report PDF, `\b\d{7,}\b` for card numbers | SST cards are ALPHANUMERIC — `KSPNNWEFJ4`. The scan reported clean on a document carrying ten of them. Reading page 9 found them |
+| 14 | the orientation control run, 92 of 92 byte-identical | both sides were the new engine. See the lead above — it proved the old branch was unreachable and never asked whether the sheet still said what it used to |
 
 ### Five shapes, and the fourth is the one to fear
 
