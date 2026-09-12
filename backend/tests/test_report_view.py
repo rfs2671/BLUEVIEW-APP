@@ -1,0 +1,298 @@
+"""THE VIEW CARRIES NO RAW FIELD, SO A TEMPLATE CANNOT DECIDE MEANING.
+
+The renderer may choose presentation and never meaning. That rule is not
+enforced by discipline; it is enforced by the renderer being handed objects
+with nothing on them to misread.
+
+SO THE STRONGEST TEST HERE IS STRUCTURAL: walk every view object and refuse a
+dictionary, a document, or any of the raw field names a template could
+interpret. A `num_workers` reachable from a template is hidden business logic
+waiting to happen, and the four production states already found -- an
+UNASSIGNED trade, a nameless activity row, a saved empty row, a headcount-only
+row -- are exactly the cases where that goes wrong quietly.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import os
+import sys
+import unittest
+from pathlib import Path
+
+os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+os.environ.setdefault("DB_NAME", "smoke_test")
+os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
+os.environ.setdefault("APP_BASE_URL", "https://app.levelog.com")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from lib.report import model as m  # noqa: E402
+from lib.report import view as v  # noqa: E402
+
+
+def _row(company="Arkon Builders", trade="Framers", worker_id="w1"):
+    return {"worker_company": company, "trade": trade, "status": "checked_in",
+            "worker_id": worker_id, "worker_name": "A Worker"}
+
+
+def _activity(company="Arkon Builders", workers="6", where="1st floor",
+              photos=None, trade=""):
+    return {"company": company, "num_workers": workers,
+            "work_locations": where, "trade": trade, "photos": photos or []}
+
+
+def _model(rows=None, acts=None, missing=None, complete=False,
+           weather=("Rainy · 73°F",)):
+    gate = m.GateDayState(rows if rows is not None else [_row()])
+    activities = [m.ActivityDisplayState(a, i, gate)
+                  for i, a in enumerate(acts if acts is not None
+                                        else [_activity()])]
+    required = ["daily_jobsite", "preshift_signin", "toolbox_talk"]
+    due = ["daily_jobsite", "preshift_signin"]
+    # `complete` FILES BOTH DUE LOGS, which is what "nothing outstanding"
+    # needs. The first draft's default filed one of the two and then asserted
+    # no attention block -- the fixture was wrong, not the code, and the test
+    # would have been "fixed" by weakening a real assertion.
+    if complete:
+        filed = list(required)
+    elif missing:
+        filed = []
+    else:
+        filed = ["daily_jobsite", "toolbox_talk"]
+    return m.ReportDisplayModel(
+        project={}, date="2026-08-27", gate=gate, activities=activities,
+        safety=m.SafetyState(None),
+        required_logs=m.RequiredLogsState(required, due, filed),
+        weather=list(weather))
+
+
+def _build(model, cards=(), summary_body=None):
+    return v.build(
+        model, address="588 Thomas S Boyland Street", city="Brooklyn, NY",
+        date_long="August 27, 2026", generated="2026-09-11 12:00:00 ET",
+        report_number="Report #___", headline="Framing active",
+        summary_body=summary_body, cards=cards,
+        photo_url=lambda lb, ai, pi, photo: f"https://x/{lb}/{ai}/{pi}",
+        logbook_id="lb1")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  NOTHING RAW REACHES A TEMPLATE
+# ══════════════════════════════════════════════════════════════════════════
+
+#: Raw DOCUMENT keys. A view field sharing a name with one of these would be
+#: a template reading a stored value.
+#:
+#: `activities` IS NOT ON THE LIST AND WAS, WRONGLY. `ReportView.activities`
+#: holds finished row objects, not the stored array of the same name -- the
+#: first draft banned the word and refused a legitimate field. The dictionary
+#: ban above is what actually protects against the raw array; this list is for
+#: scalar keys a template could read and interpret.
+BANNED_FIELDS = (
+    "num_workers", "work_locations", "worker_company", "check_in_time",
+    "enhance_status", "log_type", "is_deleted", "cp_signature",
+    "required_logbooks", "project_class", "signins", "worker_trade",
+)
+
+
+def _walk(node, path="view"):
+    """Every value reachable from the view, with the path that reached it."""
+    yield path, node
+    if dataclasses.is_dataclass(node) and not isinstance(node, type):
+        for f in dataclasses.fields(node):
+            yield from _walk(getattr(node, f.name), f"{path}.{f.name}")
+    elif isinstance(node, (list, tuple)):
+        for i, item in enumerate(node):
+            yield from _walk(item, f"{path}[{i}]")
+
+
+class TheViewIsFinished(unittest.TestCase):
+
+    def setUp(self):
+        self.view = _build(_model(acts=[
+            _activity(photos=[{"enhance_status": "done"}, {"a": 1}])]))
+
+    def test_no_dictionary_is_reachable(self):
+        """A dict is a document, and a template handed a document will read a
+        field out of it sooner or later."""
+        for path, node in _walk(self.view):
+            self.assertNotIsInstance(
+                node, dict,
+                f"{path} exposes a raw mapping to the renderer")
+
+    def test_no_raw_field_name_is_reachable(self):
+        for path, node in _walk(self.view):
+            if dataclasses.is_dataclass(node) and not isinstance(node, type):
+                names = {f.name for f in dataclasses.fields(node)}
+                for banned in BANNED_FIELDS:
+                    self.assertNotIn(banned, names, f"{path}.{banned}")
+
+    def test_every_leaf_is_a_finished_value(self):
+        allowed = (str, int, bool, type(None), v.CardState)
+        for path, node in _walk(self.view):
+            if dataclasses.is_dataclass(node) or isinstance(node, (list, tuple)):
+                continue
+            self.assertIsInstance(node, allowed, f"{path} is {type(node)}")
+
+    def test_the_card_state_is_a_closed_enum_not_a_string(self):
+        view = _build(_model(), cards=[{
+            "number": 1, "title": "Daily Jobsite Log", "citation": "§3301.2",
+            "state": v.CardState.FILED}])
+        self.assertIsInstance(view.cards[0].state, v.CardState)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE RAIL
+# ══════════════════════════════════════════════════════════════════════════
+
+class TheRail(unittest.TestCase):
+
+    def test_there_are_exactly_five_cells(self):
+        self.assertEqual(len(_build(_model()).rail), 5)
+
+    def test_no_check_ins_is_a_zero_and_says_so(self):
+        """ZERO IS AN OBSERVED RESULT for that Eastern-day window. An em dash
+        would mean the conclusion is unavailable, which is a different fact."""
+        cell = _build(_model(rows=[])).rail[0]
+        self.assertEqual(cell.value, "0")
+        self.assertIn("No check-ins recorded", cell.notes)
+
+    def test_a_placeholder_trade_is_not_counted_and_is_surfaced(self):
+        view = _build(_model(rows=[_row(trade="Framers", worker_id="w1"),
+                                   _row(trade="UNASSIGNED", worker_id="w2")]))
+        self.assertEqual(view.rail[1].value, "1")
+        self.assertTrue(any("pending assignment" in n
+                            for n in view.rail[1].notes))
+
+    def test_an_unmapped_location_reaches_the_page(self):
+        view = _build(_model(acts=[_activity(where="J")]))
+        self.assertIn("J", view.unmapped_locations)
+        self.assertTrue(any("Unmapped source value: J" in n
+                            for n in view.rail[2].notes))
+
+    def test_safety_not_reported_carries_the_dash_and_the_words(self):
+        view = _build(_model())
+        self.assertEqual(view.rail[3].value, "—")
+        self.assertIn("Not reported", view.rail[3].notes)
+        self.assertIn("No safety conclusion", view.safety.note)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  SECTIONS COLLAPSE RATHER THAN RESERVE SPACE
+# ══════════════════════════════════════════════════════════════════════════
+
+class SectionsCollapse(unittest.TestCase):
+
+    def test_additional_gate_workforce_is_None_when_empty(self):
+        self.assertIsNone(_build(_model()).additional_gate)
+
+    def test_and_present_when_a_company_has_no_activity_row(self):
+        view = _build(_model(rows=[_row(company="MQ Steel", worker_id="w1"),
+                                   _row(company="MQ Steel", worker_id="w2")]))
+        self.assertIsNotNone(view.additional_gate)
+        self.assertIn("MQ Steel 2", view.additional_gate.line)
+
+    def test_attention_is_None_when_nothing_is_outstanding(self):
+        self.assertIsNone(_build(_model(complete=True)).attention)
+
+    def test_and_names_each_outstanding_record(self):
+        view = _build(_model(missing=True))
+        self.assertEqual(view.attention.outstanding, 2)
+        self.assertIn("required records outstanding", view.attention.headline)
+
+    def test_one_outstanding_record_is_singular(self):
+        model = _model()
+        model.required_logs = m.RequiredLogsState(
+            ["a", "b"], ["a", "b"], ["a"], label=lambda t: t.upper())
+        view = _build(model)
+        self.assertEqual(view.attention.headline,
+                         "1 required record outstanding")
+
+    def test_no_bands_when_no_photographs(self):
+        self.assertEqual(_build(_model()).bands, ())
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  ONE STATEMENT, TWO PAGES
+# ══════════════════════════════════════════════════════════════════════════
+
+class TheBandCopyIsTheRowCopy(unittest.TestCase):
+
+    def test_the_band_statement_is_the_activity_statement(self):
+        model = _model(
+            rows=[_row(company="Quality Plumbing", worker_id=f"w{i}")
+                  for i in range(5)],
+            acts=[_activity(company="Quality Plumbing", workers="7",
+                            where="Underground", photos=[{"a": 1}])])
+        view = _build(model)
+        self.assertEqual(view.bands[0].statement, view.activities[0].statement)
+        self.assertEqual(view.bands[0].chip, view.activities[0].chip)
+        self.assertIn("7 on daily log", view.bands[0].statement)
+
+
+class ThePhotoVariantIsChosenHere(unittest.TestCase):
+
+    def test_the_url_builder_receives_the_photograph(self):
+        """Which rendition is authoritative is a data decision, so the callable
+        is handed the photograph and the template never sees it."""
+        seen = []
+
+        def url(lb, ai, pi, photo):
+            seen.append(photo.get("enhance_status"))
+            return f"u/{pi}"
+
+        model = _model(acts=[_activity(
+            photos=[{"enhance_status": "done"}, {"enhance_status": None}])])
+        v.build(model, address="a", city="c", date_long="d", generated="g",
+                report_number="r", headline="h", summary_body=None, cards=(),
+                photo_url=url, logbook_id="lb1")
+        self.assertEqual(seen, ["done", None])
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  THE SUMMARY
+# ══════════════════════════════════════════════════════════════════════════
+
+class TheSummary(unittest.TestCase):
+
+    def test_the_fallback_is_used_when_the_generator_refuses(self):
+        view = _build(_model(), summary_body=None)
+        self.assertIn("checked in through the gate", view.summary.body)
+
+    def test_a_verified_sentence_replaces_it_and_looks_no_different(self):
+        view = _build(_model(), summary_body="A verified sentence.")
+        self.assertEqual(view.summary.body, "A verified sentence.")
+
+    def test_the_fallback_names_no_area(self):
+        """The rail already says where the work was; naming areas here made
+        the sentence read like a field dump."""
+        view = _build(_model(acts=[_activity(where="1st floor")]))
+        for token in ("L1", "1st floor", "Level 1"):
+            self.assertNotIn(token, view.summary.body)
+
+    def test_the_fallback_separates_matched_from_unmatched_companies(self):
+        model = _model(
+            rows=[_row(company="Arkon Builders", worker_id="w1")],
+            acts=[_activity(company="Arkon Builders"),
+                  _activity(company="AAZ", workers="0")])
+        body = _build(model).summary.body
+        self.assertIn("Arkon Builders had recorded workforce activity", body)
+        self.assertIn("AAZ activity was documented without", body)
+
+    def test_the_closing_line_is_the_ratio_and_nothing_else(self):
+        self.assertEqual(_build(_model()).summary.closing,
+                         "1 of 2 required daily logs were filed.")
+
+
+class TheCompletenessDenominatorsStaySeparate(unittest.TestCase):
+
+    def test_they_are_three_numbers_and_never_a_sum(self):
+        c = _build(_model()).completeness
+        self.assertEqual(c.required_ratio, "1 of 2")
+        self.assertEqual(c.additional, 1)
+        self.assertEqual(c.outstanding, 1)
+        self.assertNotIn("3", c.required_ratio)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
