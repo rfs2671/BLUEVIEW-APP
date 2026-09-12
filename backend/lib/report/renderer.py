@@ -48,7 +48,7 @@ from typing import List, Optional, Sequence, Tuple
 from .view import (ActivityRowView, AdditionalGateView, AttentionView,
                    BandView, BannerView, CardState, CardView,
                    CompletenessView, RailCell, ReportView, SafetyView,
-                   SummaryView)
+                   SummaryView, WeatherView)
 
 # ── INK ────────────────────────────────────────────────────────────────────
 NAVY = "#0A1929"
@@ -231,8 +231,12 @@ body { margin: 0; color: %(INK)s; background: #fff;
            text-transform: uppercase; color: %(MUTED)s; }
 .p1 .wxrule { border-top: 2px solid %(HAIR)s; width: 0.30in;
               margin: 0.13in 0 0.15in; }
-/* THE RESOLVED LINE, WHOLE. It is one sentence from one helper and the wind
-   clause is part of it. */
+/* THE THREE VALUES, AND THE TEMPERATURE LEADS. */
+.p1 .wxcond { font-size: 13px; color: %(INK)s; line-height: 1.2; }
+.p1 .wxtemp { font-size: 30px; font-weight: 700; color: %(NAVY)s;
+              line-height: 1; letter-spacing: -0.02em; padding-top: 6px; }
+.p1 .wxwind { font-size: 12px; color: %(MUTED)s; padding-top: 9px; }
+/* AND THE WHOLE-LINE MESSAGES, which have no breakdown behind them. */
 .p1 .wxline { font-size: 12.5px; color: %(NAVY)s; line-height: 1.55;
               font-weight: 500; }
 .p1 .exrule { border-top: 1px solid %(HAIR)s; margin-top: 0.22in; }
@@ -371,6 +375,9 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1.dense .eclose { font-size: 10.5px; padding-top: 7px; }
 .p1.dense .wx { margin-top: 0.12in; padding: 0.11in 0.14in 0.12in; }
 .p1.dense .wxline { font-size: 11.5px; }
+.p1.dense .wxcond { font-size: 11px; }
+.p1.dense .wxtemp { font-size: 22px; padding-top: 4px; }
+.p1.dense .wxwind { font-size: 10px; padding-top: 5px; }
 .p1.dense .wxrule { margin: 0.07in 0 0.08in; }
 .p1.dense .exrule { margin-top: 0.09in; }
 .p1.dense .sechead { padding: 0.11in 0 0.02in; font-size: 7.5px; }
@@ -408,6 +415,9 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1.tight .eclose { font-size: 11px; padding-top: 9px; }
 .p1.tight .wx { margin-top: 0.18in; padding: 0.15in 0.18in 0.17in; }
 .p1.tight .wxline { font-size: 12.5px; }
+.p1.tight .wxcond { font-size: 12px; }
+.p1.tight .wxtemp { font-size: 26px; padding-top: 5px; }
+.p1.tight .wxwind { font-size: 11px; padding-top: 7px; }
 .p1.tight .wxrule { margin: 0.10in 0 0.11in; }
 .p1.tight .exrule { margin-top: 0.18in; }
 .p1.tight .sechead { padding: 0.13in 0 0.03in; }
@@ -642,21 +652,37 @@ def render_hero(banner: BannerView) -> str:
         "</div></div>")
 
 
-def render_weather_card(line: str) -> str:
+def render_weather_card(wx: WeatherView) -> str:
     """WEATHER, AS A DESIGNED PANEL RATHER THAN A ROW OF METADATA.
 
-    `line` arrives already resolved by `_display_weather`, which is the only
-    thing that reads `weather_fetch_state` -- so "could not be retrieved" and
-    "not recorded" arrive here as themselves and are printed as themselves.
-    NOTHING IS PARSED OUT OF IT: the reference sets the temperature apart from
-    the condition and the wind, and the view carries one composed string, so
-    splitting it here would be this layer deciding what a piece of it means.
-    See the note to the operator.
+    THE TEMPERATURE LEADS, which is what the reference asks for and what a
+    reader looks for first. The condition sits above it and the wind below.
+
+    NOTHING IS PARSED HERE. The three values arrive resolved from
+    `_weather_parts`, the same resolution that composes the line; this layer
+    chooses sizes and nothing else.
+
+    AND WHEN THERE IS NO BREAKDOWN THE PANEL PRINTS THE LINE. "Weather could
+    not be retrieved" and "not recorded" are whole-line messages with no parts
+    behind them, and a heading over three empty fields would say less than the
+    sentence does.
     """
+    if not wx.detailed:
+        return (
+            '<div class="wx"><div class="wxh">Weather</div>'
+            '<div class="wxrule"></div>'
+            f'<div class="wxline">{esc(wx.line)}</div></div>')
+    wind = (f'<div class="wxwind">{esc(wx.wind_line)}</div>'
+            if wx.wind_line else "")
     return (
         '<div class="wx"><div class="wxh">Weather</div>'
         '<div class="wxrule"></div>'
-        f'<div class="wxline">{esc(line)}</div></div>')
+        + (f'<div class="wxcond">{esc(wx.condition)}</div>'
+           if wx.condition else "")
+        + (f'<div class="wxtemp">{esc(wx.temperature)}</div>'
+           if wx.temperature else "")
+        + wind
+        + "</div>")
 
 
 def render_activity_block(a: ActivityRowView) -> str:
@@ -758,7 +784,7 @@ def render_page_1(view: ReportView) -> str:
         + f'<div class="ebody">{esc(view.summary.body)}</div>'
         + f'<div class="eclose">{esc(view.summary.closing)}</div></div>'
         + '</td><td class="exr">'
-        + render_weather_card(view.weather_line)
+        + render_weather_card(view.weather)
         + "</td></tr></table>"
         + '<div class="exrule"></div>'
         + '<div class="sechead">Today&rsquo;s documented activity</div>'

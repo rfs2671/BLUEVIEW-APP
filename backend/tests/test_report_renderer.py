@@ -28,6 +28,7 @@ import os
 import sys
 import typing
 import unittest
+from enum import Enum
 from pathlib import Path
 
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
@@ -119,14 +120,43 @@ def _cards(n=7, filed=5):
 #  THE INPUT CONTRACT
 # ══════════════════════════════════════════════════════════════════════════
 
-VIEW_TYPES = {v.ReportView, v.BannerView, v.RailCell, v.SummaryView,
-              v.ActivityRowView, v.PhotoView, v.BandView, v.CardView,
-              v.AttentionView, v.SafetyView, v.CompletenessView,
-              v.AdditionalGateView, v.CardState}
+#: WHAT A RENDERER HELPER MAY BE HANDED: anything the view layer declares,
+#: and nothing else.
+#:
+#: DERIVED, NOT RETYPED. This was a list of thirteen names written by hand, and
+#: the first view object added after it was written -- `WeatherView`, when the
+#: weather panel was given its three values -- failed the check for being
+#: absent from the list rather than for being wrong. A hand-kept allowlist of
+#: the things a gate permits turns every legitimate addition into a false
+#: positive, and a reader who has seen two of those starts adding names without
+#: reading the gate.
+#:
+#: The rule is unchanged and is what the derivation states: a renderer helper
+#: takes a VIEW OBJECT or a primitive. A model class, a database document or an
+#: activity dict is still refused, because none of them is declared here.
+VIEW_TYPES = {obj for obj in vars(v).values()
+              if isinstance(obj, type)
+              and (dataclasses.is_dataclass(obj) or issubclass(obj, Enum))
+              and obj.__module__ == v.__name__}
 PRIMITIVES = {str, int, float, bool}
 
 
 class TheRendererTakesOnlyViewObjects(unittest.TestCase):
+
+    def test_the_derived_list_found_the_view_objects(self):
+        """THE VACUITY GUARD ON THE DERIVATION. An empty set makes every
+        signature check below pass, and a set that quietly stopped matching
+        would look exactly like a renderer that had been cleaned up."""
+        self.assertGreaterEqual(len(VIEW_TYPES), 13)
+        for named in (v.ReportView, v.BannerView, v.ActivityRowView,
+                      v.WeatherView, v.CardState):
+            self.assertIn(named, VIEW_TYPES, named)
+
+    def test_and_it_admits_nothing_from_outside_the_view_layer(self):
+        """The other direction: a model class imported into `view.py` for a
+        type hint must not become something a renderer may be handed."""
+        for declared in VIEW_TYPES:
+            self.assertEqual(declared.__module__, v.__name__, declared)
 
     def _functions(self):
         for name, fn in vars(r).items():

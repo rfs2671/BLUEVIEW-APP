@@ -382,19 +382,63 @@ reach the register.
 | weather under activity | printed again | removed; the panel is the primary presentation |
 | footer | none | pinned to the foot of the sheet |
 
-## Two things the reference asks for that the view cannot supply
+## Two things the reference asked for that the view could not supply
 
-Reported rather than reached for, per the ruling.
+Reported rather than reached for. Both were then ruled on, in opposite
+directions, and the answers are recorded here because the reasoning is the
+useful part.
 
-1. **The weather card's three-part hierarchy.** The reference sets condition,
-   temperature and wind apart. The view carries ONE composed string from
-   `_display_weather`, which is the only thing that reads `weather_fetch_state`.
-   Splitting it in the renderer would be the layout layer deciding what a piece
-   of a resolved string means, which is the defect this architecture exists to
-   prevent. The card ships with the label, the rule and the resolved line.
-2. **Trade and work description on an activity block.** `ActivityRowView`
-   carries company, location, statement and chip. Adding either is a view-object
-   change.
+### 1. The weather hierarchy — APPROVED, and built
+
+The reference sets condition, temperature and wind apart. The view carried ONE
+composed string from `_display_weather`, and splitting it in the renderer would
+have been the layout layer deciding what a piece of a resolved string means.
+
+RULED: *"Have `_display_weather` keep returning the exact same composed string
+for compatibility, but also expose structured condition, temperature, and wind
+values from the same resolved data. That is a justified view-model change
+because it improves presentation without changing data resolution."*
+
+`_weather_parts` now holds every rule the helper had — the fetch-state check,
+the stripping, the two kinds of absence — and `_display_weather` is one line
+that composes from it. There is ONE resolution in two shapes, not two
+resolutions that agree today.
+
+**The fetch-failure case offers no parts at all**, and that is the case worth
+reading. The helper's rule is that `offline` or `error` wins over whatever
+`weather` and `weather_temp` hold, because a stale value beside "could not be
+retrieved" is two claims about one reading. Parts that survived that check would
+put a temperature on a page whose own panel says there is no reading.
+
+`WeatherView.detailed` is the only question the template may ask. A panel that
+tested the three fields itself could assemble a reading out of whichever
+happened to be non-empty; it asks whether there is a breakdown and prints the
+sentence when there is not.
+
+The compatibility claim is asserted rather than promised: ten record shapes,
+each checked that `_display_weather` and `_weather_parts(...).line` agree.
+
+**And the weather census now counts the resolution, not a name.** It counted
+`_display_weather(` alone and would have reported the investor page as having
+drifted away from the helper when it had only asked for the other shape.
+
+### 2. Trade and work description — DECLINED
+
+RULED: *"Do not add it yet. The current activity block is enough for Page 1.
+Don't expand `ActivityRowView` just to imitate the reference unless we later
+decide the report actually needs that information."*
+
+`ActivityRowView` is unchanged: company, location, statement, chip.
+
+### And one gate that fired correctly on the way through
+
+`VIEW_TYPES` — the list of things a renderer helper may be handed — was thirteen
+names written by hand, and the first view object added after it was written
+failed for being absent from the list rather than for being wrong. **A
+hand-kept allowlist turns every legitimate addition into a false positive**, and
+a reader who has seen two of those starts adding names without reading the gate.
+It is derived from `view.py`'s own dataclasses and enums now, with a vacuity
+guard and a check that nothing from outside the view layer is admitted.
 
 ## The tagline
 

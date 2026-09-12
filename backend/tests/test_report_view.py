@@ -66,12 +66,12 @@ def _model(rows=None, acts=None, missing=None, complete=False,
         weather=list(weather))
 
 
-def _build(model, cards=(), summary_body=None):
+def _build(model, cards=(), summary_body=None, weather=None):
     return v.build(
         model, address="588 Thomas S Boyland Street", city="Brooklyn, NY",
         date_long="August 27, 2026", generated="2026-09-11 12:00:00 ET",
         report_number="Report #___", headline="Framing active",
-        summary_body=summary_body, cards=cards,
+        summary_body=summary_body, cards=cards, weather=weather,
         photo_url=lambda lb, ai, pi, photo: f"https://x/{lb}/{ai}/{pi}",
         logbook_id="lb1")
 
@@ -378,6 +378,54 @@ class TheSummary(unittest.TestCase):
     def test_the_closing_line_is_the_ratio_and_nothing_else(self):
         self.assertEqual(_build(_model()).summary.closing,
                          "1 of 2 required daily logs were filed.")
+
+
+class TheWeatherPanelGetsTheSameResolutionTakenApart(unittest.TestCase):
+    """APPROVED VIEW CHANGE, 12 September. The panel on Page 1 sets the
+    condition, the temperature and the wind out separately; every other
+    surface prints the composed line. Both come from `_weather_parts`, and
+    NEITHER IS PARSED OUT OF THE OTHER -- which is the whole reason the helper
+    offers two shapes instead of the renderer splitting a sentence.
+    """
+
+    class _Parts:
+        def __init__(self, condition="", temperature="", wind=""):
+            self.condition = condition
+            self.temperature = temperature
+            self.wind = wind
+
+    def test_the_parts_reach_the_view_and_the_line_still_does(self):
+        view = _build(_model(), weather=self._Parts("Cloudy", "73°F", "14 mph"))
+        self.assertEqual(view.weather.condition, "Cloudy")
+        self.assertEqual(view.weather.temperature, "73°F")
+        self.assertEqual(view.weather.wind, "14 mph")
+        self.assertEqual(view.weather.line, view.weather_line)
+
+    def test_a_caller_with_no_parts_still_gets_a_panel_to_read(self):
+        """THE PAGE HAS ONE THING TO READ, not a view object and a `None` to
+        branch on. Without parts the panel carries the line it would have
+        printed anyway."""
+        view = _build(_model())
+        self.assertEqual(view.weather.line, view.weather_line)
+        self.assertFalse(view.weather.detailed)
+
+    def test_detailed_is_the_only_question_a_template_may_ask(self):
+        """A panel that tested the three fields itself could assemble a
+        reading out of whichever happened to be non-empty. It asks whether
+        there is a breakdown, and prints the sentence when there is not."""
+        self.assertTrue(v.WeatherView("x", condition="Cloudy").detailed)
+        self.assertTrue(v.WeatherView("x", temperature="73°F").detailed)
+        self.assertFalse(v.WeatherView("— Weather could not be retrieved")
+                         .detailed)
+        # WIND ALONE IS NOT A READING. The helper never returns it without a
+        # condition or a temperature, and a panel headed by a wind speed would
+        # be a breakdown of nothing.
+        self.assertFalse(v.WeatherView("x", wind="14 mph").detailed)
+
+    def test_the_wind_label_is_the_panels_and_the_value_is_the_records(self):
+        self.assertEqual(v.WeatherView("x", wind="14 mph").wind_line,
+                         "Wind: 14 mph")
+        self.assertEqual(v.WeatherView("x").wind_line, "")
 
 
 class TheCompletenessDenominatorsStaySeparate(unittest.TestCase):

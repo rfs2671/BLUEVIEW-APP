@@ -194,6 +194,40 @@ class AttentionView:
 
 
 @dataclass(frozen=True)
+class WeatherView:
+    """One day's weather, resolved, in the two shapes a page might want.
+
+    `line` is the composed sentence every other surface prints. The three
+    beside it are the SAME resolution taken apart by `_weather_parts`, for the
+    panel on Page 1 that sets them out separately.
+
+    `detailed` IS THE ONLY QUESTION A TEMPLATE MAY ASK. When the helper
+    returned a whole-line message -- "could not be retrieved", or not recorded
+    -- there are no parts, and a panel that tried to lay out three empty
+    fields would print a heading over nothing. So the template asks whether
+    there is a breakdown to show and prints the line when there is not; it
+    does not test the fields itself and cannot assemble a reading from
+    whichever of them happens to be non-empty.
+    """
+
+    line: str
+    condition: str = ""
+    temperature: str = ""
+    wind: str = ""
+
+    @property
+    def detailed(self) -> bool:
+        return bool(self.condition or self.temperature)
+
+    @property
+    def wind_line(self) -> str:
+        """The wind with its label, or nothing. The label is the panel's
+        wording and the value is the record's; keeping them apart here is why
+        the renderer never has to build a phrase."""
+        return f"Wind: {self.wind}" if self.wind else ""
+
+
+@dataclass(frozen=True)
 class SafetyView:
     value: str
     note: str
@@ -229,6 +263,7 @@ class ReportView:
     additional_gate: Optional[AdditionalGateView]
     workforce_line: str
     weather_line: str
+    weather: WeatherView
     attention: Optional[AttentionView]
     safety: SafetyView
     bands: Tuple[BandView, ...]
@@ -307,11 +342,19 @@ def fallback_summary(model: "m.ReportDisplayModel") -> str:
     return " ".join(parts)
 
 
+def weather_line_of(model: "m.ReportDisplayModel") -> str:
+    """The one place the page's weather sentence is decided.
+
+    It was written twice the moment the panel needed the parts as well, which
+    is how the two would have drifted."""
+    return " · ".join(model.weather) or "Not recorded"
+
+
 def build(model: "m.ReportDisplayModel", *, address: str, city: str,
           date_long: str, generated: str, report_number: str,
           headline: str, summary_body: Optional[str],
           cards: Sequence[dict], photo_url: Callable,
-          logbook_id: str) -> ReportView:
+          logbook_id: str, weather=None) -> ReportView:
     """Project the resolved model onto the objects a template may read.
 
     `summary_body` is the verified sentence when the generator produced one and
@@ -396,7 +439,15 @@ def build(model: "m.ReportDisplayModel", *, address: str, city: str,
         activities=activities,
         additional_gate=additional,
         workforce_line=workforce or "No check-ins recorded",
-        weather_line=" · ".join(model.weather) or "Not recorded",
+        weather_line=weather_line_of(model),
+        # THE PARTS ARE OPTIONAL AND THE LINE IS NOT. A caller with no parts
+        # to offer still gets a `WeatherView`, carrying the line it would have
+        # printed anyway -- so the panel has one thing to read rather than two
+        # and a `None` to branch on.
+        weather=(WeatherView(weather_line_of(model), weather.condition,
+                             weather.temperature, weather.wind)
+                 if weather is not None
+                 else WeatherView(weather_line_of(model))),
         attention=(AttentionView(len(model.required_logs.missing),
                                  tuple(model.required_logs.missing_names()))
                    if model.required_logs.missing else None),

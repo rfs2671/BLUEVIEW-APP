@@ -14,7 +14,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Literal, Optional, Dict, Any, Tuple
+from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -30275,6 +30275,45 @@ def _headcount_by_sub(checkins) -> "Tuple[List[Tuple[str, int]], int]":
     return ordered, sum(counts.values())
 
 
+class WeatherParts(NamedTuple):
+    """One day's weather, resolved once and offered in two shapes.
+
+    `line` is what `_display_weather` has always returned and is what anything
+    printing a single line should use. The three fields beside it are the same
+    resolution taken apart, for a surface that sets them out separately.
+
+    ALL THREE ARE EMPTY WHENEVER `line` IS A WHOLE-LINE MESSAGE -- "could not
+    be retrieved" or not recorded. A caller that prints the fields therefore
+    prints nothing on exactly the days the line says there is nothing, and
+    cannot assemble a reading out of pieces the helper refused.
+    """
+
+    line: str
+    condition: str = ""
+    temperature: str = ""
+    wind: str = ""
+
+
+def _weather_parts(data) -> "WeatherParts":
+    """THE ONE RESOLUTION. See `_display_weather` below for why each rule is
+    what it is; this function holds them and that one composes from it."""
+    d = data or {}
+    state = str(d.get("weather_fetch_state") or "").strip().lower()
+    if state in ("offline", "error"):
+        # THE FETCH STATE WINS over whatever the other fields hold. A
+        # temperature printed beside "could not be retrieved" is two claims
+        # about one reading, so no parts are offered at all.
+        return WeatherParts("— Weather could not be retrieved")
+    condition = str(d.get("weather") or "").strip()
+    temperature = str(d.get("weather_temp") or "").strip()
+    body = " ".join(p for p in (condition, temperature) if p)
+    if not body:
+        return WeatherParts(NOT_RECORDED)
+    wind = str(d.get("weather_wind") or "").strip()
+    line = f"{body} — Wind: {wind}" if wind else body
+    return WeatherParts(line, condition, temperature, wind)
+
+
 def _display_weather(data):
     """Render weather for a report or PDF. NEVER a blank.
 
@@ -30294,20 +30333,17 @@ def _display_weather(data):
     ('ok' | 'offline' | 'error'), so a failure is distinguishable from a log
     filed before the field existed. Older documents have no state and simply
     fall through to the not-recorded case, which is the honest reading of them.
+
+    ── ONE LINE, BECAUSE THE RULES MOVED UP AND NOT AWAY ──────────────────
+
+    Every rule described above lives in `_weather_parts` now, which offers the
+    same resolution taken apart for a surface that sets the condition, the
+    temperature and the wind out separately. This composes the line from it, so
+    there is one place the fetch state is read and one place the two kinds of
+    absence are decided. The string it returns is unchanged, and the cases
+    above are asserted on it directly.
     """
-    d = data or {}
-    state = str(d.get("weather_fetch_state") or "").strip().lower()
-    if state in ("offline", "error"):
-        return "— Weather could not be retrieved"
-    parts = [
-        str(d.get("weather") or "").strip(),
-        str(d.get("weather_temp") or "").strip(),
-    ]
-    body = " ".join(p for p in parts if p)
-    if not body:
-        return NOT_RECORDED
-    wind = str(d.get("weather_wind") or "").strip()
-    return f"{body} — Wind: {wind}" if wind else body
+    return _weather_parts(data).line
 
 
 def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140,
@@ -31340,8 +31376,8 @@ async def generate_combined_report(
     # NOT_RECORDED becomes an EMPTY LIST rather than a printed line, so the
     # page's own absence wording is used once instead of two spellings of the
     # same nothing appearing on one document.
-    _weather_line = _display_weather(daily_data)
-    weather = [] if _weather_line == NOT_RECORDED else [_weather_line]
+    _wx = _weather_parts(daily_data)
+    weather = [] if _wx.line == NOT_RECORDED else [_wx.line]
 
     model = report_model.ReportDisplayModel(
         project=project or {}, date=date, gate=gate, activities=activities,
@@ -31415,6 +31451,11 @@ async def generate_combined_report(
         # surface with a different failure mode, and standing one up quietly
         # would put unverified prose on a document a lender relies on.
         summary_body=None,
+        # THE SAME RESOLUTION, TAKEN APART. Page 1 sets the condition, the
+        # temperature and the wind out separately; everything else reads the
+        # composed line. Both come from `_weather_parts` and neither is parsed
+        # out of the other.
+        weather=_wx,
         cards=cards,
         photo_url=_report_photo_url,
         logbook_id=str(daily.get("_id") or ""),
