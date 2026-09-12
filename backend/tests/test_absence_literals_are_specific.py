@@ -385,14 +385,20 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     # "UNAFFIRMED", so an anchor built around the shorter word matches the
     # longer one, and an anchor built around the longer sentence would pass on
     # a reworded banner that still accuses the signer.
-    ("test_report_document_layout.py", "UNAFFIRMED"),
+    # RE-KEYED. test_report_document_layout.py was deleted with the report's
+    # embedded sections; the claim moved to TheReportNeverAccusesASigner,
+    # which reads the rendered report rather than an embedded copy of a filed
+    # document. See docs/audits/report-replacement-ledger.md.
+    ("test_report_renderer.py", "UNAFFIRMED"),
+    ("test_report_renderer.py", "AFFIRMED"),
+    ("test_report_renderer.py", "iVBORw0KGgo"),
 
     # ── A SENTINEL THE FIXTURE PLANTED ───────────────────────────────────────
     # The base64 PNG magic prefix. It is in the document ONLY if item 1 pasted
     # the superintendent's signature blob in as body text, which is the whole
     # finding, so any occurrence at all is the violation and there is nothing
     # to anchor to.
-    ("test_report_document_layout.py", "iVBORw0KGgo"),
+    ("test_filed_document_layout.py", "iVBORw0KGgo"),
 }
 
 

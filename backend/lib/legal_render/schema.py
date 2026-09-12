@@ -19,15 +19,22 @@ it inline.
 
 ── THE SOURCE IS PART OF THE SCHEMA ──────────────────────────────────────────
 
-Some sheets are one filed record. Some are many: an orientation is filed ONE
-DOCUMENT PER WORKER -- 85 records in 22 project-and-date groups on production
-today -- while the paper it becomes lists every attendee under one
-certification. And the daily jobsite log and the superintendent's log are two
-separately signed records that print as ONE SHEET.
+Some sheets are one filed record. Some are many: the daily jobsite log and the
+superintendent's log are two separately signed records that print as ONE SHEET.
 
 So `source` is declared per type: `one`, `group`, or `combined`. Getting this
 into the schema now is the difference between a mechanism and a special case
 waiting to happen, because the combined sheet then needs no engine change.
+
+AND IT HAS ALREADY EARNED ITS KEEP, BY BEING CHANGED. The orientation shipped
+as `group` -- one sheet per project and date, every attendee under one
+certification -- and that was wrong about what the document IS. A worker signs
+his own orientation the first time he comes on site; it is not a register of
+signatures collected at one meeting. Reversing it to `one` was ONE WORD in this
+file. The engine was not touched, the per-type switch in server.py was not
+touched, and no primitive learned anything new, because the group read there is
+gated on this declaration. That is the whole argument for source living in the
+schema, and it held the first time it was tested.
 
 ── EMPTY IS DECLARED, NEVER INFERRED ─────────────────────────────────────────
 
@@ -225,17 +232,23 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     # ── SITE SAFETY ORIENTATION ─────────────────────────────────────────────
     #
-    # ONE SHEET PER (PROJECT, DATE), NOT PER WORKER. The app files one document
-    # per worker -- 85 of them in 22 groups on production, the largest group 16
-    # -- and the paper it becomes is one sheet listing every attendee under one
-    # certification. The records are NOT merged: each stays its own separately
-    # signed row, and each attendee line carries that worker's own signature,
-    # which is what the paper does and what the data supports.
+    # ONE SHEET PER WORKER. 92 filed records on production, and 92 sheets.
+    #
+    # THIS SHIPPED THE OTHER WAY ROUND, AND THE REVERSAL IS THE POINT. It was
+    # `group`, keyed on project and date, drawing every attendee into one
+    # roster under one certification. That reads well and is wrong about the
+    # document: a worker signs his own orientation the first time he comes on
+    # site, and the date two men share is where their first days happen to
+    # fall, not a meeting either attended. A roster asserts the meeting.
+    #
+    # Reversing it also ended the only case in this product where two
+    # separately filed legal records shared a page. 17 of the 23 groups held
+    # more than one record; the largest held 16.
     "subcontractor_orientation": {
         "title": "Site Safety Orientation Record",
         "subtitle": "To be maintained on site for inspection",
         "cite": "BC 3301.13.13",
-        "source": {"kind": "group", "by": ["project_id", "date"]},
+        "source": {"kind": "one"},
         "sections": [
             {
                 "n": 1, "title": "Site Information", "primitive": "field_grid",
@@ -265,34 +278,46 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "labels": "orientation_items", "empty": "none_documented",
             },
             {
-                # THE ATTENDEE TABLE IS THE SHEET. One row per filed record,
-                # each carrying that worker's OWN signature -- the reason the
-                # records are drawn together rather than merged.
-                "n": 4, "title": "Attendees", "primitive": "table",
-                "scope": "each", "empty": "blank_rows", "min_rows": 10,
-                # EVERY FIELD THE RECORD CARRIES. The first draft of this
-                # schema dropped `osha_number`, `orientation_number` and the
-                # completion stamp, and the existing renderer tests caught all
-                # three -- which is the field-set rule working exactly as it
-                # was meant to: APPEARANCE MAY CHANGE, THE RECORDED VALUES MAY
-                # NOT. The spec's warning against adding OSHA numbers "because
-                # they appeared in a mockup" does not apply: this app collects
-                # one, on 80 of 85 filed records, and the old sheet printed it.
-                "columns": [
+                # A FIELD GRID, NOT A TABLE. This was a table of attendees, and
+                # on a one-worker sheet a table is one row with nine blank ones
+                # ruled beneath it -- a roster inviting names that are never
+                # coming, on a document about one man.
+                #
+                # EVERY FIELD THE RECORD CARRIES, unchanged from the columns
+                # that table declared. The first draft of this schema dropped
+                # `osha_number`, `orientation_number` and the completion stamp
+                # and the renderer tests caught all three: APPEARANCE MAY
+                # CHANGE, THE RECORDED VALUES MAY NOT. That rule is exactly
+                # what makes swapping one primitive for another safe to do.
+                "n": 4, "title": "Worker", "primitive": "field_grid",
+                "scope": "first", "empty": "omit",
+                "fields": [
                     ("data.worker_name", "Name (Print)", "name"),
                     ("data.worker_company", "Company", "name"),
                     ("data.worker_trade", "Trade", "name"),
                     ("data.osha_number", "OSHA / SST #", "raw_text"),
                     ("data.orientation_number", "Orientation #", "raw_text"),
                     ("data.completed_at", "Completed", "datetime_stamp"),
-                    ("data.worker_signature", "Signature", "signature_ink"),
                 ],
             },
             {
-                "n": 5, "title": "Certification", "primitive": "certification",
+                # HIS OWN MARK, ON HIS OWN SHEET. `omit` and the engine's
+                # signature rule together keep the distinction the old renderer
+                # drew: a key present and empty says UNSIGNED, and a key the
+                # record does not carry prints no section at all. A heading
+                # reading "Worker Acknowledgment" over an empty box is itself a
+                # claim that one was asked for.
+                "n": 5, "title": "Worker Acknowledgment",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "data.worker_signature",
+                "name_path": "data.worker_name",
+                "role": "Worker",
+            },
+            {
+                "n": 6, "title": "Certification", "primitive": "certification",
                 "scope": "first", "empty": "none_documented",
                 "statement": (
-                    "I certify that the above individuals received a site "
+                    "I certify that the individual named above received a site "
                     "safety orientation in accordance with BC 3301.13.13 and "
                     "that the information provided was reviewed and understood."
                 ),

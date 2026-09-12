@@ -129,14 +129,102 @@ class TestWeatherIsNeverBlank(unittest.TestCase):
         # What this assertion is for is unchanged -- that no renderer drifts
         # back to its own defaults -- and the earlier reasoning is kept rather
         # than deleted, so a reader who greps it finds the reversal.
+        #   5 -> 3  the report stopped EMBEDDING the filed documents, so its
+        #            copies of the daily jobsite and SSC sections went with
+        #            them. Both facts are still printed -- on the filed PDFs
+        #            those sections index -- and the cover's panel stays.
+        #
+        # ── AND THE HELPER NOW HAS TWO SHAPES, NOT TWO RESOLUTIONS ────────
+        #
+        # `_weather_parts` holds every rule and `_display_weather` composes one
+        # line from it, so a surface that sets the condition, temperature and
+        # wind out separately does not have to take the line apart. Counting
+        # one name alone would therefore report a renderer as having drifted
+        # away when it had only asked for the other shape.
+        #
+        # WHAT THIS COUNTS IS THE RESOLUTION'S CALL SITES: two definitions,
+        # the composition between them, the filed log's section, and the
+        # investor page's panel.
         self.assertEqual(
-            src.count('_display_weather('), 5,
-            "expected 1 definition + 4 call sites: the two PDF renderers' "
-            "daily jobsite sections, the SSC section, and the investor cover",
+            src.count('_display_weather(') + src.count('_weather_parts('), 5,
+            "expected 2 definitions + 1 composition + 2 call sites: the filed "
+            "daily jobsite log's own section, and the investor page's panel",
         )
+        # THE COMPOSITION IS THE ONE THAT MAKES THEM ONE RESOLUTION rather
+        # than two that happen to agree today.
+        i = src.index("def _display_weather(")
+        j = src.index(chr(10) + "def ", i + 10)
+        self.assertIn("return _weather_parts(data).line", src[i:j],
+                      "the line is built somewhere other than from the parts, "
+                      "so there are two resolutions to drift apart")
         # The exact bug shape, gone.
         self.assertNotIn('f\'{data.get("weather", "N/A")} ', src)
         self.assertNotIn('f\'{d.get("weather", "N/A")} ', src)
+
+
+class TheSameResolutionInTwoShapes(unittest.TestCase):
+    """`_weather_parts` offers the pieces; `_display_weather` composes them.
+
+    The panel on Page 1 sets the condition, the temperature and the wind out
+    separately. The alternative was for the renderer to split the composed
+    sentence, which is the layout layer deciding what a piece of a resolved
+    string means -- so the helper that already decided offers both shapes.
+    """
+
+    def test_the_parts_and_the_line_are_the_same_reading(self):
+        d = {"weather": "Cloudy", "weather_temp": "73°F",
+             "weather_wind": "14 mph"}
+        parts = server._weather_parts(d)
+        self.assertEqual(parts.condition, "Cloudy")
+        self.assertEqual(parts.temperature, "73°F")
+        self.assertEqual(parts.wind, "14 mph")
+        self.assertEqual(parts.line, server._display_weather(d))
+
+    def test_a_failed_FETCH_offers_no_parts_at_all(self):
+        """THE CASE THAT MATTERS MOST. The fetch state wins over whatever the
+        other fields hold, so a stale temperature cannot be laid out beside a
+        sentence saying the reading could not be retrieved."""
+        for state in ("offline", "error"):
+            d = {"weather_fetch_state": state, "weather": "Cloudy",
+                 "weather_temp": "73°F", "weather_wind": "14 mph"}
+            parts = server._weather_parts(d)
+            self.assertEqual((parts.condition, parts.temperature, parts.wind),
+                             ("", "", ""), state)
+            self.assertIn("could not be retrieved", parts.line)
+
+    def test_an_unrecorded_day_offers_no_parts_either(self):
+        parts = server._weather_parts({"weather": "", "weather_temp": ""})
+        self.assertEqual((parts.condition, parts.temperature), ("", ""))
+        self.assertEqual(parts.line, server.NOT_RECORDED)
+
+    def test_a_missing_value_is_absent_rather_than_invented(self):
+        """Temperature with no condition, and a reading with no wind: each
+        prints what the record holds and nothing in place of what it does
+        not."""
+        parts = server._weather_parts({"weather_temp": "73°F"})
+        self.assertEqual(parts.condition, "")
+        self.assertEqual(parts.temperature, "73°F")
+        self.assertEqual(parts.wind, "")
+        self.assertEqual(parts.line, "73°F")
+
+    def test_the_composed_line_is_byte_identical_across_every_shape(self):
+        """THE COMPATIBILITY CLAIM, ASSERTED RATHER THAN PROMISED. Everything
+        that printed one line before this change prints the same one."""
+        shapes = [
+            {}, None, {"weather": "Rainy"}, {"weather_temp": "73°F"},
+            {"weather": "Cloudy", "weather_temp": "73°F"},
+            {"weather": "Cloudy", "weather_temp": "73°F",
+             "weather_wind": "14 mph"},
+            {"weather": "  Snow  ", "weather_temp": " 31°F "},
+            {"weather_fetch_state": "offline"},
+            {"weather_fetch_state": "error", "weather": "Cloudy"},
+            {"weather_fetch_state": "ok", "weather": "Windy",
+             "weather_temp": "50°F", "weather_wind": "20 mph"},
+        ]
+        for d in shapes:
+            with self.subTest(shape=d):
+                self.assertEqual(server._display_weather(d),
+                                 server._weather_parts(d).line)
 
 
 class TestActivityChipCarriesTrade(unittest.TestCase):

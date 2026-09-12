@@ -49,8 +49,8 @@ from __future__ import annotations
 import html as _html
 from typing import Any, Dict, List, Optional
 
-from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _section_close,
-                         _section_open)
+from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _has,
+                         _section_close, _section_open)
 from .schema import SCHEMAS
 
 _PAGE_CSS = """
@@ -90,6 +90,18 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
         return not records
     if sec.get("scope") == "project":
         return not ctx.get("project")
+    if sec.get("primitive") == "signature":
+        # ASKED AND UNSIGNED IS NOT THE SAME AS NEVER ASKED, AT SECTION SCALE.
+        #
+        # `ink` already draws that line inside a cell. Here it decides whether
+        # the section exists: a heading reading "Worker Acknowledgment" over an
+        # empty signing area is itself a claim that an acknowledgment was asked
+        # for. The old renderer wrapped the whole block in `if
+        # "worker_signature" in data`, and a test names both halves.
+        #
+        # PRESENCE, NOT TRUTH -- `_has`, not `_get`. A key present and null is
+        # NOT empty here; it renders, and prints UNSIGNED.
+        return not _has(records[0] if records else {}, sec.get("path", ""))
     if sec.get("primitive") == "checklist":
         # THE ONE EXCEPTION, AND IT IS ABOUT MEANING RATHER THAN VALUES. A
         # checklist with no stored map has no items to draw three states over,

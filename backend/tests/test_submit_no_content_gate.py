@@ -37,8 +37,11 @@ _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
 import server as S  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 
 _SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
 
 # Every log type the shared submit path serves.
 ALL_LOG_TYPES = [
@@ -144,7 +147,7 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         guards = re.findall(
             r'if (?:str\()?w\.get\("name"(?:, "")?\)(?: or "")?\)?\.strip\(\):',
             _SRC)
-        self.assertEqual(len(guards), 2, guards)
+        self.assertEqual(len(guards), N_RENDERERS, guards)
         # And the unsafe spelling specifically must not come back.
         self.assertNotIn('w.get("name", "").strip()', _SRC)
 

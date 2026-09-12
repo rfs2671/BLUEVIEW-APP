@@ -35,6 +35,20 @@ WHAT WAS GENUINELY INVISIBLE was the rendering. `_filed_log(logbooks,
 was ever filed, so no report anyone had read contained the section at all. The
 decision was made in code and never seen on paper until the day it was.
 
+── WHAT THIS FILE DOES NOT COVER, AND WHERE THAT LIVES ───────────────────────
+
+SIGNATURES, NOT MARKERS. This walk works by asserting a keyword argument, so it
+can only hold things that take one. "Added after filing" is a photograph
+caption produced from a flag on the photograph; it takes no argument, there was
+no convention for it to violate, and it rendered on the investor report through
+two rulings against it -- eight times on the 2026-09-09 report -- while
+rendering zero times on the per-logbook PDF where it was ruled to stay.
+
+`test_the_legal_apparatus_markers.py` holds that class: a registry of markers
+checked against RENDERED OUTPUT, each one asserted absent from the investor
+render and present on the legal one. Read them together; this file's title
+promises more than a call-graph walk can deliver on its own.
+
 THE FLAG. `legal_record=True` on `_superintendent_log_html` gates three things
 that are one thing — the AFFIRMED banner, the BC 3301.13.13 citations, and the
 attestation paragraph. All are the audit trail of a §3301 filing: what a DOB
@@ -127,16 +141,35 @@ def _signature_calls_under(root: str):
     return out
 
 
-class EverySignatureReachableFromTheInvestorReportIsSilenced(unittest.TestCase):
-    """THE CHECK THAT WOULD HAVE CAUGHT IT."""
+class NoSignatureIsReachableFromTheInvestorReportAtAll(unittest.TestCase):
+    """THE CHECK THAT WOULD HAVE CAUGHT IT, ASKING FOR MORE.
+
+    It required every reachable signature to be SILENCED. The report embeds no
+    filed document now, so it reaches no signature renderer whatsoever -- and
+    "none" is a property a future section cannot satisfy by accident, whereas
+    "all of them pass a flag" is one somebody can break by adding a call that
+    forgets it. The walk is unchanged; only what it must find is.
+
+    THE VACUITY PROBLEM IS THE WHOLE POINT OF THIS FILE, so it is not solved
+    by lowering the old `>= 13` to `>= 0`. It is solved by running the SAME
+    walk from the filed renderer, where the answer must still be many.
+    """
 
     def test_the_call_graph_is_actually_being_walked(self):
         """A closure that returns only the root passes every assertion below
-        vacuously. This is the empty-set guard."""
-        reached = _reachable("generate_combined_report")
-        self.assertIn("generate_combined_report", reached)
+        vacuously. This is the empty-set guard, and it now runs against the
+        renderer that still composes filed documents."""
+        reached = _reachable("generate_single_logbook_html")
+        self.assertIn("generate_single_logbook_html", reached)
         self.assertIn("_superintendent_log_html", reached,
                       "the shared builder is no longer reached — the walk broke")
+        self.assertGreater(len(reached), 5)
+
+    def test_the_report_itself_is_still_walked(self):
+        """And the report's own closure is non-trivial, so "reaches no
+        signature" is a fact about a walk that went somewhere."""
+        reached = _reachable("generate_combined_report")
+        self.assertIn("generate_combined_report", reached)
         self.assertGreater(len(reached), 5)
 
     def test_every_reachable_signature_call_passes_show_affirmation_false(self):
@@ -156,13 +189,25 @@ class EverySignatureReachableFromTheInvestorReportIsSilenced(unittest.TestCase):
             f"report: {offenders}",
         )
 
-    def test_the_count_is_asserted_so_an_empty_walk_cannot_pass(self):
+    def test_the_report_reaches_no_signature_renderer_at_all(self):
+        """THE ASSERTION, INVERTED. Thirteen call sites were reachable and all
+        thirteen had to be silenced; zero are reachable now."""
         found = _signature_calls_under("generate_combined_report")
+        self.assertEqual(
+            [f"{f}:{c.lineno}" for f, c in found], [],
+            "the investor report composes a signature again")
+
+    def test_and_the_walk_still_finds_many_from_the_filed_renderer(self):
+        """THE GUARD ON THE ASSERTION ABOVE. An empty result is the shape a
+        BROKEN WALK produces, which is exactly what this file exists to refuse
+        -- so emptiness only counts as evidence while the same walk, on the
+        same machinery, still returns a crowd from the document renderer."""
+        found = _signature_calls_under("generate_single_logbook_html")
         self.assertGreaterEqual(
-            len(found), 13,
-            f"only {len(found)} signature calls reached; the walk is not "
-            "seeing the report's sections",
-        )
+            len(found), 9,   # measured, 2026-09-12
+            f"only {len(found)} signature calls reached from the filed "
+            "renderer; the walk is broken, so the empty result above proves "
+            "nothing")
 
     def test_the_exemption_is_ONE_function_and_its_premise_holds(self):
         """A named exemption is only as good as the claim behind it, so the
@@ -177,7 +222,13 @@ class EverySignatureReachableFromTheInvestorReportIsSilenced(unittest.TestCase):
         self.assertIn("return _public_temp_media_url", body,
                       "it no longer returns a URL, so it may be composing "
                       "HTML into the investor page after all")
-        self.assertIn('<img src="{c["thumb"]}"', _SRC,
+        # EMBEDDED BY THE RENDERER, NOT BY server.py. The card markup moved
+        # into lib/report/renderer.py with the rest of the layout; the claim
+        # -- that this URL reaches the page as an image and not as composed
+        # document HTML -- is read there.
+        _CARDS = (_PATH.parent / "lib" / "report" / "renderer.py").read_text(
+            encoding="utf-8")
+        self.assertIn('<img src="{esc(card.thumbnail)}"', _CARDS,
                       "its output is not embedded as an image")
 
     def test_the_exempt_function_IS_reached__it_is_not_dead(self):
@@ -188,8 +239,14 @@ class EverySignatureReachableFromTheInvestorReportIsSilenced(unittest.TestCase):
 
     def test_the_shared_builder_is_the_one_that_broke_it(self):
         """Named, so a future reader knows which call site the walk exists
-        for rather than rediscovering it."""
-        names = {f for f, _ in _signature_calls_under("generate_combined_report")}
+        for rather than rediscovering it.
+
+        READ OFF THE FILED RENDERER NOW. The builder is shared no longer: the
+        report reaches it through nothing, which is the finding above. What is
+        worth keeping is the NAME -- a reader who hits a failure here should
+        land on the call site that made this file necessary."""
+        names = {f for f, _ in
+                 _signature_calls_under("generate_single_logbook_html")}
         self.assertIn("_superintendent_log_html", names)
 
 
@@ -208,8 +265,25 @@ class TheLegalPdfKeepsEverything(unittest.TestCase):
         # mentioning the flag. What must be absent is the ARGUMENT.
         self.assertNotIn("legal_record=", _SRC[i:i + 200])
 
-    def test_the_combined_report_is_the_only_caller_that_opts_out(self):
-        self.assertEqual(_SRC.count("legal_record=False"), 1)
+    def test_nothing_opts_out_any_more_and_that_is_recorded(self):
+        """THE OPT-OUT HAS NO CALLER LEFT, and saying so is the point.
+
+        `legal_record=False` existed for exactly one caller: the investor
+        report's embedded copy of the superintendent's log. The report embeds
+        nothing, so the flag's False branch is now unreached code.
+
+        IT IS KEPT AND PINNED AT ZERO rather than deleted here. Deleting a
+        gate that takes the audit apparatus off a §3301 record is a decision
+        about the filing, not a tidy-up, and it belongs in its own change with
+        its own reading. What must not happen quietly is the opposite: a new
+        caller switching the apparatus off without anyone deciding to. This
+        assertion fails the moment one appears.
+        """
+        self.assertEqual(
+            _SRC.count("legal_record=False"), 0,
+            "something opts the superintendent's log out of its own audit "
+            "apparatus again; that was a decision last time and must be one "
+            "this time")
 
     def test_the_flag_gates_all_three_and_nothing_else(self):
         """Counted on STRIPPED code. The first draft counted the raw file and

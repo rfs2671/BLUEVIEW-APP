@@ -4,6 +4,76 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## DATA (HIGH) — 2026-09-11 — 16 of 92 orientation sheets are duplicates, and the 2026-07-29 entry names the wrong cause
+
+Found by the operator reading a rendered investor report. The orientation
+section's attendee table printed sixteen rows for roughly five men — Italo
+Guangasi five times, Juan Marcelo Marquez four, Angel Lopez four, Ivan Ramirez
+three — on a document that goes to investors and lenders.
+
+**The census, run in the production container on 2026-09-11:**
+
+```
+orientation records (all projects)     92
+  rows with NO data.worker_id           0
+  distinct worker names                76
+  names holding more than one row        8
+  rows those names account for          24
+  duplicate sheets                      16
+```
+
+**THE EXISTING ENTRY DOES NOT COVER THIS, AND ITS PREMISE IS FALSIFIED.**
+`DATA — 2026-07-29 — legacy subcontractor_orientation rows without
+data.worker_id` predicts a duplicate per worker whose row lacks that field, on
+the reasoning that a UI create cannot match it and mints a fresh `srv_<uuid>`.
+
+Zero rows on production lack `data.worker_id`. Seven of the eight duplicated
+names resolve to a SINGLE distinct `worker_id` across all of their rows, which
+is the opposite of what that mechanism produces: the upsert key is present, it
+is identical, and a second row was written anyway. So the cause is somewhere
+else and has not been found. The 2026-07-29 entry should be read as closed on
+its own terms and not as an explanation of these sixteen.
+
+That entry also calls the duplicate "**harmless**" and offers "the duplicate
+can be accepted as cosmetic". Both are now wrong:
+
+* it was **printing on the investor report** until the table was cut today
+* after the one-sheet-per-worker reversal, each duplicate is **its own filed
+  sheet** — a man with five rows produces five separate legal documents, each
+  certifying an orientation, each separately signed
+* it inflates "Worker acknowledgments signed: 16 of 16 filed today" threefold
+  against "11 of 11 on-site workers" on the same page
+
+**Not investigated further, deliberately.** The restyle is the only work track;
+this is recorded and left. Whoever picks it up starts with: what writes a
+second row when `data.worker_id` already matches, and is `date` part of the
+upsert key.
+
+---
+
+## COPY — 2026-09-11 — two figures on the report count different units
+
+Same page, nothing explaining the difference:
+
+```
+First-time orientation on file:   11 of 11 on-site workers
+Worker acknowledgments signed:    16 of 16 filed today
+```
+
+The first counts **people**: distinct workers checked in and not checked out
+for that project and date, deduped on `worker_id` or normalised name, against
+any orientation record for the project on any date. The second counts
+**documents**: filed orientation records bearing that date. Sixteen of those
+were five men.
+
+Neither figure is arithmetically wrong and both labels are literally accurate.
+Read together on one page they invite the arithmetic nobody intended, and the
+duplicate population above makes the second one three times the number of men
+it appears to describe. Kept as ruled; recorded because the reading is the
+defect, not the values.
+
+---
+
 ## OPEN — 2026-09-07 — every seed script can only write to PRODUCTION
 
 Found while looking for a way to generate a demo compliance report for the

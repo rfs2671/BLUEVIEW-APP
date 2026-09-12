@@ -1758,3 +1758,34 @@ Before a check is worth having:
       indistinguishable from never written. Before you close out a session,
       check `git for-each-ref refs/remotes/origin` against
       `gh pr list --state all --json headRefName`.
+
+---
+
+## The frontend runner reported on a subset, 2026-09-12
+
+`tests.yml`'s JS suite looped over the test files under `set -euo pipefail` and
+let the first non-zero exit halt the job. **It reported ONE broken file when
+five were broken**, and said nothing about the other 152.
+
+That is the same failure mode the step's own comment already describes for the
+two files that needed `@babel/core` and had therefore never executed in CI even
+once: **a gate reporting on a subset and saying nothing about the rest.** The
+cost of that shape is not the missed failure, it is the sequence — every fix is
+followed by another red build and nobody can know how many are left.
+
+**WHAT IT COST TO RUN THEM ALL: nothing.** Measured on the branch:
+
+| | |
+|---|---:|
+| all 157 files, sequentially | 12s |
+| the CI job's total wall time | 35s–67s |
+
+The job spends most of its time on `npm ci` and the two parse sweeps. Halting
+early bought no time at all.
+
+The loop now collects failures and prints the count with the list:
+
+    FAILED: 62 of 157 file(s)
+
+It still exits non-zero, so nothing about the gate's strictness changes — only
+what it is able to tell you when it fails.

@@ -41,6 +41,9 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
+
 
 try:
     from lib.logbook import cs_attribution as CA  # noqa: E402
@@ -246,7 +249,7 @@ class TheSentenceIsAFactNotAnAccusation(unittest.TestCase):
 class ItReachesTheDocument(unittest.TestCase):
     def test_both_renderers_resolve_it(self):
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertEqual(src.count("await cs_attribution_for("), 2)
+        self.assertEqual(src.count("await cs_attribution_for("), N_RENDERERS)
 
     def test_the_sentence_sits_above_the_signature(self):
         html = server._superintendent_log_html(

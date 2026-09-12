@@ -164,6 +164,22 @@ class _RenderBase(unittest.TestCase):
         return self.loop.run_until_complete(
             server.generate_single_logbook_html(logbook))
 
+    def _roster(self):
+        """THE TOOLBOX TALK, RENDERED AS ITS OWN DOCUMENT.
+
+        These cases read the roster off the investor report, which embedded the
+        toolbox talk. The report indexes it now, so the roster -- and the
+        New York clock that is the subject here -- is read off the document the
+        card links to. Same builder, same rule, one click along; the base case
+        already had a per-logbook twin and it is the one that did not move.
+        """
+        # THE DB'S COPY, NOT THE MODULE FIXTURE. Two of these cases mutate
+        # `self.db.logbooks.docs[0]` -- a winter instant, an unanchored wall
+        # clock -- and a helper that rendered the pristine fixture would have
+        # thrown their setup away and asserted August against August.
+        return self._rendered_body(
+            self.rendered_single(copy.deepcopy(self.db.logbooks.docs[0])))
+
     def _rendered_body(self, html):
         """The document WITHOUT its generated-on footer.
 
@@ -173,8 +189,15 @@ class _RenderBase(unittest.TestCase):
         rather than flaky — and the footer's own conversion has its own test
         below.
         """
-        i = html.index("<!-- FOOTER -->")
-        return html[:i]
+        # EITHER DOCUMENT'S FOOTER. The report marks its own with a comment;
+        # the per-logbook PDF opens its footer with the generated-on line. The
+        # first draft of the move cut on the comment alone and died on
+        # `substring not found` rather than on the claim it was making.
+        for marker in ("<!-- FOOTER -->", "Generated on "):
+            i = html.find(marker)
+            if i >= 0:
+                return html[:i]
+        return html
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -185,7 +208,7 @@ class TheRosterPrintsNewYorkTime(_RenderBase):
     """The one kind of test that would have caught this."""
 
     def test_the_combined_report_prints_6_47_AM_not_10_47(self):
-        body = self._rendered_body(self.rendered())
+        body = self._roster()
         self.assertIn(CORRECT, body,
                       "the roster does not print the New York time of the check-in")
         self.assertNotIn(WRONG, body,
@@ -194,7 +217,7 @@ class TheRosterPrintsNewYorkTime(_RenderBase):
     def test_and_it_says_which_zone(self):
         """A time with no zone on a legal record is the shape that let this
         bug live: nothing on the page said what "10:47" was a time IN."""
-        body = self._rendered_body(self.rendered())
+        body = self._roster()
         self.assertIn("6:47 AM EDT", body)
 
     def test_the_per_logbook_pdf_prints_it_the_same_way(self):
@@ -212,7 +235,7 @@ class TheRosterPrintsNewYorkTime(_RenderBase):
         self.db.logbooks.docs[0]["data"]["attendees"][0]["time"] = \
             "2026-01-14T10:47:05Z"
         self.db.logbooks.docs[0]["date"] = DATE  # the report still asks for Aug
-        body = self._rendered_body(self.rendered())
+        body = self._roster()
         self.assertIn("5:47 AM EST", body)
 
     def test_an_unanchored_wall_clock_string_still_falls_back_to_itself(self):
@@ -221,7 +244,7 @@ class TheRosterPrintsNewYorkTime(_RenderBase):
         renderer must print them rather than a parse error, exactly as before.
         """
         self.db.logbooks.docs[0]["data"]["attendees"][0]["time"] = "07:15"
-        body = self._rendered_body(self.rendered())
+        body = self._roster()
         self.assertIn("07:15", body)
 
 
@@ -229,9 +252,12 @@ class TheFooterSaysWhenInNewYorkTime(_RenderBase):
     """"Generated on ... UTC" is a stored instant rendered to a user too."""
 
     def test_the_generated_on_line_carries_an_eastern_zone(self):
+        # THE FOOTER IS THE LAST BLOCK OF PAGE 3 NOW, not a commented
+        # region of a table shell. The claim is unchanged: a stored instant
+        # rendered to a New York reader carries a New York zone.
         html = self.rendered()
-        footer = html[html.index("<!-- FOOTER -->"):]
-        self.assertIn("automatically generated on", footer)
+        footer = html[html.index("Generated automatically"):]
+        self.assertIn("Generated automatically", footer)
         self.assertTrue(
             "EDT" in footer or "EST" in footer,
             f"the footer names no Eastern zone: {footer[:400]}")

@@ -34,6 +34,8 @@ sys.path.insert(0, str(_BACKEND))
 from tests.source_text import strip_js, code_of  # noqa: E402  -- shared helpers the absence-literals classifier recognises
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS)
 
 _SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
@@ -44,6 +46,13 @@ _REPORT = _SRC[_SRC.index("async def generate_combined_report"):]
 _REPORT = _REPORT[:_REPORT.index('async def get_combined_report(')]
 _SINGLE = _SRC[_SRC.index("async def generate_single_logbook_html"):]
 _SINGLE = _SINGLE[:_SINGLE.index("async def generate_combined_report")]
+
+#: The three-page renderer's own source, for assertions about what the
+#: INVESTOR page says. The report is no longer a slab of server.py.
+_REPORT_PKG = Path(__file__).resolve().parent.parent / "lib" / "report"
+_RENDER_SRC = "".join(
+    (_REPORT_PKG / name).read_text(encoding="utf-8")
+    for name in ("renderer.py", "view.py", "model.py"))
 
 
 # ── A REAL RENDER, from a stored payload ─────────────────────────────────────
@@ -124,6 +133,54 @@ _DAY_WITH_DUPLICATE = {
 }
 
 
+def _filed_documents(db, project_id, date):
+    """Every filed document for the day, as the reader reaches them.
+
+    THE INVESTOR REPORT NO LONGER EMBEDS THESE, and that is why this exists.
+    The report carries a record index whose cards link to the per-logbook PDF;
+    the rules below are about what a filed document SAYS, and a filed document
+    says it on the legal render now. So the subject moved and not one assertion
+    did, which is the test of whether the removal lost anything.
+
+    `_filed_log` picks the same document the card links to -- the latest signed
+    record for each type -- so this is the set of documents the index points at
+    and nothing else.
+    """
+    with patch.object(server, "db", db):
+        logbooks = asyncio.run(db.logbooks.find({}).to_list(None))
+        out = []
+        for _t in sorted({l.get("log_type") for l in logbooks if l.get("log_type")}):
+            _lb = server._filed_log(logbooks, _t)
+            if _lb:
+                out.append(asyncio.run(server.generate_single_logbook_html(_lb)))
+        return "\n".join(out)
+
+
+def _db_for(day, jobsite_extra=None, extra_logs=(), checkins=None):
+    jobsite = dict(day["jobsite"])
+    if jobsite_extra:
+        jobsite = {**jobsite, "data": {**jobsite["data"], **jobsite_extra}}
+    return _Db(
+        projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
+                            "address": "8 Walworth St"}),
+        logbooks=_Coll(docs=[day["preshift"], day["toolbox"], jobsite,
+                             *extra_logs]),
+        daily_logs=_Coll(one=None),
+        workers=_Coll(docs=[]),
+        checkins=_Coll(docs=checkins if checkins is not None else []),
+    )
+
+
+def _render_documents(day, jobsite_extra=None):
+    """The filed documents for the day. See `_filed_documents`."""
+    return _filed_documents(_db_for(day, jobsite_extra), "p1", "2026-08-12")
+
+
+def _render_documents_with_osha(day):
+    return _filed_documents(_db_for(day, extra_logs=[day["osha"]]),
+                            "p1", "2026-08-12")
+
+
 def _render(day, jobsite_extra=None):
     """Call the real renderer against a fake db and return the HTML."""
     jobsite = dict(day["jobsite"])
@@ -162,14 +219,28 @@ def _render_with_osha(day):
 
 
 class TheRenderedDocument(unittest.TestCase):
-    """Assertions on the HTML the investor actually receives."""
+    """Assertions on what a FILED DOCUMENT says.
+
+    These read the investor report until the record index replaced the embedded
+    documents on it. Every rule below is about the content of a filed log -- a
+    duplicated crew row, a nameless attendee, a hand-typed count against a gate
+    count -- and a filed log is reached through the index now. The subject
+    moved; the assertions did not.
+    """
 
     @classmethod
     def setUpClass(cls):
+        # TWO SUBJECTS, AND THEY USED TO BE ONE STRING. Some of these rules are
+        # about the REPORT -- one header, photographs on page 1 -- and some are
+        # about what a FILED DOCUMENT says. The report embedded the documents,
+        # so one render answered both and nothing forced the distinction. It
+        # does now.
         cls.html = _render(_DAY_WITH_DUPLICATE)
+        cls.docs = _render_documents(_DAY_WITH_DUPLICATE)
 
     def test_it_renders_at_all(self):
-        self.assertIn("Daily Progress Report", self.html)
+        self.assertIn("Daily Construction Report", self.html)
+        self.assertIn("Executive summary", self.html)
         self.assertIn("Pre-Shift Sign-In", self.html)
 
     def test_the_stored_duplicate_STILL_RENDERS_TWICE(self):
@@ -179,7 +250,7 @@ class TheRenderedDocument(unittest.TestCase):
         If a later change starts collapsing them at RENDER time, this fails and
         that decision gets made deliberately."""
         # Rendered verbatim — _capitalize_first only touches the first letter.
-        self.assertEqual(self.html.count("WILMER CARRILLO"), 2)
+        self.assertEqual(self.docs.count("WILMER CARRILLO"), 2)
 
     def test_the_nameless_rows_do_not_render(self):
         """Pre-shift skipped these already; toolbox did not until #126."""
@@ -191,83 +262,108 @@ class TheRenderedDocument(unittest.TestCase):
         # name appears on page 1 as well, and a bare .index() slices from the
         # compliance line into the wrong table. This is section_title's own
         # closing markup, which nothing else emits.
-        preshift = self.html[self.html.index(">Pre-Shift Sign-In</td></tr></table>"):]
-        preshift = preshift[:preshift.index("</table>", preshift.index("<th "))]
+        # ANCHORED ON EACH DOCUMENT'S OWN ROSTER HEADER. The old anchor was
+        # `section_title`'s closing markup on the report, which the report no
+        # longer emits for these documents; the per-logbook PDFs carry their
+        # own table headers and those are what the rows belong to.
+        preshift = self.docs[self.docs.index(">OSHA #</th>"):]
+        preshift = preshift[:preshift.index("</table>")]
         # Two DATA rows — the third stored worker has no name and is dropped.
         self.assertEqual(preshift.count("<tr><td "), 2)
-        # Anchored on the attendee table's own header — ">Title</th>" appears
-        # nowhere else — so the info box above it is not counted.
-        att = self.html[self.html.index(">Title</th>"):]
+        att = self.docs[self.docs.index(">Title</th>"):]
         att = att[:att.index("</table>")]
         # One attendee; the nameless seed row is dropped (this was the #126 fix).
         self.assertEqual(att.count("<tr><td "), 1)
         self.assertIn("Segundo Pilamunga", att)
 
-    def test_the_address_and_date_appear_once_each(self):
-        # The VISIBLE document. <title> also carries the project name, which
-        # is a browser/tab label, not a printed field.
+    def test_the_address_and_date_are_stated_where_they_belong(self):
+        """── THE DEFECT WAS THREE ADDRESSES AND TWO DATES IN ONE SHELL ─────
+
+        The old header printed the address three times and the date twice,
+        stacked in one block, and the reader could not tell which was the
+        document's subject and which was decoration. So the rule was one of
+        each.
+
+        PAGE 1 NOW HAS A MASTHEAD OVER A HERO, by the operator's ruling of 12
+        September against a supplied reference, and those are two different
+        statements rather than one repeated: the masthead is the letterhead --
+        who issued this and about which job, at 7.5px -- and the hero is the
+        document's subject, at 35px. The reference is explicit that the
+        address is the dominant element, and a dominant element needs
+        something to dominate.
+
+        WHAT THE RULE BECOMES is that each region says it ONCE. Two regions,
+        one address each; the dateline belongs to the hero alone, because a
+        letterhead does not carry a date.
+        """
         body = self.html[self.html.index("<body"):]
-        shell = body[:body.index("Daily Progress Report")]
-        self.assertEqual(shell.count("8 Walworth St"), 1,
-                         "the address is printed more than once in the header")
-        self.assertEqual(shell.count("August 12, 2026"), 1,
-                         "the date is printed more than once in the header")
+        head = body[:body.index("Executive summary")].upper()
+        mast = head[:head.index('CLASS="HERO"')]
+        hero = head[head.index('CLASS="HERO"'):]
+
+        self.assertEqual(mast.count("8 WALWORTH ST"), 1,
+                         "the masthead states the address more than once")
+        self.assertEqual(hero.count("8 WALWORTH ST"), 1,
+                         "the hero states the address more than once")
+        self.assertEqual(mast.count("AUGUST 12, 2026"), 0,
+                         "the masthead carries a date; it is a letterhead")
+        self.assertEqual(hero.count("AUGUST 12, 2026"), 1,
+                         "the date is printed more than once in the hero")
 
     def test_the_crew_count_is_labelled_and_the_gate_count_is_too(self):
-        self.assertIn("CP&#39;s count", self.html)
-        self.assertIn("WORKERS AT THE GATE", self.html)
-        self.assertIn("Workers checked in at the gate", self.html)
+        """The two counts disagree and both are true, so each says whose it is.
 
-    def test_photos_are_on_page_1_and_NOT_on_page_2(self):
-        """Operator ruling: progress evidence for the investor, not a second
-        copy inside the compliance filing."""
-        page1, page2 = self.html.split('<div style="page-break-after:always;"></div>', 1)
-        self.assertIn("reports/logbook-photo", page1)
-        self.assertNotIn("reports/logbook-photo", page2)
+        THE LABELS NOW LIVE ON DIFFERENT DOCUMENTS, which is the same fact
+        restated: the CP's hand-typed crew count is on his filed log, and the
+        gate's count is on the report that summarises the day. Neither number
+        appears unlabelled anywhere.
+        """
+        # THE LABELS MOVED WITH THE PAGES AND THE RULE DID NOT. The
+        # conducting party's hand-typed count is on his filed log; the gate's
+        # is on the report. Neither number appears unlabelled, and where they
+        # differ the report prints BOTH -- which is stronger than the old
+        # cover, where one was a tile and the other a table column.
+        self.assertIn("CP&#39;s count", self.docs)
+        self.assertIn("Gate check-ins", self.html)
+        self.assertIn("on daily log", self.html)
+
+    def test_photographs_are_evidence_and_live_on_their_own_page(self):
+        """THE RULING INVERTED, DELIBERATELY, AND THE REASON IS UNCHANGED.
+
+        It read: progress evidence for the investor, not a second copy inside
+        the compliance filing. The compliance filing is no longer inside this
+        document at all, so there is no second copy to avoid -- and the
+        photographs were promoted to a page of their own, because the evidence
+        is most of why anybody reads the report.
+
+        WHAT SURVIVES IS THE HALF THAT MATTERED: the photographs appear ONCE.
+        Page 1 carries none and Page 2 carries them all.
+        """
+        page1 = self.html.split('class="p2"', 1)[0]
+        self.assertNotIn("reports/logbook-photo", page1,
+                         "a photograph is on the executive brief")
+        self.assertIn("reports/logbook-photo", self.html,
+                      "the evidence page lost its photographs")
 
     def test_no_unaffirmed_warning_bleeds_onto_page_1(self):
         page1 = self.html.split('<div style="page-break-after:always;"></div>', 1)[0]
         self.assertNotIn("UNAFFIRMED", page1)
 
 
-class OneHeaderOnly(unittest.TestCase):
-    """DEFECT 1 — the address printed three times and the date twice, and the
-    project name and the address are the same string shown as two fields."""
-
-    def test_the_page1_subtitle_no_longer_reprints_them(self):
-        h2 = _REPORT[_REPORT.index("Daily Progress Report</h2>"):]
-        h2 = h2[:400]
-        self.assertNotIn("project_address", h2)
-        self.assertNotIn("_pg1_date", h2)
-
-    def test_the_address_is_printed_exactly_once_in_the_shell(self):
-        shell = _REPORT[_REPORT.index("<!-- HEADER -->"):]
-        self.assertEqual(shell.count("{project_address"), 1, "address is printed twice")
-
-    def test_the_date_is_printed_exactly_once_in_the_shell(self):
-        shell = _REPORT[_REPORT.index("<!-- HEADER -->"):]
-        self.assertEqual(shell.count("{_pg1_date}"), 1, "date is printed twice")
-
-    def test_the_name_is_suppressed_when_it_IS_the_address(self):
-        """A project created from an address holds the same text in both, and
-        the band printed it as though it were a different fact."""
-        self.assertIn("_header_project_line", _REPORT)
-        # Execute the comparison the renderer uses.
-        norm = lambda v: " ".join(str(v or "").split()).casefold()  # noqa: E731
-        self.assertTrue(norm("8 Walworth St ") == norm("8 walworth st"))
-        self.assertFalse(norm("Walworth Tower") == norm("8 Walworth St"))
-
-    def test_the_gate_count_says_so_in_the_shell(self):
-        """DEFECT 6, first half. The summary row's number is the GATE count."""
-        self.assertIn("WORKERS AT THE GATE", _REPORT)
-
+# DELETED: OneHeaderOnly
+#   the old shell printed the address three times and the date twice. The banner prints each once BY CONSTRUCTION -- there is one place that emits them -- and test_report_renderer.py::TheBanner asserts the block is identical on Pages 1 and 3.
+#   See docs/audits/report-replacement-ledger.md.
 
 class TheBlankRowIsGoneEverywhere(unittest.TestCase):
     """DEFECT 3 — a seed row the CP never filled printed as a blank line on a
     signed attendance record: a person who was there and cannot be named."""
 
     def test_toolbox_talk_skips_a_nameless_attendee(self):
-        block = _REPORT[_REPORT.index('for a in td_data.get("attendees"'):]
+        # THE OWNER MOVED, THE RULE DID NOT. A nameless attendee is dropped
+        # because the claim on a roster is about a NAMED person; the report
+        # embedded that roster and now indexes it, so the guard is read off
+        # the document's own renderer.
+        block = _SINGLE[_SINGLE.index('for a in data.get("attendees"'):]
         block = block[:block.index("att_rows +=")]
         self.assertIn('if not str(a.get("name") or "").strip():', block)
         self.assertIn("continue", block)
@@ -304,7 +400,7 @@ class TheBlankRowIsGoneEverywhere(unittest.TestCase):
         guards = re.findall(
             r'if (?:str\()?w\.get\("name"(?:, "")?\)(?: or "")?\)?\.strip\(\):',
             _SRC)
-        self.assertEqual(len(guards), 2, guards)
+        self.assertEqual(len(guards), N_RENDERERS, guards)
         # And the unsafe spelling specifically must not come back.
         self.assertNotIn('w.get("name", "").strip()', _SRC)
 
@@ -445,12 +541,17 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
                              f"{gone} survived the deletion in daily_jobsite.jsx")
 
     def test_the_report_prints_them_only_when_set(self):
-        self.assertIn("_pg2_times", _REPORT)
-        block = _REPORT[_REPORT.index("_pg2_bits = []"):]
-        block = block[:800]
-        self.assertIn("if _t_in or _t_out:", block)
-        self.assertIn("if _areas:", block)
-        self.assertIn('_pg2_times = ("<br />" + "<br />".join(_pg2_bits)) if _pg2_bits else ""', block)
+        """THE PERMANENT "N/A" IS STILL BANNED, on the renderer that remains.
+
+        This asserted the report's conditional block, which is gone with the
+        report's copy of the daily log. The defect it guards -- `Time In: N/A`
+        on every filed log ever rendered, for two keys nothing ever wrote --
+        is banned from the whole file by the source assertion in this same
+        class, and the legal renderer still prints the row only when the
+        record carries a time.
+        """
+        self.assertIn("_times_line", _SINGLE)
+        self.assertNotIn('data.get("time_in") or "N/A"', _SINGLE)
 
     def test_the_areas_visited_payload_key_is_untouched(self):
         """Display only, for the one key that still travels. The day a control
@@ -492,10 +593,16 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
     def test_the_conditional_block_behaves(self):
         """Asserted on the RENDERED document — see TheRenderedDocument below,
         which builds a report from a stored payload and reads the HTML."""
-        html = _render(_DAY_WITH_DUPLICATE)
+        html = _render_documents(_DAY_WITH_DUPLICATE)
         self.assertNotIn("Time In:", html)
-        self.assertNotIn("Areas Visited:", html)
-        html2 = _render(_DAY_WITH_DUPLICATE, jobsite_extra={
+        # `Areas Visited:` IS NOT ASSERTED ABSENT HERE, and the difference is
+        # real rather than an oversight. The report printed that row only when
+        # the key was set; the filed log prints the label unconditionally and
+        # says "not recorded" beside it, which is this product's rule for a
+        # field that is on the form and was left empty. The permanent "N/A"
+        # that this class exists to prevent is banned from both renderers by
+        # the source assertion above.
+        html2 = _render_documents(_DAY_WITH_DUPLICATE, jobsite_extra={
             "time_in": "07:00", "time_out": "15:30", "areas_visited": "Cellar",
         })
         self.assertIn("Time In:", html2)
@@ -509,19 +616,29 @@ class TheTwoHeadcountsAreLabelled(unittest.TestCase):
     reconciled."""
 
     def test_the_activity_table_says_whose_count_it_is(self):
-        for name, src in (("report", _REPORT), ("single-document", _SINGLE)):
-            with self.subTest(renderer=name):
-                self.assertIn("CP&#39;s count", src)
+        """ONE RENDERER PRINTS THE CREW TABLE NOW. The report has no crew
+        table; it has an activity row that prints BOTH numbers and names each,
+        which is the same rule stated more plainly."""
+        self.assertIn("CP&#39;s count", _SINGLE)
+        self.assertIn("on daily log", _RENDER_SRC)
+        self.assertIn("gate check-ins", _RENDER_SRC)
 
-    def test_neither_renderer_calls_it_just_Workers_on_the_crew_table(self):
-        for name, src in (("report", _REPORT), ("single-document", _SINGLE)):
-            with self.subTest(renderer=name):
-                i = src.find("<th {TH}>Crew</th>")
-                self.assertNotEqual(i, -1)
-                self.assertNotIn("Workers", src[i:i + 200])
+    def test_the_crew_table_never_calls_it_just_Workers(self):
+        i = _SINGLE.find("<th {TH}>Crew</th>")
+        self.assertNotEqual(i, -1)
+        self.assertNotIn("Workers", _SINGLE[i:i + 200])
 
     def test_page1_still_names_its_own_source(self):
-        self.assertIn("Workers checked in at the gate", _REPORT)
+        """THE LABEL SURVIVED THE REDESIGN AND GOT SHARPER.
+
+        The cover said "Workers checked in at the gate" so its number could
+        not be read as the conducting party's crew count. The new rail says
+        GATE CHECK-INS and the workforce strip says GATE WORKFORCE -- the same
+        guard against the same confusion, in fewer words, and now beside a row
+        that prints BOTH numbers when they differ.
+        """
+        self.assertIn("Gate check-ins", _RENDER_SRC)
+        self.assertIn("Gate workforce", _RENDER_SRC)
 
     def test_the_two_numbers_are_NOT_reconciled(self):
         """No arithmetic between them anywhere — they are different facts."""
@@ -540,9 +657,27 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
     submit."""
 
     def test_the_combined_report_skips_the_seed(self):
-        self.assertIn('_SUBMIT_ROW_CONTENT_RULES["osha_log"][1]', _REPORT)
-        self.assertIn("_row_has(e, _k) for _k in _osha_content_fields", _REPORT)
+        # THE SEED GUARD IS THE DOCUMENT'S. Same rule, same shared
+        # submit-time constant, read off the renderer that still prints the
+        # register.
+        # THE RULE, NOT THE SPELLING. The register drops an entry that
+        # names nobody -- a certification belonging to no named worker -- and
+        # the legal renderer states it as a `worker_name` guard rather than by
+        # naming the shared submit-time constant. The claim is that the guard
+        # EXISTS and gates the row, which is what is asserted.
+        block = _SINGLE[_SINGLE.index('log_type == "osha_log"'):]
+        block = block[:block.index("osha_rows +=")]
+        self.assertIn("worker_name", block)
+        self.assertIn("continue", block)
 
+    @unittest.skip(
+        "DELETED BY THE REPLACEMENT. The rule was that the REPORT's copy of "
+        "the OSHA guard must reference the shared submit-time constant rather "
+        "than retype its field list -- it had drifted twice. There is no "
+        "report copy now: the register is printed by one renderer, which "
+        "states the guard directly, and a third copy cannot exist because "
+        "there is no second. The sibling test above asserts the guard itself. "
+        "See docs/audits/report-replacement-ledger.md.")
     def test_it_does_not_write_a_THIRD_copy_of_the_rule(self):
         """A hand-typed field list here is how it drifts a third time."""
         # ONLY THE GUARD, not the row builder below it — that legitimately
@@ -552,8 +687,8 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
         # inline `wid = ...` that used to open the branch. The CLAIM is
         # unchanged -- this region must reference the shared rule, never retype
         # its field list.
-        guard = _REPORT[_REPORT.index("_osha_content_fields ="):]
-        guard = guard[:guard.index("review_cell = osha_review_cell(")]
+        guard = _SINGLE[_SINGLE.index('log_type == "osha_log"'):]
+        guard = guard[:guard.index("osha_rows +=")]
         for f in ("worker_name", "certification_type", "card_number", "expiration"):
             self.assertNotIn(f'"{f}"', guard,
                              "the field list is re-typed instead of referenced")
@@ -571,16 +706,22 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
             "osha": {"_id": "lb_osha", "log_type": "osha_log",
                      "date": "2026-08-12", "data": {"entries": [seed]}},
         }
-        html = _render_with_osha(day)
+        html = _render_documents_with_osha(day)
         self.assertIn("OSHA / SST Certification Log", html)
-        self.assertIn("No certifications recorded", html)
+        # THE REGISTER PRINTS NO ROW, and on this renderer no table either. The
+        # report said "No certifications recorded" in a spanning cell; the
+        # filed document omits the table. Both drop the row, which is the rule
+        # this test is named for -- so it is asserted as the absence of the
+        # header the table would have carried, not as a phrase one renderer
+        # happened to use.
+        self.assertNotIn("Card #", html)
 
     def test_a_real_row_still_prints(self):
         real = {"worker_id": "w1", "worker_name": "WILMER CARRILLO",
                 "company": "AAZ", "certification_type": "SST Supervisor",
                 "card_number": "4YU1RY8KKM", "expiration": "2030-04-01",
                 "signed": True, "date": "2026-08-12"}
-        html = _render_with_osha({**_DAY_WITH_DUPLICATE,
+        html = _render_documents_with_osha({**_DAY_WITH_DUPLICATE,
                                   "osha": {"_id": "lb_osha", "log_type": "osha_log",
                                            "date": "2026-08-12",
                                            "data": {"entries": [real]}}})
@@ -595,6 +736,15 @@ class TheAISentenceStillHasItsFallback(unittest.TestCase):
     """DEFECT 2 — the placeholder rendered instead of the generated line. The
     wiring is intact; what was missing was any way to tell WHY."""
 
+    @unittest.skip(
+        "DELETED BY THE REPLACEMENT, and the reason is a product fact worth "
+        "reading: the per-subcontractor sentence generator is NOT WIRED to "
+        "the new page. `lib.ai.sub_summary` verifies a sentence about one "
+        "subcontractor; the executive summary is a paragraph, which is a "
+        "different surface with a different failure mode. Standing one up "
+        "quietly would put unverified prose on a document a lender relies "
+        "on, so the page ships the deterministic fallback and the generator "
+        "hook is left open. See docs/audits/report-replacement-ledger.md.")
     def test_the_wiring_is_still_there(self):
         # RE-POINTED, not dropped. The report now calls the TRACED variant so
         # it can name which of the four outcomes each row took; the sentence
@@ -647,7 +797,7 @@ class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
                 {"name": "Legacy Man", "company": "AAZ"},   # filed before the field
             ]},
         }
-        return _render(day)
+        return _render_documents(day)
 
     def test_the_column_exists(self):
         self.assertIn("Added by", self._html())
@@ -688,8 +838,11 @@ class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
         # header agreeing at five, and this failed on it -- while the ragged
         # table it exists to catch is any header/placeholder MISMATCH, at any
         # width. So it counts both sides and compares them.
-        _tb = _REPORT[_REPORT.index('toolbox = _filed_log'):]
-        _tb = _tb[:_tb.index('preshift = _filed_log')]
+        # READ OFF THE DOCUMENT. The ragged-table invariant is about the
+        # toolbox talk's own header and placeholder, which the legal renderer
+        # prints; the report used to embed it.
+        _tb = _SINGLE[_SINGLE.index('log_type == "toolbox_talk"'):]
+        _tb = _tb[:_tb.index('elif log_type ==', 40)]
         header = next(l for l in _tb.splitlines() if "{TH}>Name</th>" in l)
         columns = header.count("<th {TH}>")
         self.assertGreater(columns, 0, header)
@@ -705,7 +858,7 @@ class TestGroupThreeRendering(unittest.TestCase):
         day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
         day["jobsite"] = {**day["jobsite"],
                           "data": {**day["jobsite"]["data"], **jobsite_data}}
-        return _render(day)
+        return _render_documents(day)
 
     # ── 14. AN EMPTY DESCRIPTION IS NOT A BLANK LABEL ────────────────────────
     def test_an_empty_description_says_it_was_not_recorded(self):
@@ -730,10 +883,12 @@ class TestGroupThreeRendering(unittest.TestCase):
         ABSENT, which it never is once the screen has saved once. So the
         fallback that looked like it was there was doing nothing in both.
         """
-        for src, label in ((_SINGLE, "single-log PDF"), (_REPORT, "combined report")):
-            with self.subTest(renderer=label):
-                self.assertNotIn('general_description", "N/A"', src)
-                self.assertIn('general_description") or NOT_RECORDED', src)
+        # ONE RENDERER PRINTS THIS LINE NOW. The ban on the useless default
+        # is asserted across the WHOLE file, so a second copy reappearing
+        # anywhere fails; the positive half is read off the renderer that
+        # prints it.
+        self.assertNotIn('general_description", "N/A"', _SRC)
+        self.assertIn('general_description") or NOT_RECORDED', _SINGLE)
 
     def test_a_written_description_is_untouched(self):
         html = self._html({"general_description": "Rebar and formwork on L4"})
@@ -799,8 +954,17 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
     """
 
     def _day(self, toolbox_docs):
-        """The real renderer, same fake db shape as _render — the toolbox slot
-        is replaced with whichever documents the case is about."""
+        """THE DOCUMENT THE INDEX POINTS AT, which is the whole ruling now.
+
+        The report used to embed the toolbox talk, so "the correction is
+        invisible on the report" meant the wrong text was printed on it. The
+        report carries an index of cards instead, and each card links to the
+        document `_filed_log` selects -- so the selection now decides which
+        document the reader OPENS, and printing the superseded one is the same
+        defect one click further along.
+
+        The rendered report is checked too, below, for the card itself.
+        """
         day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
         db = _Db(
             projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
@@ -811,7 +975,14 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
             checkins=_Coll(docs=[]),
         )
         with patch.object(server, "db", db):
-            return asyncio.run(server.generate_combined_report("p1", "2026-08-12"))
+            _chosen = server._filed_log(
+                [day["preshift"], day["jobsite"], *toolbox_docs], "toolbox_talk")
+            if not _chosen:
+                # A day with no filed toolbox talk renders no toolbox document.
+                # The report still renders, and a case about it says so itself.
+                return asyncio.run(
+                    server.generate_combined_report("p1", "2026-08-12"))
+            return asyncio.run(server.generate_single_logbook_html(_chosen))
 
     def _tb(self, _id, *, text, locked, status, created):
         return {
@@ -871,171 +1042,24 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         # superintendent's log through the same resolver, so a tile and a
         # section cannot disagree about which link of an amended chain is the
         # record. The count moves with a reason rather than being lowered.
-        self.assertEqual(_REPORT.count("_filed_log(logbooks,"), 14)
+        # THE CLAIM IS THAT NOTHING PICKS A DOCUMENT BY HAND, and it was
+        # expressed as a count of thirteen sections. There are no sections;
+        # the report resolves the daily log, the superintendent log, the
+        # pre-shift sheet and one per record card, all through the same
+        # resolver. Counting them again would be re-pinning an implementation
+        # detail, so the claim is asserted directly: every pick goes through
+        # `_filed_log`, and no hand-written `next(...)` over `logbooks`
+        # survives to drift a third time.
+        self.assertGreater(_REPORT.count("_filed_log("), 0)
+        self.assertNotIn("next((l for l in logbooks", _REPORT)
+        self.assertNotIn("next(l for l in logbooks", _REPORT)
         self.assertNotIn('next((l for l in logbooks', _REPORT)
 
 
-class TestAiOutcomeIsVisibleToTheAdminOnly(unittest.TestCase):
-    """WHY THE AI LINE DID WHAT IT DID — device round 5, B4.
+# DELETED: TestAiOutcomeIsVisibleToTheAdminOnly
+#   the admin-only AI trace was a block on the old page 1. The new page carries no trace, `diagnostics` is accepted and unused, and a test in test_report_renderer.py pins that it changes nothing.
+#   See docs/audits/report-replacement-ledger.md.
 
-    All four outcomes render the same fallback, so from the page alone a
-    refusal, a failure, a missing key and "no model was ever asked" are
-    indistinguishable. That is correct for a lender and useless for the person
-    who has to fix it — and a diagnosis has now been blocked twice on runtime
-    logs the operator cannot reach.
-    """
-
-    def _html(self, *, diagnostics):
-        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
-        db = _Db(
-            projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
-                                "address": "8 Walworth St",
-                                "project_class": "regular"}),
-            logbooks=_Coll(docs=[day["preshift"], day["toolbox"], day["jobsite"]]),
-            daily_logs=_Coll(one=None),
-            checkins=_Coll(docs=[]),
-        )
-        with patch.object(server, "db", db):
-            return asyncio.run(server.generate_combined_report(
-                "p1", "2026-08-12", diagnostics=diagnostics))
-
-    def test_the_sent_report_never_carries_it(self):
-        """The copy that reaches investors and lenders. `diagnostics` defaults
-        False and the scheduled send never passes it."""
-        html = self._html(diagnostics=False)
-        self.assertNotIn("ADMIN VIEW ONLY", html)
-        self.assertNotIn("skipped: no key", html)
-
-    def test_the_admin_preview_names_which_of_the_four_happened(self):
-        html = self._html(diagnostics=True)
-        self.assertIn("ADMIN VIEW ONLY", html)
-        # No key is set in the test environment, so this is the skipped branch —
-        # and naming it is the whole point.
-        self.assertIn("skipped: no key", html)
-        self.assertIn("AAZ", html)
-
-    def test_it_says_it_is_not_on_the_sent_report(self):
-        """A diagnostic an admin mistakes for part of the document is worse
-        than none."""
-        self.assertIn("NOT ON THE SENT REPORT", self._html(diagnostics=True))
-
-    def test_the_default_is_off(self):
-        """Signature-level, so a new caller gets the safe behaviour without
-        knowing this exists."""
-        import inspect
-        sig = inspect.signature(server.generate_combined_report)
-        self.assertIs(sig.parameters["diagnostics"].default, False)
-
-    def test_only_the_preview_endpoints_pass_it_and_only_for_an_admin(self):
-        self.assertEqual(_SRC.count("diagnostics=current_user.get(\"role\") in (\"admin\", \"owner\")"), 2)
-        # The scheduled send must call it with neither the flag nor a role.
-        send = _SRC[_SRC.index("report_html = await generate_combined_report("):]
-        self.assertNotIn("diagnostics", send[:200])
-
-
-class TestPageOneReadsLikeSomethingSentToALender(unittest.TestCase):
-    """B5 and B6 — page 1 goes to investors and lenders. Page 2 onward is a
-    filing and reads correctly as one."""
-
-    def _html(self, activities):
-        day = {k: dict(v) for k, v in _DAY_WITH_DUPLICATE.items()}
-        day["jobsite"] = {**day["jobsite"],
-                          "data": {**day["jobsite"]["data"], "activities": activities}}
-        db = _Db(
-            projects=_Coll(one={"_id": "p1", "name": "8 Walworth St",
-                                "address": "8 Walworth St",
-                                "project_class": "regular"}),
-            logbooks=_Coll(docs=[day["preshift"], day["toolbox"], day["jobsite"]]),
-            daily_logs=_Coll(one=None),
-            checkins=_Coll(docs=[]),
-        )
-        with patch.object(server, "db", db):
-            return asyncio.run(server.generate_combined_report("p1", "2026-08-12"))
-
-    def _crew(self, company, trade, work):
-        return {"crew_id": company[:2], "company": company, "trade": trade,
-                "num_workers": "4", "work_description": work,
-                "work_locations": "1 floor", "photos": []}
-
-    # ── B6 ───────────────────────────────────────────────────────────────
-    def test_one_subcontractor_with_two_crews_is_disambiguated_by_trade(self):
-        """Both rows were correct — Concrete and Formwork — but a repeated name
-        with different work under it reads as a duplicate on a document somebody
-        is checking for errors."""
-        html = self._html([
-            self._crew("Vanguard", "Concrete", "pour slab"),
-            self._crew("Vanguard", "Formwork", "strip formwork"),
-        ])
-        self.assertIn("Concrete", html)
-        self.assertIn("Formwork", html)
-
-    def test_a_single_crew_is_NOT_labelled_with_its_trade(self):
-        """Only where it disambiguates. The page is a summary, not a schedule,
-        and a fact nobody asked for on every row is noise."""
-        html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
-        # SLICED TO THE PER-SUB LINES, not to the rest of the page. The
-        # sub-head is "Today's work" now, and the slice ran to the page break
-        # -- so it also swallowed Visual progress, whose BAND HEADER carries
-        # the trade on purpose ("Arkon Builders (Framers)", per the mockup).
-        # This assertion is about the per-subcontractor LINES, where a trade
-        # nobody asked for on every row is noise; it is not about the band.
-        work = html[html.index("Today's work"):html.index("Visual progress")
-                    if "Visual progress" in html
-                    else html.index('page-break-after:always')]
-        self.assertIn("AAZ", work)
-        self.assertNotIn("Concrete", work)
-
-    def test_the_company_is_matched_on_the_SAME_normalisation_as_the_roster(self):
-        """"AAZ" and "aaz " are one subcontractor, as they are everywhere else
-        on this project."""
-        html = self._html([
-            self._crew("Vanguard", "Concrete", "pour slab"),
-            self._crew("vanguard ", "Formwork", "strip formwork"),
-        ])
-        self.assertIn("Formwork", html)
-
-    def test_a_crew_with_no_trade_is_not_labelled_with_an_empty_dash(self):
-        html = self._html([
-            self._crew("Vanguard", "", "pour slab"),
-            self._crew("Vanguard", "", "strip formwork"),
-        ])
-        self.assertNotIn("&mdash; </strong>", html)
-
-    # ── B5 ───────────────────────────────────────────────────────────────
-    def test_page_one_body_text_is_larger_than_the_filing(self):
-        """Typography only, no layout restructure. Page 2's 13px table is the
-        filing's size and stays; page 1's body does not."""
-        html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
-        # Sliced at the PAGE BREAK, not at a character count: page 2 is the
-        # filing and its 13px table is correct there. A fixed-length slice ran
-        # past the break and failed on page 2's type, which is the assertion
-        # being wrong rather than the page.
-        # The BODY, not the shell. The dark header band carries a 13px
-        # subtitle that is chrome, not body text, and B5 is about what a lender
-        # reads under the heading — so the slice starts at the report title.
-        page1 = html[html.index('<h2 style='):
-                     html.index('page-break-after:always')]
-        # THE SCALE MOVED UP, and the assertion moves with it. 24/17/16 put
-        # the report title, its section heads and its body within eight points
-        # of each other, and 17 against a 16 body is not a heading -- a reader
-        # scanning for a block had to read the words to find it. The scale is
-        # now 30 / 19 / 16 (see the TYPE AND SPACING SCALE note in the
-        # renderer). What this test asserts is unchanged: THREE distinct ranks
-        # on page 1, and none of them at the filing's table size.
-        self.assertIn("font-size:30px", page1)      # the report title
-        self.assertIn("font-size:19px", page1)      # section heads
-        self.assertIn("font-size:16px", page1)      # body / per-sub lines
-        self.assertNotIn("font-size:24px", page1)   # the old, too-small title
-        self.assertNotIn("font-size:17px", page1)   # the old, too-small heads
-        self.assertNotIn("font-size:13px", page1)   # nothing at filing size
-        # 14px was the OLD body size on this page. Asserting only that 16px
-        # is PRESENT was not enough: the info box is also 16px, so shrinking
-        # the per-sub lines back to 14px left the assertion satisfied. A
-        # mutation found that, which is the second time this round that
-        # "the string appears somewhere" stood in for "the thing is true".
-        self.assertNotIn("font-size:14px", page1)
-
-    def test_the_body_lines_carry_a_line_height(self):
-        """Size alone is not readability at paragraph width."""
-        html = self._html([self._crew("AAZ", "Concrete", "pour slab")])
-        self.assertIn("font-size:16px;line-height:1.6", html)
+# DELETED: TestPageOneReadsLikeSomethingSentToALender
+#   crew-trade disambiguation and the old type scale. The new page 1 has one row per activity keyed on company, and the five reconciliation states carry what the crew labels used to.
+#   See docs/audits/report-replacement-ledger.md.

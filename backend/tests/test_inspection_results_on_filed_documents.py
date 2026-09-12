@@ -41,6 +41,9 @@ _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
+
 
 R = server._display_inspections
 
@@ -167,8 +170,14 @@ class BothRenderersUseTheOneHelper(unittest.TestCase):
 
     SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
-    def test_one_definition_and_two_call_sites(self):
-        self.assertEqual(self.SRC.count("_display_inspections("), 3)
+    def test_one_definition_and_one_call_site_per_renderer(self):
+        """DERIVED, NOT RETYPED. The report indexes the filed documents now
+        and prints none, so it has no inspection results to render and the
+        census is 1 definition + 1 call site. The DISCIPLINE is unchanged and
+        is what this asserts: nobody gets their own join."""
+        assert_is_current(self)
+        self.assertEqual(self.SRC.count("_display_inspections("),
+                         1 + N_RENDERERS)
 
     def test_neither_renderer_kept_its_own_join(self):
         self.assertNotIn(
@@ -180,7 +189,8 @@ class BothRenderersUseTheOneHelper(unittest.TestCase):
         """Equipment on site did not change shape, and must not be swept into
         this change: it is a presence tick, not an inspection result."""
         self.assertEqual(
-            self.SRC.count('equip_list = ", ".join(k.replace("_", " ").title()'), 2,
+            self.SRC.count('equip_list = ", ".join(k.replace("_", " ").title()'),
+            N_RENDERERS,
             "equipment_on_site still renders as the plain list both PDFs expect",
         )
 

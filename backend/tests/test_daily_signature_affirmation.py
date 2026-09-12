@@ -147,13 +147,27 @@ class TestToolboxIsExplicitlyExcluded(unittest.TestCase):
     def test_no_toolbox_renderer_reads_the_affirmation(self):
         """The affirmation is scoped to the PRE-SHIFT SIGN-IN LOG. If a toolbox
         branch ever reads it, the exclusion has been lost."""
+        # ONE TOOLBOX BRANCH NOW. The second pair bracketed the investor
+        # report's embedded copy of the toolbox talk, which went with every
+        # other embedded section; the report prints no roster at all, which
+        # satisfies the exclusion more completely than reading its source did.
+        # The branch that still prints one is checked exactly as before.
         for start, end in (('elif log_type == "toolbox_talk":',
-                            'elif log_type == "preshift_signin":'),
-                           ('toolbox = _filed_log', 'preshift = _filed_log')):
+                            'elif log_type == "preshift_signin":'),):
             with self.subTest(branch=start):
                 block = _SRC[_SRC.index(start):_SRC.index(end)]
                 self.assertNotIn("signature_affirmed", block)
                 self.assertNotIn("_preshift_signature_cell", block)
+
+    def test_and_the_investor_report_prints_no_roster_to_read_it_on(self):
+        """THE OTHER HALF OF THE PAIR, ASSERTED AS AN ABSENCE. The report used
+        to embed the toolbox talk and had to be checked for the same leak."""
+        i = _SRC.index("async def generate_combined_report")
+        j = _SRC.index(chr(10) + "@api_router", i)
+        report = _SRC[i:j]
+        self.assertNotIn("signature_affirmed", report)
+        self.assertNotIn("_preshift_signature_cell", report)
+        self.assertNotIn("toolbox", report)
 
 
 class TestTheRecordIsAFactAboutToday(unittest.TestCase):

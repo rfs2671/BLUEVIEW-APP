@@ -876,7 +876,28 @@ class _RDB:
         return self._c[n]
 
 
-def _report_with(photos):
+def _legal_pdf_with(photos):
+    """THE PER-LOGBOOK PDF, which is where this marker was ruled to live.
+
+    These cases read the investor report, and the marker was on it -- through
+    two rulings that it should not be, because it is filing apparatus and that
+    report goes to lenders. It is on the legal render now and absent from the
+    report, and both halves are held by
+    `test_the_legal_apparatus_markers.py` against rendered output.
+
+    THE FORM CHANGED WITH THE DOCUMENT. The report captioned a photograph tile;
+    the legal PDF prints no photographs, so it carries the statement instead --
+    how many were appended, when, and by whom. That is the whole content of the
+    apparatus. Putting the pictures on a legal render is a separate decision
+    and has not been made.
+    """
+    doc, db = _report_fixture(photos)
+    with patch.object(server, "db", db), \
+         patch.object(server, "to_query_id", lambda x: x):
+        return asyncio.run(server.generate_single_logbook_html(doc))
+
+
+def _report_fixture(photos):
     doc = {
         "_id": "lb_dj", "project_id": "proj1", "date": "2026-08-12",
         "log_type": "daily_jobsite", "is_deleted": False,
@@ -894,6 +915,11 @@ def _report_with(photos):
                          "address": "588 Thomas S Boyland St, Brooklyn"}]
     db.logbooks.docs = [doc]
     db.checkins.docs = []
+    return doc, db
+
+
+def _report_with(photos):
+    _doc, db = _report_fixture(photos)
     with patch.object(server, "db", db), \
          patch.object(server, "to_query_id", lambda x: x):
         return asyncio.run(server.generate_combined_report("proj1", "2026-08-12"))
@@ -913,24 +939,42 @@ class TheReportSaysWhichPhotosCameLater(unittest.TestCase):
     it was in front of the CP when he signed."""
 
     def test_an_appended_photo_is_labelled(self):
-        html = _report_with([dict(ATTESTED), dict(APPENDED)])
+        html = _legal_pdf_with([dict(ATTESTED), dict(APPENDED)])
         self.assertIn("Added after filing", html)
 
-    def test_the_label_names_who_added_it_and_when(self):
+    def test_and_the_INVESTOR_REPORT_does_not_carry_it(self):
+        """The other half, and the one that was wrong for five weeks."""
         html = _report_with([dict(ATTESTED), dict(APPENDED)])
+        self.assertNotIn("Added after filing", html)
+
+    def test_the_label_names_who_added_it_and_when(self):
+        html = _legal_pdf_with([dict(ATTESTED), dict(APPENDED)])
         self.assertIn("Casey CP", html)
         self.assertIn("Aug 14, 2026", html)
 
     def test_a_photo_present_at_signing_carries_no_label(self):
-        html = _report_with([dict(ATTESTED)])
+        html = _legal_pdf_with([dict(ATTESTED)])
         self.assertNotIn("Added after filing", html)
 
     def test_both_photos_still_render(self):
+        """ONE ENHANCED RENDITION EACH, AND EACH INDEX ONCE.
+
+        This counted 4 -- two photos, each a thumbnail `src` and an enhanced
+        `href` to click through to. The evidence page embeds the ENHANCED
+        rendition directly and does not link onward, so the count is 2. That
+        is the operator's ruling on renditions, not an accident of the
+        rewrite.
+
+        COUNTED BY INDEX RATHER THAN IN TOTAL, because a total of 2 is also
+        what one photograph printed twice would give.
+        """
         html = _report_with([dict(ATTESTED), dict(APPENDED)])
-        self.assertEqual(
-            html.count("/api/reports/logbook-photo/lb_dj/0/"), 4,
-            "two photos, each a thumb src and an enhanced href",
-        )
+        for index in (0, 1):
+            self.assertEqual(
+                html.count(f"/api/reports/logbook-photo/lb_dj/0/{index}?"), 1,
+                f"photograph {index} is missing or duplicated")
+        self.assertNotIn("v=thumbnail", html,
+                         "the evidence page fell back to a thumbnail")
 
     def test_the_added_by_name_is_escaped(self):
         photo = dict(APPENDED, added_by_name='Casey <script>alert(1)</script>')
@@ -939,7 +983,8 @@ class TheReportSaysWhichPhotosCameLater(unittest.TestCase):
 
     def test_a_label_with_no_name_or_time_still_marks_the_photo(self):
         """The flag is the assertion; the attribution is a courtesy."""
-        html = _report_with([{"original_r2_key": KEY, "added_after_filing": True}])
+        html = _legal_pdf_with([{"original_r2_key": KEY,
+                                 "added_after_filing": True}])
         self.assertIn("Added after filing", html)
 
 

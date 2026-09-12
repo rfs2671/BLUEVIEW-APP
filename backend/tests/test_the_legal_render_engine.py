@@ -34,6 +34,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server  # noqa: E402
 from lib import legal_render  # noqa: E402
+from lib.legal_render import primitives  # noqa: E402
 from lib.legal_render import schema as _schema  # noqa: E402
 
 _SRC = Path(server.__file__).read_text(encoding="utf-8")
@@ -65,6 +66,11 @@ def _logbook(log_type, worker="alex rivera"):
                  # answered no, and -- by omission -- never asked.
                  "checklist": {"hard_hats": True, "safety_boots": True,
                                "no_horseplay": False},
+                 # PRESENT AND NULL, which is what the manual-entry path
+                 # writes. The acknowledgment section exists and reads
+                 # UNSIGNED; a record without the key omits the section
+                 # entirely, and a renderer test names that other half.
+                 "worker_signature": None,
                  "entries": [], "activities": [], "attendees": [],
                  "signins": [], "workers": []},
     }
@@ -290,24 +296,65 @@ class TheOrientationSheetSaysWhatTheSchemaDeclares(unittest.TestCase):
     def test_a_later_page_names_its_subject(self):
         self.assertIn("running(contheader)", self.html)
 
-    def test_BLANK_ROWS_are_drawn_rather_than_the_table_shortened(self):
-        """A twenty-row sheet with one name is valid paper. The row count is
-        the form's, not the data's."""
-        table_sec = [s for s in self.decl["sections"]
-                     if s["primitive"] == "table"][0]
-        self.assertEqual(table_sec["empty"], "blank_rows")
-        self.assertGreaterEqual(table_sec["min_rows"], 10)
+    def test_the_sheet_is_ONE_WORKERS_and_carries_no_roster(self):
+        """ONE SHEET PER WORKER, and the reversal is asserted rather than
+        assumed.
 
-    def test_a_group_renders_one_row_per_FILED_RECORD(self):
-        """The records are drawn together, never merged: each is its own
-        separately signed document and contributes its own row."""
-        group = [_logbook("subcontractor_orientation", "alex rivera"),
-                 _logbook("subcontractor_orientation", "marcus lee")]
-        for i, g in enumerate(group):
-            g["_id"] = "lb1" if i == 0 else f"lb{i + 1}"
-        html = _render("subcontractor_orientation", group=group)
-        self.assertTrue("Alex rivera" in html, "the first filed record is not a row")
-        self.assertTrue("Marcus lee" in html, "the second filed record is not a row")
+        This shipped as a roster keyed on project and date. A worker signs his
+        own orientation the first time he comes on site, so the date two men
+        share is where their first days fall and not a meeting either attended.
+        No other worker's name may appear, and there is no table to put one in.
+        """
+        other = _logbook("subcontractor_orientation", "marcus lee")
+        other["_id"] = "lb-other"
+        html = _render("subcontractor_orientation", group=[other])
+        self.assertTrue("Alex rivera" in html, "the sheet lost its own worker")
+        self.assertNotIn(
+            "Marcus lee", html,
+            "another worker's filed record appeared on this man's sheet; the "
+            "orientation is one document per worker and the source declaration "
+            "says so")
+        self.assertNotIn(
+            "<thead", html.split("4. Worker")[-1].split("6. Certification")[0],
+            "the worker section is still a table; one row with blank rows "
+            "ruled beneath it is a roster inviting names that are not coming")
+
+    def test_ONE_WORD_IN_THE_SCHEMA_REVERSED_IT(self):
+        """The argument for source living in the declaration, checked.
+
+        The reversal from `group` to `one` had to be a schema edit and nothing
+        else. If the engine or the switch had to learn about it, source would
+        be decoration.
+        """
+        self.assertEqual(
+            legal_render.SCHEMAS["subcontractor_orientation"]["source"],
+            {"kind": "one"})
+        # The group read in server.py is gated on the DECLARATION, so a type
+        # that does not declare `group` cannot reach it.
+        body = _SRC[_SRC.index("if log_type in legal_render.CONVERTED_TYPES"):]
+        body = body[:body.index("if log_type == \"daily_jobsite\":")]
+        self.assertIn('.get("kind") == "group"', body)
+        self.assertIn("db.logbooks.find(", body)
+        self.assertLess(
+            body.index('.get("kind") == "group"'), body.index("db.logbooks.find("),
+            "the group read is not gated on the declaration, so reversing a "
+            "type's source would not stop it reading siblings")
+
+    def test_BLANK_ROWS_ARE_STILL_THE_ENGINES_BEHAVIOUR(self):
+        """No schema asks for a table today, and the behaviour is still real.
+
+        The orientation was the only one, and reversing it to one sheet per
+        worker took the last caller with it. Asserted against a declaration
+        made here rather than deleted: a twenty-row sheet with four names is
+        valid paper, and the next schema that wants a roster must find that
+        behaviour working, not rediscover it.
+        """
+        sec = {"primitive": "table", "empty": "blank_rows", "min_rows": 10,
+               "columns": [("name", "Name", "name")]}
+        html = primitives.table(sec, [{"name": "alex rivera"}], {})
+        self.assertIn("Alex rivera", html)
+        self.assertEqual(html.count("&nbsp;"), 9,
+                         "nine blank rows should follow the one filled row")
 
     def test_a_record_the_group_cannot_see_still_gets_its_own_sheet(self):
         """A draft, or a row the query misses, must not produce a document

@@ -311,9 +311,11 @@ class APreviewCarriesNoNumber(Base):
         says the field is not YET meaningful, which is true — the same
         distinction the superintendent log draws between not_reached and
         attested_none."""
-        i = _SRC.index("_report_no_line = (")
-        body = _SRC[i:i + 700]
-        self.assertIn('f"Report #{report_number}"', body)
+        # BUILT AT THE CALL SITE NOW, as the `report_number` argument the
+        # view takes. Same two strings, same distinction.
+        i = _SRC.index("report_number=(f\"Report #{issued}\"")
+        body = _SRC[i:i + 300]
+        self.assertIn('f"Report #{issued}"', body)
         self.assertIn('"Report number assigned when sent"', body)
 
     def test_the_header_prints_the_line(self):
@@ -322,8 +324,14 @@ class APreviewCarriesNoNumber(Base):
         # so a one-line failure arrives as 2.3MB with the fact buried in it.
         # The same choice siteSuperintendentSign.test.cjs made, for the same
         # reason, against a haystack a hundred times smaller.
-        self.assertTrue("{_report_no_line}" in _SRC,
-                        "the header does not render the report-number line")
+        # ON THE BANNER'S DATELINE, beside the long date, and it is the view
+        # that composes the two. Read off the view rather than server.py --
+        # and still with a SHORT MESSAGE, because the container is a whole
+        # source file either way.
+        _VIEW = (Path(server.__file__).parent / "lib" / "report"
+                 / "view.py").read_text(encoding="utf-8")
+        self.assertTrue('f"{date_long} · {report_number}"' in _VIEW,
+                        "the banner does not render the report-number line")
 
 
 class NothingRenumbersFromHistory(unittest.TestCase):

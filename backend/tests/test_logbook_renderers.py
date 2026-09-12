@@ -473,18 +473,24 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
                 html = render(doc(log_type, SPARSE[log_type], cp_name=None))
                 assert_field_not_recorded(self, html, label)
 
-    def test_the_orientation_sheet_states_an_absent_trade_in_its_column(self):
-        """Case (a) after the restyle. Same rule, new shape: the sheet carries
-        a Trade column and the row for a worker whose trade was never recorded
-        says so in the one sanctioned phrase. A blank cell there would leave an
-        inspector unable to tell "not asked" from "asked and left empty"."""
+    def test_the_orientation_sheet_states_an_absent_trade(self):
+        """Case (a) after the restyle. Same rule, shape moved TWICE.
+
+        It was a field line, became a table column when the sheet was a roster,
+        and is a field-grid cell now that the sheet is one worker's. The rule
+        has not moved at all: the app has no value for the trade and the
+        document says exactly that, so an inspector can tell "not asked" from
+        "asked and left empty".
+        """
         html = render(doc("subcontractor_orientation",
                           SPARSE["subcontractor_orientation"], cp_name=None))
-        self.assertIn(">Trade</th>", html, "the Trade column is gone")
         self.assertRegex(
-            html, r">Solo worker</td>(<td[^>]*>[^<]*</td>){1}<td[^>]*>"
-                  + re.escape(NOT_RECORDED),
-            "the attendee's absent trade did not render " + repr(NOT_RECORDED))
+            html, r">Trade</div>\s*<div[^>]*>" + re.escape(NOT_RECORDED),
+            "the worker's absent trade did not render " + repr(NOT_RECORDED))
+        self.assertNotIn(
+            ">Trade</th>", html,
+            "the worker section is a table again; one row with blank rows "
+            "beneath it is the wrong primitive for a one-worker sheet")
 
     def test_a_row_only_type_has_no_field_absences_to_state(self):
         """osha_log renders rows and nothing else. Its empty CELLS stay empty:
@@ -655,10 +661,19 @@ class CrewIdTest(unittest.TestCase):
         self.assertNotIn("crew_name", code,
                          "something in server.py still reads the phantom crew_name")
 
-    def test_combined_report_still_reads_crew_id(self):
-        """The reference reader that was already correct must stay correct."""
+    def test_the_filed_document_still_reads_crew_id(self):
+        """THE READER MOVED WITH THE COLUMN.
+
+        `crew_id` is the Crew column of the activity table -- an identifier the
+        CP types, C1/C2 -- and the combined report was the reference reader
+        because it read the real field while another renderer read the
+        phantom. The report does not print an activity table any more; it
+        prints one row per activity keyed on COMPANY, which is the operator's
+        design. The Crew column is on the filed document, and so is its
+        reader.
+        """
         src = Path(server.__file__).read_text(encoding="utf-8")
-        block_start = src.index("async def generate_combined_report")
+        block_start = src.index("async def generate_single_logbook_html")
         block = src[block_start:]
         self.assertIn('act.get("crew_id"', block)
 

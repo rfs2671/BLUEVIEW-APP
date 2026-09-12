@@ -48,8 +48,11 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
+
 CHECKIN_HTML = (BACKEND / "checkin.html").read_text(encoding="utf-8")
 
 AFFIRMED_AT = datetime(2026, 8, 28, 15, 13, 12, tzinfo=timezone.utc)
@@ -362,7 +365,8 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
             self.assertIn(cell, SRC)
 
     def test_both_renderers_show_the_footer(self):
-        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"), 2)
+        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"),
+                         N_RENDERERS)
 
     def test_neither_renderer_passes_anything_but_the_signature_map(self):
         """Both call sites pass the SAME second argument and nothing else.
@@ -372,7 +376,8 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
         What changed is which single argument is allowed: `_ps_sigs`, the
         signin_id -> image map, resolved once per roster before the loop."""
         self.assertEqual(
-            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"), 2)
+            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"),
+            N_RENDERERS)
         self.assertNotIn("{_preshift_signature_cell(w)}</td></tr>", SRC)
         self.assertEqual(
             SRC.count("def _preshift_signature_cell(w, resolved=None)"), 1)

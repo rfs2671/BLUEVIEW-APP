@@ -41,8 +41,11 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
+
 MODEL = (BACKEND.parent / "frontend" / "src" / "utils"
          / "oshaLogModel.js").read_text(encoding="utf-8")
 
@@ -125,7 +128,7 @@ class ItComposesNothing(unittest.TestCase):
         self.assertNotIn("class_by_key", ast.unparse(node))
 
     def test_both_renderers_call_the_one_argument_form(self):
-        self.assertEqual(SRC.count("_osha_type_cell(e)"), 2)
+        self.assertEqual(SRC.count("_osha_type_cell(e)"), N_RENDERERS)
         self.assertNotIn("_osha_type_cell(e, ", SRC)
 
 

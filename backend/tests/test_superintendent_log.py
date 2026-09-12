@@ -60,6 +60,9 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    DOCUMENT_RENDERERS, N_DOCUMENT_RENDERERS as N_RENDERERS,
+    assert_is_current)
 
 try:
     from lib.logbook import superintendent_log as SL  # noqa: E402
@@ -347,13 +350,25 @@ class OneBuilderBothRenderers(unittest.TestCase):
     def test_there_is_exactly_one_definition(self):
         self.assertEqual(SRC.count("def _superintendent_log_html"), 1)
 
-    def test_both_renderers_call_it(self):
-        for fn in (server.generate_combined_report,
-                   server.generate_single_logbook_html):
-            code = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(fn))))
-            self.assertIn("_superintendent_log_html", code)
+    def test_every_document_renderer_calls_it(self):
+        """ONE BUILDER, AND NOW ONE CALLER. The report used to embed this
+        section; it indexes it instead. `assert_is_current` is the other half
+        -- it fails if the report ever builds `_superintendent_log_html`
+        again, which would put a second copy of the section back on a document
+        that is meant to point at the filed one."""
+        assert_is_current(self)
+        seen = 0
+        for name in DOCUMENT_RENDERERS:
+            code = ast.unparse(ast.parse(textwrap.dedent(
+                inspect.getsource(getattr(server, name)))))
+            self.assertIn("_superintendent_log_html", code, name)
+            seen += 1
+        self.assertEqual(seen, N_RENDERERS)
 
     def test_neither_builds_its_own_item_list(self):
+        """BOTH, DELIBERATELY. The report no longer PRINTS the section, but
+        the ban on re-deriving the item list is worth keeping over it -- that
+        is the shape a "small summary of the safety log" would take."""
         for fn in (server.generate_combined_report,
                    server.generate_single_logbook_html):
             code = ast.unparse(ast.parse(textwrap.dedent(inspect.getsource(fn))))
