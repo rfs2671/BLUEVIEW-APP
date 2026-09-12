@@ -190,9 +190,35 @@ class TheTablesThatHadNoCoverage(unittest.TestCase):
     # See docs/audits/report-replacement-ledger.md.
 
     def test_site8_the_orientation_column_stops_mixing_a_glyph_and_a_word(self):
-        """A tick against the word "No" in one column."""
-        i = _CODE.index("val = answer_label(checked)")
-        self.assertGreater(i, 0)
+        """A tick against the word "No" in one column.
+
+        ── THE CLAIM MOVED INTO THE ENGINE, INTACT ─────────────────────────
+
+        Site 8 was the orientation sheet's checklist column, and that sheet is
+        the first type through the declarative renderer. Its branch was
+        deleted once it had rendered in production and been read, so
+        `answer_label(checked)` is gone from server.py.
+
+        THE RULE IS NOT GONE, and it is stated more sharply where it landed:
+        the checklist primitive draws a BOX for an answered item and prints
+        the not-recorded phrase in WORDS for an item nobody was asked. A glyph
+        and a word are different KINDS of answer rather than two values on one
+        axis -- which is the same correction site 8 forced, restated by the
+        code that now makes it.
+
+        The ban stays on the whole of server.py, because the mixed spelling
+        must not come back on any of the twelve types still rendering there.
+        """
+        from pathlib import Path
+        prim = (Path(__file__).resolve().parents[1] / "lib" / "legal_render"
+                / "primitives.py").read_text(encoding="utf-8")
+        block = prim[prim.index("def checklist("):]
+        block = block[:block.index("\ndef ", 10)]
+        # THE BOX IS A GLYPH: ticked and unticked are the two marks.
+        self.assertIn("&#9746;", block)
+        self.assertIn("&#9744;", block)
+        # AND THE ABSENCE IS WORDS, on its own axis.
+        self.assertIn("return NOT_RECORDED", block)
         self.assertNotIn('"&#10003;" if checked else "No"', _CODE)
 
 

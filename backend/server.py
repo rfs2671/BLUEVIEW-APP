@@ -19770,6 +19770,17 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         })
         if _sheet:
             return _sheet
+        # A CONVERTED TYPE THAT PRODUCED NOTHING IS A CONTRADICTION, not a
+        # fall-through. `render` returns None in exactly one case -- the type
+        # has no schema -- and this arm only runs when it has one.
+        #
+        # WHAT IT WOULD FALL TO IS THE GENERIC BRANCH AT THE END, which prints
+        # the type's title and the word Status. On a §3301 record that is a
+        # statutory document demoted to a stub, and it would be filed and
+        # signed looking deliberate. Loud beats plausible.
+        raise RuntimeError(
+            f"legal_render has a schema for {log_type!r} and returned no "
+            f"sheet; the filed document would have printed as a stub")
 
     if log_type == "daily_jobsite":
         type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
@@ -20541,99 +20552,6 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # sentence says nothing about it.
             + OSHA_LOG_ATTESTATION_HTML
             + cp_name_line + cp_sig_block
-        )
-
-    elif log_type == "subcontractor_orientation":
-        # ONE DOCUMENT PER WORKER (server.py:14945 comment). Payload keys:
-        #   frontend/app/logbooks/subcontractor_orientation.jsx:472-483 (manual
-        #   entry) and backend/server.py:9900-9912 (the kiosk registration
-        #   path), which write the same field names.
-        # Checklist labels: ORIENTATION_SECTIONS, subcontractor_orientation.jsx:49-87.
-        type_title = "Subcontractor Safety Orientation"
-        ORIENTATION_ITEMS = [
-            ("hard_hats", "Hard hats required at all times on site"),
-            ("safety_boots", "Safety boots required (steel toe, ANSI rated)"),
-            ("safety_glasses", "Safety glasses / eye protection required"),
-            ("high_vis", "High-visibility vest required near traffic"),
-            ("no_horseplay", "No horseplay, running, or unsafe behavior"),
-            ("report_hazards", "Report all hazards to CP immediately"),
-            ("fall_protection_required", "Fall protection required at 6 ft and above"),
-            ("harness_inspection", "Inspect harness before each use"),
-            ("ladder_safety", "Three-point contact on ladders at all times"),
-            ("scaffold_rules", "Only use scaffold as erected — no modifications"),
-            ("emergency_exits", "Emergency exit locations reviewed"),
-            ("first_aid", "First aid kit location reviewed"),
-            ("emergency_contact", "Emergency contact numbers provided"),
-            ("incident_reporting", "All incidents must be reported immediately"),
-            ("no_drugs_alcohol", "Zero tolerance for drugs and alcohol on site"),
-            ("sign_in_out", "Must sign in and out every day"),
-            ("authorized_areas", "Only enter authorized work areas"),
-            ("housekeeping", "Keep work area clean at all times"),
-        ]
-        orient_lines = field_lines(data, [
-            ("worker_name", "Worker", _capitalize_first),
-            ("worker_trade", "Trade", _capitalize_first),
-            ("worker_company", "Company", _capitalize_first),
-            ("osha_number", "OSHA / SST #", _raw),
-            ("orientation_number", "Orientation #", _raw),
-            ("language_provided", "Language Provided", _raw),
-            ("completed_at", "Completed",
-             lambda v: str(v)[:19].replace("T", " ")),
-        ])
-
-        # The kiosk writes {checked: bool, checked_at: iso} per item and keys it
-        # by the item's full English sentence (backend/checkin.html:674-687,
-        # 1574-1579); the in-app editor writes key -> bool. Both shapes render.
-        # An item the editor's map does not carry reads "— Not recorded"; a map
-        # keyed the kiosk way carries none of the known keys, so it renders only
-        # its own sentences (see toggle_map_rows).
-        checklist = data.get("checklist")
-        chk_rows = ""
-        if isinstance(checklist, dict) and checklist:
-            labels = dict(ORIENTATION_ITEMS)
-            known_present = [k for k, _ in ORIENTATION_ITEMS if k in checklist]
-            order = [k for k, _ in ORIENTATION_ITEMS] if known_present else []
-            order += [k for k in checklist.keys() if k not in labels]
-            for k in order:
-                if k not in checklist:
-                    val = NOT_RECORDED
-                else:
-                    v = checklist.get(k)
-                    checked = bool(v.get("checked")) if isinstance(v, dict) else bool(v)
-                    # A tick against the word "No" mixed a glyph with a word
-                    # in one column. Both words now, through the one helper.
-                    val = answer_label(checked)
-                chk_rows += (
-                    f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
-                    f'<td {TD}>{val}</td></tr>'
-                )
-        chk_html = (
-            sub_title("Safety Topics Reviewed")
-            + rows_table(["Topic", "Reviewed"], chk_rows)
-        ) if chk_rows else ""
-
-        # LOAD-BEARING: worker_signature is written as null on manual entries
-        # (subcontractor_orientation.jsx:481). When the key is THERE and empty,
-        # say UNSIGNED — an unattested acknowledgment must never be presented
-        # as complete. When the key is absent entirely, say nothing.
-        worker_sig_html = ""
-        if "worker_signature" in data:
-            if data.get("worker_signature"):
-                worker_sig_html = render_signature_html(
-                    data.get("worker_signature"), "Worker Acknowledgment",
-                )
-            else:
-                worker_sig_html = (
-                    '<p style="color:#b91c1c;font-weight:700;margin:6px 0;">'
-                    'Worker acknowledgment: UNSIGNED</p>'
-                )
-
-        body_html = (
-            maybe_info_box(orient_lines)
-            + chk_html
-            + worker_sig_html
-            + cp_name_line
-            + render_signature_html(logbook.get("cp_signature"), "Conducted By (CP)")
         )
 
     else:
