@@ -155,18 +155,27 @@ class TheCaptionsAreLegible(unittest.TestCase):
         re-anchored on the header it describes rather than on a character
         count and a variable name.
         """
-        self.assertIn("_photo_added_after_filing_caption", _SRC)
-        i = _SRC.index('f\'<p class="band-head"')
-        head = _SRC[i:i + 400]
-        self.assertTrue("font-size:13px" in head,
-                        "the group caption is no longer 13px")
-        self.assertTrue("{_facts}" in head,
-                        "the band header no longer renders the company line")
+        # THE CAPTION MOVED TO ITS OWN PAGE AND KEPT ITS JOB.
+        #
+        # `band-head` was the photo group's caption on the old page 1, and the
+        # rule was that it carries the COMPANY -- because the caption is the
+        # attribution, and a band whose header is missing shows photographs
+        # belonging to nobody. Page 2 is now the evidence page and the band
+        # header is `.bco`; the attribution rule is asserted in
+        # test_report_renderer.py, including a rendered multi-page control that
+        # proves no page ends on one.
+        _REPORT_PKG = Path(__file__).resolve().parent.parent / "lib" / "report"
+        head = (_REPORT_PKG / "renderer.py").read_text(encoding="utf-8")
+        self.assertIn('<div class="bco">', head,
+                      "the band header no longer renders the company line")
+        self.assertIn(".bandhead { page-break-after: avoid", head,
+                      "the band header may be stranded from its photographs")
         # AND THE COMPANY IS IN IT, which is what makes it an attribution
-        # rather than a decoration.
-        j = _SRC.index("_facts = ")
-        self.assertTrue("_display_sub_company" in _SRC[j - 700:j + 400],
-                        "the band header no longer names the subcontractor")
+        # rather than a decoration -- at the same 13px the old caption used.
+        self.assertIn('<div class="bco">{esc(band.company)}</div>', head,
+                      "the band header no longer names the subcontractor")
+        self.assertIn(".bco { font-size: 13px;", head,
+                      "the group caption is no longer 13px")
 
 
 if __name__ == "__main__":

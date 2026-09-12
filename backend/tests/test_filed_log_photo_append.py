@@ -957,11 +957,24 @@ class TheReportSaysWhichPhotosCameLater(unittest.TestCase):
         self.assertNotIn("Added after filing", html)
 
     def test_both_photos_still_render(self):
+        """ONE ENHANCED RENDITION EACH, AND EACH INDEX ONCE.
+
+        This counted 4 -- two photos, each a thumbnail `src` and an enhanced
+        `href` to click through to. The evidence page embeds the ENHANCED
+        rendition directly and does not link onward, so the count is 2. That
+        is the operator's ruling on renditions, not an accident of the
+        rewrite.
+
+        COUNTED BY INDEX RATHER THAN IN TOTAL, because a total of 2 is also
+        what one photograph printed twice would give.
+        """
         html = _report_with([dict(ATTESTED), dict(APPENDED)])
-        self.assertEqual(
-            html.count("/api/reports/logbook-photo/lb_dj/0/"), 4,
-            "two photos, each a thumb src and an enhanced href",
-        )
+        for index in (0, 1):
+            self.assertEqual(
+                html.count(f"/api/reports/logbook-photo/lb_dj/0/{index}?"), 1,
+                f"photograph {index} is missing or duplicated")
+        self.assertNotIn("v=thumbnail", html,
+                         "the evidence page fell back to a thumbnail")
 
     def test_the_added_by_name_is_escaped(self):
         photo = dict(APPENDED, added_by_name='Casey <script>alert(1)</script>')

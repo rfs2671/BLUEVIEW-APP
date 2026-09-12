@@ -192,7 +192,13 @@ class TheReportAddressesThePhotosOfTheDocumentItPrinted(unittest.TestCase):
         child = _jobsite("lb_child", photo_key=ORIG_KEY, locked=True,
                          status="submitted", hour=16, desc="branch rough-in corrected")
         html = self._report([original, child])
-        self.assertIn("Branch rough-in corrected", html)
+        # THE ROW IS ON THE PAGE, read by the field the page prints. The
+        # three-page report carries company, trade, location and the two
+        # headcounts per activity; it does not print `work_description`, so
+        # the corrected TEXT is no longer the way to tell the two documents
+        # apart here. The photo ids are, and they are the thing this case is
+        # actually about.
+        self.assertIn("Kestrel Electric", html)
         self.assertIn("/api/reports/logbook-photo/lb_child/", html)
         self.assertNotIn("/api/reports/logbook-photo/lb_original/", html)
 
@@ -212,10 +218,18 @@ class TheReportAddressesThePhotosOfTheDocumentItPrinted(unittest.TestCase):
     def test_the_id_is_taken_from_the_resolved_document_in_source(self):
         """Asserted in source as well, because the behaviour above would also
         pass if a second resolver happened to agree on this fixture."""
-        self.assertIn('daily_jobsite = _filed_log(logbooks, "daily_jobsite")', _REPORT)
-        self.assertIn('_dj_id = str(daily_jobsite["_id"]) if daily_jobsite else ""',
-                      _REPORT)
-        self.assertIn('logbook_id = str(daily_jobsite["_id"])', _REPORT)
+        # ONE RESOLUTION, ONE NAME, AND IT FEEDS BOTH. `daily` supplies the
+        # activity rows AND the id every photo URL is built from, so the two
+        # cannot come from different documents -- which is the property, and
+        # it is now structural rather than a pair of variables that happen to
+        # agree.
+        self.assertIn('daily = _filed_log(logbooks, "daily_jobsite")', _REPORT)
+        self.assertIn('daily_data = daily.get("data") or {}', _REPORT)
+        self.assertIn('logbook_id=str(daily.get("_id") or "")', _REPORT)
+        self.assertEqual(
+            _REPORT.count('_filed_log(logbooks, "daily_jobsite")'), 1,
+            "the daily jobsite log is resolved twice; the two resolutions can "
+            "disagree, which is the whole defect")
         # And nothing anywhere reaches for a parent to read photos off.
         self.assertNotIn("parent_logbook_id", _REPORT)
 

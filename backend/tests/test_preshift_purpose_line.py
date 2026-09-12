@@ -46,8 +46,11 @@ os.environ.setdefault("DB_NAME", "smoke_test")
 os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
+
 
 
 class TheSentenceNamesTheQuestions(unittest.TestCase):
@@ -192,7 +195,7 @@ class BothRenderersPrintIt(unittest.TestCase):
                 if "Each worker named below was present" in t), 1)
 
     def test_both_renderers_emit_it(self):
-        self.assertEqual(SRC.count("+ PRESHIFT_ATTESTATION_HTML"), 2)
+        self.assertEqual(SRC.count("+ PRESHIFT_ATTESTATION_HTML"), N_RENDERERS)
 
     def test_it_sits_directly_above_the_cp_line_at_both_sites(self):
         """Adjacency, not just order. The CP line is not unique in either
@@ -203,7 +206,7 @@ class BothRenderersPrintIt(unittest.TestCase):
             r"\+ PRESHIFT_ATTESTATION_HTML\s*\n\s*\+ bold_para\(\"CP\", "
             r"_capitalize_first\((?:logbook|preshift)\.get\(\"cp_name\", \"N/A\"\)\)\)",
             SRC)
-        self.assertEqual(len(pairs), 2,
+        self.assertEqual(len(pairs), N_RENDERERS,
                          "the attestation is not directly above the CP line at both sites")
 
 
@@ -225,7 +228,7 @@ class PlacementIsTheDistinction(unittest.TestCase):
 
     def test_the_attestation_is_above_the_cp_signature_in_both_renderers(self):
         blocks = self._blocks("+ PRESHIFT_ATTESTATION_HTML")
-        self.assertEqual(len(blocks), 2)
+        self.assertEqual(len(blocks), N_RENDERERS)
         for b in blocks:
             self.assertLess(b.index("PRESHIFT_ATTESTATION_HTML"), b.index("ps_sig"),
                             "a signer must see the claim before making it")
@@ -234,7 +237,7 @@ class PlacementIsTheDistinction(unittest.TestCase):
         """A footer qualifying a document the reader has already read. If this
         ever flips, the two kinds of purpose line have been confused."""
         blocks = self._blocks("+ FALL_PROTECTION_NOTICE")
-        self.assertEqual(len(blocks), 2)
+        self.assertEqual(len(blocks), N_RENDERERS)
         for b in blocks:
             anchor = "cp_sig_block" if "cp_sig_block" in b else "render_signature_html"
             self.assertGreater(b.index("FALL_PROTECTION_NOTICE"), b.index(anchor))
@@ -257,21 +260,24 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
                      'w.get("company")'):
             self.assertIn(cell, SRC, f"{cell} no longer comes from the stored row")
 
-    def test_the_affirmation_FOOTER_runs_in_both_renderers(self):
+    def test_the_affirmation_FOOTER_runs_in_every_renderer(self):
         """The overlay is gone: the Signature column no longer asserts
         affirmation in either direction, and the sheet points at the separate
         records in a footer instead. See test_preshift_affirmation_record.py."""
-        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"), 2)
+        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"),
+                         N_RENDERERS)
         # The cell now takes the signin_id -> signature IMAGE map as a second
         # argument. That is not the overlay this test guards: it decides which
         # picture to draw, never whether a man affirmed. See
         # test_preshift_affirmation_record.py::test_the_cell_takes_no_AFFIRMATION_overlay.
         self.assertEqual(
-            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"), 2)
+            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"),
+            N_RENDERERS)
 
     def test_the_column_headers_are_unchanged(self):
         self.assertEqual(
-            SRC.count('<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th>'), 2)
+            SRC.count('<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th>'),
+            N_RENDERERS)
 
 
 if __name__ == "__main__":

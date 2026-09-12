@@ -109,7 +109,13 @@ def unreadable_failure_sites():
 
 #: PINNED IN ONE PLACE, AND DESIGNED TO FALL. 78 across 37 files on the day
 #: this gate was written. Lower it when you fix one; never raise it.
-EXPECTED_TOTAL = 78
+#:
+#: 78 -> 65 on 2026-09-12. Thirteen went with the report replacement: seven
+#: test files were deleted outright and several survivors were re-anchored on
+#: a view object or a rendered page instead of all 47,000 lines of server.py.
+#: None was "fixed" by weakening an assertion -- the haystacks got smaller
+#: because what they read got smaller.
+EXPECTED_TOTAL = 65
 
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):

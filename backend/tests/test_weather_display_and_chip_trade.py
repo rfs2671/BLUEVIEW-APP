@@ -129,10 +129,14 @@ class TestWeatherIsNeverBlank(unittest.TestCase):
         # What this assertion is for is unchanged -- that no renderer drifts
         # back to its own defaults -- and the earlier reasoning is kept rather
         # than deleted, so a reader who greps it finds the reversal.
+        #   5 -> 3  the report stopped EMBEDDING the filed documents, so its
+        #            copies of the daily jobsite and SSC sections went with
+        #            them. Both facts are still printed -- on the filed PDFs
+        #            those sections index -- and the cover's panel stays.
         self.assertEqual(
-            src.count('_display_weather('), 5,
-            "expected 1 definition + 4 call sites: the two PDF renderers' "
-            "daily jobsite sections, the SSC section, and the investor cover",
+            src.count('_display_weather('), 3,
+            "expected 1 definition + 2 call sites: the filed daily jobsite "
+            "log's own section, and the investor cover's weather panel",
         )
         # The exact bug shape, gone.
         self.assertNotIn('f\'{data.get("weather", "N/A")} ', src)

@@ -39,6 +39,12 @@ from lib.server_http import ServerHttpClient
 # lib/legal_render/. A type named in CONVERTED_TYPES renders through it;
 # every other type falls through to the branch chain, unchanged.
 from lib import legal_render
+# THE INVESTOR REPORT: model, view, renderer, and the boundary between
+# them is the point -- see lib/report/renderer.py's docstring for what
+# each layer is and is not allowed to decide.
+from lib.report import model as report_model
+from lib.report import renderer as report_renderer
+from lib.report import view as report_view
 # The sentence printed above a signature, versioned. THE TEXT LIVES THERE and
 # this module imports it: two copies of a sentence are two sentences the moment
 # one is edited, and this one is both printed on a compliance document and
@@ -19512,7 +19518,9 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     applies on the only path that exists today.
     """
 
-    BASE_URL = "https://api.levelog.com"
+    # ONE SOURCE. This was the same literal written twice as a local, in
+    # this renderer and in the investor report.
+    BASE_URL = PUBLIC_API_BASE_URL
     
     project_id = logbook.get("project_id")
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
@@ -20623,6 +20631,31 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         type_title = log_type.replace("_", " ").title()
         body_html = bold_para("Status", logbook.get("status", "N/A"))
 
+    # ── AN AMENDED RECORD SAYS SO, ON ITS OWN FACE ──────────────────────
+    #
+    # `amendment_sentence` reads the CHILD document -- amendment_reason,
+    # created_by_name, created_at -- and never the clock, so an amendment
+    # filed in September for an August log reads the same in December.
+    #
+    # IT PRINTS HERE AND NOT ON THE INVESTOR REPORT. The report indexes the
+    # filing; the filing carries its own audit trail. The old placement was
+    # the report's header, which reached the daily jobsite log and no other
+    # type -- an amended toolbox talk or OSHA register said nothing anywhere.
+    #
+    # ESCAPED LOCALLY. The reason is operator-supplied text on its way into
+    # an HTML document.
+    import html as _amend_esc
+    _amend_line = amendment_sentence(amendment_state(logbook))
+    amendment_html = (
+        f'<div style="margin-top:16px;padding:12px 14px;'
+        f'background-color:#fffbeb;border-left:3px solid #b45309;">'
+        f'<span style="font-size:10px;text-transform:uppercase;'
+        f'letter-spacing:1.5px;color:#b45309;font-weight:600;">'
+        f'AMENDED RECORD</span><br />'
+        f'<span style="font-size:13px;color:#0A1929;">'
+        f'{_amend_esc.escape(_amend_line)}</span></div>'
+    ) if _amend_line else ""
+
     # Wrap in full HTML document
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{type_title} — {project_name} — {date}</title>
@@ -20679,6 +20712,7 @@ table{{border-collapse:collapse;}}
 </tr></table>
 </td></tr>
 <tr class="shell"><td style="padding:24px 40px;background-color:#ffffff;" bgcolor="#ffffff">
+{amendment_html}
 {section_title(type_title)}
 {body_html}
 </td></tr>
@@ -30970,92 +31004,110 @@ async def _release_report_number(project_id: str, number: Optional[int]) -> None
         logger.warning(f"report number: release failed for {project_id}: {e}")
 
 
+#: THE ONE ADDRESS. It was the same literal written twice as a LOCAL inside
+#: two different renderers, which is how two copies of anything begin.
+PUBLIC_API_BASE_URL = "https://api.levelog.com"
+
+
+def _report_photo_url(logbook_id: str, activity_index: int, photo_index: int,
+                      rendition: str) -> str:
+    """A photograph's address. IT CHOOSES NOTHING.
+
+    The rendition arrives already decided by `lib/report/view.py`, which holds
+    the ordered list; this only builds the address. The index is the
+    photograph's position in the STORED list, because the endpoint reads
+    `data.activities[ai].photos[pi]` -- an index into a filtered list serves a
+    different photograph than the one laid out.
+    """
+    url = (f"{PUBLIC_API_BASE_URL}/api/reports/logbook-photo/"
+           f"{logbook_id}/{activity_index}/{photo_index}")
+    return url + "?v=enhanced" if rendition == "enhanced" else url
+
+
+def _report_headline(gate, activities) -> str:
+    """The factual headline. NOT MARKETING COPY, and not generated.
+
+    Named trades at the gate, or the plain fact that activity was documented.
+    "Steady progress" is a claim about a project; "Framers and plumber active"
+    is a reading of who badged in.
+    """
+    trades = [t.lower() for t in gate.trades]
+    if trades:
+        joined = (trades[0] if len(trades) == 1
+                  else ", ".join(trades[:-1]) + " and " + trades[-1])
+        return joined[0].upper() + joined[1:] + " active"
+    if activities:
+        return "Activity documented"
+    return "No activity documented"
+
+
+async def _oriented_on_site_count(project_id: str, checkins: list) -> int:
+    """On-site workers with any orientation on file for this project.
+
+    MATCHED ON worker_id OR NORMALISED NAME, which is what the coverage line
+    has always done: a manual entry mints a synthetic id, so an id-only match
+    understates coverage, and a mockup that matched on name alone reported 10
+    of 11 against the report's 11 of 11.
+    """
+    rows = await db.logbooks.find(
+        {"project_id": project_id,
+         "log_type": "subcontractor_orientation",
+         "is_deleted": {"$ne": True}},
+        {"data.worker_id": 1, "data.worker_name": 1}).to_list(5000)
+    ids, names = set(), set()
+    for row in rows:
+        data = row.get("data") or {}
+        if data.get("worker_id"):
+            ids.add(str(data["worker_id"]))
+        if data.get("worker_name"):
+            names.add(" ".join(str(data["worker_name"]).split()).lower())
+    covered = 0
+    for row in checkins:
+        if row.get("status") != "checked_in":
+            continue
+        rid = str(row.get("worker_id") or "")
+        name = " ".join(str(row.get("worker_name") or "").split()).lower()
+        if (rid and rid in ids) or (name and name in names):
+            covered += 1
+    return covered
+
+
 async def generate_combined_report(
     project_id: str, date: str, diagnostics: bool = False,
     report_number: Optional[int] = None,
 ) -> str:
-    """The investor report. RENDERED FOR PRINT, not for an email client.
+    """The investor report: three pages, and this function makes none of them.
 
-    THIS DOCSTRING USED TO SAY THE OPPOSITE, and correcting it is the first
-    thing this redesign does because it is the sentence that would otherwise
-    stop the next person. It read:
+    IT FETCHES, RESOLVES, PROJECTS AND RENDERS. Nothing else. Every judgement
+    about what the records support is made in `lib/report/model.py`; every
+    judgement about what a template may see is made in `lib/report/view.py`;
+    every judgement about layout is made in `lib/report/renderer.py`. If a
+    branch about meaning ever reappears below, it has been taken back from one
+    of those.
 
-        Generate email-safe HTML report. Uses table-based layout, bgcolor
-        attrs, and URL-based images for Gmail/Outlook/Apple Mail compatibility.
-        ... 2) Fits in email box (table layout, zero flexbox)
+    WHAT THIS REPLACED. 2,423 lines that built thirteen embedded logbook
+    sections and a cover, on a document whose own record index was supposed to
+    have replaced the sections a month earlier. The index shipped BESIDE them
+    and nobody rendered the result: the report went from 10 pages to 13, eight
+    of them documents printed in full with an index pointing at the five
+    immediately above it.
 
-    Every one of those was true and load-bearing when it was written. NONE OF
-    IT IS NOW. The scheduled send stopped using this HTML as the message body:
-    "the body now uses their exact render_for_trigger path and THE DOCUMENT
-    RIDES AS A PDF." Gmail never sees this string.
+    There is no fallback to that path and no compatibility shim. A renderer
+    that can still produce the old document is a renderer that eventually does.
 
-    WHAT ACTUALLY RENDERS IT, all three:
-
-        the scheduled send   -> WeasyPrint -> a PDF attachment
-        GET .../report/pdf   -> WeasyPrint -> a PDF
-        GET .../report       -> a browser, admin preview only
-
-    So the audience is WeasyPrint and a browser, and the email-safe
-    compromises -- nested tables where a div would do, `bgcolor` beside every
-    background, zero flexbox, a 680px shell -- are legacy. They are not wrong;
-    they are answers to a question nobody is asking any more, and a redesign
-    that treats them as constraints cannot be built at all.
-
-    THE ONE THING THAT IS STILL TRUE: photos are absolute URLs to public image
-    endpoints, because WeasyPrint fetches them over HTTP exactly as a mail
-    client would have.
-
-    -- WHAT IS A LEGAL DOCUMENT AND WHAT IS NOT --
-
-    This is an INVESTOR communication: no statutory weight, never read by an
-    inspector, and it may INDEX rather than CONTAIN. The per-logbook PDF is the
-    filed record and is rendered elsewhere
-    (`generate_single_logbook_html`). test_report_legal_vs_investor.py is the
-    boundary between them and nothing here may cross it.
+    `diagnostics` is accepted and unused: the admin preview passed it to reveal
+    an AI trace on a page that no longer carries one. Removing the parameter
+    would break three callers for no gain; a test pins that it changes nothing.
     """
-
-    BASE_URL = "https://api.levelog.com"
-
-    # THE SEND PASSES THE NUMBER IT JUST ISSUED; EVERY OTHER CALLER ASKS.
-    #
-    # A preview of a date that WAS sent shows the number that went out, which
-    # is what makes the preview a preview OF that report rather than a
-    # look-alike. A preview of a date that was not shows the line below, and
-    # NEVER a provisional number: one that later differs from the sent one is
-    # worse than none, because a reader has no way to know which they are
-    # holding.
-    if report_number is None:
-        report_number = await _issued_report_number(project_id, date)
-    _report_no_line = (
-        f"Report #{report_number}" if isinstance(report_number, int)
-        # AN ABSENCE WITH ITS REASON, not a blank. A blank field on a cover
-        # reads as a missing datum or a bug; this says the field is not YET
-        # meaningful, which is true. Same distinction the superintendent log
-        # draws between not_reached and attested_none.
-        else "Report number assigned when sent"
-    )
-
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    project_name = project.get("name", "Unknown") if project else "Unknown"
-    project_address = project.get("address", "") if project else ""
-
-    # THE NAME AND THE ADDRESS ARE OFTEN THE SAME STRING. Projects are created
-    # from an address, so `name` and `address` frequently hold identical text —
-    # and the header printed both, in different fields, as though they were two
-    # different facts. When they match, the band carries no subtitle and the
-    # address is printed once, in the summary row beneath it.
-    _header_project_line = (
-        "" if (" ".join(str(project_name or "").split()).casefold()
-               == " ".join(str(project_address or "").split()).casefold())
-        else project_name
-    )
-
     logbooks = await db.logbooks.find({
-        "project_id": project_id,
-        "date": date,
+        "project_id": project_id, "date": date,
         "is_deleted": {"$ne": True},
-    }).to_list(100)
+    }).to_list(200)
 
+    # THE EASTERN DAY, AND IT IS THE ONLY CORRECT FILTER. A worker who badges
+    # in at half past nine in the evening is on today's report even though the
+    # UTC date has already rolled over.
     day_start, day_end = get_day_range_est(date)
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -31063,2336 +31115,137 @@ async def generate_combined_report(
         "is_deleted": {"$ne": True},
     }).to_list(500)
 
-    checkin_count = len(checkins)
+    gate = report_model.GateDayState(
+        checkins, display_company=_display_sub_company)
 
-    # Reusable inline style constants
-    TH = (
-        'style="background-color:#1e293b;color:#ffffff;padding:10px 12px;'
-        'text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;'
-        'letter-spacing:0.5px;" bgcolor="#1e293b"'
-    )
-    TD = 'style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;"'
-    EMPTY_5 = f'<tr><td colspan="5" {TD}>&mdash;</td></tr>'
-    # The pre-shift sheet is SIX columns since it gained a signature — a
-    # placeholder narrower than its header renders a ragged table on the one
-    # document nobody re-renders. EMPTY_5 still serves the three tables that
-    # really are five wide.
-    EMPTY_6 = f'<tr><td colspan="6" {TD}>&mdash;</td></tr>'
-    EMPTY_3 = f'<tr><td colspan="3" {TD}>&mdash;</td></tr>'
-
-    # =====================================================================
-    #  TYPE AND SPACING SCALE
-    # =====================================================================
-    #
-    # 17px against a 16px body is not a heading. This document had FOUR sizes
-    # -- 16 body, 16 section header, 17 sub-head, 14 sub-title -- all within a
-    # point of each other, so nothing on the page carried a rank. A reader
-    # looking for the Pre-Shift Sign-In had to READ the words to find it, on a
-    # sixteen-section record; and a section header the same size as the
-    # sentence beneath it is not a header, it is a bolder sentence.
-    #
-    # THE TYPE SCALE. Each step is a jump, not a nudge:
-    #
-    #     30  document title      page 1 only, once
-    #     24  section header      the name of a filed document
-    #     19  sub-head            a named block inside a section
-    #     16  body
-    #     15  table label         uppercase and tracked; a caption, not a head
-    #     13  table cell          density matters on a sixty-man roster
-    #
-    # THE SPACING SCALE, in the same spirit -- four steps, each roughly 1.7x
-    # the one below it, so a gap ALWAYS says which boundary it is:
-    #
-    #     40  above a section header      between two filed documents
-    #     24  between content blocks      within one document
-    #     14  header to its description   they belong together
-    #      8  label to its table          they are one unit
-    #
-    # A section header, its description and its content were separated by 12,
-    # 12 and 12 -- three different relationships rendered identically, which is
-    # why the page read as one undifferentiated column.
-    _T_SECTION, _T_SUBHEAD, _T_LABEL = "24px", "19px", "15px"
-    _S_SECTION, _S_BLOCK, _S_HEAD, _S_TIGHT = "40px", "24px", "14px", "8px"
-
-    def section_title(text):
-        """THE NAME OF A FILED DOCUMENT. Every one of these now starts its own
-        sheet, so this is the first thing on a page and has to read like it."""
-        return (
-            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            f'class="doc-section-title" style="margin:{_S_SECTION} 0 0 0;">'
-            f'<tr><td style="font-size:{_T_SECTION};font-weight:700;'
-            'line-height:1.25;color:#0A1929;letter-spacing:-0.01em;'
-            'padding-bottom:12px;border-bottom:2px solid #cbd5e1;">'
-            f'{text}</td></tr></table>'
-        )
-
-    def sub_title(text):
-        """THE CAPTION OVER A TABLE, and it is set as one: small, uppercase and
-        tracked out, so it reads as a label rather than as a smaller heading
-        competing with the section name above it."""
-        return (
-            # `class="doc-sub-title"` SO THE PRINT BLOCK CAN SEE IT. This is a
-            # class-less <table>, so it matched none of `h2, h3,
-            # .doc-section-title` -- and "Activity Details" is emitted by THIS
-            # function, which is the caption that rule's own comment cites as
-            # the thing it stops stranding at the foot of a page. It never
-            # matched it. Nineteen captions in this renderer go through here.
-            '<table cellpadding="0" cellspacing="0" border="0" '
-            f'class="doc-sub-title" style="margin:{_S_BLOCK} 0 {_S_TIGHT} 0;">'
-            f'<tr><td style="font-size:{_T_LABEL};font-weight:700;'
-            'color:#475569;text-transform:uppercase;letter-spacing:0.08em;">'
-            f'{text}</td></tr></table>'
-        )
-
-    def sub_head(text):
-        """A NAMED BLOCK INSIDE A SECTION -- "Headcount by subcontractor",
-        "Work today". Four hand-written <h3>s at 17px; one builder at 19."""
-        return (
-            f'<h3 style="color:#0A1929;margin:{_S_BLOCK} 0 {_S_TIGHT};'
-            f'font-size:{_T_SUBHEAD};font-weight:700;line-height:1.3;">'
-            f'{text}</h3>'
-        )
-
-    def info_box(content):
-        """THE SECTION'S DESCRIPTION. It sits under the header at the HEAD gap,
-        the tightest of the block gaps -- a header and the line that qualifies
-        it are one thing, and 12px put it exactly as far from its header as
-        from the table below it."""
-        return (
-            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            f'style="margin:{_S_HEAD} 0 0 0;" bgcolor="#f1f5f9">'
-            '<tr><td style="background-color:#f1f5f9;padding:16px 20px;'
-            'border-left:4px solid #1565C0;font-size:16px;line-height:1.7;color:#475569;">'
-            + _metadata_columns(content) + '</td></tr></table>'
-        )
-
-    def para(text):
-        return (f'<p style="color:#475569;font-size:16px;line-height:1.65;'
-                f'margin:{_S_BLOCK} 0 0;">{text}</p>')
-
-    def bold_para(label, value):
-        return (
-            f'<p style="color:#475569;font-size:16px;line-height:1.65;'
-            f'margin:{_S_BLOCK} 0 0;">'
-            f'<strong style="color:#0A1929;">{label}:</strong> {value}</p>'
-        )
-
-    # ==========================================================
-    #  DAILY JOBSITE (CP Logbook)
-    # ==========================================================
-    daily_jobsite = _filed_log(logbooks, "daily_jobsite")
-    # PAGE 1 - THE PROGRESS REPORT
-    #
-    # WHO THIS IS FOR. An investor or a bank, who asked "what was really done
-    # today" and was handed a compliance filing. Page 2 onward IS that filing,
-    # unchanged and unmoved - it is the legal record and an inspector reads it.
-    # This page answers the question and stops.
-    #
-    # DELIBERATELY ABSENT: percent complete, which cannot be computed honestly
-    # and is worse than nothing in front of a lender; and anything about cost
-    # or draw status, which this app does not hold and must not imply.
-    _pg1_date = _report_date_long(date)
-    # AMENDED? A FACT ABOUT THE RECORD, not about one log section, so it sits
-    # in the document header beside the date and the address.
-    #
-    # Read off the log this report PRINTS. _filed_log already supersedes a
-    # signed parent with its signed amendment ("an unsigned amendment is not a
-    # correction"), so by the time a child is printing, the reader is looking at
-    # a corrected document with nothing on it saying so. That was the gap: the
-    # report silently changed shape between two printings.
-    # Escaped locally: the reason is operator-supplied text on its way into
-    # an HTML document. `import html as _html` lower in this function is AFTER
-    # this point, so it cannot be borrowed.
-    import html as _amend_esc
-    _amend = amendment_state(daily_jobsite)
-    _amend_line = amendment_sentence(_amend)
-    _amendment_html = (
-        f'<div style="margin-top:16px;padding:12px 14px;background-color:#fffbeb;'
-        f'border-left:3px solid #b45309;">'
-        f'<span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;'
-        f'color:#b45309;font-weight:600;">AMENDED RECORD</span><br />'
-        f'<span style="font-size:13px;color:#0A1929;">{_amend_esc.escape(_amend_line)}</span>'
-        f'</div>'
-    ) if _amend_line else ""
-
-    _subs, _sub_total = _headcount_by_sub(checkins)
-
-    _dj = ((daily_jobsite or {}).get("data") or {}) if daily_jobsite else {}
-    _dj_id = str(daily_jobsite["_id"]) if daily_jobsite else ""
-    # ── WEATHER IS ON THE COVER, AND THIS REVERSES A RULING ─────────────────
-    #
-    # THE OLD REASONING, QUOTED SO A READER FINDS THE CORRECTION RATHER THAN AN
-    # EMPTY GREP:
-    #
-    #     NO WEATHER ON THE COVER. It is a fact about the DAILY JOBSITE LOG and
-    #     it is printed there, in that log's own info box, where 3301-02 asks
-    #     for it. On the investor cover it was a second copy of the same string
-    #     with no document behind it -- the first line of a progress report
-    #     answering a question nobody with $2M in the ground was asking.
-    #
-    # THE OPERATOR HAS REVERSED IT, and the reversal is a PROMOTION rather than
-    # a move: the daily jobsite log keeps its own weather box, where 3301-02
-    # asks for it, and the cover gains one. Two copies of one fact is what the
-    # old note objected to; on a cover a lender reads, conditions are the
-    # frame the rest of the page sits in -- eight men on a roof means one
-    # thing in the dry and another in 30mph wind.
-    #
-    # `_display_weather` is unchanged and now has four call sites.
-    _weather_panel = ""
-    if _dj:
-        _w = _display_weather(_dj)
-        if _w:
-            _weather_panel = (
-                '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-                'style="margin:0;border:1px solid #e2e8f0;border-radius:6px;" '
-                'bgcolor="#f8fafc"><tr><td style="padding:14px 16px;">'
-                f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
-                'text-transform:uppercase;letter-spacing:0.08em;'
-                'padding-bottom:6px;">Weather</div>'
-                '<div style="font-size:16px;color:#0A1929;line-height:1.6;">'
-                f'{_w}</div></td></tr></table>'
-            )
-
-    # ── THE COVER STRIP: FOUR TILES ─────────────────────────────────────────
-    #
-    # FOUR, NOT FIVE. The mockup's fifth reads ACTIVE FLOORS "2, 5, 6 + ROOF"
-    # and there is no source for it: `location_ids` across ALL 110 activity
-    # rows in production is 71 free-text `other:` strings and 40 empty, with
-    # ZERO floor chips -- three spellings of the same two floors in three
-    # consecutive days ("1 floor", "1st 2nd floor", "1st and 2nd floor").
-    # Parsing that into a list is inventing one. The operator ruled the tile
-    # OUT rather than permanently "&mdash;": a cover tile that always reads as
-    # missing advertises a number the product does not have.
-    #
-    # TRADES COMES FROM THE GATE, NOT THE LOG. `trade` is blank on 50 of 110
-    # activity rows; every one of the 217 check-ins carries one.
-    _trades = sorted({
-        " ".join(str(_c.get("trade") or "").split())
-        for _c in (checkins or []) if _c.get("blocked") is not True
-    } - {""})
-
-    # `_stat_tile`, NOT `_tile`. The photo loop below binds a LOCAL named
-    # `_tile` for each photograph's HTML, and it runs BEFORE this is used --
-    # so a function called `_tile` is a string by the time the cover is
-    # assembled, and the failure is `'str' object is not callable` on a live
-    # render rather than anything a reader would connect to a photo loop 400
-    # lines away. Found by rendering, not by reading.
-    def _stat_tile(value, label):
-        return (
-            f'<td width="25%" valign="top" style="vertical-align:top;'
-            'padding:0 10px;border-left:1px solid #e2e8f0;">'
-            f'<div style="font-size:30px;font-weight:700;color:#0A1929;'
-            f'line-height:1.1;">{value}</div>'
-            f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
-            'text-transform:uppercase;letter-spacing:0.08em;padding-top:6px;">'
-            f'{label}</div></td>'
-        )
-
-    # Headcount, by sub and total. From CHECK-INS, as ruled.
-    _sub_rows = "".join(
-        f'<tr><td {TD}>{_capitalize_first(_name)}</td>'
-        f'<td {TD} align="right">{_n}</td></tr>'
-        for _name, _n in _subs
-    ) or f'<tr><td colspan="2" {TD}>{NOT_RECORDED}</td></tr>'
-
-    # ONE LINE PER SUBCONTRACTOR. One Gemini call per row, every sentence
-    # through the verifier before it can reach this page, and a refusal falls
-    # back to the plain facts - which is exactly what this rendered before the
-    # generator existed (#121), so the worst case here is the previous best case.
-    #
-    # AUTO-APPROVE. There is no human in this path: the report sends at the
-    # admin's daily send time whether or not anyone read it. That is precisely
-    # why generate_sentence is the ONLY thing called here - it runs
-    # verify_sentence internally and returns None rather than an unchecked
-    # string, so there is no way to render a sentence that did not pass.
-    #
-    # The closed input set is assembled below and is the whole of what the model
-    # sees. Headcount comes from the GATE (_subs, via check-ins), not from the
-    # row's hand-typed num_workers, matching the headcount table directly above.
-    #
-    # Imported here, not at module scope, matching how phase_inference is pulled
-    # in (:11943) - the google-genai import stays off the boot path.
-    from lib.ai.sub_summary import generate_sentence_traced as _gen_sub_sentence
-    import html as _html
-
-    _gate_counts = {_n.strip().lower(): _c for _n, _c in _subs}
-
-    # Which of the four outcomes each row took. Rendered ONLY under
-    # `diagnostics` — see the block after this loop.
-    _ai_outcomes: List[tuple] = []
-
-    # ── TWO CREWS, ONE SUBCONTRACTOR ────────────────────────────────────────
-    #
-    # Vanguard appeared twice in Work today with nothing to tell the two rows
-    # apart. Both were correct — Concrete and Formwork — but a repeated name
-    # with different activities under it reads as a duplicate on a document
-    # somebody is checking for errors, and this page has already been through
-    # one round of real duplicates.
-    #
-    # The trade is named ONLY where it disambiguates. Printing it on every row
-    # would push a fact nobody asked for onto the rows that were never
-    # ambiguous, and the page is a summary, not a schedule. Counted on the
-    # normalised company so "AAZ" and "aaz " are one subcontractor, matching
-    # how every other roster comparison on this project is keyed.
-    _pg1_company_crews: Dict[str, int] = {}
-    for _a in (_dj.get("activities") or []):
-        _c = _roster_key(_a.get("company"))
-        if _c:
-            _pg1_company_crews[_c] = _pg1_company_crews.get(_c, 0) + 1
-
-    _pg1_lines = ""
-    for _a in (_dj.get("activities") or []):
-        _co = str(_a.get("company") or "").strip()
-        if not _co:
-            continue
-        # work_description / work_locations are the tapped chip labels, already
-        # resolved and comma-joined by the stepper (composeSelection in
-        # frontend/src/utils/dailyJobsiteModel.js). Splitting them back apart is
-        # what gives the verifier one label per item to trace.
-        _payload = {
-            "company":      _display_sub_company(_co),
-            "trade":        str(_a.get("trade") or "").strip(),
-            "worker_count": _gate_counts.get(_co.lower()),
-            "activities":   [_s.strip() for _s in
-                             str(_a.get("work_description") or "").split(",")
-                             if _s.strip()],
-            "locations":    [_s.strip() for _s in
-                             str(_a.get("work_locations") or "").split(",")
-                             if _s.strip()],
-            "photo_count":  sum(
-                1 for _p in (_a.get("photos") or [])
-                if _logbook_photo_is_renderable(_p)
-            ),
-        }
-        # THE FALLBACK IS THE #121 LINE, unchanged. A refused sentence renders
-        # exactly what this page rendered before the generator existed, so the
-        # worst case of adding AI here is the status quo ante - never a gap.
-        _facts = ", ".join(
-            _x for _x in [
-                _sentence_case(_a.get("work_description") or ""),
-                _capitalize_first(_a.get("work_locations") or ""),
-            ] if _x
-        )
-        # The generated sentence is ESCAPED and the fallback is not, and that
-        # asymmetry is deliberate. verify_sentence is a vocabulary gate, not a
-        # sanitizer - it tokenizes on [A-Za-z0-9]+ and ignores punctuation
-        # completely, so angle brackets are invisible to it. CP free text is
-        # already rendered raw here and on page 2 and that is this page's
-        # established trust level; a model is a new writer and does not inherit
-        # it. Escaping costs nothing on a sentence that traces.
-        _gen, _outcome = _gen_sub_sentence(_payload)
-        _ai_outcomes.append((_display_sub_company(_co), _outcome))
-        _line = _sentence_case(_html.escape(_gen)) if _gen else _facts
-        # The trade, only when this company has more than one crew today.
-        _trade = str(_a.get("trade") or "").strip()
-        _label = _capitalize_first(_display_sub_company(_co))
-        if _pg1_company_crews.get(_roster_key(_co), 0) > 1 and _trade:
-            _label += f' &mdash; {_capitalize_first(_trade)}'
-        _pg1_lines += (
-            '<p style="margin:0 0 10px;font-size:16px;line-height:1.6;color:#334155;">'
-            f'<strong style="color:#0A1929;">{_label}</strong>'
-            f'{" - " + _line if _line else ""}</p>'
-        )
-
-    # ── WHY THAT LINE SAYS WHAT IT SAYS — admin only ───────────────────────
-    #
-    # All four outcomes render the same fallback, so from the page alone a
-    # refusal, a failure, a missing key and "no model was ever asked" are
-    # indistinguishable. That is fine for a lender and useless for the person
-    # who has to fix it — and a diagnosis has now been blocked twice on runtime
-    # logs the operator cannot reach.
-    #
-    # NEVER ON THE SENT REPORT. `diagnostics` defaults False and only the two
-    # authenticated preview endpoints pass it, gated on role. The scheduled
-    # send — the copy that reaches investors and lenders — never sees this.
-    #
-    # It carries no key and no secret: an outcome is a branch name, an
-    # exception CLASS, or a refusal reason plus the offending words, which are
-    # the CP's own vocabulary or the model's.
-    _pg1_ai_note = ""
-    if diagnostics and _ai_outcomes:
-        _rows = "".join(
-            f'<div>{_html.escape(str(_c))} &mdash; {_html.escape(str(_o))}</div>'
-            for _c, _o in _ai_outcomes
-        )
-        _pg1_ai_note = (
-            '<div style="margin:12px 0;padding:8px 10px;border:1px solid #cbd5e1;'
-            'border-radius:6px;background:#f8fafc;font-size:11px;color:#475569;">'
-            '<strong style="color:#0A1929;">AI LINE &mdash; ADMIN VIEW ONLY, '
-            'NOT ON THE SENT REPORT</strong>'
-            f'{_rows}</div>'
-        )
-
-    # ── VISUAL PROGRESS: ONE NUMBERED BAND PER SUBCONTRACTOR ───────────────
-    #
-    # Photos grouped by subcontractor, captioned from what the CP tapped. ALL
-    # of them. Same URL scheme and the same renderable test the logbook section
-    # uses, so a photo that vanishes there vanishes here -- never a broken
-    # image standing in for evidence.
-    #
-    # THE BAND HEADER CARRIES THREE FACTS FROM TWO SOURCES, and which comes
-    # from where is the whole design:
-    #
-    #   company, trade, floors   THE LOG. Photos attach to activity rows, so
-    #                            the log is the only thing that can attribute
-    #                            them, and a band is a group of photographs.
-    #   worker count             THE GATE. `worker_count` on an activity row is
-    #                            None on ALL 110 rows in production -- it has
-    #                            never once been filled in -- and the gate has
-    #                            the real number.
-    #
-    # A COMPANY THE GATE SAW AND THE LOG DID NOT gets a row in the workforce
-    # table on page 1 and NO BAND. That is truthful rather than a gap: those
-    # men were on site and the CP logged no work for them. MQ Steel is the live
-    # instance -- 3 workers at the gate on 2026-09-09, no activity row.
-    _headcounts = {_norm_company(_co): _n for _co, _n in _subs}
-    _pg1_photos = ""
-    _band_no = 0
-    for _ai, _a in enumerate(_dj.get("activities") or []):
-        _shots = ""
-        for _pi, _photo in enumerate(_a.get("photos") or []):
-            if not _logbook_photo_is_renderable(_photo):
-                continue
-            _orig = (
-                f"{BASE_URL}/api/reports/logbook-photo/"
-                f"{_dj_id}/{_ai}/{_pi}"
-            )
-            _done = _photo.get("enhance_status") == "done"
-            _thumb = f"{_orig}?v=thumb" if _done else _orig
-            _full = f"{_orig}?v=enhanced" if _done else _orig
-            _tile = (
-                f'<a href="{_full}" target="_blank" '
-                'style="text-decoration:none;display:inline-block;">'
-                f'<img src="{_thumb}" width="160" height="120" '
-                'style="width:160px;height:120px;object-fit:cover;'
-                'border-radius:4px;border:1px solid #e2e8f0;'
-                'display:inline-block;margin:3px;'
-                # A PHOTOGRAPH IS NOT SPLIT ACROSS TWO SHEETS.
-                'page-break-inside:avoid;break-inside:avoid;" /></a>'
-            )
-            # THE "ADDED AFTER FILING" MARKER USED TO BE CAPTIONED HERE, AND
-            # THIS REPORT IS THE ONE DOCUMENT IT MUST NOT BE ON.
-            #
-            # It is filing apparatus: it answers "was this photograph part of
-            # what the CP attested to", which is a DOB inspector's question and
-            # not a lender's. The affirmation banner and the BC 3301.13.13
-            # citations were ruled off this report for exactly that reason and
-            # this was left behind, because it takes no flag and so no
-            # convention could refuse it.
-            #
-            # IT WAS ALSO INVERTED. It rendered eight times on the 2026-09-09
-            # report and zero times on the per-logbook PDF, which is where it
-            # was ruled to stay -- that renderer carried no reference to the
-            # flag at all. It is on the legal PDF now, and on the site device,
-            # and a registry test asserts both halves against rendered output
-            # rather than against a call-site convention.
-            _shots += _tile
-        if not _shots:
-            continue
-        _band_no += 1
-        _company = _capitalize_first(_display_sub_company(_a.get("company")))
-        _trade = _sentence_case(_a.get("trade") or "")
-        # THE COUNT IS THE GATE'S, MATCHED BY NAME -- OR AN EM DASH.
-        #
-        # NOTHING IS NORMALISED INTO A MATCH. `_norm_company` folds case and
-        # collapses whitespace, which is matching; it does NOT make "Arkon"
-        # and "Arkon Builders" the same company, and both are on record at 588
-        # Thomas. A band whose company the gate never saw shows a dash and
-        # says nothing further: the discrepancy is legible on page 1, where
-        # the workforce table lists every company the gate DID see, and a band
-        # that editorialised about a name mismatch would be the report arguing
-        # with its own data.
-        _n = _headcounts.get(_norm_company(_a.get("company")))
-        _facts = " &nbsp;|&nbsp; ".join(
-            _x for _x in [
-                f"{_company}" + (f" ({_trade})" if _trade else ""),
-                (f"{_n} worker" + ("s" if _n != 1 else "")) if _n is not None
-                else "&mdash;",
-                _capitalize_first(_a.get("work_locations") or ""),
-            ] if _x
-        )
-        _pg1_photos += (
-            # ── THE HEADER AND ITS PHOTOGRAPHS DO NOT SEPARATE ─────────────
-            #
-            # THE DEFECT THIS FIXES, reported live on the 2026-09-09 report:
-            # appended photographs "render in a single unattributed block after
-            # a page break, with the subcontractor's own photo section left
-            # empty above."
-            #
-            # The data was never wrong. `append_activity_photo` pushes into
-            # `data.activities.$[act].photos` keyed on activity_id, so all 21
-            # appended photographs in production sit inside their own
-            # subcontractor's row -- 8 of the 12 on that date, all Arkon
-            # Builders. There is exactly ONE photo-rendering site in this
-            # report and it has always grouped by activity.
-            #
-            # WHAT WAS WRONG IS THAT THE CAPTION AND THE GRID WERE BARE
-            # SIBLINGS. A `<p>` and a `<div>` with no break rule between them,
-            # while the print block protects only `h2, h3, .doc-section-title,
-            # .doc-sub-title` -- none of which either is. The caption stranded
-            # at the foot of one page and the tiles flowed onto the next, and
-            # the caption IS the attribution. Eight amber "added after filing"
-            # markers roughly doubled the block's height, which is why it
-            # surfaced on that date and not before.
-            #
-            # `page-break-after: avoid` ON THE HEADER, not `page-break-inside:
-            # avoid` on the band. A band of twelve tiles can be taller than
-            # what is left of a page; forbidding it to break would push the
-            # whole thing overleaf and leave a hole. The header may not be the
-            # last thing on a page -- that is the actual rule -- and each tile
-            # is unbreakable so a photograph never splits across a sheet.
-            #
-            # 13px #475569 is 7.58:1 on white. It was 11px #64748b at 4.76:1 --
-            # which PASSES AA and was simply the smallest text near the photos.
-            f'<p class="band-head" style="margin:16px 0 6px;font-size:13px;'
-            f'color:#475569;page-break-after:avoid;break-after:avoid-page;">'
-            f'<strong style="color:#0A1929;">{_band_no}</strong>&nbsp;&nbsp;'
-            f'{_facts}</p>'
-            f'<div>{_shots}</div>'
-        )
-
-    # Anything flagged. Safety observations the CP recorded, and inspections he
-    # marked FAILED - the two things a reader must not have to hunt for.
-    _flags = ""
-    for _o in (_dj.get("observations") or []):
-        _desc = _sentence_case(_o.get("description") or "")
-        if not _desc:
-            continue
-        _who = _capitalize_first(_o.get("responsible_party") or "")
-        _fix = _sentence_case(_o.get("remedy") or "")
-        _flags += (
-            f'<li style="margin:0 0 6px;">{_desc}'
-            f'{" - " + _who if _who else ""}'
-            f'{". Action: " + _fix if _fix else ""}</li>'
-        )
-    for _k, _v in (_dj.get("checklist_items") or {}).items():
-        if isinstance(_v, dict) and _v.get("result") == "fail":
-            _note = str(_v.get("note") or "").strip()
-            _flags += (
-                '<li style="margin:0 0 6px;">Failed inspection: '
-                f'{_inspection_label(_k)}{" - " + _note if _note else ""}</li>'
-            )
-    # ── SAFETY STATUS: THREE STATES, AND THE THIRD IS NOT "FINE" ───────────
-    #
-    # THE FOUR KEYS ARE NOT NAMED HERE. They are declared in
-    # superintendent_log.py and `cs_safety_status` reads them there --
-    # `test_superintendent_log.py::OneBuilderBothRenderers` refuses a renderer
-    # that builds its own item list, and it was right to: a second copy of
-    # those keys goes quietly out of date, the tile reads "not stated"
-    # forever, and nothing fails.
-    #
-    # `flagged` CARRIES THE CP'S OWN RECORD, which items 4 to 7 do not: all
-    # four can be honestly attested "none" on a day the CP still logged an
-    # observation or a failed inspection.
-    _cs_log = _filed_log(logbooks, "site_superintendent_log")
-    _cs_data = (_cs_log or {}).get("data") if _cs_log else None
-    _safety = cs_safety_status(_cs_data, date, flagged=bool(_flags))
-    _safety_value = {
-        SAFETY_CLEAR: "Clear",
-        SAFETY_ATTENTION: "Attention",
-    }.get(_safety, "&mdash;")
-    _safety_label = "Safety status"
-
-    _flags_html = (
-        sub_head("Flagged today")
-        + '<ul style="margin:0 0 8px;padding-left:20px;font-size:15px;'
-          'line-height:1.6;'
-        + f'color:#334155;">{_flags}</ul>'
-    ) if _flags else ""
-
-    # ONE line of compliance status. The detail is page 2; this says only
-    # whether a reader needs to go there.
-    #
-    # THE DENOMINATOR IS THE PROJECT'S REQUIRED SET. It used to be the number
-    # of documents that happened to exist for the date, compared against
-    # itself: `_total_logs = len(_real_logs)` and then "All 9 required logs
-    # filed and signed". That sentence could not fail. Nine logs present became
-    # nine logs required; a required log NOBODY FILED was invisible, because a
-    # document that does not exist cannot be counted by counting documents. On
-    # a compliance line that is the exact direction the error must not run.
-    #
-    # So the required set is read from the PROJECT (get_required_logbooks —
-    # class, storeys, demolition, scaffold), and the logs actually filed are
-    # compared against it. "4 of 4", which can also read "2 of 4".
-    #
-    # DAILY ONLY, and this is a restriction not an omission. A Tool Box Talk is
-    # weekly and a Subcontractor Orientation is as-needed; counting either as
-    # missing on a Tuesday would invent a deficiency out of a frequency. They
-    # are still named when they ARE filed, so nothing the CP did goes unstated.
-    #
-    # SIGNED MEANS AFFIRMED, tested with _is_affirmed_signature — the same
-    # predicate the signature banner beside each section prints from. The old
-    # line tested `_l.get("cp_signature")` for truthiness, and production held
-    # `cp_signature: {}`: an empty object, truthy, counted as signed here while
-    # page 2 printed "UNAFFIRMED — inherited signature" for the very same log.
-    # Two statements about one signature on one document.
-    _FREQ = {t["key"]: (t.get("label") or t["key"], t.get("frequency"))
-             for t in LOGBOOK_TYPE_REGISTRY}
-
-    def _log_label(_t):
-        return _FREQ.get(_t, (_t, None))[0]
-
-    # THE CITATION, FROM THE REGISTRY THAT DECLARES IT. Built the same way and
-    # in the same place as `_FREQ`, off the same rows, so a type cannot have a
-    # label here and a citation somewhere else. `dob_reference` is present on
-    # every required type -- §3301.2, §3301.13.13, OSHA 1926.21, LL196,
-    # OSHA 1926, §3314 -- and these are authoritative where the mockup's are
-    # approximate: it prints "§3301-02" for what the registry calls §3301.2.
-    _CITE = {t["key"]: (t.get("dob_reference") or "")
-             for t in LOGBOOK_TYPE_REGISTRY}
-
-    if project:
-        _required = list(project.get("required_logbooks") or [])
-        if not _required:
-            _required = get_required_logbooks(project.get("project_class"), project)
-    else:
-        _required = []
-    # THE SAME RESOLVER THE SECTIONS BELOW PRINT FROM, so this line can never
-    # call a log missing that page 2 goes on to render, or vice versa. One pass,
-    # so there is one lookup per required type and no second opinion.
-    _by_type = {_t: _filed_log(logbooks, _t) for _t in _required}
-    # An unknown key has no frequency to judge it by, so it is treated as due —
-    # a new required type is surfaced rather than silently dropped from the
-    # count until someone remembers to register it.
-    _due = [_t for _t in _required if _FREQ.get(_t, (None, None))[1] in (None, "daily")]
-    _done, _unaffirmed, _missing = [], [], []
-    for _t in _due:
-        _doc = _by_type.get(_t)
-        if not _doc:
-            _missing.append(_t)
-        elif _is_affirmed_signature(_doc.get("cp_signature")):
-            _done.append(_t)
-        else:
-            _unaffirmed.append(_t)
-    # Required but not due today, and filed anyway. Stated because the ratio
-    # above deliberately excludes them and silence would read as "not done".
-    _extra = [_t for _t in _required if _t not in _due and _by_type.get(_t)]
-
-    _unassessed_note = (
-        " Building classification not set, so the two major-building logs are"
-        " included until it is."
-        if project and not classification_assessed(project) else ""
-    )
-    if not project:
-        _compliance = "Project record not found — the required-log set could not be read."
-    elif not _due:
-        _compliance = "No daily logs are required on this project."
-    else:
-        _compliance = (
-            f"{len(_done)} of {len(_due)} required daily logs filed and signed."
-        )
-        _short = []
-        if _unaffirmed:
-            _short.append(
-                f"{len(_unaffirmed)} filed without an affirmed signature "
-                f"({', '.join(_log_label(_t) for _t in _unaffirmed)})"
-            )
-        if _missing:
-            _short.append(
-                f"{len(_missing)} not filed "
-                f"({', '.join(_log_label(_t) for _t in _missing)})"
-            )
-        if _short:
-            _compliance = _compliance[:-1] + "; " + "; ".join(_short) + "."
-    if _extra:
-        _compliance += (
-            " Also filed today: "
-            + ", ".join(_log_label(_t) for _t in _extra) + "."
-        )
-    # WHY THE DENOMINATOR IS BIGGER THAN THE READER EXPECTS. get_required_logbooks
-    # fails CLOSED on a project whose §3310 class was never decided, so the
-    # Concrete Safety Manager log and the SSC/SSM log are counted as required.
-    # Printing that count without the reason puts two unexplained deficiencies
-    # on a document that goes to investors and lenders, and the honest sentence
-    # is that nobody has classified the building — not that the site is failing.
-    _compliance += _unassessed_note
-
-    # ── THE COVER FOOTER: TWO COLUMNS ───────────────────────────────────────
-    #
-    # SAFETY & COMPLIANCE is a tick per statement, and each tick is a fact off
-    # a filed record -- never a decoration. A statement whose document was not
-    # filed does not get a tick and does not get a cross: it gets the em dash,
-    # because "no incidents reported" and "nobody said" are different claims
-    # and only one of them is an attestation.
-    #
-    #   tick     the superintendent attested "none to report" on that item
-    #   cross    something IS recorded against it
-    #   dash     no superintendent log, or the item was never reached
-    #
-    # THE COMPLIANCE LINE IS THE FIFTH ROW, and it is the only one that reads
-    # off a different source -- the required-set arithmetic rather than an
-    # attestation. When it is not clean it renders `_compliance` in full, so
-    # WHICH log is missing survives the move out of the body.
-    # KEYED OFF THE MODEL'S OWN TUPLE, in its order, so a renamed or reordered
-    # item cannot leave a tick pointing at nothing. The WORDS are the report's
-    # -- a lender reads "No violations or stop work orders", not the item's
-    # statutory label -- but the KEYS are never restated.
-    _CS_TICK_LABELS = [
-        (_k, CS_SAFETY_TICK_WORDS[_k]) for _k in CS_SAFETY_ITEM_KEYS
+    daily = _filed_log(logbooks, "daily_jobsite") or {}
+    daily_data = daily.get("data") or {}
+    activities = [
+        report_model.ActivityDisplayState(
+            row, index, gate,
+            display_company=_display_sub_company,
+            renderable=_logbook_photo_is_renderable)
+        for index, row in enumerate(daily_data.get("activities") or [])
+        if isinstance(row, dict)
     ]
 
-    def _tick_row(mark, colour, text):
-        return (
-            '<tr><td width="18" valign="top" style="vertical-align:top;'
-            f'padding:0 6px 8px 0;color:{colour};font-size:16px;'
-            f'line-height:1.6;">{mark}</td>'
-            '<td valign="top" style="vertical-align:top;padding:0 0 8px 0;'
-            f'font-size:16px;line-height:1.6;color:#334155;">{text}</td></tr>'
-        )
+    label = {t["key"]: (t.get("label") or t["key"])
+             for t in LOGBOOK_TYPE_REGISTRY}
+    frequency = {t["key"]: t.get("frequency") for t in LOGBOOK_TYPE_REGISTRY}
+    citation = {t["key"]: (t.get("dob_reference") or "")
+                for t in LOGBOOK_TYPE_REGISTRY}
 
-    _ticks = ""
-    for _key, _label in _CS_TICK_LABELS:
-        _st = cs_item_state(_key, _cs_data, date) if _cs_log else None
-        if _st == "attested_none":
-            _ticks += _tick_row("&#10003;", "#15803d", _label)
-        elif _st == "present":
-            _ticks += _tick_row("&#10007;", "#b91c1c",
-                                _label.replace("No ", "Recorded: ", 1))
-        else:
-            # NOT A TICK AND NOT A CROSS. Nobody made this statement.
-            _ticks += _tick_row("&mdash;", "#64748b",
-                                f"{_label} &mdash; not stated")
-    # ── THE COMPLIANCE ROW CARRIES THE RATIO, CLEAN OR NOT ─────────────────
-    #
-    # The first draft rendered "All required daily logs filed and signed" on
-    # the clean path, and `test_investor_page_one` refused it -- correctly, and
-    # for a reason older than this change. That sentence used to read "All 9
-    # required logs filed and signed" where the 9 was a count of the documents
-    # that happened to exist, compared against itself: A SENTENCE THAT COULD
-    # NOT FAIL. The ratio is what fixed it, and putting "All required" back on
-    # the clean path is that defect returning as a tick.
-    #
-    # So the WORDS are always `_compliance` -- "5 of 5 required daily logs
-    # filed and signed", with its deficiency clauses when there are any -- and
-    # only the MARK changes. The tile says the same ratio in two characters;
-    # this row is where a reader learns WHICH log is missing.
-    _clean = bool(_due) and len(_done) == len(_due)
-    _ticks += _tick_row(
-        "&#10003;" if _clean else "&mdash;",
-        "#15803d" if _clean else "#64748b",
-        _compliance,
-    )
+    required = list((project or {}).get("required_logbooks") or [])
+    if not required and project:
+        required = get_required_logbooks(project.get("project_class"), project)
+    due = [t for t in required if frequency.get(t) in (None, "daily")]
+    filed = [t for t in required if _filed_log(logbooks, t)]
+    required_logs = report_model.RequiredLogsState(
+        required, due, filed, label=lambda t: label.get(t, t))
 
-    _open_items = (
-        f'<ul style="margin:0;padding-left:18px;font-size:16px;'
-        f'line-height:1.6;color:#334155;">{_flags}</ul>' if _flags
-        else '<p style="margin:0;font-size:16px;line-height:1.6;color:#64748b;">'
-             '&mdash;&nbsp; None</p>'
-    )
+    # SAFETY COMES OFF THE SUPERINTENDENT'S LOG AND NOWHERE ELSE. When that log
+    # is not filed there is no conclusion, and "no incidents" is a claim the
+    # record does not make.
+    cs_log = _filed_log(logbooks, "site_superintendent_log")
+    flagged = bool([o for o in (daily_data.get("observations") or [])
+                    if isinstance(o, dict)
+                    and " ".join(str(o.get("description") or "").split())])
+    status = None
+    if cs_log:
+        state = cs_safety_status(cs_log.get("data"), date, flagged=flagged)
+        status = {SAFETY_CLEAR: "Clear",
+                  SAFETY_ATTENTION: "Attention"}.get(state)
+    safety = report_model.SafetyState(cs_log, status)
 
-    def _col_head(text):
-        return (f'<div style="font-size:{_T_LABEL};font-weight:700;color:#475569;'
-                'text-transform:uppercase;letter-spacing:0.08em;'
-                f'padding-bottom:10px;">{text}</div>')
+    # THROUGH `_display_weather`, NOT REBUILT. The helper is the only thing
+    # that reads `weather_fetch_state`, and that field is the difference
+    # between "the fetch failed and the CP had no way to type it in" and
+    # "nobody recorded it". Rebuilding the line here silently collapsed the
+    # first into the second.
+    #
+    # NOT_RECORDED becomes an EMPTY LIST rather than a printed line, so the
+    # page's own absence wording is used once instead of two spellings of the
+    # same nothing appearing on one document.
+    _weather_line = _display_weather(daily_data)
+    weather = [] if _weather_line == NOT_RECORDED else [_weather_line]
 
-    # ── PAGE 4: THE PROJECT RECORD ──────────────────────────────────────────
+    model = report_model.ReportDisplayModel(
+        project=project or {}, date=date, gate=gate, activities=activities,
+        safety=safety, required_logs=required_logs, weather=weather)
+
+    # ── THE RECORD INDEX ────────────────────────────────────────────────────
     #
-    # ONE CARD PER REQUIRED LOG TYPE, derived from the project's own required
-    # set. NOT eight: the mockup's eighth card reads "Additional Records --
-    # permits, deliveries, visitors, etc." and there is nothing behind it.
-    # Visitors and deliveries are FIELDS ON THE DAILY JOBSITE LOG, already
-    # inside card 01, and a card promising records that live in another card is
-    # worse than seven cards.
-    #
-    # THE COUNT IS PER PROJECT, so the grid flows 4-up rather than pretending
-    # to be 4x2: across the five live projects the required set is 0, 5, 5, 7
-    # and 7, and a Major A/B job carries more.
-    #
-    # THE CITATIONS ARE OURS. The registry carries a `dob_reference` for every
-    # type -- §3301.2, §3301.13.13, OSHA 1926.21, LL196, OSHA 1926, §3314 --
-    # and they are authoritative where the mockup's are approximate ("§3301-02"
-    # for what the registry calls §3301.2).
-    #
-    # ── THREE STATES, BECAUSE A REQUIRED LOG CAN BE MISSING ─────────────────
-    #
-    # It was put to me that one cannot be, "there's no way to submit without it
-    # anyway". MEASURED ACROSS EVERY PROJECT AND DATE IN PRODUCTION: 38 days
-    # where fewer were filed than were due, against 6 complete. On 588 Thomas
-    # the superintendent log and the scaffold log are absent from nearly every
-    # day before 2026-09-04, which is when they were switched on.
-    #
-    # The belief came from three weeks of complete days. There is no gate and
-    # there could not be: each logbook is an independent document with its own
-    # Submit, and "the day ended" is not an event this app owns.
-    # `daily_required_logbooks` is a REQUIREMENT, NOT AN ENFORCEMENT.
-    #
-    #   filed              thumbnail + View document
-    #   due today, absent  "Not filed" -- the same words the cover's tick row
-    #                      uses for the same fact, so the two surfaces agree
-    #   not due today      "Not due today" -- a weekly or as-needed type is not
-    #                      a deficiency on a date it was not owed
-    #
-    # OMITTING THE ABSENT ONES WAS THE ALTERNATIVE AND IT IS WORSE: page 4
-    # would show five cards on a project requiring seven, and a reader counting
-    # cards would get a different answer from the cover's "3 of 5".
-    _CARD_BLURBS = {
-        "daily_jobsite": "Daily on-site work log",
-        "site_superintendent_log": "Superintendent site record",
-        "toolbox_talk": "Safety meeting record",
-        "preshift_signin": "Daily workforce record",
-        "osha_log": "Worker certification status",
-        "scaffold_maintenance": "Sidewalk shed and scaffold",
-        "subcontractor_orientation": "Site orientation records",
+    # One card per required type, in the project's own order. A card's
+    # thumbnail is the FIRST PAGE OF THE FILED DOCUMENT, rendered once ever and
+    # cached; a type that is owed and absent gets a grey panel naming the date,
+    # never an empty document outline.
+    on_site = gate.on_site
+    orientations = [l for l in logbooks
+                    if l.get("log_type") == "subcontractor_orientation"]
+    covered = await _oriented_on_site_count(project_id, checkins)
+    preshift = _filed_log(logbooks, "preshift_signin")
+    signins = len(((preshift or {}).get("data") or {}).get("signins") or [])
+    facts = {
+        "preshift_signin": ([f"{signins} workers recorded"] if signins
+                            else ["No workers recorded on the sheet"]),
+        "subcontractor_orientation": [
+            f"{covered} / {on_site} current onsite workers have orientation "
+            f"on file",
+            f"{len(orientations)} acknowledgments filed today",
+        ],
     }
 
-    _cards = []
-    for _n, _t in enumerate(_required, start=1):
-        _doc = _by_type.get(_t)
-        _thumb = await _logbook_thumbnail_url(_doc) if _doc else None
-        _link = ""
-        if _doc:
-            _tok = await _mint_logbook_share_token(str(_doc.get("_id") or ""))
-            if _tok:
-                _link = _public_logbook_url(_tok)
-        _cards.append({
-            "n": _n,
-            "title": _log_label(_t),
-            "cite": _CITE.get(_t, ""),
-            "blurb": _CARD_BLURBS.get(_t, ""),
-            "thumb": _thumb,
-            "link": _link,
-            "state": ("filed" if _doc else
-                      ("missing" if _t in _due else "not_due")),
+    cards = []
+    for number, log_type in enumerate(required, start=1):
+        document = _filed_log(logbooks, log_type)
+        thumbnail = await _logbook_thumbnail_url(document) if document else None
+        link = ""
+        if document:
+            token = await _mint_logbook_share_token(
+                str(document.get("_id") or ""))
+            if token:
+                link = _public_logbook_url(token)
+        if document:
+            state = report_view.CardState.FILED
+        elif log_type in due:
+            state = report_view.CardState.MISSING
+        else:
+            state = report_view.CardState.NOT_DUE
+        cards.append({
+            "number": number,
+            "title": label.get(log_type, log_type),
+            "citation": citation.get(log_type, ""),
+            "state": state,
+            "thumbnail": thumbnail,
+            "link": link or None,
+            "facts": tuple(facts.get(log_type, ())) if document else (),
         })
 
-    def _card_html(c):
-        # A PICTURE IS AN ILLUSTRATION, NOT THE RECORD. When the raster fails
-        # -- poppler absent, a PDF it cannot parse, R2 refusing the write --
-        # `_logbook_thumbnail_url` returns None and this renders a plain panel
-        # in its place. The title, the citation and the button are untouched.
-        _pic = (
-            f'<img src="{c["thumb"]}" width="240" '
-            'style="width:100%;max-width:240px;height:auto;display:block;'
-            'border:1px solid #e2e8f0;border-radius:3px;" />'
-            if c["thumb"] else
-            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            'style="border:1px solid #e2e8f0;border-radius:3px;" '
-            'bgcolor="#f8fafc"><tr><td height="150" align="center" '
-            'style="height:150px;color:#94a3b8;font-size:12px;">'
-            'Document</td></tr></table>'
-        )
-        if c["state"] == "filed" and c["link"]:
-            _foot = (
-                f'<a href="{c["link"]}" '
-                'style="display:block;text-align:center;text-decoration:none;'
-                'background-color:#0A1929;color:#ffffff;border-radius:4px;'
-                'padding:10px 8px;font-size:12px;font-weight:700;'
-                'letter-spacing:0.08em;text-transform:uppercase;">'
-                'View document</a>'
-            )
-        else:
-            # NO BUTTON AND NO CROSS. The reason sits where the button would
-            # be, in the words the cover already uses.
-            _foot = (
-                '<div style="text-align:center;border:1px solid #e2e8f0;'
-                'border-radius:4px;padding:10px 8px;font-size:12px;'
-                'font-weight:700;letter-spacing:0.08em;'
-                'text-transform:uppercase;color:#64748b;">'
-                + ("Not filed" if c["state"] == "missing"
-                   else ("Not due today" if c["state"] == "not_due"
-                         else "Unavailable"))
-                + '</div>'
-            )
-        return (
-            '<td width="25%" valign="top" style="vertical-align:top;'
-            'padding:0 8px 20px 8px;">'
-            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            'style="border:1px solid #e2e8f0;border-radius:6px;" '
-            'bgcolor="#ffffff"><tr><td style="padding:12px;">'
-            f'<div style="font-size:{_T_LABEL};font-weight:700;color:#94a3b8;'
-            f'padding-bottom:4px;">{c["n"]:02d}</div>'
-            '<div style="font-size:14px;font-weight:700;color:#0A1929;'
-            f'line-height:1.3;">{_html.escape(c["title"])}</div>'
-            + (f'<div style="font-size:11px;color:#64748b;padding-top:2px;">'
-               f'{_html.escape(c["cite"])}</div>' if c["cite"] else "")
-            + f'<div style="padding:10px 0;">{_pic}</div>'
-            + (f'<div style="font-size:12px;color:#475569;padding-bottom:10px;'
-               f'line-height:1.4;">{_html.escape(c["blurb"])}</div>'
-               if c["blurb"] else "")
-            + _foot
-            + '</td></tr></table></td>'
-        )
+    issued = report_number or await _issued_report_number(project_id, date)
+    address = " ".join(str((project or {}).get("address") or "").split())
+    head, _, tail = address.partition(",")
 
-    # 4-UP, FLOWING. A row is padded with empty cells so the last row's cards
-    # keep the same width as the first's -- seven cards render 4 + 3, not 4 + 3
-    # stretched across the page.
-    _rows = ""
-    for _i in range(0, len(_cards), 4):
-        _chunk = _cards[_i:_i + 4]
-        _rows += ('<tr>' + "".join(_card_html(_c) for _c in _chunk)
-                  + '<td width="25%"></td>' * (4 - len(_chunk)) + '</tr>')
-    _record_html = (
-        (section_title("Project record")
-         # THE DOCUMENT'S OWN INTRO BUILDER, not a hand-rolled paragraph.
-         # `info_box` carries the header-to-description gap that
-         # test_report_document_layout asserts every section has, and a
-         # paragraph with its own margin is a fourth relationship rendered
-         # like the other three.
-         + info_box('<strong style="color:#0A1929;">'
-                    'Regulatory, safety and workforce documentation</strong>')
-         + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-           f'style="margin:{_S_HEAD} 0 0 0;">{_rows}</table>')
-        if _cards else ""
+    view = report_view.build(
+        model,
+        address=head.strip() or ((project or {}).get("name") or ""),
+        city=tail.strip().removesuffix(", USA") or "New York, NY",
+        date_long=_report_date_long(date),
+        generated=f"Generated automatically from filed site records on "
+                  f"{eastern_datetime(datetime.now(timezone.utc))}.",
+        report_number=(f"Report #{issued}" if issued
+                       else "Report number assigned when sent"),
+        headline=_report_headline(gate, activities),
+        # THE VERIFIED PARAGRAPH DOES NOT EXIST YET, so the defensible
+        # fallback is what ships. `lib.ai.sub_summary` verifies a SENTENCE
+        # about one subcontractor; an executive paragraph is a different
+        # surface with a different failure mode, and standing one up quietly
+        # would put unverified prose on a document a lender relies on.
+        summary_body=None,
+        cards=cards,
+        photo_url=_report_photo_url,
+        logbook_id=str(daily.get("_id") or ""),
     )
-
-    _cover_footer_html = (
-        '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-        'style="margin:26px 0 0 0;border-top:1px solid #e2e8f0;'
-        'padding-top:18px;"><tr>'
-        '<td width="55%" valign="top" style="vertical-align:top;'
-        'padding:18px 16px 0 0;">'
-        + _col_head("Safety &amp; compliance")
-        + '<table cellpadding="0" cellspacing="0" border="0" width="100%">'
-        + _ticks + '</table></td>'
-        '<td width="45%" valign="top" style="vertical-align:top;'
-        'padding:18px 0 0 16px;">'
-        + _col_head("Attention / open items") + _open_items
-        + '</td></tr></table>'
-    )
-
-    # ONE HEADER. The address and the date are printed by the document header
-    # above this section and are NOT repeated here.
-    #
-    # They used to appear three times over: the dark band (which prints
-    # project_name, and on this project the name IS the address), the summary
-    # row (ADDRESS / DATE), and this subtitle — which printed project_name AND
-    # project_address, i.e. the same string twice inside one line, formatted as
-    # though they were two different facts. A reader counting fields on a
-    # compliance document reads a repeat as a discrepancy.
-    # ── THE TILE STRIP AND THE WEATHER PANEL ────────────────────────────────
-    #
-    # NO EXECUTIVE SUMMARY. The mockup gives a paragraph beside the weather;
-    # the operator ruled it out and ruled out inventing one to fill the space.
-    # The AI line stays exactly where it is, feeding the per-subcontractor
-    # sentences in Today's Work -- which is a sentence per sub, each one
-    # through the verifier, rather than one paragraph about the day that
-    # nothing on the record supports.
-    _tiles_html = (
-        '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-        'style="margin:20px 0 0 0;border-top:1px solid #e2e8f0;'
-        'border-bottom:1px solid #e2e8f0;"><tr>'
-        + _stat_tile(_sub_total, "Workers onsite").replace(
-            'border-left:1px solid #e2e8f0;', 'padding-left:0;')
-        + _stat_tile(len(_trades), "Trades")
-        + _stat_tile(_safety_value, _safety_label)
-        + _stat_tile(f"{len(_done)} of {len(_due)}" if _due else "&mdash;",
-                     "Daily logs filed")
-        + '</tr></table>'
-    )
-
-    progress_html = (
-        '<h2 style="color:#0A1929;margin:0 0 4px;font-size:30px;'
-        'font-weight:700;line-height:1.2;letter-spacing:-0.02em;">'
-        'Daily Progress Report</h2>'
-        + _tiles_html
-        + (f'<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-           f'style="margin:20px 0 0 0;"><tr><td width="50%" valign="top" '
-           f'style="vertical-align:top;padding-right:10px;">{_weather_panel}'
-           f'</td><td width="50%"></td></tr></table>'
-           if _weather_panel else "")
-        + info_box(
-            '<strong style="color:#0A1929;">'
-            f'Workers checked in at the gate:</strong> {_sub_total}'
-        )
-        + sub_head("Workforce breakdown")
-        + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-          'style="border-collapse:collapse;margin:8px 0 0 0;font-size:15px;">'
-        + f'<tr><th {TH}>Subcontractor</th>'
-          f'<th {TH} align="right">Workers</th></tr>'
-        + _sub_rows
-        + f'<tr><td {TD}><strong>Total</strong></td>'
-          f'<td {TD} align="right"><strong>{_sub_total}</strong></td></tr>'
-        + '</table>'
-        + ((sub_head("Today's work") + _pg1_lines + _pg1_ai_note)
-           if _pg1_lines else "")
-        + ((sub_head("Visual progress") + _pg1_photos) if _pg1_photos else "")
-        # ── TWO COLUMNS, AND LOOK AHEAD IS NOT ONE OF THEM ──────────────────
-        #
-        # The mockup has three: safety ticks, attention/open items, and LOOK
-        # AHEAD. The third is ruled out and not built -- NOTHING IN THIS APP
-        # RECORDS WHAT IS PLANNED, and a column of five bullets about tomorrow
-        # would be the only invented content on a document whose entire claim
-        # is that every field comes off a filed record.
-        #
-        # THE COMPLIANCE SENTENCE LEFT THE BODY. It was a paragraph reading
-        # "5 of 5 required daily logs filed and signed" directly beneath a tile
-        # reading "5 of 5" and a tick reading "All required daily logs filed
-        # and signed" -- the same fact three times on one page. The tile
-        # carries the ratio, the tick carries the words, and the DEFICIENCY
-        # CLAUSES survive: `_compliance` still names which log is missing or
-        # unaffirmed, and that is what the tick renders when it is not a tick.
-        + _cover_footer_html
-        # THE BREAK USED TO BE EMITTED HERE and it was the only one in the
-        # report. It is now emitted BETWEEN every pair of sections by the
-        # joiner in the final assembly -- keeping a copy here as well would put
-        # two breaks after the cover and a blank sheet between it and page 2.
-    )
-
-    jobsite_html = ""
-    if daily_jobsite:
-        logbook_id = str(daily_jobsite["_id"])
-        d = daily_jobsite.get("data", {})
-        activities = d.get("activities", [])
-
-        # PHOTOS ARE PAGE 1 ONLY. Operator ruling, reversing the earlier one:
-        # site photos are PROGRESS EVIDENCE and belong on the investor page.
-        # The logbook is the legal record and NYC DOB 3301-02 does not require
-        # a photograph, so page 2 stops carrying a second copy of the same
-        # images.
-        #
-        # NOTHING ELSE LOSES THEM. The photo endpoint stays live because page 1
-        # still uses it (server.py:15589), the per-logbook PDF an inspector
-        # downloads renders its own (generate_single_logbook_html), and the
-        # kiosk inspector renders from the device. This removes ONE of four
-        # surfaces — see the PR.
-        act_rows = ""
-        for act in activities:
-            # PR G + PR B (combined-report parity): company is short-entry AND the
-            # UNASSIGNED sentinel renders as pending here too; description is prose;
-            # location short-entry. crew_id/num_workers excluded.
-            act_rows += (
-                f'<tr>'
-                f'<td {TD}>{act.get("crew_id", "")}</td>'
-                f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
-                f'<td {TD}>{_headcount_cell(act)}</td>'
-                f'<td {TD}>{_sentence_case(act.get("work_description", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td>'
-                f'</tr>'
-            )
-
-        equip = d.get("equipment_on_site", {})
-        equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
-        chk = d.get("checklist_items", {})
-        check_list = _display_inspections(chk)
-
-        obs_html = ""
-        obs_rows = ""
-        for obs in d.get("observations", []):
-            # PR G: description/remedy prose; responsible party short-entry.
-            obs_rows += (
-                f'<tr><td {TD}>{_sentence_case(obs.get("description", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(obs.get("responsible_party", ""))}</td>'
-                f'<td {TD}>{_sentence_case(obs.get("remedy", ""))}</td></tr>'
-            )
-        if obs_rows:
-            obs_html = (
-                sub_title("Safety Observations")
-                + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-                  'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-                + f'<tr><th {TH}>Description</th><th {TH}>Responsible</th><th {TH}>Remedy</th></tr>'
-                + obs_rows + '</table>'
-            )
-
-        cp_sig = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature", show_affirmation=False)
-        sup_sig = render_signature_html(d.get("superintendent_signature"), "Superintendent", show_affirmation=False)
-        visitors = d.get("visitors_deliveries", "")
-        wind = d.get("weather_wind", "")
-
-        weather_str = _display_weather(d)
-
-        # Only the ones that carry a value. All three empty renders nothing at
-        # all rather than a row of "N/A" — see the note in the info box below.
-        _t_in = str(d.get("time_in") or "").strip()
-        _t_out = str(d.get("time_out") or "").strip()
-        _areas = str(d.get("areas_visited") or "").strip()
-        _pg2_bits = []
-        if _t_in or _t_out:
-            _pg2_bits.append(
-                f'<strong style="color:#0A1929;">Time In:</strong> {_t_in or NOT_RECORDED}'
-                f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {_t_out or NOT_RECORDED}'
-            )
-        if _areas:
-            _pg2_bits.append(
-                f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(_areas)}'
-            )
-        _pg2_times = ("<br />" + "<br />".join(_pg2_bits)) if _pg2_bits else ""
-
-        jobsite_html = (
-            section_title("Daily Jobsite Log (NYC DOB 3301-02)")
-            + info_box(
-                f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(d.get("general_description") or NOT_RECORDED)}'
-                # PRINTED ONLY WHEN SET. Nothing in the app writes these three:
-                # daily_jobsite.jsx holds timeIn/timeOut/areasVisited in state and
-                # hydrates them from a stored log, but no control anywhere sets
-                # them, so on every report since the U1 rebuild they printed a
-                # permanent "N/A". A field that is always N/A on a compliance
-                # record teaches a reader to skip the row. The state and the
-                # payload keys are untouched, so the day a control is added these
-                # reappear on their own — see the PR note.
-                f'{_pg2_times}'
-            )
-            + sub_title("Activity Details")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            # "CP's count", not "Workers" — the same label the single-document
-            # renderer now carries, for the same reason. See the note there.
-            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>CP&#39;s count</th>'
-              f'<th {TH}>Description</th><th {TH}>Location</th></tr>'
-            + (act_rows or EMPTY_5)
-            + '</table>'
-            + bold_para("Equipment", equip_list or "None")
-            + bold_para("Inspected", check_list or "None")
-            + obs_html
-            + (bold_para("Visitors / Deliveries", _sentence_case(visitors)) if visitors else "")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="margin-top:16px;border-top:1px solid #e2e8f0;"><tr><td style="padding-top:12px;">'
-            # _capitalize_first, LIKE THE OTHER SEVEN. This was the one raw
-            # site of eight: the per-logbook PDF and every other line in this
-            # report capitalised, so the two filed documents disagreed about
-            # the same record -- one printing "michael", the other "Michael".
-            # Display-time only; the stored value is untouched.
-            + bold_para("CP", _capitalize_first(daily_jobsite.get("cp_name", "N/A")))
-            + cp_sig + sup_sig
-            + '</td></tr></table>'
-        )
-
-    # ==========================================================
-    #  TOOLBOX TALK
-    # ==========================================================
-    toolbox = _filed_log(logbooks, "toolbox_talk")
-    toolbox_html = ""
-    if toolbox:
-        td_data = toolbox.get("data", {})
-        topics = td_data.get("checked_topics", {})
-        topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
-        att_rows = ""
-        for a in td_data.get("attendees", []):
-            # AN ATTENDEE WITH NO NAME IS NOT AN ATTENDEE. A seed row the CP
-            # never filled rendered as a blank line on a signed attendance
-            # record — a person who was at the talk and cannot be identified.
-            #
-            # THE COMMENT HERE USED TO SAY the pre-shift sheet and the OSHA
-            # register "already use" this rule and that this table "was the one
-            # that never got it". The first half was true and the second was
-            # not: the per-logbook PDF for toolbox_talk (render_logbook_html)
-            # had no name gate at all, so the SAME stored talk printed one way
-            # in the emailed report and another way on the document an
-            # inspector asks for by name. It has one now, and the two renderers
-            # agree; there are two of these gates and both are load-bearing.
-            if not str(a.get("name") or "").strip():
-                continue
-            # TWO COLUMNS ARE GONE FROM THIS TABLE, AND NEITHER FIELD IS.
-            #
-            # "Present" printed `signed` and "Confirmed" printed
-            # `gate_confirmed`. Neither is a legal attestation -- the CP's
-            # signature over the whole roster is (NYC DOB §3301.12.3 / OSHA
-            # 1926.21) -- and two tick columns beside it invited exactly the
-            # reading that signature already forecloses: that each man
-            # individually attested to something. "Added by" stays, because
-            # WHOSE CLAIM PUT HIM ON THE SHEET is the provenance question a
-            # reader of an attendance record actually has.
-            #
-            # THE FIELDS STAY IN STORAGE, unchanged, and toolboxTalkModel.js is
-            # untouched. Dropping a COLUMN is a rendering change; dropping a
-            # FIELD is a data change, and the operator is not making that one.
-            # Both are still written at the gate and both are still read --
-            # `signed` by app/site/logbooks.jsx, `gate_confirmed` by anything
-            # that queries the stored document.
-            att_rows += (
-                f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
-                f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
-                f'<td {TD}>{_attendee_source_label(a)}</td></tr>'
-            )
-
-        tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature", show_affirmation=False)
-
-        # PR G: location/company/performed-by/cp short-entry; time excluded.
-        toolbox_html = (
-            section_title("Tool Box Talk")
-            + info_box(
-                f'<strong style="color:#0A1929;">Location:</strong> {_capitalize_first(td_data.get("location", "N/A"))}<br />'
-                f'<strong style="color:#0A1929;">Company:</strong> {_capitalize_first(td_data.get("company_name", "N/A"))}<br />'
-                f'<strong style="color:#0A1929;">Performed By:</strong> {_capitalize_first(td_data.get("performed_by", "N/A"))}<br />'
-                f'<strong style="color:#0A1929;">Time:</strong> {td_data.get("meeting_time", "N/A")}'
-            )
-            + bold_para("Topics", topic_list or "None")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Added by</th></tr>'
-            + (att_rows or f'<tr><td colspan="5" {TD}>&mdash;</td></tr>')
-            + '</table>'
-            + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
-            + tb_sig
-        )
-
-    # ==========================================================
-    #  PRE-SHIFT SIGN-IN
-    # ==========================================================
-    preshift = _filed_log(logbooks, "preshift_signin")
-    preshift_html = ""
-    if preshift:
-        pd = preshift.get("data", {})
-        # Affirmation only. Every other cell below reads `w`, the stored row.
-        # A COUNT FOR THE FOOTER, not an overlay onto a man's row.
-        _affirm_n = await preshift_affirmation_count(db, project_id, date)
-        # Resolve R2-backed signatures ONCE for the whole roster, before the
-        # loop: the cell renderer is sync and a per-row await would serialise
-        # sixty object reads.
-        _ps_sigs = await _resolve_signin_signatures(pd.get("workers", []))
-        w_rows = ""
-        for w in pd.get("workers", []):
-            # `.get("name", "")` RETURNS THE DEFAULT ONLY ON AN ABSENT KEY.
-            # A row storing `name: None` — which is exactly what correcting a
-            # worker called "null" produces — returns None, and None.strip()
-            # raises AttributeError. In a renderer, that does not skip a row:
-            # it takes down the WHOLE PDF, so a data fix meant to clean one
-            # name would have stopped every filed roster from printing.
-            #
-            # The safe form is already used twice in these same two functions
-            # (`if not str(a.get("name") or "").strip()` on the attendee rows).
-            # Shipped, not invented.
-            if str(w.get("name") or "").strip():
-                # PR G: name/company short-entry; osha_number excluded.
-                # `or ""` ON EVERY CELL, for the same reason as the guard
-                # above: a stored None interpolates into an f-string as the
-                # four characters None, and a filed compliance record printing
-                # "None" for a man's employer is the same defect as printing
-                # "null" for his name, one field over.
-                w_rows += (
-                    f'<tr><td {TD}>{_capitalize_first(w.get("name") or "")}</td>'
-                    f'<td {TD}>{_capitalize_first(w.get("company") or "")}</td>'
-                    f'<td {TD}>{w.get("osha_number") or ""}</td>'
-                    f'<td {TD}>{answer_label(w.get("had_injury"))}</td>'
-                    f'<td {TD}>{answer_label(w.get("inspected_ppe"))}</td>'
-                    f'<td {TD}>{_preshift_signature_cell(w, _ps_sigs)}</td></tr>'
-                )
-
-        ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature", show_affirmation=False)
-
-        preshift_html = (
-            section_title("Pre-Shift Sign-In")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
-              f'<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th></tr>'
-            + (w_rows or EMPTY_6)
-            + '</table>'
-            + preshift_affirmation_footer(_affirm_n)
-            # ABOVE the signature: the claim, then the name that makes it.
-            + PRESHIFT_ATTESTATION_HTML
-            + bold_para("CP", _capitalize_first(preshift.get("cp_name", "N/A")))
-            + ps_sig
-        )
-
-    # ── THE SECTION TITLED "Site Superintendent Log" IS GONE, AND IT WAS
-    #    ALREADY INVISIBLE ──────────────────────────────────────────────────
-    #
-    # The title is quoted above in the casing it had, so a grep for the section
-    # someone remembers lands HERE rather than on nothing.
-    #
-    # About 110 lines rendered weather, worker count, notes, work performed,
-    # subcontractor cards, a safety checklist, corrective actions, an incident
-    # log and two signatures -- all from `db.daily_logs`, behind `if daily_log:`.
-    #
-    # That collection's last row is dated 16 April 2026. The daily record moved
-    # to the logbook system that month, so the lookup returned None for every
-    # report since and the section simply did not appear. NOBODY HAS BEEN
-    # READING A BLANK BOX: a rendered report from production was checked and
-    # the section is absent while its successors are present.
-    #
-    # IT IS DELETED RATHER THAN RE-POINTED, and that is the decision worth
-    # recording. `as_daily_log_row` exists -- get_report_preview already uses it
-    # to read the filed daily_jobsite logbook in this shape -- so this section
-    # COULD have been fed from the logbook instead. It must not be: the same
-    # document already renders `jobsite_html` (Daily Jobsite Log) and `cs_html`
-    # (Construction Superintendent Log) from the logbooks, and feeding this one
-    # too would print one record three times under three headings.
-    #
-    # The collection, its read routes and its PDF route are untouched. Ninety-two
-    # records from April are a legal record; retiring a renderer is not dropping
-    # data.
-    # ==========================================================
-    #  CONSTRUCTION SUPERINTENDENT LOG  (BC 3301.13.13)
-    # ==========================================================
-    cs_html = ""
-    cs_lb = _filed_log(logbooks, "site_superintendent_log")
-    if cs_lb:
-        _cs_attr = await cs_attribution_for(
-            db, project_id, cs_lb.get("date"),
-            (cs_lb.get("data") or {}).get("presence") or {})
-        cs_html = (
-            section_title("Construction Superintendent Log (BC 3301.13.13)")
-            # ONE BUILDER, BOTH RENDERERS. See _superintendent_log_html.
-            + _superintendent_log_html(cs_lb, attribution=_cs_attr,
-                                       legal_record=False)
-        )
-
-    # ==========================================================
-    #  OSHA / SST CERTIFICATION LOG
-    # ==========================================================
-    # Rendered as a real table, and — critically — each row is joined back to the
-    # worker's LIVE certifications so a cert the database has flagged for review
-    # (needs_review / CLASS_UNVERIFIED, e.g. from audit_fabricated_certs) is never
-    # shown as a clean row. The osha_log snapshot itself carries no review state,
-    # so we look it up now; match is by (worker_id, card_number).
-    osha_html = ""
-    osha_lb = _filed_log(logbooks, "osha_log")
-    if osha_lb:
-        osha_entries = (osha_lb.get("data") or {}).get("entries") or []
-
-        # ONE DEFINITION, in osha_review_index / osha_review_cell beside
-        # _preshift_signature_cell. The rule is exercised directly by its tests
-        # rather than through a copy, which is the only way a control run can
-        # prove the renderer moved rather than a duplicate of it.
-        review_by_key = {}
-        known_cards, known_workers = set(), set()
-        worker_ids = {str(e.get("worker_id")) for e in osha_entries if e.get("worker_id")}
-        if worker_ids:
-            qids = [q for q in (to_query_id(w) for w in worker_ids) if q is not None]
-            worker_docs = await db.workers.find(
-                {"_id": {"$in": qids}}, {"certifications": 1}
-            ).to_list(500)
-            review_by_key, known_cards, known_workers = osha_review_index(
-                worker_docs)
-
-        # THE SAME ROW RULE THE PER-LOGBOOK PDF APPLIES: a row that does not
-        # name a worker is not printed.
-        #
-        # THE DIVERGENCE THIS CLOSES. generate_single_logbook_html dropped a
-        # contentless row; this renderer did not. Same stored register, two
-        # different documents — and THIS is the one the operator emails, so a
-        # blank row that the per-logbook PDF refuses was printing on the
-        # investor's copy as a certification row for nobody.
-        #
-        # The rule is now the NAME (device round 6): a row with a card number
-        # and no worker was the shape that survived the old any-of-five test
-        # and printed. Both renderers, the submit gate and the device all read
-        # the one definition below, so all four moved together.
-        #
-        # THE DEFINITION IS NOT REWRITTEN HERE. It is read from
-        # _SUBMIT_ROW_CONTENT_RULES, the rule #125 already enforces at submit,
-        # through _row_has, the module-level mirror of this file's own `has()`.
-        # One definition, three consumers: the submit gate, the per-logbook PDF
-        # and this report. That is the whole point — this pair has drifted
-        # twice before (weather, then drawings_on_site).
-        _osha_content_fields = _SUBMIT_ROW_CONTENT_RULES["osha_log"][1]
-
-        osha_rows = ""
-        for e in osha_entries:
-            if not isinstance(e, dict):
-                continue
-            if not any(_row_has(e, _k) for _k in _osha_content_fields):
-                continue      # names nobody — including the untouched seed
-            review_cell = osha_review_cell(
-                e, review_by_key, known_cards, known_workers)
-            # name/company are short-entry; card_number/expiration are identifiers
-            # (rendered raw, no capitalization).
-            osha_rows += (
-                f'<tr><td {TD}>{_capitalize_first(e.get("worker_name", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(e.get("company", ""))}</td>'
-                f'<td {TD}>{_osha_type_cell(e) or "&mdash;"}</td>'
-                f'<td {TD}>{e.get("card_number", "") or "&mdash;"}</td>'
-                f'<td {TD}>{e.get("expiration", "") or "&mdash;"}</td>'
-                f'<td {TD}>{"&#10003;" if e.get("signed") else "&mdash;"}</td>'
-                f'<td {TD}>{review_cell}</td></tr>'
-            )
-
-        osha_sig = render_signature_html(osha_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-        osha_html = (
-            section_title("OSHA / SST Certification Log")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Cert Type</th>'
-              f'<th {TH}>Card #</th><th {TH}>Expiration</th><th {TH}>Signed</th>'
-              f'<th {TH}>Review</th></tr>'
-            + (osha_rows or f'<tr><td colspan="7" {TD}>No certifications recorded</td></tr>')
-            + '</table>'
-            # ABOVE the signature: the claim, then the name that makes it.
-            + OSHA_LOG_ATTESTATION_HTML
-            + osha_sig
-        )
-
-    # ==========================================================
-    #  HOT WORK PERMIT
-    # ==========================================================
-    hot_work_html = ""
-    hw_lb = _filed_log(logbooks, "hot_work")
-    if hw_lb:
-        d = hw_lb.get("data") or {}
-
-        # Full precaution list so an UNconfirmed item reads "Not recorded", never
-        # a silent "No" (sparse-map convention). Labels mirror the editor's
-        # PRECAUTION_ITEMS.
-        HW_PRECAUTIONS = [
-            ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
-            ("fire_extinguisher_present", "Fire Extinguisher Present"),
-            ("sprinklers_operational", "Sprinklers Operational"),
-            ("combustibles_covered", "Combustibles Covered / Protected"),
-            ("fire_watch_assigned", "Fire Watch Assigned"),
-            ("ventilation_adequate", "Ventilation Adequate"),
-            ("permit_posted", "Permit Posted at Location"),
-        ]
-        precautions = d.get("precautions") or {}
-        prec_rows = ""
-        for key, label in HW_PRECAUTIONS:
-            if key in precautions:
-                val = "Yes" if precautions.get(key) else "No"
-            else:
-                val = "&mdash; Not recorded"
-            prec_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
-
-        # The editor captures NO real fire-watch end time — fire_watch_end_time is
-        # derived as work-end + 30 min. FDNY can require a 60-min watch, so this is
-        # labeled as a computed DEFAULT, never asserted as a recorded watch-until.
-        fw_end = d.get("fire_watch_end_time") or ""
-        fw_end_display = (
-            f'{fw_end} <span style="color:#94a3b8;">(default: work end + 30 min)</span>'
-            if fw_end else "&mdash;"
-        )
-
-        # work_type is an enum label; location / worker / fire-watch names are
-        # short-entry; worker_cert_number is an identifier (raw); times as-is.
-        hot_work_html = (
-            section_title("Hot Work Permit")
-            + info_box(
-                f'<strong style="color:#0A1929;">Work Type:</strong> {d.get("work_type") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Location:</strong> {_capitalize_first(d.get("location", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Worker:</strong> {_capitalize_first(d.get("worker_name", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Worker Cert #:</strong> {d.get("worker_cert_number") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Start &ndash; End:</strong> {d.get("start_time") or "N/A"} &ndash; {d.get("end_time") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Fire Watch:</strong> {_capitalize_first(d.get("fire_watch_name", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Fire Watch Until:</strong> {fw_end_display}'
-            )
-            + sub_title("Pre-Work Precautions")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Precaution</th><th {TH}>Confirmed</th></tr>'
-            + prec_rows
-            + '</table>'
-            + render_signature_html(hw_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-        )
-
-    # ==========================================================
-    #  CRANE OPERATIONS
-    # ==========================================================
-    crane_html = ""
-    crane_lb = _filed_log(logbooks, "crane_operations")
-    if crane_lb:
-        d = crane_lb.get("data") or {}
-
-        # Full list so an unconfirmed item reads "Not recorded", never a silent
-        # "No" (sparse-map convention). Labels mirror the editor's checklist.
-        CRANE_PREOP = [
-            ("wire_ropes", "Wire Ropes Inspected"),
-            ("hooks_latches", "Hooks & Latches Secure"),
-            ("brakes", "Brakes Functional"),
-            ("outriggers", "Outriggers Deployed"),
-            ("load_chart", "Load Chart Available"),
-            ("boom_condition", "Boom Condition OK"),
-            ("anti_two_block", "Anti Two-Block Device"),
-            ("fire_extinguisher", "Fire Extinguisher Present"),
-            ("signals_reviewed", "Signals Reviewed"),
-            ("area_barricaded", "Area Barricaded"),
-            ("wind_speed_checked", "Wind Speed Checked"),
-            ("power_lines_clear", "Power Lines Clear"),
-            ("load_weight_known", "Load Weight Known"),
-            ("rigging_inspected", "Rigging Inspected"),
-            ("swing_radius_clear", "Swing Radius Clear"),
-        ]
-        checklist = d.get("pre_operation_checklist") or {}
-        preop_rows = ""
-        for key, label in CRANE_PREOP:
-            if key in checklist:
-                val = "Yes" if checklist.get(key) else "No"
-            else:
-                val = "&mdash; Not recorded"
-            preop_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
-
-        load_entries = d.get("load_entries") or []
-        load_rows = ""
-        for le in load_entries:
-            if not any(str(le.get(k, "")).strip() for k in ("time", "description", "load_weight", "radius")):
-                continue
-            load_rows += (
-                f'<tr><td {TD}>{le.get("time", "") or "&mdash;"}</td>'
-                f'<td {TD}>{_capitalize_first(le.get("description", "")) or "&mdash;"}</td>'
-                f'<td {TD}>{le.get("load_weight", "") or "&mdash;"}</td>'
-                f'<td {TD}>{le.get("radius", "") or "&mdash;"}</td></tr>'
-            )
-
-        # crane_type / operator_name are short-entry; crane_id / operator_license
-        # are identifiers (raw). load_weight & radius are unit-less strings as
-        # entered by the operator (units are a logged capture gap).
-        crane_html = (
-            section_title("Crane Operations")
-            + info_box(
-                f'<strong style="color:#0A1929;">Crane Type:</strong> {_capitalize_first(d.get("crane_type", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Crane ID:</strong> {d.get("crane_id") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Operator:</strong> {_capitalize_first(d.get("operator_name", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Operator License:</strong> {d.get("operator_license") or "N/A"}'
-            )
-            + sub_title("Pre-Operation Checklist")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
-            + preop_rows
-            + '</table>'
-            + sub_title("Lift Log")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Time</th><th {TH}>Description</th><th {TH}>Load Weight</th><th {TH}>Radius</th></tr>'
-            + (load_rows or f'<tr><td colspan="4" {TD}>No lifts recorded</td></tr>')
-            + '</table>'
-            + render_signature_html(crane_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-        )
-
-    # ==========================================================
-    #  EXCAVATION MONITORING
-    # ==========================================================
-    exc_html = ""
-    exc_lb = _filed_log(logbooks, "excavation_monitoring")
-    if exc_lb:
-        d = exc_lb.get("data") or {}
-
-        # Vibration: the over-threshold flag is only meaningful with an actual
-        # reading. Without both values it is "Not recorded", NOT a false "Within".
-        v_thr = str(d.get("vibration_threshold") or "").strip()
-        v_cur = str(d.get("vibration_current") or "").strip()
-        if v_thr and v_cur:
-            over_display = (
-                '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
-                if d.get("vibration_over_threshold") else "Within threshold"
-            )
-        else:
-            over_display = "&mdash; Not recorded"
-
-        # Adjacent-structure monitoring points. Units and per-reading timestamps
-        # are NOT captured (tracked in followups), so headers imply no unit and
-        # there is NO time column — readings render exactly as entered, and a
-        # reading without a timestamp shows without one rather than inventing it.
-        buildings = d.get("adjacent_buildings") or []
-        bld_rows = ""
-        for b in buildings:
-            # The owner rule, same as the per-logbook PDF: a reading with no
-            # address names no building.
-            if not str(b.get("address", "")).strip():
-                continue
-            bld_rows += (
-                f'<tr><td {TD}>{_capitalize_first(b.get("address", "")) or "&mdash;"}</td>'
-                f'<td {TD}>{b.get("baseline_reading", "") or "&mdash;"}</td>'
-                f'<td {TD}>{b.get("current_reading", "") or "&mdash;"}</td>'
-                f'<td {TD}>{b.get("delta", "") or "&mdash;"}</td></tr>'
-            )
-
-        # soil_type / protection_system are enums (as-is); excavation_depth is a
-        # raw number (unit not captured); groundwater / atmospheric are real
-        # booleans (seeded false, always present) → Yes/No.
-        exc_html = (
-            section_title("Excavation Monitoring")
-            + info_box(
-                f'<strong style="color:#0A1929;">Excavation Depth:</strong> {d.get("excavation_depth") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Soil Type:</strong> {d.get("soil_type") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Protection System:</strong> {d.get("protection_system") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Groundwater Observed:</strong> {"Yes" if d.get("groundwater_observed") else "No"}<br />'
-                f'<strong style="color:#0A1929;">Atmospheric Testing:</strong> {"Yes" if d.get("atmospheric_testing") else "No"}'
-            )
-            + sub_title("Vibration")
-            + info_box(
-                f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr or "&mdash; Not recorded"}<br />'
-                f'<strong style="color:#0A1929;">Current:</strong> {v_cur or "&mdash; Not recorded"}<br />'
-                f'<strong style="color:#0A1929;">Status:</strong> {over_display}'
-            )
-            + sub_title("Adjacent-Structure Monitoring Points")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Location</th><th {TH}>Baseline</th><th {TH}>Current</th><th {TH}>Movement (&Delta;)</th></tr>'
-            + (bld_rows or f'<tr><td colspan="4" {TD}>No monitoring points recorded</td></tr>')
-            + '</table>'
-            + render_signature_html(exc_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-        )
-
-    # ==========================================================
-    #  FALL PROTECTION EQUIPMENT
-    # ==========================================================
-    fp_html = ""
-    fp_lb = _filed_log(logbooks, "fall_protection")
-    if fp_lb:
-        _fp_rows = ""
-        for r in ((fp_lb.get("data") or {}).get("activities") or []):
-            if not isinstance(r, dict):
-                continue
-            # The Group 1 rule. A nameless row here claims a man's fall-arrest
-            # equipment was inspected without saying whose.
-            if not str(r.get("worker_name") or "").strip():
-                continue
-            _res = str(r.get("result") or "").strip()
-            if _res == "Pass":
-                _res_cell = '<span style="color:#15803d;font-weight:600;">Pass</span>'
-            elif _res:
-                # Fail and "Removed from service" are different findings and
-                # neither is collapsed into the other.
-                _res_cell = ('<span style="color:#b91c1c;font-weight:700;">'
-                             + _capitalize_first(_res) + '</span>')
-            else:
-                _res_cell = "&mdash; Not recorded"
-            _imp = r.get("impact_loaded")
-            _imp_cell = ("&mdash; Not recorded" if _imp is None
-                         else ("Yes" if _imp else "No"))
-            _fp_rows += (
-                f'<tr><td {TD}>{_capitalize_first(r.get("worker_name", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(r.get("company", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(r.get("equipment_type", ""))}</td>'
-                f'<td {TD}>{r.get("equipment_id", "") or "&mdash;"}</td>'
-                f'<td {TD}>{r.get("manufacture_date", "") or "&mdash;"}</td>'
-                f'<td {TD}>{_res_cell}</td>'
-                f'<td {TD}>{_imp_cell}</td>'
-                f'<td {TD}>{_sentence_case(r.get("defect_found") or "") or "&mdash;"}</td>'
-                f'<td {TD}>{_sentence_case(r.get("action_taken") or "") or "&mdash;"}</td></tr>'
-            )
-        fp_html = (
-            section_title("Fall Protection Equipment")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Equipment</th>'
-              f'<th {TH}>ID / Serial</th><th {TH}>Mfg Date</th><th {TH}>Result</th>'
-              f'<th {TH}>Impact Loaded</th><th {TH}>Defect</th><th {TH}>Action Taken</th></tr>'
-            + (_fp_rows or f'<tr><td colspan="9" {TD}>No inspections recorded</td></tr>')
-            + '</table>'
-            + render_signature_html(fp_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-            # THIS REPORT GOES TO INVESTORS AND LENDERS, and it is where a
-            # reader is most likely to mistake this section for a required
-            # filing. One sentence, on the section, saying what it is.
-            + '<p style="color:#64748b;font-size:11px;line-height:1.6;margin:8px 0 0;">'
-            + FALL_PROTECTION_NOTICE + '</p>'
-        )
-
-    # ==========================================================
-    #  SCAFFOLD MAINTENANCE INSPECTION
-    # ==========================================================
-    scaffold_html = ""
-    scaffold_lb = _filed_log(logbooks, "scaffold_maintenance")
-    if scaffold_lb:
-        d = scaffold_lb.get("data") or {}
-        gi = d.get("general_info") or {}
-        answers = d.get("answers") or {}
-
-        # 19 inspection questions, exact DOB-form wording from the editor. Sparse:
-        # an unanswered question reads "Not recorded", never a silent "No"; an
-        # explicit N/A stays N/A. (general_info.drawings_on_site is a dead
-        # duplicate of the answers question of the same key — only the answer is
-        # rendered.)
-        SCAFFOLD_QUESTIONS = [
-            ("signs_on_parapets", "Are the signs on the parapets?"),
-            ("base_plates_mudsills", "Are the base plates and mudsills secured?"),
-            ("scaffold_pins_bolts", "Are the scaffold pins and bolts installed?"),
-            ("legs_poles_plumb", "Are the legs and poles plumb, braced and not displaced?"),
-            ("tie_ins_spaced", "Are tie-ins correctly spaced, properly secured and the correct amount?"),
-            ("cross_braces", "Are cross braces fully attached, not bent, and not missing?"),
-            ("pipe_clamps_tight", "Are pipe clamps tight?"),
-            ("window_jacks_tight", "Are window jacks tight?"),
-            ("planks_secured", "Are all the planks secured?"),
-            ("decking_planks_condition", "Are decking and planks in good condition?"),
-            ("deck_fully_planked", "Is deck fully planked?"),
-            ("gaps_open_spaces", "Are there gaps or open spaces on decking?"),
-            ("guardrails_toe_boards", "Are the guardrails and toe boards secured at all places where required?"),
-            ("netting_extension", "Is the netting extension of full length and height?"),
-            ("netting_secured", "Is the netting secured?"),
-            ("parapet_height", "Is the parapet the proper height and secured?"),
-            ("lights_working", "Are the lights working?"),
-            ("deck_clean", "Is the deck clean and free of debris?"),
-            ("drawings_on_site", "Drawings on site for inspection?"),
-        ]
-        q_rows = ""
-        for key, label in SCAFFOLD_QUESTIONS:
-            ans = answers.get(key)
-            val = ans if (key in answers and ans) else "&mdash; Not recorded"
-            q_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
-
-        # scaffold_erector / renters_name are short-entry; permit_number / phone
-        # are identifiers; dates & counts render raw; shed_type is an enum.
-        scaffold_html = (
-            section_title("Scaffold Maintenance Inspection")
-            + info_box(
-                f'<strong style="color:#0A1929;">Scaffold Erector:</strong> {_capitalize_first(gi.get("scaffold_erector", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Renter:</strong> {_capitalize_first(gi.get("renters_name", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Permit #:</strong> {gi.get("permit_number") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Phone #:</strong> {gi.get("phone") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Installation Date:</strong> {gi.get("installation_date") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Expiration:</strong> {gi.get("expiration_date") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Scaffold Height:</strong> {gi.get("scaffold_height") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Platforms Decked:</strong> {gi.get("num_platforms") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Shed Type:</strong> {gi.get("shed_type") or "N/A"}'
-            )
-            + sub_title("Inspection Checklist")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Question</th><th {TH}>Answer</th></tr>'
-            + q_rows
-            + '</table>'
-            + render_signature_html(scaffold_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-        )
-
-    # ==========================================================
-    #  SUBCONTRACTOR SAFETY ORIENTATION  (aggregate — one doc per worker)
-    # ==========================================================
-    # LL196: subcontractor orientation is FIRST-TIME-on-project only (not daily).
-    # The coverage question is therefore: has each worker currently ON SITE ever
-    # been oriented on THIS project? Rendered whenever anyone checked in today,
-    # even if no orientation was filed today — the point is catching an
-    # un-oriented worker on a day nobody new was oriented.
-    orientation_today = [l for l in logbooks if l.get("log_type") == "subcontractor_orientation"]
-    orientation_html = ""
-    if checkin_count > 0 or orientation_today:
-        def _norm_name(v):
-            return " ".join(str(v or "").split()).lower()
-
-        # ON SITE = checked in today AND not checked out, THIS project (checkins is
-        # already scoped to project_id + this date's EST window). Mirrors the app's
-        # canonical on_site_query (status == "checked_in"); deduped to DISTINCT
-        # workers so N counts people, not check-in rows.
-        on_site = {}
-        for c in checkins:
-            if c.get("status") != "checked_in":
-                continue
-            rid = str(c.get("worker_id") or "")
-            rname = _norm_name(c.get("worker_name"))
-            key = rid or (f"name:{rname}" if rname else "")
-            if key:
-                on_site.setdefault(key, c)
-        n_onsite = len(on_site)
-
-        # Every orientation doc for THIS project across ALL dates — a worker
-        # oriented weeks ago counts as covered. Manual entries mint a synthetic
-        # worker_id, so match on worker_id OR normalized name (heuristic —
-        # collisions/spelling can skew it; tracked in followups).
-        all_orientations = await db.logbooks.find(
-            {"project_id": project_id, "log_type": "subcontractor_orientation",
-             "is_deleted": {"$ne": True}},
-            {"data.worker_id": 1, "data.worker_name": 1},
-        ).to_list(5000)
-        oriented_ids, oriented_names = set(), set()
-        for o in all_orientations:
-            od = o.get("data") or {}
-            if od.get("worker_id"):
-                oriented_ids.add(str(od.get("worker_id")))
-            if od.get("worker_name"):
-                oriented_names.add(_norm_name(od.get("worker_name")))
-
-        n_covered = 0
-        for c in on_site.values():
-            rid = str(c.get("worker_id") or "")
-            rname = _norm_name(c.get("worker_name"))
-            if (rid and rid in oriented_ids) or (rname and rname in oriented_names):
-                n_covered += 1
-        coverage_gap = max(0, n_onsite - n_covered)
-
-        if n_onsite == 0:
-            coverage_value = "No workers currently on site"
-        else:
-            coverage_value = f"{n_covered} of {n_onsite} on-site workers"
-            if coverage_gap > 0:
-                coverage_value += (
-                    f' &nbsp;<span style="color:#b91c1c;font-weight:700;">'
-                    f'&#9888; {coverage_gap} on-site worker(s) with no orientation on file</span>'
-                )
-
-        # Today's FILED orientation records — who was oriented today (often empty;
-        # that is normal and correct, not a gap).
-        n_today = len(orientation_today)
-        n_signed = 0
-        orient_rows = ""
-        for doc in orientation_today:
-            od = doc.get("data") or {}
-            name = _capitalize_first(od.get("worker_name", "")) or "&mdash;"
-            trade = _capitalize_first(od.get("worker_trade", ""))
-            company = _capitalize_first(od.get("worker_company", ""))
-            trade_company = " &bull; ".join([p for p in (trade, company) if p]) or "&mdash;"
-            # Orientation date: completed_at (ISO) preferred, else the doc's date;
-            # neither present renders "Not recorded", not a fabricated date.
-            completed = od.get("completed_at") or ""
-            orient_date = (str(completed)[:10] if completed else doc.get("date")) or "&mdash; Not recorded"
-            # cp_name is the trainer's attestation (a competent person delivered
-            # the orientation) — top-level on the doc, short-entry.
-            cp = _capitalize_first(doc.get("cp_name", "")) or "&mdash; Not recorded"
-            # LOAD-BEARING HONESTY: worker_signature is hardcoded null on manual
-            # entries. Surface UNSIGNED so an unattested acknowledgment is never
-            # presented as complete (same failure class as a replayed CP signature).
-            if od.get("worker_signature"):
-                sig_cell = '<span style="color:#15803d;font-weight:600;">Signed</span>'
-                n_signed += 1
-            else:
-                sig_cell = '<span style="color:#b91c1c;font-weight:700;">UNSIGNED</span>'
-            orient_rows += (
-                f'<tr><td {TD}>{name}</td>'
-                f'<td {TD}>{trade_company}</td>'
-                f'<td {TD}>{orient_date}</td>'
-                f'<td {TD}>{cp}</td>'
-                f'<td {TD}>{sig_cell}</td></tr>'
-            )
-
-        signed_line = (
-            bold_para("Worker acknowledgments signed", f"{n_signed} of {n_today} filed today")
-            if n_today else ""
-        )
-        # THE "ORIENTED TODAY" TABLE IS GONE, AND IT WAS THE THIRTEENTH
-        # REPRODUCED DOCUMENT HIDING BEHIND A SUMMARY.
-        #
-        # This section survived the removal of the other twelve because the two
-        # lines above it are a coverage check computed from the gate rather than
-        # a reproduction of a filed log. The table underneath them was not:
-        # worker, trade, date, conducting CP and a signature column, one row per
-        # filed record — the same shape as every section that came out, and on
-        # the 2026-08-27 record it ran to sixteen rows across two pages.
-        #
-        # IT ALSO PRINTED THE DUPLICATES. Those sixteen rows are five men.
-        # Ivan Ramirez three times, Italo Guangasi five, on a document that goes
-        # to an investor. See docs/audits/followups.md, the entry dated today on
-        # duplicate orientation rows.
-        #
-        # AND THE "Signed" CELL GOES WITH IT. A green word where a signature
-        # belongs was the last place in either renderer that printed a verdict
-        # in place of a mark; the per-logbook PDF draws the ink.
-        #
-        # `n_signed` and `orient_rows` are still computed above. `signed_line`
-        # reads the first; the rows now have no reader, and they come out in the
-        # following change with the twelve builders.
-        orientation_html = (
-            section_title("Subcontractor Safety Orientation")
-            + bold_para("First-time orientation on file", coverage_value)
-            + signed_line
-        )
-
-    # ==========================================================
-    #  SSC DAILY SAFETY LOG
-    # ==========================================================
-    ssc_html = ""
-    ssc_lb = _filed_log(logbooks, "ssc_daily_safety_log")
-    if ssc_lb:
-        d = ssc_lb.get("data") or {}
-
-        # Two-state ToggleRows (seeded false, always present) → Yes/No as captured.
-        SSC_FLAGS = [
-            ("incidents_reported", "Incidents Reported"),
-            ("safety_meetings_held", "Safety Meetings Held"),
-            ("fire_protection_in_place", "Fire Protection in Place"),
-            ("housekeeping_satisfactory", "Housekeeping Satisfactory"),
-            ("ppe_compliance", "PPE Compliance"),
-        ]
-        flag_rows = ""
-        for key, label in SSC_FLAGS:
-            flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{"Yes" if d.get(key) else "No"}</td></tr>'
-
-        # Prose (sentence-case); empty renders "Not recorded", never an asserted
-        # "none" that could read as a negative finding the CP did not make.
-        def _ssc_prose(v):
-            return (_sentence_case(v) if v else "") or "&mdash; Not recorded"
-
-        incident_line = (
-            bold_para("Incident Details", _ssc_prose(d.get("incident_details")))
-            if d.get("incidents_reported") else ""
-        )
-
-        ssc_html = (
-            section_title("SSC Daily Safety Log")
-            + info_box(
-                f'<strong style="color:#0A1929;">Project Address:</strong> {_capitalize_first(d.get("project_address", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Site Safety Plan #:</strong> {d.get("ssp_number") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Weather:</strong> {_display_weather(d)}<br />'
-                f'<strong style="color:#0A1929;">Workers on Site:</strong> {d.get("workers_on_site_count") or "N/A"}'
-            )
-            + sub_title("Compliance")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Item</th><th {TH}>Status</th></tr>'
-            + flag_rows
-            + '</table>'
-            # A rendered "No" here may be an untouched default, not a deliberate
-            # negative finding — qualify it so a bare "No" is never read as an
-            # affirmative safety-violation attestation on a DOB record.
-            + '<p style="color:#94a3b8;font-size:11px;font-style:italic;margin:2px 0 0;">'
-              'Compliance items default to "No" if not explicitly set by the reviewer.</p>'
-            + sub_title("Narrative")
-            + bold_para("Site Conditions", _ssc_prose(d.get("site_conditions")))
-            + bold_para("Safety Violations Observed", _ssc_prose(d.get("safety_violations_observed")))
-            + bold_para("Corrective Actions Taken", _ssc_prose(d.get("corrective_actions_taken")))
-            + incident_line
-            + render_signature_html(ssc_lb.get("cp_signature"), "SSC / SSM Signature", show_affirmation=False)
-        )
-
-    # ==========================================================
-    #  CONCRETE OPERATIONS
-    # ==========================================================
-    concrete_html = ""
-    concrete_lb = _filed_log(logbooks, "concrete_operations")
-    if concrete_lb:
-        d = concrete_lb.get("data") or {}
-
-        FORMWORK_ITEMS = [
-            ("shores_plumb", "Shores Plumb"),
-            ("bracing_adequate", "Bracing Adequate"),
-            ("formwork_clean", "Formwork Clean"),
-            ("no_gaps", "No Gaps"),
-        ]
-        formwork = d.get("formwork_checklist") or {}
-        formwork_rows = ""
-        for key, label in FORMWORK_ITEMS:
-            if key in formwork:
-                val = "Yes" if formwork.get(key) else "No"
-            else:
-                val = "&mdash; Not recorded"
-            formwork_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
-
-        slump_rows = ""
-        for st in (d.get("slump_tests") or []):
-            t = str(st.get("time", "")).strip()
-            v = str(st.get("value", "")).strip()
-            p = st.get("pass")
-            if not t and not v and p is None:
-                continue
-            # pass is TRI-STATE: null → Not recorded, never "Fail".
-            if p is True:
-                result = '<span style="color:#15803d;font-weight:600;">Pass</span>'
-            elif p is False:
-                result = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
-            else:
-                result = "&mdash; Not recorded"
-            slump_rows += (
-                f'<tr><td {TD}>{t or "&mdash;"}</td>'
-                f'<td {TD}>{v or "&mdash;"}</td>'
-                f'<td {TD}>{result}</td></tr>'
-            )
-
-        # pour_location / concrete_supplier short-entry; mix_design an identifier;
-        # volume_ordered & temperature raw (unit-less as entered); weather an enum.
-        concrete_html = (
-            section_title("Concrete Operations")
-            + info_box(
-                f'<strong style="color:#0A1929;">Pour Location:</strong> {_capitalize_first(d.get("pour_location", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Supplier:</strong> {_capitalize_first(d.get("concrete_supplier", "")) or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Mix Design:</strong> {d.get("mix_design") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Volume Ordered:</strong> {d.get("volume_ordered") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Weather:</strong> {d.get("weather_conditions") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Temperature:</strong> {d.get("temperature") or "N/A"}'
-            )
-            + sub_title("Slump Tests")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Time</th><th {TH}>Slump</th><th {TH}>Result</th></tr>'
-            + (slump_rows or f'<tr><td colspan="3" {TD}>No slump tests recorded</td></tr>')
-            + '</table>'
-            + sub_title("Formwork Inspection")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
-            + formwork_rows
-            + '</table>'
-            + render_signature_html(concrete_lb.get("cp_signature"), "CP Signature", show_affirmation=False)
-        )
-
-    # ==========================================================
-    #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
-    # ==========================================================
-    # EVERY TYPE WITH A DEDICATED SECTION ABOVE MUST BE LISTED HERE, or it
-    # prints twice: once under its own heading and again below as an
-    # "Additional Logbook". fall_protection and site_superintendent_log had
-    # both fallen through -- the second is the BC 3301.13.13 log, so the
-    # duplicate landed on a statutory record a CP signs.
-    #
-    # Nothing about a duplicated section looks like an error: no crash, no
-    # warning, just a report that mentions something twice. That is why
-    # test_report_no_double_render.py compares this set against the
-    # _filed_log(...) lookups by parsing BOTH, rather than pinning the two
-    # types that happened to be wrong. Add a section, and that test tells you
-    # to add it here.
-    handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
-                     "subcontractor_orientation", "osha_log", "hot_work", "crane_operations",
-                     "excavation_monitoring", "ssc_daily_safety_log", "concrete_operations",
-                     "fall_protection", "site_superintendent_log"}
-    additional_logbooks_html = ""
-    for logbook in logbooks:
-        lt = logbook.get("log_type", "")
-        if lt in handled_types:
-            continue
-        d = logbook.get("data", {})
-        label = lt.replace("_", " ").title()
-        # Build key-value rows from the data dict
-        data_rows = ""
-        for k, v in d.items():
-            if isinstance(v, (dict, list)):
-                if isinstance(v, list):
-                    v_str = ", ".join(str(item) if not isinstance(item, dict) else str(item) for item in v[:10])
-                else:
-                    # `if iv` dropped False and 0; and a True printed as
-                    # `flag: True`. The bool branch below is the correct
-                    # rendering and was one level out of reach.
-                    v_str = ", ".join(
-                        f"{ik}: {answer_label(iv)}" for ik, iv in v.items()
-                        if isinstance(iv, bool) or iv)
-            elif isinstance(v, bool):
-                v_str = "Yes" if v else "No"
-            else:
-                v_str = str(v) if v else ""
-            if v_str:
-                field_label = k.replace("_", " ").title()
-                data_rows += f'<tr><td {TD} style="font-weight:600;width:35%;padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;">{field_label}</td><td {TD}>{v_str}</td></tr>'
-
-        sig_html = render_signature_html(logbook.get("cp_signature"), "Signature", show_affirmation=False)
-        # A FRESH SHEET PER DOCUMENT, HERE TOO.
-        #
-        # The `page-break-after:always` join below separates SECTIONS, and this
-        # is one section holding every log type the branches above do not
-        # handle -- so two such logs were stacked with nothing between them.
-        # The rule is that no two filed documents share a page, and it was true
-        # of this report everywhere except inside this loop.
-        #
-        # LATENT, NOT LIVE: no project-day on production carries two unhandled
-        # types, so nothing has ever rendered this way. It is a page-break rule
-        # and it costs one line, which is a better trade than a note saying it
-        # cannot fire yet.
-        if additional_logbooks_html:
-            additional_logbooks_html += (
-                '<div style="page-break-after:always;"></div>'
-            )
-        additional_logbooks_html += (
-            section_title(f"{label}")
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:8px 0 0 0;font-size:13px;">'
-            + (data_rows or f'<tr><td {TD}>No data recorded</td></tr>')
-            + '</table>'
-            + sig_html
-        )
-
-    # ==========================================================
-    #  EVERY DOCUMENT ON ITS OWN PAGE
-    # ==========================================================
-    #
-    # There was exactly ONE page break in this report -- between the investor
-    # cover and everything after it -- and page 2 onward ran together. A Tool
-    # Box Talk ended four lines into a sheet and the Pre-Shift Sign-In began on
-    # the fifth; an Activity Details table split across the fold with its
-    # header on one page and half its crews on the next.
-    #
-    # THESE ARE SEPARATE FILED DOCUMENTS. An inspector asks for one of them by
-    # name and a lender is handed another; a printed record that has to be cut
-    # apart with a ruler to separate two statutory logs is not a record of
-    # either. So each section starts a sheet.
-    #
-    # THE BREAK GOES *BETWEEN*, NEVER AFTER EACH. A break after the last
-    # section ends the PDF on a blank sheet, and a blank final page on a
-    # compliance document reads as a page somebody removed.
-    #
-    # AN UNFILED LOG IS NOT A PAGE. A section with no document behind it
-    # renders "" and is dropped before the join, so a three-document day is
-    # three sheets and not sixteen -- thirteen of them blank, each looking like
-    # a filing that went missing.
-    # THE PROJECT RECORD IS LAST, which is where the mockup numbers it -- page
-    # 4 of 4, after the cover and the two progress pages. The index is the end
-    # of the investor document, and the full logbook sections that follow it
-    # today are what it will eventually replace: the report MAY index rather
-    # than contain, so when those go this lands exactly where the mockup puts
-    # it. Nothing is removed here, so a reader who scrolls past it still finds
-    # every log in full.
-    #
-    # AND PUTTING IT SECOND BROKE TWO TESTS THAT WERE RIGHT. Both anchor on the
-    # FIRST occurrence of "Daily Jobsite Log" to find that section's header and
-    # measure its type and its gaps. A card bearing the same title, earlier in
-    # the document, moved the anchor onto the card -- the leftmost-match shape
-    # this codebase already carries a note about for source-text tests, here in
-    # a rendered document. The claim they defend never moved.
-    # THE THIRTEEN EMBEDDED LOGBOOK SECTIONS ARE GONE, AND THAT WAS THE POINT
-    # OF THE RECORD INDEX ALL ALONG.
-    #
-    # The index was ruled in to REPLACE the embedded documents. It was built
-    # beside them, and nobody rendered the result: the report went from 10
-    # pages to 13, and eight of those thirteen were documents printed in full
-    # with an index on page 12 pointing at the five immediately above it.
-    #
-    # MEASURED, same record, same container, frozen clock:
-    #
-    #   before the redesign (bada9533)   10 pages   6 sections   no index
-    #   with the index added beside      13 pages   7 sections   index p.12
-    #   with the documents removed        5 pages   3 sections   index p.3
-    #
-    # NOTHING IS LOST. Every card on the index carries a link to the filed
-    # document, and that link is the per-logbook PDF -- the legal render, with
-    # the affirmation banner and the citations that were ruled off this report.
-    # A lender reads the summary; an inspector clicks through to the filing.
-    # Those are different documents for different readers and this stops
-    # pretending to be both.
-    #
-    # TWELVE, NOT THIRTEEN, AND THE LINE BETWEEN THEM IS STRUCTURAL RATHER
-    # THAN A JUDGEMENT CALL.
-    #
-    # `orientation_html` STAYS. Every other section here is gated on
-    # `_filed_log(...)` returning a document -- it exists because a log was
-    # filed, and it reproduces that log. The orientation section is gated on
-    # `checkin_count > 0 or orientation_today`, so it renders on days when NO
-    # orientation was filed at all. It is not a reproduction of anything: it is
-    # the LL196 first-timer coverage check, computed from who checked in.
-    #
-    #     "3 of 5 on-site workers -- 2 on-site worker(s) with no orientation
-    #      on file"
-    #
-    # That is a DEFICIENCY, it appears nowhere else, and it appears on exactly
-    # the days nobody was oriented. The record index cannot carry it: a card
-    # reads filed or not filed for one document, and this is a statement about
-    # the workforce. Removing it with the reproductions would have deleted a
-    # compliance warning to shorten a report, which is the wrong trade in the
-    # one direction that matters.
-    #
-    # THE TWELVE BUILDERS STILL RUN and their output is now unused. They come
-    # out in the FOLLOWING change, once this has rendered in production and
-    # been read -- the same rule the legal engine's converted branches follow,
-    # and for the same reason: a deletion is easier to judge against a document
-    # somebody has looked at.
-    _SECTIONS = (
-        progress_html,
-        orientation_html,
-        additional_logbooks_html,
-        _record_html,
-    )
-    # page-break-inside ON THE WRAPPER, which is what stops a table splitting
-    # across the fold.
-    #
-    # THE CLAIM THAT USED TO BE HERE WAS WRONG, AND IT NEVER HELD. It read:
-    # "A section taller than a page cannot honour it, and WeasyPrint drops the
-    # request rather than leaving the sheet blank -- which is what makes this
-    # safe on a sixty-man pre-shift sheet." WeasyPrint does not drop it. It
-    # RELOCATES the block to a fresh sheet first, and only then splits it
-    # because it has nowhere else to go. The blank sheet is exactly what you
-    # get.
-    #
-    # MEASURED, on this renderer, on production data, in a container where
-    # WeasyPrint loads (2026-09-05):
-    #
-    #   2026-08-25   first section  461px   page 1 ends y=265   7 pages
-    #   2026-09-04   first section  779px   page 1 ends y=265  12 pages
-    #   2026-08-31   first section ~1715px  page 1 ends y=426   9 pages
-    #
-    # A4 at 12mm margins gives a content box of y 45..1078. The 08-31 section
-    # is far taller than a whole page -- the exact case the old comment called
-    # safe -- and it still began on page 2. Page 1 carried the header and the
-    # summary row and nothing else, on all three.
-    #
-    # AND THIS WRAPPER IS ONLY HALF OF IT. Ablating one rule at a time on the
-    # same rendered HTML: removing `.doc-section { break-inside: avoid }` alone
-    # changed nothing on any of the three days. Removing the unqualified
-    # `tr { page-break-inside: avoid }` from the print block alone moved the
-    # light day's section back onto page 1 (page-1 bottom 265px -> 794px, 7
-    # pages -> 6), because that rule matches the outer layout table's single
-    # CONTENT row -- the one holding the entire body. Removing both moved all
-    # three. So the wrapper is load-bearing on a photo-heavy day and irrelevant
-    # on a light one, and the `tr` rule is the dominant cause.
-    #
-    # THE FIX IS THE `tr.shell` EXEMPTION in the print block BELOW, matching
-    # the scoping the per-logbook PDF already carries. The wrapper below stays:
-    # it is the rule that keeps a section together when a section CAN fit, and
-    # on a photo-heavy day it is load-bearing.
-    #
-    # WHY IT SURVIVED: no check in this repo renders a page. Every
-    # page-geometry test asserts the CSS a renderer emits, so a false claim
-    # about what WeasyPrint does with that CSS sits next to a suite that
-    # cannot contradict it. See docs/audits/check-harness.md section 8.
-    # ── OPTION (a): A SECTION MAY BREAK WHEN IT CANNOT FIT ──────────────────
-    #
-    # `page-break-inside:avoid` was here. WeasyPrint does not drop an
-    # unsatisfiable avoid -- it RELOCATES the block to a fresh sheet and splits
-    # it there anyway (proved with a control in
-    # test_weasyprint_break_inside_semantics.py), so on a section taller than a
-    # page it cost a sheet and bought nothing.
-    #
-    # AND REMOVING IT DOES NOT FIX THE HEAVY DAY. That was the expectation
-    # written here first, and the measurement says otherwise. Rendered against
-    # production with this change applied:
-    #
-    #   2026-08-25 (light)   6 pages, page 1 carries the Daily Progress Report
-    #   2026-08-31 (heavy)   9 pages, page 1 UNCHANGED -- header, summary and
-    #                        the amendment banner, exactly as before
-    #
-    # So this rule was not the binding constraint on a heavy day. Something
-    # else still relocates that section, and the likeliest candidate is the
-    # unqualified `tr { page-break-inside: avoid }` acting on the section's own
-    # first row -- the same rule whose SHELL half was scoped in #442, applied
-    # one level further in. NOT DIAGNOSED HERE, and deliberately not guessed
-    # at in code: it is reported as an open item rather than fixed on a hunch.
-    #
-    # What this change does buy, measured: the rule is gone from a document
-    # where it was inert for every section but the first (each later section
-    # already begins at the top of an empty sheet, where an avoid cannot fire),
-    # and the light day is unaffected.
-    #
-    # WHAT THE RULE WAS PROTECTING IS KEPT, AND ONE GAP IN IT IS CLOSED. The
-    # concern was a caption separating from its table. That is the job of
-    # `page-break-after: avoid` on the headings -- and the selector did NOT
-    # reach `sub_title`, which emits a class-less <table> and produces the very
-    # caption ("Activity Details") the rule's own comment cites. It now carries
-    # `class="doc-sub-title"` and the selector names it, so the claim this
-    # paragraph makes is true rather than assumed.
-    #
-    # AND THE RULE WAS ALREADY INERT FOR ALL BUT THE FIRST SECTION. Every pair
-    # of sections is separated by `page-break-after:always`, so sections 2..N
-    # each begin at the top of an empty sheet -- a block already at a page top
-    # has nothing to be relocated past, and `avoid` cannot fire. It only ever
-    # acted on the FIRST section, where it was either unnecessary (the section
-    # fits) or harmful (it does not, and the cover goes blank).
-    #
-    # Each section still STARTS its own sheet: the `page-break-after:always`
-    # join below is untouched.
-    sections_html = '<div style="page-break-after:always;"></div>'.join(
-        f'<div class="doc-section">{_s}</div>'
-        for _s in _SECTIONS if _s
-    )
-
-    # ==========================================================
-    #  FINAL HTML ASSEMBLY  (email-safe, table-based)
-    # ==========================================================
-    # THE ZONE IS PART OF THE FACT. This printed a UTC clock with the word
-    # UTC beside it -- not wrong, but the only Eastern-looking number on a
-    # New York document, sitting four hours from every other time on it.
-    # `eastern_datetime` carries its own zone, so the literal goes with it.
-    gen_time = eastern_datetime(datetime.now(timezone.utc))
-    font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
-
-    html = f"""<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="color-scheme" content="light only" />
-<meta name="supported-color-schemes" content="light only" />
-<title>Daily Construction Report - {project_name}</title>
-<!--[if mso]><style>table, td {{font-family: Arial, sans-serif !important;}}</style><![endif]-->
-<style>
-  :root {{ color-scheme: light only; }}
-  body, .body {{ background-color: #f0f4f8 !important; }}
-  u + .body {{ background-color: #f0f4f8 !important; }}
-  [data-ogsc] .wrapper {{ background-color: #ffffff !important; }}
-  [data-ogsc] body {{ background-color: #f0f4f8 !important; }}
-  @media (prefers-color-scheme: dark) {{
-    body, .body {{ background-color: #f0f4f8 !important; }}
-    .wrapper {{ background-color: #ffffff !important; }}
-    .content-cell {{ background-color: #ffffff !important; color: #1a2332 !important; }}
-  }}
-
-  /* PRINT / PDF. ONE HTML SERVES TWO MEDIA and they want opposite things.
-     The wrapper is width="680" with max-width:680px because that is the
-     right column for an email client. The SAME string is handed to
-     WeasyPrint (get_combined_report_pdf), where 680px sits on a ~794px A4
-     page and leaves a dead strip down the right — which is what made the
-     Activity Details table stop mid-page and read, on a phone, as though
-     the document had been trimmed.
-
-     Email clients ignore @media print, so releasing the width here costs
-     the email nothing. */
-  @page {{ size: A4; margin: 12mm; }}
-  @media print {{
-    .wrapper {{ width: 100% !important; max-width: 100% !important; }}
-    body, .body {{ background-color: #ffffff !important; }}
-
-    /* THE REST OF THE LEVER. The block released the width and stopped, and
-       every typographic decision below is one an EMAIL CLIENT must not be
-       asked to make -- these rules exist only for the sheet of paper.
-
-       A HEADING MUST NOT BE THE LAST THING ON A PAGE. Every section now
-       starts its own sheet, but the sub-heads inside one do not, and
-       "Activity Details" alone at the foot of a page with its table
-       overleaf is the shape a reader takes for a truncated document. */
-    h2, h3, .doc-section-title, .doc-sub-title {{
-      page-break-after: avoid; break-after: avoid-page;
-    }}
-
-    /* THE SECTION HEADER IS THE FIRST THING ON ITS SHEET, so the 40px that
-       separates it from the previous section on screen is a dead strip at
-       the top of every printed page. Inline styles lose to !important. */
-    .doc-section > .doc-section-title:first-child {{ margin-top: 0 !important; }}
-
-    /* NEVER SPLIT A ROW. A man's name on one sheet and his check-in time on
-       the next is not a roster entry -- and page-break-inside on the section
-       wrapper cannot help a table that is genuinely taller than a page,
-       which the pre-shift sheet on a busy day is. */
-    tr {{ page-break-inside: avoid; break-inside: avoid; }}
-
-    /* EXCEPT THE FIVE SHELL ROWS, WHICH ARE THE PAGE AND NOT ITS CONTENT.
-       This document's outer markup is an email layout: a centring row, then
-       the wrapper's header, summary, CONTENT and footer rows. The rule above
-       matched the content row -- the one holding every section of the report
-       -- so WeasyPrint refused to split it and relocated the whole body to a
-       fresh sheet, leaving page 1 carrying the header and the summary and
-       nothing else. That is the blank cover.
-
-       Measured on production data, ablating this one rule and nothing else:
-       the 2026-08-25 report's first section moved from page 2 back onto page
-       1 (page-1 content bottom 265px -> 794px, 7 pages -> 6).
-
-       By class rather than a `> tbody >` combinator, so it does not depend on
-       where the parser puts an anonymous tbody. The nested roster and activity
-       tables inside the content cell are untouched and still refuse to split,
-       which is what the rule was written for. */
-    tr.shell {{ page-break-inside: auto; break-inside: auto; }}
-
-    /* One line of a paragraph stranded by itself reads as a fragment. */
-    p, li {{ orphans: 3; widows: 3; }}
-  }}
-</style>
-</head>
-<body class="body" style="margin:0;padding:0;background-color:#f0f4f8;font-family:{font};-webkit-font-smoothing:antialiased;" bgcolor="#f0f4f8">
-
-<table cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f0f4f8" style="background-color:#f0f4f8;">
-<tr class="shell"><td align="center" style="padding:20px 0;">
-
-<table cellpadding="0" cellspacing="0" border="0" width="680" class="wrapper" bgcolor="#ffffff"
-  style="background-color:#ffffff;max-width:680px;width:100%;">
-
-  <!-- HEADER -->
-  <tr class="shell">
-    <td style="background-color:#0A1929;padding:32px 40px;" bgcolor="#0A1929">
-      <table cellpadding="0" cellspacing="0" border="0" width="100%">
-        <tr><td style="color:rgba(255,255,255,0.5);font-size:10px;letter-spacing:3px;text-transform:uppercase;padding-bottom:16px;font-family:{font};">LEVELOG</td></tr>
-        <tr><td style="color:#ffffff;font-size:22px;font-weight:600;letter-spacing:0.5px;padding-bottom:4px;font-family:{font};">Daily Construction Report</td></tr>
-        <tr><td style="color:rgba(255,255,255,0.7);font-size:13px;font-weight:400;font-family:{font};">{_header_project_line}</td></tr>
-        <tr><td style="color:rgba(255,255,255,0.5);font-size:11px;letter-spacing:1.5px;text-transform:uppercase;padding-top:8px;font-family:{font};">{_report_no_line}</td></tr>
-      </table>
-    </td>
-  </tr>
-
-  <!-- SUMMARY ROW -->
-  <tr class="shell">
-    <td style="background-color:#f8fafc;padding:20px 40px;border-bottom:1px solid #e2e8f0;" bgcolor="#f8fafc">
-      <table cellpadding="0" cellspacing="0" border="0" width="100%">
-        <tr>
-          <td width="50%" valign="top" style="vertical-align:top;">
-            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">DATE</span><br />
-            <span style="font-size:15px;color:#0A1929;font-weight:500;">{_pg1_date}</span>
-          </td>
-          <!-- WORKERS AT THE GATE WAS THE THIRD CELL HERE. It is printed
-               again on page 2, where the roster it counts actually appears, so
-               on the cover it was a number with nothing under it. The two
-               remaining cells widen to fill the row rather than leaving the
-               gap the removal would otherwise make. -->
-          <td width="50%" valign="top" style="vertical-align:top;">
-            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">ADDRESS</span><br />
-            <span style="font-size:15px;color:#0A1929;font-weight:500;">{project_address or 'N/A'}</span>
-          </td>
-        </tr>
-      </table>
-      {_amendment_html}
-    </td>
-  </tr>
-
-  <!-- CONTENT -->
-  <tr class="shell">
-    <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
-      {sections_html}
-    </td>
-  </tr>
-
-  <!-- FOOTER -->
-  <tr class="shell">
-    <td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
-      <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time}</span><br />
-      <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;text-transform:uppercase;">LEVELOG CONSTRUCTION MANAGEMENT</span>
-    </td>
-  </tr>
-
-</table>
-</td></tr></table>
-
-</body>
-</html>"""
-    return html
+    return report_renderer.render(view)
 
 @api_router.get("/reports/project/{project_id}/date/{date}/view-grant",
                 dependencies=[Depends(require_project_access)])

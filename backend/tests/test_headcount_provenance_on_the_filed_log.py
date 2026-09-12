@@ -34,8 +34,11 @@ os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 os.environ.setdefault("QWEN_API_KEY", "")
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8-sig")
+
 TREE = ast.parse(SRC)
 
 def cell(act, blank=""):
@@ -266,7 +269,9 @@ class BothRenderersUseIt(unittest.TestCase):
         calls = [n.lineno for n in ast.walk(TREE)
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "_headcount_cell"]
-        self.assertGreaterEqual(len(calls), 2, "both crew-row renderers must use it")
+        self.assertGreaterEqual(
+            len(calls), N_RENDERERS,
+            "every renderer that prints a crew row must use it")
 
     def test_the_marker_is_compared_to_the_literal_cp(self):
         """Truthiness would let any stray value claim CP authorship."""

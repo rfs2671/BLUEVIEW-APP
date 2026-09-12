@@ -95,17 +95,46 @@ class ActivityRowView:
     chip: str
 
 
+#: THE RENDITION ORDER FOR THE INVESTOR PDF, MOST FAITHFUL FIRST.
+#:
+#: This is a print document and the photographic evidence is most of why
+#: anybody reads Page 2, so the enhanced rendition is served whenever the
+#: pipeline produced one and the original otherwise.
+#:
+#: THE THUMBNAIL IS NOT IN THIS LIST, AND ITS ABSENCE IS THE RULE. Falling back
+#: to it would shrink the attachment and quietly cost the visible construction
+#: detail the page was redesigned around -- an optimisation that reads, on the
+#: page, as worse photographs for no stated reason. A thumbnail is a legitimate
+#: rendition for a card-sized image; it is not a size optimisation for a
+#: full-page band.
+#:
+#: The legal renderers keep whatever rendition they already use. This order
+#: governs the investor PDF and nothing else.
+PHOTO_RENDITIONS: Tuple[str, ...] = ("enhanced", "original")
+
+
+def photo_rendition(photo) -> str:
+    """The best available rendition for one photograph.
+
+    ORDERED AND EXPLICIT, in the view layer, so a template never chooses which
+    image is authoritative and nobody can introduce a size-driven fallback at a
+    call site.
+    """
+    if isinstance(photo, dict) and photo.get("enhance_status") == "done":
+        return "enhanced"
+    return "original"
+
+
 @dataclass(frozen=True)
 class PhotoView:
     """One photograph, as a finished address.
 
-    WHICH VARIANT TO SERVE IS A DATA DECISION, not a layout one, so it is made
-    here: the enhanced rendition when the pipeline finished, the original
-    otherwise. A template choosing that would be a template deciding which
-    image is authoritative.
+    WHICH RENDITION IS AUTHORITATIVE IS A DATA DECISION, not a layout one, so
+    it is made by `photo_rendition` above and arrives here already resolved.
     """
 
     url: str
+    rendition: str = "original"
 
 
 @dataclass(frozen=True)
@@ -226,8 +255,14 @@ def fallback_summary(model: "m.ReportDisplayModel") -> str:
                  if a.named and not a.gate_count]
     trades = len(model.gate.trades)
     parts = [
+        # BOTH NUMBERS IN THE SAME REGISTER. This read "Eleven workers
+        # checked in through the gate across 1 trade" -- one word, one digit,
+        # in one sentence, on a page a lender reads. `_words` capitalises for
+        # the sentence opening, so the mid-sentence use is lowered; above
+        # twelve it returns the digits and lowering them changes nothing.
         f"{_words(model.gate.check_ins)} workers checked in through the gate "
-        f"across {trades} trade{'' if trades == 1 else 's'}."
+        f"across {_words(trades).lower()} "
+        f"trade{'' if trades == 1 else 's'}."
     ]
     if named:
         parts.append(" and ".join(named) + " had recorded workforce activity.")
@@ -293,9 +328,11 @@ def build(model: "m.ReportDisplayModel", *, address: str, city: str,
         bands.append(BandView(
             number=i, company=a.company_display, subtitle=" · ".join(bits),
             statement=a.statement, chip=a.chip,
-            photos=tuple(PhotoView(photo_url(logbook_id, a.activity_index,
-                                             index, photo))
-                         for index, photo in a.photos)))
+            photos=tuple(
+                PhotoView(url=photo_url(logbook_id, a.activity_index, index,
+                                        photo_rendition(photo)),
+                          rendition=photo_rendition(photo))
+                for index, photo in a.photos)))
 
     card_views = tuple(
         CardView(number=c["number"], title=c["title"], citation=c["citation"],

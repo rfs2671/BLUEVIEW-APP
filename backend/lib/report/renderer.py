@@ -168,6 +168,32 @@ table.two { width: 100%%; border-collapse: collapse; }
 .snote { font-size: 9.5px; color: %(MUTED)s; padding-top: 6px; line-height: 1.45; }
 .gen { font-size: 6.5px; color: #93A1AE; padding-top: 0.12in; line-height: 1.5; }
 
+/* ── WHAT MAY NOT BE SPLIT ─────────────────────────────────────────────
+   THIS STYLESHEET HAD NO BREAK RULES AT ALL, and the page-two allocation was
+   the only thing keeping a band whole -- which is to say, an arithmetic
+   assumption. The old report made the same assumption and it failed on a
+   filed document: a band header stranded at the foot of a sheet with its
+   photographs overleaf, and THE HEADER IS THE ATTRIBUTION, so eight
+   photographs appeared belonging to nobody.
+
+   `break-after: avoid` ON THE HEADER, not `break-inside: avoid` on the band.
+   A band taller than what is left of a page cannot honour an inside rule, and
+   WeasyPrint answers an unsatisfiable one by relocating the whole block to a
+   fresh sheet and leaving a hole. The header simply may not be the last thing
+   on a page; that is the actual rule.
+*/
+.bandhead { page-break-after: avoid; break-after: avoid-page; }
+table.shots td { page-break-inside: avoid; break-inside: avoid; }
+table.shots tr { page-break-inside: avoid; break-inside: avoid; }
+/* A CARD IS A UNIT: its state, its picture and its link are one statement. */
+.card { page-break-inside: avoid; break-inside: avoid; }
+/* An activity row's company and its count statement are one row of one fact. */
+table.acts tr { page-break-inside: avoid; break-inside: avoid; }
+/* The two boxes at the foot of Page 1, each of which is a whole claim. */
+.abox, .sbox { page-break-inside: avoid; break-inside: avoid; }
+/* A section heading is never the last thing on a sheet. */
+.sechead, .comph, .p2h { page-break-after: avoid; break-after: avoid-page; }
+
 /* PAGE 2 */
 .p2 { page-break-before: always; padding: 0.42in 0.55in 0.34in; }
 .p2ref { font-size: 7.5px; font-weight: 700; letter-spacing: 0.16em;
@@ -312,17 +338,45 @@ def render_page_1(view: ReportView) -> str:
         + f'<td class="sv">{esc(view.workforce_line)}</td></tr>'
         + '<tr><td class="sl">Weather</td>'
         + f'<td class="sv">{esc(view.weather_line)}</td></tr></table>'
-        + '<div class="att"><table class="two"><tr>'
-        + '<td width="58%" style="padding-right:0.22in;">'
-        + ('<div class="sechead" style="padding-top:0;">Attention</div>'
-           + attention if attention else "")
+        + render_attention_and_safety(attention, view.safety)
+        + "</div>")
+
+
+def render_attention_and_safety(attention: str, safety: SafetyView) -> str:
+    """THE LAST BLOCK OF PAGE 1, AND IT DOES NOT LEAVE A HOLE.
+
+    Attention and Safety share a row: outstanding records on the left at 58%,
+    the safety conclusion on the right at 42%. That is the ordering the design
+    asks for -- discrepancies visible, and subordinate to what was actually
+    done.
+
+    ON A DAY WITH NOTHING OUTSTANDING THE LEFT CELL IS EMPTY, and a 58% empty
+    cell is not "nothing": it indents Safety into the middle of the sheet under
+    a full-width rule, which reads as a section whose first half failed to
+    print. Measured on the 10 September report, where 5 of 5 required logs were
+    filed. So the row collapses to ONE full-width block instead -- the same
+    rule the cover's summary row follows when a cell is removed, and the same
+    rule Page 2 follows when a day has no photographs.
+    """
+    body = (
+        '<div class="sbox">'
+        f'<div class="sval">'
+        f'{esc(safety.value if safety.note == "" else "Status not reported")}'
+        f'</div>'
+        + (f'<div class="snote">{esc(safety.note)}</div>' if safety.note
+           else "")
+        + "</div>")
+    head = '<div class="sechead" style="padding-top:0;">Safety</div>'
+    if not attention:
+        return f'<div class="att">{head}{body}</div>'
+    return (
+        '<div class="att"><table class="two"><tr>'
+        '<td width="58%" style="padding-right:0.22in;">'
+        '<div class="sechead" style="padding-top:0;">Attention</div>'
+        + attention
         + '</td><td width="42%">'
-        + '<div class="sechead" style="padding-top:0;">Safety</div>'
-        + '<div class="sbox">'
-        + f'<div class="sval">{esc(view.safety.value if view.safety.note == "" else "Status not reported")}</div>'
-        + (f'<div class="snote">{esc(view.safety.note)}</div>'
-           if view.safety.note else "")
-        + "</div></td></tr></table></div></div>")
+        + head + body
+        + "</td></tr></table></div>")
 
 
 # ══════════════════════════════════════════════════════════════════════════

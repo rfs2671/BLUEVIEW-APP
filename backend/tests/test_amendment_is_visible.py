@@ -127,23 +127,113 @@ class TheSentenceSaysWhoAndWhen(unittest.TestCase):
         self.assertIn("Roy Fishman", s)
 
 
-class TheReportHeaderCarriesIt(unittest.TestCase):
-    def test_the_combined_report_renders_the_sentence(self):
-        src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        i = src.index("def generate_combined_report")
-        j = src.index("def get_report_preview")
-        body = src[i:j]
-        self.assertIn("amendment_sentence", body)
-        self.assertIn("_amendment_html", body)
+class TheFiledDocumentCarriesIt(unittest.TestCase):
+    """── THE READER MOVED, AND THE SENTENCE COVERS MORE THAN IT DID ───────
 
-    def test_it_sits_in_the_DOCUMENT_header(self):
-        """A fact about the record, not about one log section -- so it goes
-        beside the date and address, above the content."""
-        src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        i = src.index("def generate_combined_report")
-        body = src[i:src.index("def get_report_preview")]
-        self.assertLess(body.index("{_amendment_html}"),
-                        body.index("<!-- CONTENT -->"))
+    This was asserted on `generate_combined_report`'s SOURCE: the name
+    `amendment_sentence` appears in it, and `{_amendment_html}` appears before
+    the `<!-- CONTENT -->` marker. The report indexes the filed documents now
+    and prints no header of theirs, so both anchors are gone.
+
+    THE CLAIM IS NOT. `amendment_reason` being write-only is the defect this
+    whole file exists for, and with the report's header gone the sentence had
+    no reader left anywhere -- the same state, reached a different way. It
+    prints on the FILED DOCUMENT now, which is where the operator's standing
+    ruling puts filing apparatus: the report points at the record, the record
+    carries its own audit trail.
+
+    AND IT REACHES EVERY TYPE. The report's header read `daily_jobsite` and
+    only that, so an amended toolbox talk, OSHA register or pre-shift sheet
+    announced itself nowhere. The document header has no such limit, and the
+    case below proves it on a second type.
+
+    ASSERTED ON RENDERED HTML rather than on source, because a variable name
+    in a function body is not a sentence on a page.
+    """
+
+    @staticmethod
+    def _render(doc):
+        import asyncio
+        from unittest.mock import patch
+
+        class _C:
+            def __init__(self, docs=None):
+                self.docs = list(docs or [])
+
+            async def find_one(self, *a, **k):
+                return self.docs[0] if self.docs else None
+
+            def find(self, *a, **k):
+                return _Cur(self.docs)
+
+        class _Cur:
+            def __init__(self, docs):
+                self._d = docs
+
+            async def to_list(self, *a, **k):
+                return list(self._d)
+
+            def sort(self, *a, **k):
+                return self
+
+        class _DB:
+            projects = _C([{"_id": "p1", "name": "588 Thomas S Boyland Street",
+                            "address": "588 Thomas S Boyland St, Brooklyn"}])
+            logbooks = _C()
+            checkins = _C()
+
+        with patch.object(server, "db", _DB()), \
+                patch.object(server, "to_query_id", lambda x: x):
+            return asyncio.run(server.generate_single_logbook_html(doc))
+
+    def test_an_amended_record_says_so_on_its_own_face(self):
+        html = self._render(_child())
+        self.assertIn("AMENDED RECORD", html)
+        self.assertIn("Roy Fishman", html)
+        self.assertIn("twice", html)
+
+    def test_it_sits_above_the_content(self):
+        """A fact about the RECORD, not about one section of it, so it goes
+        at the top of the page rather than beside whichever item it changed."""
+        html = self._render(_child())
+        # THE CONTENT CELL, isolated. The document names its type three
+        # times -- the `<title>`, the dark header, the section heading -- and
+        # the first two are always before anything. The claim is about the
+        # order INSIDE the cell that holds the record.
+        cell = html[html.index(
+            '<td style="padding:24px 40px;background-color:#ffffff;"'):]
+        cell = cell[:cell.index("</td>")]
+        self.assertLess(
+            cell.index("AMENDED RECORD"),
+            cell.index("Daily Jobsite Log (NYC DOB 3301-02)"),
+            "the amendment notice is below the content it qualifies")
+
+    def test_an_ORDINARY_log_carries_no_banner(self):
+        """The absence half. A banner on every document says nothing."""
+        html = self._render({"log_type": "daily_jobsite", "date": "2026-08-31",
+                             "data": {}})
+        self.assertNotIn("AMENDED RECORD", html)
+
+    def test_a_type_the_old_placement_never_reached(self):
+        """The report's header read the daily jobsite log and no other, so an
+        amended toolbox talk announced itself nowhere at all."""
+        html = self._render(_child(log_type="toolbox_talk", data={}))
+        self.assertIn("AMENDED RECORD", html)
+        self.assertIn("Roy Fishman", html)
+
+    def test_the_reason_is_escaped(self):
+        """Operator-supplied text on its way into an HTML document."""
+        html = self._render(_child(
+            amendment_reason='Duplicated <script>alert(1)</script> rows'))
+        self.assertNotIn("<script>", html)
+        self.assertIn("&lt;script&gt;", html)
+
+    def test_a_reasonless_amendment_still_announces_itself(self):
+        """The middle state reaches paper. Collapsing it into "not amended"
+        hides a correction to a signed record."""
+        html = self._render(_child(amendment_reason=""))
+        self.assertIn("AMENDED RECORD", html)
+        self.assertIn("no reason", html.lower())
 
 
 if __name__ == "__main__":

@@ -34,9 +34,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 from tests.source_text import code_of  # noqa: E402
 
 _SRC = Path(server.__file__).read_text(encoding="utf-8")
+
 #: comments and docstrings STRIPPED. The bucket assertion below is about
 #: what the code reads, and the docstring names the wrong bucket in order
 #: to warn about it — asserting over prose matched the warning, not the code.
@@ -152,17 +155,22 @@ class BothRenderersResolveTheSameWay(unittest.TestCase):
 
     def test_both_call_sites_pass_the_resolved_map(self):
         self.assertEqual(
-            _SRC.count("_preshift_signature_cell(w, _ps_sigs)"), 2)
+            _SRC.count("_preshift_signature_cell(w, _ps_sigs)"),
+            N_RENDERERS)
 
     def test_no_call_site_was_left_on_the_old_signature(self):
         self.assertNotIn("_preshift_signature_cell(w)</td>", _SRC)
 
     def test_both_renderers_resolve_before_their_loop(self):
-        self.assertEqual(_SRC.count("await _resolve_signin_signatures("), 2)
+        self.assertEqual(_SRC.count("await _resolve_signin_signatures("),
+                         N_RENDERERS)
 
     def test_the_resolution_precedes_the_row_loop_in_each(self):
-        for anchor in ('_resolve_signin_signatures(workers)',
-                       '_resolve_signin_signatures(pd.get("workers", []))'):
+        # ONE ANCHOR. The second spelling was the report's copy of the
+        # pre-shift sheet, which it no longer prints. The ORDER is the claim --
+        # resolve the signatures before the row loop, so a row cannot draw a
+        # signature the resolver has not seen -- and it is unchanged.
+        for anchor in ("_resolve_signin_signatures(workers)",):
             i = _SRC.index(anchor)
             j = _SRC.index("_preshift_signature_cell(w, _ps_sigs)", i)
             self.assertLess(i, j)

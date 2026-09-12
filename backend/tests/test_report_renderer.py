@@ -22,6 +22,7 @@ file.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import os
 import sys
@@ -207,6 +208,74 @@ class NothingIsReserved(unittest.TestCase):
         html = r.render_page_1(_view(filed_all=True))
         self.assertNotIn("required record", html)
         self.assertNotIn('class="abox"', html)
+
+    def test_safety_is_not_left_indented_beside_an_empty_attention_cell(self):
+        """FOUND ON PAPER, ON THE 10 SEPTEMBER REPORT, where 5 of 5 required
+        logs were filed.
+
+        Attention and Safety share a row: 58% and 42%. With nothing
+        outstanding the left cell is empty, and a 58% empty cell is not
+        nothing -- it pushes Safety into the middle of the sheet under a
+        full-width rule, which reads as a section whose first half failed to
+        print. The row collapses to one full-width block instead.
+        """
+        html = r.render_page_1(_view(filed_all=True))
+        self.assertIn('class="sbox"', html, "safety vanished with the row")
+        self.assertNotIn('<table class="two">', html,
+                         "safety is still in a two-column row with an empty "
+                         "cell beside it")
+
+    def test_and_the_row_is_STILL_two_columns_when_there_is_attention(self):
+        """The control. Collapsing must not become the only layout."""
+        html = r.render_page_1(_view())
+        self.assertIn('<table class="two">', html)
+        self.assertIn('class="sbox"', html)
+        # THE SECTION HEADS, not the words. "Safety status" is also a rail
+        # cell at the top of the page and always comes first.
+        att = '>Attention</div>'
+        saf = '>Safety</div>'
+        self.assertIn(att, html)
+        self.assertLess(html.index(att), html.index(saf),
+                        "safety moved ahead of the outstanding records")
+
+
+class TheReportNeverAccusesASigner(unittest.TestCase):
+    """RESCUED FROM test_report_document_layout.py, WHICH THE REPLACEMENT
+    DELETED. The claim outlived the page it was written against.
+
+    The filed document carries an affirmation banner, and when no affirmation
+    record exists for it that banner reads UNAFFIRMED. That is an honest
+    deficiency ON THE DOCUMENT ITSELF. The investor report must never repeat
+    it: the report indexes the filing, and a lender reading "UNAFFIRMED" on a
+    summary page has been handed an accusation stripped of the record that
+    qualifies it.
+
+    The old ban was on the report EMBEDDING the badge. The report embeds
+    nothing now, so this is cheaper to satisfy and worth strictly more: it
+    fails the day somebody puts signature status on a record card.
+
+    The second half is the base64 PNG magic prefix. A signature blob pasted in
+    as body text is what that sentinel catches, and it is banned here for the
+    same reason it is banned on the filed document.
+    """
+
+    def test_no_affirmation_badge_reaches_the_report(self):
+        html = r.render(_view(rows=[_row(company="MQ Steel", worker_id="w1")]))
+        self.assertNotIn("UNAFFIRMED", html)
+        self.assertNotIn("AFFIRMED", html)
+
+    def test_no_signature_blob_reaches_the_report(self):
+        html = r.render(_view(rows=[_row(company="MQ Steel", worker_id="w1")]))
+        self.assertNotIn("iVBORw0KGgo", html)
+        self.assertNotIn("data:image/png;base64", html)
+
+    def test_the_view_has_nowhere_to_put_one(self):
+        """THE STRUCTURAL HALF. Two absence assertions on one rendered page
+        pass on a page that happens not to exercise the branch; a view with no
+        signature field cannot grow one by accident."""
+        fields = {f.name for f in dataclasses.fields(v.ReportView)}
+        for banned in ("signature", "signatures", "affirmation", "affirmed"):
+            self.assertNotIn(banned, fields)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -421,3 +490,88 @@ class ThePageCount(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  WHAT MAY NOT BE SPLIT
+# ══════════════════════════════════════════════════════════════════════════
+
+class NothingIsStrandedAcrossASheet(unittest.TestCase):
+    """CARRIED FORWARD FROM `test_a_band_never_loses_its_photographs.py`, which
+    this replaces.
+
+    That file exists because the failure happened on a filed report: a band
+    header stranded at the foot of a sheet with its photographs overleaf, and
+    THE HEADER IS THE ATTRIBUTION, so eight photographs appeared belonging to
+    nobody. The new stylesheet had no break rules at all -- the page-two
+    allocation was the only thing keeping a band whole, which is an arithmetic
+    assumption of exactly the kind that failed before.
+    """
+
+    def test_the_band_header_may_not_end_a_page(self):
+        css = r.stylesheet()
+        self.assertIn(".bandhead { page-break-after: avoid", css)
+
+    def test_a_photograph_is_never_split(self):
+        css = r.stylesheet()
+        self.assertIn("table.shots td { page-break-inside: avoid", css)
+
+    def test_a_card_is_one_unit(self):
+        self.assertIn(".card { page-break-inside: avoid", r.stylesheet())
+
+    def test_an_activity_row_is_one_unit(self):
+        self.assertIn("table.acts tr { page-break-inside: avoid", r.stylesheet())
+
+    def test_the_rule_is_AVOID_AFTER_on_the_header_not_AVOID_INSIDE_the_band(self):
+        """A band taller than what is left of a page cannot honour an inside
+        rule, and WeasyPrint answers an unsatisfiable one by relocating the
+        whole block and leaving a hole. That correction is written in the old
+        file and must not be relearned."""
+        css = r.stylesheet()
+        self.assertNotIn(".bandhead { page-break-inside", css)
+
+    def test_IT_IS_RENDERED_NOT_GREPPED(self):
+        """The rules above prove the rule is WRITTEN. This proves WeasyPrint
+        honours it: a document forced onto several sheets, with every band
+        header checked against the page it landed on."""
+        _needs_weasyprint(self)
+        view = _view(acts=[_activity(company=f"Co {i}", photos=4)
+                           for i in range(6)], cards=_cards())
+        pages = HTML(string=r.render(view)).render().pages
+
+        def texts(page):
+            out = []
+
+            def walk(box):
+                t = getattr(box, "text", None)
+                if t:
+                    out.append(t)
+                for c in getattr(box, "children", None) or ():
+                    walk(c)
+
+            walk(page._page_box)
+            return out
+
+        companies = [b.company for b in view.bands]
+        for i, page in enumerate(pages, 1):
+            run = texts(page)
+            if not run:
+                continue
+            last = run[-1].strip()
+            self.assertNotIn(
+                last, companies,
+                f"page {i} ends on a band header, so its photographs are "
+                f"overleaf and unattributed")
+
+
+class TheDocumentRendererListIsCurrent(unittest.TestCase):
+    """THE VACUITY GUARD ON THE WHOLE CENSUS IDIOM.
+
+    Nine suites derive "once per renderer" from `tests/document_renderers.py`.
+    A list of names that has drifted out of server.py counts nothing and
+    passes, which is exactly the failure the derivation was meant to prevent.
+    """
+
+    def test_every_named_renderer_exists_and_the_former_one_prints_nothing(self):
+        from tests.document_renderers import assert_is_current
+        assert_is_current(self)

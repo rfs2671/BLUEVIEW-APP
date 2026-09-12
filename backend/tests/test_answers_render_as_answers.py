@@ -42,12 +42,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 from tests.source_text import code_of  # noqa: E402
 from lib.logbook.superintendent_log import (  # noqa: E402
     ITEMS_BY_KEY, _has_content,
 )
 
 _CODE = code_of("server.py")
+
 NR = server.NOT_RECORDED
 
 
@@ -165,13 +168,26 @@ class TheTablesThatHadNoCoverage(unittest.TestCase):
         i = _CODE.index("safety_html = ")
         self.assertIn('item_key.replace("_", " ").title()', _CODE[i:i + 500])
 
-    def test_site7_a_nested_boolean_is_a_word(self):
-        """`", ".join(f"{ik}: {iv}")` printed `flag: True`, and its `if iv`
-        filter dropped a nested False entirely."""
-        i = _CODE.index('v_str = ", ".join(')
-        seg = _CODE[i:i + 320]
-        self.assertIn("answer_label(iv)", seg)
-        self.assertIn("isinstance(iv, bool) or iv", seg)
+    # SITE 7 IS GONE, and unlike site 3 it did not simply go stale -- the
+    # surface was deleted with the report's embedded sections.
+    #
+    # It was the combined report's CATCH-ALL: the block that printed any log
+    # type the named sections did not handle, by dumping `data` as
+    # `key: value` pairs. That is where a nested boolean reached paper as
+    # `flag: True` and a nested False vanished. The report indexes the filed
+    # documents now and embeds none, so nothing renders a dictionary
+    # generically any more.
+    #
+    # WHAT REPLACES IT IS NOT A TEST, IT IS AN ABSENCE OF THE CASE. Every one
+    # of the 13 types in LOGBOOK_TYPE_REGISTRY has its own branch in
+    # generate_single_logbook_html or a schema in legal_render -- measured,
+    # not assumed -- so the per-logbook PDF's own `else` is unreachable for
+    # any type the product defines. Its body prints `Status` and no values, so
+    # it has no nested rendering to get wrong.
+    #
+    # The rule itself survives on the surfaces that still print answers:
+    # sites 4 and 8 below, and `answer_label` itself above.
+    # See docs/audits/report-replacement-ledger.md.
 
     def test_site8_the_orientation_column_stops_mixing_a_glyph_and_a_word(self):
         """A tick against the word "No" in one column."""
@@ -184,8 +200,10 @@ class ThePreShiftAnswersReadAsAnswers(unittest.TestCase):
     """SITES 1 and 2, in both renderers."""
 
     def test_both_renderers_route_the_two_answers_through_the_helper(self):
-        self.assertEqual(_CODE.count('answer_label(w.get("had_injury"))'), 2)
-        self.assertEqual(_CODE.count('answer_label(w.get("inspected_ppe"))'), 2)
+        self.assertEqual(_CODE.count('answer_label(w.get("had_injury"))'),
+                         N_RENDERERS)
+        self.assertEqual(_CODE.count('answer_label(w.get("inspected_ppe"))'),
+                         N_RENDERERS)
 
     def test_neither_still_prints_the_raw_value(self):
         self.assertNotIn('w.get("had_injury") or "&mdash;"', _CODE)

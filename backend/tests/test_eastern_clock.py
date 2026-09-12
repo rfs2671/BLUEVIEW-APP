@@ -252,9 +252,12 @@ class TheFooterSaysWhenInNewYorkTime(_RenderBase):
     """"Generated on ... UTC" is a stored instant rendered to a user too."""
 
     def test_the_generated_on_line_carries_an_eastern_zone(self):
+        # THE FOOTER IS THE LAST BLOCK OF PAGE 3 NOW, not a commented
+        # region of a table shell. The claim is unchanged: a stored instant
+        # rendered to a New York reader carries a New York zone.
         html = self.rendered()
-        footer = html[html.index("<!-- FOOTER -->"):]
-        self.assertIn("automatically generated on", footer)
+        footer = html[html.index("Generated automatically"):]
+        self.assertIn("Generated automatically", footer)
         self.assertTrue(
             "EDT" in footer or "EST" in footer,
             f"the footer names no Eastern zone: {footer[:400]}")

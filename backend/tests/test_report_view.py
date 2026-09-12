@@ -230,15 +230,15 @@ class TheBandCopyIsTheRowCopy(unittest.TestCase):
         self.assertIn("7 on daily log", view.bands[0].statement)
 
 
-class ThePhotoVariantIsChosenHere(unittest.TestCase):
+class TheRenditionOrderIsExplicitAndLivesHere(unittest.TestCase):
 
-    def test_the_url_builder_receives_the_photograph(self):
-        """Which rendition is authoritative is a data decision, so the callable
-        is handed the photograph and the template never sees it."""
+    def test_the_url_builder_is_handed_a_resolved_rendition(self):
+        """It chooses nothing. The order is in the view; the server builds an
+        address."""
         seen = []
 
-        def url(lb, ai, pi, photo):
-            seen.append(photo.get("enhance_status"))
+        def url(lb, ai, pi, rendition):
+            seen.append(rendition)
             return f"u/{pi}"
 
         model = _model(acts=[_activity(
@@ -246,7 +246,32 @@ class ThePhotoVariantIsChosenHere(unittest.TestCase):
         v.build(model, address="a", city="c", date_long="d", generated="g",
                 report_number="r", headline="h", summary_body=None, cards=(),
                 photo_url=url, logbook_id="lb1")
-        self.assertEqual(seen, ["done", None])
+        self.assertEqual(seen, ["enhanced", "original"])
+
+    def test_the_enhanced_rendition_is_preferred(self):
+        self.assertEqual(v.photo_rendition({"enhance_status": "done"}),
+                         "enhanced")
+
+    def test_and_the_original_is_the_fallback(self):
+        for photo in ({}, {"enhance_status": None},
+                      {"enhance_status": "failed"}, None):
+            self.assertEqual(v.photo_rendition(photo), "original", photo)
+
+    def test_the_thumbnail_is_NOT_in_the_order(self):
+        """Its absence is the rule. Falling back to it would shrink the
+        attachment and quietly cost the construction detail Page 2 was
+        redesigned around -- worse photographs for no stated reason."""
+        self.assertEqual(v.PHOTO_RENDITIONS, ("enhanced", "original"))
+        self.assertNotIn("thumb", v.PHOTO_RENDITIONS)
+
+    def test_every_rendition_it_returns_is_in_the_declared_order(self):
+        for photo in ({"enhance_status": "done"}, {}, None, {"x": 1}):
+            self.assertIn(v.photo_rendition(photo), v.PHOTO_RENDITIONS, photo)
+
+    def test_the_view_carries_the_rendition_so_it_can_be_asserted(self):
+        model = _model(acts=[_activity(photos=[{"enhance_status": "done"}])])
+        view = _build(model)
+        self.assertEqual(view.bands[0].photos[0].rendition, "enhanced")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -278,6 +303,31 @@ class TheSummary(unittest.TestCase):
         body = _build(model).summary.body
         self.assertIn("Arkon Builders had recorded workforce activity", body)
         self.assertIn("AAZ activity was documented without", body)
+
+    def test_both_counts_in_the_sentence_are_written_the_same_way(self):
+        """FOUND ON PAPER. It read "Eleven workers checked in through the gate
+        across 1 trade" -- one word and one digit in one sentence, on a page a
+        lender reads. Either register is defensible; mixing them is not."""
+        body = _build(_model(
+            rows=[_row(company="Arkon Builders", trade="Framers",
+                       worker_id="w1")])).summary.body
+        self.assertIn("across one trade", body)
+        self.assertNotIn("across 1 trade", body)
+
+    def test_and_a_plural_reads_the_same_way(self):
+        body = _build(_model(rows=[
+            _row(company="Arkon Builders", trade="Framers", worker_id="w1"),
+            _row(company="AAZ", trade="Concrete", worker_id="w2")])).summary.body
+        self.assertIn("across two trades", body)
+
+    def test_a_count_past_the_word_list_falls_back_to_digits(self):
+        """The helper spells one through twelve. Thirteen trades is not a
+        number anybody writes out, and the fallback must not crash or print
+        "None"."""
+        rows = [_row(company=f"C{i}", trade=f"T{i}", worker_id=f"w{i}")
+                for i in range(13)]
+        body = _build(_model(rows=rows)).summary.body
+        self.assertIn("across 13 trades", body)
 
     def test_the_closing_line_is_the_ratio_and_nothing_else(self):
         self.assertEqual(_build(_model()).summary.closing,

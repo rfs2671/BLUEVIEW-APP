@@ -661,10 +661,19 @@ class CrewIdTest(unittest.TestCase):
         self.assertNotIn("crew_name", code,
                          "something in server.py still reads the phantom crew_name")
 
-    def test_combined_report_still_reads_crew_id(self):
-        """The reference reader that was already correct must stay correct."""
+    def test_the_filed_document_still_reads_crew_id(self):
+        """THE READER MOVED WITH THE COLUMN.
+
+        `crew_id` is the Crew column of the activity table -- an identifier the
+        CP types, C1/C2 -- and the combined report was the reference reader
+        because it read the real field while another renderer read the
+        phantom. The report does not print an activity table any more; it
+        prints one row per activity keyed on COMPANY, which is the operator's
+        design. The Crew column is on the filed document, and so is its
+        reader.
+        """
         src = Path(server.__file__).read_text(encoding="utf-8")
-        block_start = src.index("async def generate_combined_report")
+        block_start = src.index("async def generate_single_logbook_html")
         block = src[block_start:]
         self.assertIn('act.get("crew_id"', block)
 

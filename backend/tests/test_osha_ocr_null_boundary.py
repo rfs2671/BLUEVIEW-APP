@@ -39,6 +39,8 @@ os.environ.setdefault("QWEN_API_KEY", "")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import server  # noqa: E402
+from tests.document_renderers import (  # noqa: E402
+    N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
 from lib.ocr_text import norm_ocr_str  # noqa: E402
 
 payload = server._osha_ocr_payload
@@ -171,8 +173,9 @@ import textwrap  # noqa: E402
 
 
 def _roster_guard(row):
-    """The live guard, lifted from both renderers. If they diverge from this
-    line the source assertion below fails and this stops being a stand-in."""
+    """The live guard, lifted from the renderer that prints the roster. If it
+    diverges from this line the source assertion below fails and this stops
+    being a stand-in."""
     return bool(str(row.get("name") or "").strip())
 
 
@@ -198,8 +201,10 @@ def test_neither_renderer_still_uses_the_unsafe_form():
     assert 'w.get("name", "").strip()' not in src, (
         "a preshift renderer is back on the form that raises on a stored None"
     )
-    assert src.count('if str(w.get("name") or "").strip():') == 2, (
-        "both preshift renderers must carry the safe guard"
+    assert src.count('if str(w.get("name") or "").strip():') == N_RENDERERS, (
+        "every renderer that prints the pre-shift roster must carry the safe "
+        "guard; the investor report stopped printing one when it stopped "
+        "embedding the filed documents"
     )
 
 
@@ -211,8 +216,8 @@ def test_a_none_cell_does_not_print_the_word_none():
     assert server._capitalize_first(None) == ""
     src = inspect.getsource(server)
     assert 'w.get("osha_number", "")}' not in src, "an unguarded cell remains"
-    assert src.count('{_capitalize_first(w.get("name") or "")}') == 2
-    assert src.count('{_capitalize_first(w.get("company") or "")}') == 2
+    assert src.count('{_capitalize_first(w.get("name") or "")}') == N_RENDERERS
+    assert src.count('{_capitalize_first(w.get("company") or "")}') == N_RENDERERS
 
 
 # ══ 1d — AND THE REWRITE THAT WOULD HAVE UNDONE IT ════════════════════════

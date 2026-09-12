@@ -28,6 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server  # noqa: E402
 
 _SRC = Path(server.__file__).read_text(encoding="utf-8")
+_REPORT_PKG = Path(server.__file__).parent / "lib" / "report"
+_RENDERER = (_REPORT_PKG / "renderer.py").read_text(encoding="utf-8")
+_VIEW = (_REPORT_PKG / "view.py").read_text(encoding="utf-8")
+_MODEL = (_REPORT_PKG / "model.py").read_text(encoding="utf-8")
 
 # A one-pixel PNG is enough: these assertions are about the wrapper, not the ink.
 _PNG = "iVBORw0KGgoAAAANSUhEUg"
@@ -153,25 +157,38 @@ class TheCoverDoesNotCountWhatItDoesNotShow(unittest.TestCase):
     def test_workers_at_the_gate_is_gone_from_the_cover_summary(self):
         self.assertNotIn('font-weight:600;">WORKERS AT THE GATE</span>', _SRC)
 
-    def test_the_summary_row_still_has_its_other_two_cells(self):
-        self.assertIn('font-weight:600;">DATE</span>', _SRC)
-        self.assertIn('font-weight:600;">ADDRESS</span>', _SRC)
+    def test_the_date_and_the_address_are_still_on_the_page(self):
+        """The two cells that stayed. They are a stacked banner rather than a
+        table row now, so they are read off the renderer that draws them."""
+        self.assertIn('<div class="addr">{esc(banner.address.upper())}</div>',
+                      _RENDERER)
+        self.assertIn('<div class="when">{esc(banner.dateline)}</div>',
+                      _RENDERER)
 
-    def test_the_two_remaining_cells_fill_the_row(self):
-        """A removed cell that leaves 33/34 behind prints two columns crammed
-        against the left with a third of the page blank — the cover is already
-        the item being complained about for emptiness."""
-        i = _SRC.index('font-weight:600;">DATE</span>')
-        j = _SRC.index('font-weight:600;">ADDRESS</span>')
-        row = _SRC[max(0, i - 400):j + 200]
-        self.assertEqual(row.count('width="50%"'), 2)
-        self.assertNotIn('width="33%"', row)
-        self.assertNotIn('width="34%"', row)
+    def test_the_banner_cannot_leave_a_hole_where_the_cell_was(self):
+        """WHY THE LAYOUT HALF OF THE OLD TEST IS GONE RATHER THAN MOVED.
 
-    def test_the_count_itself_is_still_computed_and_used(self):
-        """Only the cover CELL goes. `checkin_count` still feeds page 2, and a
-        removal that orphaned it would be a different change."""
-        self.assertGreater(_SRC.count("checkin_count"), 1)
+        It asserted the survivors were widened to 50% each, because a removed
+        cell that leaves 33/34 behind prints two columns crammed against the
+        left with a third of the page blank. The banner is a STACKED BLOCK: it
+        has no column widths at all, so there is no proportion to get wrong
+        and no third column to remove. That is asserted rather than assumed --
+        a future banner rebuilt as a table would want the old test back.
+        """
+        block = _RENDERER[_RENDERER.index("def render_banner("):]
+        block = block[:block.index("\ndef ")]
+        self.assertNotIn("width=", block)
+        self.assertNotIn("<td", block)
+
+    def test_the_gate_figure_is_still_printed_and_now_carries_its_qualifier(self):
+        """THE RULE, STRENGTHENED. The cell was removed because a bare gate
+        count explains nothing. The figure is back, on the rail, beside the
+        reconciliation between the gate and the log -- so it is not the number
+        that was banned, it is the number the ban was asking for."""
+        self.assertIn('RailCell(str(model.gate.check_ins), "Gate check-ins"',
+                      _VIEW)
+        self.assertIn("on daily log", _MODEL)
+        self.assertIn("gate check-ins", _MODEL)
 
 
 if __name__ == "__main__":
