@@ -261,8 +261,28 @@ class TheRenditionOrderIsExplicitAndLivesHere(unittest.TestCase):
         """Its absence is the rule. Falling back to it would shrink the
         attachment and quietly cost the construction detail Page 2 was
         redesigned around -- worse photographs for no stated reason."""
-        self.assertEqual(v.PHOTO_RENDITIONS, ("enhanced", "original"))
+        self.assertEqual(v.PHOTO_RENDITIONS, ("clean", "enhanced", "original"))
         self.assertNotIn("thumb", v.PHOTO_RENDITIONS)
+
+    def test_clean_leads_and_is_a_presentation_not_a_different_picture(self):
+        """THE OPERATOR'S RULING ON THE CAPTURE PADDING. Two fifths of every
+        stored photograph is black -- the camera writes the picture onto a
+        phone-screen canvas -- and no grid can fix what is inside the image.
+        `clean` is the enhanced rendition with only uniformly near-black edges
+        removed; the stored objects are untouched, so the filing keeps the
+        frame the camera wrote and the investor page gets the composition."""
+        self.assertEqual(v.PHOTO_RENDITIONS[0], "clean")
+        self.assertEqual(
+            v.photo_rendition({"enhance_status": "done",
+                               "enhanced_r2_key": "k"}), "clean")
+        self.assertEqual(v.photo_rendition({"original_r2_key": "k"}), "clean")
+
+    def test_a_photo_with_no_r2_object_is_not_asked_to_be_cropped(self):
+        """There is nothing for the endpoint to read, so asking for a crop
+        would only add a rendition name to a URL that cannot honour it."""
+        self.assertEqual(
+            v.photo_rendition({"enhance_status": "done"}), "enhanced")
+        self.assertEqual(v.photo_rendition({"base64": "x"}), "original")
 
     def test_every_rendition_it_returns_is_in_the_declared_order(self):
         for photo in ({"enhance_status": "done"}, {}, None, {"x": 1}):
@@ -272,6 +292,11 @@ class TheRenditionOrderIsExplicitAndLivesHere(unittest.TestCase):
         model = _model(acts=[_activity(photos=[{"enhance_status": "done"}])])
         view = _build(model)
         self.assertEqual(view.bands[0].photos[0].rendition, "enhanced")
+
+    def test_and_carries_clean_when_there_is_an_object_to_crop(self):
+        model = _model(acts=[_activity(photos=[
+            {"enhance_status": "done", "enhanced_r2_key": "k"}])])
+        self.assertEqual(_build(model).bands[0].photos[0].rendition, "clean")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -294,6 +319,27 @@ class TheSummary(unittest.TestCase):
         view = _build(_model(acts=[_activity(where="1st floor")]))
         for token in ("L1", "1st floor", "Level 1"):
             self.assertNotIn(token, view.summary.body)
+
+    def test_three_or_more_companies_read_as_a_list(self):
+        """FOUND ON PAPER. A bare join printed "AAZ and Arkon Builders and
+        Power Direct and Quality Plumbing had recorded workforce activity."
+        """
+        model = _model(
+            rows=[_row(company=c, worker_id=f"w{i}") for i, c in enumerate(
+                ("AAZ", "Arkon Builders", "Power Direct"))],
+            acts=[_activity(company="AAZ"), _activity(company="Arkon Builders"),
+                  _activity(company="Power Direct")])
+        body = _build(model).summary.body
+        self.assertIn("AAZ, Arkon Builders and Power Direct", body)
+        self.assertNotIn("and Arkon Builders and", body)
+
+    def test_two_companies_still_read_as_a_pair(self):
+        model = _model(
+            rows=[_row(company=c, worker_id=f"w{i}") for i, c in enumerate(
+                ("AAZ", "Arkon Builders"))],
+            acts=[_activity(company="AAZ"),
+                  _activity(company="Arkon Builders")])
+        self.assertIn("AAZ and Arkon Builders", _build(model).summary.body)
 
     def test_the_fallback_separates_matched_from_unmatched_companies(self):
         model = _model(

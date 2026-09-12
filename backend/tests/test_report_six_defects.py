@@ -276,19 +276,39 @@ class TheRenderedDocument(unittest.TestCase):
         self.assertEqual(att.count("<tr><td "), 1)
         self.assertIn("Segundo Pilamunga", att)
 
-    def test_the_address_and_date_appear_once_each(self):
-        # The VISIBLE document. <title> also carries the project name, which
-        # is a browser/tab label, not a printed field.
-        # THE BANNER, which is the whole header now. It is ONE block with
-        # one address line and one dateline, so "printed once" is structural
-        # rather than a count that happens to come out right.
+    def test_the_address_and_date_are_stated_where_they_belong(self):
+        """── THE DEFECT WAS THREE ADDRESSES AND TWO DATES IN ONE SHELL ─────
+
+        The old header printed the address three times and the date twice,
+        stacked in one block, and the reader could not tell which was the
+        document's subject and which was decoration. So the rule was one of
+        each.
+
+        PAGE 1 NOW HAS A MASTHEAD OVER A HERO, by the operator's ruling of 12
+        September against a supplied reference, and those are two different
+        statements rather than one repeated: the masthead is the letterhead --
+        who issued this and about which job, at 7.5px -- and the hero is the
+        document's subject, at 35px. The reference is explicit that the
+        address is the dominant element, and a dominant element needs
+        something to dominate.
+
+        WHAT THE RULE BECOMES is that each region says it ONCE. Two regions,
+        one address each; the dateline belongs to the hero alone, because a
+        letterhead does not carry a date.
+        """
         body = self.html[self.html.index("<body"):]
-        shell = body[:body.index("Executive summary")]
-        shell = shell.upper()
-        self.assertEqual(shell.count("8 WALWORTH ST"), 1,
-                         "the address is printed more than once in the header")
-        self.assertEqual(shell.count("AUGUST 12, 2026"), 1,
-                         "the date is printed more than once in the header")
+        head = body[:body.index("Executive summary")].upper()
+        mast = head[:head.index('CLASS="HERO"')]
+        hero = head[head.index('CLASS="HERO"'):]
+
+        self.assertEqual(mast.count("8 WALWORTH ST"), 1,
+                         "the masthead states the address more than once")
+        self.assertEqual(hero.count("8 WALWORTH ST"), 1,
+                         "the hero states the address more than once")
+        self.assertEqual(mast.count("AUGUST 12, 2026"), 0,
+                         "the masthead carries a date; it is a letterhead")
+        self.assertEqual(hero.count("AUGUST 12, 2026"), 1,
+                         "the date is printed more than once in the hero")
 
     def test_the_crew_count_is_labelled_and_the_gate_count_is_too(self):
         """The two counts disagree and both are true, so each says whose it is.

@@ -624,15 +624,16 @@ class ReportEmitGateTest(unittest.TestCase):
         """It used to emit only `if photo.get("base64")`. A purged photo would
         not render broken — it would VANISH, and the report would read as no
         photos taken on a day photos were taken."""
-        # ONE URL PER PHOTOGRAPH NOW, and it asks for the ENHANCED
-        # rendition. The old page emitted two -- a `?v=thumb` `src` and a
-        # `?v=enhanced` `href` to click through to -- and the operator's
-        # ruling on renditions is that the evidence page embeds the enhanced
-        # copy and never silently falls back to a thumbnail. The CLAIM here
-        # is unchanged and is the important half: a purged photograph is
-        # still ADDRESSED, so it renders broken rather than vanishing.
+        # ONE URL PER PHOTOGRAPH NOW, and it asks for the `clean` rendition:
+        # the enhanced copy with the capture padding cropped off. The old page
+        # emitted two -- a `?v=thumb` `src` and a `?v=enhanced` `href` to click
+        # through to -- and the ruling on renditions is that the evidence page
+        # embeds the composed copy and never silently falls back to a
+        # thumbnail. The CLAIM here is unchanged and is the important half: a
+        # purged photograph is still ADDRESSED, so it renders broken rather
+        # than vanishing.
         html = _report([dict(PURGED)])
-        self.assertIn("/api/reports/logbook-photo/lb1/0/0?v=enhanced", html)
+        self.assertIn("/api/reports/logbook-photo/lb1/0/0?v=clean", html)
         self.assertNotIn("v=thumb", html)
 
     def test_a_photo_with_only_r2_keys_and_no_inline_copy_is_emitted(self):
@@ -655,7 +656,7 @@ class ReportEmitGateTest(unittest.TestCase):
         html = _report([dict(PURGED)])
         self.assertIn(
             "https://api.levelog.com/api/reports/logbook-photo/lb1/0/0"
-            "?v=enhanced", html,
+            "?v=clean", html,
         )
 
 

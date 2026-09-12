@@ -108,9 +108,21 @@ class ActivityRowView:
 #: rendition for a card-sized image; it is not a size optimisation for a
 #: full-page band.
 #:
+#: `clean` LEADS, AND IT IS A PRESENTATION RATHER THAN A DIFFERENT PICTURE.
+#: The capture path pads every photograph onto a phone-screen canvas with pure
+#: black above and below: two fifths of a 1280x2849 original is bar. `clean`
+#: serves the enhanced rendition with only uniformly near-black EDGES removed,
+#: cached under its own prefix; the stored objects are untouched, and a
+#: photograph with no padding -- or one dark enough that cropping would be a
+#: judgement -- is served exactly as filed.
+#:
+#: THE LEGAL RECORD KEEPS THE UNCROPPED PICTURE. That is the whole reason this
+#: is a rendition and not a change to the enhancement: the investor report gets
+#: the composed image, the filing keeps the frame the camera wrote.
+#:
 #: The legal renderers keep whatever rendition they already use. This order
 #: governs the investor PDF and nothing else.
-PHOTO_RENDITIONS: Tuple[str, ...] = ("enhanced", "original")
+PHOTO_RENDITIONS: Tuple[str, ...] = ("clean", "enhanced", "original")
 
 
 def photo_rendition(photo) -> str:
@@ -120,7 +132,14 @@ def photo_rendition(photo) -> str:
     image is authoritative and nobody can introduce a size-driven fallback at a
     call site.
     """
-    if isinstance(photo, dict) and photo.get("enhance_status") == "done":
+    if not isinstance(photo, dict):
+        return "original"
+    # CLEAN IS ASKED FOR WHENEVER THERE IS AN R2 OBJECT TO CROP. The endpoint
+    # decides whether there is anything to remove -- it has the pixels and this
+    # layer does not -- and serves the source untouched when there is not.
+    if photo.get("enhanced_r2_key") or photo.get("original_r2_key"):
+        return "clean"
+    if photo.get("enhance_status") == "done":
         return "enhanced"
     return "original"
 
@@ -226,7 +245,11 @@ class ReportView:
 # ══════════════════════════════════════════════════════════════════════════
 
 WORDMARK = "LEVELOG"
-TAGLINE = "Construction Intelligence for a Higher Standard"
+#: STRUCK BY NAME, 12 September, and not replaced with other marketing copy.
+#: A report a lender reads is not a place to make a claim about ourselves that
+#: the pages do not prove. What stands in its place says what the company
+#: does, which the document then demonstrates.
+TAGLINE = "Site Oversight & Compliance"
 DOCUMENT_TITLE = "Daily Construction Report"
 
 
@@ -234,6 +257,17 @@ def _words(n: int) -> str:
     return {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six",
             7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten", 11: "Eleven",
             12: "Twelve"}.get(n, str(n))
+
+
+def _listed(names: Sequence[str]) -> str:
+    """A, B and C. NOT "A and B and C", which is what a bare join produced --
+    seen on the 31 August page: "AAZ and Arkon Builders and Power Direct and
+    Quality Plumbing had recorded workforce activity."
+    """
+    names = list(names)
+    if len(names) <= 2:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def fallback_summary(model: "m.ReportDisplayModel") -> str:
@@ -265,7 +299,7 @@ def fallback_summary(model: "m.ReportDisplayModel") -> str:
         f"trade{'' if trades == 1 else 's'}."
     ]
     if named:
-        parts.append(" and ".join(named) + " had recorded workforce activity.")
+        parts.append(_listed(named) + " had recorded workforce activity.")
     if unmatched:
         parts.append(
             ", ".join(unmatched) + " activity was documented without a "

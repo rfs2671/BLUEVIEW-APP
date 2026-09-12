@@ -397,7 +397,10 @@ def _logbook_photo_sources(photo: dict, v: str = "") -> list:
     if v == "thumb":
         order = [("r2", thumb), ("r2", enhanced), ("r2", original),
                  ("b64", full_b64), ("b64", thumb_b64)]
-    elif v == "enhanced":
+    elif v in ("enhanced", "clean"):
+        # `clean` IS A PRESENTATION OF `enhanced`, so it takes the same ladder.
+        # The trim happens after a source is chosen, in the route, and a source
+        # that cannot be trimmed is served untouched rather than dropped.
         order = [("r2", enhanced), ("r2", thumb), ("r2", original),
                  ("b64", full_b64), ("b64", thumb_b64)]
     else:
@@ -24051,14 +24054,174 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     
 # ==================== PHOTO UPLOADS ====================
 
+#: A pixel this dark is padding, not photograph. Sum of R+G+B, so 26 is
+#: roughly (8,8,8) -- JPEG ringing around a hard black edge, not a shadow.
+_CLEAN_DARK_SUM = 26
+
+#: An edge thinner than this is encoder noise, not a bar. Below it the source
+#: is served UNTOUCHED -- no decode, no re-encode, no generational loss on a
+#: photograph that never needed cropping.
+_CLEAN_MIN_MARGIN = 0.02
+
+#: AND A FLOOR, WHICH IS THE SAFETY. A photograph taken at night, or of a dark
+#: shaft, is mostly black and must never be cropped down to the one lit corner.
+#: If the trim would keep less than this fraction of either dimension the image
+#: is left alone and the reader sees the picture that was filed.
+_CLEAN_MIN_KEPT = 0.30
+
+#: THE CROP IS A RE-ENCODE, SO IT IS ALSO A SIZE DECISION. Removing the bars
+#: removes the cheapest 40% of the file -- flat black costs almost nothing --
+#: so a naive re-encode came out LARGER than the source it cropped: 152KB in,
+#: 230KB out, thirteen times on a heavy day. These two numbers put it back.
+#:
+#: 1400px is not a guess. The tallest cell the evidence page will draw is 4.40
+#: inches (renderer.MAX_CELL_IN); at 300dpi that is 1320 pixels, so anything
+#: above 1400 is detail the page cannot print.
+_CLEAN_MAX_EDGE = 1400
+_CLEAN_QUALITY = 84
+
+#: Bumped when the trim's RULES change, so a cached crop from the old rule is
+#: not served for ever. The objects themselves are keyed by source, so a bump
+#: costs one re-crop per photograph and nothing else.
+_CLEAN_VERSION = "v1"
+
+
+def _clean_crop_box(img):
+    """The picture inside the padding, or None if there is no padding to remove.
+
+    FOUR EDGES, EACH INDEPENDENTLY, and a row counts as padding only if EVERY
+    sampled pixel across it is near-black. A single bright pixel stops the scan,
+    so a crop can never eat into the photograph.
+    """
+    w, h = img.size
+    if w < 8 or h < 8:
+        return None
+    px = img.load()
+    step_x = max(1, w // 64)
+    step_y = max(1, h // 64)
+
+    def row_is_pad(y):
+        return all(sum(px[x, y]) <= _CLEAN_DARK_SUM for x in range(0, w, step_x))
+
+    def col_is_pad(x):
+        return all(sum(px[x, y]) <= _CLEAN_DARK_SUM for y in range(0, h, step_y))
+
+    top = 0
+    while top < h and row_is_pad(top):
+        top += 1
+    if top >= h:
+        return None                       # the whole frame is black; leave it
+    bottom = 0
+    while bottom < h - top - 1 and row_is_pad(h - 1 - bottom):
+        bottom += 1
+    left = 0
+    while left < w and col_is_pad(left):
+        left += 1
+    if left >= w:
+        return None
+    right = 0
+    while right < w - left - 1 and col_is_pad(w - 1 - right):
+        right += 1
+
+    if (top + bottom) < h * _CLEAN_MIN_MARGIN and \
+            (left + right) < w * _CLEAN_MIN_MARGIN:
+        return None                       # nothing worth a re-encode
+
+    kept_w, kept_h = w - left - right, h - top - bottom
+    if kept_w < w * _CLEAN_MIN_KEPT or kept_h < h * _CLEAN_MIN_KEPT:
+        return None                       # a genuinely dark photograph
+
+    return (left, top, w - right, h - bottom)
+
+
+def _clean_photo_bytes(raw):
+    """`raw` with its capture padding removed, or None to serve `raw` as it is.
+
+    NEVER RAISES. Every failure -- an unreadable image, a missing codec, an
+    exhausted decoder -- returns None, and None means the photograph is served
+    exactly as filed. Losing a photograph to a cosmetic crop is the one outcome
+    this must not produce.
+    """
+    try:
+        import io as _io
+        from PIL import Image
+        img = Image.open(_io.BytesIO(raw))
+        img = img.convert("RGB")
+        box = _clean_crop_box(img)
+        if not box:
+            return None
+        img = img.crop(box)
+        if max(img.size) > _CLEAN_MAX_EDGE:
+            img.thumbnail((_CLEAN_MAX_EDGE, _CLEAN_MAX_EDGE),
+                          Image.LANCZOS)
+        out = _io.BytesIO()
+        img.save(out, format="JPEG", quality=_CLEAN_QUALITY, optimize=True)
+        return out.getvalue()
+    except Exception as exc:
+        logger.warning("[photo-clean] leaving the photograph as filed: %r", exc)
+        return None
+
+
+def _clean_photo_r2_key(source_key: str) -> str:
+    """Where the cropped copy lives. DERIVED FROM THE SOURCE OBJECT'S KEY, so a
+    re-enhanced photograph gets a new source key and therefore a new crop, and
+    the two can never disagree about which picture they are."""
+    return f"report-clean/{_CLEAN_VERSION}/{source_key}"
+
+
+async def _clean_photo_from_r2(source_key: str):
+    """The cropped copy of one R2 object: cached, else cropped and cached.
+
+    Returns bytes to serve, or None meaning "serve the source unchanged".
+    """
+    if not (_r2_client and R2_BUCKET_NAME):
+        return None
+    cache_key = _clean_photo_r2_key(source_key)
+    try:
+        obj = await asyncio.to_thread(
+            _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=cache_key)
+        return obj["Body"].read()
+    except Exception:
+        pass                              # not cached yet; that is the normal path once
+
+    try:
+        src = await asyncio.to_thread(
+            _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=source_key)
+        raw = src["Body"].read()
+    except Exception as exc:
+        logger.warning("[photo-clean] source unreadable %s: %r", source_key, exc)
+        return None
+
+    cropped = await asyncio.to_thread(_clean_photo_bytes, raw)
+    if not cropped:
+        return None
+    try:
+        await asyncio.to_thread(
+            _upload_to_r2, cropped, cache_key, "image/jpeg")
+    except Exception as exc:
+        # THE CACHE IS AN OPTIMISATION, NOT THE FEATURE. A bucket that refuses
+        # the write still serves a correctly cropped photograph, one crop per
+        # request, and says so once.
+        logger.warning("[photo-clean] could not cache %s: %r", cache_key, exc)
+    return cropped
+
+
 @api_router.get("/reports/logbook-photo/{logbook_id}/{activity_index}/{photo_index}")
 async def get_logbook_activity_photo(
     logbook_id: str, activity_index: int, photo_index: int, v: str = "",
 ):
     """Public endpoint - serve activity photo from logbook as raw image for email reports.
 
-    `v` selects a derivative: "thumb" (long edge 400) or "enhanced" (long edge
-    1800). Anything else serves the untouched original.
+    `v` selects a derivative: "thumb" (long edge 400), "enhanced" (long edge
+    1800), or "clean" -- the enhanced rendition with the capture padding
+    cropped off, which is what the investor report embeds. Anything else serves
+    the untouched original.
+
+    `clean` CHANGES NOTHING THAT IS STORED. It reads the enhanced object,
+    removes only edges that are uniformly near-black, and caches the result
+    under its own prefix. A photograph with no padding, or one dark enough that
+    cropping it would be a judgement rather than a trim, is served exactly as
+    filed.
 
     EVERY failure path falls back to another copy rather than 404-ing. A photo
     that failed enhancement, or whose R2 object is missing, still renders in the
@@ -24092,6 +24255,12 @@ async def get_logbook_activity_photo(
         if kind == "r2":
             if not (_r2_client and R2_BUCKET_NAME):
                 continue
+            if v == "clean":
+                cleaned = await _clean_photo_from_r2(val)
+                if cleaned:
+                    return Response(content=cleaned, media_type="image/jpeg")
+                # AND FALL THROUGH TO THE SOURCE, not to the next rung: a
+                # photograph that cannot be cropped is still this photograph.
             try:
                 obj = await asyncio.to_thread(
                     _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=val,
@@ -24104,7 +24273,12 @@ async def get_logbook_activity_photo(
                 )
             continue
         try:
-            return Response(content=base64.b64decode(val), media_type="image/jpeg")
+            _raw = base64.b64decode(val)
+            if v == "clean":
+                _cropped = await asyncio.to_thread(_clean_photo_bytes, _raw)
+                if _cropped:
+                    _raw = _cropped
+            return Response(content=_raw, media_type="image/jpeg")
         except Exception as e:
             logger.warning(
                 "[photo-enhance] inline copy would not decode for %s/%d/%d: %r",
@@ -31021,7 +31195,7 @@ def _report_photo_url(logbook_id: str, activity_index: int, photo_index: int,
     """
     url = (f"{PUBLIC_API_BASE_URL}/api/reports/logbook-photo/"
            f"{logbook_id}/{activity_index}/{photo_index}")
-    return url + "?v=enhanced" if rendition == "enhanced" else url
+    return f"{url}?v={rendition}" if rendition else url
 
 
 def _report_headline(gate, activities) -> str:

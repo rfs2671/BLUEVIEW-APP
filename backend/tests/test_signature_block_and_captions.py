@@ -172,10 +172,15 @@ class TheCaptionsAreLegible(unittest.TestCase):
                       "the band header may be stranded from its photographs")
         # AND THE COMPANY IS IN IT, which is what makes it an attribution
         # rather than a decoration -- at the same 13px the old caption used.
-        self.assertIn('<div class="bco">{esc(band.company)}</div>', head,
+        # THE NUMBER JOINED THE COMPANY ON ONE LINE when the header went from
+        # four stacked lines to two, to give the photographs back an inch of
+        # page. The attribution is unchanged: `.bco` still carries the
+        # company, at the same size.
+        self.assertIn('{esc(band.company)}</div>', head,
                       "the band header no longer names the subcontractor")
-        self.assertIn(".bco { font-size: 13px;", head,
-                      "the group caption is no longer 13px")
+        self.assertIn('<div class="bco">', head)
+        self.assertIn(".bco { font-size: 13.5px;", head,
+                      "the group caption is no longer around 13px")
 
 
 if __name__ == "__main__":

@@ -259,3 +259,195 @@ WeasyPrint actually takes, `?v=enhanced` returns the 809 × 1800 object,
 being served was an artefact of a script that never ran the startup event and
 so had no R2 client. The operator's ruling — never fall back to a thumbnail for
 size alone — is intact.
+
+---
+
+# The composition pass
+
+The replacement was read on paper and the architecture held. What follows is
+composition and typography, in the operator's own order of priority.
+
+## 1. Page 2 — the photographs
+
+**THE PROBLEM WAS INSIDE THE IMAGE.** The capture path writes every photograph
+onto a phone-screen canvas, 0.449 wide, with the picture centred and pure black
+above and below. Measured across 36 production photographs on five days: two
+fifths of every stored file is bar, and the picture inside is an ordinary 3:4
+portrait. No grid can fix that.
+
+**`?v=clean`.** A rendition that removes uniformly near-black EDGES from the
+enhanced object and caches the result under its own prefix. Every stored key is
+untouched, so the filed document keeps the frame the camera wrote and the
+investor report gets the composition. Run over all 36: every one trimmed, 39-40%
+removed, resulting aspect between 0.737 and 0.749 against a phone portrait's
+0.750.
+
+The refusals are the interesting half and they are what `test_the_clean_rendition.py`
+is mostly about: a photograph with no padding is served byte-for-byte and never
+re-encoded; a genuinely dark photograph is left whole rather than cropped to its
+one lit corner; an entirely black frame stays black; anything unreadable is
+served exactly as filed. A crop that is too eager edits evidence.
+
+**AND THE GRID FOLLOWED.** Cropping changed the geometry the layout was designed
+for, and two things broke at once:
+
+| | before | after |
+|---|---|---|
+| cell | a fraction of the page wide, whatever was in it | the size of the photograph |
+| four photographs | two-by-two | one row of four |
+| columns | fixed by count | chosen against the height the page can give |
+| band header | four stacked lines, 0.76in | two lines, 0.606in, measured |
+
+The column count is now a small exhaustive search: for every assignment it
+computes what each photograph would actually measure -- height from the row
+allocation, width from the column's share of the page, whichever binds first --
+and keeps the most printed photograph. That fixes both ends of the range at
+once. One band of ten went from five across at 1.9in to four across at 2.4in;
+four bands of 4/3/2/4 stopped leaving a third of the sheet grey.
+
+## 2. Page 3 — the register
+
+Seven cards in three columns left one card beside two empty cells with the
+completeness figures floating below the grid. The figures moved into the empty
+cells, at the card's own height and border, so the row reads as a row. Six or
+eight cards leave no room for it and it falls back underneath -- the same block,
+one row down.
+
+The document window grew a third taller, 0.74in to 0.98in, because at 0.74 every
+filed card showed the same navy band and seven cards read as seven identical
+rectangles. A card that carries FACTS gives 0.28in of that back: the orientation
+card has two fact lines under a two-line title and overflowed its row, printing
+its link across the block below. Between a taller picture and a readable figure
+the figure wins.
+
+## 3. Page 1 — vertical adaptation
+
+**THE SPACING IS A FUNCTION OF WHAT IS ON THE PAGE.** A single generous set of
+paddings cannot satisfy both halves of "fill a sparse page" and "fit a full
+one": the same 10-15% increase that filled the 10 September page -- one
+activity, nothing outstanding -- pushed the 31 August page onto a second sheet.
+Three densities, chosen once in the renderer from the blocks it is about to lay
+out:
+
+| | weight | |
+|---|---|---|
+| `air` | 0-2 | the generous set |
+| `mid` | 3-4 | between |
+| `tight` | 5+ | the pre-polish page, restored IN FULL |
+
+"In full" is load-bearing: the first attempt rolled the paddings back and left
+the type sizes grown, and a five-activity day at 8 Prescott Place still put
+Attention and Safety alone on a second sheet. Every number the polish moved is
+moved back.
+
+`test_report_renderer.py` renders page 1 at nine activity counts and requires
+one sheet each, and asserts the density is monotonic so that one rendered check
+per shape is enough.
+
+## 4. The rail, the safety block, and the type
+
+* **The rail** lost its vertical dividers -- space separates the cells now --
+  and gained padding, a bigger numeral (27px to 31px) and a quieter label with
+  a third less tracking.
+* **Safety is a line when it is clear and a panel when it needs explaining.** A
+  bordered box whose whole content is the word "Clear" reads as emphasis on
+  nothing. "Status not reported", with the sentence saying why, keeps the panel.
+* **The smallest text came up about a point** and the extreme letter-spacing
+  came back: card citations, photo metadata, the completeness note and the
+  secondary rail line were texture rather than information at reading distance.
+  The footer went from 6.5px to 8px.
+* **Two prose defects, both found on paper.** "across 1 trade" beside "Eleven
+  workers" in one sentence, and "AAZ and Arkon Builders and Power Direct and
+  Quality Plumbing" from a bare join.
+
+---
+
+# Page 1, recomposed
+
+Operator ruling, 12 September: the semantic architecture of `aa17e483` is
+frozen and page 1 is re-dressed against a supplied reference. Skin only.
+`model.py` is untouched, the view's resolution is untouched, pages 2 and 3 are
+untouched, and everything below is scoped to `.p1` so a bare selector cannot
+reach the register.
+
+## What moved
+
+| | before | after |
+|---|---|---|
+| head | one navy banner, shared with page 3 | a white masthead over a navy hero |
+| rail | five cells, no separators | hairline separators, 32px figure, quieter label |
+| summary | full width | 64%, with a grey weather panel at 36% |
+| activity | a table row per activity | a typographic block per activity |
+| gate workforce | a labelled strip row | a caption of the activity section |
+| weather under activity | printed again | removed; the panel is the primary presentation |
+| footer | none | pinned to the foot of the sheet |
+
+## Two things the reference asks for that the view cannot supply
+
+Reported rather than reached for, per the ruling.
+
+1. **The weather card's three-part hierarchy.** The reference sets condition,
+   temperature and wind apart. The view carries ONE composed string from
+   `_display_weather`, which is the only thing that reads `weather_fetch_state`.
+   Splitting it in the renderer would be the layout layer deciding what a piece
+   of a resolved string means, which is the defect this architecture exists to
+   prevent. The card ships with the label, the rule and the resolved line.
+2. **Trade and work description on an activity block.** `ActivityRowView`
+   carries company, location, statement and chip. Adding either is a view-object
+   change.
+
+## The tagline
+
+"Construction Intelligence for a Higher Standard" is struck by name and
+replaced with "Site Oversight & Compliance" -- what the company does, which the
+document then demonstrates. A test bans the struck line, and "Building Better
+Together", from the whole rendered document.
+
+## Page 1 and page 3 no longer share a head
+
+They cannot: page 1 moves and page 3 does not. `render_banner` is byte-for-byte
+what it was and is page 3's alone.
+
+WHAT REPLACED THE SHARED-BLOCK TEST is the half that mattered. Two heads may
+look different; they may not disagree about the facts. Both read the same
+`BannerView`, and address, city, dateline and document title are asserted on
+each.
+
+**And the "printed once" rule became "stated once per region".** The old header
+printed the address three times and the date twice in one block. The masthead
+and the hero are two different statements -- a letterhead at 7.5px and the
+document's subject at 35px -- so each states the address once, and the date
+belongs to the hero alone because a letterhead carries none.
+
+## The pagination, which took three attempts
+
+`test_page_1_is_ONE_SHEET_on_every_shape_of_day` was **passing vacuously**: it
+rendered `render_page_1` as a bare fragment with no stylesheet, so every height,
+every padding and the footer's position came from nothing. It renders with the
+stylesheet now, across sixteen shapes -- because whether a day has outstanding
+records and whether the gate saw anyone the log does not describe each cost
+about an activity row, and the airiest densities are only reachable without
+them. That is the case the first tuning missed, and it is the 10 September
+record.
+
+Three mechanisms were tried for pinning the footer and the two failures are
+recorded in the stylesheet beside the one that worked:
+
+* an absolutely positioned footer reserves no space, and the last section ran
+  into its rule;
+* a hand-measured `min-height` on the body moved the WHOLE body to a second
+  sheet the moment the measurement was a tenth of an inch out;
+* a fixed-height table shell with a stretching middle row **does not stretch**
+  in WeasyPrint 70 -- the table laid out at its content height and the footer
+  floated a fifth of a sheet above the bottom edge.
+
+What ships is an absolute footer in a page-height block with a measured reserve,
+and a FOURTH density. Seven activities is the measured ceiling for one sheet;
+the busiest day in the corpus carries five.
+
+| | weight | |
+|---|---|---|
+| `air` | 0-1 | the generous set |
+| `mid` | 2 | between |
+| `tight` | 3-4 | |
+| `dense` | 5+ | the floor; past this the page is full and says so |

@@ -339,19 +339,27 @@ class AmberMeansOwedAndAbsent(unittest.TestCase):
 class ThePhotoBandRules(unittest.TestCase):
 
     def test_the_column_shapes(self):
-        for count, cols in ((1, 1), (2, 2), (3, 3), (4, 2), (5, 3), (9, 3),
-                            (10, 4), (12, 4)):
+        for count, cols in ((1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 4),
+                            (8, 4), (9, 5), (10, 5), (12, 5)):
             self.assertEqual(r.photo_columns(count), cols, count)
 
-    def test_four_photographs_are_two_by_two(self):
-        self.assertEqual((r.photo_columns(4), r.photo_rows(4)), (2, 2))
+    def test_four_photographs_are_ONE_ROW_and_the_reason_reversed(self):
+        """IT USED TO BE TWO-BY-TWO, and that was right for the shape the
+        photographs used to be. On the old 0.449 capture canvas a single row
+        of four was a thin strip. Cropped to 3:4 the trade reverses: a second
+        row halves what every row gets, height is the scarce thing, and four
+        across at 1.85in wide is larger than two across at 1.5in tall."""
+        self.assertEqual((r.photo_columns(4), r.photo_rows(4)), (4, 1))
 
-    def test_ten_are_four_across(self):
-        self.assertEqual(r.photo_columns(10), 4)
+    def test_and_no_band_is_more_than_five_across(self):
+        """Past five a photograph is narrower than the caption above it."""
+        for n in (9, 10, 12, 20):
+            self.assertLessEqual(r.photo_columns(n), 5, n)
+        self.assertEqual(r.photo_columns(10), 5)
 
     def test_height_is_allocated_by_rows_not_by_count(self):
-        """A four-up two-by-two needs twice the height of a four-across row."""
-        heights, rows = r.allocate_bands([4, 2], 8.0)
+        """Two rows need twice the height of one, whatever the counts are."""
+        heights, rows = r.allocate_bands([9, 2], 8.0)
         self.assertEqual(rows, [2, 1])
         self.assertAlmostEqual(heights[0] / heights[1], 2.0, places=5)
 
@@ -364,6 +372,38 @@ class ThePhotoBandRules(unittest.TestCase):
         html = r.render_band(_view(acts=[_activity(photos=12)]).bands[0],
                              0.2, 3)
         self.assertIn(f"height:{r.MIN_CELL_IN:.3f}in", html)
+
+    def test_a_photograph_is_bounded_on_BOTH_axes(self):
+        """THE GREY FIELD CAME FROM ONLY ONE OF THEM. The cell used to be a
+        fraction of the page wide whatever was in it, so a picture that ran
+        out of height first sat in 2.6in of field on each side. Both bounds
+        are on the image now and the cell is whatever the image turns out to
+        be."""
+        html = r.render_band(_view(acts=[_activity(photos=4)]).bands[0],
+                             3.0, 1)
+        self.assertIn("max-height:", html)
+        self.assertIn("max-width:", html)
+
+    def test_the_strip_hugs_its_photographs_rather_than_the_page(self):
+        css = r.stylesheet()
+        block = css[css.index("table.shots {"):]
+        block = block[:block.index("}")]
+        self.assertIn("width: auto", block)
+        self.assertNotIn("width: 100%", block)
+
+    def test_the_width_bound_is_the_columns_share_of_the_page(self):
+        """Four across on a 7.4in page is 1.85in less the gaps, and a fifth
+        column would make each one narrower."""
+        four = r.render_band(_view(acts=[_activity(photos=4)]).bands[0], 9.0, 1)
+        five = r.render_band(_view(acts=[_activity(photos=5)]).bands[0], 9.0, 1)
+
+        def widest(html):
+            import re
+            return max(float(m) for m in
+                       re.findall(r"max-width:([0-9.]+)in", html))
+
+        self.assertLess(widest(five), widest(four))
+        self.assertLess(widest(four), r.BAND_WIDTH_IN / 4)
 
     def test_photographs_are_contained_and_never_cropped(self):
         html = r.render_page_2(_view(acts=[_activity(photos=4)]))
@@ -389,13 +429,54 @@ class ThePhotoBandRules(unittest.TestCase):
 
 class TheRegisterReadsLikeARegister(unittest.TestCase):
 
+    #: The register's row height. Named once here so the two assertions below
+    #: cannot drift apart, and so a change to it is one edit rather than a
+    #: search. 2.00in -> 2.30in when the document window grew a third taller.
+    ROW_HEIGHT = "2.30in"
+
     def test_every_card_declares_the_same_height(self):
         """ONE DECLARATION, IN THE STYLESHEET. A per-card inline height is how
         three cards in a row end at three heights."""
         html = r.render_page_3(_view(cards=_cards()))
-        self.assertNotIn("height:2.00in", html)
-        self.assertIn("height: 2.00in", r.stylesheet())
-        self.assertEqual(r.stylesheet().count("height: 2.00in"), 1)
+        self.assertNotIn(f"height:{self.ROW_HEIGHT}", html)
+        self.assertIn(f"height: {self.ROW_HEIGHT}", r.stylesheet())
+
+    def test_the_completeness_inset_is_the_SAME_height_as_a_card(self):
+        """IT SITS IN A ROW OF CARDS, so it is a row of cards' height. A
+        panel that ends higher or lower than the card beside it reads as
+        something that wandered into the grid."""
+        css = r.stylesheet()
+        # THE GEOMETRY RULE, NOT THE BREAK RULE. `.card` is declared twice --
+        # once for its box and once in the page-break block -- and the first
+        # occurrence in the file is the break rule.
+        card = css[css.index(".card { border:"):]
+        card = card[:card.index("}")]
+        inset = css[css.index(".comp.inset {"):]
+        inset = inset[:inset.index("}")]
+        self.assertIn(self.ROW_HEIGHT, card)
+        self.assertIn(self.ROW_HEIGHT, inset)
+
+    def test_a_card_carrying_facts_does_not_overflow_its_row(self):
+        """MEASURED ON PAPER. The orientation card carries two fact lines
+        under a two-line title, and at the full window height it printed its
+        link across the block below it -- the register's rows are a fixed
+        height so that a row reads as a row, and a card that escapes one is
+        worse than a smaller picture."""
+        _needs_weasyprint(self)
+        cards = _cards(n=7)
+        cards[4] = dict(cards[4], facts=(
+            "18 / 18 current onsite workers have orientation on file",
+            "8 acknowledgments filed today"))
+        html = r.render_page_3(_view(cards=cards))
+        self.assertIn('class="card facts"', html)
+        page = HTML(string=f"<style>{r.stylesheet()}</style>{html}").render()
+        self.assertEqual(len(page.pages), 1,
+                         "the register spilled onto a second sheet")
+
+    def test_and_a_card_with_no_facts_keeps_the_taller_window(self):
+        html = r.render_page_3(_view(cards=_cards(n=3)))
+        self.assertIn('class="card"', html)
+        self.assertNotIn('class="card facts"', html)
 
     def test_a_missing_card_gets_a_panel_and_no_fake_thumbnail(self):
         html = r.render_page_3(_view(cards=_cards(n=2, filed=1)))
@@ -413,12 +494,44 @@ class TheRegisterReadsLikeARegister(unittest.TestCase):
         self.assertIn("never combined", html)
 
     def test_cards_flow_three_up(self):
-        """COUNTED INSIDE THE GRID. The completeness block is a table too, and
-        counting every `<tr>` on the page made seven cards look like four
-        rows."""
+        """COUNTED BY CARD, NOT BY `<tr>`. The completeness block is a table
+        too, and it is INSIDE the grid now -- counting rows finds its row as
+        well and makes seven cards look like four."""
         html = r.render_page_3(_view(cards=_cards(n=7)))
-        grid = html.split('class="grid"')[1].split("</table>")[0]
-        self.assertEqual(grid.count("<tr>"), 3, "seven cards should be 3+3+1")
+        rows = [row for row in html.split("<tr>") if 'class="card"' in row]
+        self.assertEqual(len(rows), 3, "seven cards should be 3+3+1")
+        self.assertEqual([row.count('class="card"') for row in rows],
+                         [3, 3, 1])
+
+    def test_the_lonely_last_card_gets_the_completeness_beside_it(self):
+        """THE OPERATOR'S RECOMPOSITION. Seven cards left one card beside two
+        empty cells, with the three completeness figures floating under the
+        whole grid as an afterthought. They go in the empty cells: the row
+        reads as a row, and the numbers become as prominent as the cards they
+        summarise."""
+        html = r.render_page_3(_view(cards=_cards(n=7)))
+        grid = html[html.index('class="grid"'):]
+        self.assertIn('colspan="2"', grid)
+        self.assertIn("comp inset", grid)
+        # AND NOT TWICE. The block below the grid is the fallback, not a
+        # second copy.
+        self.assertEqual(html.count("Document completeness"), 1)
+
+    def test_a_full_last_row_keeps_the_completeness_underneath(self):
+        """SIX CARDS LEAVES NO ROOM. The block is the same block, one row
+        down, and nothing is dropped to make the recomposition work."""
+        html = r.render_page_3(_view(cards=_cards(n=6)))
+        self.assertNotIn("comp inset", html)
+        self.assertEqual(html.count("Document completeness"), 1)
+        self.assertIn("Required daily logs filed", html)
+
+    def test_one_spare_cell_is_not_enough_for_the_inset(self):
+        """Eight cards leaves ONE empty cell. A card-shaped block of numbers in
+        a row of cards is the confusion this was meant to remove, so it falls
+        back rather than squeezing."""
+        html = r.render_page_3(_view(cards=_cards(n=8)))
+        self.assertNotIn("comp inset", html)
+        self.assertEqual(html.count("Document completeness"), 1)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -426,20 +539,52 @@ class TheRegisterReadsLikeARegister(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════
 
 class TheBanner(unittest.TestCase):
+    """── PAGE 1 AND PAGE 3 NO LONGER SHARE A HEAD, BY RULING ──────────────
 
-    def test_pages_1_and_3_carry_it_and_page_2_does_not(self):
+    They did, and the test below said so: one `render_banner` on both, because
+    two banners that merely look alike drift the first time one is edited.
+
+    The operator ruled page 1 to a supplied reference on 12 September and
+    ruled pages 2 and 3 untouched in the same breath. Those two cannot both
+    hold with one shared block, so page 1 now carries a white masthead over a
+    navy hero and page 3 carries the banner it already had.
+
+    WHAT REPLACES THE SHARED-BLOCK CHECK is the thing that check was really
+    for: the two heads must not disagree about the FACTS. Both read the same
+    `BannerView`, and that is asserted below rather than assumed.
+    """
+
+    def test_page_3_still_carries_the_banner_and_page_2_does_not(self):
         view = _view(acts=[_activity(photos=2)], cards=_cards())
-        self.assertIn('class="banner"', r.render_page_1(view))
         self.assertIn('class="banner"', r.render_page_3(view))
         self.assertNotIn('class="banner"', r.render_page_2(view))
 
-    def test_it_is_the_same_block_on_both(self):
-        """SAME MARKUP, SO SAME DIMENSIONS. Two banners that merely look alike
-        drift the first time one is edited."""
+    def test_page_1_carries_a_masthead_over_a_hero_instead(self):
+        html = r.render_page_1(_view(cards=_cards()))
+        self.assertIn('class="mh"', html)
+        self.assertIn('class="hero"', html)
+        self.assertNotIn('class="banner"', html)
+
+    def test_both_heads_read_the_SAME_view_object(self):
+        """THE HALF THAT MATTERED. Two heads may look different; they may not
+        name a different address, city, date or document."""
         view = _view(cards=_cards())
-        block = r.render_banner(view.banner)
-        self.assertIn(block, r.render_page_1(view))
-        self.assertIn(block, r.render_page_3(view))
+        one = r.render_page_1(view)
+        three = r.render_page_3(view)
+        for fact in (view.banner.address.upper(), view.banner.city,
+                     view.banner.dateline, view.banner.document_title):
+            self.assertIn(r.esc(fact), one, fact)
+        self.assertIn(r.esc(view.banner.address.upper()), three)
+        self.assertIn(r.esc(view.banner.dateline), three)
+
+    def test_the_struck_marketing_line_is_gone_from_the_whole_document(self):
+        """NAMED, AND BANNED EVERYWHERE. It was the masthead's second line and
+        it is not replaced with other copy of the same kind."""
+        html = r.render(_view(cards=_cards()))
+        self.assertNotIn("Construction Intelligence for a Higher Standard",
+                         html)
+        self.assertNotIn("Building Better Together", html)
+        self.assertIn("Site Oversight &amp; Compliance", html)
 
     def test_page_2_carries_a_running_reference_instead(self):
         html = r.render_page_2(_view(acts=[_activity(photos=2)]))
@@ -449,6 +594,13 @@ class TheBanner(unittest.TestCase):
 # ══════════════════════════════════════════════════════════════════════════
 #  PAGINATION
 # ══════════════════════════════════════════════════════════════════════════
+
+def _sheet(fragment: str) -> str:
+    """One page's markup as a document WeasyPrint can lay out."""
+    return ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f"<style>{r.stylesheet()}</style></head><body>{fragment}"
+            "</body></html>")
+
 
 class ThePageCount(unittest.TestCase):
 
@@ -486,6 +638,72 @@ class ThePageCount(unittest.TestCase):
     def test_a_day_with_no_photographs_is_two_pages(self):
         _needs_weasyprint(self)
         self.assertEqual(self._pages(_view(cards=_cards())), 2)
+
+    def test_page_1_is_ONE_SHEET_on_every_shape_of_day(self):
+        """THE INVARIANT THE THREE DENSITIES EXIST TO HOLD.
+
+        Page 1 adapts vertically: generous when a day has little on it, the
+        pre-polish spacing when it has a lot. The failure mode is the one
+        measured at 8 Prescott Place, where five activities and two
+        outstanding records put Attention and Safety alone on a second sheet
+        -- a brief that runs to two pages is not a brief.
+
+        COUNTED BY RENDERING, not by arithmetic, because the arithmetic is
+        exactly what was wrong: the first pass rolled the paddings back for a
+        dense day and left the type sizes grown, and the page still spilled.
+        """
+        _needs_weasyprint(self)
+        # EVERY SHAPE, NOT EVERY COUNT. Whether a day has outstanding records
+        # and whether the gate saw anyone the log does not describe each cost
+        # about an activity row, and the airiest densities are only reachable
+        # without them -- the 10 September record has neither, and it is the
+        # one the first tuning missed.
+        #
+        # SEVEN ACTIVITIES IS THE BOUND, and it is measured rather than
+        # chosen: at eight with both extra blocks the page is full and
+        # `dense` has nothing left to give. The busiest day in the corpus
+        # carries five.
+        shapes = [(n, extras) for n in range(0, 8) for extras in (False, True)]
+        for n_acts, extras in shapes:
+            with self.subTest(activities=n_acts, extras=extras):
+                view = _view(
+                    acts=[_activity(company=f"Company Number {i}", photos=0)
+                          for i in range(n_acts)],
+                    rows=([_row(company="Arkon Builders", worker_id="w1")]
+                          if extras else []),
+                    filed_all=not extras,
+                    cards=_cards())
+                # WITH THE STYLESHEET. Without it this measured unstyled
+                # markup: every height, every padding and the footer's
+                # absolute position come from the CSS, so the check passed on
+                # a page that does not exist and missed a real overflow on
+                # the 10 September record.
+                pages = len(HTML(string=_sheet(r.render_page_1(view)))
+                            .render().pages)
+                self.assertEqual(
+                    pages, 1,
+                    f"page 1 ran to {pages} sheets with {n_acts} activities "
+                    f"at density {r.page_1_density(view)!r}")
+
+    def test_the_density_falls_as_the_page_fills(self):
+        """AND IT IS MONOTONIC. A day with more on it never gets more air
+        than a day with less, which is the property that makes one rendered
+        check per shape enough."""
+        order = {"air": 0, "mid": 1, "tight": 2, "dense": 3}
+        seen = [order[r.page_1_density(_view(
+            acts=[_activity(company=f"C{i}") for i in range(n)],
+            rows=[_row(company="Arkon Builders", worker_id="w1")],
+            cards=_cards()))] for n in range(0, 9)]
+        self.assertEqual(seen, sorted(seen), seen)
+        self.assertEqual(seen[-1], 3, "a full day is not at the floor")
+        # THE GENEROUS END NEEDS A GENUINELY EMPTY DAY. `_view()` carries an
+        # outstanding record and an additional-gate block by default, and each
+        # of those is worth about an activity row -- a page with both on it is
+        # not a page with room to spare.
+        bare = _view(acts=[], rows=[], filed_all=True, cards=_cards())
+        self.assertIsNone(bare.attention)
+        self.assertIsNone(bare.additional_gate)
+        self.assertEqual(r.page_1_density(bare), "air")
 
 
 if __name__ == "__main__":
