@@ -294,12 +294,21 @@ console.log('\n-- the payload, and the machinery it plugs into --');
   ok(/FALL_PROTECTION_NOTICE/.test(cut), 'and prints the notice on the document');
 }
 {
-  const report = SERVER.slice(SERVER.indexOf('_filed_log(logbooks, "fall_protection")'));
-  const cut = report.slice(0, report.indexOf('SCAFFOLD MAINTENANCE'));
-  ok(/if not str\(r\.get\("worker_name"\) or ""\)\.strip\(\)/.test(cut),
-    'the combined report drops the same rows');
-  ok(/FALL_PROTECTION_NOTICE/.test(cut),
-    'and prints the same notice — this is the copy investors and lenders read');
+  // ONE RENDERER PRINTS THIS SECTION NOW, AND THE RULE IS ASSERTED ON IT
+  // ABOVE. The combined report used to embed the fall protection section and
+  // had to drop the same nameless rows and print the same notice; it indexes
+  // the filed documents and embeds none, so there is no second copy to keep
+  // in step.
+  //
+  // WHAT IS CHECKED INSTEAD IS THE ABSENCE, because "both agree" becoming
+  // "one of them" is only safe while the other really is gone.
+  const report = SERVER.slice(SERVER.indexOf('async def generate_combined_report'));
+  const body = report.slice(0, report.indexOf(String.fromCharCode(10) + '@api_router'));
+  ok(!/FALL_PROTECTION_NOTICE/.test(body),
+    'the investor report prints the fall protection notice again — it embeds '
+    + 'a filed document, and there are two copies of the rule to drift');
+  ok(!/fall_protection/.test(body),
+    'the investor report names the fall protection log again');
 }
 
 console.log('\n-- the screen blocks at SUBMIT, never on Next --');

@@ -52,14 +52,20 @@ const M = load('toolboxTalkModel.js',
 // ── 1. THE PAYLOAD ──────────────────────────────────────────────────────────
 console.log('\n-- the keys the renderer reads --');
 
+// THE FILED DOCUMENT'S BRANCH. This read the combined report's embedded
+// copy, which is gone: the report indexes the filed documents and prints
+// none. The payload has to carry every key the renderer that PRINTS it
+// opens, and that is this one.
 const branch = SERVER.slice(
-  SERVER.indexOf('#  TOOLBOX TALK'),
-  SERVER.indexOf('#  PRE-SHIFT SIGN-IN'),
+  SERVER.indexOf('elif log_type == "toolbox_talk":'),
+  SERVER.indexOf('elif log_type == "preshift_signin":'),
 );
-ok(branch.length > 0, 'located the toolbox branch of the combined report');
+ok(branch.length > 0, 'located the toolbox branch of the filed document');
 
+// `data`, NOT `td_data`: the report's copy named the dict after the section
+// it sat in; the filed document's branch reads the record directly.
 const topLevel = [...new Set(
-  [...branch.matchAll(/td_data\.get\("([a-z_]+)"/g)].map((m) => m[1]),
+  [...branch.matchAll(/data\.get\("([a-z_]+)"/g)].map((m) => m[1]),
 )].sort();
 const body = M.draftBody({
   location: 'Gate', companyName: 'AAZ', typeOfWork: 'Concrete',
@@ -268,17 +274,21 @@ console.log('\n-- added_from is RENDERED, not just stored --');
 ok((SERVER.match(/def _attendee_source_label\(a\) -> str:/g) || []).length === 1,
   'the label is ONE helper, so the two PDF renderers cannot drift apart');
 // The braces matter: `_attendee_source_label(a)` also matches the def line.
-ok((SERVER.match(/\{_attendee_source_label\(a\)\}/g) || []).length === 2,
-  'and BOTH toolbox renderers call it');
-ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 2,
-  'both carry the column header');
+// ONE RENDERER CALLS IT NOW. The helper exists so two renderers of the same
+// roster could not drift apart, and the reason it still exists is that the
+// drift it prevents is between the SHEET and the LABEL -- "added by the CP"
+// and "walked through the gate" are different claims about the same man.
+ok((SERVER.match(/\{_attendee_source_label\(a\)\}/g) || []).length === 1,
+  'the label is called from somewhere other than the one roster');
+ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 1,
+  'the column header is printed twice, so a second roster is back');
 // NARROWED. This meant "the toolbox placeholders are not left one column short
 // of their header" and was written as a global ban on colspan 6 — which the
 // PRE-SHIFT sheet then legitimately needed when it gained a signature column
 // (B10). Scoped to the two toolbox tables, which is what it was always about.
 // Same over-broad shape as four earlier assertions on this project.
-for (const [from, to] of [['elif log_type == "toolbox_talk":', 'elif log_type == "preshift_signin":'],
-  ['toolbox = _filed_log', 'preshift = _filed_log']]) {
+for (const [from, to] of [['elif log_type == "toolbox_talk":',
+  'elif log_type == "preshift_signin":']]) {
   const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
   // THE INVARIANT, NOT THE NUMBER. This asserted colspan="7" literally, and
   // the number is not the claim -- the claim is that the placeholder spans its

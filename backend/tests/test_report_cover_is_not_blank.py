@@ -1,5 +1,30 @@
 """PAGE 1 OF THE FILED REPORT CARRIED THE HEADER AND NOTHING ELSE.
 
+── MIGRATED 12 SEPTEMBER, AND CI IS WHAT CAUGHT IT ────────────────────────
+
+These tests are WeasyPrint-gated: they skip where the native libraries are
+absent, and the guard turns that skip into a failure under CI. A local suite
+reported green while they never ran, which is precisely the hole the guard
+exists to cover -- and the reason the report replacement's migration ledger
+never listed this file.
+
+THE CAUSE CANNOT RECUR ON THIS DOCUMENT. The investor report has no email
+shell, no content row and no embedded section; it is three composed pages. The
+unqualified `tr` rule that relocated the body is not in its stylesheet and has
+nothing to match if it were.
+
+So the halves went different ways, and the original account below is kept
+because the defect is worth being able to read:
+
+  * PAGE 1 IS NOT JUST THE HEADER is the claim worth keeping, and it is
+    rewritten against the page that exists rather than deleted.
+  * THE SHELL ROWS AND THEIR EXEMPTION moved to the per-logbook PDF, which
+    still is an email-style document and still carries both rules.
+  * EACH SECTION ON ITS OWN SHEET is deleted. There are no sections.
+
+── AND THE ORIGINAL ───────────────────────────────────────────────────────
+
+
 The operator photographed it: a cover page with the LEVELOG banner, the date,
 the address, and then white paper to the fold. Every section of the report
 began on page 2.
@@ -168,6 +193,20 @@ class TheCoverCarriesTheFirstSection(unittest.TestCase):
              "cp_name": "carl cp", "data": {"notes": f"note {i}"}}
             for i, lt in enumerate(("toolbox_talk", "hot_work", "fall_protection"))
         ]
+        # AND A DAY WITH WORK ON IT. The original fixture only needed several
+        # short sections; the page that replaced them has an activity to
+        # describe, and "page 1 is not just the header" is not a claim worth
+        # testing on a day with nothing to put there.
+        self.db.logbooks.docs.append({
+            "_id": "lb_dj", "project_id": PROJECT, "date": DATE,
+            "log_type": "daily_jobsite", "is_deleted": False,
+            "status": "submitted", "cp_name": "carl cp",
+            "data": {"activities": [{
+                "company": "AAZ", "trade": "Concrete", "num_workers": "4",
+                "work_locations": "1st floor",
+                "work_description": "slab pour", "photos": [],
+            }]},
+        })
         self._orig = {"db": server.db, "tqid": server.to_query_id}
         server.db = self.db
         server.to_query_id = lambda x: x
@@ -185,12 +224,27 @@ class TheCoverCarriesTheFirstSection(unittest.TestCase):
         html = asyncio.run(server.generate_combined_report(PROJECT, DATE))
         return HTML(string=html).render().pages
 
-    def test_the_shell_rows_carry_the_class_the_exemption_needs(self):
-        """A rule on `tr.shell` is inert unless the rows carry it. Five of
-        them: the centring row, then the wrapper's header, summary, content
-        and footer."""
+    def test_the_shell_rows_are_on_the_document_that_still_has_a_shell(self):
+        """A rule on `tr.shell` is inert unless the rows carry it.
+
+        THE SHELL MOVED, AND SO DID THE COUNT. The investor report was an
+        email-style layout and is now three composed pages; the per-logbook
+        PDF is the email-style document, and it is the one whose rows must
+        carry the class its exemption names.
+        """
+        html = asyncio.run(server.generate_single_logbook_html(
+            {"_id": "lb0", "project_id": PROJECT, "date": DATE,
+             "log_type": "toolbox_talk", "status": "submitted",
+             "cp_name": "carl cp", "data": {"notes": "note"}}))
+        self.assertGreaterEqual(html.count('<tr class="shell">'), 3)
+
+    def test_and_the_investor_report_has_no_shell_to_protect(self):
+        """THE OTHER HALF, AND IT IS WHY THE DEFECT CANNOT RECUR HERE. The
+        rule that relocated the body matched a row of the email shell. There
+        is no shell, so there is nothing for an unqualified `tr` rule to
+        match even if one were written."""
         html = asyncio.run(server.generate_combined_report(PROJECT, DATE))
-        self.assertEqual(html.count('<tr class="shell">'), 5)
+        self.assertNotIn('<tr class="shell">', html)
 
     def test_the_fixture_is_actually_longer_than_one_page(self):
         """The precondition. A one-page report cannot exhibit the defect, and
@@ -198,27 +252,50 @@ class TheCoverCarriesTheFirstSection(unittest.TestCase):
         self.assertGreater(len(self._pages()), 1)
 
     def test_page_one_is_not_just_the_header(self):
-        pages = self._pages()
-        first = _page_text(pages[0])
-        self.assertIn("Daily Construction Report", first)   # the header
-        self.assertIn("Daily Progress Report", first,
-                      "page 1 carries the header and nothing else — the cover "
-                      "is blank")
+        """THE CLAIM THIS FILE IS FOR, ON THE PAGE THAT EXISTS.
 
-    def test_the_report_still_starts_each_section_on_its_own_sheet(self):
-        """THE GUARANTEE THIS MUST NOT BREAK. Releasing the shell rows must not
-        run two filed documents together on one sheet."""
+        The old cover carried the banner, the date and the address, and then
+        white paper to the fold. The new page 1 has to carry the day: the
+        summary, the gate figures and the activity. Named rather than counted,
+        because a character count passes on a page of running heads.
+        """
+        first = _page_text(self._pages()[0])
+        self.assertIn("DAILY CONSTRUCTION REPORT", first)    # the head
+        for substance in ("EXECUTIVE SUMMARY", "GATE CHECK-INS",
+                          "TODAY’S DOCUMENTED ACTIVITY", "AAZ"):
+            self.assertIn(substance, first,
+                          f"page 1 does not carry {substance!r} -- the cover "
+                          f"is the header and nothing else again")
+
+    # DELETED: test_the_report_still_starts_each_section_on_its_own_sheet
+    #
+    #   It guaranteed that releasing the shell rows did not run two FILED
+    #   DOCUMENTS together on one sheet. The report embeds no filed document
+    #   now -- it indexes them -- so there are no sections to run together and
+    #   nothing the guarantee can be made about.
+    #
+    #   What replaced the sections is the record index on page 3, and that the
+    #   report is exactly three pages is asserted on four day shapes in
+    #   test_report_renderer.py::ThePageCount. See
+    #   docs/audits/report-replacement-ledger.md.
+
+    def test_the_report_is_more_than_one_page_and_the_first_is_not_the_last(self):
+        """THE PRECONDITION THIS FILE ALWAYS HAD, restated. A one-page report
+        cannot exhibit a blank cover, and every assertion here would pass on
+        one.
+
+        TWO PAGES ON THIS FIXTURE, NOT THREE, and the difference is the
+        design. The day's one activity carries no photographs, so the evidence
+        page collapses entirely -- a page reserved for evidence that does not
+        exist is the empty-section defect the whole redesign was about. Page 2
+        here is the project record.
+        """
         pages = self._pages()
-        titles = ("Tool Box Talk", "Hot Work", "Fall Protection")
-        seen = {}
-        for i, p in enumerate(pages):
-            text = _page_text(p)
-            for t in titles:
-                if t in text and t not in seen:
-                    seen[t] = i
-        self.assertEqual(len(seen), len(titles), f"a section vanished: {seen}")
-        self.assertEqual(len(set(seen.values())), len(titles),
-                         f"two filed documents share a sheet: {seen}")
+        self.assertEqual(len(pages), 2,
+                         "the fixture's day has no photographs, so the "
+                         "evidence page should collapse")
+        self.assertNotEqual(_page_text(pages[0]), _page_text(pages[-1]))
+        self.assertIn("Project record", _page_text(pages[-1]))
 
 
 @unittest.skipIf(HTML is None and not os.environ.get("CI"), "see above")
@@ -233,19 +310,26 @@ class TheNestedRowsAreStillProtected(unittest.TestCase):
             self.fail(f"weasyprint did not import in CI: {_IMPORT_ERROR}")
 
     def test_the_exemption_names_a_class_and_not_the_bare_element(self):
-        """ANCHORED TO THIS REPORT'S STYLESHEET, not to the first `@media
-        print` in the file. server.py now holds two print blocks -- the
-        per-logbook PDF's was added first and appears EARLIER in the file -- so
-        an unanchored `index("@media print")` reads the wrong renderer and
-        passes on the strength of the other one's `tr.shell`. It did exactly
-        that on the pre-fix control run."""
-        src = Path(server.generate_combined_report.__code__.co_filename
+        """THE RULE MOVED TO THE DOCUMENT THAT STILL HAS A SHELL.
+
+        It was anchored to the combined report's stylesheet, and deliberately:
+        server.py held two print blocks and an unanchored `index("@media
+        print")` read the wrong renderer and passed on the strength of the
+        other one's `tr.shell`. There is one print block now -- the
+        per-logbook PDF's -- because the report's went with its shell, so the
+        anchor is the renderer itself.
+
+        BOTH HALVES STILL MATTER on that document. The bare rule is what keeps
+        a man's name and his check-in time on one sheet; the class is what
+        stops it being applied to the whole document.
+        """
+        src = Path(server.generate_single_logbook_html.__code__.co_filename
                    ).read_text(encoding="utf-8")
-        i = src.index(":root {{ color-scheme: light only; }}")
+        i = src.index("async def generate_single_logbook_html(")
         block = src[i:src.index("</style>", i)]
-        self.assertIn("tr.shell", block)
+        self.assertIn("tr.shell { page-break-inside: auto", block)
         # The bare rule survives, or nothing is protected any more.
-        self.assertIn("tr {{ page-break-inside: avoid", block)
+        self.assertIn("tr { page-break-inside: avoid", block)
 
 
 if __name__ == "__main__":

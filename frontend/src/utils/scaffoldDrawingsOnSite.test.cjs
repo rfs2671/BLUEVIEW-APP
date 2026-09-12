@@ -74,9 +74,14 @@ ok((code.match(/drawings_on_site/g) || []).length === 1,
 console.log('\n-- Nothing printed changes --');
 
 ok(/general_info\.drawings_on_site is a dead duplicate/.test(server),
-  'both renderers already ignored the general_info copy');
-ok((server.match(/general_info\.drawings_on_site is a dead/g) || []).length === 2,
-  'and both of them say so, so neither starts reading it');
+  'the renderer already ignored the general_info copy');
+// ONE NOTE, BECAUSE THERE IS ONE RENDERER. There were two -- the per-logbook
+// PDF and the combined report's embedded copy -- and each said in its own
+// comment that the general_info duplicate is dead, so neither would start
+// reading it. The report embeds no filed document now, so the second note went
+// with the second renderer.
+ok((server.match(/general_info\.drawings_on_site is a dead/g) || []).length === 1,
+  'the note is duplicated again, which means a second renderer is back');
 
 console.log('\n-- The project value is left alone --');
 

@@ -565,3 +565,71 @@ starts at 10.12in, so the register has roughly 7in for its rows.
 `render_banner` and its stylesheet had no caller once page 3 took the masthead
 and hero. Both are deleted rather than left behind, and the break rule for the
 bordered card went with the card.
+
+---
+
+# Six files the migration missed, and how they were found
+
+**CI found them, not the local suite, and the reason is worth more than the
+fixes.** Two independent gaps hid them:
+
+### 1. A local suite that reports green can be skipping the check
+
+`test_report_cover_is_not_blank.py` and `test_report_renderer.py` are
+WeasyPrint-gated: they skip where the native libraries are absent, and the
+guard turns that skip into a failure under `CI`. Every local run in this
+session reported the whole backend suite green while five of those tests had
+never executed. The guard is written exactly for this and it worked; what
+failed was reading "6,333 passed" as though it were the whole picture. **31
+skipped was on the same line and I did not read it.**
+
+### 2. The frontend runner halts on the first failing file
+
+The CI job loops over the test files under `set -euo pipefail` and stops at the
+first non-zero exit, so it reported ONE broken file when five were broken.
+Running all 157 by hand found the other four. The workflow's own comments
+describe this failure mode for a missing `@babel/core` -- two files had never
+executed in CI even once for that reason -- and it applies to assertion
+failures too.
+
+| file | what it read |
+|---|---|
+| `test_report_cover_is_not_blank.py` | the email shell, the embedded sections |
+| `fallProtectionModel.test.cjs` | the report's fall-protection section |
+| `oshaLogModel.test.cjs` | the report's OSHA register |
+| `portedFormPayloads.test.cjs` | five types' embedded sections |
+| `scaffoldDrawingsOnSite.test.cjs` | a note duplicated across two renderers |
+| `toolboxTalkModel.test.cjs` | the report's toolbox roster |
+
+## The shape was the same in all six
+
+"Both renderers agree about this rule" becomes "the one renderer that remains
+carries it", plus an absence check on the other -- because "both agree"
+becoming "one of them" is only safe while the other really is gone.
+
+`reportBranch` in `portedFormPayloads` became `reportEmbedsNothing` rather than
+being deleted: dropping it would have left nothing saying the third reader is
+gone, and "every reader opens these keys" quietly becoming "every REMAINING
+reader" is the shape that hides a reader nobody counted.
+
+## Two claims that changed rather than moved
+
+* **The SSC switches.** The test argued the payload must seed five flags false
+  because the combined report printed a bare Yes/No with no third state. The
+  renderer that remains does the OPPOSITE -- an absent flag prints "not
+  recorded", because it will not assert a negative finding from a key that is
+  not on the record. The requirement is unchanged and the argument is stronger:
+  omit the keys and a sheet the CP filled in prints "not recorded" against every
+  one. A stale comment in `server.py` still contrasted this renderer with the
+  report's behaviour; it is corrected.
+* **The blank cover.** "Page 1 is not just the header" is the claim worth
+  keeping and is rewritten against the page that exists. The cause cannot recur
+  there -- the unqualified `tr` rule matched a row of an email shell, and there
+  is no shell -- so the shell rows and their exemption moved to the per-logbook
+  PDF, which still is an email-style document and still carries both rules.
+
+## And the fixture renders two pages, not three
+
+The day in that fixture has one activity and no photographs, so the evidence
+page collapses entirely. That is the design, and the assertion says so and
+checks that page 2 is the register.

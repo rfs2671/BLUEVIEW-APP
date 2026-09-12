@@ -20340,9 +20340,15 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         ]
         # The five are a fixed list: once ANY of them is on the document the
         # rest read "— Not recorded" rather than dropping out of the table.
-        # (generate_combined_report prints "No" for an absent flag here,
-        # server.py:17856-17857 — this renderer will not assert a negative
-        # finding from a key that is not on the record.)
+        # This renderer will not assert a negative finding from a key that is
+        # not on the record.
+        #
+        # THE RENDERER THIS WAS CONTRASTED WITH IS GONE. The note named
+        # `generate_combined_report`, which printed a bare "No" for an absent
+        # flag; it embeds no filed document now, so this is the only rendering
+        # of these five and there is nothing to disagree with. The DISTINCTION
+        # is the point and it stays: an unanswered switch and a switch
+        # answered No are different claims on a signed record.
         flag_rows = ""
         if any(has(data, key) for key, _ in SSC_FLAGS):
             for key, label in SSC_FLAGS:

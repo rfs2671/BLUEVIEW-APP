@@ -191,8 +191,21 @@ console.log('\n-- the server agrees, field for field --');
   ok(JSON.stringify(fields) === JSON.stringify(['worker_name']),
     'the per-logbook PDF drops the same rows');
 }
-ok(/_osha_content_fields = _SUBMIT_ROW_CONTENT_RULES\["osha_log"\]\[1\]/.test(SERVER),
-  'and the combined report reads the rule rather than restating it');
+// ONE RENDERER PRINTS THE REGISTER NOW. The combined report embedded it and
+// had to read the shared submit-time constant rather than restate the rule;
+// it indexes the filed documents and embeds none, so there is no second
+// reader to keep honest. The per-logbook PDF's own guard is asserted directly
+// above, out of its branch.
+//
+// WHAT IS CHECKED HERE IS THE ABSENCE, because "both read the constant"
+// becoming "one does" is only safe while the other really is gone.
+{
+  const report = SERVER.slice(SERVER.indexOf('async def generate_combined_report'));
+  const body = report.slice(0, report.indexOf(String.fromCharCode(10) + '@api_router'));
+  ok(!/osha_log/.test(body),
+    'the investor report names the OSHA log again — it embeds a filed '
+    + 'document, and there are two copies of the drop rule to drift');
+}
 
 console.log('\n-- the payload shape is unchanged --');
 {
