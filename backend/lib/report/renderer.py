@@ -99,20 +99,6 @@ def stylesheet() -> str:
 body { margin: 0; color: %(INK)s; background: #fff;
        font-family: Helvetica, Arial, sans-serif; }
 
-/* THE BANNER. Pages 1 and 3 carry it at the SAME size; Page 2 does not,
-   because Page 2 is evidence and a masthead over photographs competes with
-   the only thing that page is for. */
-.banner { background: %(NAVY)s; color: #fff; padding: 0.40in 0.55in 0.30in; }
-.mark { font-size: 26px; font-weight: 700; letter-spacing: 0.30em; line-height: 1; }
-.tag { font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase;
-       color: #9FB3C8; padding-top: 10px; }
-.brule { border-top: 1px solid rgba(255,255,255,0.20); margin: 0.19in 0 0.15in; }
-.dtitle { font-size: 9.5px; font-weight: 700; letter-spacing: 0.22em;
-          text-transform: uppercase; color: #C8D6E4; }
-.addr { font-size: 22px; font-weight: 700; letter-spacing: -0.015em;
-        line-height: 1.12; padding-top: 8px; }
-.city { font-size: 12px; color: #9FB3C8; padding-top: 3px; }
-.when { font-size: 10px; color: #9FB3C8; padding-top: 11px; }
 
 .body { padding: 0 0.55in; }
 
@@ -148,19 +134,19 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .p1 .body { padding: 0 0.55in 0.95in; }
 
 /* ── THE WHITE MASTHEAD ─────────────────────────────────────────────── */
-.p1 .mh { padding: 0.30in 0.55in 0.26in; border-bottom: 1px solid %(HAIR)s; }
-.p1 table.mhg { width: 100%%; border-collapse: collapse; }
-.p1 td.mhl { vertical-align: bottom; }
-.p1 td.mhr { vertical-align: bottom; text-align: right; }
-.p1 .mhmark { font-size: 21px; font-weight: 700; letter-spacing: 0.22em;
+.p1 .mh, .p3 .mh { padding: 0.30in 0.55in 0.26in; border-bottom: 1px solid %(HAIR)s; }
+.p1 table.mhg, .p3 table.mhg { width: 100%%; border-collapse: collapse; }
+.p1 td.mhl, .p3 td.mhl { vertical-align: bottom; }
+.p1 td.mhr, .p3 td.mhr { vertical-align: bottom; text-align: right; }
+.p1 .mhmark, .p3 .mhmark { font-size: 21px; font-weight: 700; letter-spacing: 0.22em;
               color: %(NAVY)s; line-height: 1; }
-.p1 .mhsub { font-size: 9.5px; color: %(MUTED)s; padding-top: 7px;
+.p1 .mhsub, .p3 .mhsub { font-size: 9.5px; color: %(MUTED)s; padding-top: 7px;
              letter-spacing: 0.01em; }
-.p1 .mhdoc { font-size: 8.5px; font-weight: 700; letter-spacing: 0.16em;
+.p1 .mhdoc, .p3 .mhdoc { font-size: 8.5px; font-weight: 700; letter-spacing: 0.16em;
              text-transform: uppercase; color: %(NAVY)s; }
-.p1 .mhwhere { font-size: 7.5px; font-weight: 700; letter-spacing: 0.11em;
+.p1 .mhwhere, .p3 .mhwhere { font-size: 7.5px; font-weight: 700; letter-spacing: 0.11em;
                color: %(MUTED)s; padding-top: 6px; }
-.p1 .mhbar { color: %(HAIR)s; padding: 0 7px; font-weight: 400; }
+.p1 .mhbar, .p3 .mhbar { color: %(HAIR)s; padding: 0 7px; font-weight: 400; }
 
 /* ── THE HERO ───────────────────────────────────────────────────────────
    A navy base fading to pale at the right with two very low-contrast
@@ -168,7 +154,7 @@ body { margin: 0; color: %(INK)s; background: #fff;
    is emailed and rasterised, and an asset would be one more thing that can
    fail to load on a page a lender reads.
 */
-.p1 .hero {
+.p1 .hero, .p3 .hero {
   background:
     linear-gradient(104deg, rgba(255,255,255,0) 40%%,
                             rgba(255,255,255,0.10) 40.2%%,
@@ -182,17 +168,17 @@ body { margin: 0; color: %(INK)s; background: #fff;
                            #2E4761 58%%, #61798F 72%%, #9FB1C2 86%%,
                            #D3DAE2 100%%);
   color: #fff; padding: 0.36in 0.55in 0.38in; }
-.p1 .hdoc { font-size: 9px; font-weight: 700; letter-spacing: 0.23em;
+.p1 .hdoc, .p3 .hdoc { font-size: 9px; font-weight: 700; letter-spacing: 0.23em;
             text-transform: uppercase; color: #C8D6E4; }
 /* THE DOMINANT ELEMENT ON THE PAGE, and it is allowed to take two lines:
    the reference sets it at a size where a long address wraps, and a wrapped
    address at this weight still reads as the subject. */
-.p1 .haddr { font-size: 35px; font-weight: 700; letter-spacing: -0.018em;
+.p1 .haddr, .p3 .haddr { font-size: 35px; font-weight: 700; letter-spacing: -0.018em;
              line-height: 1.06; padding-top: 12px; max-width: 6.1in; }
-.p1 .hcity { font-size: 14px; color: #C2D0DE; padding-top: 7px; }
-.p1 .hrule { border-top: 2px solid rgba(255,255,255,0.55); width: 0.34in;
+.p1 .hcity, .p3 .hcity { font-size: 14px; color: #C2D0DE; padding-top: 7px; }
+.p1 .hrule, .p3 .hrule { border-top: 2px solid rgba(255,255,255,0.55); width: 0.34in;
              margin: 0.20in 0 0.14in; }
-.p1 .hwhen { font-size: 11px; color: #C2D0DE; }
+.p1 .hwhen, .p3 .hwhen { font-size: 11px; color: #C2D0DE; }
 
 /* ── THE RAIL ───────────────────────────────────────────────────────────
    Editorial, not spreadsheet columns: the figure leads, the label is a quiet
@@ -306,20 +292,33 @@ body { margin: 0; color: %(INK)s; background: #fff;
    AT THE FOOT OF THE SHEET, not after the content. A footer that flows sits
    halfway up a sparse day and reads as the place the document stopped.
 */
-.p1 .ft { position: absolute; left: 0.55in; right: 0.55in; bottom: 0.30in; }
-.p1 .ftrule { border-top: 1px solid %(NAVY)s; margin-bottom: 0.11in; }
-.p1 table.ftg { width: 100%%; border-collapse: collapse; }
-.p1 td.ftl { vertical-align: top; }
-.p1 td.ftr { vertical-align: top; text-align: right; font-size: 7.5px;
+.p1 .ft, .p3 .ft { position: absolute; left: 0.55in; right: 0.55in; bottom: 0.30in; }
+.p1 .ftrule, .p3 .ftrule { border-top: 1px solid %(NAVY)s; margin-bottom: 0.11in; }
+.p1 table.ftg, .p3 table.ftg { width: 100%%; border-collapse: collapse; }
+.p1 td.ftl, .p3 td.ftl { vertical-align: top; }
+.p1 td.ftr, .p3 td.ftr { vertical-align: top; text-align: right; font-size: 7.5px;
              font-weight: 700; letter-spacing: 0.11em;
              text-transform: uppercase; color: %(MUTED)s;
              padding-top: 3px; }
-.p1 .ftmark { font-size: 11px; font-weight: 700; letter-spacing: 0.20em;
+.p1 .ftmark, .p3 .ftmark { font-size: 11px; font-weight: 700; letter-spacing: 0.20em;
               color: %(NAVY)s; line-height: 1; }
-.p1 .ftwhere { font-size: 7px; font-weight: 700; letter-spacing: 0.10em;
+.p1 .ftwhere, .p3 .ftwhere { font-size: 7px; font-weight: 700; letter-spacing: 0.10em;
                color: %(MUTED)s; padding-top: 6px; }
-.p1 .ftno { color: %(NAVY)s; font-size: 12px; letter-spacing: 0;
-            padding-left: 14px; }
+.p1 .ftno, .p3 .ftno { color: %(NAVY)s; font-size: 12px;
+            letter-spacing: 0; padding-left: 14px; }
+.p3 .ftmeta, .p1 .ftmeta { font-size: 6.5px; color: %(FAINT)s;
+            padding-top: 6px; letter-spacing: 0.02em; }
+
+/* PAGE 3 TAKES THE TIGHTEST HEAD. Page 1 chooses its hero by how much it has
+   to say; page 3 always has a register to fit and nothing to spend on a
+   taller masthead. MEASURED: the head ran to 3.61in of an 11in sheet and the
+   grid had 6.51in left for up to four rows and a totals line. */
+.p3 .mh { padding: 0.22in 0.55in 0.20in; }
+.p3 .hero { padding: 0.22in 0.55in 0.24in; }
+.p3 .haddr { font-size: 24px; padding-top: 8px; }
+.p3 .hcity { font-size: 12px; padding-top: 5px; }
+.p3 .hrule { margin: 0.12in 0 0.09in; }
+.p3 .hwhen { font-size: 10px; }
 
 /* ── PAGE 1 ADAPTS VERTICALLY ──────────────────────────────────────────
    The rules above are the MIDDLE density, which is what a three or four
@@ -455,8 +454,8 @@ body { margin: 0; color: %(INK)s; background: #fff;
 .bandhead { page-break-after: avoid; break-after: avoid-page; }
 table.shots td { page-break-inside: avoid; break-inside: avoid; }
 table.shots tr { page-break-inside: avoid; break-inside: avoid; }
-/* A CARD IS A UNIT: its state, its picture and its link are one statement. */
-.card { page-break-inside: avoid; break-inside: avoid; }
+/* A RECORD IS A UNIT: its state, its evidence and its link are one
+   statement. The rule lives with the rest of page 3's, on `.rec`. */
 /* An activity row's company and its count statement are one row of one fact. */
 table.acts tr { page-break-inside: avoid; break-inside: avoid; }
 /* The two boxes at the foot of Page 1, each of which is a whole claim. */
@@ -507,76 +506,154 @@ table.shots img { max-width: 100%%; display: inline-block; }
    exist. */
 table.shots td.none { background: #fff; }
 
-/* PAGE 3 */
-.p3 { page-break-before: always; }
-h1.sec { font-size: 21px; font-weight: 700; letter-spacing: -0.01em; margin: 0;
-         color: %(NAVY)s; }
-.sub { font-size: 8.5px; font-weight: 700; letter-spacing: 0.13em;
-       text-transform: uppercase; color: %(MUTED)s; padding-top: 6px; }
-.secrule { border-top: 1px solid %(NAVY)s; margin: 0.12in 0 0.16in; }
-table.grid { width: 100%%; border-collapse: separate; border-spacing: 9px 9px; }
-table.grid td { width: 33.33%%; vertical-align: top; }
-/* FIXED HEIGHT, so the register reads as a register. Content used to decide
-   each card's bottom edge and three cards in a row ended at three heights.
-   2.00in -> 2.30in, which is where the taller document window goes. */
-.card { border: 1px solid %(HAIR)s; padding: 10px 11px 11px; height: 2.30in; }
-.card .no { font-size: 8px; font-weight: 700; letter-spacing: 0.12em;
-            color: %(MUTED)s; }
-/* 30px -> 34px. "Construction Superintendent Log" and "Subcontractor Safety
-   Orientation" both run to two lines and were touching the citation under
-   them. */
-.card .t { font-size: 12px; font-weight: 700; line-height: 1.25;
-           color: %(NAVY)s; padding-top: 4px; height: 34px; }
-.card .c { font-size: 9px; color: %(MUTED)s; }
-.state { font-size: 8px; font-weight: 700; letter-spacing: 0.10em;
-         text-transform: uppercase; padding-top: 7px; }
-.state.filed { color: %(GREEN)s; }
-.state.missing { color: %(AMBER)s; }
-.state.not_due { color: %(MUTED)s; }
-/* 0.74in -> 0.98in, a third taller. At 0.74 every filed card showed the same
-   navy band and nothing else, so seven cards read as seven identical
-   rectangles; the extra quarter inch is where the document's own title and
-   date line sit. Still top-clipped -- the card is an index entry, not a
-   preview of the sheet. */
-.win { height: 0.98in; overflow: hidden; border: 1px solid %(HAIR)s;
-       margin: 8px 0 0; background: #fff; }
-.win img { width: 100%%; display: block; }
-.nowin { height: 0.98in; border: 1px dashed %(HAIR)s; margin: 8px 0 0;
-         background: %(PANEL)s; }
-/* See `render_card`: two fact lines and a two-line title do not fit beside a
-   0.98in window inside a 2.30in row. */
-.card.facts .win, .card.facts .nowin { height: 0.70in; }
-.card.facts .nowin .msg { padding-top: 0.19in; }
-.nowin .msg { font-size: 9px; color: %(MUTED)s; padding: 0.33in 10px 0;
-              text-align: center; line-height: 1.45; }
-.fact { font-size: 8.5px; color: %(INK)s; padding-top: 6px; line-height: 1.4; }
-.go { font-size: 8px; font-weight: 700; letter-spacing: 0.10em;
-      text-transform: uppercase; color: %(NAVY)s; padding-top: 7px; }
-.go a { color: %(NAVY)s; text-decoration: none; }
+/* ══ PAGE 3 ══════════════════════════════════════════════════════════════
+   A QUIET EDITORIAL REGISTER. The bordered cards are gone: records are
+   separated by whitespace and hairlines, and the only ink on the page that
+   is not type is a rule.
 
-/* COMPLETENESS, IN TWO POSITIONS. Below the grid when the last row is full,
-   and INSIDE the last row when it is not -- which is the seven-card case, and
-   the one the register actually has. The inset takes the card's border and
-   the card's height so the row reads as a row. */
-.comp { margin: 0.14in 0 0; border-top: 2px solid %(NAVY)s;
-        padding-top: 0.16in; }
-.comp.inset { margin: 0; border: 1px solid %(NAVY)s; border-top-width: 2px;
-              padding: 10px 14px 11px; height: 2.30in; }
-.comph { font-size: 8px; font-weight: 700; letter-spacing: 0.13em;
+   EVERY RULE HERE IS SCOPED TO `.p3`, so pages 1 and 2 are not reachable.
+*/
+.p3 { page-break-before: always; position: relative; height: 10.96in; }
+.p3 .body { padding: 0 0.55in 0.95in; }
+
+/* The masthead, the hero and the footer are page 1's, by instruction, and
+   their rules are written once under `.p1 .x, .p3 .x` above. */
+
+h1.sec { font-size: 22px; font-weight: 700; letter-spacing: -0.012em;
+         margin: 0; color: %(NAVY)s; }
+.p3 .sec { padding-top: 0.22in; }
+.sub { font-size: 8px; font-weight: 700; letter-spacing: 0.13em;
+       text-transform: uppercase; color: %(MUTED)s; padding-top: 7px; }
+.secrule { border-top: 1px solid %(NAVY)s; margin: 0.10in 0 0; }
+
+/* ── THE GRID ───────────────────────────────────────────────────────────
+   Hairlines between the columns and under every row but the last, and a
+   generous gutter so the rules are a whisper rather than a table.
+*/
+table.grid { width: 100%%; border-collapse: collapse; }
+table.grid td { width: 33.33%%; vertical-align: top;
+                padding: 0.16in 0.26in 0.16in;
+                border-left: 1px solid %(HAIR)s;
+                border-bottom: 1px solid %(HAIR)s; }
+table.grid td.first { border-left: none; padding-left: 0; }
+table.grid tr.lastrow td { border-bottom: none; }
+
+/* ── ONE RECORD ─────────────────────────────────────────────────────────
+   A muted number, the title as the strongest thing in the block, the
+   citation under it, the evidence, then the state as quiet metadata.
+*/
+.rec { page-break-inside: avoid; break-inside: avoid; }
+.reclink { text-decoration: none; }
+.recno { font-size: 15px; font-weight: 700; letter-spacing: 0.04em;
+         color: %(FAINT)s; line-height: 1; }
+/* A FIXED HEIGHT SO THE CITATIONS LINE UP ACROSS A ROW, and tall enough for
+   the two-line titles. "Construction Superintendent Log" and "Subcontractor
+   Safety Orientation" both wrap, and every height below is the two-line case
+   measured rather than guessed: font-size x 1.25 x 2 plus the padding.
+   At 36px the citation printed OVER the second line of the title. */
+.rect { font-size: 13px; font-weight: 700; line-height: 1.25;
+        color: %(NAVY)s; padding-top: 8px; height: 42px; }
+.recc { font-size: 8.5px; color: %(MUTED)s; letter-spacing: 0.02em; }
+
+/* THE EVIDENCE. Top-anchored and clipped, which is the behaviour that was
+   already there: the card is an index entry, not a preview of the sheet. */
+/* 1.50in -> 1.28in. A MISSING RECORD IS TALLER THAN A FILED ONE -- it adds
+   what is absent, a rule and the state under the same empty evidence space --
+   and a two-row register of them put the second row on a second sheet. The
+   window is what gives way; see `page_3_density`. */
+.doc { height: 1.46in; overflow: hidden; margin: 0.10in 0 0;
+       background: #fff; border: 1px solid %(HAIR)s; }
+.doc img { width: 100%%; display: block; }
+/* AND A MISSING RECORD DRAWS NOTHING AT ALL. No dashed box, no grey panel,
+   no outline of a document that was not filed -- the space is simply empty,
+   and it keeps its height so the rows stay aligned. */
+.doc.empty { border: none; background: transparent; }
+.docmsg { font-size: 8.5px; color: %(FAINT)s; padding-top: 0.58in;
+          line-height: 1.45; }
+
+.recstate { font-size: 8px; font-weight: 700; letter-spacing: 0.10em;
+            text-transform: uppercase; padding-top: 7px; }
+.recstate.filed { color: %(GREEN)s; }
+.recstate.missing { color: %(AMBER)s; }
+.recstate.not_due { color: %(MUTED)s; }
+.recnote { font-size: 9.5px; color: %(INK)s; line-height: 1.4;
+           padding-top: 0.09in; }
+.recrule { border-top: 2px solid %(AMBER)s; width: 0.34in;
+           margin: 0.08in 0 0; }
+.recrule.not_due { border-top-color: %(HAIR)s; }
+.recfact { font-size: 8.5px; color: %(INK)s; padding-top: 7px;
+           line-height: 1.4; }
+
+/* ── THE DOCUMENT WINDOW SHRINKS AS THE REGISTER GROWS ──────────────────
+   Eleven records is the ceiling, which is four rows. The evidence is the only
+   thing that may give way: every number, title, citation and state prints at
+   a readable size whatever the day holds, and a smaller thumbnail still shows
+   WHICH document it is.
+*/
+.p3.r3 table.grid td { padding: 0.11in 0.24in 0.11in; }
+.p3.r3 .doc { height: 0.72in; margin-top: 0.08in; }
+.p3.r3 .docmsg { padding-top: 0.24in; }
+.p3.r3 .rect { font-size: 12.5px; height: 40px; padding-top: 7px; }
+.p3.r3 .recnote { padding-top: 0.07in; }
+.p3.r3 .recrule { margin-top: 0.06in; }
+.p3.r3 .recstate { padding-top: 6px; }
+
+.p3.r4 table.grid td { padding: 0.075in 0.22in 0.075in; }
+.p3.r4 .doc { height: 0.44in; margin-top: 0.06in; }
+.p3.r4 .docmsg { padding-top: 0.11in; font-size: 7.5px; }
+.p3.r4 .rect { font-size: 12px; height: 38px; padding-top: 6px; }
+.p3.r4 .recno { font-size: 13px; }
+.p3.r4 .recc { font-size: 8px; }
+.p3.r4 .recstate { padding-top: 5px; }
+.p3.r4 .recnote { padding-top: 0.06in; font-size: 9px; }
+.p3.r4 .recrule { margin-top: 0.05in; }
+.p3.r4 .recfact { font-size: 8px; padding-top: 4px; }
+
+/* FIVE ROWS IS THE CEILING, and at five the window is a strip. Eleven
+   records plus a totals line is what the operator set as the most the page
+   must hold, and the thumbnail is the only thing that may give way. */
+.p3.r5 table.grid td { padding: 0.055in 0.20in 0.055in; }
+.p3.r5 .doc { height: 0.30in; margin-top: 0.05in; }
+.p3.r5 .docmsg { padding-top: 0.06in; font-size: 7px; }
+.p3.r5 .rect { font-size: 11.5px; height: 35px; padding-top: 5px; }
+.p3.r5 .recno { font-size: 12px; }
+.p3.r5 .recc { font-size: 7.5px; }
+.p3.r5 .recstate { padding-top: 4px; }
+.p3.r5 .recnote { padding-top: 0.05in; font-size: 8.5px; }
+.p3.r5 .recrule { margin-top: 0.04in; }
+.p3.r5 .recfact { font-size: 7.5px; padding-top: 3px; }
+.p3.r5 .cnum { font-size: 21px; }
+.p3.r5 table.cf { margin-top: 0.09in; }
+.p3.r5 .cnote { padding-top: 0.09in; }
+
+/* ── THE TOTALS LINE ────────────────────────────────────────────────────
+   Horizontal, compact, and the last thing in the register rather than a
+   panel beside it.
+*/
+.comp { margin: 0.20in 0 0; border-top: 1px solid %(NAVY)s;
+        padding-top: 0.14in; }
+.comp.inset { margin: 0; border: none; padding: 0; }
+.comph { font-size: 7.5px; font-weight: 700; letter-spacing: 0.15em;
          text-transform: uppercase; color: %(MUTED)s; }
-table.cf { width: 100%%; border-collapse: collapse; margin-top: 11px; }
-table.cf td { vertical-align: top; padding-right: 0.35in; }
-.comp.inset table.cf { margin-top: 0.20in; }
-.comp.inset table.cf td { padding-right: 0.28in; }
-.cnum { font-size: 24px; font-weight: 700; color: %(NAVY)s; line-height: 1;
-        letter-spacing: -0.02em; }
-.comp.inset .cnum { font-size: 30px; }
+table.cf { width: 100%%; border-collapse: collapse; margin-top: 0.12in; }
+table.cf td { vertical-align: top; padding: 0 0.18in;
+              border-left: 1px solid %(HAIR)s; }
+table.cf td.first { border-left: none; padding-left: 0; }
+.cnum { font-size: 27px; font-weight: 700; color: %(NAVY)s; line-height: 1;
+        letter-spacing: -0.022em; }
 .cnum.owed { color: %(AMBER)s; }
-.clab { font-size: 7.5px; font-weight: 700; letter-spacing: 0.10em;
-        text-transform: uppercase; color: %(MUTED)s; padding-top: 8px;
-        line-height: 1.35; }
-.cnote { font-size: 8px; color: %(MUTED)s; padding-top: 0.14in;
+/* ONE LINE EACH. "Required daily logs filed" wrapped at 0.10em of tracking
+   inside a third of the page, and a label broken across two lines beside a
+   figure reads as two labels. */
+.clab { font-size: 7px; font-weight: 700; letter-spacing: 0.04em;
+        text-transform: uppercase; color: %(MUTED)s; padding-top: 9px;
+        line-height: 1.35; white-space: nowrap; }
+.cnote { font-size: 8px; color: %(MUTED)s; padding-top: 0.13in;
          line-height: 1.5; }
+.p3.r4 .cnum { font-size: 23px; }
+.p3.r4 table.cf { margin-top: 0.11in; }
+.p3.r4 .cnote { padding-top: 0.11in; }
+
 """ % dict(NAVY=NAVY, INK=INK, MUTED=MUTED, FAINT=FAINT, HAIR=HAIR,
            PANEL=PANEL, AMBER=AMBER, AMBER_FIELD=AMBER_FIELD, GREEN=GREEN)
 
@@ -584,19 +661,6 @@ table.cf td { vertical-align: top; padding-right: 0.35in; }
 # ══════════════════════════════════════════════════════════════════════════
 #  SHARED
 # ══════════════════════════════════════════════════════════════════════════
-
-def render_banner(banner: BannerView) -> str:
-    return (
-        '<div class="banner">'
-        f'<div class="mark">{esc(banner.wordmark)}</div>'
-        f'<div class="tag">{esc(banner.tagline)}</div>'
-        '<div class="brule"></div>'
-        f'<div class="dtitle">{esc(banner.document_title)}</div>'
-        f'<div class="addr">{esc(banner.address.upper())}</div>'
-        f'<div class="city">{esc(banner.city)}</div>'
-        f'<div class="when">{esc(banner.dateline)}</div>'
-        "</div>")
-
 
 def render_rail(cells: Sequence[RailCell]) -> str:
     out = ""
@@ -704,12 +768,17 @@ def render_activity_block(a: ActivityRowView) -> str:
         "</tr></table></div>")
 
 
-def render_footer(view: ReportView) -> str:
+def render_footer(view: ReportView, numeral: str = "1",
+                  meta: str = "") -> str:
     """PINNED TO THE FOOT OF THE SHEET, which is what closes the page.
 
-    Absolutely positioned inside the page-1 block rather than left to flow:
-    a footer that follows the content sits halfway up a sparse day and reads
-    as the place the document stopped.
+    Absolutely positioned inside the page block rather than left to flow: a
+    footer that follows the content sits halfway up a sparse day and reads as
+    the place the document stopped.
+
+    `meta` is the tiny line under the identity. Page 3 puts the generation
+    timestamp there rather than letting it float beneath the register, where
+    it read as one more entry.
     """
     return (
         '<div class="ft"><div class="ftrule"></div><table class="ftg"><tr>'
@@ -717,11 +786,13 @@ def render_footer(view: ReportView) -> str:
         f'<div class="ftmark">{esc(view.banner.wordmark)}</div>'
         f'<div class="ftwhere">{esc(view.banner.address.upper())}'
         '<span class="mhbar">|</span>'
-        f'{esc(view.banner.city.upper())}</div></td>'
+        f'{esc(view.banner.city.upper())}</div>'
+        + (f'<div class="ftmeta">{esc(meta)}</div>' if meta else "")
+        + '</td>'
         '<td class="ftr">'
         f'{esc(view.banner.document_title)}<span class="mhbar">|</span>'
         f'{esc(view.date_long).upper()}'
-        '<span class="ftno">1</span></td>'
+        f'<span class="ftno">{esc(numeral)}</span></td>'
         "</tr></table></div>")
 
 
@@ -797,7 +868,7 @@ def render_page_1(view: ReportView) -> str:
         + extra
         + render_attention_and_safety(attention, view.safety)
         + "</div>"
-        + render_footer(view)
+        + render_footer(view, "1")
         + "</div>")
 
 
@@ -1043,111 +1114,198 @@ def render_page_2(view: ReportView) -> str:
 #  PAGE 3 — PROJECT RECORD
 # ══════════════════════════════════════════════════════════════════════════
 
+#: The state each record prints, and the class that colours it.
+#:
+#: AMBER IS FOR A REQUIRED RECORD THAT IS OWED AND ABSENT, and for nothing
+#: else. "Not due today" is not a deficiency and takes the muted ink; a filed
+#: record takes green, which on this document means FILED and only that.
 STATE_WORDS = {
-    CardState.FILED: ("filed", "&#10003;&nbsp; Filed"),
-    CardState.MISSING: ("missing", "&#9651;&nbsp; Not filed"),
-    CardState.NOT_DUE: ("not_due", "&mdash;&nbsp; Not due today"),
+    CardState.FILED: ("filed", "Filed"),
+    CardState.MISSING: ("missing", "Not filed"),
+    CardState.NOT_DUE: ("not_due", "Not due today"),
 }
 
 
-def render_card(card: CardView) -> str:
+def render_record(card: CardView) -> str:
+    """ONE RECORD IN THE REGISTER. No box, no badge, no placeholder.
+
+    THE ORDER IS THE HIERARCHY: a muted number, the title as the strongest
+    thing in the block, the citation under it in small muted ink, then the
+    evidence, then the state as quiet metadata beneath the evidence.
+
+    A MISSING RECORD LEAVES THE EVIDENCE SPACE EMPTY. Not a dashed box, not a
+    grey panel, not an outline of a document that does not exist -- each of
+    those draws something where nothing was filed, and on a compliance
+    register that is the one thing the space must not do. The rows stay
+    aligned because the empty space is the same height as a thumbnail.
+
+    THE TITLE AND THE EVIDENCE CARRY THE LINK. The repeated "VIEW LOG" line
+    under every card was the third time a reader was told the same thing.
+    """
     css, words = STATE_WORDS[card.state]
-    if card.state is CardState.FILED and card.thumbnail:
-        window = f'<div class="win"><img src="{esc(card.thumbnail)}" /></div>'
-    elif card.state is CardState.FILED:
+    filed = card.state is CardState.FILED
+
+    if filed and card.thumbnail:
+        doc = f'<div class="doc"><img src="{esc(card.thumbnail)}" /></div>'
+    elif filed:
         # THE PICTURE IS AN ILLUSTRATION, NOT THE RECORD. A thumbnail that
-        # could not be rendered leaves the card otherwise intact.
-        window = ('<div class="nowin"><div class="msg">Document filed<br />'
-                  "preview unavailable</div></div>")
+        # could not be rendered leaves the entry otherwise intact, and says so
+        # in the same quiet ink as everything else rather than drawing a box.
+        doc = ('<div class="doc empty"><div class="docmsg">'
+               "Document filed &middot; preview unavailable</div></div>")
     else:
-        # NOT A FAKE PAGE. An empty document outline reads as a filing that
-        # rendered badly; this says what is absent and for which date.
-        window = ('<div class="nowin"><div class="msg">'
-                  f'{esc(card.absent_note)}</div></div>')
-    facts = "".join(f'<div class="fact">{esc(f)}</div>' for f in card.facts)
-    link = (f'<div class="go"><a href="{esc(card.link)}">View log &rarr;</a>'
-            "</div>" if card.link else "")
-    # A CARD CARRYING FACTS GIVES UP SOME OF ITS WINDOW. The window is an
-    # illustration of the filed document; the facts are the document's own
-    # figures. On the 31 August page the orientation card carried two fact
-    # lines under a two-line title and overflowed the register's fixed row
-    # height, printing its link across the block below it. The picture yields,
-    # because between a taller picture and a readable figure the figure wins.
-    shell = "card facts" if card.facts else "card"
-    return (f'<div class="{shell}"><div class="no">{card.number:02d}</div>'
-            f'<div class="t">{esc(card.title)}</div>'
-            f'<div class="c">{esc(card.citation)}</div>'
-            f'<div class="state {css}">{words}</div>'
-            f"{window}{facts}{link}</div>")
+        doc = '<div class="doc empty"></div>'
+
+    head = (f'<div class="recno">{card.number:02d}</div>'
+            f'<div class="rect">{esc(card.title)}</div>'
+            f'<div class="recc">{esc(card.citation)}</div>')
+    if card.link:
+        head = f'<a class="reclink" href="{esc(card.link)}">{head}</a>'
+        doc = f'<a href="{esc(card.link)}">{doc}</a>'
+
+    if filed:
+        tail = f'<div class="recstate {css}">{words}</div>'
+    else:
+        # THE ABSENCE, IN THE ORDER IT READS: what is missing and for when,
+        # a short rule, then the state.
+        tail = (f'<div class="recnote">{esc(card.absent_note)}</div>'
+                f'<div class="recrule {css}"></div>'
+                f'<div class="recstate {css}">{words.upper()}</div>')
+
+    facts = "".join(f'<div class="recfact">{esc(f)}</div>' for f in card.facts)
+    return f'<div class="rec">{head}{doc}{tail}{facts}</div>'
 
 
 def render_completeness(completeness: CompletenessView,
                         inset: bool = False) -> str:
-    """The three denominators.
+    """THE TOTALS LINE, which is what closes a register.
 
-    `inset` puts it inside the register's last row instead of below the grid.
-    In that position it is a CARD-SHAPED block: it carries the grid's border
-    and its height, so the row reads as a row rather than as a card beside a
-    panel that wandered in.
+    Three figures side by side under a small eyebrow, separated by hairlines.
+    Not a panel: a panel makes the summary compete with the records it
+    summarises, and this is the last line of an institutional report rather
+    than a dashboard tile.
+
+    `inset` places it beside the last record, in the columns that record does
+    not use. Everything else about it is identical, which is the point --
+    the same block in two positions rather than two blocks.
+
+    ONLY THE OUTSTANDING FIGURE MAY BE AMBER, and only when it is not zero. A
+    zero set in the colour that means "a record is missing" reads as an alarm
+    about nothing, and a palette that cries wolf on a complete day is worth
+    less on the day it matters.
     """
     shell = "comp inset" if inset else "comp"
+    owed = " owed" if completeness.outstanding else ""
     return (
-        f'<div class="{shell}"><div class="comph">Document completeness</div>'
+        f'<div class="{shell}">'
+        '<div class="comph">Document completeness</div>'
         '<table class="cf"><tr>'
-        f'<td><div class="cnum">{esc(completeness.required_ratio)}</div>'
+        f'<td class="first"><div class="cnum">'
+        f'{esc(completeness.required_ratio)}</div>'
         '<div class="clab">Required daily logs filed</div></td>'
         f'<td><div class="cnum">{completeness.additional}</div>'
         '<div class="clab">Additional records filed</div></td>'
-        # AMBER ONLY WHEN THERE IS SOMETHING OWED. A zero set in the colour
-        # that means "a record is missing" reads as an alarm about nothing,
-        # and a palette that cries wolf on a complete day is worth less on
-        # the day it matters.
-        + f'<td><div class="cnum{" owed" if completeness.outstanding else ""}">'
-        + f'{completeness.outstanding}</div>'
-        + '<div class="clab">Outstanding</div></td>'
+        f'<td><div class="cnum{owed}">{completeness.outstanding}</div>'
+        '<div class="clab">Outstanding</div></td>'
         "</tr></table>"
         '<div class="cnote">Required and additional records have different '
         "denominators and are never combined.</div></div>")
 
 
-def render_page_3(view: ReportView) -> str:
-    """THE REGISTER, AND THE COMPLETENESS FIGURES INSIDE IT.
+def page_3_rows(cards: Sequence[CardView]) -> int:
+    """How many rows the register needs INCLUDING the totals line.
 
-    Seven cards in three columns leaves 3/3/1, and the lone seventh card used
+    The totals line goes in the cells the last row does not use. When there
+    are fewer than two of those it needs a row of its own, and that row costs
+    the same page as a row of records -- which is why it is counted here and
+    not left for the layout to discover.
+    """
+    rows = (len(cards) + 2) // 3
+    spare = (3 - len(cards) % 3) % 3
+    return rows + (0 if spare >= 2 else 1)
+
+
+def page_3_density(cards: Sequence[CardView]) -> str:
+    """How tall a document window the register can afford.
+
+    THE EVIDENCE IS WHAT GIVES WAY, because it is the only thing on this page
+    that can. Every record's number, title, citation and state must print at a
+    readable size whatever the day holds; the thumbnail is an illustration of
+    the filed document and a smaller one still shows which document it is.
+
+    MEASURED, NOT CHOSEN. The head runs to about 3.1in of an 11in sheet and
+    the footer starts at 10.12in, so the register has roughly 7in for its
+    rows. Eleven records is the ceiling the operator set; with the totals line
+    that is five rows, and at five rows the window is a strip that shows the
+    document's title bar and little else. That is the trade the ceiling buys.
+    """
+    rows = page_3_rows(cards)
+    if rows <= 2:
+        return "r2"
+    if rows == 3:
+        return "r3"
+    if rows == 4:
+        return "r4"
+    return "r5"
+
+
+def render_page_3(view: ReportView) -> str:
+    """THE REGISTER, AND THE TOTALS LINE INSIDE IT.
+
+    Seven records in three columns leaves 3/3/1, and the lone last record used
     to sit beside two empty cells with the completeness block floating below
-    the whole grid. The empty cells are where the completeness belongs: it is
-    a statement ABOUT the register, the row has room for it, and putting it
-    there makes the three numbers as prominent as the cards they summarise.
+    the whole grid. The empty cells are where the totals belong: they are a
+    statement ABOUT the register, and putting them there closes the page
+    rather than adding to it.
+
+    TWO FREE CELLS OR MORE. One is not enough -- a totals line squeezed into a
+    single column would be a record-shaped block of numbers in a row of
+    records, which is the confusion this is meant to remove -- so it falls back
+    to a line under the grid, which is the same block one row down.
     """
     rows = [view.cards[i:i + 3] for i in range(0, len(view.cards), 3)]
     spare = 3 - len(rows[-1]) if rows else 0
-    # TWO FREE CELLS OR MORE. One is not enough to read as a panel -- it would
-    # be a card-shaped block of numbers in a row of cards, which is the
-    # confusion this is meant to remove.
     inset = spare >= 2
 
     grid = ""
     for n, chunk in enumerate(rows):
-        grid += "<tr>" + "".join(f"<td>{render_card(c)}</td>" for c in chunk)
-        if inset and n == len(rows) - 1:
-            grid += (f'<td colspan="{spare}">'
+        last = n == len(rows) - 1
+        rcls = ' class="lastrow"' if last else ""
+        grid += f"<tr{rcls}>"
+        for c, card in enumerate(chunk):
+            cls = "first" if c == 0 else ""
+            grid += f'<td class="{cls}">{render_record(card)}</td>'
+        if inset and last:
+            grid += (f'<td class="first" colspan="{spare}">'
                      + render_completeness(view.completeness, inset=True)
                      + "</td>")
         else:
-            grid += "<td></td>" * (3 - len(chunk))
+            grid += '<td class="first"></td>' * (3 - len(chunk))
         grid += "</tr>"
 
+    if not inset:
+        # A ROW OF THE REGISTER, NOT A BLOCK UNDER IT. Below the grid it
+        # carried its own margin, border and padding, and that was what put
+        # five records on two sheets -- the register had already used the
+        # page. Spanning the last row costs a third of an inch less and reads
+        # as the totals of the thing above it rather than a panel after it.
+        grid += ('<tr class="lastrow"><td class="first" colspan="3">'
+                 + render_completeness(view.completeness, inset=True)
+                 + "</td></tr>")
+
     return (
-        '<div class="p3">' + render_banner(view.banner)
-        + '<div class="body"><div style="padding-top:0.14in;"></div>'
+        f'<div class="p3 {page_3_density(view.cards)}">'
+        + render_masthead(view.banner)
+        + render_hero(view.banner)
+        + '<div class="body">'
         + '<h1 class="sec">Project record</h1>'
         + '<div class="sub">Regulatory &nbsp;&middot;&nbsp; Safety '
           "&nbsp;&middot;&nbsp; Workforce documentation</div>"
         + '<div class="secrule"></div>'
         + f'<table class="grid">{grid}</table>'
-        + ("" if inset else render_completeness(view.completeness))
-        + f'<div class="gen">{esc(view.generated)}</div>'
-        + "</div></div>")
+        + "</div>"
+        + render_footer(view, "3 of 3", view.generated)
+        + "</div>")
 
 
 # ══════════════════════════════════════════════════════════════════════════

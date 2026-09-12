@@ -158,11 +158,13 @@ class TheCoverDoesNotCountWhatItDoesNotShow(unittest.TestCase):
         self.assertNotIn('font-weight:600;">WORKERS AT THE GATE</span>', _SRC)
 
     def test_the_date_and_the_address_are_still_on_the_page(self):
-        """The two cells that stayed. They are a stacked banner rather than a
-        table row now, so they are read off the renderer that draws them."""
-        self.assertIn('<div class="addr">{esc(banner.address.upper())}</div>',
+        """The two cells that stayed. They are a stacked HERO rather than a
+        table row now -- the banner they used to sit in was replaced by a
+        white masthead over it -- so they are read off the renderer that draws
+        them."""
+        self.assertIn('<div class="haddr">{esc(banner.address.upper())}</div>',
                       _RENDERER)
-        self.assertIn('<div class="when">{esc(banner.dateline)}</div>',
+        self.assertIn('<div class="hwhen">{esc(banner.dateline)}</div>',
                       _RENDERER)
 
     def test_the_banner_cannot_leave_a_hole_where_the_cell_was(self):
@@ -175,7 +177,7 @@ class TheCoverDoesNotCountWhatItDoesNotShow(unittest.TestCase):
         and no third column to remove. That is asserted rather than assumed --
         a future banner rebuilt as a table would want the old test back.
         """
-        block = _RENDERER[_RENDERER.index("def render_banner("):]
+        block = _RENDERER[_RENDERER.index("def render_hero("):]
         block = block[:block.index("\ndef ")]
         self.assertNotIn("width=", block)
         self.assertNotIn("<td", block)

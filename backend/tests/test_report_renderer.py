@@ -326,9 +326,10 @@ class AmberMeansOwedAndAbsent(unittest.TestCase):
         """THE ANCHOR. Without it the bans below are looking for nothing."""
         css = r.stylesheet()
         self.assertIn(f".abox {{ border: 1px solid {r.AMBER}", css)
-        self.assertIn(f".state.missing {{ color: {r.AMBER}", css)
+        self.assertIn(f".recstate.missing {{ color: {r.AMBER}", css)
+        self.assertIn(f".recrule {{ border-top: 2px solid {r.AMBER}", css)
         self.assertIn(f".cnum.owed {{ color: {r.AMBER}", css)
-        self.assertIn(f".state.filed {{ color: {r.GREEN}", css)
+        self.assertIn(f".recstate.filed {{ color: {r.GREEN}", css)
 
     def test_a_variance_is_not_amber(self):
         html = r.render_page_1(_view(
@@ -359,7 +360,25 @@ class AmberMeansOwedAndAbsent(unittest.TestCase):
         for cls in self.GREEN_CLASSES:
             self.assertNotIn(cls, page1, cls)
         page3 = r.render_page_3(_view(cards=_cards()))
-        self.assertIn('"state filed"', page3)
+        self.assertIn('"recstate filed"', page3)
+
+    def test_a_record_that_is_not_due_is_not_amber(self):
+        """AMBER MEANS REQUIRED TODAY AND ABSENT, and nothing else. A record
+        that is not due is not a deficiency, so neither its state nor the
+        rule above it takes the colour that says one is owed."""
+        cards = _cards(n=2, filed=1)
+        cards[1] = dict(cards[1], state=v.CardState.NOT_DUE)
+        html = r.render_page_3(_view(cards=cards))
+        self.assertIn('"recstate not_due"', html)
+        self.assertIn('"recrule not_due"', html)
+        self.assertNotIn('"recstate missing"', html)
+
+    def test_and_a_complete_register_shows_no_amber_at_all(self):
+        html = r.render_page_3(_view(cards=_cards(n=3, filed=3),
+                                     filed_all=True))
+        for cls in self.AMBER_CLASSES:
+            self.assertNotIn(cls, html, cls)
+        self.assertNotIn('"recstate missing"', html)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -459,63 +478,89 @@ class ThePhotoBandRules(unittest.TestCase):
 
 class TheRegisterReadsLikeARegister(unittest.TestCase):
 
-    #: The register's row height. Named once here so the two assertions below
-    #: cannot drift apart, and so a change to it is one edit rather than a
-    #: search. 2.00in -> 2.30in when the document window grew a third taller.
-    ROW_HEIGHT = "2.30in"
+    def test_no_record_declares_a_height_of_its_own(self):
+        """THE ROWS ARE THE GRID'S, NOT THE RECORDS'.
 
-    def test_every_card_declares_the_same_height(self):
-        """ONE DECLARATION, IN THE STYLESHEET. A per-card inline height is how
-        three cards in a row end at three heights."""
+        Every record used to be a bordered box with a fixed height, so that
+        three in a row did not end at three different places. There are no
+        boxes now: the records sit in table cells and the cell is what makes
+        the row, so an inline height on a record is the old defect returning
+        by another name.
+        """
         html = r.render_page_3(_view(cards=_cards()))
-        self.assertNotIn(f"height:{self.ROW_HEIGHT}", html)
-        self.assertIn(f"height: {self.ROW_HEIGHT}", r.stylesheet())
+        self.assertNotIn("height:", html)
+        self.assertNotIn('class="card"', html, "the bordered card is back")
 
-    def test_the_completeness_inset_is_the_SAME_height_as_a_card(self):
-        """IT SITS IN A ROW OF CARDS, so it is a row of cards' height. A
-        panel that ends higher or lower than the card beside it reads as
-        something that wandered into the grid."""
+    def test_the_document_window_is_declared_once_per_density(self):
+        """ONE DECLARATION EACH, IN THE STYLESHEET. A per-record inline
+        height is how three thumbnails in a row end at three sizes."""
+        # ANCHORED AT THE START OF A RULE. `.doc { height:` is a substring of
+        # `.p3.r4 .doc { height:`, so counting it bare found all three.
         css = r.stylesheet()
-        # THE GEOMETRY RULE, NOT THE BREAK RULE. `.card` is declared twice --
-        # once for its box and once in the page-break block -- and the first
-        # occurrence in the file is the break rule.
-        card = css[css.index(".card { border:"):]
-        card = card[:card.index("}")]
-        inset = css[css.index(".comp.inset {"):]
-        inset = inset[:inset.index("}")]
-        self.assertIn(self.ROW_HEIGHT, card)
-        self.assertIn(self.ROW_HEIGHT, inset)
+        nl = chr(10)
+        for rule in (nl + ".doc { height:",
+                     nl + ".p3.r3 .doc { height:",
+                     nl + ".p3.r4 .doc { height:"):
+            self.assertEqual(css.count(rule), 1, rule.strip())
 
-    def test_a_card_carrying_facts_does_not_overflow_its_row(self):
-        """MEASURED ON PAPER. The orientation card carries two fact lines
-        under a two-line title, and at the full window height it printed its
-        link across the block below it -- the register's rows are a fixed
-        height so that a row reads as a row, and a card that escapes one is
-        worse than a smaller picture."""
+    def test_the_evidence_space_of_a_missing_record_keeps_its_height(self):
+        """SO THE ROWS STAY ALIGNED. The space is empty -- no box, no panel,
+        no outline of a document that was not filed -- but it is still the
+        height of a thumbnail, or the record beside it would sit lower."""
+        css = r.stylesheet()
+        empty = css[css.index(".doc.empty {"):]
+        empty = empty[:empty.index("}")]
+        self.assertIn("border: none", empty)
+        self.assertIn("background: transparent", empty)
+        self.assertNotIn("height", empty, "the empty space set its own height")
+
+    def test_a_record_carrying_facts_does_not_overflow_its_row(self):
+        """MEASURED ON PAPER. The orientation record carries two fact lines
+        under a two-line title, and inside the old fixed-height card it
+        printed its link across the block below.
+
+        THE CARDS ARE GONE and the row takes the height of what is in it, so
+        the record cannot escape one. What is still worth checking is that the
+        page does not: the fact lines are real content and they have to fit.
+        """
         _needs_weasyprint(self)
         cards = _cards(n=7)
         cards[4] = dict(cards[4], facts=(
             "18 / 18 current onsite workers have orientation on file",
             "8 acknowledgments filed today"))
         html = r.render_page_3(_view(cards=cards))
-        self.assertIn('class="card facts"', html)
-        page = HTML(string=f"<style>{r.stylesheet()}</style>{html}").render()
+        page = HTML(string=_sheet(html)).render()
         self.assertEqual(len(page.pages), 1,
                          "the register spilled onto a second sheet")
 
-    def test_and_a_card_with_no_facts_keeps_the_taller_window(self):
-        html = r.render_page_3(_view(cards=_cards(n=3)))
-        self.assertIn('class="card"', html)
-        self.assertNotIn('class="card facts"', html)
+    def test_the_special_copy_reaches_the_page_verbatim(self):
+        """THE PRE-SHIFT AND ORIENTATION LINES ARE THE RECORD'S OWN FIGURES
+        and are printed as they arrive. This page decides sizes, not wording.
+        """
+        cards = _cards(n=7)
+        cards[1] = dict(cards[1], facts=("No workers recorded on the sheet",))
+        cards[4] = dict(cards[4], facts=(
+            "11 / 11 current onsite workers have orientation on file",
+            "16 acknowledgments filed today"))
+        html = r.render_page_3(_view(cards=cards))
+        for line in ("No workers recorded on the sheet",
+                     "11 / 11 current onsite workers have orientation on file",
+                     "16 acknowledgments filed today"):
+            self.assertIn(r.esc(line), html, line)
 
     def test_a_missing_card_gets_a_panel_and_no_fake_thumbnail(self):
         html = r.render_page_3(_view(cards=_cards(n=2, filed=1)))
         self.assertIn("No record filed for August 27", html)
         self.assertEqual(html.count("<img"), 1, "the absent card drew an image")
 
-    def test_a_filed_card_links_and_an_absent_one_does_not(self):
+    def test_a_filed_record_links_and_an_absent_one_does_not(self):
+        """THE TITLE AND THE EVIDENCE CARRY THE LINK NOW. The repeated
+        "View log" line under every card was the third time a reader was told
+        the same thing; a record with nothing filed still links to nothing."""
         html = r.render_page_3(_view(cards=_cards(n=2, filed=1)))
-        self.assertEqual(html.count("View log"), 1)
+        self.assertNotIn("View log", html)
+        self.assertEqual(html.count("<a "), 2, "one link on the title and "
+                         "one on the evidence, for the filed record only")
 
     def test_the_denominators_stay_separate(self):
         html = r.render_page_3(_view(cards=_cards()))
@@ -523,15 +568,29 @@ class TheRegisterReadsLikeARegister(unittest.TestCase):
         self.assertIn("Additional records filed", html)
         self.assertIn("never combined", html)
 
-    def test_cards_flow_three_up(self):
-        """COUNTED BY CARD, NOT BY `<tr>`. The completeness block is a table
-        too, and it is INSIDE the grid now -- counting rows finds its row as
-        well and makes seven cards look like four."""
+    def test_records_flow_three_up(self):
+        """COUNTED BY RECORD, NOT BY `<tr>`. The totals line is a table too,
+        and it is INSIDE the grid -- counting rows finds its row as well and
+        makes seven records look like four."""
         html = r.render_page_3(_view(cards=_cards(n=7)))
-        rows = [row for row in html.split("<tr>") if 'class="card"' in row]
-        self.assertEqual(len(rows), 3, "seven cards should be 3+3+1")
-        self.assertEqual([row.count('class="card"') for row in rows],
+        rows = [row for row in html.split("<tr") if 'class="rec"' in row]
+        self.assertEqual(len(rows), 3, "seven records should be 3+3+1")
+        self.assertEqual([row.count('class="rec"') for row in rows],
                          [3, 3, 1])
+
+    def test_a_missing_record_draws_nothing_where_the_document_would_be(self):
+        """NOT A DASHED BOX, NOT A GREY PANEL, NOT A DOCUMENT ICON. Each of
+        those draws something where nothing was filed, which on a compliance
+        register is the one thing the space must not do."""
+        html = r.render_page_3(_view(cards=_cards(n=2, filed=1)))
+        self.assertIn('class="doc empty"', html)
+        self.assertEqual(html.count("<img"), 1, "the absent record drew one")
+        # ANCHORED AS A DECLARATION. The bare word appears in the comment
+        # that explains why there is no dashed box, and an assertion matching
+        # a comment instead of code is satisfied by the prose alone.
+        css = r.stylesheet()
+        self.assertNotIn("border: 1px dashed", css,
+                         "a dashed placeholder is back")
 
     def test_the_lonely_last_card_gets_the_completeness_beside_it(self):
         """THE OPERATOR'S RECOMPOSITION. Seven cards left one card beside two
@@ -543,25 +602,98 @@ class TheRegisterReadsLikeARegister(unittest.TestCase):
         grid = html[html.index('class="grid"'):]
         self.assertIn('colspan="2"', grid)
         self.assertIn("comp inset", grid)
+        # AND IT IS THE SAME BLOCK IN BOTH POSITIONS. An inset that carried
+        # different copy would be a second summary.
+        self.assertIn("never combined", grid)
         # AND NOT TWICE. The block below the grid is the fallback, not a
         # second copy.
         self.assertEqual(html.count("Document completeness"), 1)
 
-    def test_a_full_last_row_keeps_the_completeness_underneath(self):
-        """SIX CARDS LEAVES NO ROOM. The block is the same block, one row
-        down, and nothing is dropped to make the recomposition work."""
+    def test_a_full_last_row_gives_the_totals_a_row_of_their_own(self):
+        """SIX RECORDS LEAVES NO SPARE CELL, so the totals line spans a row of
+        the register instead of sitting beside one.
+
+        IT IS STILL A ROW OF THE REGISTER, not a block under it. Below the
+        grid it carried its own margin, border and padding, and that was what
+        put five records on two sheets -- the register had already used the
+        page.
+        """
         html = r.render_page_3(_view(cards=_cards(n=6)))
-        self.assertNotIn("comp inset", html)
         self.assertEqual(html.count("Document completeness"), 1)
         self.assertIn("Required daily logs filed", html)
+        grid = html[html.index('class="grid"'):]
+        self.assertIn('colspan="3"', grid, "the totals line left the grid")
 
-    def test_one_spare_cell_is_not_enough_for_the_inset(self):
-        """Eight cards leaves ONE empty cell. A card-shaped block of numbers in
-        a row of cards is the confusion this was meant to remove, so it falls
-        back rather than squeezing."""
+    def test_one_spare_cell_is_not_enough_to_sit_beside_a_record(self):
+        """Eight records leaves ONE empty cell. A record-shaped block of
+        numbers in a row of records is the confusion this was meant to remove,
+        so the totals take a row rather than squeeze into a column."""
         html = r.render_page_3(_view(cards=_cards(n=8)))
-        self.assertNotIn("comp inset", html)
         self.assertEqual(html.count("Document completeness"), 1)
+        grid = html[html.index('class="grid"'):]
+        self.assertIn('colspan="3"', grid)
+        self.assertNotIn('colspan="1"', grid)
+
+    def test_the_totals_row_is_counted_before_the_window_is_sized(self):
+        """THE ROW COSTS THE SAME PAGE AS A ROW OF RECORDS. Leaving the layout
+        to discover that is what put five records on two sheets: the register
+        was sized for two rows and then asked to carry three."""
+        self.assertEqual(r.page_3_rows(_cards(n=4)), 2, "4 records inset")
+        self.assertEqual(r.page_3_rows(_cards(n=5)), 3, "5 needs a totals row")
+        self.assertEqual(r.page_3_rows(_cards(n=6)), 3)
+        self.assertEqual(r.page_3_rows(_cards(n=7)), 3, "7 records inset")
+        self.assertEqual(r.page_3_rows(_cards(n=11)), 5, "the ceiling")
+
+    def test_the_register_fits_one_sheet_up_to_the_ELEVEN_ceiling(self):
+        """THE OPERATOR'S CEILING, MEASURED RATHER THAN ASSUMED.
+
+        COUNTING SHEETS IS NOT ENOUGH and that is the whole reason this test
+        looks the way it does. Page 3 is a fixed-height block, and a
+        fixed-height block CLIPS rather than paginating: the first version of
+        this check reported one sheet for a register whose last row and whose
+        footer had fallen off the bottom of it. What is counted is what
+        LANDED -- every record, and the footer that closes the page.
+        """
+        _needs_weasyprint(self)
+        for n in range(1, 12):
+            with self.subTest(records=n):
+                html = r.render_page_3(_view(cards=_cards(n=n, filed=n - 1)))
+                page = HTML(string=_sheet(html)).render().pages[0]
+                seen = {"rec": set(), "ft": set()}
+
+                def walk(box):
+                    el = getattr(box, "element", None)
+                    cls = (el.get("class") if el is not None else "") or ""
+                    for want in seen:
+                        if want in cls.split():
+                            # BY ELEMENT, NOT BY BOX: every anonymous block
+                            # inside a record inherits its class.
+                            seen[want].add(id(el))
+                    for child in getattr(box, "children", ()):
+                        walk(child)
+
+                walk(page._page_box)
+                self.assertEqual(len(seen["rec"]), n,
+                                 f"{n - len(seen['rec'])} records fell off "
+                                 f"the sheet at density "
+                                 f"{r.page_3_density(_cards(n=n))!r}")
+                self.assertEqual(len(seen["ft"]), 1,
+                                 "the footer fell off the sheet")
+
+    def test_the_window_shrinks_as_the_register_grows(self):
+        """AND IT IS MONOTONIC. A register with more in it never gets a taller
+        document window than one with less."""
+        css = r.stylesheet()
+
+        def window(density):
+            nl = chr(10)
+            key = (nl + f".p3.{density} .doc {{ height: " if density
+                   else nl + ".doc { height: ")
+            i = css.index(key) + len(key)
+            return float(css[i:css.index("in", i)])
+
+        heights = [window(d) for d in ("", "r3", "r4", "r5")]
+        self.assertEqual(heights, sorted(heights, reverse=True), heights)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -584,10 +716,21 @@ class TheBanner(unittest.TestCase):
     `BannerView`, and that is asserted below rather than assumed.
     """
 
-    def test_page_3_still_carries_the_banner_and_page_2_does_not(self):
+    def test_pages_1_and_3_carry_the_same_head_and_page_2_does_not(self):
+        """THEY SHARE IT AGAIN, BY RULING. Page 1 was redesigned first and
+        page 3 followed on 12 September, so both carry the masthead over the
+        hero and `render_banner` has no caller left.
+
+        PAGE 2 STILL CARRIES NEITHER. It is the evidence page and a masthead
+        over photographs competes with the only thing that page is for.
+        """
         view = _view(acts=[_activity(photos=2)], cards=_cards())
-        self.assertIn('class="banner"', r.render_page_3(view))
-        self.assertNotIn('class="banner"', r.render_page_2(view))
+        for page in (r.render_page_1(view), r.render_page_3(view)):
+            self.assertIn('class="mh"', page)
+            self.assertIn('class="hero"', page)
+        page2 = r.render_page_2(view)
+        self.assertNotIn('class="mh"', page2)
+        self.assertNotIn('class="hero"', page2)
 
     def test_page_1_carries_a_masthead_over_a_hero_instead(self):
         html = r.render_page_1(_view(cards=_cards()))
@@ -764,8 +907,11 @@ class NothingIsStrandedAcrossASheet(unittest.TestCase):
         css = r.stylesheet()
         self.assertIn("table.shots td { page-break-inside: avoid", css)
 
-    def test_a_card_is_one_unit(self):
-        self.assertIn(".card { page-break-inside: avoid", r.stylesheet())
+    def test_a_record_is_one_unit(self):
+        """Its state, its evidence and its link are one statement, and the
+        register's cards became typographic records when page 3 was
+        recomposed -- the rule followed the markup."""
+        self.assertIn(".rec { page-break-inside: avoid", r.stylesheet())
 
     def test_an_activity_row_is_one_unit(self):
         self.assertIn("table.acts tr { page-break-inside: avoid", r.stylesheet())

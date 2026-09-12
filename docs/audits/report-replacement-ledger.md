@@ -495,3 +495,73 @@ the busiest day in the corpus carries five.
 | `mid` | 2 | between |
 | `tight` | 3-4 | |
 | `dense` | 5+ | the floor; past this the page is full and says so |
+
+---
+
+# Page 3, recomposed
+
+Operator ruling, 12 September: *"Keep all existing data, logic, statuses,
+links, banner content, and legal-document behavior unchanged. This is a
+visual/layout change only."* Pages 1 and 2 are untouched, every string still
+comes from the same `CardView` and `CompletenessView`, and
+`_logbook_thumbnail_url` is unchanged -- same source document, same
+top-anchored clip.
+
+## What moved
+
+| | before | after |
+|---|---|---|
+| head | the navy banner | page 1's masthead over its hero |
+| record | a bordered card | a typographic block in a quiet grid |
+| separation | card borders | whitespace and hairlines |
+| evidence | 0.98in window inside a card | up to 1.46in, in the grid |
+| state | a badge with a tick | small green metadata under the evidence |
+| link | "VIEW LOG" under every card | the title and the evidence carry it |
+| missing | a dashed placeholder box | nothing at all, then the note, a short amber rule, NOT FILED |
+| totals | a panel | a row of the register |
+| footer | none; a floating timestamp | a footer, with the timestamp as its metadata |
+
+**A missing record draws nothing where the document would be.** Not a dashed
+box, not a grey panel, not an outline of a document that was not filed. Each of
+those draws something where nothing exists, which on a compliance register is
+the one thing the space must not do. It keeps its height so the rows stay
+aligned, and that is all it keeps.
+
+## The eleven-record ceiling, and the check that was lying
+
+The operator set eleven records as the ceiling and said the thumbnail should
+shrink to make room. Five densities do that, and the window is the only thing
+that gives way: every number, title, citation and state prints at a readable
+size whatever the day holds.
+
+**COUNTING SHEETS WAS NOT ENOUGH, and that is the finding worth keeping.** Page
+3 is a fixed-height block, and a fixed-height block CLIPS rather than
+paginating. The first measurement reported "one sheet" for a register whose
+last row and whose footer had fallen off the bottom of it — and the first real
+render did exactly that: seven records went in and six came out, with no
+footer. The check now counts what LANDED, by element rather than by box,
+because every anonymous block inside a record inherits the record's class and
+counting boxes reported fourteen records for three.
+
+**The totals row is counted before the window is sized.** It goes in the cells
+the last row does not use; with fewer than two of those it needs a row of its
+own, and that row costs the same page as a row of records. Leaving the layout
+to discover that is what put five records on two sheets.
+
+Measured budget: the head runs to about 3.1in of an 11in sheet and the footer
+starts at 10.12in, so the register has roughly 7in for its rows.
+
+## Two collisions found on paper
+
+* **The citation printed over the second line of the title.** "Construction
+  Superintendent Log" and "Subcontractor Safety Orientation" both wrap, and the
+  title's fixed height was set for one line. Every height is now the two-line
+  case computed from the font size rather than guessed.
+* **The totals labels wrapped**, and a label broken across two lines beside a
+  figure reads as two labels.
+
+## And the banner is gone
+
+`render_banner` and its stylesheet had no caller once page 3 took the masthead
+and hero. Both are deleted rather than left behind, and the break rule for the
+bordered card went with the card.
