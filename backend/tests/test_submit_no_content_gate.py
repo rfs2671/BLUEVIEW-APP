@@ -110,8 +110,11 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
     def test_osha_fields_match_the_renderer(self):
         """render_logbook_html's osha_log branch drops a row that names no
         worker. Read from the source, so the two cannot drift apart."""
+        # ENDED AT THE GENERIC ARM. See the note on the same slice in
+        # test_report_six_defects.py: `osha_log` is the last named branch now.
         branch = _SRC[_SRC.index('elif log_type == "osha_log":'):]
-        branch = branch[:branch.index("elif log_type ==", 10)]
+        branch = branch[:branch.index(
+            'type_title = log_type.replace("_", " ").title()')]
         m = re.search(r"has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)", branch)
         renderer_fields = tuple(re.findall(r'"([a-z_]+)"', m.group(1)))
         self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["osha_log"][1], renderer_fields)

@@ -410,8 +410,13 @@ class TheBlankRowIsGoneEverywhere(unittest.TestCase):
         and a card number against no name. A certification register is a list
         of statements about named men, so the name is the rule and the seed
         row (which has no name either) is still dropped by it."""
+        # ENDED AT THE GENERIC ARM, NOT AT THE NEXT TYPE. `osha_log` became
+        # the LAST named branch when the orientation sheet's was deleted, so
+        # this raised `substring not found`. The generic arm follows the last
+        # named branch whichever type that is.
         branch = _SINGLE[_SINGLE.index('elif log_type == "osha_log":'):]
-        branch = branch[:branch.index("elif log_type ==", 10)]
+        branch = branch[:branch.index(
+            'type_title = log_type.replace("_", " ").title()')]
         m = re.search(r"has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)", branch)
         self.assertIsNotNone(m, "the osha row gate is unreadable")
         self.assertEqual(tuple(re.findall(r'"([a-z_]+)"', m.group(1))),

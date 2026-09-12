@@ -84,11 +84,24 @@ console.log('\n-- osha_log: data.entries[] --');
 // The renderer's own key list, read out of the `elif log_type == "osha_log"`
 // branch rather than copied. If it starts reading a key the model does not
 // write, that is the bug this catches.
+// ENDED AT THE GENERIC ARM, NOT AT THE NEXT TYPE. This sliced up to
+// `elif log_type == "subcontractor_orientation":`, and that branch was
+// DELETED when the orientation sheet's conversion to the declarative engine
+// was finished -- so `indexOf` returned -1, the slice ran to the end of
+// server.py, and this block reported every key in the file as one the OSHA
+// renderer reads.
+//
+// The generic arm is the last thing in the chain and is what follows the last
+// named branch whichever type that is, so it does not move again the next
+// time a type is converted.
 const oshaBranch = SERVER.slice(
   SERVER.indexOf('elif log_type == "osha_log":'),
-  SERVER.indexOf('elif log_type == "subcontractor_orientation":'),
+  SERVER.indexOf('type_title = log_type.replace("_", " ").title()'),
 );
 ok(oshaBranch.length > 0, 'located the osha_log branch of the PDF renderer');
+ok(oshaBranch.length < 12000,
+  `the osha_log slice is ${oshaBranch.length} chars — its end marker moved `
+  + 'and it is reading the rest of the file');
 // PLUS THE CELL HELPER. `certification_type` moved out of the branch and into
 // _osha_type_cell when the Cert Type column stopped composing the class label
 // at print time -- it is still read, just one call deeper. Scanning only the
