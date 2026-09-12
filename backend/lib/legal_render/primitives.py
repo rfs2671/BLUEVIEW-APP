@@ -316,6 +316,27 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
     `present` is whether the record CARRIES the key, which is not the same as
     whether it holds a signature -- see `_has`, and the two tests that pin the
     two halves of it.
+
+    ── AND THE AFFIRMATION BANNER RIDES WITH THE MARK ───────────────────
+
+    A filed document says whether the signature under it was affirmed FOR THIS
+    DOCUMENT -- green with a claimed and a server-received time, or amber
+    saying no affirmation record exists for it. Every branch renderer prints
+    it, through `render_signature_html`. The first version of this function did
+    not, and 92 filed orientation records lost it: 89 lost an audit trail and
+    79 lost a DEFICIENCY MARKER, which is the worse half. An unaffirmed
+    signature with its warning removed does not look broken. It looks fine.
+
+    THE BANNER IS NOT REIMPLEMENTED HERE. It arrives through ctx, like the
+    stroke reconstruction above it and for the same reason: the function that
+    composes it carries a careful argument about what this product may claim
+    about a mark's origin, and a second spelling of it would be a second place
+    for that argument to be half-remembered.
+
+    NO MARK, NO BANNER. `render_signature_html` returns early on a falsy
+    signature and prints no banner over nothing, and an absent signature has no
+    affirmation record to report on in the first place. The UNSIGNED word below
+    is a statement about the RECORD -- it was asked for -- and stands alone.
     """
     if not sig:
         # ASKED AND UNSIGNED IS NOT THE SAME AS NEVER ASKED.
@@ -334,6 +355,21 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
             return ""
         return ('<span style="font:700 8px Helvetica,Arial,sans-serif;'
                 'letter-spacing:0.06em;color:#555;">UNSIGNED</span>')
+
+    # THE DOCUMENT'S CLAIM ABOUT THIS MARK, composed by the one function that
+    # is allowed to make it. Absent from ctx it contributes nothing, so a
+    # caller that has no affirmation machinery -- a test, a preview -- renders
+    # exactly what it rendered before.
+    _affirm = ctx.get("signature_affirmation")
+    banner = ""
+    if callable(_affirm):
+        try:
+            banner = _affirm(sig) or ""
+        except Exception:
+            # A BANNER THAT CANNOT BE COMPOSED MUST NOT TAKE THE SIGNATURE WITH
+            # IT. The mark is the record; the banner is a statement about it.
+            banner = ""
+
     to_svg = ctx.get("signature_svg")
     if isinstance(sig, dict) and sig.get("paths") and to_svg:
         # THE HEIGHT IS THE BINDING CAP, and the width bound is deliberately
@@ -342,7 +378,7 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
         svg = to_svg(sig.get("paths"), boxed=False,
                      max_width=_INK_MAX_W, max_height=_INK_MAX_H)
         if svg:
-            return svg
+            return svg + banner
     data = sig.get("data") if isinstance(sig, dict) else sig
     if isinstance(data, str) and data:
         src = data if data.startswith("data:") else f"data:image/png;base64,{data}"
@@ -352,8 +388,12 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
         # guards by its width bound.
         return (f'<img src="{src}" alt="" '
                 f'style="height:{_INK_MAX_H}px;width:auto;'
-                f'max-width:{_INK_MAX_W}px;display:block;" />')
-    return ""
+                f'max-width:{_INK_MAX_W}px;display:block;" />') + banner
+    # A SIGNATURE OBJECT WITH NOTHING DRAWABLE IN IT still had an affirmation
+    # recorded against it, or conspicuously did not, and the old renderer
+    # printed that banner over the empty space. It is the only thing the
+    # document can say about a mark it cannot draw.
+    return banner
 
 
 def signature(sec: Dict, rec: Any, ctx: Dict) -> str:

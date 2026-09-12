@@ -163,6 +163,18 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
     RETURNS None RATHER THAN RAISING for an unconverted type: the caller's job
     is to fall through to its existing branch, and an exception here would turn
     "not converted yet" into a failed document.
+
+    ── ctx["amendment_html"] IS CONTENT, NOT CHROME ─────────────────────
+
+    An amended record says so on its own face, and that banner is composed by
+    the caller because it reads a CHILD document this engine never sees. It was
+    composed AFTER the per-type switch, which a converted type returns before,
+    so the first sheet through this engine silently stopped carrying it: 15 of
+    92 filed orientation records are amended and none of them said so.
+
+    It is placed here rather than declared as a section because it is not about
+    this log type. It is the same statement on every document in the product,
+    and a section would mean thirteen schemas each remembering to ask for it.
     """
     decl = SCHEMAS.get(log_type)
     if not decl:
@@ -196,6 +208,7 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         f'<div class="contheader">{cont}</div>'
         f'<div class="contfooter">{foot}</div>'
         + _head(ctx, decl)
+        + str(ctx.get("amendment_html") or "")
         + "".join(body)
         + "</body></html>"
     )

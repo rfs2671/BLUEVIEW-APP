@@ -252,6 +252,74 @@ changes nothing until someone sets the variable.
 
 ---
 
+### A15. Every filed daily jobsite log says "Areas Visited: N/A"
+
+`server.py` daily jobsite branch — `data.areas_visited`, rendered as
+`{value or "N/A"}`.
+
+**What it does:** the field is carried on **50 of 59** production records and is
+non-empty on **none of them**, so the line prints `N/A` on every daily jobsite
+log ever filed. The screen declares the state, writes the key into the payload
+and hydrates it back, and no control on the form ever sets it.
+
+**It is the same defect the branch already fixed one field over.** `time_in`
+and `time_out` had exactly this shape — declared, hydrated, never written — and
+the branch carries a long comment explaining why the row was made conditional
+rather than deleted. The reasoning stopped one field short.
+
+**The decision is not the renderer's.** Either the field is wired to a control,
+or it comes out of the screen, the payload and the schema together. Making the
+line conditional would only hide it.
+
+**Found:** 2026-09-12, censusing production before writing the daily jobsite
+schema. Not fixed inside that conversion, by ruling.
+
+---
+
+### A16. "Corrected immediately" is recorded on a safety observation and never printed
+
+`data.observations[].corrected_immediately` — present on **5** observations,
+true on **1**. Zero references in either renderer.
+
+**What it does:** the competent person ticks that a hazard was corrected on the
+spot, the app stores it on a signed §3301.2 record, and no document the DOB, a
+lender or an inspector can open says so. The remedy column is free text and
+carries whatever he typed there instead, which is not the same claim.
+
+**Adding it is a change of substance, not appearance** — a new column on a
+filed document — so it belongs to the operator rather than to a restyle. The
+formatter is `yes_no`, which reads an absent value as *not recorded* rather than
+as *no*.
+
+**Found:** 2026-09-12, same census as A15.
+
+---
+
+### A17. A converted type's sheet no longer says it is a DRAFT
+
+`lib/legal_render/engine.py` — the engine's letterhead carries the title,
+citation and date. The old document's header carried `STATUS: SUBMITTED` or
+`STATUS: DRAFT`.
+
+**What it does:** **3 of 92** orientation records are drafts, and their sheets
+now render indistinguishably from filed ones. Across the whole collection 6 of
+317 logbooks are drafts, so every remaining conversion inherits this.
+
+**Same class as the two banners repaired in `fix/the-two-banners-the-engine-
+dropped`, and found by the same comparison** — apparatus composed outside the
+per-type branch, below the line where a converted type has already returned.
+The general guard in `tests/test_the_sheet_keeps_its_banners.py` has a named
+list that this belongs on once the operator rules.
+
+**Why it was not repaired with the banners:** the status sat in the dark header
+the redesign deliberately replaced, so whether it returns — and where it sits on
+a document whose whole visual argument is that it looks like filed paper — is a
+design decision, not a mechanical restoration.
+
+**Found:** 2026-09-12, by the old-branch-against-new-engine diff.
+
+---
+
 ## B. Closed on 2026-09-11
 
 These were live when triaged and are not any more. Listed so nobody works them
