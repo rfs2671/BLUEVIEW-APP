@@ -149,10 +149,33 @@ jobs:
           fi
           echo "Found ${#files[@]} test file(s):"
           printf '  %s\n' "${files[@]}"
+
+          # EVERY FILE RUNS, AND EVERY FAILURE IS COLLECTED.
+          #
+          # This loop let `set -e` halt it at the first non-zero exit, so the
+          # job reported ONE broken file when five were broken and said
+          # nothing about the other 152. Each fix was then followed by another
+          # red build and nobody could know how many were left.
+          #
+          # SAME FAILURE MODE THE NOTE ABOVE DESCRIBES for the two files that
+          # needed @babel/core and had never executed in CI even once: the
+          # gate reporting on a subset and saying nothing about the rest.
+          #
+          # AND IT COSTS NOTHING. All 157 files run in 12 seconds; this job
+          # spends far longer on `npm ci` and the parse sweeps. Halting early
+          # bought no time at all.
+          failed=()
           for f in "${files[@]}"; do
             echo "--- $f"
-            node "$f"
+            if ! node "$f"; then failed+=("$f"); fi
           done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo
+            echo "FAILED: ${#failed[@]} of ${#files[@]} file(s)"
+            printf '  %s
+' "${failed[@]}"
+            exit 1
+          fi
 
   # ── Mount smoke ────────────────────────────────────────────────────────────
   # The suite above PARSES component source; it never executes a component. That

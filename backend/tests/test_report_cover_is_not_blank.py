@@ -327,9 +327,13 @@ class TheNestedRowsAreStillProtected(unittest.TestCase):
                    ).read_text(encoding="utf-8")
         i = src.index("async def generate_single_logbook_html(")
         block = src[i:src.index("</style>", i)]
-        self.assertIn("tr.shell { page-break-inside: auto", block)
+        # DOUBLED BRACES. This block is inside an f-string, so the source
+        # carries `{{` where the rendered stylesheet carries `{`. The original
+        # assertion had them doubled for the same reason and I un-doubled them
+        # when re-anchoring; CI caught it.
+        self.assertIn("tr.shell {{ page-break-inside: auto", block)
         # The bare rule survives, or nothing is protected any more.
-        self.assertIn("tr { page-break-inside: avoid", block)
+        self.assertIn("tr {{ page-break-inside: avoid", block)
 
 
 if __name__ == "__main__":
