@@ -136,8 +136,8 @@ jobs:
 
       # Globbed rather than hard-coded so a new *.test.cjs / *.test.js is
       # picked up automatically — a test nobody runs is the thing this workflow
-      # exists to prevent. Fails the job on the FIRST non-zero exit, and fails
-      # loudly if the glob ever matches nothing.
+      # exists to prevent. Runs EVERY file and fails the job with the full list,
+      # and fails loudly if the glob ever matches nothing.
       - name: Run frontend JS tests
         working-directory: frontend
         run: |
@@ -172,8 +172,7 @@ jobs:
           if [ ${#failed[@]} -gt 0 ]; then
             echo
             echo "FAILED: ${#failed[@]} of ${#files[@]} file(s)"
-            printf '  %s
-' "${failed[@]}"
+            printf '  %s\n' "${failed[@]}"
             exit 1
           fi
 
