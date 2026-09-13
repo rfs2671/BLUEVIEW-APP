@@ -675,7 +675,20 @@ class CrewIdTest(unittest.TestCase):
         src = Path(server.__file__).read_text(encoding="utf-8")
         block_start = src.index("async def generate_single_logbook_html")
         block = src[block_start:]
-        self.assertIn('act.get("crew_id"', block)
+        # THE CLAIM MOVED INTO THE SCHEMA, INTACT. The filed document
+        # read `crew_id` because the CP types a crew IDENTIFIER and nothing in
+        # the repo has ever written `crew_name` -- so that column rendered
+        # empty on every record until it was fixed. The daily jobsite log is
+        # declarative now and the column is named in the declaration, which is
+        # a stronger place for it: a schema naming a path that no record
+        # carries is visible on the page as "not recorded", not as a blank.
+        from lib.legal_render import schema as _schema
+        _cols = [c for sec in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                 for c in (sec.get("columns") or [])]
+        self.assertIn("crew_id", [c[0] for c in _cols],
+                      "the crew column stopped reading crew_id")
+        self.assertNotIn("crew_name", [c[0] for c in _cols],
+                         "crew_name is a field nothing has ever written")
 
 
 # ══════════════════════════════════════════════════════════════════════════

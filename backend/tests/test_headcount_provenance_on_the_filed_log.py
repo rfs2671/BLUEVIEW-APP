@@ -265,13 +265,33 @@ class BothRenderersUseIt(unittest.TestCase):
                 self.assertNotIn("num_workers_source", keys)
                 self.assertNotIn("gate_num_workers", keys)
 
-    def test_the_helper_is_called_at_least_twice(self):
+    def test_every_renderer_of_a_crew_row_still_uses_one_rule(self):
+        """THE RULE MOVED AND THE DISCIPLINE DID NOT.
+
+        This counted `_headcount_cell` call sites in server.py, because both
+        renderers printed a crew row and the whole point was that neither
+        wrote its own. The daily jobsite log renders declaratively now: there
+        is ONE crew row, its cell is `cp_headcount`, and a schema NAMES it
+        rather than calling it -- which is a stronger version of the same
+        claim, since a declaration cannot quietly inline an alternative.
+
+        `_headcount_cell` itself is callerless and recorded as defect A19.
+        """
         calls = [n.lineno for n in ast.walk(TREE)
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "_headcount_cell"]
-        self.assertGreaterEqual(
-            len(calls), N_RENDERERS,
-            "every renderer that prints a crew row must use it")
+        from lib.legal_render import schema as _schema
+        from lib.legal_render import primitives as _prim
+        self.assertIn("cp_headcount", _schema.ROW_FORMATTERS)
+        self.assertIn("cp_headcount", _prim.ROW_FORMATTER_FNS)
+        _cols = [c for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                 for c in (s.get("columns") or [])]
+        self.assertIn("cp_headcount", [c[2] for c in _cols],
+                      "the crew row stopped naming the one headcount rule")
+        self.assertEqual(
+            len(calls) + 1, N_RENDERERS,
+            "server.py grew a second crew-row renderer, or the engine lost "
+            "its only one")
 
     def test_the_marker_is_compared_to_the_literal_cp(self):
         """Truthiness would let any stray value claim CP authorship."""

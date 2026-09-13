@@ -591,7 +591,23 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         class, and the legal renderer still prints the row only when the
         record carries a time.
         """
-        self.assertIn("_times_line", _SINGLE)
+        # THE RULE IS `requires` IN THE DECLARATION NOW. `_times_line`
+        # was the branch's conditional; the daily jobsite schema says which
+        # paths make the Working Hours section exist, and the engine omits it
+        # when none of them holds a value.
+        #
+        # STRONGER THAN THE STRING IT REPLACES: the old assertion proved a
+        # name appeared in a file. This proves the section is gated, names the
+        # exact paths it is gated on, and fails if either is dropped.
+        from lib.legal_render import schema as _schema
+        _sec = next(s for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                    if s["title"] == "Working Hours")
+        self.assertEqual(sorted(_sec["requires"]),
+                         ["data.time_in", "data.time_out"])
+        self.assertEqual([f[0] for f in _sec["fields"]],
+                         ["data.time_in", "data.time_out"],
+                         "the fields and the gate must name the same paths, "
+                         "or the section appears and reads Not recorded")
         self.assertNotIn('data.get("time_in") or "N/A"', _SINGLE)
 
     def test_BOTH_renderers_print_the_times_only_when_set(self):
@@ -610,8 +626,11 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         apply one rule — print it when a value is there, print nothing when it
         is not — which is what TheTwoRenderersAgreeOnAnEmptyRow below is about.
         """
-        self.assertIn("_t_in = str(data.get(\"time_in\") or \"\").strip()", _SINGLE)
-        self.assertIn("if (_t_in or _t_out) else \"\"", _SINGLE)
+        # THE FILED RENDERER'S HALF IS A DECLARATION NOW. Working Hours
+        # is gated by `requires`, asserted by path in the sibling test
+        # above; the two lines that used to be checked here were the
+        # branch's own conditional. What remains in this method is the
+        # REPORT's half and the ban that covers both files.
         # code_of(), NOT the module-level _SINGLE slice. _SINGLE is bound by
         # `_SRC[a:b]`, and test_absence_literals_are_specific classifies an
         # assertNotIn by the call that produced its haystack: it proves "a
@@ -660,14 +679,29 @@ class TheTwoHeadcountsAreLabelled(unittest.TestCase):
         """ONE RENDERER PRINTS THE CREW TABLE NOW. The report has no crew
         table; it has an activity row that prints BOTH numbers and names each,
         which is the same rule stated more plainly."""
-        self.assertIn("CP&#39;s count", _SINGLE)
+        # THE LABEL IS DECLARED NOW, and html.escape spells the apostrophe
+        # &#x27; where the branch wrote &#39;. Both are an apostrophe on
+        # paper, and an assertion broken by which entity a library chose is
+        # not asserting the label. Read off the declaration.
+        from lib.legal_render import schema as _schema
+        self.assertIn("CP's count",
+                      [c[1] for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                       for c in (s.get("columns") or [])])
         self.assertIn("on daily log", _RENDER_SRC)
         self.assertIn("gate check-ins", _RENDER_SRC)
 
     def test_the_crew_table_never_calls_it_just_Workers(self):
-        i = _SINGLE.find("<th {TH}>Crew</th>")
-        self.assertNotEqual(i, -1)
-        self.assertNotIn("Workers", _SINGLE[i:i + 200])
+        """THE COLUMN IS DECLARED NOW, so the label is checked where it is
+        written rather than in a slice of f-strings. The rule is unchanged:
+        this number is the CP's, the report's is the gate's, and neither may
+        appear under a bare "Workers"."""
+        from lib.legal_render import schema as _schema
+        _cols = [c for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                 for c in (s.get("columns") or [])]
+        _labels = [c[1] for c in _cols]
+        self.assertIn("Crew", _labels)
+        self.assertNotIn("Workers", _labels,
+                         "a headcount column with no provenance in its name")
 
     def test_page1_still_names_its_own_source(self):
         """THE LABEL SURVIVED THE REDESIGN AND GOT SHARPER.
@@ -934,7 +968,16 @@ class TestGroupThreeRendering(unittest.TestCase):
         # anywhere fails; the positive half is read off the renderer that
         # prints it.
         self.assertNotIn('general_description", "N/A"', _SRC)
-        self.assertIn('general_description") or NOT_RECORDED', _SINGLE)
+        # AND THE POSITIVE HALF MOVED INTO THE DECLARATION. The field is
+        # bound with the `sentence` formatter, which returns the sanctioned
+        # not-recorded phrase for an absent value -- so the "N/A" default
+        # cannot come back by being retyped, because there is nowhere left to
+        # type it.
+        from lib.legal_render import schema as _schema
+        _fields = [f for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                   for f in (s.get("fields") or [])]
+        self.assertIn(("data.general_description", "Description", "sentence"),
+                      _fields)
 
     def test_a_written_description_is_untouched(self):
         # THE DAILY LOG RENDERS THROUGH THE ENGINE NOW, so the sheet states

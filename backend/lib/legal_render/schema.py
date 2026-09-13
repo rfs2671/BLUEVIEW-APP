@@ -350,7 +350,26 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         "sections": [
             {
                 "n": 1, "title": "Site Information", "primitive": "field_grid",
-                "scope": "project", "empty": "omit",
+                # `none_documented`, NOT `omit`, AND THE DIFFERENCE IS REAL.
+                #
+                # A project-scoped section is "empty" when the render context
+                # has no project. For this type that is not a section which
+                # does not apply -- it is a filed record naming a site that is
+                # not in the projects collection. Two of the 59 do, and 9 of
+                # 317 across four types, and under `omit` those sheets had no
+                # Site Information at all: a reader cannot tell a dropped
+                # section from a site nobody recorded.
+                #
+                # FOUND BY THE BRANCH-DELETION PROOF, which counted how many
+                # records carried the engine's own markers and got 57 of 59.
+                # The local old-against-new diff could NOT see it: that corpus
+                # stored only the projects that RESOLVED, so both renderers
+                # were handed a project and the two orphans silently borrowed
+                # one. A comparison corpus that drops what it cannot resolve
+                # hides precisely the records worth looking at.
+                "scope": "project", "empty": "none_documented",
+                "none_text": ("The project this record names is not on file, "
+                              "so the site could not be identified."),
                 "fields": [
                     ("address", "Job Address", "text"),
                     ("bbl", "Borough", "bbl_borough"),

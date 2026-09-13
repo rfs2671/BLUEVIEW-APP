@@ -348,6 +348,57 @@ guard covers it.
 
 ---
 
+### A18. Nine filed records name a project that is not in the collection
+
+Found censusing before the daily jobsite branch deletion.
+
+**What it does:** 9 of 317 filed logbooks carry a `project_id` that resolves to
+no project document at all — not soft-deleted, absent. Two daily jobsite, three
+toolbox talk, two OSHA, two pre-shift, all pointing at one missing project.
+
+The old branch printed "Unknown" as the project name and an empty address. The
+engine's sheet omitted Site Information entirely until this change, which is
+worse: a reader cannot tell a dropped section from a site nobody recorded. The
+daily jobsite schema now says so in words, and every type converted after it
+should do the same.
+
+**The data defect itself is untouched.** Whether those nine records should be
+re-pointed, or the project restored, is not a renderer's decision.
+
+**Found:** 2026-09-13, by the branch-deletion proof counting how many records
+carried the engine's own markers and getting 57 of 59.
+
+---
+
+### A19. Six helpers have no caller and still read as renderers
+
+`server.py` — `_headcount_cell`, `_display_inspections`, `_inspection_label`,
+`_display_sub_company`, `_appended_photo_notice`, `_display_weather`.
+
+**What it does:** all six were the daily jobsite branch's own, and that branch
+was their only caller. Every rule they hold now lives in `lib/legal_render` —
+as `cp_headcount`, `inspection_log`, the `inspection_items` label set,
+`sub_company`, `appended_photographs` and `weather_line`. The functions remain,
+198 lines of them, reading like the renderers for those sections.
+
+**A helper with no caller is the same defect as a shadowed branch.** The next
+person to fix something on the daily jobsite sheet will find
+`_display_inspections`, change it, test nothing, and ship.
+
+**Why it was not done with the deletion:** it was tried and backed out. Removing
+them took **45 tests** with it — four files bind these names at module scope,
+and `test_headcount_provenance_on_the_filed_log.py` is an entire file about one
+of them. Those tests are not wrong; each asserts a rule that moved, and each
+needs restating where the rule now lives. That is a deliberate change, not a
+rider on a branch deletion.
+
+**Expect the same shape for every conversion after this one.** The list will
+grow until it is worked as its own change.
+
+**Found:** 2026-09-13.
+
+---
+
 ## B. Closed on 2026-09-11
 
 These were live when triaged and are not any more. Listed so nobody works them

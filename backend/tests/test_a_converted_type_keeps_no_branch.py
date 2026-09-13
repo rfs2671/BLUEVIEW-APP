@@ -88,7 +88,11 @@ DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 #: EMPTYING IT IS THE DELETION CHANGE. The next change removes the daily
 #: jobsite branch and this name together, and the census below goes back to
 #: refusing every overlap.
-IN_FLIGHT = {"daily_jobsite"}
+#: EMPTY, AND THAT IS WHAT A FINISHED CONVERSION LOOKS LIKE. The daily
+#: jobsite branch was deleted in the change after its own, once its sheet
+#: had rendered in production and been read -- 59 of 59 records carrying
+#: no fingerprint the branch can emit.
+IN_FLIGHT = set()
 
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):
@@ -123,6 +127,12 @@ class AConvertedTypeKeepsNoBranch(unittest.TestCase):
             f"these types render through the engine AND keep their old "
             f"branch: {shadowed}. The branch cannot run -- delete it, as "
             f"the dispatch's own note requires.")
+
+    def test_the_window_is_shut_unless_a_conversion_is_open(self):
+        """The ordinary state is EMPTY. A name here outside the one change
+        between a conversion and its deletion is a shadowed branch nobody is
+        counting."""
+        self.assertLessEqual(len(IN_FLIGHT), 1)
 
     def test_at_most_one_type_is_in_flight(self):
         """THE BOUND ON THE EXCEPTION. One type mid-conversion is a fact; two
@@ -169,8 +179,15 @@ class TheDispatchDoesNotDEGRADEAConvertedType(unittest.TestCase):
     def test_a_converted_type_that_renders_nothing_raises(self):
         block = _filed_renderer()
         i = block.index("if log_type in legal_render.CONVERTED_TYPES:")
-        j = block.index('if log_type == "daily_jobsite":', i)
-        arm = block[i:j]
+        # THE FIRST ARM OF THE CHAIN, FOUND RATHER THAN NAMED. This
+        # named `daily_jobsite`, and that branch was deleted the
+        # moment its conversion finished -- the same shape as the
+        # three slices that broke when `osha_log` became the last
+        # named branch. The chain's first arm moves every time a type
+        # is converted; what does not move is that there IS one.
+        m = re.compile('\\n    if log_type == "\\w+":').search(block[i:])
+        self.assertIsNotNone(m, "the per-type chain has no first branch")
+        arm = block[i:i + m.start()]
         self.assertIn("raise RuntimeError", arm,
                       "a converted type that produced no sheet falls through "
                       "to the generic arm, which prints a title and the word "
