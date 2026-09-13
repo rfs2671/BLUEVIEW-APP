@@ -69,3 +69,30 @@ Two traps already paid for, both handled in `compare.py`:
 And one that is not automatable: **the tool reports missing words, not missing
 meaning.** A word that survives in a different sentence still counts as
 present. Read the leftovers; do not just count them.
+
+## It was exercised in both directions before it was needed
+
+`compare.py`'s healthy output is the words *Nothing was lost*.
+
+**That is also exactly what a broken one says.** A baseline that failed to
+decode, a regex that stopped matching, a record-id join that silently found
+nothing — every one of those produces a clean run, and a clean run is what
+everybody wants to see. It is the §12 shape wearing the name of the check
+written to prevent §12.
+
+So it was run twice against `daily_jobsite` on 2026-09-12, before any
+conversion depended on it:
+
+| | records | reporting loss |
+|---|---|---|
+| live tree, nothing changed | 59 of 59 joined | **0** |
+| renderer with the inspections line removed | 59 of 59 joined | **59** |
+
+In the second run it named the content, not just a count: `inspected` on all
+59, then `perimeter`, `fence`, `fire`, `neighbors`, `permits`, `property`,
+`plans` — the inspection item labels themselves.
+
+**The join count printed beside the result is load-bearing.** A comparison that
+matched no records would report zero losses and look identical to a clean run,
+so the number of baselined records actually found in the database is printed on
+its own line every time. Read it first.
