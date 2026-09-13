@@ -237,13 +237,126 @@ def toggle_list(v: Any) -> str:
     return _html.escape(", ".join(on))
 
 
+#: The spellings this product actually stores. Pre-shift writes the
+#: lowercase words; other forms write booleans.
+_YES_WORDS = {"yes", "y", "true", "1"}
+_NO_WORDS = {"no", "n", "false", "0"}
+
+
+def answer(v: Any) -> str:
+    """Yes, No, or whatever the man actually answered.
+
+    THREE ANSWERS AND AN ABSENCE, which is a different shape from `yes_no`:
+    this is for a field whose stored value is the ANSWER ITSELF rather than a
+    flag, so "N/A" is a third thing he chose and not a missing value.
+
+    UNRECOGNISED VALUES ARE RETURNED AS WRITTEN. A form that grows a fourth
+    option must print it, not fall back to one of the three -- and a renderer
+    guessing at a compliance answer is the defect this whole file exists to
+    refuse.
+    """
+    if v is None:
+        return NOT_RECORDED
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in _YES_WORDS:
+        return "Yes"
+    if low in _NO_WORDS:
+        return "No"
+    return _html.escape(s)
+
+
+def raw_name(v: Any) -> str:
+    """A name or a short entry, capitalised, and BLANK when there is none.
+
+    ── THREE AGENTS ASKED FOR THIS UNDER THREE NAMES ───────────────────
+
+    `name_or_blank` for a pre-shift company and an OSHA worker, `raw_name` for
+    a toolbox attendee, `raw_sentence` for a fall-protection defect column. One
+    rule: `name`'s capitalisation with `raw_text`'s empty.
+
+    WHY NEITHER EXISTING ONE WILL DO. `raw_text` keeps the blank and drops the
+    capitalisation, so a man's firm prints as he typed it, lower case, on a
+    filed record. `name` capitalises and prints the not-recorded phrase -- and
+    in a DEFECT column on a row that passed, or a company column the CP left
+    blank on purpose, that phrase is a finding against a row that has none.
+
+    A ROW IS THE RECORD. Its blank cells are not absences the document should
+    remark on; the row being there is the claim.
+    """
+    s = _s(v)
+    if not s:
+        return ""
+    return _html.escape(s[0].upper() + s[1:])
+
+
+def pass_fail(v: Any) -> str:
+    """A tri-state verdict. NULL IS NOT A PASS AND NEVER A FAIL.
+
+    REQUESTED BY TWO AGENTS for two types -- a concrete slump test and a
+    fall-protection equipment check -- and `yes_no` was the nearest fit for
+    both. It is not close enough: a FAILED slump on a filed BC 3315 record
+    would print "No", which is the same defect `inspection_log`'s docstring is
+    about, one form over.
+
+    "Fail" and "No" are not the same word on a compliance document. One is a
+    verdict on a test; the other is an answer to a question.
+    """
+    if v is None:
+        return NOT_RECORDED
+    if isinstance(v, bool):
+        return "Pass" if v else "Fail"
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in _YES_WORDS or low == "pass":
+        return "Pass"
+    if low in _NO_WORDS or low == "fail":
+        return "Fail"
+    return _html.escape(s)
+
+
 def yes_no(v: Any) -> str:
     """A stored boolean. ABSENT IS NOT NO -- it is not recorded, and a
     compliance document that prints "No" for a question nobody answered has
-    made a claim nobody made."""
-    if v is None or v == "":
+    made a claim nobody made.
+
+    ── IT INVERTED EVERY STORED "no", AND NOTHING HAD BOUND IT YET ──────
+
+    The body was `"Yes" if bool(v) else "No"`, and `bool("no")` is True.
+    Pre-shift stores its injury and PPE answers as the lowercase STRINGS 'yes'
+    and 'no' -- 329 rows in production, not one boolean -- so binding this
+    formatter there would have printed **Yes** under a column headed Injury
+    for every man who reported none, on 49 filed compliance records, on a
+    sheet that looked entirely normal.
+
+    Caught by a schema agent censusing the stored values before declaring the
+    field, which is the only reason it was caught at all: no shipped schema
+    had bound it, so no test could have failed.
+
+    A STRING IS NOT A BOOLEAN AND IS NOT COERCED AS ONE. The spellings this
+    product stores are read; anything else is returned as the record wrote it,
+    because a renderer that guesses at a compliance answer is worse than one
+    that quotes it.
+    """
+    if v is None:
         return NOT_RECORDED
-    return "Yes" if bool(v) else "No"
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in _YES_WORDS:
+        return "Yes"
+    if low in _NO_WORDS:
+        return "No"
+    return _html.escape(s)
 
 
 #: THE WHOLE SET. A schema may name these and nothing else.
@@ -259,6 +372,12 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "bbl_block": bbl_block,
     "bbl_lot": bbl_lot,
     "yes_no": yes_no,
+    # Three agents asked for `raw_name` under three names, and two for
+    # `pass_fail`. `answer` is the three-state string `yes_no` refuses
+    # to coerce.
+    "answer": answer,
+    "raw_name": raw_name,
+    "pass_fail": pass_fail,
     "sub_company": sub_company,
     "weather_line": weather_line,
     "toggle_list": toggle_list,

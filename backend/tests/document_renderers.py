@@ -41,6 +41,32 @@ DOCUMENT_RENDERERS: Tuple[str, ...] = ("generate_single_logbook_html",)
 #: The count those suites assert against. One occurrence per renderer.
 N_DOCUMENT_RENDERERS = len(DOCUMENT_RENDERERS)
 
+# ── THE FLOOR, AND IT IS NOT A STYLE POINT ────────────────────────────────
+#
+# Thirty-nine test files assert `src.count(<something>) == N_DOCUMENT_RENDERERS`.
+# If this tuple ever empties, every one of those becomes "this string appears
+# ZERO times in server.py" -- the exact opposite of what each was written to
+# assert -- and all thirty-nine go green saying it.
+#
+# A CENSUS THAT INVERTS IS WORSE THAN ONE THAT GOES QUIET. A quiet check merely
+# stops helping; an inverted one actively certifies the wrong thing, and does it
+# in thirty-nine places at once.
+#
+# THE TUPLE HOLDS ONE NAME TODAY, because the investor report stopped embedding
+# the filed documents and its copies went with them. So it is ONE CONVERSION
+# from empty, and the type-by-type migration is precisely what would empty it.
+#
+# The message says what to do, because a floor that fails without saying so gets
+# RAISED rather than acted on.
+assert DOCUMENT_RENDERERS, (
+    "DOCUMENT_RENDERERS is empty, so every `== N_DOCUMENT_RENDERERS` assertion "
+    "in the suite now reads 'this string appears zero times' and passes. Do NOT "
+    "delete this check and do NOT set the count by hand. Either a renderer was "
+    "renamed -- put the new name in the tuple, which is what `assert_is_current` "
+    "is for -- or the last hand-written document renderer is genuinely gone, in "
+    "which case those assertions have no subject left and the suites that use "
+    "them need re-pointing at the declarative engine, one file at a time.")
+
 #: Removed from the list, kept for the record so a reader of a census that used
 #: to say `2` can see which entry went and look up why.
 FORMER_DOCUMENT_RENDERERS: Tuple[str, ...] = ("generate_combined_report",)

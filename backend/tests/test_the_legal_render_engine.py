@@ -263,8 +263,161 @@ class TheComparisonIsRepeatable(unittest.TestCase):
 
     def test_the_frozen_marker_actually_reaches_the_page(self):
         """A freeze that patched the wrong name would leave the clock running
-        and this whole class would pass while proving nothing."""
+        and this whole class would pass while proving nothing.
+
+        ── POINTED AT A TYPE THAT STILL HAS A CLOCK ────────────────────
+
+        This is the BRANCH renderer's half. It stamps "Generated on <time>"
+        into every document it wraps, so a freeze that missed would show up
+        here immediately. `toolbox_talk` is named because it still renders
+        that way; when it converts this moves to whichever type still does.
+
+        IT RETIRES WHEN THE LAST CLOCK-STAMPING RENDERER DOES, not before --
+        and `test_a_renderer_that_stamps_a_clock_still_exists` below fails
+        loudly on the day that happens, rather than letting this quietly
+        assert nothing.
+        """
         self.assertIn("FROZEN", _render("toolbox_talk"))
+
+    def test_a_renderer_that_stamps_a_clock_still_exists(self):
+        """THE GUARD ON THE GUARD ABOVE.
+
+        The moment no renderer stamps a wall clock onto a page, the assertion
+        above has nothing to find and would fail -- which is correct, and is
+        the signal to retire it rather than to repoint it again. Named here so
+        that failure arrives as a sentence instead of a puzzle.
+        """
+        self.assertIn("Generated on", _render("toolbox_talk"))
+
+    def test_the_freeze_reaches_the_ENGINE_sheet_too(self):
+        """THE ENGINE'S HALF, AND IT IS A DIFFERENT ROUTE.
+
+        The engine's sheet carries no generation stamp, so the marker cannot
+        arrive the way it does above. It arrives through the AFFIRMATION
+        BANNER, which formats a signature's claimed and server-received times
+        with `eastern_datetime` -- the one clock-formatted thing on the page.
+
+        WHAT THIS PROVES IS NARROWER THAN IT LOOKS, and the next class says
+        why: those times come off the RECORD, not off the clock, so they do
+        not vary between runs. This shows the freeze patched the right name
+        and its effect is visible. It does not show the comparison needed
+        protecting.
+        """
+        # AN AFFIRMED, TIMESTAMPED SIGNATURE, BUILT HERE ON PURPOSE.
+        #
+        # The shared fixture's mark is unaffirmed, and an UNAFFIRMED banner
+        # carries no time -- so on that record NOTHING on the engine's page is
+        # clock-formatted and the marker cannot arrive. That is worth stating
+        # rather than working around: the engine's sheet touches a clock only
+        # where a signature was affirmed with a recorded time, and on every
+        # other record it is clock-free entirely.
+        base = _logbook("subcontractor_orientation")
+        base["cp_signature"] = dict(base["cp_signature"] or {})
+        base["cp_signature"].update({
+            "affirmed": True,
+            "affirmedAt": "2026-08-04T19:56:00Z",
+            "affirmed_received_at": "2026-08-04T19:56:00Z"})
+        with patch.object(sys.modules[__name__], "_logbook",
+                          lambda *a, **k: base):
+            html = _render("subcontractor_orientation")
+        self.assertIn("AFFIRMED", html)
+        self.assertIn("FROZEN", html,
+                      "the freeze no longer reaches the engine's sheet at "
+                      "all, so a byte comparison of two engine renders is "
+                      "unguarded")
+
+
+class TheEngineReadsNoClock(unittest.TestCase):
+    """AN ASSERTION ABOUT WHAT THE CODE DOES NOT DO.
+
+    ── WHY THIS REPLACES A CHECK RATHER THAN JOINING ONE ───────────────
+
+    `TheComparisonIsRepeatable` exists because a before/after run once
+    reported thirteen of thirteen types changed with every length identical --
+    one varying field, the generation timestamp, and an hour spent reading a
+    diff of twelve files that were the same. The fix was to freeze the clock,
+    and the guard was to prove the freeze reached the page.
+
+    THE ENGINE'S SHEET HAS NO SUCH FIELD. It stamps no generation time, by
+    ruling: a stamp says when the PDF was made, which is not a fact about the
+    record, and the record's date, its signature timestamps and its filing
+    state are all already on the page. The paper form it imitates has no
+    printout line either.
+
+    So two engine renders of one record are identical WHETHER OR NOT the clock
+    is frozen -- which is a stronger property than the freeze was buying, and
+    it is worth asserting directly instead of hoping it stays true. An
+    assertion about what the code does not do outlives a check that it
+    happened not to this time.
+
+    A CLOCK READ INSIDE THE ENGINE WOULD BE INVISIBLE OTHERWISE. It would not
+    break a test; it would make the sheet vary, quietly, and the next person
+    to run a before/after comparison would lose the same hour again.
+    """
+
+    #: Every way this codebase asks what time it is now.
+    CLOCK_CALLS = ("datetime.now", "datetime.utcnow", "time.time",
+                   "date.today", "eastern_now", "eastern_date(",
+                   "eastern_datetime(", "utcnow()", "now()")
+
+    def _engine_sources(self):
+        from pathlib import Path
+        d = Path(__file__).resolve().parents[1] / "lib" / "legal_render"
+        return {f.name: f.read_text(encoding="utf-8") for f in d.glob("*.py")}
+
+    def test_the_engine_modules_were_read(self):
+        """THE VACUITY GUARD ON THIS CLASS. A glob that matched nothing would
+        make every assertion below pass over an empty set."""
+        got = self._engine_sources()
+        self.assertGreaterEqual(len(got), 4)
+        for name in ("engine.py", "primitives.py", "formatters.py",
+                     "schema.py"):
+            self.assertIn(name, got)
+
+    def test_no_engine_module_asks_what_time_it_is(self):
+        """The claim. Read off CODE, not text, so a docstring explaining the
+        rule cannot satisfy or break it."""
+        for name, src in self._engine_sources().items():
+            body = "\n".join(l for l in src.splitlines()
+                              if not l.lstrip().startswith("#"))
+            tree = ast.parse(src)
+            docs = {id(ast.get_docstring(n, clean=False)) for n in ast.walk(tree)
+                    if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                      ast.AsyncFunctionDef))}
+            code = ast.unparse(ast.parse(src)) if hasattr(ast, "unparse") else body
+            for call in self.CLOCK_CALLS:
+                with self.subTest(module=name, call=call):
+                    self.assertNotIn(
+                        call, code,
+                        f"{name} reads a clock. The engine's sheet is "
+                        f"deterministic BY CONSTRUCTION and that is what "
+                        f"makes a before/after comparison of it mean "
+                        f"anything -- a clock here makes the sheet vary "
+                        f"quietly and costs the next comparison an hour.")
+
+    def test_and_two_renders_of_one_record_are_identical_UNFROZEN(self):
+        """The property itself, exercised rather than inferred -- and with the
+        clock deliberately RUNNING, which is the half the old freeze hid."""
+        a = _render("subcontractor_orientation", freeze=False)
+        b = _render("subcontractor_orientation", freeze=False)
+        self.assertEqual(a, b,
+                         "the engine's sheet varies between two renders of "
+                         "one record, so nothing about a byte comparison of "
+                         "it can be trusted")
+
+    def test_the_branch_renderer_does_NOT_share_that_property(self):
+        """THE CONTRAST, so the claim above is not true of everything and
+        therefore says nothing. A branch-rendered document stamps its
+        generation time and two unfrozen renders of it differ."""
+        a = _render("toolbox_talk", freeze=False)
+        b = _render("toolbox_talk", freeze=False)
+        if a == b:
+            self.skipTest("two unfrozen branch renders landed in the same "
+                          "second; the contrast is real but not observable "
+                          "in this run")
+        self.assertEqual(len(a), len(b),
+                         "the branch renders differ in LENGTH as well, so the "
+                         "cause is no longer just the timestamp")
 
 
 class TheOrientationSheetSaysWhatTheSchemaDeclares(unittest.TestCase):

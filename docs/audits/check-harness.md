@@ -836,7 +836,45 @@ the diff is megabytes of ink.)*
 | 13 | PII scan of a report PDF, `\b\d{7,}\b` for card numbers | SST cards are ALPHANUMERIC — `KSPNNWEFJ4`. The scan reported clean on a document carrying ten of them. Reading page 9 found them |
 | 14 | the orientation control run, 92 of 92 byte-identical | both sides were the new engine. See the lead above — it proved the old branch was unreachable and never asked whether the sheet still said what it used to |
 | 15 | a CI poll that exits when no check is `pending` | the backend suite's row was **not yet in the listing**. Nothing pending, so the loop reported SETTLED on six green checks and the seventh — the one that matters — appeared afterwards, red. Poll for the checks you REQUIRE BY NAME, never for the absence of pending |
+| 15b | a patch script's `replace` with no assertion on the count | the registry line never applied. `sub()` asserts a count of one and fails loudly; a bare `s.replace(a, b)` that matches nothing returns the string unchanged and reports success. Written in my own patch, in the same session as three warnings about exactly this |
 | 16 | a full-suite run that predates the last edit | the suite was green, then two tests were added, then only that one module was re-run, then it was committed. The bare-literal gate caught the new assertion in CI. **A suite run is a claim about the code as it was when it ran** — which is the same sentence as "a green suite is a claim about what RAN", one step further back |
+
+### The rule that comes out of all of them
+
+**A gate whose subject population can reach zero needs an assertion that the
+population is not zero, carrying the sentence that says what to do when it is.**
+
+The second clause is the load-bearing one. A floor that fails without saying
+what to do next gets **raised** rather than acted on — which is how the pinned
+seventeen and the pinned 78 both nearly went, and how a census becomes a number
+somebody edits without reading.
+
+Three states found when the rule was written down:
+
+| gate | state |
+|---|---|
+| the bare-literal allowlist | **already had it**, per entry: an exemption that matches nothing fails as a stale rule |
+| the clock-freeze guard | given it — a companion that fails on the day no renderer stamps a clock, so the original retires by announcement |
+| the falling source-print total | given it — its purpose is completion, so completion is now the loud event |
+| `N_DOCUMENT_RENDERERS` | given it, and it was the urgent one |
+
+**The renderer census is the case that shows why this is not tidiness.** Thirty-nine
+test files assert `src.count(…) == N_DOCUMENT_RENDERERS`. The tuple holds one name
+today, because the investor report stopped embedding the filed documents. If it
+empties, all thirty-nine assertions become *this string appears zero times in
+`server.py`* — the exact opposite of what each was written to assert — and every
+one goes green saying it.
+
+> **A census that inverts is worse than one that goes quiet.** A quiet check
+> merely stops helping; an inverted one actively certifies the wrong thing, and
+> does it in thirty-nine places at once.
+
+And the type-by-type migration is precisely what would empty it.
+
+**The shape existed here before it was named.** `test_the_allowlist_does_not_rot`
+has done this per entry since it was written, and it is the one gate in this
+document whose failures have all been true. That is not a coincidence — it is
+the argument for the rule.
 
 ### Five shapes, and the fourth is the one to fear
 
