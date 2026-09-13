@@ -321,6 +321,29 @@ def pass_fail(v: Any) -> str:
     return _html.escape(s)
 
 
+def affirmation_note(v: Any) -> str:
+    """How many workers affirmed at the gate, as a sentence.
+
+    A FACT ABOUT A DIFFERENT RECORD, and it says so. The sheet states how many
+    affirmations are on file for the day; it never puts an affirmation beside
+    a named man's row, because the stored roster does not carry one. That
+    distinction is the whole reason this is a footer count and not a column --
+    a per-row claim here once accused every worker on every filed sheet.
+
+    ZERO OMITS THE SECTION RATHER THAN REACHING THIS. `requires` tests
+    `_get(...) or ""`, and `0 or ""` is empty -- so a day with no affirmations
+    prints no heading at all, instead of a heading over a line saying none.
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return NOT_RECORDED
+    if n <= 0:
+        return NOT_RECORDED
+    return ("%d worker%s affirmed their sign-in at the gate for this date."
+            % (n, "" if n == 1 else "s"))
+
+
 def tick_or_blank(v: Any) -> str:
     """A tick, or nothing. NEVER "No", and never the not-recorded phrase.
 
@@ -400,6 +423,7 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "raw_name": raw_name,
     "pass_fail": pass_fail,
     "tick_or_blank": tick_or_blank,
+    "affirmation_note": affirmation_note,
     "sub_company": sub_company,
     "weather_line": weather_line,
     "toggle_list": toggle_list,

@@ -284,10 +284,26 @@ class TheRenderedDocument(unittest.TestCase):
         # `section_title`'s closing markup on the report, which the report no
         # longer emits for these documents; the per-logbook PDFs carry their
         # own table headers and those are what the rows belong to.
-        preshift = self.docs[self.docs.index(">OSHA #</th>"):]
+        # THE PRE-SHIFT ROSTER IS DECLARATIVE NOW, so its column header is
+        # emitted by the table primitive rather than by an f-string, and the
+        # markup around it differs. The CLAIM is unchanged -- a row with no
+        # name is not a row -- and it is asserted the same way, against
+        # whichever header this document actually carries.
+        _hdr = ">OSHA #<" if ">OSHA #<" in self.docs else ">OSHA #</th>"
+        preshift = self.docs[self.docs.index(_hdr):]
         preshift = preshift[:preshift.index("</table>")]
-        # Two DATA rows — the third stored worker has no name and is dropped.
-        self.assertEqual(preshift.count("<tr><td "), 2)
+        # TWO DATA ROWS -- the third stored worker has no name and is
+        # dropped. Counted as `<tr` minus the header row, because the roster
+        # is drawn by the table primitive now and its rows carry a
+        # break-inside style rather than being a bare `<tr><td`. The CLAIM is
+        # the count, not the markup that happened to express it.
+        # THE BODY, NOT THE WHOLE TABLE. The slice starts inside the
+        # header cell, so the header's own `<tr` is already outside it; the
+        # rows are whatever `<tbody` opens. Sliced explicitly rather than
+        # counted-and-adjusted, because an off-by-one on a row census reads
+        # exactly like a dropped row.
+        _body = preshift[preshift.index("<tbody"):] if "<tbody" in preshift             else preshift
+        self.assertEqual(_body.count("<tr"), 2)
         att = self.docs[self.docs.index(">Title</th>"):]
         att = att[:att.index("</table>")]
         # One attendee; the nameless seed row is dropped (this was the #126 fix).

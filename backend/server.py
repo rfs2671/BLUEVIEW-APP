@@ -19783,6 +19783,49 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         f'{_amend_esc.escape(_amend_line)}</span></div>'
     ) if _amend_line else ""
 
+    # ── WHAT THE ENGINE CANNOT AWAIT, RESOLVED HERE ─────────────────────
+    #
+    # `render` is synchronous and will stay that way: a renderer that can
+    # await is a renderer that can query, and a declaration that can trigger a
+    # database read is the branch chain growing back with a different shape.
+    #
+    # SO THE CALLER DOES THE AWAITING. Both of these are pre-shift's, and both
+    # cross as DATA -- the same shape the filing-state line and the appended
+    # photographs already use.
+    _ctx_extra = {}
+    if log_type == "preshift_signin":
+        _ps_workers = list((data or {}).get("workers") or [])
+        try:
+            _ps_resolved = await _resolve_signin_signatures(_ps_workers)
+        except Exception as _e:                       # pragma: no cover
+            logger.warning(f"signin signature resolution failed: {_e}")
+            _ps_resolved = {}
+        # INLINED ONTO THE ROW, not passed alongside it. The row formatter is
+        # handed ONE row and must decide from it; a lookup table it would have
+        # to index is a second source of truth for the same cell.
+        #
+        # A COPY, NEVER THE STORED ROW. This document must not mutate the
+        # record it prints -- the row that reaches Mongo is the row the CP
+        # filed.
+        _rows = []
+        for _w in _ps_workers:
+            _w = dict(_w or {})
+            _sid = str(_w.get("signin_id") or "")
+            if _sid and not _w.get("signature"):
+                _hit = _ps_resolved.get(_sid)
+                if _hit:
+                    _w["signature"] = _hit
+                else:
+                    # RECORDED AND NOT DRAWABLE is not "did not sign".
+                    _w["signature_unavailable"] = True
+            _rows.append(_w)
+        _ctx_extra["rows_override"] = {"data.workers": _rows}
+        try:
+            _ctx_extra["preshift_affirmation_count"] = (
+                await preshift_affirmation_count(db, project_id, date))
+        except Exception as _e:                       # pragma: no cover
+            logger.warning(f"affirmation count failed: {_e}")
+
     # ── THE PER-TYPE SWITCH ─────────────────────────────────────────────
     #
     # A type with a schema renders through the one engine. Everything else
@@ -19848,6 +19891,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # on a flag and reads a UTC instant as a New York day; the engine
             # learns none of that for one block on one sheet.
             "appended_photographs": _appended_photo_rows(data),
+            **_ctx_extra,
             # CONTENT, NOT CHROME. Composed above this switch for the reason
             # written there.
             "amendment_html": amendment_html,

@@ -207,7 +207,7 @@ def field_grid(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'border:{_RULE};">{cells}</table>')
 
 
-def cp_headcount(row: Any) -> str:
+def cp_headcount(row: Any, ctx: Dict = None) -> str:
     """A crew row's headcount, SAYING WHERE THE NUMBER CAME FROM.
 
     A daily 3301.2 log carries two headcounts from two provenances: the gate
@@ -245,7 +245,7 @@ def cp_headcount(row: Any) -> str:
     return _html.escape(f"{text} (CP) - gate recorded {gate_text}")
 
 
-def preshift_signature(row: Any) -> str:
+def preshift_signature(row: Any, ctx: Dict = None) -> str:
     """A worker's sign-in mark, in three states, from three keys off one row.
 
     THE THREE ARE DIFFERENT CLAIMS and the old renderer drew all three:
@@ -259,9 +259,32 @@ def preshift_signature(row: Any) -> str:
     somebody who has none.
     """
     w = row if isinstance(row, dict) else {}
-    sig = w.get("signature") or w.get("signature_data")
+    # `worker_signature` FIRST, WHICH IS WHAT THE ROSTER ACTUALLY STORES.
+    # The first version read only `signature` and drew nothing: 291 marks on
+    # 49 filed rosters, gone, and the word diff saw five unrelated words. The
+    # branch has always read this key first and the order is its order.
+    sig = (w.get("worker_signature") or w.get("signature")
+           or w.get("signature_data"))
     if sig:
-        return "Signature on file"
+        # ── THE MARK ITSELF, NOT A SENTENCE ABOUT IT ────────────────────
+        #
+        # The first version of this returned the words "Signature on file",
+        # and the old-against-new comparison caught what that cost: 291
+        # signature images on the branch's sheets, ZERO on the engine's,
+        # across 49 filed rosters. A man's own mark on a compliance record
+        # replaced by a claim that it exists.
+        #
+        # AND THE WORD DIFF ALONE WOULD NOT HAVE SEEN IT -- it would have
+        # reported five lost words, none of them about a signature. It was
+        # found by counting image tokens, which the comparison could not do
+        # until the instrument was repaired two days ago.
+        # THE MARK AND THE WORDS, WHICH IS WHAT THE BRANCH PRINTS. The
+        # image is the evidence; the line beneath it is the CLAIM, and a
+        # reader of a filed roster needs the claim even where the ink renders.
+        # Dropping it cost the phrase on 30 of 49 sheets -- caught by the same
+        # comparison, one pass after it caught the images themselves.
+        return (ink(sig, ctx or {}, present=True)
+                + f'<div style="{_LABEL}">Signature on file</div>')
     if w.get("signin_id") or w.get("signature_unavailable"):
         # RECORDED AND NOT DRAWABLE. The resolution runs before render and
         # inlines what it found; an id with nothing behind it is a lookup that
@@ -270,7 +293,7 @@ def preshift_signature(row: Any) -> str:
     return ('<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>')
 
 
-def osha_cert_type(row: Any) -> str:
+def osha_cert_type(row: Any, ctx: Dict = None) -> str:
     """The certification class the card prints, and whether it could be read.
 
     NOTHING IS RESOLVED AT RENDER TIME. The register prints what the row
@@ -347,7 +370,11 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
             elif formatter in ROW_FORMATTERS:
                 # THE SUBJECT IS THE ROW. The declared path is "." and is not
                 # read: this cell is computed from several keys at once.
-                cell = ROW_FORMATTER_FNS[formatter](rec)
+                # ctx AS WELL AS THE ROW. A row formatter that draws a
+                # SIGNATURE needs the stroke reconstruction, which arrives in
+                # the context for the same reason `ink` takes it: one copy of
+                # that geometry, passed in, never reimplemented.
+                cell = ROW_FORMATTER_FNS[formatter](rec, ctx)
             else:
                 cell = _fmt(rec, path, formatter)
             body += (f'<td style="{_BODY};border:{_HAIRLINE};'

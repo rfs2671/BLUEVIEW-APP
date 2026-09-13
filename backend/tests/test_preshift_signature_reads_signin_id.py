@@ -161,19 +161,49 @@ class BothRenderersResolveTheSameWay(unittest.TestCase):
     def test_no_call_site_was_left_on_the_old_signature(self):
         self.assertNotIn("_preshift_signature_cell(w)</td>", _SRC)
 
-    def test_both_renderers_resolve_before_their_loop(self):
+    def test_the_resolution_happens_before_the_renderer_can_need_it(self):
+        """ONE RESOLUTION, AND IT MOVED ABOVE THE DISPATCH.
+
+        This counted `await _resolve_signin_signatures(` against the number of
+        document renderers, because each one resolved inside its own branch.
+        The pre-shift sheet renders declaratively now and `legal_render.render`
+        is SYNCHRONOUS -- deliberately, because a renderer that can await is a
+        renderer that can query, and a declaration that triggers a database
+        read is the branch chain growing back in another shape.
+
+        SO THE CALLER AWAITS, ONCE, ABOVE THE SWITCH, and inlines what it found
+        onto copies of the rows. The claim is unchanged and is stronger: there
+        is exactly one resolution, and it cannot happen after a row has been
+        drawn because it happens before the renderer is entered at all.
+        """
+        # ONE PER LIVE RENDERER. While the old branch still exists there
+        # are two -- the caller's, above the dispatch, and the branch's own --
+        # and the count falls to one the change after this, when the branch is
+        # deleted. Derived from whether that branch is still there, so this
+        # line does not need editing on the day it goes.
+        _branch_alive = 'elif log_type == "preshift_signin":' in _SRC
         self.assertEqual(_SRC.count("await _resolve_signin_signatures("),
-                         N_RENDERERS)
+                         1 + (1 if _branch_alive else 0))
+        i = _SRC.index("await _resolve_signin_signatures(")
+        j = _SRC.index("if log_type in legal_render.CONVERTED_TYPES:")
+        self.assertLess(i, j,
+                        "the resolution happens after the dispatch, so a "
+                        "converted type renders rows the resolver never saw")
 
     def test_the_resolution_precedes_the_row_loop_in_each(self):
         # ONE ANCHOR. The second spelling was the report's copy of the
         # pre-shift sheet, which it no longer prints. The ORDER is the claim --
         # resolve the signatures before the row loop, so a row cannot draw a
         # signature the resolver has not seen -- and it is unchanged.
-        for anchor in ("_resolve_signin_signatures(workers)",):
-            i = _SRC.index(anchor)
-            j = _SRC.index("_preshift_signature_cell(w, _ps_sigs)", i)
-            self.assertLess(i, j)
+        # THE ORDER IS THE CLAIM and it now holds by construction: the
+        # resolution is awaited above the per-type switch and its result is
+        # inlined onto the rows, so no row can draw a signature the resolver
+        # has not seen. Asserted against the branch's own call site while that
+        # branch still exists, and against the inlining above it.
+        i = _SRC.index("await _resolve_signin_signatures(")
+        j = _SRC.index('_ctx_extra["rows_override"]', i)
+        self.assertLess(i, j,
+                        "the rows are inlined before the resolution runs")
 
 
 if __name__ == "__main__":

@@ -176,7 +176,16 @@ def _subject(sec: Dict, records: List, ctx: Dict):
         # and its safety observations, and the same shape on most of the
         # eleven types after it -- and without this the engine could render a
         # roster of separately filed records but not a table on a form.
-        rows = _get(records[0] if records else {}, sec.get("path", "")) or []
+        # ROWS THE CALLER ALREADY RESOLVED, WHERE IT HAD TO. Pre-shift's
+        # signatures live in another collection and resolving them needs an
+        # await, so the caller inlines them onto copies of the rows and hands
+        # the list over. Every other type reads straight off the record.
+        #
+        # KEYED BY THE DECLARED PATH, so a schema cannot pick up rows meant
+        # for a different section by accident.
+        _over = (ctx.get("rows_override") or {}).get(sec.get("path", ""))
+        rows = _over if _over is not None else _get(
+            records[0] if records else {}, sec.get("path", "")) or []
         return [r for r in rows if isinstance(r, dict)]
     return records[0] if records else {}
 

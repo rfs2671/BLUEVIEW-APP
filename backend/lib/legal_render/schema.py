@@ -350,6 +350,154 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
 
 SCHEMAS: Dict[str, Dict[str, Any]] = {
 
+    "preshift_signin": {
+        "title": "Pre-Shift Sign-In",
+        "subtitle": "Daily sign-in with all workers",
+        "cite": "OSHA 1926.21",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # LOCATION IS THE CP'S OWN WORDS AND STAYS BESIDE THE PROJECT
+                # ADDRESS ABOVE, NOT INSTEAD OF IT. They disagree on filed
+                # records -- one sheet reads "Bronx, NY" over a project whose
+                # address is a Brooklyn street -- and both are true statements
+                # about different things: one is where the project is, the
+                # other is what the CP wrote on the roster that morning.
+                # Reconciling them would delete a fact, the same way picking
+                # one of the daily log's two headcounts would.
+                #
+                # TOTAL WORKERS IS THE FILED NUMBER, not a recount of the rows.
+                # The old branch fell back to `len(workers)` when the key was
+                # absent; measured on the 49 filed records the key is present
+                # on all 49, including the two that say 0, so the fallback has
+                # never fired and re-deriving it here would be this renderer
+                # counting where the record already states.
+                "n": 2, "title": "Sign-In Information",
+                "primitive": "field_grid", "scope": "first", "empty": "omit",
+                "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data.company", "Company", "name"),
+                    ("data.project_location", "Location", "text"),
+                    ("data.total_count", "Total Workers", "text"),
+                ],
+            },
+            {
+                # `row_requires` ON `name`, WHICH IS THE OLD BRANCH'S GUARD AND
+                # NOT A NEW RULE. A seed row the CP never filled printed as a
+                # blank line carrying an injury answer and a PPE answer -- a
+                # man who was asked two safety questions on a signed roster and
+                # cannot be identified by anybody reading it.
+                #
+                # THE ANSWER COLUMNS ARE `answer`, NOT `yes_no`, AND THIS IS
+                # THE ONE THAT WOULD HAVE SHIPPED QUIETLY. The stored domain is
+                # the lowercase strings 'yes' and 'no'; `yes_no` takes
+                # `bool(v)`, and `bool("no")` is True. Every man who reported
+                # NO INJURY would have printed "Yes" under a column headed
+                # Injury, on 49 filed compliance records, and the document
+                # would have looked entirely normal.
+                #
+                # `raw_text` ON OSHA #, NOT `text`. The row is the record here:
+                # a man with no card number has a blank cell, and
+                # "— Not recorded" in that slot is a finding against him.
+                "n": 3, "title": "Workers", "primitive": "table",
+                "scope": "rows", "path": "data.workers",
+                "empty": "none_documented",
+                "none_text": "No workers were recorded on this roster.",
+                "row_requires": ["name"],
+                "columns": [
+                    ("name", "Name", "raw_name"),
+                    ("company", "Company", "raw_name"),
+                    ("osha_number", "OSHA #", "raw_text"),
+                    ("had_injury", "Injury", "answer"),
+                    ("inspected_ppe", "PPE", "answer"),
+                    (".", "Signature", "preshift_signature"),
+                ],
+            },
+            {
+                # A FACT ABOUT A RECORD KEPT SOMEWHERE ELSE, WHICH IS WHY IT IS
+                # A COUNT AND NOT A COLUMN. The Signature column above gave up
+                # the affirmation claim deliberately: an affirmation beside a
+                # named man's row is an assertion the stored roster does not
+                # carry. The count is a statement about the affirmation
+                # records, not about anyone on this sheet, and it is safe in a
+                # way the per-row mark was not.
+                #
+                # SCOPE `context`. The number comes from an async query over
+                # two collections, resolved above the dispatch; it is on the
+                # record nowhere, and it must not be written onto the record to
+                # get here.
+                #
+                # `requires` OMITS THE SECTION WHEN THE COUNT IS ABSENT. The
+                # old footer printed nothing at zero -- 24 of the 49 filed
+                # records carry no line at all -- and a heading over "0
+                # affirmations are on record" would turn a silence into a
+                # finding.
+                "n": 4, "title": "Affirmation Records",
+                "primitive": "narrative", "scope": "context",
+                "path": "preshift_affirmation_count",
+                "formatter": "affirmation_note",
+                "requires": ["preshift_affirmation_count"],
+                "empty": "omit",
+            },
+            {
+                # A CERTIFICATION, AND HERE THE SWORN SENTENCE IS REAL. Unlike
+                # the daily jobsite log, this document HAS an attestation: it
+                # is printed above the CP's mark today and its exact wording is
+                # stored, versioned, in every signature event this sheet
+                # produces.
+                #
+                # `statement_ref`, NEVER `statement`. The text lives in
+                # lib/logbook/attestations.py, append-only and keyed by version,
+                # BECAUSE A STORED SNAPSHOT MUST BE CHECKABLE AGAINST WHAT THE
+                # SIGNER WAS SHOWN. Retyping it here would be a second copy of a
+                # sentence whose whole value is that there is one -- and the
+                # copy would be wrong on its first character, because the
+                # registry's text is already HTML-escaped and `certification`
+                # escapes what it is handed.
+                "n": 5, "title": "Certification", "primitive": "certification",
+                "scope": "first", "empty": "omit",
+                "statement_ref": "preshift_signin",
+                "fields": [
+                    ("cp_name", "Name (Print)", "name"),
+                ],
+                "signature_path": "cp_signature",
+                "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── OSHA / SST CERTIFICATION REGISTER ───────────────────────────────────
+    #
+    # A REGISTER, AND ITS OWN RULE FOLLOWS FROM THAT: the row is the record and
+    # there is no unanswered form field. An entry with no card number has a
+    # BLANK cell, never "— Not recorded", because nobody was asked a question
+    # and left it unanswered -- the man simply holds no card of that kind. Both
+    # the Card #, Expiration and Signed columns are declared on that rule, and
+    # it is the reason two of them use `raw_text` rather than `text`.
+    #
+    # 39 filed records; 37 carry at least one entry and 2 carry none.
+    #
+    # THE REVIEW COLUMN IS NOT HERE AND MUST NOT BE. The combined report adds
+    # one by joining each row back to the worker's LIVE certifications. This
+    # document renders one STORED snapshot, and a register whose Cert Type or
+    # Review column reads differently on two renderings of one filed document
+    # cannot be validated against a single moment -- which is the thing
+    # Bulletin 2024-007 sec V.6 asks of a signature.,
+
     # ── DAILY JOBSITE LOG ───────────────────────────────────────────────────
     #
     # THE LARGEST, THE MOST READ, AND THE ONE THAT WILL EVENTUALLY DECLARE

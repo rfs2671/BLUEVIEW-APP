@@ -88,11 +88,12 @@ DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 #: EMPTYING IT IS THE DELETION CHANGE. The next change removes the daily
 #: jobsite branch and this name together, and the census below goes back to
 #: refusing every overlap.
-#: EMPTY, AND THAT IS WHAT A FINISHED CONVERSION LOOKS LIKE. The daily
-#: jobsite branch was deleted in the change after its own, once its sheet
-#: had rendered in production and been read -- 59 of 59 records carrying
-#: no fingerprint the branch can emit.
-IN_FLIGHT = set()
+#: ONE NAME WHILE A CONVERSION IS OPEN, EMPTY OTHERWISE. Pre-shift renders
+#: through the engine now and keeps its branch for exactly one change, which is
+#: what makes the rollback a one-line revert. The daily jobsite branch went the
+#: same way: deleted in the change after its own, with 59 of 59 records proving
+#: it could not run.
+IN_FLIGHT = {"preshift_signin"}
 
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):
