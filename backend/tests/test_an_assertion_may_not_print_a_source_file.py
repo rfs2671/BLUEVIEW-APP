@@ -115,7 +115,15 @@ def unreadable_failure_sites():
 #: a view object or a rendered page instead of all 47,000 lines of server.py.
 #: None was "fixed" by weakening an assertion -- the haystacks got smaller
 #: because what they read got smaller.
-EXPECTED_TOTAL = 65
+#:
+#: 65 -> 61 on 2026-09-13, by the same mechanism and for the same reason. Five
+#: shadowed branches were deleted, and the assertions that read them moved onto
+#: the RENDERED DOCUMENT -- a sheet is a few thousand characters and a failure
+#: prints something a person can look at, where the same claim against
+#: `server.py` printed 47,000 lines. The claims got stronger, not weaker: they
+#: now ask the filed record what it says instead of asking the source that used
+#: to build it.
+EXPECTED_TOTAL = 61
 
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):

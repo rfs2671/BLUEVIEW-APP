@@ -80,11 +80,26 @@ class ItReadsRealFiles(unittest.TestCase):
             "frontend/src/components/logbookStepper/primitives.jsx"))
 
     def test_raw_keeps_the_prose_for_assertions_that_are_ABOUT_the_prose(self):
-        """Provenance notes are load-bearing in this codebase — "a dead
-        duplicate of the answers question" is an assertion worth making."""
+        """Provenance notes are load-bearing in this codebase, and an
+        assertion about one is worth making.
+
+        THE SPECIMEN HAD TO MOVE, AND THAT IS THIS FILE'S OWN SUBJECT. It was
+        "a dead duplicate of the answers question", a note inside the
+        pre-shift branch -- and the branch was deleted when that type finished
+        converting, so a test about the HELPER failed because of a change to
+        the sample it happened to name.
+
+        SO IT NAMES ONE THAT CANNOT GO WITHOUT THE RULE IT DOCUMENTS: the
+        dispatch's own note requiring a converted type's branch to be deleted
+        in the change after its conversion. If that sentence disappears the
+        migration has lost its stated rule, which is a failure worth having.
+        """
+        note = "deleted in the FOLLOWING change"
         raw = code_of("server.py", raw=True)
-        self.assertIn("dead duplicate of the answers", raw)
-        self.assertNotIn("dead duplicate of the answers", code_of("server.py"))
+        self.assertIn(note, raw,
+                      "the dispatch no longer states the rule requiring a "
+                      "converted type's branch to be deleted")
+        self.assertNotIn(note, code_of("server.py"))
 
     def test_a_missing_file_raises_rather_than_returning_empty(self):
         """An empty subject makes every absence assertion pass — the exact

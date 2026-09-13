@@ -153,10 +153,23 @@ class BothRenderersResolveTheSameWay(unittest.TestCase):
     """Two renderers print this sheet. A man who reads as signed on one and
     unsigned on the other is worse than one that is wrong on both."""
 
-    def test_both_call_sites_pass_the_resolved_map(self):
-        self.assertEqual(
-            _SRC.count("_preshift_signature_cell(w, _ps_sigs)"),
-            N_RENDERERS)
+    def test_what_was_resolved_reaches_the_row(self):
+        """THE RESOLVED MAP IS INLINED ONTO THE ROW, not passed beside it.
+
+        This counted `_preshift_signature_cell(w, _ps_sigs)` at each renderer.
+        The pre-shift branch is deleted; the cell is a ROW FORMATTER handed one
+        row, and the caller copies what it resolved onto that row before the
+        engine ever sees it -- so there is no second source for the picture.
+
+        A COPY, NEVER THE STORED ROW, which is asserted here because the
+        alternative is a renderer that mutates the record it prints."""
+        from tests.filed_sheet import cells, logbook, render
+        lb = logbook("preshift_signin")
+        before = [dict(w) for w in lb["data"]["workers"]]
+        html = render(lb)
+        self.assertEqual(lb["data"]["workers"], before,
+                         "the renderer mutated the record it printed")
+        self.assertIn("[INK]", cells(html, "Signature")[0])
 
     def test_no_call_site_was_left_on_the_old_signature(self):
         self.assertNotIn("_preshift_signature_cell(w)</td>", _SRC)

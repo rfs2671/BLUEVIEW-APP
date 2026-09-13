@@ -175,11 +175,26 @@ class TheTwoDocumentsAgreeAboutTheSameRecord(unittest.TestCase):
         # that no CP line reads from anywhere but the account, and deleting
         # every CP line would satisfy it -- so this exists to prove there are
         # still lines for it to be true of.
-        self.assertGreater(_CODE.count('bold_para("CP"'), 2)
+        # 4 -> 3 -> 1. Each conversion takes another `bold_para("CP"` with
+        # the branch that held it, and the line does not disappear -- it stops
+        # being an f-string and becomes a declared field. A floor that has to
+        # be edited down after every conversion is a floor somebody edits down
+        # without reading, so the census counts BOTH FORMS and asserts against
+        # the types that exist.
+        #
+        # THE CLAIM ABOVE is that no CP line reads from anywhere but the
+        # account, and deleting every CP line would satisfy it. This exists to
+        # prove there are still lines for it to be true of.
         from lib.legal_render import schema as _schema
-        _paths = [f[0] for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
-                  for f in (s.get("fields") or [])]
-        self.assertIn("cp_name", _paths,
+        declared = [t for t, d in _schema.SCHEMAS.items()
+                    if any(f[0] == "cp_name"
+                           for s in d["sections"]
+                           for f in (s.get("fields") or []))]
+        self.assertGreater(
+            _CODE.count('bold_para("CP"') + len(declared), 2,
+            "no document names the competent person any more, in either "
+            "form, so the rule above is true of nothing")
+        self.assertIn("daily_jobsite", declared,
                       "the daily jobsite sheet stopped naming the CP")
 
 

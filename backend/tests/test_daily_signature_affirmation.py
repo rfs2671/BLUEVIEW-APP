@@ -147,21 +147,43 @@ class TestToolboxIsExplicitlyExcluded(unittest.TestCase):
     def test_no_toolbox_renderer_reads_the_affirmation(self):
         """The affirmation is scoped to the PRE-SHIFT SIGN-IN LOG. If a toolbox
         branch ever reads it, the exclusion has been lost."""
-        # ONE TOOLBOX BRANCH NOW. The second pair bracketed the investor
-        # report's embedded copy of the toolbox talk, which went with every
-        # other embedded section; the report prints no roster at all, which
-        # satisfies the exclusion more completely than reading its source did.
-        # The branch that still prints one is checked exactly as before.
-        # NO `elif` PREFIX. Toolbox talk became the chain's FIRST arm when
-        # the daily jobsite branch was deleted, so it is spelled `if` now.
-        # Anchoring on the comparison alone survives the next eleven
-        # deletions; anchoring on the keyword survived one.
-        for start, end in (('log_type == "toolbox_talk":',
-                            'log_type == "preshift_signin":'),):
-            with self.subTest(branch=start):
-                block = _SRC[_SRC.index(start):_SRC.index(end)]
-                self.assertNotIn("signature_affirmed", block)
-                self.assertNotIn("_preshift_signature_cell", block)
+        # THERE IS NO TOOLBOX BRANCH LEFT TO READ.
+        #
+        # This bracketed the toolbox arm of the per-type chain and asserted
+        # the pre-shift affirmation machinery did not appear inside it. The
+        # arm was deleted after its sheet rendered in production and was read;
+        # the sheet is a DECLARATION now, and a declaration cannot reach the
+        # affirmation machinery by accident -- it can only NAME a formatter,
+        # from a closed set, and the exclusion is checkable by reading what it
+        # names.
+        #
+        # THE RULING IT DEFENDS IS UNCHANGED: a worker does not sign a toolbox
+        # talk, and carrying a gate signature there would misrepresent its
+        # provenance.
+        from lib.legal_render import schema as _schema
+        decl = _schema.SCHEMAS["toolbox_talk"]
+        named = [f[2] for s in decl["sections"]
+                 for f in (s.get("fields") or []) + (s.get("columns") or [])]
+        named += [s.get("formatter") for s in decl["sections"]]
+        self.assertNotIn(
+            "preshift_signature", named,
+            "the toolbox roster draws its rows with the PRE-SHIFT signature "
+            "cell, so an attendee now carries a mark he never made")
+        self.assertNotIn("preshift_affirmation_count",
+                         [s.get("path") for s in decl["sections"]])
+
+        # AND ON THE DOCUMENT: the only mark on a toolbox talk is the
+        # competent person's, over the whole roster. No attendee row draws
+        # one, which is what the ruling actually says.
+        from tests.filed_sheet import cells, sheet, visible
+        html = sheet("toolbox_talk")
+        self.assertEqual(
+            visible(html).count("[INK]"), 1,
+            "a toolbox talk carries more than one mark; the only legal "
+            "attestation on it is the CP's over the roster")
+        for column in ("Name", "Title", "Company", "In", "Added by"):
+            with self.subTest(column=column):
+                self.assertNotIn("[INK]", " ".join(cells(html, column)))
 
     def test_and_the_investor_report_prints_no_roster_to_read_it_on(self):
         """THE OTHER HALF OF THE PAIR, ASSERTED AS AN ABSENCE. The report used

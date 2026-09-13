@@ -403,9 +403,20 @@ class TheRegisterSaysWhatTheSignatureClaims(unittest.TestCase):
             re.search(r"§|\b1926\b|\b3301\b|\bDOB\b|OSHA requires",
                       server.OSHA_LOG_ATTESTATION))
 
-    def test_every_renderer_that_prints_the_register_states_it(self):
-        self.assertEqual(SRC.count("+ OSHA_LOG_ATTESTATION_HTML"),
-                         N_RENDERERS)
+    def test_the_register_states_it_on_the_sheet(self):
+        """ON THE DOCUMENT. This counted `+ OSHA_LOG_ATTESTATION_HTML` in
+        `server.py`, which was true while a branch composed the register and
+        is a claim about the source rather than about the filed record. The
+        branch is deleted; the sentence reaches the page from the
+        declaration's certification section.
+
+        THE DEFECT IT GUARDS IS UNCHANGED: a signature over other people's
+        credentials with no statement of what it covers."""
+        import html as _html_mod
+        from tests.filed_sheet import sheet, visible
+        self.assertIn(_html_mod.unescape(server.OSHA_LOG_ATTESTATION),
+                      visible(sheet("osha_log")),
+                      "the register no longer says what the signature covers")
 
     def test_the_sentence_is_written_once(self):
         # THE CLAIM IS UNCHANGED AND ITS SCOPE MOVED. The sentence now lives
@@ -493,16 +504,30 @@ class NothingElseOnTheRegisterMoved(unittest.TestCase):
         So the claim is asserted as agreement: the shared rule still names the
         one field, and the renderer's guard gates on that same field.
         """
-        from tests.source_text import code_of
-        code = code_of("server.py")
-        self.assertIn("_SUBMIT_ROW_CONTENT_RULES", code,
-                      "the shared rule is gone entirely")
+        from lib.legal_render import schema as _schema
         self.assertIn("worker_name",
                       str(server._SUBMIT_ROW_CONTENT_RULES["osha_log"][1]))
-        register = code[code.index('log_type == "osha_log"'):]
-        register = register[:register.index("osha_rows +=")]
-        self.assertIn("worker_name", register,
-                      "the register no longer gates a row on a named worker")
+        # THE RENDERER'S GUARD IS A DECLARATION NOW. It was an `if` inside the
+        # osha_log branch and the branch is deleted; `row_requires` is the
+        # same rule stated declaratively, and the agreement being asserted --
+        # the submit gate and the register gate on the SAME FIELD -- is what
+        # this test has always been for.
+        _rr = [s.get("row_requires") for s in
+               _schema.SCHEMAS["osha_log"]["sections"] if s.get("row_requires")]
+        self.assertEqual(
+            _rr, [["worker_name"]],
+            "the register's row guard no longer names the field the submit "
+            "rule names, so a row the gate rejects could still print")
+        # AND THE OUTCOME, ON THE PAGE: a row naming nobody does not appear,
+        # and a row that names somebody does.
+        from tests.filed_sheet import cells, logbook, render
+        _lb = logbook("osha_log")
+        _lb["data"]["entries"] = [
+            {"worker_name": "", "company": "aaz", "card_number": "99998888"},
+            {"worker_name": "wilmer carrillo", "company": "aaz",
+             "card_number": "11112222"}]
+        _html = render(_lb)
+        self.assertEqual(cells(_html, "Card #"), ["11112222"])
 
     def test_the_review_labels_are_unchanged(self):
         for reason in ("CLASS_UNVERIFIED", "EXPIRY_IMPLAUSIBLE", "DUPLICATE_SST"):

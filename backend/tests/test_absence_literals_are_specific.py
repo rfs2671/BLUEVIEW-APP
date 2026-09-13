@@ -254,6 +254,12 @@ _BARE_BY_DESIGN: set[tuple[str, str]] = {
     ("test_logbook_renderers.py", "UNSIGNED"),
     ("test_signature_affirmation.py", "UNAFFIRMED"),
     ("test_orientation_gate_signature.py", "UNAFFIRMED"),
+    # THE CELL MUST NOT ASSERT AFFIRMATION IN EITHER DIRECTION, and the claim
+    # is literally the word: a Signature column that says a man Affirmed --
+    # or that he did not -- is deciding from a PICTURE something only the
+    # affirmation record can say. Any occurrence, in any casing or position,
+    # is the finding, so there is nothing to anchor to.
+    ("test_preshift_signature_reads_signin_id.py", "Affirmed"),
 
     # ── VOCABULARY BANS ──────────────────────────────────────────────────────
     # The claim is literally about the WORD appearing in prose a human reads.

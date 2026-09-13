@@ -32,6 +32,7 @@ shift", which is what the existing freeze already implements. The citation is
 not settled and nothing here pretends otherwise.
 """
 
+import html as _h
 import os
 import re
 import sys
@@ -48,8 +49,20 @@ os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 import server  # noqa: E402
 from tests.document_renderers import (  # noqa: E402
     N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
+from tests.filed_sheet import cells, sheet, visible  # noqa: E402
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
+
+#: The type this file is about. Converted, so its rules live in a declaration
+#: and its sheet is the only place they can be asserted.
+TYPE = "preshift_signin"
+
+#: THE SENTENCE AS A READER SEES IT. `PRESHIFT_ATTESTATION` is stored already
+#: HTML-escaped -- it holds `&#39;` where the page shows an apostrophe -- so a
+#: comparison against visible text has to unescape it first. Doing that once
+#: here rather than at three call sites, because the one that forgets fails
+#: with a diff that looks like a wording change.
+ATTESTATION = _h.unescape(server.PRESHIFT_ATTESTATION)
 
 
 
@@ -194,20 +207,40 @@ class BothRenderersPrintIt(unittest.TestCase):
             sum(1 for t in _A.HISTORY.values()
                 if "Each worker named below was present" in t), 1)
 
-    def test_both_renderers_emit_it(self):
-        self.assertEqual(SRC.count("+ PRESHIFT_ATTESTATION_HTML"), N_RENDERERS)
+    def test_the_sheet_carries_it(self):
+        """ON THE DOCUMENT, NOT IN THE SOURCE THAT BUILDS IT.
 
-    def test_it_sits_directly_above_the_cp_line_at_both_sites(self):
-        """Adjacency, not just order. The CP line is not unique in either
-        renderer -- it appears once per log type -- so the anchor has to be
-        the pairing, and the pairing is what makes the claim read as the one
-        the name underneath is making."""
-        pairs = re.findall(
-            r"\+ PRESHIFT_ATTESTATION_HTML\s*\n\s*\+ bold_para\(\"CP\", "
-            r"_capitalize_first\((?:logbook|preshift)\.get\(\"cp_name\", \"N/A\"\)\)\)",
-            SRC)
-        self.assertEqual(len(pairs), N_RENDERERS,
-                         "the attestation is not directly above the CP line at both sites")
+        This was `SRC.count("+ PRESHIFT_ATTESTATION_HTML") == N_RENDERERS`.
+        That was a true claim while a hand-written branch composed the sheet,
+        and it is a claim about `server.py` rather than about the record an
+        inspector reads. The branch was deleted after its sheet had rendered in
+        production and been read; the attestation still reaches the page, from
+        the declaration's certification section.
+
+        THE NEW FORM SURVIVES THE NEXT SIX CONVERSIONS, which is the point --
+        it asks the document what it says.
+        """
+        self.assertIn(ATTESTATION, visible(sheet(TYPE)))
+
+    def test_it_sits_directly_above_the_mark_it_qualifies(self):
+        """Adjacency, not just order. A signer must see the claim before
+        making it, and a claim separated from the mark by the whole roster is
+        a claim about a different thing.
+
+        BOTH ARE IN ONE SECTION, which is how the declaration says "these
+        belong together": the certification block holds the sentence, the
+        printed name and the mark, in that order.
+        """
+        t = visible(sheet(TYPE))
+        claim = t.index(ATTESTATION)
+        mark = t.index("Name (Print)", claim)
+        self.assertLess(claim, mark,
+                        "a signer must see the claim before making it")
+        between = t[claim + len(ATTESTATION):mark]
+        self.assertLess(
+            len(between), 400,
+            f"the attestation and the mark it qualifies are {len(between)} "
+            f"characters apart; something has come between them")
 
 
 class PlacementIsTheDistinction(unittest.TestCase):
@@ -226,12 +259,17 @@ class PlacementIsTheDistinction(unittest.TestCase):
             out.append(SRC[start:end])
         return out
 
-    def test_the_attestation_is_above_the_cp_signature_in_both_renderers(self):
-        blocks = self._blocks("+ PRESHIFT_ATTESTATION_HTML")
-        self.assertEqual(len(blocks), N_RENDERERS)
-        for b in blocks:
-            self.assertLess(b.index("PRESHIFT_ATTESTATION_HTML"), b.index("ps_sig"),
-                            "a signer must see the claim before making it")
+    def test_the_attestation_is_above_the_cp_signature_on_the_sheet(self):
+        """THE CLAIM, ON THE DOCUMENT. This bounded a composition block in
+        `server.py` and checked the attestation came before `ps_sig`. The
+        pre-shift branch is deleted; the sheet is built from a declaration, and
+        the order on the PAGE is what the rule was always about.
+
+        A signer must see the claim before making it.
+        """
+        t = visible(sheet(TYPE))
+        self.assertLess(t.index(ATTESTATION), t.index("Name (Print)"),
+                        "a signer must see the claim before making it")
 
     def test_the_fall_protection_scope_notice_stays_below_its_signature(self):
         """A footer qualifying a document the reader has already read. If this
@@ -244,40 +282,60 @@ class PlacementIsTheDistinction(unittest.TestCase):
 
 
 class NothingElseOnTheSheetMoved(unittest.TestCase):
-    def test_every_cell_still_reads_the_stored_row(self):
-        # THE FIELD, NOT ITS DEFAULT FORM. These pinned `w.get("name", "")`
-        # and `w.get("osha_number", "")` — the two-argument spelling. That
-        # spelling returns the default only on an ABSENT key, so a stored
-        # `name: None` reached `.strip()` and raised, and a stored None
-        # interpolated into the cell as the four characters "None". Fixing
-        # both took the literals with them.
-        #
-        # The invariant here is "every cell still reads the STORED ROW `w`",
-        # which is about WHICH OBJECT is read, not about how the default is
-        # spelled. `w.get("<field>")` is the part that carries that meaning.
-        for cell in ('w.get("name")', 'w.get("had_injury")',
-                     'w.get("inspected_ppe")', 'w.get("osha_number")',
-                     'w.get("company")'):
-            self.assertIn(cell, SRC, f"{cell} no longer comes from the stored row")
+    """RESTATED ON THE RENDERED SHEET. Every assertion here read `server.py`
+    and counted strings the pre-shift branch composed. That branch is deleted;
+    the rules it held are in the declaration, and the claims below are about
+    what the filed document says, which is what they always meant."""
 
-    def test_the_affirmation_FOOTER_runs_in_every_renderer(self):
+    def test_every_cell_still_reads_the_stored_row(self):
+        """THE FIELD, NOT ITS DEFAULT FORM, and now not its source spelling
+        either. These pinned `w.get("name", "")` and `w.get("osha_number",
+        "")`; that two-argument spelling returns the default only on an ABSENT
+        key, so a stored `name: None` reached `.strip()` and raised, and a
+        stored None interpolated as the four characters "None".
+
+        THE INVARIANT IS "EVERY CELL READS THE STORED ROW". Asserted by
+        putting a recognisable value in each field of the fixture and finding
+        it in that column of the document -- which is the same claim without
+        a spelling in it.
+        """
+        html = sheet(TYPE)
+        for column, expected in (("Name", "Wilmer carrillo"),
+                                 ("Company", "Aaz"),
+                                 ("OSHA #", "11112222"),
+                                 ("Injury", "No"),
+                                 ("PPE", "Yes")):
+            with self.subTest(column=column):
+                self.assertIn(expected, cells(html, column)[0],
+                              f"the {column} cell does not carry the value "
+                              f"stored on the roster row")
+
+    def test_the_affirmation_FOOTER_runs(self):
         """The overlay is gone: the Signature column no longer asserts
         affirmation in either direction, and the sheet points at the separate
-        records in a footer instead. See test_preshift_affirmation_record.py."""
-        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"),
-                         N_RENDERERS)
-        # The cell now takes the signin_id -> signature IMAGE map as a second
-        # argument. That is not the overlay this test guards: it decides which
-        # picture to draw, never whether a man affirmed. See
-        # test_preshift_affirmation_record.py::test_the_cell_takes_no_AFFIRMATION_overlay.
-        self.assertEqual(
-            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"),
-            N_RENDERERS)
+        records in a footer instead. See test_preshift_affirmation_record.py.
+
+        THE FOOTER IS A SENTENCE ON THE PAGE, so that is what is asserted.
+        It was `SRC.count("preshift_affirmation_footer(_affirm_n)")`, which
+        counted a call and not a document."""
+        t = visible(sheet(TYPE))
+        self.assertIn("affirmation record", t,
+                      "the sheet no longer points at the affirmation records")
 
     def test_the_column_headers_are_unchanged(self):
-        self.assertEqual(
-            SRC.count('<th {TH}>Injury</th><th {TH}>PPE</th><th {TH}>Signature</th>'),
-            N_RENDERERS)
+        """The roster's columns, in order. This counted the header f-string
+        in `server.py`; the declaration emits them now and the ORDER is the
+        part that matters -- Injury and PPE beside each other, the Signature
+        last, because the attestation above reads them in that order."""
+        html = sheet(TYPE)
+        heads = [re.sub(r"<[^>]+>", "", h).strip()
+                 for h in re.findall(r"<th[^>]*>(.*?)</th>", html, flags=re.S)]
+        for a, b in (("Injury", "PPE"), ("PPE", "Signature")):
+            with self.subTest(pair=(a, b)):
+                self.assertIn(a, heads)
+                self.assertIn(b, heads)
+                self.assertEqual(heads.index(a) + 1, heads.index(b),
+                                 f"{a} and {b} are no longer adjacent")
 
 
 if __name__ == "__main__":

@@ -357,13 +357,27 @@ class OneBuilderBothRenderers(unittest.TestCase):
         again, which would put a second copy of the section back on a document
         that is meant to point at the filed one."""
         assert_is_current(self)
+        # THE BUILDER OF THE MARKUP GAVE WAY TO THE BUILDER OF THE ROWS.
+        #
+        # `_superintendent_log_html` formatted the BC 3301.13.13 register into
+        # the branch's own markup. That branch is deleted and the section is
+        # drawn by the `register` primitive -- but the reading of the statute
+        # never moved: `_cs_register_rows` decides which items a date requires
+        # and what each body says, and it is what the caller hands over.
+        #
+        # SO THE CLAIM IS THE SAME ONE. There is exactly one place that reads
+        # BC 3301.13.13, and every renderer that prints the register goes
+        # through it. `_superintendent_log_html` itself now has no caller and
+        # is listed in the open-defects document as A19.
         seen = 0
         for name in DOCUMENT_RENDERERS:
             code = ast.unparse(ast.parse(textwrap.dedent(
                 inspect.getsource(getattr(server, name)))))
-            self.assertIn("_superintendent_log_html", code, name)
+            self.assertIn("_cs_register_rows", code, name)
             seen += 1
         self.assertEqual(seen, N_RENDERERS)
+        self.assertEqual(SRC.count("def _cs_register_rows("), 1,
+                         "there is a second reading of BC 3301.13.13")
 
     def test_neither_builds_its_own_item_list(self):
         """BOTH, DELIBERATELY. The report no longer PRINTS the section, but

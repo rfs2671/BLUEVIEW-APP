@@ -127,9 +127,20 @@ class ItComposesNothing(unittest.TestCase):
             node.body = node.body[1:]
         self.assertNotIn("class_by_key", ast.unparse(node))
 
-    def test_both_renderers_call_the_one_argument_form(self):
-        self.assertEqual(SRC.count("_osha_type_cell(e)"), N_RENDERERS)
-        self.assertNotIn("_osha_type_cell(e, ", SRC)
+    def test_the_cell_still_takes_the_ROW_and_nothing_else(self):
+        """ONE ARGUMENT, WHICH IS THE WHOLE CLAIM: the cell is handed the
+        stored row and decides from it, so there is no second source for the
+        label a filed register prints.
+
+        THE CALL MOVED INTO THE ENGINE. `_osha_type_cell(e)` was counted in
+        `server.py`; the osha_log branch is deleted, and the rule is a ROW
+        FORMATTER -- handed one row and the render context, which is the same
+        one-argument discipline enforced by the engine rather than by a count.
+        """
+        from lib.legal_render import primitives
+        self.assertIn("osha_cert_type", primitives.ROW_FORMATTERS)
+        from tests.filed_sheet import cells, sheet
+        self.assertEqual(cells(sheet("osha_log"), "Cert Type"), ["SST"])
 
 
 class TheWordingRulingIsNotWithdrawn(unittest.TestCase):

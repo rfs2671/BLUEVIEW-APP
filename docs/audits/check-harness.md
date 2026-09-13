@@ -1713,6 +1713,175 @@ list that already exists for exactly this, and which `<title>` was not on.
 
 ---
 
+### Instance 19: the instrument worked and the reading did not
+
+**Where:** the daily jobsite conversion's accepted old-against-new run.
+
+The report listed, under WORDS THE OLD SHEET HAD AND THE NEW ONE DOES NOT:
+
+    none                             32 records
+
+That is defect A20. Thirty-two filed daily jobsite logs stopped saying
+"Equipment: None" and started saying "— Not recorded", and the comparison said
+so, in the run that was read and accepted. It was skimmed for a plausible total
+and merged.
+
+**This is the first failure in the migration that no better tool would have
+caught.** Every other one has been an instrument that could not see its subject
+— the image blindness, the lowercasing, the page-only reading. This one the
+instrument saw and named.
+
+**The rule.** *A comparison only helps if EVERY NAMED LOSS is accounted for
+before the merge. A total is not a reading.* The output of these runs is a
+short list; each line is a class of change on filed documents, and the merge
+is the moment somebody says what each one is. "56 of 63 clean" is a headline,
+not a finding — the finding is the seven.
+
+**The practice.** Write the account into the change: one line per reported word,
+saying which records and why it is acceptable. A word with no line beside it
+has not been read. This is cheap — the lists run to five or six entries — and
+it is the only step between a named loss and a filed document.
+
+---
+
+### Instance 20: a document has content that is not on its page
+
+**What A21 actually was.** Not one omission — a category. `visible()` strips
+tags before it tokenises, so everything that lives in an attribute or in the
+head is outside every comparison this migration has run. `<title>` was in that
+category, and 254 filed records went out without one.
+
+**The category, measured on both renderers rather than listed from memory**
+(one branch-rendered type against one engine-rendered type, 2026-09-13):
+
+| | branch | engine |
+|---|---|---|
+| `<title>` | present | present *(after A21)* |
+| `<html lang=>` | **absent** | **absent** |
+| `<img alt=>` | 0 of 0 | 0 of 0 |
+| `<th scope=>` | **0** | **0** |
+| `<thead>` (repeating header) | 0 | 1 |
+| page counter / running header | no | yes |
+| `aria-*` | 0 | 0 |
+| HTML comments | 0 | 0 |
+| `<a href=>` | 0 | 0 |
+
+**What is a regression and what is a standing absence.** Only `<title>` was a
+regression; `thead`, the page counter and the running header are things the
+engine ADDED. `lang`, `scope` and PDF metadata beyond the title are absent on
+BOTH renderers — they were never there, no comparison would ever have reported
+them, and they are the rest of this category sitting in plain sight. A filed
+PDF with no `lang` is one a screen reader guesses at; a `<table>` with no
+`scope` is one it cannot navigate.
+
+**The rule.** *An instrument that reads the rendered text is checking the body
+and nothing else. The head, the attributes, the metadata, the page geometry and
+anything a reader's software derives from them are all outside it, and a clean
+run says nothing about any of them.*
+
+**Closed how:** one assertion per whole-document property, on the RENDERED
+sheet, in `test_the_sheet_keeps_its_banners.py`'s positional apparatus. That
+list already existed for exactly this and `<title>` was not on it.
+
+---
+
+### Instance 21: a set difference cannot see order, and that is worse than the head
+
+**The demonstration, executed rather than argued.** Two pre-shift rosters,
+identical except that every man's Injury answer and PPE answer are exchanged:
+
+    TRUTH, read column by column:
+       correct  Injury: ['Yes', 'No']   PPE: ['No', 'Yes']
+       swapped  Injury: ['No', 'Yes']   PPE: ['Yes', 'No']
+
+    WHAT THE MIGRATION'S INSTRUMENT REPORTS:
+       words lost:   none
+       words gained: none
+
+**Nothing. On a signed §3301 record that is a man reported as having had an
+injury who did not.**
+
+`words()` returns a SET of lowercased tokens. It therefore cannot see:
+
+* a value moving from one column to another,
+* a value's COUNT changing — on one toolbox sheet, 25 of 69 distinct words
+  appear more than once, so a third of the vocabulary can change frequency
+  invisibly,
+* sections or rows REORDERED,
+* two rows exchanged,
+* and (instance 17) any change of case.
+
+**This is larger than instances 18 and 20 put together.** The head holds one
+element per document; the body holds every answer on the record, and their
+ARRANGEMENT is most of what the document means. A roster is a table of
+correspondences — this man, this company, this answer — and a set of words has
+thrown all of the correspondence away before the comparison starts.
+
+**Why it has not bitten yet:** because the declarations have been written to
+reproduce column order, and the per-type unit tests name literal cells. That is
+two habits, not a check.
+
+**The rule.** *A comparison over an unordered collection is a check on
+VOCABULARY, not on CONTENT. Anything whose meaning is carried by arrangement —
+a table, a roster, a register, a sequence of sections — needs a comparison that
+preserves arrangement, or an assertion that names the cell.*
+
+**The practice, for the six conversions still to come:** every declaration with
+a `table` gets an assertion reading a named column by header and comparing its
+cells, in order, against the stored rows. `tests/filed_sheet.py::cells` does
+exactly that and is why it exists.
+
+---
+
+### The count, not the instances: this instrument has been repaired four times
+
+| # | what it could not see | found by |
+|---|---|---|
+| 1 | images and ink (`src=` tokenised, then the tag stripped) | a signature count, not the diff |
+| 2 | case (`words()` lowercases both sides) | a unit test naming "Foreman" |
+| 3 | anything not on the page (`<title>`) | luck — one project's name differs from its address |
+| 4 | an invented project for records whose project is not on file | reading the orphan count |
+
+Four repairs, three of them in one session, after two earlier ones. Each was
+found by something OTHER than the instrument, and each time the instrument had
+been reporting clean runs across the defect.
+
+**The rule.** *An instrument repaired four times is one nobody should trust
+without a control. Every comparison run states what it CANNOT see, and every
+conversion carries at least one check that does not use it.*
+
+That second half is the operative part and it is cheap: a per-type unit test
+that names literal cells of the rendered document costs a few lines, uses none
+of the comparison machinery, and has now caught two defects the 63-record diff
+reported as clean.
+
+---
+
+### A guard that describes the rule in prose and tests the neighbours
+
+**Where:** `test_inspection_results_on_filed_documents.py`, the `toggle_list`
+assertions. The comment said:
+
+> a map that EXISTS with nothing ticked is None, and an absent map is not
+> recorded
+
+and the assertions checked `{"compressor": True}`, `{"compressor": False}` and
+`None`. The map the defect lived in — `{}` — was not among them. The first
+control run put the defective expression back and the file stayed green.
+
+**This is §12 and §14 in one place.** §14 is that a comment is not an
+assertion; §12 is that the check was narrower than its subject. Here the
+comment stated the rule CORRECTLY and completely, the code got it wrong, and
+the test agreed with the code while reading like it agreed with the comment.
+
+**The rule.** *When a function's docstring draws a distinction, the test names
+every state on both sides of it.* Three shapes around the boundary are not the
+boundary. If the prose says "X and Y are different answers", the assertions say
+what X is and what Y is — including the empty, the absent, the zero and the
+false, which is where every one of these has lived.
+
+---
+
 ## 15. Work that is DONE and not PROPOSED does not exist
 
 Every other section in this document is about a check that fails to detect

@@ -50,6 +50,7 @@ os.environ.setdefault("JWT_SECRET", "smoke_test_secret")
 import server  # noqa: E402
 from tests.document_renderers import (  # noqa: E402
     N_DOCUMENT_RENDERERS as N_RENDERERS, assert_is_current)
+from tests.filed_sheet import cells, sheet, visible  # noqa: E402
 
 SRC = (BACKEND / "server.py").read_text(encoding="utf-8")
 
@@ -352,35 +353,52 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
     def test_every_other_cell_still_reads_the_stored_row(self):
         # THE FIELD, NOT ITS DEFAULT FORM. These pinned `w.get("name", "")`
         # and `w.get("osha_number", "")` — the two-argument spelling. That
-        # spelling returns the default only on an ABSENT key, so a stored
-        # `name: None` reached `.strip()` and raised, and a stored None
-        # interpolated into the cell as the four characters "None". Fixing
-        # both took the literals with them.
+        # THE FIELD, NOT ITS DEFAULT FORM, AND NOT ITS SOURCE SPELLING. These
+        # pinned `w.get("name", "")` and `w.get("osha_number", "")` — the
+        # two-argument spelling. That spelling returns the default only on an
+        # ABSENT key, so a stored `name: None` reached `.strip()` and raised,
+        # and a stored None interpolated into the cell as the four characters
+        # "None". Fixing both took the literals with them.
         #
-        # The invariant here is "every cell still reads the STORED ROW `w`",
-        # which is about WHICH OBJECT is read, not about how the default is
-        # spelled. `w.get("<field>")` is the part that carries that meaning.
-        for cell in ('w.get("name")', 'w.get("had_injury")',
-                     'w.get("inspected_ppe")', 'w.get("osha_number")'):
-            self.assertIn(cell, SRC)
+        # AND THEN THE BRANCH ITSELF WENT. The invariant was always "every cell
+        # reads the STORED ROW" — which object is read, not how the default is
+        # spelled and not which file spells it. A recognisable value in each
+        # field of the fixture, found in that column of the document, is the
+        # same claim with no spelling in it at all.
+        html = sheet("preshift_signin")
+        for column, expected in (("Name", "Wilmer carrillo"),
+                                 ("Injury", "No"),
+                                 ("PPE", "Yes"),
+                                 ("OSHA #", "11112222")):
+            with self.subTest(column=column):
+                self.assertIn(expected, cells(html, column)[0])
 
-    def test_both_renderers_show_the_footer(self):
-        self.assertEqual(SRC.count("preshift_affirmation_footer(_affirm_n)"),
-                         N_RENDERERS)
+    def test_the_sheet_shows_the_footer(self):
+        """The footer points at the affirmation records instead of overlaying
+        the Signature column. Asserted on the page: this counted a call in
+        `server.py`, and the branch that made the call is deleted."""
+        self.assertIn("affirmation record", visible(sheet("preshift_signin")))
 
-    def test_neither_renderer_passes_anything_but_the_signature_map(self):
-        """Both call sites pass the SAME second argument and nothing else.
+    def test_the_cell_still_takes_the_resolved_map_and_nothing_else(self):
+        """THE CALL FORM IS STILL PINNED, because the defect this guards is an
+        AFFIRMATION OVERLAY smuggled into the Signature column — a cell that
+        decides, from a picture, whether a man affirmed.
 
-        The call form is still pinned -- an overlay smuggled in as a third
-        argument, or a different map at one of the two renderers, fails here.
-        What changed is which single argument is allowed: `_ps_sigs`, the
-        signin_id -> image map, resolved once per roster before the loop."""
-        self.assertEqual(
-            SRC.count("{_preshift_signature_cell(w, _ps_sigs)}</td></tr>"),
-            N_RENDERERS)
-        self.assertNotIn("{_preshift_signature_cell(w)}</td></tr>", SRC)
-        self.assertEqual(
-            SRC.count("def _preshift_signature_cell(w, resolved=None)"), 1)
+        THE CALL MOVED INTO THE ENGINE. The row formatter is handed ONE ROW and
+        the render context, and the resolved map is inlined onto the row before
+        it gets there; there is no second argument to smuggle anything into.
+        So the claim is asserted where it now lives, and the OUTCOME is
+        asserted on the sheet: a drawn mark says nothing about affirmation, and
+        an unaffirmed one says so in words.
+        """
+        from lib.legal_render import primitives
+        self.assertIn("preshift_signature", primitives.ROW_FORMATTERS)
+        html = sheet("preshift_signin")
+        signed, unsigned = cells(html, "Signature")
+        self.assertIn("[INK]", signed, "the drawn mark is not on the sheet")
+        self.assertIn("UNAFFIRMED", signed,
+                      "a drawn mark with no affirmation record must say so")
+        self.assertIn("NO SIGNATURE ON FILE", unsigned)
 
     def test_the_overlay_resolver_is_gone(self):
         self.assertNotIn("async def preshift_affirmations", SRC)
