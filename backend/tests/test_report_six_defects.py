@@ -544,7 +544,11 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         every occurrence before removing it."""
         viewer = (_BACKEND / ".." / "frontend" / "app" / "site"
                   / "logbooks.jsx").resolve().read_text(encoding="utf-8")
-        self.assertNotIn("areas_visited", strip_js(viewer))
+        # ANCHORED, NOT BARE. `assertNotIn` against a string bans a SUBSTRING,
+        # so a bare `areas_visited` is satisfied -- or broken -- by anything
+        # that happens to contain those characters. The gate caught this one
+        # in CI; the form the file actually held is the property read.
+        self.assertNotIn("data.areas_visited", strip_js(viewer))
 
     def test_the_two_time_fields_are_gone_from_the_screen_entirely(self):
         """TIME IN / TIME OUT WENT FURTHER THAN THE ROW.
