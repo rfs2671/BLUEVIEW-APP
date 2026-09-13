@@ -976,19 +976,37 @@ class TheNamelessToolboxAttendee(unittest.TestCase):
         """The point is not the empty cell. It is that a signed attendance
         record carried a LINE about somebody it does not identify.
 
-        The empty-state placeholder spans the header exactly — five columns
-        since Confirmed and Present were dropped — because a placeholder
-        narrower than its header renders a ragged table on the one document
-        nobody re-renders. Read off the header rather than pinned, so a future
-        column change fails only when the two actually disagree."""
+        ── THE EMPTY STATE IS NOW A SENTENCE, NOT A DASH ────────────────
+
+        The branch printed the header row over a single cell holding an
+        em-dash, and this asserted the colspan matched the header, because a
+        placeholder narrower than its header renders a ragged table.
+
+        THE ENGINE DOES NOT DRAW THE TABLE AT ALL. `row_requires` empties the
+        row list and `empty: none_documented` puts the declared sentence in its
+        place -- column headers over no rows read as a register that was
+        started, and this sheet's roster is the §3301.12.3 record. There is no
+        colspan to match because there is no header, so the ragged-table
+        failure this asserted cannot occur; what is asserted instead is that
+        the sheet SAYS the roster is empty rather than leaving a silent gap.
+
+        THE CLAIM IS UNCHANGED: no line about an unidentifiable man.
+        """
         one = self._html([dict(self.NAMELESS)])
-        self.assertEqual(_table_rows(one, "Added by"), 1)   # the "no rows" dash
-        self.assertIn("colspan=\"%d\"" % _toolbox_columns(one), one)
-        self.assertNotIn("Laborer", one)
+        self.assertIn("No attendees recorded", one)
+        self.assertNotIn(">Name</th>", one)
+        self.assertNotIn(">Laborer<", one)
 
     def test_whitespace_is_not_a_name(self):
+        """A name of three spaces is the same absence, and `row_requires`
+        tests the STRIPPED value for exactly this."""
         html = self._html([dict(self.NAMELESS, name="   ")])
-        self.assertIn("colspan=\"%d\"" % _toolbox_columns(html), html)
+        self.assertIn("No attendees recorded", html)
+        # ANCHORED ON THE CELL, not on the word. A bare `assertNotIn` over a
+        # whole document bans a substring, so it is satisfied by anything that
+        # happens to contain it and broken by anything that happens to mention
+        # it -- tests/test_absence_literals_are_specific.py is the rule.
+        self.assertNotIn(">Laborer<", html)
 
     def test_a_named_row_is_untouched(self):
         html = self._html([self.NAMED])

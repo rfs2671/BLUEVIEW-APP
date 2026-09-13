@@ -93,8 +93,11 @@ DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 #: what makes the rollback a one-line revert. The daily jobsite branch went the
 #: same way: deleted in the change after its own, with 59 of 59 records proving
 #: it could not run.
+#: FIVE NOW. Toolbox talk renders through the engine in this change and keeps
+#: its branch for exactly one more, which is what makes the rollback a one-line
+#: revert. The other four are owed their deletion and it is the next change.
 IN_FLIGHT = {"preshift_signin", "osha_log", "scaffold_maintenance",
-             "site_superintendent_log"}
+             "site_superintendent_log", "toolbox_talk"}
 
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):

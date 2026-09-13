@@ -842,6 +842,172 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         ],
     },
 
+    # ── TOOL BOX TALK ───────────────────────────────────────────────────────
+    #
+    # 63 FILED RECORDS, 393 ATTENDEE ROWS, AND IT IS THE SUITE'S WHOLE-DOCUMENT
+    # SPECIMEN. Six test files render a toolbox talk to assert something about
+    # the document SHELL rather than about this type -- the frozen marker, the
+    # letterhead, the status line. Converting it moves what those tests are
+    # looking at, so each one is repointed at a type the branch still renders
+    # rather than deleted; a shell assertion that stops running is a gate that
+    # reports "fine" because it no longer asks.
+    "toolbox_talk": {
+        "title": "Tool Box Talk",
+        # THE REGISTRY'S OWN WORDS. The branch's title was the bare label and
+        # its subtitle existed nowhere; the registry keeps a label, a subtitle
+        # and a citation, which is what the letterhead has slots for.
+        "subtitle": "OSHA 29 CFR 1926.21 — weekly per company, "
+                    "to be maintained on site for inspection",
+        "cite": "OSHA 1926.21",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                # `none_documented`, NOT `omit`, FOR THE REASON THE DAILY LOG
+                # LEARNED IT: a project-scoped section is "empty" when the
+                # record names a site that is not in the projects collection,
+                # and under `omit` those sheets simply have no Site Information
+                # on them. A reader cannot tell a dropped section from a site
+                # nobody recorded. All 63 of these resolve today; A18 is the
+                # mechanism that makes that a fact about today.
+                "scope": "project", "empty": "none_documented",
+                "none_text": ("The project this record names is not on file, "
+                              "so the site could not be identified."),
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # `location` IS KEPT BESIDE THE JOB ADDRESS, NOT FOLDED INTO
+                # IT. On 55 of the 63 filed records the two are the same
+                # string, which is exactly why dropping it looks safe -- but it
+                # is a free-text field the CP types to say WHERE ON THE SITE
+                # the talk was held, and on the sheets where it differs that is
+                # the only thing on the document that says so.
+                "n": 2, "title": "The Talk", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data.meeting_time", "Time", "time_of_day"),
+                    ("data.location", "Location", "name"),
+                    ("data.company_name", "Company", "name"),
+                    ("data.performed_by", "Performed By", "name"),
+                    # THE CP'S NAME IS A FIELD, NOT ONLY A SIGNATURE CAPTION,
+                    # AND THE COMPARISON IS WHY. The branch printed "CP: <name>"
+                    # whenever `cp_name` was set and INDEPENDENTLY of the mark;
+                    # bound only to the signature section it disappears with
+                    # that section on any record that never carried a
+                    # `cp_signature` key -- and one filed toolbox record in the
+                    # baseline prints "CP: Roy fishman" with no signature block
+                    # at all. The daily log declares it in both places for the
+                    # same reason.
+                    #
+                    # IT IS NOT THE SAME FIELD AS `performed_by`. Usually the
+                    # same man, occasionally not: one filed record names the
+                    # CP and a different person as having given the talk.
+                    ("cp_name", "Competent Person", "name"),
+                ],
+            },
+            {
+                # A SENTENCE, NOT A CHECKLIST, AND THAT IS THE DAILY LOG'S
+                # UNRULED HALF REACHED AGAIN. The 21 topic keys ARE a fixed set
+                # (toolboxTalkModel.js TOPICS) so a label set could exist and a
+                # checklist would be the more honest rendering -- it would
+                # close the gap where a stored `false` is indistinguishable
+                # from never having been asked, and it would print the words
+                # the CP actually tapped instead of the key-derived ones.
+                #
+                # IT WOULD ALSO VISIBLY CHANGE 63 FILED DOCUMENTS, from "these
+                # topics were covered" into "here are 21 topics and here is
+                # which ones were". That is a change of substance and it is the
+                # operator's call, not a restyle's. `toggle_list` prints
+                # exactly what the branch printed -- the truthy keys,
+                # title-cased from the key -- so the choice stays open and
+                # nothing moves.
+                #
+                # `covid19` IS WHY THE LABEL SET CANNOT SIMPLY BE ADOPTED
+                # EITHER: the key was removed from TOPICS by an operator ruling
+                # and filed records still carry it true. A label set keyed on
+                # today's 21 would drop it from the sheets that hold it.
+                #
+                # FIVE OF THE 63 CARRY AN EMPTY MAP and the branch prints None
+                # for them. That is a seeded form the CP ticked nothing on, and
+                # `toggle_list` had been folding it in with the absent one --
+                # see the note on that function, and the 32 daily records it
+                # had already cost.
+                "n": 3, "title": "Topics Covered", "primitive": "narrative",
+                "scope": "first", "path": "data.checked_topics",
+                "formatter": "toggle_list", "empty": "none_documented",
+            },
+            {
+                # THE ROSTER, AND THE §3301.12.3 FIELDS ARE ITS COLUMNS: name,
+                # title, company, time. Nothing is added to them -- `signed`
+                # and `gate_confirmed` are stored on every row and the branch
+                # deliberately stopped printing them as columns, because
+                # neither is an attestation and two tick columns beside the
+                # CP's signature invite the reading that signature forecloses.
+                #
+                # `row_requires` ON `name`, WHICH IS THE BRANCH'S OWN GUARD.
+                # Three of the 393 filed rows have no name: a seed row the CP
+                # never filled, printing as a blank line on a signed attendance
+                # record -- a man who was at the talk and cannot be identified
+                # by anybody reading it. The branch drops them and so does
+                # this. Same rule the pre-shift sheet and the OSHA register
+                # already carry.
+                "n": 4, "title": "Attendance", "primitive": "table",
+                "scope": "rows", "path": "data.attendees",
+                "row_requires": ["name"],
+                "empty": "none_documented",
+                "none_text": "No attendees recorded.",
+                "columns": [
+                    ("name", "Name", "name"),
+                    # `raw_name`, WHICH IS THE ONE WRITTEN FOR THIS COLUMN --
+                    # its docstring names the toolbox attendee. The ROW is the
+                    # record here, so a man whose trade the CP did not type is
+                    # blank on the paper rather than carrying a finding against
+                    # himself; 21 filed rows have no title and 14 no company.
+                    #
+                    # AND IT CAPITALISES, WHICH `raw_text` DOES NOT. The branch
+                    # ran `_capitalize_first` over both, so a row read "Foreman"
+                    # and under `raw_text` it read "foreman". The word diff
+                    # cannot see that -- `words()` lowercases both sides before
+                    # it compares -- and a unit test caught it instead. Fourth
+                    # time an instrument has been narrower than its subject.
+                    ("title", "Title", "raw_name"),
+                    ("company", "Company", "raw_name"),
+                    # NEW YORK, NOT UTC. 221 of the 393 rows hold an anchored
+                    # instant the gate wrote, and printing its digits put a man
+                    # at the gate four hours after he walked through it. The
+                    # conversion lives in `formatters` now for exactly this
+                    # reason -- the engine cannot import server.py, and a
+                    # second copy of the rule beside the first is how the four
+                    # hours got written in the first place.
+                    ("time", "In", "roster_clock"),
+                    # THE PROVENANCE IN WORDS, FROM A CLOSED SET. `text` would
+                    # print the stored token, so a filed attendance record
+                    # would read `weekly_gap` under a column headed "Added by".
+                    ("added_from", "Added by", "attendee_source"),
+                ],
+            },
+            {
+                # HIS MARK OVER THE WHOLE ROSTER, which is the only legal
+                # attestation on this document. `omit` plus the engine's
+                # signature rule keep the branch's own line: a record carrying
+                # the key and no mark says UNSIGNED, and a record that never
+                # carried it prints no section.
+                "n": 5, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
     # ── DAILY JOBSITE LOG ───────────────────────────────────────────────────
     #
     # THE LARGEST, THE MOST READ, AND THE ONE THAT WILL EVENTUALLY DECLARE
