@@ -225,11 +225,32 @@ class TheTablesThatHadNoCoverage(unittest.TestCase):
 class ThePreShiftAnswersReadAsAnswers(unittest.TestCase):
     """SITES 1 and 2, in both renderers."""
 
-    def test_both_renderers_route_the_two_answers_through_the_helper(self):
-        self.assertEqual(_CODE.count('answer_label(w.get("had_injury"))'),
-                         N_RENDERERS)
-        self.assertEqual(_CODE.count('answer_label(w.get("inspected_ppe"))'),
-                         N_RENDERERS)
+    def test_the_two_answers_read_as_answers_on_the_sheet(self):
+        """THE STORED WORDS ARE `yes` AND `no`, AND THE SHEET SAYS Yes AND No.
+
+        This counted `answer_label(w.get("had_injury"))` in `server.py`. The
+        pre-shift branch is deleted and the rule is the `answer` formatter,
+        named by the declaration -- so the claim is asserted on the two
+        columns it is about.
+
+        AND THE ABSENT ONE IS NOT A NO. A worker asked nothing has no answer,
+        and the sheet must not supply one; `yes_no` coerced that to No on 49
+        filed records before this migration found it."""
+        from tests.filed_sheet import cells, logbook, render
+        lb = logbook("preshift_signin")
+        lb["data"]["workers"] = [
+            {"name": "wilmer carrillo", "had_injury": "no",
+             "inspected_ppe": "yes"},
+            {"name": "segundo pilamunga"},
+        ]
+        html = render(lb)
+        self.assertEqual(cells(html, "Injury")[0], "No")
+        self.assertEqual(cells(html, "PPE")[0], "Yes")
+        for column in ("Injury", "PPE"):
+            with self.subTest(column=column):
+                self.assertNotIn(cells(html, column)[1], ("Yes", "No"),
+                                 "a worker who was asked nothing has been "
+                                 "given an answer")
 
     def test_neither_still_prints_the_raw_value(self):
         self.assertNotIn('w.get("had_injury") or "&mdash;"', _CODE)

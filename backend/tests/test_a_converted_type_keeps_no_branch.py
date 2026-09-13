@@ -65,8 +65,46 @@ def _filed_renderer() -> str:
     return "".join(_SRC.splitlines(keepends=True)[node.lineno - 1:node.end_lineno])
 
 
+def _the_chain() -> str:
+    """The per-type chain ONLY, located from the dispatch that precedes it.
+
+    ── THE CENSUS USED TO READ THE WHOLE FUNCTION ──────────────────────────
+
+        BRANCHED = set(re.findall(r'(?:el)?if log_type == "(\\w+)"',
+                                  _filed_renderer()))
+
+    and `generate_single_logbook_html` contains two `if log_type ==` statements
+    that are NOT chain arms: the block above the dispatch that resolves the
+    async work a declaration cannot do, for `site_superintendent_log` and
+    `preshift_signin`. While both types also had arms the two sets matched and
+    nothing showed. The moment their arms were deleted this census reported two
+    branches that do not exist, and `IN_FLIGHT` -- which must EQUAL the real
+    overlap -- would have had to name two phantoms to go green.
+
+    FOURTH INSTANCE OF THE SAME SHAPE in this file's own history: a pattern
+    that means "a chain arm" and matches every occurrence of its own text.
+    Three test slices and a frontend slice have been broken by it already, and
+    each was fixed by anchoring AFTER something that is only ever in the right
+    place. This is that fix for the census.
+
+    THE ANCHOR IS THE DISPATCH, which cannot move: a switch below the chain's
+    first arm would never be reached for a type the chain handles, and
+    `test_the_dispatch_happens_before_the_chain` asserts exactly that.
+    """
+    fn = _filed_renderer()
+    d = fn.index("if log_type in legal_render.CONVERTED_TYPES:")
+    m = re.compile('\\n    (?:el)?if log_type == "\\w+":').search(fn, d)
+    if not m:
+        raise AssertionError(
+            "the per-type chain has no arms left. That is the END of this "
+            "migration, not a broken test: every type renders through the "
+            "engine and there is no branch for anything to shadow. Retire "
+            "this file -- its subject is gone.")
+    return fn[m.start():]
+
+
 #: Every type with a hand-written arm of the per-type chain.
-BRANCHED = set(re.findall(r'(?:el)?if log_type == "(\w+)"', _filed_renderer()))
+BRANCHED = set(re.findall(r'(?:el)?if log_type == "(\w+)"', _the_chain()))
 
 #: Every type the declarative engine has a schema for.
 CONVERTED = set(legal_render.CONVERTED_TYPES)
@@ -93,11 +131,12 @@ DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 #: what makes the rollback a one-line revert. The daily jobsite branch went the
 #: same way: deleted in the change after its own, with 59 of 59 records proving
 #: it could not run.
-#: FIVE NOW. Toolbox talk renders through the engine in this change and keeps
-#: its branch for exactly one more, which is what makes the rollback a one-line
-#: revert. The other four are owed their deletion and it is the next change.
-IN_FLIGHT = {"preshift_signin", "osha_log", "scaffold_maintenance",
-             "site_superintendent_log", "toolbox_talk"}
+#: EMPTY, WHICH IS THE ORDINARY STATE. All five branches went in this change,
+#: each after its sheet had rendered in production and been read: 317 of 317
+#: filed records across seven types, 0 raised, 0 making a claim the record does
+#: not support. The window is shut and the census below refuses every overlap
+#: again.
+IN_FLIGHT = set()
 
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):
@@ -105,7 +144,29 @@ class TheCensusFoundSomethingToCompare(unittest.TestCase):
     regex that stops matching makes all of them pass on an empty set."""
 
     def test_the_branch_chain_was_read(self):
-        self.assertGreaterEqual(len(BRANCHED), 10)
+        """THE FLOOR, AND IT TRACKS THE MIGRATION RATHER THAN A NUMBER.
+
+        This was `>= 10`, which was true when three types were converted and
+        became false at seven -- on a correct deletion. A floor that has to be
+        edited down after every change is a floor somebody edits down without
+        reading it.
+
+        WHAT IT IS ACTUALLY FOR is that the regex still matches something: an
+        empty `BRANCHED` makes every set difference below pass. So the claim is
+        that the chain has arms, and the sentence says what it means when it
+        does not."""
+        self.assertGreaterEqual(
+            len(BRANCHED), 1,
+            "the chain has no arms, so every census below is a difference "
+            "against an empty set and passes vacuously. If that is because "
+            "the migration finished, this file's subject is gone -- retire "
+            "it. If it is because the regex stopped matching, fix the regex.")
+
+    def test_the_chain_and_the_registry_agree_on_what_is_left(self):
+        """THE STRONGER HALF, which is available now that the census reads the
+        chain and nothing else: the arms remaining are EXACTLY the types with
+        no schema. Not a floor -- the real number, whatever it is."""
+        self.assertEqual(sorted(BRANCHED), sorted(DEFINED - CONVERTED))
 
     def test_the_schema_list_was_read(self):
         self.assertGreaterEqual(len(CONVERTED), 1)
@@ -206,6 +267,27 @@ class AConvertedTypeKeepsNoBranch(unittest.TestCase):
         which is what a FINISHED conversion looks like."""
         self.assertIn("subcontractor_orientation", CONVERTED)
         self.assertNotIn("subcontractor_orientation", BRANCHED)
+
+    def test_all_SEVEN_finished_conversions_look_like_finished_ones(self):
+        """THE COUNT AT THE END OF THIS CHANGE, named the same way. Five
+        branches went in one change because five sheets had rendered in
+        production and been read -- 317 of 317 filed records across seven
+        types, 0 raised, 0 making a claim the record does not support.
+
+        THE TWO PRE-DISPATCH BLOCKS ARE NOT BRANCHES, and two of these names
+        are why: `preshift_signin` and `site_superintendent_log` still appear
+        in `if log_type ==` statements ABOVE the dispatch, where the caller
+        resolves async work a declaration cannot. The census reads the chain
+        alone; if it ever goes back to reading the function, this assertion is
+        the one that fails."""
+        for t in ("subcontractor_orientation", "daily_jobsite",
+                  "preshift_signin", "osha_log", "scaffold_maintenance",
+                  "site_superintendent_log", "toolbox_talk"):
+            with self.subTest(log_type=t):
+                self.assertIn(t, CONVERTED, f"{t} lost its schema")
+                self.assertNotIn(t, BRANCHED,
+                                 f"{t}'s branch is back, or the census is "
+                                 f"reading something that is not the chain")
 
 
 class TheDispatchDoesNotDEGRADEAConvertedType(unittest.TestCase):

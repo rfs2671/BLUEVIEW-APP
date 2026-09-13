@@ -155,15 +155,6 @@ class NoSignatureIsReachableFromTheInvestorReportAtAll(unittest.TestCase):
     walk from the filed renderer, where the answer must still be many.
     """
 
-    def test_the_call_graph_is_actually_being_walked(self):
-        """A closure that returns only the root passes every assertion below
-        vacuously. This is the empty-set guard, and it now runs against the
-        renderer that still composes filed documents."""
-        reached = _reachable("generate_single_logbook_html")
-        self.assertIn("generate_single_logbook_html", reached)
-        self.assertIn("_superintendent_log_html", reached,
-                      "the shared builder is no longer reached — the walk broke")
-        self.assertGreater(len(reached), 5)
 
     def test_the_report_itself_is_still_walked(self):
         """And the report's own closure is non-trivial, so "reaches no
@@ -197,38 +188,75 @@ class NoSignatureIsReachableFromTheInvestorReportAtAll(unittest.TestCase):
             [f"{f}:{c.lineno}" for f, c in found], [],
             "the investor report composes a signature again")
 
+    def test_the_call_graph_is_actually_being_walked(self):
+        """A closure that returns only the root passes every assertion below
+        vacuously. This is the empty-set guard.
+
+        ── THE SUBJECT IT PROVES ITSELF ON HAD TO STOP BEING THE FILED
+           RENDERER ────────────────────────────────────────────────────
+
+        It walked from `generate_single_logbook_html` and required
+        `_superintendent_log_html` in the result. That was true while the
+        per-type chain composed thirteen documents; every conversion takes a
+        branch and its calls with it, and the number went 9 -> 7 -> 5 -> 2
+        across four conversions with a comment explaining each step down. A
+        guard whose floor is edited down after every change is a guard
+        somebody edits down without reading.
+
+        SO IT PROVES ITSELF ON SOMETHING THAT DOES NOT ERODE. The walk's job
+        is to follow calls; `render_signature_html` and the builder that calls
+        it are both still in `server.py`, converted or not, and a walk that
+        cannot find that edge is broken whatever the migration has done.
+        """
+        reached = _reachable("_superintendent_log_html")
+        self.assertIn("_superintendent_log_html", reached)
+        self.assertIn(
+            "render_signature_html", reached,
+            "the walk cannot follow a call it is looking at directly, so "
+            "every 'reaches nothing' result in this file is worthless")
+
     def test_and_the_walk_still_finds_many_from_the_filed_renderer(self):
-        """THE GUARD ON THE ASSERTION ABOVE. An empty result is the shape a
-        BROKEN WALK produces, which is exactly what this file exists to refuse
-        -- so emptiness only counts as evidence while the same walk, on the
-        same machinery, still returns a crowd from the document renderer."""
+        """THE GUARD ON THE ASSERTION ABOVE, AND IT IS ERODING BY DESIGN.
+
+        An empty result is the shape a BROKEN walk produces, which is what this
+        file exists to refuse -- so emptiness only counts as evidence while the
+        same walk, on the same machinery, still finds calls somewhere.
+
+        WHAT IT CANNOT SEE IS NOT MISSING FROM THE DOCUMENT. The engine draws
+        every mark on a converted sheet through the `signature` primitive, and
+        this walk looks for ONE FUNCTION BY NAME in `server.py`. So the count
+        falls with each conversion while the sheets keep their signatures, and
+        the floor here is 1 rather than a number that has to be revised: what
+        must stay true is that the walk finds SOMETHING when something is
+        there, and the test above proves that on a subject that does not move.
+
+        WHEN IT REACHES ZERO: the last branch-rendered type has converted, and
+        `render_signature_html` has no caller inside the filed renderer at all.
+        That is not a broken walk -- it is the end of the migration, and this
+        assertion should be retired together with the census in
+        test_a_converted_type_keeps_no_branch.py.
+        """
         found = _signature_calls_under("generate_single_logbook_html")
-        # 9 -> 7. The orientation branch carried two `render_signature_html`
-        # calls -- the worker's and the conducting party's -- and it was
-        # deleted when that type's conversion finished. The sheet still prints
-        # both, through the engine's `signature` primitive, which this walk
-        # cannot see because it looks for one function by name.
-        #
-        # THE NUMBER IS NOT THE CLAIM. It is the vacuity guard on the assertion
-        # above: an empty result from this walk is the shape a BROKEN walk
-        # produces, so emptiness only counts as evidence while the same walk
-        # still returns a crowd from the document renderer.
         self.assertGreaterEqual(
-            # 7 -> 5. The daily jobsite branch carried two
-            # `render_signature_html` calls -- the CP's and the
-            # superintendent's -- and went when that type was converted. The
-            # sheet still prints both, through the engine's `signature`
-            # primitive, which this walk cannot see because it looks for one
-            # function by name.
-            #
-            # THE NUMBER IS NOT THE CLAIM. It is the vacuity guard on the
-            # assertion above: an empty result is the shape a BROKEN walk
-            # produces, so emptiness only counts as evidence while the same
-            # walk still returns a crowd from the document renderer.
-            len(found), 5,   # measured, 2026-09-13
-            f"only {len(found)} signature calls reached from the filed "
-            "renderer; the walk is broken, so the empty result above proves "
-            "nothing")
+            len(found), 1,
+            "the filed renderer reaches no signature call at all. If every "
+            "type is converted that is expected -- retire this assertion. If "
+            "not, the walk is broken and the empty result above proves "
+            "nothing.")
+
+    def test_the_engine_draws_the_marks_this_walk_cannot_see(self):
+        """THE OTHER HALF OF THE EROSION, SAID OUT LOUD.
+
+        The count above falls because marks moved OUT of `server.py`, not
+        because sheets stopped carrying them. Asserted on a rendered document,
+        so the shrinking number above can never be mistaken for signatures
+        disappearing from filed records."""
+        from tests.filed_sheet import sheet, visible
+        from lib import legal_render
+        for log_type in sorted(legal_render.CONVERTED_TYPES):
+            with self.subTest(log_type=log_type):
+                self.assertIn("[INK]", visible(sheet(log_type)),
+                              f"{log_type}'s sheet draws no mark at all")
 
     def test_the_exemption_is_ONE_function_and_its_premise_holds(self):
         """A named exemption is only as good as the claim behind it, so the
@@ -266,8 +294,16 @@ class NoSignatureIsReachableFromTheInvestorReportAtAll(unittest.TestCase):
         report reaches it through nothing, which is the finding above. What is
         worth keeping is the NAME -- a reader who hits a failure here should
         land on the call site that made this file necessary."""
+        # THE NAME IS WORTH KEEPING; THE ROUTE TO IT IS NOT. A reader who
+        # hits a failure in this file should land on the call site that made
+        # it necessary, and that call site is inside
+        # `_superintendent_log_html` -- which the FILED RENDERER no longer
+        # reaches, because the superintendent branch was deleted after its
+        # sheet rendered in production and was read. The function is intact and
+        # so is the call; what changed is who calls the function, which is
+        # recorded as A19.
         names = {f for f, _ in
-                 _signature_calls_under("generate_single_logbook_html")}
+                 _signature_calls_under("_superintendent_log_html")}
         self.assertIn("_superintendent_log_html", names)
 
 
@@ -280,11 +316,34 @@ class TheLegalPdfKeepsEverything(unittest.TestCase):
         self.assertIs(p.default, True)
         self.assertIs(p.kind, inspect.Parameter.KEYWORD_ONLY)
 
-    def test_the_per_logbook_pdf_passes_nothing_and_so_inherits_true(self):
-        i = _SRC.index("body_html = _superintendent_log_html(")
-        # ANCHORED: the bare identifier would also match a comment
-        # mentioning the flag. What must be absent is the ARGUMENT.
-        self.assertNotIn("legal_record=", _SRC[i:i + 200])
+    def test_NOTHING_passes_the_flag_so_every_caller_inherits_true(self):
+        """THE FLAG IS NEVER SUPPLIED, WHICH IS STRONGER THAN ONE CALL SITE
+        NOT SUPPLYING IT.
+
+        This anchored on `body_html = _superintendent_log_html(` -- the
+        per-logbook branch's call -- and asserted that call passed no
+        `legal_record=`. That branch is deleted. The claim generalises rather
+        than disappearing: `legal_record` defaults to True, and if NO caller
+        anywhere passes it, no caller anywhere can take the audit apparatus off
+        a §3301 record.
+        """
+        # NO CALL SITE SUPPLIES IT. The three occurrences in `server.py` are
+        # the two DEFAULTS and the one forward inside the builder itself; a
+        # fourth is a caller deciding what apparatus a filing carries.
+        import re as _re
+        supplied = [m for m in _re.findall(r"legal_record=(\w+)", _SRC)
+                    if m not in ("True", "legal_record")]
+        self.assertEqual(supplied, [],
+                         f"something now supplies the flag ({supplied}); find "
+                         f"it and decide whether it may take the audit "
+                         f"apparatus off a filed record")
+        # AND THE APPARATUS IS ON THE FILED SHEET, which is what inheriting
+        # True is FOR. Asserted on the document: the superintendent's mark
+        # carries its affirmation banner.
+        from tests.filed_sheet import sheet, visible
+        self.assertIn("AFFIRMED", visible(sheet("site_superintendent_log")),
+                      "the filed superintendent sheet lost its affirmation "
+                      "banner, which is what legal_record=True protects")
 
     def test_nothing_opts_out_any_more_and_that_is_recorded(self):
         """THE OPT-OUT HAS NO CALLER LEFT, and saying so is the point.

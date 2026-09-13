@@ -201,11 +201,21 @@ def test_neither_renderer_still_uses_the_unsafe_form():
     assert 'w.get("name", "").strip()' not in src, (
         "a preshift renderer is back on the form that raises on a stored None"
     )
-    assert src.count('if str(w.get("name") or "").strip():') == N_RENDERERS, (
-        "every renderer that prints the pre-shift roster must carry the safe "
-        "guard; the investor report stopped printing one when it stopped "
-        "embedding the filed documents"
-    )
+    # THE GUARD IS A DECLARATION NOW, AND THE OUTCOME IS ON THE PAGE.
+    #
+    # This counted `if str(w.get("name") or "").strip():` once per renderer.
+    # The pre-shift branch is deleted; `row_requires` is the same rule stated
+    # declaratively, and what it has to do is unchanged: a row whose name is a
+    # stored None is not a row, and reading it must not raise.
+    from tests.filed_sheet import cells, logbook, render
+    lb = logbook("preshift_signin")
+    lb["data"]["workers"] = [
+        {"name": None, "company": None, "osha_number": None},
+        {"name": "wilmer carrillo", "company": "aaz", "osha_number": "1"},
+    ]
+    html = render(lb)                      # must not raise on the stored None
+    assert cells(html, "Name") == ["Wilmer carrillo"], (
+        "a roster row whose name is a stored None printed anyway")
 
 
 def test_a_none_cell_does_not_print_the_word_none():
@@ -216,8 +226,17 @@ def test_a_none_cell_does_not_print_the_word_none():
     assert server._capitalize_first(None) == ""
     src = inspect.getsource(server)
     assert 'w.get("osha_number", "")}' not in src, "an unguarded cell remains"
-    assert src.count('{_capitalize_first(w.get("name") or "")}') == N_RENDERERS
-    assert src.count('{_capitalize_first(w.get("company") or "")}') == N_RENDERERS
+    # ASSERTED ON THE DOCUMENT, which is where the four characters would have
+    # appeared. A filed record naming a man's employer "None" is the same
+    # defect as naming him "null", one field over -- and counting f-strings in
+    # `server.py` stopped being able to see it when the branch went.
+    from tests.filed_sheet import logbook, render, visible
+    lb = logbook("preshift_signin")
+    lb["data"]["workers"] = [{"name": "wilmer carrillo", "company": None,
+                              "osha_number": None, "had_injury": None,
+                              "inspected_ppe": None}]
+    assert "None" not in visible(render(lb)), (
+        "a stored None reached the page as the four characters None")
 
 
 # ══ 1d — AND THE REWRITE THAT WOULD HAVE UNDONE IT ════════════════════════

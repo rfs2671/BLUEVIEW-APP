@@ -73,15 +73,29 @@ ok((code.match(/drawings_on_site/g) || []).length === 1,
 
 console.log('\n-- Nothing printed changes --');
 
-ok(/general_info\.drawings_on_site is a dead duplicate/.test(server),
-  'the renderer already ignored the general_info copy');
-// ONE NOTE, BECAUSE THERE IS ONE RENDERER. There were two -- the per-logbook
-// PDF and the combined report's embedded copy -- and each said in its own
-// comment that the general_info duplicate is dead, so neither would start
-// reading it. The report embeds no filed document now, so the second note went
-// with the second renderer.
-ok((server.match(/general_info\.drawings_on_site is a dead/g) || []).length === 1,
-  'the note is duplicated again, which means a second renderer is back');
+// A COMMENT IS NOT AN ASSERTION, AND NOW IT DOES NOT HAVE TO BE.
+//
+// These two read a NOTE in the scaffold branch saying the general_info copy is
+// a dead duplicate -- which was the best available check while a hand-written
+// branch composed the sheet, and is the trap `tests/source_text.py` exists
+// for: matching the documentation of a rule instead of the rule.
+//
+// The branch was deleted when the sheet converted. What replaced it is better
+// than the note: the declaration NAMES every path it binds, so "the renderer
+// ignores the general_info copy" is directly readable rather than promised.
+const RK = require('./rendererKeys.cjs');
+const scafPaths = RK.declFields('scaffold_maintenance').map((f) => f.path);
+ok(scafPaths.length > 0,
+  'the scaffold declaration binds no fields at all -- this check has no '
+  + 'subject, and every assertion below it is vacuous');
+ok(!scafPaths.includes('data.general_info.drawings_on_site'),
+  'the sheet reads the DEAD general_info copy of drawings_on_site instead of '
+  + 'the question the CP actually answered');
+// AND IT IS STILL QUESTION 19, where the CP taps it.
+const scafQs = RK.labelSet('scaffold_maintenance_questions');
+ok(scafQs.length === 19 && scafQs[18].key === 'drawings_on_site',
+  `drawings_on_site is question 19 on the sheet too (got ${scafQs.length} `
+  + `questions, 19th is ${scafQs[18] && scafQs[18].key})`);
 
 console.log('\n-- The project value is left alone --');
 

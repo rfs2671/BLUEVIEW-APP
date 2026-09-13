@@ -110,13 +110,19 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
     def test_osha_fields_match_the_renderer(self):
         """render_logbook_html's osha_log branch drops a row that names no
         worker. Read from the source, so the two cannot drift apart."""
-        # ENDED AT THE GENERIC ARM. See the note on the same slice in
-        # test_report_six_defects.py: `osha_log` is the last named branch now.
-        branch = _SRC[_SRC.index('elif log_type == "osha_log":'):]
-        branch = branch[:branch.index(
-            'type_title = log_type.replace("_", " ").title()')]
-        m = re.search(r"has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)", branch)
-        renderer_fields = tuple(re.findall(r'"([a-z_]+)"', m.group(1)))
+        # THE RENDERER'S RULE IS A DECLARATION NOW. This sliced the
+        # osha_log branch out of `server.py` and read its `has(e, k) for k in
+        # (...)` guard; the branch was deleted after its sheet rendered in
+        # production and was read, and `row_requires` states the same rule.
+        #
+        # THE CLAIM IS UNCHANGED AND IS THE WHOLE POINT OF THIS CLASS: the
+        # gate that refuses a row at SUBMIT and the gate that refuses to print
+        # it must name the same field, or a row the one rejects is a row the
+        # other silently drops -- or worse, prints.
+        from lib.legal_render import schema as _schema
+        section = next(s for s in _schema.SCHEMAS["osha_log"]["sections"]
+                       if s.get("path") == "data.entries")
+        renderer_fields = tuple(section["row_requires"])
         self.assertEqual(S._SUBMIT_ROW_CONTENT_RULES["osha_log"][1], renderer_fields)
 
     def test_the_osha_rule_is_the_WORKER_NAME(self):
@@ -137,20 +143,23 @@ class TheRulesAreLiftedFromTheRenderers(unittest.TestCase):
         """The rule preshift WOULD use is shipped in both renderers already —
         a worker row is real when it has a NAME. Pinned so the deferral stays a
         one-line change and does not need re-deriving later."""
-        # COUNTED BY SHAPE, NOT BY SPELLING. This pinned the literal
-        # `if w.get("name", "").strip():`, which is the form that RAISES
-        # AttributeError on a stored `name: None` — the value correcting a
-        # worker called "null" produces. Fixing that took the literal with it
-        # and this assertion failed about a rule that had not changed.
+        # COUNTED BY SHAPE, THEN BY DECLARATION. This pinned the literal
+        # `if w.get("name", "").strip():` -- the form that RAISES
+        # AttributeError on a stored `name: None`, the value correcting a
+        # worker called "null" produces -- then a regex over both spellings,
+        # and then the pre-shift branch was deleted and there was no `if` to
+        # find at all.
         #
-        # The invariant is "both preshift renderers gate a row on a non-blank
-        # name", and it is expressed as that now: any guard on w's name, in
-        # either safe or unsafe spelling, counted twice. A regression that
-        # DELETES a guard still fails; a rewording does not.
-        guards = re.findall(
-            r'if (?:str\()?w\.get\("name"(?:, "")?\)(?: or "")?\)?\.strip\(\):',
-            _SRC)
-        self.assertEqual(len(guards), N_RENDERERS, guards)
+        # THE INVARIANT HAS NEVER CHANGED: the pre-shift roster gates a row on
+        # a non-blank NAME, and that is the rule a deferred submit-time gate
+        # would adopt one line at a time. It is `row_requires` now.
+        from lib.legal_render import schema as _schema
+        section = next(s for s in _schema.SCHEMAS["preshift_signin"]["sections"]
+                       if s.get("path") == "data.workers")
+        self.assertEqual(section.get("row_requires"), ["name"],
+                         "the pre-shift roster's row guard is gone or names "
+                         "a different field, so the deferral above is no "
+                         "longer a one-line change")
         # And the unsafe spelling specifically must not come back.
         self.assertNotIn('w.get("name", "").strip()', _SRC)
 

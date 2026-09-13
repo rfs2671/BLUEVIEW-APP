@@ -405,71 +405,109 @@ class TheRenderedDocument(unittest.TestCase):
 
 class TheBlankRowIsGoneEverywhere(unittest.TestCase):
     """DEFECT 3 — a seed row the CP never filled printed as a blank line on a
-    signed attendance record: a person who was there and cannot be named."""
+    signed attendance record: a person who was there and cannot be named.
 
-    def test_toolbox_talk_skips_a_nameless_attendee(self):
-        # THE OWNER MOVED, THE RULE DID NOT. A nameless attendee is dropped
-        # because the claim on a roster is about a NAMED person; the report
-        # embedded that roster and now indexes it, so the guard is read off
-        # the document's own renderer.
-        block = _SINGLE[_SINGLE.index('for a in data.get("attendees"'):]
-        block = block[:block.index("att_rows +=")]
-        self.assertIn('if not str(a.get("name") or "").strip():', block)
-        self.assertIn("continue", block)
+    ── THE RULE OUTLIVED EVERY PLACE IT WAS WRITTEN ───────────────────────
 
-    def test_the_per_logbook_PDF_skips_one_too(self):
-        """DEVICE ROUND 6, item 2. The gate above was applied to the emailed
-        report and nowhere else, while its own comment said the pre-shift sheet
-        and the OSHA register "already use" it and this table "was the one that
-        never got it". The second half was false: render_logbook_html — the
-        document an inspector asks for BY NAME — had no name gate on this table
-        at all, so one stored talk printed two different attendance records.
+    Four assertions here read four different `if ... continue` guards out of
+    four hand-written branches. All four branches are deleted; every one of
+    those rosters is drawn by the table primitive now, and the guard is
+    `row_requires` in the declaration.
 
-        A nameless row there was not blank, either: it carried Present ✓ from
-        the CP's mark and Confirmed at gate ✓ from a worker tap, against a man
-        the record does not identify."""
-        block = _SINGLE[_SINGLE.index('for a in data.get("attendees"'):]
-        block = block[:block.index("att_rows +=")]
-        self.assertIn('if not str(a.get("name") or "").strip():', block)
-        self.assertIn("continue", block)
+    NOT ONE OF THE FOUR WAS ABOUT A RULE THAT BROKE. So the claim is restated
+    as what it always meant — a row naming nobody does not appear on a signed
+    record — and it is asserted TWICE: on every declaration that has a roster,
+    and on the rendered document, which is the thing an inspector reads.
 
-    def test_preshift_already_skipped_and_still_does(self):
-        """It was never the defect on this table — asserted so a later change
-        cannot quietly remove the rule the other tables were brought up to."""
-        # COUNTED BY SHAPE, NOT BY SPELLING. This pinned the literal
-        # `if w.get("name", "").strip():`, which is the form that RAISES
-        # AttributeError on a stored `name: None` — the value correcting a
-        # worker called "null" produces. Fixing that took the literal with it
-        # and this assertion failed about a rule that had not changed.
-        #
-        # The invariant is "both preshift renderers gate a row on a non-blank
-        # name", and it is expressed as that now: any guard on w's name, in
-        # either safe or unsafe spelling, counted twice. A regression that
-        # DELETES a guard still fails; a rewording does not.
-        guards = re.findall(
-            r'if (?:str\()?w\.get\("name"(?:, "")?\)(?: or "")?\)?\.strip\(\):',
-            _SRC)
-        self.assertEqual(len(guards), N_RENDERERS, guards)
-        # And the unsafe spelling specifically must not come back.
-        self.assertNotIn('w.get("name", "").strip()', _SRC)
+    AND IT COVERS TYPES THAT DID NOT EXIST WHEN IT WAS WRITTEN. The census is
+    derived, so the six conversions still to come are checked by it the day
+    they land instead of being remembered.
+    """
 
-    def test_the_osha_register_drops_a_row_that_names_nobody(self):
-        """WIDENED, device round 6 item 1. It skipped a row carrying none of
-        five fields — the untouched seed — and printed one carrying a company
-        and a card number against no name. A certification register is a list
-        of statements about named men, so the name is the rule and the seed
-        row (which has no name either) is still dropped by it."""
-        # ENDED AT THE GENERIC ARM, NOT AT THE NEXT TYPE. `osha_log` became
-        # the LAST named branch when the orientation sheet's was deleted, so
-        # this raised `substring not found`. The generic arm follows the last
-        # named branch whichever type that is.
-        branch = _SINGLE[_SINGLE.index('elif log_type == "osha_log":'):]
-        branch = branch[:branch.index(
-            'type_title = log_type.replace("_", " ").title()')]
-        m = re.search(r"has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)", branch)
-        self.assertIsNotNone(m, "the osha row gate is unreadable")
-        self.assertEqual(tuple(re.findall(r'"([a-z_]+)"', m.group(1))),
-                         ("worker_name",))
+    #: Every roster whose rows name a person, and the field that names them.
+    #: A table of anything else -- an activity, a load, a delivery -- is not a
+    #: claim about a man and is deliberately not here.
+    ROSTERS = {
+        # `name`, NOT `worker_name`. The pre-shift roster and the OSHA
+        # register store the man's name under different keys, which is exactly
+        # the sort of thing a hand-written guard got right in four places and
+        # a derived census has to be TOLD -- so the field is named here and
+        # `test_and_the_guard_names_the_field_that_names_the_man` checks the
+        # declaration agrees.
+        "preshift_signin": ("data.workers", "name"),
+        "osha_log": ("data.entries", "worker_name"),
+        "toolbox_talk": ("data.attendees", "name"),
+    }
+
+    def test_every_roster_declares_the_guard(self):
+        """THE RULE, WHERE IT NOW LIVES. A roster section with no
+        `row_requires` is a table that will print a row naming nobody."""
+        from lib.legal_render import schema as _schema
+        for log_type, (path, _field) in self.ROSTERS.items():
+            with self.subTest(log_type=log_type):
+                section = next(
+                    (s for s in _schema.SCHEMAS[log_type]["sections"]
+                     if s.get("path") == path), None)
+                self.assertIsNotNone(
+                    section, f"{log_type} has no section bound to {path}")
+                self.assertTrue(
+                    section.get("row_requires"),
+                    f"{log_type}'s roster prints every stored row, including "
+                    f"a seed row the CP never filled")
+
+    def test_and_the_guard_names_the_field_that_names_the_man(self):
+        """A guard on the wrong field drops the wrong rows, and would look
+        exactly like this one."""
+        from lib.legal_render import schema as _schema
+        for log_type, (path, field) in self.ROSTERS.items():
+            with self.subTest(log_type=log_type):
+                section = next(s for s in _schema.SCHEMAS[log_type]["sections"]
+                               if s.get("path") == path)
+                self.assertIn(field, section["row_requires"])
+
+    def test_the_nameless_row_does_not_reach_the_page(self):
+        """THE OUTCOME, ON THE DOCUMENT. The three rules above could all hold
+        and the row could still print, if the primitive stopped honouring
+        them."""
+        from tests.filed_sheet import logbook, render, visible
+        for log_type, (path, field) in self.ROSTERS.items():
+            with self.subTest(log_type=log_type):
+                lb = logbook(log_type)
+                key = path.split(".")[-1]
+                lb["data"][key] = [
+                    {field: "", "company": "aaz",
+                     "card_number": "99998888", "title": "laborer"},
+                    {field: "wilmer carrillo", "company": "aaz",
+                     "card_number": "11112222", "title": "foreman"},
+                ]
+                text = visible(render(lb))
+                self.assertIn("Wilmer carrillo", text)
+                self.assertNotIn(
+                    "99998888", text,
+                    f"{log_type} printed a row belonging to nobody named")
+
+    def test_whitespace_is_not_a_name_on_any_of_them(self):
+        """`row_requires` tests the STRIPPED value, and a name of three spaces
+        is the same absence as no name at all."""
+        from tests.filed_sheet import logbook, render, visible
+        for log_type, (path, field) in self.ROSTERS.items():
+            with self.subTest(log_type=log_type):
+                lb = logbook(log_type)
+                lb["data"][path.split(".")[-1]] = [
+                    {field: "   ", "company": "aaz",
+                     "card_number": "99998888", "title": "laborer"}]
+                self.assertNotIn("99998888", visible(render(lb)))
+
+    def test_the_ROSTERS_census_is_not_empty_and_names_real_types(self):
+        """THE VACUITY GUARD. Every assertion above loops over this map; an
+        empty one passes them all, and a stale name would skip a roster
+        silently."""
+        from lib.legal_render import schema as _schema
+        self.assertTrue(self.ROSTERS)
+        for log_type in self.ROSTERS:
+            self.assertIn(log_type, _schema.SCHEMAS,
+                          f"{log_type} has no declaration, so its roster is "
+                          f"not checked by anything here")
 
 
 class TheDuplicateWorkerRow(unittest.TestCase):
@@ -784,10 +822,20 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
         # the legal renderer states it as a `worker_name` guard rather than by
         # naming the shared submit-time constant. The claim is that the guard
         # EXISTS and gates the row, which is what is asserted.
-        block = _SINGLE[_SINGLE.index('log_type == "osha_log"'):]
-        block = block[:block.index("osha_rows +=")]
-        self.assertIn("worker_name", block)
-        self.assertIn("continue", block)
+        # THE GUARD IS A DECLARATION AND THE OUTCOME IS ON THE PAGE. This
+        # sliced the osha_log branch, which is deleted; `row_requires` states
+        # the same rule, and what it has to DO is that a certification
+        # belonging to no named worker does not print.
+        from lib.legal_render import schema as _schema
+        from tests.filed_sheet import cells, logbook, render
+        _sec = next(s for s in _schema.SCHEMAS["osha_log"]["sections"]
+                    if s.get("path") == "data.entries")
+        self.assertIn("worker_name", _sec.get("row_requires") or [])
+        _lb = logbook("osha_log")
+        _lb["data"]["entries"] = [
+            {"worker_name": "", "card_number": "99998888"},
+            {"worker_name": "wilmer carrillo", "card_number": "11112222"}]
+        self.assertEqual(cells(render(_lb), "Card #"), ["11112222"])
 
     @unittest.skip(
         "DELETED BY THE REPLACEMENT. The rule was that the REPORT's copy of "
@@ -970,14 +1018,37 @@ class TestAttendeeProvenanceIsPrinted(unittest.TestCase):
         # READ OFF THE DOCUMENT. The ragged-table invariant is about the
         # toolbox talk's own header and placeholder, which the legal renderer
         # prints; the report used to embed it.
-        _tb = _SINGLE[_SINGLE.index('log_type == "toolbox_talk"'):]
-        _tb = _tb[:_tb.index('elif log_type ==', 40)]
-        header = next(l for l in _tb.splitlines() if "{TH}>Name</th>" in l)
-        columns = header.count("<th {TH}>")
-        self.assertGreater(columns, 0, header)
-        self.assertIn(f'colspan="{columns}"', _tb,
-                      f"the header carries {columns} columns; the empty-state "
-                      f"placeholder does not span them")
+        # THE RAGGED TABLE CANNOT OCCUR ANY MORE, AND THAT IS THE FINDING.
+        #
+        # This read the toolbox branch, computed how many columns its header
+        # carried, and asserted the empty-state placeholder spanned exactly
+        # that many -- a placeholder narrower than its header renders a ragged
+        # table on the one document nobody re-renders.
+        #
+        # THE BRANCH IS DELETED AND THE ENGINE DRAWS NO PLACEHOLDER ROW. A
+        # roster with no rows to show is not a table with one wide cell in it;
+        # it is the declared `none_text` under the section heading, with no
+        # header above it. There are no two widths to disagree.
+        #
+        # SO THE CLAIM BECOMES ITS STRONGER FORM: when the roster is empty the
+        # sheet SAYS SO IN WORDS, and draws no header over nothing.
+        from tests.filed_sheet import logbook, render, visible
+        _lb = logbook("toolbox_talk")
+        _lb["data"]["attendees"] = []
+        _html = render(_lb)
+        self.assertIn("No attendees recorded", visible(_html))
+        self.assertNotIn(">Name</th>", _html,
+                         "the roster drew column headers over no rows")
+        self.assertNotIn('colspan="', _html,
+                         "an empty-state placeholder is back, and with it the "
+                         "two widths that can disagree")
+
+        # AND THE FULL ROSTER STILL CARRIES EVERY COLUMN, so the assertion
+        # above is not satisfied by a table that stopped rendering.
+        _full = render(logbook("toolbox_talk"))
+        for _h in ("Name", "Title", "Company", "In", "Added by"):
+            with self.subTest(column=_h):
+                self.assertIn(f">{_h}</th>", _full)
 
 
 class TestGroupThreeRendering(unittest.TestCase):

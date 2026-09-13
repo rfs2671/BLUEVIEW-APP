@@ -184,12 +184,20 @@ console.log('\n-- the server agrees, field for field --');
     `_SUBMIT_ROW_CONTENT_RULES["osha_log"] requires worker_name alone (got ${fields})`);
 }
 {
-  const branch = SERVER.slice(SERVER.indexOf('elif log_type == "osha_log":'));
-  const cut = branch.slice(0, branch.indexOf('elif log_type ==', 10));
-  const m = /has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)/.exec(cut);
-  const fields = m ? [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]) : null;
+  // THE PDF'S DROP RULE IS A DECLARATION NOW. This sliced the
+  // `elif log_type == "osha_log":` arm; that arm was deleted after the sheet
+  // rendered in production and was read, so the slice returned nothing and
+  // `fields` was null -- which reads exactly like a register that stopped
+  // dropping the rows.
+  //
+  // THE CLAIM IS UNCHANGED and is the point of this block: the rule the DEVICE
+  // files by and the rule the SHEET prints by must be the same field, or a row
+  // one accepts is a row the other silently drops.
+  const RK = require('./rendererKeys.cjs');
+  const fields = RK.rowRequires('osha_log', 'data.entries');
   ok(JSON.stringify(fields) === JSON.stringify(['worker_name']),
-    'the per-logbook PDF drops the same rows');
+    `the per-logbook PDF drops the same rows (${RK.rendererOf('osha_log')} `
+    + `requires ${JSON.stringify(fields)})`);
 }
 // ONE RENDERER PRINTS THE REGISTER NOW. The combined report embedded it and
 // had to read the shared submit-time constant rather than restate the rule;

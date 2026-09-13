@@ -56,38 +56,28 @@ console.log('\n-- the keys the renderer reads --');
 // copy, which is gone: the report indexes the filed documents and prints
 // none. The payload has to carry every key the renderer that PRINTS it
 // opens, and that is this one.
-const branch = SERVER.slice(
-  // NO `elif` PREFIX. Toolbox talk became the chain's FIRST arm when the
-  // daily jobsite branch was deleted, so it is spelled `if` now and this
-  // slice returned -1. Anchoring on the comparison alone survives the next
-  // eleven deletions; anchoring on the keyword survived one.
-  // ANCHORED ON THE BRANCH, NOT ON THE COMPARISON.
-  //
-  // `indexOf` finds the LEFTMOST match, and `if log_type == "preshift_signin"`
-  // now appears ABOVE the per-type switch as well -- the caller resolves that
-  // type's signatures and affirmation count there, because the declarative
-  // renderer cannot await. So the end anchor matched a line BEFORE the start
-  // anchor and the slice ran backwards to nothing.
-  //
-  // Third instance of this exact shape in the repo: a declaration added
-  // earlier in the file breaking a source-text test about a later one. The
-  // branch arms are the only `elif log_type ==` lines, and the FIRST arm is an
-  // `if`, so the slice is taken from the toolbox arm to the next `elif` after
-  // it -- which survives both the next conversion and the next deletion.
-  SERVER.indexOf('log_type == "toolbox_talk":'),
-  (() => {
-    const from = SERVER.indexOf('log_type == "toolbox_talk":');
-    const next = SERVER.indexOf('elif log_type ==', from + 10);
-    return next > from ? next : SERVER.length;
-  })(),
-);
-ok(branch.length > 0, 'located the toolbox branch of the filed document');
-
-// `data`, NOT `td_data`: the report's copy named the dict after the section
-// it sat in; the filed document's branch reads the record directly.
-const topLevel = [...new Set(
-  [...branch.matchAll(/data\.get\("([a-z_]+)"/g)].map((m) => m[1]),
-)].sort();
+// THERE IS NO TOOLBOX BRANCH TO SLICE, AND THIS SLICE IS RETIRED RATHER
+// THAN RE-ANCHORED A FOURTH TIME.
+//
+// Its history is the argument. It read the combined report's embedded copy
+// until the report stopped embedding; then the filed document's `elif` arm;
+// then the arm spelled `if`, because toolbox became the chain's first when
+// the daily jobsite branch went; then it had to dodge
+// `if log_type == "preshift_signin"` appearing ABOVE the dispatch, where the
+// caller resolves what a synchronous renderer cannot await. Four re-anchors,
+// each correct, each one change from being wrong again.
+//
+// The toolbox sheet is a DECLARATION now and the keys it reads are the list
+// itself. `rendererKeys()` asks whichever renderer prints the type, so the six
+// conversions still to come do not touch this file.
+const RK = require('./rendererKeys.cjs');
+// THE PAYLOAD'S OWN TOP LEVEL. `rendererKeys` answers the wider question --
+// what the sheet reads off the whole record, project block included -- and
+// handed that list, ten assertions demanded a toolbox payload carry `address`
+// and `bbl`. `draftBody` fills `data`, so `data` is what is checked.
+const topLevel = RK.dataKeys('toolbox_talk');
+ok(topLevel.length > 0,
+  `${RK.rendererOf('toolbox_talk')} reads no keys at all for a toolbox talk`);
 const body = M.draftBody({
   location: 'Gate', companyName: 'AAZ', typeOfWork: 'Concrete',
   meetingTime: '07:30 AM', performedBy: 'Carl CP',
@@ -99,10 +89,13 @@ for (const k of topLevel) {
 }
 ok(Object.keys(body).length === 7, `the payload is exactly 7 keys (${Object.keys(body).join(', ')})`);
 
-// (?<![\w.]) so "td_data.get(" does not match as "a.get(" — it did.
-const attKeys = [...new Set(
-  [...branch.matchAll(/(?<![\w.])a\.get\("([a-z_]+)"/g)].map((m) => m[1]),
-)].sort();
+// THE ROSTER'S COLUMNS, FROM THE DECLARATION. This scanned the branch for
+// `a.get("x")` with a lookbehind so `td_data.get(` did not match as `a.get(` --
+// it did, once. The branch is gone; the columns are the declaration's own
+// triples, and `rowKeys` returns them in the order the sheet prints them.
+const attKeys = RK.rowKeys('toolbox_talk', 'data.attendees');
+ok(attKeys.length > 0,
+  `${RK.rendererOf('toolbox_talk')} names no attendance columns at all`);
 const row = M.buildAttendees([{
   worker_id: 'w1', worker_name: 'Segundo Pilamunga', company: 'AAZ',
   trade: 'Concrete / Cement', check_in_time: '2026-08-14T11:12:00Z',
@@ -292,17 +285,36 @@ console.log('\n-- added_from is RENDERED, not just stored --');
 // for storing it: the gate saying a man was on site and the CP saying a man
 // attended are different assertions, and a signed sheet that renders them the
 // same way is the stronger one lending its authority to the weaker.
-ok((SERVER.match(/def _attendee_source_label\(a\) -> str:/g) || []).length === 1,
-  'the label is ONE helper, so the two PDF renderers cannot drift apart');
-// The braces matter: `_attendee_source_label(a)` also matches the def line.
-// ONE RENDERER CALLS IT NOW. The helper exists so two renderers of the same
-// roster could not drift apart, and the reason it still exists is that the
-// drift it prevents is between the SHEET and the LABEL -- "added by the CP"
-// and "walked through the gate" are different claims about the same man.
-ok((SERVER.match(/\{_attendee_source_label\(a\)\}/g) || []).length === 1,
-  'the label is called from somewhere other than the one roster');
-ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 1,
-  'the column header is printed twice, so a second roster is back');
+// ONE MAP, AND IT IS THE FORMATTER NOW.
+//
+// The helper existed so two renderers of the same roster could not drift
+// apart, and the reason it still matters is that the drift it prevents is
+// between the SHEET and the LABEL: "added by the CP" and "walked through the
+// gate" are different claims about the same man, and a signed record that
+// renders them identically is the stronger one lending its authority to the
+// weaker.
+//
+// `_attendee_source_label` was the branch's; the branch is deleted and
+// `attendee_source` in lib/legal_render/formatters.py is the same closed
+// three-value map. THE CLAIM IS THAT THERE IS EXACTLY ONE -- a second copy is
+// how the two renderers drifted in the first place.
+{
+  const fmt = RK.PRIMITIVES; // formatters live beside the primitives
+  const defs = (RK.SERVER.match(/def _attendee_source_label\(/g) || []).length
+    + (RK.FORMATTERS.match(/\ndef attendee_source\(/g) || []).length;
+  ok(defs === 1,
+    `the provenance label has ${defs} definitions; one renderer, one map`);
+  ok(fmt.length > 0, 'the primitives file was not read');
+  // AND THE DECLARATION NAMES IT, so the column really goes through the map
+  // rather than printing the stored token -- `weekly_gap` under a heading
+  // reading "Added by" on a filed attendance record.
+  const cols = RK.declFields('toolbox_talk')
+    .filter((f) => f.path === 'added_from');
+  ok(cols.length === 1 && cols[0].formatter === 'attendee_source',
+    `the Added by column is bound to ${JSON.stringify(cols)}`);
+  ok(cols[0].label === 'Added by',
+    `the column is headed ${JSON.stringify(cols[0].label)}`);
+}
 // NARROWED. This meant "the toolbox placeholders are not left one column short
 // of their header" and was written as a global ban on colspan 6 — which the
 // PRE-SHIFT sheet then legitimately needed when it gained a signature column
@@ -312,26 +324,44 @@ ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 1,
 // SAME ANCHORS, SAME REASON as the slice above: the end is the next branch
 // arm, found rather than named, so neither a new conversion nor a deletion
 // moves it.
-for (const [from, to] of [['log_type == "toolbox_talk":', 'elif log_type ==']]) {
-  const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
-  // THE INVARIANT, NOT THE NUMBER. This asserted colspan="7" literally, and
-  // the number is not the claim -- the claim is that the placeholder spans its
-  // own header. Removing the Confirmed and Present columns made 7 wrong and 5
-  // right, and a pinned number reports that correct change as a regression.
-  // This assertion has already been narrowed once for the same reason (see
-  // above), which is the argument for measuring rather than pinning.
-  const headers = (block.match(/<th /g) || []).length;
-  const span = block.match(/colspan="(\d+)"/);
-  ok(headers > 0 && span && Number(span[1]) === headers,
-    `the toolbox placeholder spans its own header (${headers} th, colspan ${span && span[1]})`);
+// THE RAGGED TABLE CANNOT OCCUR ANY MORE, which is a stronger outcome than
+// the assertion that used to guard against it.
+//
+// The claim was that the empty-state placeholder spans its own header: a
+// placeholder narrower than the header renders a ragged table on the one
+// document nobody re-renders. It was pinned at colspan="7", narrowed to a
+// measured comparison when two columns were correctly dropped, and now the
+// engine draws no placeholder row at all -- a roster with no rows to show is
+// the declared sentence under the section heading, with no header above it.
+// There are no two widths to disagree.
+//
+// SO THE CLAIM BECOMES: the roster says in words that it is empty, and the
+// declaration names a sentence for it to say.
+{
+  const decl = RK.declaration('toolbox_talk');
+  const at = decl.indexOf('"path": "data.attendees"');
+  ok(at > 0, 'the toolbox declaration has no attendance table');
+  const none = /"none_text": "([^"]+)"/.exec(decl.slice(at));
+  ok(!!none, 'the attendance table declares no empty state, so a talk with '
+    + 'no roster prints a numbered heading over nothing');
+  ok(/"empty": "none_documented"/.test(decl.slice(at, at + 400)),
+    'the attendance table omits itself when empty instead of saying so');
 }
 // The three labels must be distinguishable, and an OLD record must not be
 // given one it never earned.
+// THE THREE WORDS, WHERE THE MAP NOW LIVES. They were in the toolbox branch
+// and are `_ATTENDEE_SOURCES` in lib/legal_render/formatters.py -- the same
+// closed set, read by the `attendee_source` formatter the declaration names.
 for (const [k, v] of [['gate', 'Gate'], ['weekly_gap', 'CP &mdash; this week'],
   ['manual', 'CP &mdash; added']]) {
-  ok(SERVER.includes(`"${k}": "${v}"`), `${k} renders as "${v}"`);
+  ok(RK.FORMATTERS.includes(`"${k}": "${v}"`), `${k} renders as "${v}"`);
 }
-ok(/\}\.get\(raw, "&mdash;"\)/.test(SERVER),
+// AND THE SET IS CLOSED. Every attendee filed before `added_from` existed came
+// from the gate or from the CP's own typing with no way to tell which, and a
+// fourth provenance is exactly as unknown as an absent one. Both read as an
+// em-dash: we do not know, and the record says so.
+ok(/_ATTENDEE_SOURCES\.get\(_s\(v\)\.lower\(\), "&mdash;"\)/
+  .test(RK.FORMATTERS),
   'a row filed BEFORE the field existed reads as unknown, never as a guess');
 
 // The in-app viewer carries it too, compressed the way it already compresses
@@ -393,8 +423,36 @@ ok(!M.ALL_TOPIC_KEYS.includes('covid19'), 'covid19 is gone from the picker');
 // HISTORICAL RECORDS ARE NOT REWRITTEN. The PDF prints whichever checked_topics
 // keys are true rather than looking them up here, so a filed talk that carries
 // covid19 still renders it. Removing a chip must not edit the past.
-ok(SERVER.includes('for k, v in topics.items() if v'),
-  'the renderer prints whichever stored topics are true, so a filed talk keeps covid19');
+// HISTORICAL RECORDS ARE NOT REWRITTEN, and the sheet proves it rather than
+// the source. This asserted the branch's comprehension `for k, v in
+// topics.items() if v`; the branch is deleted and `toggle_list` is the rule.
+//
+// THE CLAIM IS THE WHOLE POINT OF THE RULING: removing a chip from the picker
+// must not edit the past. A filed talk carrying `covid19` still prints it.
+ok(RK.FORMATTERS.includes('for k, val in v.items() if val'),
+  'the renderer no longer prints whichever stored topics are true, so a '
+  + 'filed talk that carries covid19 would silently lose it');
+{
+  const decl = RK.declaration('toolbox_talk');
+  ok(/"formatter": "toggle_list"/.test(decl),
+    'the Topics Covered section is not bound to toggle_list, so the stored '
+    + 'keys are no longer what the sheet prints');
+  // NOT `!/covid19/`. The declaration's own note explains why the label set
+  // cannot be adopted -- because `covid19` was removed by ruling and filed
+  // records still carry it true -- so the word is IN the comment, and an
+  // assertion banning it was matching the documentation of the rule instead
+  // of the rule. Written down rather than quietly repaired: that is the trap
+  // `tests/source_text.py` exists for, and it caught this one in the same
+  // session it was written about.
+  //
+  // THE RULE IS THAT NO LABEL SET IS NAMED. A `labels:` binding would
+  // enumerate today's 21 topics and drop any key not on the list from the
+  // records that carry it.
+  const topics = decl.slice(decl.indexOf('"title": "Topics Covered"'));
+  ok(!/"labels":/.test(topics.slice(0, 400)),
+    'the Topics Covered section names a label set, so a filed talk carrying '
+    + 'a retired key would lose it');
+}
 
 // One key from each group, taken FROM the model so the fixture cannot drift
 // away from the groups it is meant to satisfy.

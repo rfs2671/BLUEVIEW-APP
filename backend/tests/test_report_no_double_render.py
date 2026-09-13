@@ -96,13 +96,31 @@ class TheParseFoundSomethingToCompare(unittest.TestCase):
         self.assertGreaterEqual(len(DEFINED), 12)
 
     def test_the_branch_chain_was_read(self):
-        # 12 -> 11, AND IT FALLS BY ONE PER CONVERSION. This is the
-        # vacuity guard on the assertions below -- a regex that stopped
-        # matching would make all of them pass on an empty set -- so what it
-        # needs is a floor that proves the parse worked, not a census of the
-        # chain. The chain's real size is asserted against the registry in
-        # test_a_converted_type_keeps_no_branch.py, where it is derived.
-        self.assertGreaterEqual(len(BRANCHED), 11)
+        # 12 -> 11 -> 8, AND IT FALLS WITH EVERY CONVERSION. The note here
+        # already said the right thing -- this is a vacuity guard on the set
+        # differences below, not a census of the chain -- and then kept a
+        # number that has to be edited down each time. A floor somebody edits
+        # down after every change is a floor somebody edits down without
+        # reading it, and it went stale on the very next batch.
+        #
+        # WHAT IT NEEDS TO PROVE is that the parse found something. The
+        # chain's real size is asserted against the registry in
+        # test_a_converted_type_keeps_no_branch.py, where it is derived rather
+        # than typed.
+        self.assertGreaterEqual(
+            len(BRANCHED), 1,
+            "no log type was found in the filed renderer at all, so every set "
+            "difference below is against an empty set and passes vacuously. "
+            "If every type is converted this guard has no subject -- the "
+            "union with SCHEMED is doing all the work; check PRINTABLE "
+            "instead.")
+
+    def test_and_the_union_is_what_the_differences_run_on(self):
+        """THE HONEST FLOOR, which does not erode. Whatever the migration has
+        done, every type the filed document can print is in `PRINTABLE` --
+        a branch, a schema, or both -- and THAT is the set the assertions
+        below difference against."""
+        self.assertGreaterEqual(len(PRINTABLE), len(DEFINED))
 
     def test_the_schema_engine_was_read(self):
         self.assertGreaterEqual(len(SCHEMED), 1)
