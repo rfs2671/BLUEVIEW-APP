@@ -534,6 +534,76 @@ class WhatThisDocumentIsBeforeWhatHappenedToIt(unittest.TestCase):
 #  THE GENERAL GUARD
 # ══════════════════════════════════════════════════════════════════════════
 
+class TheSheetIsAWholeDOCUMENTAndNotJustAPage(unittest.TestCase):
+    """A19'S SIBLING, AND THE ONE NO COMPARISON IN THIS MIGRATION COULD MAKE.
+
+    ── WHAT WAS LOST, AND FOR SIX CONVERSIONS ─────────────────────────────
+
+    The branch renderer wrote `<title>{type} — {project} — {date}</title>`. The
+    engine's head carried a charset and a stylesheet and nothing else, so 254
+    filed records across six types went out with an empty `<title>`. WeasyPrint
+    copies that element into the PDF's Title metadata; it is what a viewer puts
+    in a tab and what a document manager sorts on, and those sheets identify
+    themselves by object key.
+
+    ── WHY NOTHING FOUND IT ───────────────────────────────────────────────
+
+    Every instrument in this migration compares the VISIBLE TEXT of the two
+    documents -- `visible()` strips tags before it tokenises -- and `<title>`
+    is in the document and not on the page. Six clean runs said nothing about
+    it because it was never in their subject.
+
+    IT SURFACED BY ACCIDENT. One project of the three in the toolbox corpus has
+    a NAME that differs from its ADDRESS, so the old title held the word `Pl`
+    and the new document held it nowhere. Two records out of 63; on the other
+    61 the same defect was present and invisible, because the title's words
+    happen to appear on the page as well.
+
+    ── SO THE CLAIM IS MADE HERE, ON THE RENDERED DOCUMENT ────────────────
+
+    Not on the source: an f-string that interpolates an empty context value
+    produces a `<title>` containing two dashes and reads as present.
+    """
+
+    def test_the_sheet_has_a_title_element(self):
+        html = _render(_logbook())
+        self.assertIn("<title>", html,
+                      "the filed PDF has no document title: a viewer shows "
+                      "its object key and a document manager sorts on nothing")
+
+    def test_the_title_names_the_document_the_project_and_the_day(self):
+        """THE THREE PARTS, because a title of the type alone is the same for
+        every record on every job and sorts them into one heap."""
+        html = _render(_logbook())
+        title = html[html.index("<title>") + 7:html.index("</title>")]
+        self.assertIn("Site Safety Orientation Record", title)
+        self.assertIn("588 Thomas", title)
+        self.assertIn("2026-09-09", title)
+
+    def test_the_project_NAME_is_what_it_carries_not_the_address(self):
+        """They are not the same string. The corpus has a project named
+        "857 Prescott Pl" whose address is "8 PRESCOTT PLACE, Brooklyn", and
+        the name is what a reader searching his own filing types."""
+        html = _render(_logbook())
+        title = html[html.index("<title>") + 7:html.index("</title>")]
+        self.assertIn("588 Thomas", title)
+        self.assertNotIn("Boyland", title)
+
+    def test_EVERY_converted_type_carries_one(self):
+        """The failure was general, so the guard is. A schema added without
+        this passing is a type filed with no name."""
+        for t in sorted(legal_render.CONVERTED_TYPES):
+            with self.subTest(log_type=t):
+                html = _render(_logbook(log_type=t))
+                self.assertIn("<title>", html)
+                title = html[html.index("<title>") + 7:html.index("</title>")]
+                self.assertIn(legal_render.SCHEMAS[t]["title"], title)
+
+    def test_there_are_converted_types_to_check(self):
+        """THE VACUITY GUARD. The loop above is over a set that can empty."""
+        self.assertGreaterEqual(len(legal_render.CONVERTED_TYPES), 1)
+
+
 class ApparatusComposedBelowTheDispatchCannotReachAConvertedType(
         unittest.TestCase):
     """THE TEST THAT WOULD HAVE CAUGHT BOTH, AND CATCHES THE NEXT ONE.
@@ -563,6 +633,12 @@ class ApparatusComposedBelowTheDispatchCannotReachAConvertedType(
     WHOLE_DOCUMENT_APPARATUS = {
         "the amendment banner": "amendment_html = (",
         "the filing state line": "_filing_state = filing_state_notice(",
+        # THE DOCUMENT'S OWN NAME. The engine writes `<title>` from this, and
+        # the class above asserts the element is on the rendered page; this row
+        # is the other half -- the value has to be resolved ABOVE the dispatch
+        # or the engine is handed an empty string and the title reads as two
+        # dashes. See A21: six conversions shipped with no title at all.
+        "the project name for the title": "project_name = project.get(",
     }
 
     def setUp(self):
@@ -598,12 +674,14 @@ class ApparatusComposedBelowTheDispatchCannotReachAConvertedType(
         i = arm.index("legal_render.render(")
         self.assertIn('"amendment_html": amendment_html', arm[i:])
         self.assertIn('"filing_state": _filing_state', arm[i:])
+        self.assertIn('"project_name": project_name', arm[i:])
 
     def test_the_engine_places_what_it_is_given(self):
         src = io.open(BACKEND / "lib" / "legal_render" / "engine.py",
                       encoding="utf-8").read()
         self.assertIn('ctx.get("amendment_html")', src)
         self.assertIn('ctx.get("filing_state")', src)
+        self.assertIn("ctx.get('project_name')", src)
 
 
 if __name__ == "__main__":

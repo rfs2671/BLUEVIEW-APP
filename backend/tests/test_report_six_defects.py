@@ -306,8 +306,18 @@ class TheRenderedDocument(unittest.TestCase):
         self.assertEqual(_body.count("<tr"), 2)
         att = self.docs[self.docs.index(">Title</th>"):]
         att = att[:att.index("</table>")]
-        # One attendee; the nameless seed row is dropped (this was the #126 fix).
-        self.assertEqual(att.count("<tr><td "), 1)
+        # THE TOOLBOX ROSTER IS DECLARATIVE NOW TOO, and this is the same
+        # repair the pre-shift half above already carries, arriving for the
+        # same reason. `<tr><td ` was the branch's markup; the table primitive
+        # emits `<tr style="break-inside:avoid;...">`, so the literal counted
+        # ZERO rows and the assertion failed on a roster that is correct.
+        #
+        # THE CLAIM IS THE COUNT: one attendee, the nameless seed row dropped
+        # (#126). Counted off `<tbody`, which is where the primitive puts the
+        # body -- not adjusted by one, because an off-by-one on a row census
+        # reads exactly like a dropped row.
+        _att_body = (att[att.index("<tbody"):] if "<tbody" in att else att)
+        self.assertEqual(_att_body.count("<tr"), 1)
         self.assertIn("Segundo Pilamunga", att)
 
     def test_the_address_and_date_are_stated_where_they_belong(self):

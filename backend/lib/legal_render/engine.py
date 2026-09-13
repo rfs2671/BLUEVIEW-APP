@@ -317,6 +317,25 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
 
     return (
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        # ── THE DOCUMENT'S OWN NAME, WHICH THE ENGINE WAS NOT WRITING ──────
+        #
+        # The old renderer set `<title>{type} — {project} — {date}</title>`
+        # and this head carried a charset and a stylesheet. WeasyPrint puts
+        # `<title>` into the PDF's Title metadata, so every sheet filed
+        # through the engine since the first conversion has an empty one --
+        # 254 records across six types, each opening in a viewer as its
+        # object key instead of as what it is.
+        #
+        # IT IS NOT ON THE PAGE, which is why no comparison of visible words
+        # found it for six conversions. The toolbox diff did, and only
+        # because one project's NAME and ADDRESS differ: `Pl` went missing
+        # from two records and was never in the body on either side.
+        #
+        # THE OLD SHAPE, EXACTLY. An inspector's folder is full of these and
+        # the sort order is the filename.
+        f"<title>{_html.escape(str(decl.get('title') or ''))}"
+        f" — {_html.escape(str(ctx.get('project_name') or ''))}"
+        f" — {_html.escape(str(ctx.get('date') or ''))}</title>"
         f"<style>{_PAGE_CSS}</style></head><body>"
         f'<div class="contheader">{cont}</div>'
         f'<div class="contfooter">{foot}</div>'

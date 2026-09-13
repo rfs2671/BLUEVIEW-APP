@@ -39,6 +39,21 @@ from lib.server_http import ServerHttpClient
 # lib/legal_render/. A type named in CONVERTED_TYPES renders through it;
 # every other type falls through to the branch chain, unchanged.
 from lib import legal_render
+# ── THE CLOCK HAS ONE DEFINITION AND IT IS NOT HERE ANY MORE ───────────────
+#
+# `_as_eastern_instant` / `eastern_clock` / `_roster_clock` were defined in
+# this file, and the engine that now prints the toolbox roster cannot import
+# this file. A second copy of the conversion beside the first is the exact
+# shape of the bug they were written to close -- two renderers disagreeing
+# about what 10:47Z is -- so the rule moved DOWN into the library and every
+# caller here is on the same one. The names are unchanged; nothing that calls
+# them had to be touched, and the source tests that read their bodies now read
+# them where they live.
+from lib.legal_render.formatters import (  # noqa: E402
+    _as_eastern_instant,
+    eastern_clock,
+    roster_clock as _roster_clock,
+)
 # THE INVESTOR REPORT: model, view, renderer, and the boundary between
 # them is the point -- see lib/report/renderer.py's docstring for what
 # each layer is and is not allowed to decide.
@@ -2160,62 +2175,8 @@ def eastern_today() -> str:
     return eastern_date()
 
 
-def _as_eastern_instant(when) -> datetime:
-    """A stored instant, MOVED to New York — or ValueError, never a guess.
-
-    `eastern_date` above calls itself "the only date source" and that rule was
-    simply never extended to TIMES. Nothing owned the clock, so `_roster_clock`
-    parsed a check-in stored as `2026-08-11T10:47:05Z` — correctly, tz-aware,
-    UTC — and then called `.strftime("%I:%M %p")` straight on it. strftime
-    formats whatever zone the datetime is already in, so the roster on a signed
-    §3301.12.3 attendance record printed 10:47 for a man who walked through the
-    gate at 6:47 AM EDT. Four hours, on every report since the field existed.
-
-    IT REFUSES RATHER THAN PASSES THROUGH, and that is the whole design. A
-    naive datetime is a value that has NOT said what zone it is in; treating
-    its digits as New York's is precisely the assumption that produced the bug,
-    and doing it silently is what let the bug live. So a caller with an
-    unanchored value gets an exception and has to decide what to do about it —
-    _roster_clock prints the raw string, because an unanchored wall clock on an
-    old roster is a fact about the record and not something to invent a zone
-    for. See the "1d" note in followups.md for the fields that are in that
-    state and what anchoring them would take.
-
-    Accepts a datetime or an ISO-8601 string (trailing 'Z' included). Returns
-    an aware datetime in America/New_York; DST is the zone's business, never a
-    hard-coded -4 or -5.
-    """
-    from zoneinfo import ZoneInfo
-    if isinstance(when, datetime):
-        dt = when
-    else:
-        text = str(when).strip() if when is not None else ""
-        if not text:
-            raise ValueError("not an instant: nothing to convert")
-        try:
-            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError(f"not an instant: {when!r}") from exc
-    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-        raise ValueError(f"not an instant — no timezone on {when!r}")
-    return dt.astimezone(ZoneInfo("America/New_York"))
 
 
-def eastern_clock(when) -> str:
-    """The NEW YORK wall-clock time for an instant, as '6:47 AM EDT'.
-
-    THE ONLY TIME SOURCE, the way `eastern_date` is the only date source. Every
-    user-facing time conversion goes through here; a renderer that formats a
-    clock itself has opted out of the one place DST is handled.
-
-    THE STRING CARRIES ITS ZONE. "10:47" said nothing about what it was a time
-    in, which is why nobody could see it was wrong by looking at it. "6:47 AM
-    EDT" can be checked against the record by anyone holding both.
-
-    Raises ValueError on anything that is not an anchored instant — see
-    `_as_eastern_instant`.
-    """
-    return _as_eastern_instant(when).strftime("%I:%M %p %Z").lstrip("0")
 
 
 def eastern_datetime(when) -> str:
@@ -19901,6 +19862,13 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             "contractor": ((project or {}).get("company_name")
                            or (project or {}).get("name") or ""),
             "address":    project_address or project_name,
+            # THE NAME AND THE ADDRESS ARE NOT THE SAME STRING and the sheet
+            # needs both. `address` is what Site Information prints; this is
+            # what the site is FILED under, and on one project in the corpus
+            # they differ -- "857 Prescott Pl" against "8 PRESCOTT PLACE,
+            # Brooklyn". The old document title carried the name, so a reader
+            # searching his own filing by it found the record.
+            "project_name": project_name,
             "date":       date,
             "date_line":  f"Date: {date}",
             # ONE STROKE RECONSTRUCTION, PASSED IN. A second copy of that
@@ -29017,30 +28985,6 @@ def _attendee_source_label(a) -> str:
     }.get(raw, "&mdash;")
 
 
-def _roster_clock(v) -> str:
-    """A roster row's check-in time, IN NEW YORK. The toolbox roster carries
-    the §3301.12.3 required fields (name, title, company, date/time); this
-    renders the time for the PDF.
-
-    IT USED TO PRINT THE UTC DIGITS. The stored value is an instant -- the gate
-    writes `check_in_time` straight onto the attendee (toolboxTalkModel.js
-    buildAttendees) -- and this parsed it correctly and then formatted it
-    without converting, so `10:47:05Z` printed as "10:47" on a signed
-    attendance record for a man who was at the gate at 6:47 AM EDT.
-    `eastern_clock` owns that conversion now and no other renderer does it.
-
-    AN UNANCHORED VALUE IS PRINTED AS ITSELF. `weeklyGapAttendee` writes
-    `time: ''` and older rosters hold typed wall-clock strings like "07:15".
-    Those carry no zone, so there is nothing to convert -- eastern_clock
-    refuses them rather than guessing, and they print exactly as they always
-    did. Never a parse error onto a legal record.
-    """
-    if not v:
-        return "&mdash;"
-    try:
-        return eastern_clock(v)
-    except Exception:
-        return str(v)[:16]
 
 def _capitalize_first(text):
     """RULE 1 (short entry): capitalize the first letter, preserve everything

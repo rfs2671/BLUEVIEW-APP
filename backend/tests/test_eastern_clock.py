@@ -225,7 +225,18 @@ class TheRosterPrintsNewYorkTime(_RenderBase):
         the emailed report and 10:47 on the document an inspector asks for by
         name — that pairing has had to be pulled back twice on this file."""
         html = self.rendered_single(copy.deepcopy(TOOLBOX))
-        body = html[:html.index("Generated on ")]
+        # THE SLICE EXISTED TO CUT THE FOOTER'S OWN CLOCK OFF. The branch
+        # stamped "Generated on <time>" into every document it wrapped, and a
+        # roster assertion that swept it up would be reading the wrong time.
+        # The engine's sheet carries no generation stamp at all -- the
+        # operator's ruling -- so there is nothing to cut, and `.index` on an
+        # absent marker raised rather than reported.
+        #
+        # STILL CUT WHEN IT IS THERE, because this claim is about BOTH
+        # renderers printing one stored roster the same way, and the other one
+        # is still branch-rendered.
+        body = (html[:html.index("Generated on ")]
+                if "Generated on " in html else html)
         self.assertIn(CORRECT, body)
         self.assertNotIn(WRONG, body)
 
@@ -367,35 +378,80 @@ class RosterClockIsNowJustACallToIt(unittest.TestCase):
 # discipline anyway: it drops comments outright, and the helper below drops the
 # docstring, so an assertion here can only ever match CODE. That is the trap
 # tests/source_text.py exists to close, closed a different way.
-_TREE = ast.parse((_BACKEND / "server.py").read_text(encoding="utf-8"))
+_TREES = [
+    ("server.py", ast.parse(
+        (_BACKEND / "server.py").read_text(encoding="utf-8"))),
+    ("lib/legal_render/formatters.py", ast.parse(
+        (_BACKEND / "lib" / "legal_render" / "formatters.py"
+         ).read_text(encoding="utf-8"))),
+]
+
+
+def _defining_files(name):
+    """Every file of the two that defines `name`. The plural is the point."""
+    out = []
+    for where, tree in _TREES:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name == name:
+                out.append((where, node))
+                break
+    return out
 
 
 def _rendered_fn(name):
-    """The function's CODE, with its docstring removed and no comments."""
-    for node in ast.walk(_TREE):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                and node.name == name:
-            body = list(node.body)
-            if body and isinstance(body[0], ast.Expr) \
-                    and isinstance(body[0].value, ast.Constant) \
-                    and isinstance(body[0].value.value, str):
-                body = body[1:]
-            return "\n".join(ast.unparse(s) for s in body)
-    raise AssertionError(f"{name} is gone from server.py")
+    """The function's CODE, with its docstring removed and no comments.
 
+    TWO FILES, BECAUSE THE CONVERSION MOVED AND ITS CLAIMS DID NOT. The engine
+    at lib/legal_render prints the toolbox roster now, and it cannot import
+    server.py -- so `_as_eastern_instant`, `eastern_clock` and `roster_clock`
+    live in lib/legal_render/formatters.py and server.py imports them. Every
+    assertion below is about what those functions DO, which is unchanged; a
+    helper that only knew one file would have reported them as gone, and the
+    fix reached for under pressure is deleting the assertion.
+
+    server.py IS SEARCHED FIRST so the two renderer-level claims below, which
+    are about functions that did NOT move, still read the file they mean.
+    """
+    found = _defining_files(name)
+    if not found:
+        raise AssertionError(
+            f"{name} is defined in neither server.py nor "
+            f"lib/legal_render/formatters.py")
+    _where, node = found[0]
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) \
+            and isinstance(body[0].value, ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]
+    return "\n".join(ast.unparse(s) for s in body)
 
 class TheConversionHasExactlyOneOwner(unittest.TestCase):
     """Asserted by walking the AST for the CALL, so this test does not care
     where in the file anything sits."""
 
+    def test_the_conversion_is_defined_ONCE(self):
+        """THE CLASS NAME, MADE INTO AN ASSERTION. The rule moved into the
+        library and server.py imports it; if a copy ever reappears up there --
+        which is how the four-hour bug got written in the first place -- two
+        renderers can disagree again and nothing else here would notice,
+        because every assertion below reads only the first definition found."""
+        for fn in ("_as_eastern_instant", "eastern_clock", "roster_clock"):
+            with self.subTest(fn=fn):
+                where = [w for w, _n in _defining_files(fn)]
+                self.assertEqual(
+                    where, ["lib/legal_render/formatters.py"],
+                    f"{fn} should be defined in the library and nowhere "
+                    f"else; found it in {where}")
+
     def test_roster_clock_calls_eastern_clock(self):
-        body = _rendered_fn("_roster_clock")
+        body = _rendered_fn("roster_clock")
         self.assertIn("eastern_clock", body)
 
     def test_roster_clock_formats_NOTHING_itself(self):
         """The bug in one line: `.strftime(...)` on a value nobody converted.
         A renderer that formats a time itself has opted out of the helper."""
-        body = _rendered_fn("_roster_clock")
+        body = _rendered_fn("roster_clock")
         # ANCHORED ON THE CALL. `assertNotIn("strftime", ...)` bans eight
         # characters, so a variable named `strftime_fmt` would break a correct
         # build and the fix reached for under pressure is deleting the

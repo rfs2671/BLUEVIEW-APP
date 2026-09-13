@@ -46,6 +46,24 @@ ALL_TYPES = ("daily_jobsite", "toolbox_talk", "preshift_signin", "hot_work",
              "scaffold_maintenance", "ssc_daily_safety_log", "fall_protection",
              "site_superintendent_log", "osha_log", "subcontractor_orientation")
 
+#: THE SPECIMEN FOR EVERY CLAIM ABOUT THE *BRANCH* RENDERER, CHOSEN RATHER
+#: THAN NAMED.
+#:
+#: Six assertions in this file render a document to say something about the
+#: renderer that is NOT the engine -- that it stamps a clock, that two unfrozen
+#: renders of it differ. `toolbox_talk` was named in all six, and it converted;
+#: a named specimen that converts turns every one of them into an assertion
+#: about the engine, which is the opposite of what they say they check.
+#:
+#: SO IT IS DERIVED. Whatever type the chain still renders is the specimen, and
+#: the conversion that takes the last one is caught by the floor below rather
+#: than by six confusing failures.
+_STILL_BRANCHED = sorted(set(ALL_TYPES) - set(legal_render.CONVERTED_TYPES))
+
+#: The one the branch-side assertions use. Named once so a reader can see
+#: which document a failure is about.
+_BRANCHED = _STILL_BRANCHED[0] if _STILL_BRANCHED else None
+
 _PROJECT = {"_id": "p1", "name": "588 Thomas",
             "address": "588 Thomas S Boyland Street",
             "company_name": "Metro Build Constructors LLC",
@@ -242,9 +260,27 @@ class TheComparisonIsRepeatable(unittest.TestCase):
     it was the generation timestamp this renderer stamps into every footer.
     """
 
+    def test_there_IS_a_branch_rendered_type_to_make_these_claims_about(self):
+        """THE FLOOR UNDER THE SPECIMEN.
+
+        `_STILL_BRANCHED` shrinks by one with every conversion. When it empties,
+        `_BRANCHED` below raises at import and this file stops running rather
+        than passing -- so this names the moment in a sentence instead.
+
+        WHAT TO DO WHEN IT FAILS: every assertion in this class and in
+        `TheEngineSheetIsDeterministic` that contrasts the engine against the
+        branch has lost its subject, because there is no branch left. Retire
+        them; do not repoint them at a converted type, which would make each
+        one quietly assert the opposite of what it says.
+        """
+        self.assertTrue(
+            _STILL_BRANCHED,
+            "every type is converted, so nothing renders through the chain "
+            "and the branch-side claims in this file have no subject left")
+
     def test_two_renders_with_the_clock_frozen_are_identical(self):
-        a = _render("toolbox_talk")
-        b = _render("toolbox_talk")
+        a = _render(_BRANCHED)
+        b = _render(_BRANCHED)
         self.assertEqual(a, b,
                          "this renderer is not deterministic even with the "
                          "clock frozen, so no byte-for-byte comparison of it "
@@ -253,8 +289,8 @@ class TheComparisonIsRepeatable(unittest.TestCase):
     def test_and_WITHOUT_freezing_they_differ_only_in_length_preserving_ways(self):
         """The trap itself, executed. `gen_time` is why an unfrozen comparison
         reads as a total regression: same length, different bytes."""
-        a = _render("toolbox_talk", freeze=False)
-        b = _render("toolbox_talk", freeze=False)
+        a = _render(_BRANCHED, freeze=False)
+        b = _render(_BRANCHED, freeze=False)
         if a != b:
             self.assertEqual(len(a), len(b),
                              "the renders differ in LENGTH as well, so the "
@@ -269,15 +305,17 @@ class TheComparisonIsRepeatable(unittest.TestCase):
 
         This is the BRANCH renderer's half. It stamps "Generated on <time>"
         into every document it wraps, so a freeze that missed would show up
-        here immediately. `toolbox_talk` is named because it still renders
-        that way; when it converts this moves to whichever type still does.
+        THE TYPE IS NO LONGER NAMED. It was `toolbox_talk`, and the note
+        here said "when it converts this moves to whichever type still does"
+        -- which is a repair somebody has to remember. `_STILL_BRANCHED`
+        does it, and the floor above says what to do when it runs out.
 
         IT RETIRES WHEN THE LAST CLOCK-STAMPING RENDERER DOES, not before --
         and `test_a_renderer_that_stamps_a_clock_still_exists` below fails
         loudly on the day that happens, rather than letting this quietly
         assert nothing.
         """
-        self.assertIn("FROZEN", _render("toolbox_talk"))
+        self.assertIn("FROZEN", _render(_BRANCHED))
 
     def test_a_renderer_that_stamps_a_clock_still_exists(self):
         """THE GUARD ON THE GUARD ABOVE.
@@ -287,7 +325,7 @@ class TheComparisonIsRepeatable(unittest.TestCase):
         the signal to retire it rather than to repoint it again. Named here so
         that failure arrives as a sentence instead of a puzzle.
         """
-        self.assertIn("Generated on", _render("toolbox_talk"))
+        self.assertIn("Generated on", _render(_BRANCHED))
 
     def test_the_freeze_reaches_the_ENGINE_sheet_too(self):
         """THE ENGINE'S HALF, AND IT IS A DIFFERENT ROUTE.
@@ -409,8 +447,8 @@ class TheEngineReadsNoClock(unittest.TestCase):
         """THE CONTRAST, so the claim above is not true of everything and
         therefore says nothing. A branch-rendered document stamps its
         generation time and two unfrozen renders of it differ."""
-        a = _render("toolbox_talk", freeze=False)
-        b = _render("toolbox_talk", freeze=False)
+        a = _render(_BRANCHED, freeze=False)
+        b = _render(_BRANCHED, freeze=False)
         if a == b:
             self.skipTest("two unfrozen branch renders landed in the same "
                           "second; the contrast is real but not observable "

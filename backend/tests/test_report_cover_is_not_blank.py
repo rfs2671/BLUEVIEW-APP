@@ -82,6 +82,17 @@ _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 
 import server  # noqa: E402
+from lib import legal_render  # noqa: E402
+
+#: Every type the chain was written for. The shell-row specimen below is
+#: whichever of these the engine has not taken yet -- the engine builds its own
+#: document with no email shell in it at all.
+_ALL_TYPES = ("daily_jobsite", "toolbox_talk", "preshift_signin", "hot_work",
+              "crane_operations", "excavation_monitoring",
+              "concrete_operations", "scaffold_maintenance",
+              "ssc_daily_safety_log", "fall_protection",
+              "site_superintendent_log", "osha_log",
+              "subcontractor_orientation")
 
 try:
     from weasyprint import HTML
@@ -232,9 +243,20 @@ class TheCoverCarriesTheFirstSection(unittest.TestCase):
         PDF is the email-style document, and it is the one whose rows must
         carry the class its exemption names.
         """
+        # THE SPECIMEN IS DERIVED, AND THIS IS THE THIRD FILE TO NEED IT.
+        # `toolbox_talk` was named here; it converted, and the engine's sheet
+        # has no email shell at all -- no `tr.shell`, because it is not that
+        # kind of document. The count went to zero and the rule it checks was
+        # untouched.
+        branched = sorted(set(_ALL_TYPES) - set(legal_render.CONVERTED_TYPES))
+        self.assertTrue(
+            branched,
+            "every type is converted, so no document carries the email shell "
+            "and the exemption this asserts has nothing left to protect. "
+            "RETIRE IT together with the print block it belongs to.")
         html = asyncio.run(server.generate_single_logbook_html(
             {"_id": "lb0", "project_id": PROJECT, "date": DATE,
-             "log_type": "toolbox_talk", "status": "submitted",
+             "log_type": branched[0], "status": "submitted",
              "cp_name": "carl cp", "data": {"notes": "note"}}))
         self.assertGreaterEqual(html.count('<tr class="shell">'), 3)
 

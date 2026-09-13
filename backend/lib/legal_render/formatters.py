@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import html as _html
 import re
-from datetime import datetime
+from datetime import datetime, timezone  # noqa: F401
 from typing import Any, Callable, Dict
 
 #: What a field renders when the record has nothing there. NOT the same as a
@@ -216,6 +216,136 @@ def weather_line(v: Any) -> str:
     return _html.escape(weather_parts(v)[0])
 
 
+def _as_eastern_instant(when) -> datetime:
+    """A stored instant, MOVED to New York — or ValueError, never a guess.
+
+    THIS LIVED IN server.py AND THE ENGINE CANNOT REACH server.py. A renderer
+    that prints a check-in time needs the conversion, `lib/legal_render` must
+    never import the app, and the alternative -- a second copy of the rule
+    beside the first -- is the failure this migration keeps finding. So the
+    rule moved DOWN to the library and `server` imports it; there is one
+    definition and every caller, old branch and engine alike, is on it.
+
+    `eastern_date` calls itself "the only date source" and that rule was simply
+    never extended to TIMES. Nothing owned the clock, so `_roster_clock` parsed
+    a check-in stored as `2026-08-11T10:47:05Z` — correctly, tz-aware, UTC —
+    and then called `.strftime("%I:%M %p")` straight on it. strftime formats
+    whatever zone the datetime is already in, so the roster on a signed
+    §3301.12.3 attendance record printed 10:47 for a man who walked through the
+    gate at 6:47 AM EDT. Four hours, on every report since the field existed.
+
+    IT REFUSES RATHER THAN PASSES THROUGH, and that is the whole design. A
+    naive datetime is a value that has NOT said what zone it is in; treating
+    its digits as New York's is precisely the assumption that produced the bug,
+    and doing it silently is what let the bug live. So a caller with an
+    unanchored value gets an exception and has to decide what to do about it —
+    `roster_clock` prints the raw string, because an unanchored wall clock on
+    an old roster is a fact about the record and not something to invent a zone
+    for.
+
+    Accepts a datetime or an ISO-8601 string (trailing 'Z' included). Returns
+    an aware datetime in America/New_York; DST is the zone's business, never a
+    hard-coded -4 or -5.
+    """
+    from zoneinfo import ZoneInfo
+    if isinstance(when, datetime):
+        dt = when
+    else:
+        text_ = str(when).strip() if when is not None else ""
+        if not text_:
+            raise ValueError("not an instant: nothing to convert")
+        try:
+            dt = datetime.fromisoformat(text_.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"not an instant: {when!r}") from exc
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise ValueError(f"not an instant — no timezone on {when!r}")
+    return dt.astimezone(ZoneInfo("America/New_York"))
+
+
+def eastern_clock(when) -> str:
+    """The NEW YORK wall-clock time for an instant, as '6:47 AM EDT'.
+
+    THE ONLY TIME SOURCE, the way `eastern_date` is the only date source. Every
+    user-facing time conversion goes through here; a renderer that formats a
+    clock itself has opted out of the one place DST is handled.
+
+    THE STRING CARRIES ITS ZONE. "10:47" said nothing about what it was a time
+    in, which is why nobody could see it was wrong by looking at it. "6:47 AM
+    EDT" can be checked against the record by anyone holding both.
+
+    Raises ValueError on anything that is not an anchored instant — see
+    `_as_eastern_instant`.
+    """
+    return _as_eastern_instant(when).strftime("%I:%M %p %Z").lstrip("0")
+
+
+def roster_clock(v: Any) -> str:
+    """A roster row's check-in time, IN NEW YORK.
+
+    The toolbox roster carries the §3301.12.3 required fields (name, title,
+    company, date/time); this renders the time for the sheet, and it is a
+    FORMATTER rather than a helper because the engine's declaration names it.
+
+    IT USED TO PRINT THE UTC DIGITS — see `_as_eastern_instant` for the four
+    hours that cost. `eastern_clock` owns that conversion and no other renderer
+    does it.
+
+    AN UNANCHORED VALUE IS PRINTED AS ITSELF. `weeklyGapAttendee` writes
+    `time: ''` and older rosters hold typed wall-clock strings like "07:15".
+    Those carry no zone, so there is nothing to convert -- `eastern_clock`
+    refuses them rather than guessing, and they print exactly as they always
+    did. Never a parse error onto a legal record.
+
+    EM-DASH FOR NOTHING, NOT `NOT_RECORDED`. This is a roster cell, and the
+    branch printed an em-dash; a row whose time the gate never wrote is blank
+    on the paper rather than carrying a finding against the man in it.
+    """
+    if not v:
+        return "&mdash;"
+    try:
+        return eastern_clock(v)
+    except Exception:
+        return _html.escape(str(v)[:16])
+
+
+#: The three provenances the app records, and nothing else.
+_ATTENDEE_SOURCES = {
+    "gate": "Gate",
+    "weekly_gap": "CP &mdash; this week",
+    "manual": "CP &mdash; added",
+}
+
+
+def attendee_source(v: Any) -> str:
+    """WHOSE CLAIM PUT THIS MAN ON THE SHEET.
+
+    Three provenances, recorded by the app as `added_from`:
+
+      'gate'         he checked in TODAY - the gate says he was on site
+      'weekly_gap'   he worked this WEEK; the CP is asserting he attended
+      'manual'       the CP typed him in; the app knows nothing about him
+
+    A toolbox talk is a WEEKLY obligation built from a DAILY roster, so the CP
+    can now add men who worked earlier in the week. That is a genuinely weaker
+    claim than a gate check-in, and a signed attendance record that renders the
+    two identically is the stronger one lending its authority to the weaker -
+    which is the whole reason the field is stored.
+
+    AN OLD RECORD HAS NO `added_from`. Every attendee filed before the field
+    existed came from the gate or from the CP's own typing with no way to tell
+    which, and inventing a label for those would be the same false confidence
+    this column exists to remove. They read as an em-dash: we do not know, and
+    the record says so.
+
+    A KEY THIS MAP DOES NOT HOLD READS THE SAME WAY. `text` would have printed
+    the stored token -- a filed attendance record with `weekly_gap` under a
+    column headed "Added by" -- and an unknown fourth provenance is exactly as
+    unknown as an absent one. The set is closed on purpose.
+    """
+    return _ATTENDEE_SOURCES.get(_s(v).lower(), "&mdash;")
+
+
 def toggle_list(v: Any) -> str:
     """The ticked keys of a sparse toggle map, as a sentence.
 
@@ -228,14 +358,33 @@ def toggle_list(v: Any) -> str:
     The editors seed these as {} and write a key only when he taps it, so an
     absent key is untouched rather than a silent no -- which is why only the
     true ones are listed and the false ones are not listed as refusals.
+
+    ── AN EMPTY MAP IS THE SEEDED ONE, AND THIS GOT IT BACKWARDS ──────────
+
+    The sentence above is what this was written to do and `if v else` is not
+    how it did it. `{}` is FALSY, so the seeded map -- the exact case the
+    paragraph describes -- fell to "not recorded" alongside the absent one,
+    and the two answers the docstring separates were printed the same.
+
+    IT REACHED FILED DOCUMENTS. The daily jobsite branch printed
+    `equip_list or "None"`, so 32 of its 59 filed records said "Equipment:
+    None"; after that conversion the same 32 said "Equipment on Site — Not
+    recorded". The old-against-new word diff DID list `none` as lost on 32
+    records and it was read past, which is the second time a conversion's
+    finding has been in the report and not in the reader.
+
+    ABSENCE IS STILL ABSENCE. One daily record carries no `equipment_on_site`
+    key at all and the branch printed None for it too, because `.get(key, {})`
+    folds the two together before the renderer ever sees them. That one record
+    changes, deliberately: the form did not ask, and a sheet that answers for
+    it is the thing this function exists to refuse.
     """
     if not isinstance(v, dict):
         return NOT_RECORDED
     on = [str(k).replace("_", " ").title() for k, val in v.items() if val]
     if not on:
-        return _html.escape("None") if v else NOT_RECORDED
+        return _html.escape("None")
     return _html.escape(", ".join(on))
-
 
 #: The spellings this product actually stores. Pre-shift writes the
 #: lowercase words; other forms write booleans.
@@ -479,4 +628,6 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "sub_company": sub_company,
     "weather_line": weather_line,
     "toggle_list": toggle_list,
+    "roster_clock": roster_clock,
+    "attendee_source": attendee_source,
 }

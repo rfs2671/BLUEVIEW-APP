@@ -399,6 +399,69 @@ grow until it is worked as its own change.
 
 ---
 
+### A20. Thirty-two filed daily jobsite logs said "Equipment: None" and now say "Not recorded" — CLOSED 2026-09-13
+
+`lib/legal_render/formatters.py` — `toggle_list`.
+
+**What it did:** the daily jobsite branch printed `equip_list or "None"`, so a
+record whose `equipment_on_site` map was seeded and never ticked read
+**Equipment: None**. The conversion bound that section to `toggle_list`, which
+returned the not-recorded phrase for the same map, and **32 of the 59 filed
+daily jobsite records** changed what they say about the equipment on that site.
+
+**The function contradicted its own docstring.** It opens by drawing exactly
+this distinction — "A map that EXISTS with nothing ticked is a man who was
+asked about each item and said no to all of them: that is None. A map that is
+absent is a form that never asked him" — and then tested `if v else`. `{}` is
+falsy. The seeded map, which is the case the paragraph is about, fell in with
+the absent one.
+
+**The comparison reported it and it was read past.** `none` was on the daily
+conversion's lost-word list at 32 records, in the run that was accepted. That
+is not an instrument failure; it is the second time a conversion's finding has
+been in the report and not in the reader.
+
+**Found:** while profiling the toolbox corpus, which has 5 records in the same
+state. **Fixed:** in the toolbox conversion — `toggle_list` now tests
+`isinstance(v, dict)`, so a map that exists reads None and an absent one reads
+not-recorded.
+
+**One daily record changes deliberately.** It carries no `equipment_on_site`
+key at all, and the branch printed None for it because `.get(key, {})` folds
+absence into emptiness before the renderer sees either. It now reads
+not-recorded: the form did not ask, and a sheet that answers for it is the
+thing the function exists to refuse.
+
+---
+
+### A21. Every sheet the engine renders was filed with no document title — CLOSED 2026-09-13
+
+`lib/legal_render/engine.py` — the document head.
+
+**What it did:** the branch renderer wrote
+`<title>{type} — {project} — {date}</title>`. The engine's head carried a
+charset and a stylesheet and nothing else, so **254 filed records across six
+types** went out with an empty `<title>`. WeasyPrint copies that element into
+the PDF's Title metadata, and it is what a viewer shows in a tab and what a
+document manager sorts on; the sheets identify themselves by object key.
+
+**No comparison could have found it, and six of them ran.** Every instrument in
+this migration compares the VISIBLE text of the two documents — `visible()`
+strips tags before it tokenises — and `<title>` is not on the page. It
+surfaced only because one project's name and address differ: "857 Prescott Pl"
+against "8 PRESCOTT PLACE, Brooklyn", so the word `Pl` appeared in the old
+document and not the new one, on two toolbox records, and the word was never in
+either body.
+
+**Fixed:** in the toolbox conversion. The engine writes the old element, with
+the same three parts in the same order; `project_name` crosses in the render
+context beside `address`, because the two are not the same string and the sheet
+needs both.
+
+**Found:** 2026-09-13.
+
+---
+
 ## B. Closed on 2026-09-11
 
 These were live when triaged and are not any more. Listed so nobody works them

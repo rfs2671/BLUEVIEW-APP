@@ -41,6 +41,16 @@ from unittest.mock import patch
 _BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BACKEND))
 import server  # noqa: E402
+from lib import legal_render  # noqa: E402
+
+#: Every type the chain was written for. The specimen below is whichever of
+#: these the engine has NOT taken yet.
+_ALL_TYPES = ("daily_jobsite", "toolbox_talk", "preshift_signin", "hot_work",
+              "crane_operations", "excavation_monitoring",
+              "concrete_operations", "scaffold_maintenance",
+              "ssc_daily_safety_log", "fall_protection",
+              "site_superintendent_log", "osha_log",
+              "subcontractor_orientation")
 
 SRC = (_BACKEND / "server.py").read_text(encoding="utf-8")
 
@@ -66,20 +76,29 @@ def _doc(log_type: str, data: dict) -> dict:
 
 #: A real render, not the source text. What the inspector's PDF is built from.
 #:
-#: NO LONGER `daily_jobsite`, AND THE REASON IS THE SUBJECT OF THIS FILE. Every
-#: rule below is about the print CSS `generate_single_logbook_html` emits --
-#: the @page box, the wrapper release, the shell-row exemption. The daily log
-#: moved onto the declarative engine, which builds its own document with its
-#: own stylesheet, so a daily-log render stopped containing the CSS this file
-#: is about and eight assertions failed against a renderer that had not
-#: changed.
+#: THE SPECIMEN IS DERIVED NOW, AND THIS IS THE THIRD MOVE. It was
+#: `daily_jobsite`; that converted and eight assertions failed against a
+#: renderer nobody had touched. It became `toolbox_talk` with a note saying
+#: "this moves again to whatever still does" -- and toolbox converted, and the
+#: same eight failed the same way. A note telling the next person to repair
+#: something is not a mechanism.
 #:
-#: THE SPECIMEN MUST EXERCISE THE SUBJECT -- which is the note already written
-#: two lines below about `HTML_H3`, arriving a second time for the same file.
-#: A toolbox talk still renders through the branch chain and will until it is
-#: converted, at which point this moves again to whatever still does.
-HTML = render(_doc("toolbox_talk", {"topic": "Ladder safety",
-                                    "attendees": [{"name": "A Rivera"}]}))
+#: EVERY RULE BELOW IS ABOUT THE PRINT CSS `generate_single_logbook_html`
+#: EMITS -- the @page box, the wrapper release, the shell-row exemption. The
+#: engine builds its own document with its own stylesheet, so a converted type
+#: contains none of it and the specimen has to be one the chain still renders.
+_BRANCHED = sorted(set(_ALL_TYPES) - set(legal_render.CONVERTED_TYPES))
+assert _BRANCHED, (
+    "every logbook type is converted, so nothing renders through "
+    "generate_single_logbook_html's own document shell and this whole file "
+    "has no subject. RETIRE IT -- the @page box, the 700px release and the "
+    "shell-row exemption all belong to a renderer that no longer runs. Do "
+    "not repoint it at a converted type: the engine's stylesheet is a "
+    "different one and every assertion here would be about the wrong "
+    "document.")
+
+HTML = render(_doc(_BRANCHED[0], {"topic": "Ladder safety",
+                                  "attendees": [{"name": "A Rivera"}]}))
 
 #: A SECOND SPECIMEN, BECAUSE THE FIRST NEVER REACHED THE CODE UNDER TEST.
 #: `sub_title` is the only source of <h3> in this renderer and it is called from

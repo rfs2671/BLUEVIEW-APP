@@ -839,6 +839,44 @@ the diff is megabytes of ink.)*
 | 15b | a patch script's `replace` with no assertion on the count | the registry line never applied. `sub()` asserts a count of one and fails loudly; a bare `s.replace(a, b)` that matches nothing returns the string unchanged and reports success. Written in my own patch, in the same session as three warnings about exactly this |
 | 16 | a full-suite run that predates the last edit | the suite was green, then two tests were added, then only that one module was re-run, then it was committed. The bare-literal gate caught the new assertion in CI. **A suite run is a claim about the code as it was when it ran** — which is the same sentence as "a green suite is a claim about what RAN", one step further back |
 
+### A check narrower than its subject, and the same error with the opposite sign
+
+Two verifications of the converted sheets reported the product as broken. Both
+were the checker.
+
+**117 of 254 records flagged, every one correct.** The check asked whether the
+*document* contained the word UNAFFIRMED and compared that to the competent
+person's own verdict. A sheet carries several marks — an orientation has an
+affirmed CP beside an unaffirmed worker — so the page says both, truthfully.
+**A document-level question cannot answer a per-mark claim.**
+
+**8 records flagged for being more careful than the check.** It looked for
+`AFFIRMED for this document`, and those eight are the *fourth* affirmation
+state: affirmed, with a claimed time that failed validation, which the banner
+renders as `AFFIRMED — claimed time NOT VERIFIED` because it refuses to present
+an unverifiable claim as fact. The sheet was saying **more** than the phrase
+being looked for, and was marked wrong for it.
+
+> A check narrower than its subject does not merely miss things. It penalises
+> the subject for exceeding it, and the report reads as a defect in the code.
+
+**And the pair completes the family.** The baseline's image blindness was
+**silent when it should have spoken** — a conversion that dropped every
+signature would have reported zero lost words. These two **spoke when they
+should have been silent**. Same error, opposite sign: an instrument whose
+resolution does not match its subject's.
+
+### A wait condition a past state can satisfy is not a wait
+
+A CI poll waited for "both suites reported and nothing pending". That was
+already true of the **previous** run, whose results were still the latest ones
+because the new run had not been created yet — so it returned history as the
+verdict on a commit CI had not seen.
+
+Second poll of this shape; the first exited on a listing that did not yet
+contain the backend row at all. Both now wait on runs whose **head SHA is the
+commit just pushed**, which no past state can satisfy.
+
 ### The rule that comes out of all of them
 
 **A gate whose subject population can reach zero needs an assertion that the
@@ -1604,6 +1642,76 @@ unknown one.
 
 ---
 
+
+### Instance 17: the comparison lowercases both sides before it compares
+
+**Where:** `cmp_local.py` / `dj_compare.py` — `words()`.
+
+    def words(t):
+        return {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'/-]+", t)}
+
+**What it missed:** the toolbox declaration bound the attendee's Title and
+Company columns to `raw_text`, which keeps a blank cell blank and does NOT
+capitalise. The branch ran `_capitalize_first` over both. So every filed roster
+went from **Foreman** to **foreman**, on 393 rows, and the comparison reported
+nothing — it had lowercased both sides before the set difference ran.
+
+**What found it:** `tests/test_logbook_renderers.py`, which asserts the literal
+string `Foreman`. A unit test with one named expectation caught what a
+63-record diff could not.
+
+**The rule.** *A comparison that normalises before it compares has a blind spot
+exactly the width of the normalisation, and the normalisation is invisible in
+the result.* Lowercasing is there so "DATE" against "Date" is not 59 findings;
+the cost is that case is now outside the instrument's reach, and nothing in its
+output says so. Every normaliser a comparison applies — case, whitespace,
+punctuation, tag-stripping — is a class of change it has agreed not to see.
+
+**The practice.** State the normalisations in the instrument's own output, next
+to the counts, so a reader knows what a clean run does not cover. Then keep a
+per-type unit test that names a few literal strings the document must contain,
+because that is the instrument with no normaliser in it.
+
+---
+
+### Instance 18: the instrument only ever looked at the page
+
+**Where:** every comparison in this migration, six conversions deep.
+
+    def visible(html):
+        s = re.sub(r"<img\b[^>]*>", " [IMAGE] ", html, flags=re.I)
+        ...
+        s = re.sub(r"<[^>]+>", " ", s)          # <-- and here goes <title>
+
+**What it missed:** the engine writes no `<title>`. 254 filed records across
+six types went out with empty PDF Title metadata, and the check that was run
+after each conversion is a diff of the VISIBLE TEXT of the two documents.
+`<title>` is in the document and not on the page, so it was outside the
+subject the instrument had been given.
+
+**How it surfaced, which is the part worth keeping:** by accident. One project
+of the three in the toolbox corpus has a NAME that differs from its ADDRESS,
+so the old document's title contained the word `Pl` and the new one contained
+nothing at all. Two records out of 63. On the other 61 the same defect was
+present and invisible, because the title's words happened to appear on the page
+as well.
+
+**The rule.** *A document is not its page. An instrument that reads the
+rendered text is checking the body and nothing else — the head, the metadata,
+the filename, the page geometry and anything a reader's software derives from
+them are all outside it, and a clean run says nothing about any of them.*
+
+**Relation to instance 5** (the baseline's image blindness): the same shape one
+level up. There the instrument tokenised images and then stripped the tag they
+lived in. Here it strips a tag whose CONTENT is part of the record. Both were
+found by a case where the missing thing happened to change a visible word, not
+by the check.
+
+**What it costs to close:** one assertion per whole-document property, in
+`test_the_sheet_keeps_its_banners.py`'s positional apparatus — which is the
+list that already exists for exactly this, and which `<title>` was not on.
+
+---
 
 ## 15. Work that is DONE and not PROPOSED does not exist
 
