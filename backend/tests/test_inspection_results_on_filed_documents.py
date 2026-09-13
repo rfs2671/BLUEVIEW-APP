@@ -176,8 +176,21 @@ class BothRenderersUseTheOneHelper(unittest.TestCase):
         census is 1 definition + 1 call site. The DISCIPLINE is unchanged and
         is what this asserts: nobody gets their own join."""
         assert_is_current(self)
-        self.assertEqual(self.SRC.count("_display_inspections("),
-                         1 + N_RENDERERS)
+        # THE DAILY JOBSITE SHEET RENDERS DECLARATIVELY, so server.py holds
+        # the definition and no call site -- the helper is callerless and
+        # recorded as defect A19. The discipline is unchanged and is asserted
+        # where it now lives: ONE implementation of the three-state register,
+        # in the engine, named by the schema.
+        self.assertEqual(self.SRC.count("_display_inspections("), 1)
+        from lib.legal_render import primitives as _prim
+        from lib.legal_render import schema as _schema
+        self.assertIn("inspection_log", _prim.PRIMITIVE_FNS)
+        _sec = next(s for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                    if s["primitive"] == "inspection_log")
+        self.assertEqual(_sec["labels"], "inspection_items")
+        self.assertEqual(_sec["other_key"], "other_checklist",
+                         "Other is a pass/fail item again, which is a verdict "
+                         "with no subject")
 
     def test_neither_renderer_kept_its_own_join(self):
         self.assertNotIn(
@@ -188,10 +201,22 @@ class BothRenderersUseTheOneHelper(unittest.TestCase):
     def test_equipment_KEPT_its_join_because_it_is_still_a_tick(self):
         """Equipment on site did not change shape, and must not be swept into
         this change: it is a presence tick, not an inspection result."""
+        # THE JOIN MOVED TOO, AND STAYED A JOIN. Equipment is a presence
+        # tick, not an inspection result, so it was not swept into the
+        # three-state change -- and it is not swept into the register
+        # primitive either. `formatters.toggle_list` lists the ticked keys,
+        # and draws the one line this helper never did: a map that EXISTS with
+        # nothing ticked is None, and an absent map is not recorded.
+        from lib.legal_render.formatters import FORMATTERS as _F
+        self.assertIn("toggle_list", _F)
+        self.assertEqual(_F["toggle_list"]({"compressor": True}), "Compressor")
+        self.assertEqual(_F["toggle_list"]({"compressor": False}), "None")
+        self.assertIn("Not recorded", _F["toggle_list"](None))
         self.assertEqual(
             self.SRC.count('equip_list = ", ".join(k.replace("_", " ").title()'),
-            N_RENDERERS,
-            "equipment_on_site still renders as the plain list both PDFs expect",
+            N_RENDERERS - 1,
+            "the join went with the daily jobsite branch; the rule is "
+            "formatters.toggle_list, exercised directly above",
         )
 
 

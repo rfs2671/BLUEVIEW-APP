@@ -146,7 +146,18 @@ class TestWeatherIsNeverBlank(unittest.TestCase):
         # the composition between them, the filed log's section, and the
         # investor page's panel.
         self.assertEqual(
-            src.count('_display_weather(') + src.count('_weather_parts('), 5,
+            # 5 -> 4. The daily jobsite branch was `_display_weather`'s only
+            # caller and it is gone; the helper itself stays, with no caller,
+            # recorded as defect A19. What this counts is the resolution's
+            # call sites: two definitions, the composition between them, and
+            # the investor page's panel.
+            #
+            # THE RULES ARE ALSO IN lib/legal_render/formatters.py NOW, where
+            # `weather_parts` holds them and the daily log's schema names
+            # `weather_line`. They MOVED rather than being copied --
+            # `_weather_parts` calls the formatter -- which is why this file
+            # still exercises one resolution and not two.
+            src.count('_display_weather(') + src.count('_weather_parts('), 4,
             "expected 2 definitions + 1 composition + 2 call sites: the filed "
             "daily jobsite log's own section, and the investor page's panel",
         )

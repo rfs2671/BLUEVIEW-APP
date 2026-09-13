@@ -214,7 +214,18 @@ class NoSignatureIsReachableFromTheInvestorReportAtAll(unittest.TestCase):
         # produces, so emptiness only counts as evidence while the same walk
         # still returns a crowd from the document renderer.
         self.assertGreaterEqual(
-            len(found), 7,   # measured, 2026-09-12
+            # 7 -> 5. The daily jobsite branch carried two
+            # `render_signature_html` calls -- the CP's and the
+            # superintendent's -- and went when that type was converted. The
+            # sheet still prints both, through the engine's `signature`
+            # primitive, which this walk cannot see because it looks for one
+            # function by name.
+            #
+            # THE NUMBER IS NOT THE CLAIM. It is the vacuity guard on the
+            # assertion above: an empty result is the shape a BROKEN walk
+            # produces, so emptiness only counts as evidence while the same
+            # walk still returns a crowd from the document renderer.
+            len(found), 5,   # measured, 2026-09-13
             f"only {len(found)} signature calls reached from the filed "
             "renderer; the walk is broken, so the empty result above proves "
             "nothing")

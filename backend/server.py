@@ -19866,115 +19866,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             f"legal_render has a schema for {log_type!r} and returned no "
             f"sheet; the filed document would have printed as a stub")
 
-    if log_type == "daily_jobsite":
-        type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
-        weather_str = _display_weather(data)
-        
-        # Activities table
-        act_rows = ""
-        for i, act in enumerate(data.get("activities", [])):
-            act_rows += (
-                # PR G: crew/company/location are short-entry (capitalize first);
-                # work description is prose (sentence case). num_workers excluded.
-                # crew_id, NOT crew_name. The CP types a crew IDENTIFIER
-                # (daily_jobsite.jsx EMPTY_ACTIVITY `crew_id`, and the auto-seed
-                # writes `C1`, `C2`, ...). Nothing in the repo has ever written
-                # crew_name, so this column rendered empty on every record while
-                # generate_combined_report read the same row correctly.
-                f'<tr><td {TD}>{_capitalize_first(act.get("crew_id", ""))}</td>'
-                f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
-                f'<td {TD}>{_headcount_cell(act, blank="0")}</td>'
-                f'<td {TD}>{_sentence_case(act.get("work_description", "N/A"))}</td>'
-                f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td></tr>'
-            )
-        
-        equip = data.get("equipment_on_site", {})
-        equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
-        chk = data.get("checklist_items", {})
-        check_list = _display_inspections(chk)
-        
-        # Observations
-        obs_html = ""
-        obs_rows = ""
-        for obs in data.get("observations", []):
-            if obs.get("description", "").strip():
-                obs_rows += (
-                    # description/remedy prose; responsible party short-entry.
-                    f'<tr><td {TD}>{_sentence_case(obs.get("description", ""))}</td>'
-                    f'<td {TD}>{_capitalize_first(obs.get("responsible_party", ""))}</td>'
-                    f'<td {TD}>{_sentence_case(obs.get("remedy", ""))}</td></tr>'
-                )
-        if obs_rows:
-            obs_html = (
-                '<h3 style="color:#0A1929;margin:16px 0 8px;">Safety Observations</h3>'
-                '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-                'style="border-collapse:collapse;font-size:13px;">'
-                f'<tr><th {TH}>Description</th><th {TH}>Responsible</th><th {TH}>Remedy</th></tr>'
-                + obs_rows + '</table>'
-            )
-        
-        cp_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
-        sup_sig = render_signature_html(data.get("superintendent_signature"), "Superintendent")
-        visitors = data.get("visitors_deliveries", "")
-
-        # ── THE PERMANENT "N/A" IS GONE ──────────────────────────────────────
-        #
-        # This printed `Time In: N/A   Time Out: N/A` on EVERY daily jobsite
-        # log ever rendered, because nothing in the app has ever written those
-        # two keys -- daily_jobsite.jsx held the state and hydrated it and no
-        # control set it. As of the picker work the state, the payload keys and
-        # the hydrate are all deleted from the screen, so nothing will write
-        # them again and the row could only ever say N/A.
-        #
-        # CONDITIONAL RATHER THAN DELETED, and the difference matters on a
-        # signed record. A log filed BEFORE the U1 rebuild may carry real
-        # times; deleting the row outright would remove them from a document
-        # that has already been signed and read. Printed only when a value is
-        # actually there, an old log still shows what it said and a new one
-        # shows nothing at all.
-        #
-        # AND IT IS THE SAME RULE generate_combined_report ALREADY APPLIES,
-        # deliberately: TheTwoRenderersAgreeOnAnEmptyRow in
-        # backend/tests/test_report_six_defects.py exists because this pair has
-        # drifted twice before. Deleting here while the report stayed
-        # conditional would have been a third drift, on the same field.
-        _t_in = str(data.get("time_in") or "").strip()
-        _t_out = str(data.get("time_out") or "").strip()
-        _times_line = (
-            f'<strong style="color:#0A1929;">Time In:</strong> {_t_in or NOT_RECORDED}'
-            f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> '
-            f'{_t_out or NOT_RECORDED}<br />'
-        ) if (_t_in or _t_out) else ""
-
-        body_html = (
-            info_box(
-                f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description") or NOT_RECORDED)}<br />'
-                f'{_times_line}'
-            )
-            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            # "CP's count", not "Workers". This number is HAND-TYPED by the CP
-            # on the crew row (activities[].num_workers); page 1's headcount is
-            # counted at the GATE from check-ins. They disagree — 4 here, 3 there
-            # — and both are true statements about different things. Labelled at
-            # the point of use rather than reconciled: a CP who counts four men
-            # on his crew and a turnstile that recorded three are each reporting
-            # something real, and silently picking one would delete a fact.
-            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>CP&#39;s count</th>'
-              f'<th {TH}>Description</th><th {TH}>Location</th></tr>'
-            + (act_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
-            + '</table>'
-            + bold_para("Equipment", equip_list or "None")
-            + bold_para("Inspected", check_list or "None")
-            + obs_html
-            + (bold_para("Visitors / Deliveries", _sentence_case(visitors)) if visitors else "")
-            + _appended_photo_notice(data)
-            + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
-            + cp_sig + sup_sig
-        )
-    
-    elif log_type == "toolbox_talk":
+    if log_type == "toolbox_talk":
         type_title = "Tool Box Talk"
         topics = data.get("checked_topics", {})
         topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
@@ -29169,6 +29061,32 @@ AMENDMENT_NONE = "not_amended"
 # this codebase has spent its last month closing. `withdrawn_at` /
 # `withdrawn_by` / `withdrawn_by_name` are NOT that second writer: they are the
 # ATTESTATION, and they answer a different question (who, and when).
+# ── SIX HELPERS HAVE NO CALLER NOW, AND ARE DELIBERATELY LEFT ───────
+#
+# `_headcount_cell`, `_display_inspections`, `_inspection_label`,
+# `_display_sub_company`, `_appended_photo_notice` and `_display_weather`
+# were the daily jobsite branch's own, and the branch was their only
+# caller. Every rule they held now lives in lib/legal_render, named by a
+# schema rather than called from a chain:
+#
+#   _headcount_cell        -> primitives.cp_headcount (a ROW formatter)
+#   _display_inspections   -> primitives.inspection_log, because a fourth
+#                             answer is not a checklist
+#   _inspection_label      -> LABEL_SETS["inspection_items"]
+#   _display_sub_company   -> formatters.sub_company
+#   _appended_photo_notice -> primitives.appended_photographs
+#   _display_weather       -> formatters.weather_line
+#
+# DELETING THEM WAS TRIED IN THIS CHANGE AND BACKED OUT. It is 198 lines
+# and it took 45 tests with it -- four whole files bind these names at
+# module scope, and `test_headcount_provenance_on_the_filed_log.py` is an
+# entire file about one of them. That is a deliberate change of its own,
+# not a rider on a branch deletion, and it is recorded as defect A19 so
+# the decision gets made rather than discovered.
+#
+# A HELPER WITH NO CALLER IS THE SAME DEFECT AS A SHADOWED BRANCH -- it
+# reads as the renderer for something -- so this note is the marker until
+# then, not an argument for keeping them.
 WITHDRAWN_STATUS = "withdrawn"
 
 #: The one state that needs no comment on a filed document. Everything else

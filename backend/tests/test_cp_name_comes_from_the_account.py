@@ -166,7 +166,21 @@ class TheTwoDocumentsAgreeAboutTheSameRecord(unittest.TestCase):
 
     def test_and_there_are_still_CP_lines_to_print(self):
         """The absence rule: deleting every CP line satisfies the test above."""
-        self.assertGreater(_CODE.count('bold_para("CP"'), 3)
+        # 4 -> 3. The daily jobsite branch carried one of these and went
+        # when that type was converted; its sheet names the competent person
+        # in two declared places instead, so the line did not disappear, it
+        # stopped being an f-string.
+        #
+        # THE NUMBER IS THE VACUITY GUARD, not the claim. The claim above is
+        # that no CP line reads from anywhere but the account, and deleting
+        # every CP line would satisfy it -- so this exists to prove there are
+        # still lines for it to be true of.
+        self.assertGreater(_CODE.count('bold_para("CP"'), 2)
+        from lib.legal_render import schema as _schema
+        _paths = [f[0] for s in _schema.SCHEMAS["daily_jobsite"]["sections"]
+                  for f in (s.get("fields") or [])]
+        self.assertIn("cp_name", _paths,
+                      "the daily jobsite sheet stopped naming the CP")
 
 
 class NothingRewritesWhatIsAlreadyFiled(unittest.TestCase):

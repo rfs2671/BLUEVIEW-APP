@@ -152,8 +152,12 @@ class TestToolboxIsExplicitlyExcluded(unittest.TestCase):
         # other embedded section; the report prints no roster at all, which
         # satisfies the exclusion more completely than reading its source did.
         # The branch that still prints one is checked exactly as before.
-        for start, end in (('elif log_type == "toolbox_talk":',
-                            'elif log_type == "preshift_signin":'),):
+        # NO `elif` PREFIX. Toolbox talk became the chain's FIRST arm when
+        # the daily jobsite branch was deleted, so it is spelled `if` now.
+        # Anchoring on the comparison alone survives the next eleven
+        # deletions; anchoring on the keyword survived one.
+        for start, end in (('log_type == "toolbox_talk":',
+                            'log_type == "preshift_signin":'),):
             with self.subTest(branch=start):
                 block = _SRC[_SRC.index(start):_SRC.index(end)]
                 self.assertNotIn("signature_affirmed", block)

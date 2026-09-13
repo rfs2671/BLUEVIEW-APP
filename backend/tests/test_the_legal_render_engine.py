@@ -203,8 +203,15 @@ class TheSwitchIsNarrow(unittest.TestCase):
         """A switch below the first branch would never be reached for a type
         the chain already handles."""
         i = _SRC.index("if log_type in legal_render.CONVERTED_TYPES")
-        j = _SRC.index('if log_type == "daily_jobsite":')
-        self.assertLess(i, j)
+        # THE FIRST ARM OF THE CHAIN, FOUND RATHER THAN NAMED. This
+        # named `daily_jobsite`, and that branch was deleted the
+        # moment its conversion finished -- the same shape as the
+        # three slices that broke when `osha_log` became the last
+        # named branch. The chain's first arm moves every time a type
+        # is converted; what does not move is that there IS one.
+        m = re.compile('\\n    if log_type == "\\w+":').search(_SRC[i:])
+        self.assertIsNotNone(m, "the per-type chain has no first branch")
+        self.assertLess(i, i + m.start())
 
 
 class TheTwelveUnconvertedTypesStillRender(unittest.TestCase):
@@ -346,8 +353,13 @@ class TheOrientationSheetSaysWhatTheSchemaDeclares(unittest.TestCase):
             {"kind": "one"})
         # The group read in server.py is gated on the DECLARATION, so a type
         # that does not declare `group` cannot reach it.
-        body = _SRC[_SRC.index("if log_type in legal_render.CONVERTED_TYPES"):]
-        body = body[:body.index("if log_type == \"daily_jobsite\":")]
+        # SLICED TO THE FIRST ARM OF THE CHAIN, FOUND RATHER THAN NAMED --
+        # the third slice in this repo to end at a branch that was later
+        # deleted, after the three that ended at `osha_log`.
+        _i = _SRC.index("if log_type in legal_render.CONVERTED_TYPES")
+        _m = re.compile('\\n    if log_type == "\\w+":').search(_SRC[_i:])
+        self.assertIsNotNone(_m, "the per-type chain has no first branch")
+        body = _SRC[_i:_i + _m.start()]
         self.assertIn('.get("kind") == "group"', body)
         self.assertIn("db.logbooks.find(", body)
         self.assertLess(

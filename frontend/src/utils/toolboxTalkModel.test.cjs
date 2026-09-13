@@ -57,8 +57,12 @@ console.log('\n-- the keys the renderer reads --');
 // none. The payload has to carry every key the renderer that PRINTS it
 // opens, and that is this one.
 const branch = SERVER.slice(
-  SERVER.indexOf('elif log_type == "toolbox_talk":'),
-  SERVER.indexOf('elif log_type == "preshift_signin":'),
+  // NO `elif` PREFIX. Toolbox talk became the chain's FIRST arm when the
+  // daily jobsite branch was deleted, so it is spelled `if` now and this
+  // slice returned -1. Anchoring on the comparison alone survives the next
+  // eleven deletions; anchoring on the keyword survived one.
+  SERVER.indexOf('log_type == "toolbox_talk":'),
+  SERVER.indexOf('log_type == "preshift_signin":'),
 );
 ok(branch.length > 0, 'located the toolbox branch of the filed document');
 
@@ -287,8 +291,9 @@ ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 1,
 // PRE-SHIFT sheet then legitimately needed when it gained a signature column
 // (B10). Scoped to the two toolbox tables, which is what it was always about.
 // Same over-broad shape as four earlier assertions on this project.
-for (const [from, to] of [['elif log_type == "toolbox_talk":',
-  'elif log_type == "preshift_signin":']]) {
+// Same anchors, same reason as the slice above.
+for (const [from, to] of [['log_type == "toolbox_talk":',
+  'log_type == "preshift_signin":']]) {
   const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
   // THE INVARIANT, NOT THE NUMBER. This asserted colspan="7" literally, and
   // the number is not the claim -- the claim is that the placeholder spans its

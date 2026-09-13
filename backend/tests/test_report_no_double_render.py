@@ -96,7 +96,13 @@ class TheParseFoundSomethingToCompare(unittest.TestCase):
         self.assertGreaterEqual(len(DEFINED), 12)
 
     def test_the_branch_chain_was_read(self):
-        self.assertGreaterEqual(len(BRANCHED), 12)
+        # 12 -> 11, AND IT FALLS BY ONE PER CONVERSION. This is the
+        # vacuity guard on the assertions below -- a regex that stopped
+        # matching would make all of them pass on an empty set -- so what it
+        # needs is a floor that proves the parse worked, not a census of the
+        # chain. The chain's real size is asserted against the registry in
+        # test_a_converted_type_keeps_no_branch.py, where it is derived.
+        self.assertGreaterEqual(len(BRANCHED), 11)
 
     def test_the_schema_engine_was_read(self):
         self.assertGreaterEqual(len(SCHEMED), 1)
