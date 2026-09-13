@@ -212,6 +212,18 @@ class BothRenderersUseTheOneHelper(unittest.TestCase):
         self.assertEqual(_F["toggle_list"]({"compressor": True}), "Compressor")
         self.assertEqual(_F["toggle_list"]({"compressor": False}), "None")
         self.assertIn("Not recorded", _F["toggle_list"](None))
+        # THE SEEDED MAP, WHICH IS THE CASE THE COMMENT ABOVE IS ABOUT AND THE
+        # ONE NOBODY ASSERTED. The editors seed `{}` and write a key only when
+        # the CP taps it, so an empty map is a man who was asked about every
+        # item and ticked none: that is None, and it is the ONLY state that
+        # distinguishes this function from `.get(key, {})`.
+        #
+        # IT WAS WRONG IN PRODUCTION FOR THREE DAYS. `toggle_list` tested
+        # `if v else`, `{}` is falsy, and 32 of 59 filed daily jobsite records
+        # went from "Equipment: None" to "— Not recorded" (defect A20). The
+        # three assertions above all passed throughout, because the map that
+        # was broken is not one of the three shapes they name.
+        self.assertEqual(_F["toggle_list"]({}), "None")
         self.assertEqual(
             self.SRC.count('equip_list = ", ".join(k.replace("_", " ").title()'),
             N_RENDERERS - 1,
