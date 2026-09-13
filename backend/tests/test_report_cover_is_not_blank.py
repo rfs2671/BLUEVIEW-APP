@@ -174,6 +174,29 @@ def _page_text(page) -> str:
     return " ".join(out)
 
 
+def _types_with_an_arm():
+    """The types whose arm is still in the per-type chain.
+
+    AN ARM DELETED IS NOT THE SAME AS AN ARM NOTHING REACHES. Every type is
+    declared now, so the chain never runs -- but six arms are still there for
+    one more change, and that is what a rollback falls back to.
+
+    `daily_jobsite` HAS NO ARM, and that is the trap this closes: rolling it
+    back reached the GENERIC arm, which renders a title and the word Status.
+    The assertion that the result was not the engine's sheet passed, because
+    the generic arm is not the engine either. It was the wrong branch, not no
+    branch.
+
+    FOUND, NEVER NAMED, and anchored after the dispatch -- `if log_type ==
+    "preshift_signin"` also appears ABOVE it, where the caller resolves what a
+    synchronous renderer cannot await.
+    """
+    import re as _re
+    src = Path(server.__file__).read_text(encoding="utf-8")
+    i = src.index("if log_type in legal_render.CONVERTED_TYPES:")
+    return _re.findall(r'\n    (?:el)?if log_type == "(\w+)":', src[i:])
+
+
 @unittest.skipIf(HTML is None and not os.environ.get("CI"),
                  f"weasyprint native libraries unavailable: {_IMPORT_ERROR}")
 class TheCoverCarriesTheFirstSection(unittest.TestCase):
@@ -248,16 +271,26 @@ class TheCoverCarriesTheFirstSection(unittest.TestCase):
         # has no email shell at all -- no `tr.shell`, because it is not that
         # kind of document. The count went to zero and the rule it checks was
         # untouched.
-        branched = sorted(set(_ALL_TYPES) - set(legal_render.CONVERTED_TYPES))
-        self.assertTrue(
-            branched,
-            "every type is converted, so no document carries the email shell "
-            "and the exemption this asserts has nothing left to protect. "
-            "RETIRE IT together with the print block it belongs to.")
-        html = asyncio.run(server.generate_single_logbook_html(
-            {"_id": "lb0", "project_id": PROJECT, "date": DATE,
-             "log_type": branched[0], "status": "submitted",
-             "cp_name": "carl cp", "data": {"notes": "note"}}))
+        # THE ROLLBACK PATH. Every type is declared, so nothing routes to
+        # the chain -- but the arms are still there for one more change, and
+        # this is the document a one-line rollback produces.
+        _t = _types_with_an_arm()[0]
+        _keep = legal_render.schema.CONVERTED_TYPES
+        _names = frozenset(set(_keep) - {_t})
+        legal_render.schema.CONVERTED_TYPES = _names
+        legal_render.CONVERTED_TYPES = _names
+        try:
+            html = asyncio.run(server.generate_single_logbook_html(
+                {"_id": "lb0", "project_id": PROJECT, "date": DATE,
+                 "log_type": _t, "status": "submitted",
+                 "cp_name": "carl cp", "data": {"notes": "note"}}))
+        finally:
+            legal_render.schema.CONVERTED_TYPES = _keep
+            legal_render.CONVERTED_TYPES = _keep
+        self.assertNotIn(
+            "PROJECT RECORD", html,
+            f"{_t} has no branch left, so the email shell is gone with it "
+            f"and this assertion has nothing to protect. RETIRE IT.")
         self.assertGreaterEqual(html.count('<tr class="shell">'), 3)
 
     def test_and_the_investor_report_has_no_shell_to_protect(self):

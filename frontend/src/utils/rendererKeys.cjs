@@ -123,6 +123,29 @@ function rendererKeys(logType) {
     for (const m of decl.matchAll(/\("([a-z_]+)", "[^"]*", "[a-z_]+"\)/g)) {
       keys.add(m[1]);
     }
+    // AND WHAT A FIELD BOUND TO `data` READS, ONE LEVEL DEEPER.
+    //
+    // `vibration_status` and `weather_line` are handed the WHOLE map, because
+    // their answer needs several keys at once — a threshold, a reading, and
+    // the flag saying the comparison was made. The declaration therefore names
+    // the path `data` and NONE of those keys appears in it.
+    //
+    // THE FIXTURE BUILT FROM THIS LIST THEN HAD A HOLE. `vibration_over_
+    // threshold` was on neither side's list, so the record never carried it,
+    // and the excavation sheet printed "Status — Not recorded" for a reading
+    // of 0.21 against a threshold of 0.50 — which is not a finding about the
+    // renderer, it is a finding about the fixture, and it took a rendered
+    // sheet to see it. Same shape as the row-formatter step above.
+    for (const m of decl.matchAll(/\("data", "[^"]*", "([a-z_0-9]+)"\)/g)) {
+      const fn = new RegExp(`\\ndef ${m[1]}\\(`).exec(FORMATTERS);
+      if (!fn) continue;
+      const body = FORMATTERS.slice(fn.index,
+        FORMATTERS.indexOf('\ndef ', fn.index + 5));
+      for (const k of body.matchAll(/\.get\("([a-z_0-9]+)"/g)) keys.add(k[1]);
+      for (const k of body.matchAll(/"([a-z_0-9]+)" (?:not )?in d\b/g)) {
+        keys.add(k[1]);
+      }
+    }
   } else {
     const branch = pdfBranch(logType);
     for (const m of branch.matchAll(

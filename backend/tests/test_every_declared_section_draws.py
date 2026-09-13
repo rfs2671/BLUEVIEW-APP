@@ -60,8 +60,22 @@ _PROJECT = {"_id": "p1", "name": "Site", "address": "1 Test Street",
 _STROKES = [[{"x": 1, "y": 2}, {"x": 30, "y": 20}]]
 
 
+#: PATHS THAT ARE A BINDING, NOT A FIELD.
+#:
+#: `weather_line` and `vibration_status` are handed the WHOLE `data` map,
+#: because their answer needs several keys at once -- a threshold, a reading,
+#: and the flag saying the comparison was made. So the declaration names the
+#: path `data`, and a builder that treats every declared path as a field wrote
+#: the string "Recorded value" OVER the record's data map. Everything
+#: downstream then read a string where a dict belongs, and the first thing to
+#: touch it raised `'str' object has no attribute 'get'`.
+_BINDINGS = {"data", ""}
+
+
 def _put(doc: dict, path: str, value):
     """Set a dotted path, creating the maps on the way down."""
+    if str(path) in _BINDINGS:
+        return
     parts = [p for p in str(path).split(".") if p and p != "."]
     if not parts:
         return

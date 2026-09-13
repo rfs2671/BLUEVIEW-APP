@@ -322,6 +322,44 @@ ROW_FORMATTER_FNS = {"cp_headcount": cp_headcount,
                      "osha_cert_type": osha_cert_type}
 
 
+def _row_survives(row, sec) -> bool:
+    """Whether one stored row is a ROW, or a seed the CP never filled.
+
+    ── TWO TESTS, AND THE SECOND ONE IS WHY A FAILED SLUMP STAYS ─────────
+
+    `row_requires` tests a VALUE. The editors seed `{address: ""}`, so every
+    seeded row CARRIES the key and testing presence would pass all of them
+    through -- that mistake was made once already, by an agent, and caught by
+    its own comparison.
+
+    `row_requires_present` tests PRESENCE AND NOT-NULL, and it exists because
+    the value test is wrong for a tri-state. A concrete slump test seeds `pass`
+    as null; a recorded **False** is a FAILED TEST, and `str(False or "")` is
+    empty -- so a value test drops the failure off a BC 3315 pour record while
+    keeping every passing row. The branch spelled this out:
+
+        if not t and not v and p is None:
+            continue      # an untouched EMPTY_SLUMP_TEST seed
+
+    Three keys, and the third one asked a different question.
+
+    ── OR, NOT AND ─────────────────────────────────────────────────────
+
+    A row survives if EITHER test finds something. That is the branch's shape:
+    it drops a row only when the time is blank AND the value is blank AND the
+    verdict was never recorded. A row is a claim about one event, and any one
+    of its fields carrying something makes it an event somebody logged.
+    """
+    need = sec.get("row_requires")
+    if need and any(str(_get(row, k) or "").strip() for k in need):
+        return True
+    need_p = sec.get("row_requires_present")
+    if need_p and any(_has(row, k) and _get(row, k) is not None
+                      for k in need_p):
+        return True
+    return not (need or need_p)
+
+
 def table(sec: Dict, records: List, ctx: Dict) -> str:
     """Dense, with a REPEATING HEADER and rows that cannot split.
 
@@ -350,14 +388,9 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
     # identify, with ZERO WORDS LOST to a text diff because a blank row adds
     # no words.
     #
-    # A VALUE, NOT A KEY. The editors seed `{address: ""}`, so every seeded row
-    # CARRIES the key -- testing presence would pass every one of them
-    # through. That mistake was made once already, by an agent, and caught by
-    # its own comparison.
-    _need = sec.get("row_requires")
-    if _need:
-        records = [r for r in records
-                   if any(str(_get(r, k) or "").strip() for k in _need)]
+    # SEE `_row_survives` for why there are two tests and why they are ORed.
+    if sec.get("row_requires") or sec.get("row_requires_present"):
+        records = [r for r in records if _row_survives(r, sec)]
 
     body = ""
     for idx, rec in enumerate(records, start=1):

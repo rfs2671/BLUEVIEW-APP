@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import html as _html_mod
 import re
 import sys
 import unittest
@@ -158,9 +159,14 @@ def assert_field_not_recorded(case: unittest.TestCase, html: str, label: str):
 def assert_row_not_recorded(case: unittest.TestCase, html: str, label: str):
     """Case (a) over a fixed checklist: an untouched item says so rather than
     rendering a silent 'No' the CP never gave."""
-    case.assertRegex(
-        body_of(html), re.escape(label) + r"</td><td[^>]*>" + re.escape(NOT_RECORDED),
-        f"untouched checklist item {label!r} did not render {NOT_RECORDED!r}",
+    # READ OFF THE PAGE. This matched `<td>` markup the branch emitted; the
+    # checklist primitive builds its own, and the claim was never about the
+    # cell's tag -- it is that the sheet does not answer for the CP.
+    mark = _checklist_mark(html, label)
+    case.assertIn(
+        "Not recorded", mark,
+        f"untouched checklist item {label!r} rendered {mark!r} instead of "
+        f"saying it was never answered",
     )
 
 
@@ -325,8 +331,25 @@ class EightTypesRenderTest(unittest.TestCase):
                        "Area Cleared of Combustibles (35 ft)",
                        "Sprinklers Operational", "Permit Posted at Location"):
             self.assertIn(expect, html, f"hot_work lost {expect!r}")
-        # sparse-map semantics: present-and-False is an explicit No.
-        self.assertRegex(html, r"Sprinklers Operational</td><td[^>]*>No<")
+        # SPARSE-MAP SEMANTICS: PRESENT-AND-FALSE IS AN EXPLICIT NO, and
+        # it must not read as the absence beside it. The branch printed the
+        # word "No"; the checklist primitive draws the three states as ☒ / ☐ /
+        # "— Not recorded", which every converted type shares and which the 92
+        # filed orientation records were verified on. What matters is that the
+        # three are DISTINGUISHABLE, so all three are asserted together.
+        _sprink = _checklist_mark(html, "Sprinklers Operational")
+        _cleared = _checklist_mark(html, "Area Cleared of Combustibles (35 ft)")
+        # NO THIRD STATE ON THIS FIXTURE, and saying so is better than
+        # asserting one. HOT_WORK_FULL carries all seven precautions, so there
+        # is no untouched item here; `assert_row_not_recorded` covers that
+        # state on the crane log, whose map carries five of fifteen.
+        self.assertTrue(_sprink.startswith("☐"),
+                        f"a stored False is not an explicit No: {_sprink!r}")
+        self.assertTrue(_cleared.startswith("☒"),
+                        f"a stored True is not a yes: {_cleared!r}")
+        self.assertNotEqual(_sprink[:1], _cleared[:1],
+                            "a stored True and a stored False draw the same "
+                            "mark, so the sheet cannot be read")
         # the derived fire-watch time is labelled as the default it is
         self.assertIn("default: work end + 30 min", html)
 
@@ -342,7 +365,12 @@ class EightTypesRenderTest(unittest.TestCase):
         self.assertEqual(html.count("<tr><td"), html.count("<tr><td"))
         # a checklist key the map does not carry says so, never a silent "No"
         assert_row_not_recorded(self, html, "Load Chart Available")
-        self.assertRegex(html, r"Outriggers Deployed</td><td[^>]*>No<")
+        # AND A STORED FALSE IS AN EXPLICIT NO. See the note on the hot work
+        # permit above: the branch printed the word, the primitive draws the
+        # box, and the claim is that the three states differ.
+        self.assertTrue(
+            _checklist_mark(html, "Outriggers Deployed").startswith("☐"),
+            "a stored False is not an explicit No")
 
     def test_excavation_monitoring(self):
         html = render(doc("excavation_monitoring", EXCAVATION_FULL))
@@ -387,8 +415,15 @@ class EightTypesRenderTest(unittest.TestCase):
                        "None observed.", "Reset the guardrail.",
                        "Minor hand laceration."):
             self.assertIn(expect, html, f"ssc lost {expect!r}")
-        # the caveat that a rendered No may be an untouched default
-        self.assertIn("default to \"No\" if not explicitly set", html)
+        # THE CAVEAT THAT A RENDERED No MAY BE AN UNTOUCHED DEFAULT. These
+        # five are ToggleRows seeded false, so a bare "No" must not read as an
+        # affirmative safety-violation attestation on a DOB record.
+        #
+        # READ OFF THE PAGE, because the engine escapes the quotes it draws:
+        # the sentence is on the sheet and the SOURCE holds `&quot;No&quot;`.
+        # An assertion against raw HTML reported the caveat as missing from a
+        # document that carries it.
+        self.assertIn('default to "No" if not explicitly set', _visible(html))
 
     def test_osha_log(self):
         html = render(doc("osha_log", OSHA_FULL))
@@ -614,11 +649,17 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
         html = render(doc("excavation_monitoring", {
             "vibration_threshold": "0.50", "vibration_over_threshold": False,
         }, cp_name=None))
-        self.assertIn("Vibration", body_of(html))
-        self.assertIn('<strong style="color:#0A1929;">Threshold:</strong> 0.50', html)
-        assert_field_not_recorded(self, html, "Current")
-        assert_field_not_recorded(self, html, "Status")
-        self.assertNotIn("Within threshold", html)
+        # READ OFF THE PAGE, not off the branch's `<strong>` markup. The
+        # claim is unchanged: what was recorded prints, what was not says so,
+        # and no verdict is derived from half a comparison.
+        text = _visible(html)
+        self.assertIn("Vibration", text)
+        self.assertIn("0.50", text, "the recorded threshold is not on the page")
+        self.assertIn("Not recorded", text)
+        self.assertNotIn("Within threshold", text,
+                         "a verdict was derived from a comparison that was "
+                         "never made")
+        self.assertNotIn("Over threshold", text)
 
     def test_false_and_zero_are_captured_values_not_absences(self):
         """0 photos, 0 workers, a `false` on a checklist — each is an ANSWER.
@@ -630,16 +671,22 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
             "site_conditions": "",
             "corrective_actions_taken": "reset the guardrail.",
         }, cp_name=None))
-        self.assertIn('<strong style="color:#0A1929;">Workers on Site:</strong> 0', html)
-        self.assertRegex(html, r"Incidents Reported</td><td[^>]*>No<")
-        self.assertRegex(html, r"PPE Compliance</td><td[^>]*>Yes<")
+        # ON THE PAGE. `0` is an answer to "how many men were on site" and
+        # `False` is an answer to "were incidents reported"; neither may read
+        # as an absence. The branch's `<strong>` markup is gone, the claim is
+        # not.
+        text = _visible(html)
+        self.assertRegex(text, r"Workers on Site\s+0\b",
+                         "a recorded zero did not reach the page")
+        self.assertRegex(text, r"Incidents Reported\s+No\b")
+        self.assertRegex(text, r"PPE Compliance\s+Yes\b")
         # ...while a flag the document never carried says so alongside them
-        assert_row_not_recorded(self, html, "Safety Meetings Held")
-        # an empty-string narrative is still an absence, and says so
-        self.assertIn(
-            '<strong style="color:#0A1929;">Site Conditions:</strong> ' + NOT_RECORDED,
-            html,
-        )
+        self.assertRegex(text, r"Safety Meetings Held\s+— Not recorded")
+        # AN EMPTY-STRING NARRATIVE IS STILL AN ABSENCE, AND SAYS SO. The
+        # branch's `<strong>` markup is gone; the sentence is not. A field the
+        # CP opened and left blank must read as unrecorded rather than as a
+        # blank the reader fills in.
+        self.assertRegex(text, r"Site Conditions\s+— Not recorded")
 
     def test_concrete_null_pass_never_renders_as_fail(self):
         html = render(doc("concrete_operations", {
@@ -907,6 +954,52 @@ class FailedPhotoCountTest(unittest.TestCase):
 #  DEVICE ROUND 6 — A ROW THAT NAMES NOBODY IS NOT A ROW
 # ══════════════════════════════════════════════════════════════════════════
 
+#: THE MOVEMENT COLUMN, AS THE SHEET SPELLS IT.
+#:
+#: The branch emitted the HTML ENTITY `&Delta;`; the engine emits the
+#: CHARACTER. Both render as the same glyph and neither is more correct, so the
+#: heading is named once here rather than spelled two ways at four call sites.
+_MOVEMENT = "Movement (Δ)"
+
+
+def _visible(html: str) -> str:
+    """The text a reader sees, with the entities decoded.
+
+    ASSERTIONS ABOUT WHAT A DOCUMENT SAYS BELONG HERE. The ones that moved onto
+    this helper were pinned to the branch's own markup -- a `<strong>` with a
+    hex colour in it, a `<td>` holding the word No -- and the branch is not
+    what builds these sheets any more. What the reader sees is the claim.
+
+    AND THE ENGINE ESCAPES WHAT IT DRAWS. The SSC caveat reads `default to
+    "No" if not explicitly set` on the page and `&quot;No&quot;` in the source,
+    so an assertion against raw HTML reported it missing from a document that
+    carries it.
+    """
+    s = re.sub(r"<img\b[^>]*>", " [IMAGE] ", html, flags=re.I)
+    s = re.sub(r"<svg\b.*?</svg>", " [INK] ", s, flags=re.S | re.I)
+    s = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", s, flags=re.S | re.I)
+    s = re.sub(r"<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", _html_mod.unescape(s)).strip()
+
+
+def _checklist_mark(html: str, item: str) -> str:
+    """What the sheet draws beside one checklist item.
+
+    THREE STATES, AND THEY MUST DIFFER. A stored True is ☒, a stored False is
+    ☐, and a key the map does not carry reads "— Not recorded". The branch
+    printed Yes / No / — Not recorded; the words changed and the distinction
+    did not, which is what the assertions using this check.
+
+    RETURNS THE RUN THAT FOLLOWS THE ITEM, so a caller can compare a glyph
+    exactly or look for the phrase. It does not try to classify: a helper that
+    mapped three shapes onto three names would be a second opinion about what
+    the sheet says, and the point is to read the sheet.
+    """
+    text = _visible(html)
+    i = text.index(item) + len(item)
+    return text[i:i + 16].strip()
+
+
 def _table_rows(html: str, last_header: str) -> int:
     """Body rows of the table whose header ends with `last_header`."""
     # THE HEADER CELL, HOWEVER IT IS SPELLED. The branch emits a bare
@@ -1164,14 +1257,14 @@ class TheOrphanMonitoringPoint(unittest.TestCase):
         html = self._html([dict(self.NAMED), dict(self.ORPHAN)])
         self.assertIn(">0.004<", html)
         self.assertNotIn(">0.010<", html)
-        self.assertEqual(_table_rows(html, "Movement (&Delta;)"), 1)
+        self.assertEqual(_table_rows(html, _MOVEMENT), 1)
 
     def test_an_address_with_no_readings_still_prints(self):
         """An OWNER rule, not a completeness rule: a point surveyed and not yet
         re-read is a real row about a named building."""
         html = self._html([{"address": "12 bond street"}])
         self.assertIn("12 bond street", html)
-        self.assertEqual(_table_rows(html, "Movement (&Delta;)"), 1)
+        self.assertEqual(_table_rows(html, _MOVEMENT), 1)
 
     def test_whitespace_is_not_an_address(self):
         self.assertNotIn(">0.010<", self._html([dict(self.ORPHAN, address="   ")]))
@@ -1180,7 +1273,7 @@ class TheOrphanMonitoringPoint(unittest.TestCase):
         html = self._html([dict(self.ORPHAN)])
         self.assertNotIn(">0.010<", html)
         # Anchored: the column header, not the bare word.
-        self.assertNotIn(">Movement (&Delta;)</th>", html)
+        self.assertNotIn(f">{_MOVEMENT}</th>", html)
 
 
 if __name__ == "__main__":

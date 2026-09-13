@@ -87,9 +87,59 @@ def _doc(log_type: str, data: dict) -> dict:
 #: EMITS -- the @page box, the wrapper release, the shell-row exemption. The
 #: engine builds its own document with its own stylesheet, so a converted type
 #: contains none of it and the specimen has to be one the chain still renders.
-_BRANCHED = sorted(set(_ALL_TYPES) - set(legal_render.CONVERTED_TYPES))
-assert _BRANCHED, (
-    "every logbook type is converted, so nothing renders through "
+# ── THE CHAIN IS STILL THERE; NOTHING ROUTES TO IT ────────────────────────
+#
+# Every type is declared, so `_ALL_TYPES - CONVERTED_TYPES` is EMPTY. The
+# branches are NOT gone: the dispatch's rule is that a converted type's arm is
+# deleted in the change AFTER its conversion, once the sheet has rendered in
+# production and been read, and that is what keeps the rollback a one-line
+# revert.
+#
+# SO THE SPECIMEN IS TAKEN THE WAY THE ROLLBACK WOULD BE, by removing the type
+# from CONVERTED_TYPES for one render. A claim about the branch renderer is a
+# claim about what a rollback produces.
+def _through_the_branch(log_type, data):
+    keep = legal_render.schema.CONVERTED_TYPES
+    names = frozenset(set(keep) - {log_type})
+    legal_render.schema.CONVERTED_TYPES = names
+    legal_render.CONVERTED_TYPES = names
+    try:
+        html = render(_doc(log_type, data))
+    finally:
+        legal_render.schema.CONVERTED_TYPES = keep
+        legal_render.CONVERTED_TYPES = keep
+    assert "PROJECT RECORD" not in html, (
+        f"{log_type} has no branch left, so this is the ENGINE's sheet and "
+        f"every rule in this file is about a stylesheet that no longer runs. "
+        f"RETIRE THIS FILE -- do not repoint it at a converted type.")
+    return html
+
+
+def _types_with_an_arm():
+    """The types whose arm is still in the per-type chain.
+
+    AN ARM DELETED IS NOT THE SAME AS AN ARM NOTHING REACHES. Every type is
+    declared now, so the chain never runs -- but six arms are still there for
+    one more change, and that is what a rollback falls back to.
+
+    `daily_jobsite` HAS NO ARM, and that is the trap this closes: rolling it
+    back reached the GENERIC arm, which renders a title and the word Status.
+    The assertion that the result was not the engine's sheet passed, because
+    the generic arm is not the engine either. It was the wrong branch, not no
+    branch.
+
+    FOUND, NEVER NAMED, and anchored after the dispatch -- `if log_type ==
+    "preshift_signin"` also appears ABOVE it, where the caller resolves what a
+    synchronous renderer cannot await.
+    """
+    import re as _re
+    src = Path(server.__file__).read_text(encoding="utf-8")
+    i = src.index("if log_type in legal_render.CONVERTED_TYPES:")
+    return _re.findall(r'\n    (?:el)?if log_type == "(\w+)":', src[i:])
+
+_ARMED = _types_with_an_arm()
+assert _ARMED, (
+    "the per-type chain has no arms at all, so nothing renders through "
     "generate_single_logbook_html's own document shell and this whole file "
     "has no subject. RETIRE IT -- the @page box, the 700px release and the "
     "shell-row exemption all belong to a renderer that no longer runs. Do "
@@ -97,8 +147,8 @@ assert _BRANCHED, (
     "different one and every assertion here would be about the wrong "
     "document.")
 
-HTML = render(_doc(_BRANCHED[0], {"topic": "Ladder safety",
-                                  "attendees": [{"name": "A Rivera"}]}))
+HTML = _through_the_branch(_ARMED[0], {"topic": "Ladder safety",
+                                       "attendees": [{"name": "A Rivera"}]})
 
 #: A SECOND SPECIMEN, BECAUSE THE FIRST NEVER REACHED THE CODE UNDER TEST.
 #: `sub_title` is the only source of <h3> in this renderer and it is called from
@@ -107,8 +157,17 @@ HTML = render(_doc(_BRANCHED[0], {"topic": "Ladder safety",
 #: specimen that does not exercise the subject reports on nothing. Written down
 #: rather than quietly repaired, because it is the third time this shape has
 #: produced a misleading run in this repo.
-HTML_H3 = render(_doc("crane_operations",
-                      {"load_entries": [{"time": "07:30", "description": "steel"}]}))
+#: THROUGH THE ROLLBACK, LIKE `HTML` ABOVE. `sub_title` is the only source of
+#: `<h3>` in this renderer and the engine emits none, so a specimen rendered
+#: the ordinary way reports the heading rule as broken when the rule is intact
+#: -- which is the same "specimen that does not exercise the subject" this
+#: file's own note describes, arriving a fourth time.
+#:
+#: A DIFFERENT ARM FROM `HTML`, deliberately: one carries a checklist and this
+#: one a table, and `sub_title` is called from both.
+HTML_H3 = _through_the_branch(
+    _ARMED[1] if len(_ARMED) > 1 else _ARMED[0],
+    {"load_entries": [{"time": "07:30", "description": "steel"}]})
 
 def _decommented(html: str) -> str:
     """CSS COMMENTS STRIPPED.

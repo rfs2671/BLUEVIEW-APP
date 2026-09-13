@@ -136,7 +136,15 @@ DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 #: filed records across seven types, 0 raised, 0 making a claim the record does
 #: not support. The window is shut and the census below refuses every overlap
 #: again.
-IN_FLIGHT = set()
+#: SIX, AND THIS IS THE LAST TIME THIS SET IS NOT EMPTY. The final six types
+#: render through the engine in this change and keep their branches for exactly
+#: one more, which is what makes the rollback a one-line revert. The change
+#: after this one deletes them and empties this set for good -- and at that
+#: point the chain has no arms at all, which several floors in this suite are
+#: written to announce rather than fail quietly over.
+IN_FLIGHT = {"hot_work", "crane_operations", "concrete_operations",
+             "excavation_monitoring", "fall_protection",
+             "ssc_daily_safety_log"}
 
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):
@@ -166,7 +174,12 @@ class TheCensusFoundSomethingToCompare(unittest.TestCase):
         """THE STRONGER HALF, which is available now that the census reads the
         chain and nothing else: the arms remaining are EXACTLY the types with
         no schema. Not a floor -- the real number, whatever it is."""
-        self.assertEqual(sorted(BRANCHED), sorted(DEFINED - CONVERTED))
+        # PLUS THE ONES MID-CONVERSION. An arm survives its conversion by
+        # exactly one change -- that is what makes the rollback a one-line
+        # revert -- so during the window the chain carries the unconverted
+        # types AND the in-flight ones, and nothing else.
+        self.assertEqual(sorted(BRANCHED),
+                         sorted((DEFINED - CONVERTED) | IN_FLIGHT))
 
     def test_the_schema_list_was_read(self):
         self.assertGreaterEqual(len(CONVERTED), 1)

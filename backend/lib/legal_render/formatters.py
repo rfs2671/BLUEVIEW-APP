@@ -443,6 +443,30 @@ def raw_name(v: Any) -> str:
     return _html.escape(s[0].upper() + s[1:])
 
 
+def fire_watch_default(v: Any) -> str:
+    """A fire-watch end time, LABELLED AS THE COMPUTED DEFAULT IT IS.
+
+    THE EDITOR CAPTURES NO REAL FIRE-WATCH END. `hotWorkModel.calcFireWatchEnd`
+    derives it as work end + 30 minutes, and nobody on site is asked for it. So
+    a bare "14:30" under a heading reading "Fire Watch Until" is a watch-until
+    somebody set, on an FDNY 3504 permit, and FDNY can require 60.
+
+    THE BRANCH SAID SO AND THE FIRST DECLARATION DID NOT. Bound to
+    `time_of_day` the qualifier came off the permit and the old-against-new
+    comparison reported `default` and `min` as words the old sheet had. The
+    request was filed with the declaration; this is it.
+
+    ABSENT READS AS ABSENT, not as a default of nothing. A permit with no work
+    end has no derived watch-until either, and printing "(default: work end +
+    30 min)" beside nothing would assert a computation that did not happen.
+    """
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    return (f'{_html.escape(s)} <span style="color:#94a3b8;">'
+            f'(default: work end + 30 min)</span>')
+
+
 def pass_fail(v: Any) -> str:
     """A tri-state verdict. NULL IS NOT A PASS AND NEVER A FAIL.
 
@@ -621,6 +645,7 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "answer": answer,
     "raw_name": raw_name,
     "pass_fail": pass_fail,
+    "fire_watch_default": fire_watch_default,
     "tick_or_blank": tick_or_blank,
     "inspection_result": inspection_result,
     "vibration_status": vibration_status,

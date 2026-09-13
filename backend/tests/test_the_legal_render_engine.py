@@ -58,11 +58,52 @@ ALL_TYPES = ("daily_jobsite", "toolbox_talk", "preshift_signin", "hot_work",
 #: SO IT IS DERIVED. Whatever type the chain still renders is the specimen, and
 #: the conversion that takes the last one is caught by the floor below rather
 #: than by six confusing failures.
-_STILL_BRANCHED = sorted(set(ALL_TYPES) - set(legal_render.CONVERTED_TYPES))
+#: THE TYPES WHOSE BRANCH STILL EXISTS, EVEN THOUGH NOTHING REACHES IT.
+#:
+#: Every type is declared now, so `ALL_TYPES - CONVERTED_TYPES` is EMPTY and
+#: the old derivation had no specimen to offer. The branches are still in
+#: server.py: the dispatch's own rule is that a converted type's arm is deleted
+#: in the change AFTER its conversion, once the sheet has rendered in
+#: production and been read, and that is what keeps the rollback a one-line
+#: revert.
+#:
+#: SO THE SPECIMEN IS OBTAINED THE WAY THE ROLLBACK WOULD BE: by taking the
+#: type out of CONVERTED_TYPES for one render. That is not a trick -- it is the
+#: exact operation the rollback performs, and a claim about the branch renderer
+#: is a claim about what happens when somebody performs it.
+#:
+#: WHEN THE BRANCHES GO, THIS STOPS WORKING AND SHOULD. `_branch_specimen`
+#: raises rather than returning a sheet the engine built, and the floor below
+#: says what that means: the branch-side claims in this file have lost their
+#: subject and are to be retired, not repointed.
+_BRANCHED = ALL_TYPES[0]
 
-#: The one the branch-side assertions use. Named once so a reader can see
-#: which document a failure is about.
-_BRANCHED = _STILL_BRANCHED[0] if _STILL_BRANCHED else None
+
+def _render_through_the_branch(log_type=None, **kw):
+    """One document, rendered by the CHAIN, with the type rolled back.
+
+    REFUSES RATHER THAN FALLING BACK. If the arm is gone the engine renders it
+    and the result would look like a branch document to every assertion that
+    only reads words -- which is precisely the silence this file exists to
+    refuse.
+    """
+    t = log_type or _BRANCHED
+    keep = legal_render.schema.CONVERTED_TYPES
+    names = frozenset(set(keep) - {t})
+    legal_render.schema.CONVERTED_TYPES = names
+    legal_render.CONVERTED_TYPES = names
+    try:
+        html = _render(t, **kw)
+    finally:
+        legal_render.schema.CONVERTED_TYPES = keep
+        legal_render.CONVERTED_TYPES = keep
+    if "PROJECT RECORD" in html:
+        raise AssertionError(
+            f"{t} has no hand-written branch left, so this rendered through "
+            f"the ENGINE. That is the end of the migration, not a broken "
+            f"test: every branch-side claim in this file has lost its subject "
+            f"and should be RETIRED rather than repointed at a converted type.")
+    return html
 
 _PROJECT = {"_id": "p1", "name": "588 Thomas",
             "address": "588 Thomas S Boyland Street",
@@ -273,14 +314,16 @@ class TheComparisonIsRepeatable(unittest.TestCase):
         them; do not repoint them at a converted type, which would make each
         one quietly assert the opposite of what it says.
         """
-        self.assertTrue(
-            _STILL_BRANCHED,
-            "every type is converted, so nothing renders through the chain "
-            "and the branch-side claims in this file have no subject left")
+        # THE FLOOR MOVED FROM "IS THERE AN UNCONVERTED TYPE" TO "IS THERE
+        # A BRANCH". Every type is converted now and the branches are still
+        # there for one more change -- that IS the rollback -- so the question
+        # the assertions below need answered is whether the chain can still
+        # render, not whether anything routes to it.
+        _render_through_the_branch()
 
     def test_two_renders_with_the_clock_frozen_are_identical(self):
-        a = _render(_BRANCHED)
-        b = _render(_BRANCHED)
+        a = _render_through_the_branch()
+        b = _render_through_the_branch()
         self.assertEqual(a, b,
                          "this renderer is not deterministic even with the "
                          "clock frozen, so no byte-for-byte comparison of it "
@@ -289,8 +332,8 @@ class TheComparisonIsRepeatable(unittest.TestCase):
     def test_and_WITHOUT_freezing_they_differ_only_in_length_preserving_ways(self):
         """The trap itself, executed. `gen_time` is why an unfrozen comparison
         reads as a total regression: same length, different bytes."""
-        a = _render(_BRANCHED, freeze=False)
-        b = _render(_BRANCHED, freeze=False)
+        a = _render_through_the_branch(freeze=False)
+        b = _render_through_the_branch(freeze=False)
         if a != b:
             self.assertEqual(len(a), len(b),
                              "the renders differ in LENGTH as well, so the "
@@ -315,7 +358,7 @@ class TheComparisonIsRepeatable(unittest.TestCase):
         loudly on the day that happens, rather than letting this quietly
         assert nothing.
         """
-        self.assertIn("FROZEN", _render(_BRANCHED))
+        self.assertIn("FROZEN", _render_through_the_branch())
 
     def test_a_renderer_that_stamps_a_clock_still_exists(self):
         """THE GUARD ON THE GUARD ABOVE.
@@ -325,7 +368,7 @@ class TheComparisonIsRepeatable(unittest.TestCase):
         the signal to retire it rather than to repoint it again. Named here so
         that failure arrives as a sentence instead of a puzzle.
         """
-        self.assertIn("Generated on", _render(_BRANCHED))
+        self.assertIn("Generated on", _render_through_the_branch())
 
     def test_the_freeze_reaches_the_ENGINE_sheet_too(self):
         """THE ENGINE'S HALF, AND IT IS A DIFFERENT ROUTE.
@@ -447,8 +490,8 @@ class TheEngineReadsNoClock(unittest.TestCase):
         """THE CONTRAST, so the claim above is not true of everything and
         therefore says nothing. A branch-rendered document stamps its
         generation time and two unfrozen renders of it differ."""
-        a = _render(_BRANCHED, freeze=False)
-        b = _render(_BRANCHED, freeze=False)
+        a = _render_through_the_branch(freeze=False)
+        b = _render_through_the_branch(freeze=False)
         if a == b:
             self.skipTest("two unfrozen branch renders landed in the same "
                           "second; the contrast is real but not observable "

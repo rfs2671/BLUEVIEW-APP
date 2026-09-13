@@ -1882,6 +1882,69 @@ false, which is where every one of these has lived.
 
 ---
 
+### Instance 22: exit codes, never output patterns
+
+**Where:** my own sweep of the frontend suite, and it is the fifth instance of
+the crash-before-assert shape — this time at the RUNNER level.
+
+    for f in $(find src app -name '*.test.cjs'); do
+      out=$(node "$f" 2>&1)
+      if echo "$out" | grep -q "^  FAIL"; then ...    # <-- here
+    done
+
+`toolboxTalkModel.test.cjs` threw `ReferenceError: branch is not defined` at
+import. It printed no `FAIL` line, because it never reached an assertion. The
+sweep reported the file clean and I reported the suite green; CI caught it.
+
+**A test file that crashes is more broken than one that fails, and the sweep
+was only looking for the second.**
+
+**The rule.** *A runner's verdict is its EXIT CODE. Never a pattern in its
+output.* An output pattern can only see the failures a program lived long
+enough to report — an import error, a syntax error, a missing module, a
+segfault and a timeout all produce silence that reads as success.
+
+**And the corollary that made this worth writing down twice.** Re-run by exit
+code, 62 of 157 frontend files exit non-zero on this machine and 61 of them are
+`Cannot find module '@babel/core'` — a missing dev dependency, unchanged from
+main. So the exit code alone is not the answer either: it has to be read
+against a BASELINE of what already fails, or a sweep that is correct reports 62
+disasters and gets ignored.
+
+**The practice.** Exit codes for the verdict, a known-failing set for the
+noise, and the set is named in the sweep rather than carried in somebody's
+head.
+
+---
+
+### Instance 23: a decorator is silently transferable to whatever follows it
+
+**Where:** `test_report_cover_is_not_blank.py`, inserting a helper.
+
+    @unittest.skipIf(HTML is None and not os.environ.get("CI"), ...)
+    def _types_with_an_arm():          # <-- the helper landed here
+        ...
+
+    class TheCoverCarriesTheFirstSection(unittest.TestCase):
+
+The patch anchored on `class TheCoverCarriesTheFirstSection` and inserted
+above it. That put the new function between the `skipIf` decorator and the
+class it guards, so the decorator applied to the FUNCTION and the class was
+left unguarded — and five tests that had been skipping for want of WeasyPrint
+tried to render PDFs and failed.
+
+**The rule.** *An anchor on `class X` or `def X` is not an anchor on the top of
+X.* A decorated definition begins at its first decorator, and there is nothing
+between a decorator and its target to anchor against.
+
+**Why it is cheap to get wrong and cheap to catch.** It failed loudly — five
+red tests — which is the good case. The bad case is the opposite insertion: a
+decorator that was doing nothing quietly starts applying to a test, and a
+`skipIf` silently skipping is exactly the shape §12 is full of. Anchor on the
+decorator when there is one.
+
+---
+
 ## 15. Work that is DONE and not PROPOSED does not exist
 
 Every other section in this document is about a check that fails to detect
