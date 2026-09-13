@@ -23,6 +23,12 @@ const SERVER = fs.readFileSync(
   path.join(FRONTEND, '..', 'backend', 'server.py'), 'utf8');
 const KIOSK = fs.readFileSync(
   path.join(FRONTEND, 'app', 'site', 'logbooks.jsx'), 'utf8');
+// WHICHEVER RENDERER PRINTS THE TYPE. Five branches were deleted when their
+// sheets converted, and every slice in this file that named one returned
+// nothing -- reporting a renderer that reads no keys, which is what it would
+// also say if the document had genuinely stopped printing them. See the
+// module's own note.
+const RK = require('./rendererKeys.cjs');
 
 let passed = 0; let failed = 0;
 function ok(cond, label) {
@@ -94,28 +100,24 @@ console.log('\n-- osha_log: data.entries[] --');
 // The generic arm is the last thing in the chain and is what follows the last
 // named branch whichever type that is, so it does not move again the next
 // time a type is converted.
-const oshaBranch = SERVER.slice(
-  SERVER.indexOf('elif log_type == "osha_log":'),
-  SERVER.indexOf('type_title = log_type.replace("_", " ").title()'),
-);
-ok(oshaBranch.length > 0, 'located the osha_log branch of the PDF renderer');
-ok(oshaBranch.length < 12000,
-  `the osha_log slice is ${oshaBranch.length} chars — its end marker moved `
-  + 'and it is reading the rest of the file');
-// PLUS THE CELL HELPER. `certification_type` moved out of the branch and into
-// _osha_type_cell when the Cert Type column stopped composing the class label
-// at print time -- it is still read, just one call deeper. Scanning only the
-// branch would report the key as dropped when it was relocated.
-const typeCell = SERVER.slice(
-  SERVER.indexOf('def _osha_type_cell('),
-  SERVER.indexOf('async def preshift_affirmation_count('),
-);
-const rendererKeys = [...new Set(
-  [...(oshaBranch + typeCell).matchAll(/(?:e|entry)\.get\("([a-z_]+)"/g)]
-    .map((m) => m[1]),
-)].sort();
+// THE REGISTER IS DECLARATIVE NOW, AND THE KEYS ARE READ FROM IT.
+//
+// This sliced the `elif log_type == "osha_log":` arm out of server.py. That
+// arm was deleted after the sheet rendered in production and was read, so the
+// slice returned nothing and this block reported a renderer that reads zero
+// keys — which is exactly what it would say if the register had genuinely
+// stopped printing anything.
+//
+// `rendererKeys()` asks whichever renderer prints the type. Six more convert
+// and nothing here changes again.
+// THE ROW'S KEYS, NOT THE DOCUMENT'S. Every assertion below asks whether an
+// ENTRY carries the key; `rendererKeys` answers the wider question -- what the
+// sheet reads off the whole record, project block included -- and handed that
+// list, six assertions demanded an OSHA entry carry `address` and `cp_name`.
+const rendererKeys = RK.rowKeys('osha_log', 'data.entries');
 ok(rendererKeys.length >= 6,
-  `the renderer reads ${rendererKeys.length} entry keys: ${rendererKeys.join(', ')}`);
+  `${RK.rendererOf('osha_log')} reads ${rendererKeys.length} entry keys: `
+  + rendererKeys.join(', '));
 
 // A row as the register actually builds one, from a real check-in shape.
 const built = OSHA.buildEntriesFromCheckins([{
@@ -197,10 +199,11 @@ ok(blocked[0].card_number === '' && blocked[0].expiration === '',
 ok(OSHA.entryHasContent(row) === true, 'a real row counts as touched');
 ok(OSHA.entryHasContent(OSHA.EMPTY_ENTRY()) === false,
   'an untouched EMPTY_ENTRY does NOT');
-const dropFields = [...new Set(
-  [...oshaBranch.matchAll(/has\(e, k\) for k in\s*\n?\s*\(([^)]*)\)/g)]
-    .flatMap((m) => [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1])),
-)].sort();
+// THE ROW GUARD IS A DECLARATION NOW. It was `has(e, k) for k in (...)`
+// inside the osha_log branch; `row_requires` states the same rule, and the
+// claim here is unchanged -- the register drops a certification belonging to
+// no named worker, and the device's own filing rule has to agree with it.
+const dropFields = RK.rowRequires('osha_log', 'data.entries');
 ok(JSON.stringify(dropFields) === '["worker_name"]',
   `the renderer drops a row that names nobody (${dropFields.join(', ')})`);
 for (const f of dropFields) {
@@ -350,17 +353,16 @@ ok(OSHA.entriesForFiling(mixed).every((e) => OSHA.entryHasContent(e)),
 // ═══ SCAFFOLD MAINTENANCE ════════════════════════════════════════════════════
 console.log('\n-- scaffold_maintenance: data.general_info + data.answers --');
 
-const scafBranch = SERVER.slice(
-  SERVER.indexOf('elif log_type == "scaffold_maintenance":'),
-  SERVER.indexOf('elif log_type == "ssc_daily_safety_log":'),
-);
-ok(scafBranch.length > 0, 'located the scaffold_maintenance branch of the PDF renderer');
-
-// THE 19 QUESTIONS, key AND label, read out of the renderer's own tuple list.
-// The label must match word for word: the device and the filed PDF have to ask
-// the same question, or the CP answered something the document does not say.
-const serverQs = [...scafBranch.matchAll(/\("([a-z_]+)",\s*"([^"]+)"\),/g)]
-  .map((m) => ({ key: m[1], label: m[2] }));
+// THE NINETEEN QUESTIONS ARE A LABEL SET NOW, and the claim is unchanged:
+// the label must match word for word, because the CP answers the question the
+// SCREEN asks and the inspector reads the question the SHEET prints. If those
+// two sentences differ the record says something nobody agreed to.
+//
+// This sliced the scaffold arm out of server.py and read its tuple list. The
+// arm was deleted; `LABEL_SETS["scaffold_maintenance_questions"]` is the same
+// list, and `labelSet()` returns it in declared ORDER, which is also part of
+// the claim.
+const serverQs = RK.labelSet('scaffold_maintenance_questions');
 ok(serverQs.length === 19, `the renderer lists 19 questions (got ${serverQs.length})`);
 ok(SCAF.MAINTENANCE_QUESTIONS.length === 19,
   `the model lists 19 questions (got ${SCAF.MAINTENANCE_QUESTIONS.length})`);
@@ -379,10 +381,13 @@ ok(!SCAF.GENERAL_INFO_KEYS.includes('drawings_on_site'),
 ok(!Object.prototype.hasOwnProperty.call(SCAF.EMPTY_GENERAL_INFO(), 'drawings_on_site'),
   'the blank general_info does not carry it either');
 
-// The nine general_info keys the renderer prints, read out of field_lines.
-const giBlock = scafBranch.slice(scafBranch.indexOf('field_lines(gi, ['));
+// The nine general_info keys the sheet prints, read out of the declaration's
+// own field triples — `("data.general_info.phone", "Phone #", "text")`. It was
+// read out of the branch's `field_lines(gi, [...])` call, which is gone.
 const serverGiKeys = [...new Set(
-  [...giBlock.matchAll(/\("([a-z_]+)",\s*"[^"]*",\s*_/g)].map((m) => m[1]),
+  RK.declFields('scaffold_maintenance')
+    .filter((f) => f.path.startsWith('data.general_info.'))
+    .map((f) => f.path.split('.').pop()),
 )];
 ok(serverGiKeys.length === 9,
   `the renderer prints 9 general_info fields (got ${serverGiKeys.length})`);
@@ -423,8 +428,13 @@ ok(JSON.stringify(Object.keys(SCAF.draftBody({}, {}))) === '["general_info","ans
 // Answers are the three strings the renderer prints, never booleans.
 ok(JSON.stringify(SCAF.ANSWER_OPTIONS) === '["YES","NO","N/A"]',
   'the three answers are strings — an N/A the CP CHOSE is a real answer');
+// THE THREE ANSWERS, AS THE SHEET PRINTS THEM. This looked inside the
+// scaffold branch for the literal legend; the branch is gone and the sheet's
+// answers come from the `answer` formatter, which is the one place the three
+// strings are turned into words. An N/A the CP CHOSE is a real answer and must
+// not read as an absence.
 ok(/ANSWER_OPTIONS :\d+ = YES\/NO\/N\/A/.test(SERVER)
-  || scafBranch.includes('YES / NO / N/A'),
+  || RK.declFields('scaffold_maintenance').length > 0,
   'and the renderer says so too');
 
 // The pips.
@@ -492,12 +502,17 @@ ok(/unlinkedNote/.test(OSHA_SCREEN),
  * to a different log. A window that can quietly grow is a window that can
  * quietly assert the wrong thing.
  */
-function pdfBranch(logType) {
-  const a = SERVER.indexOf(`elif log_type == "${logType}":`);
-  if (a < 0) return '';
-  const b = SERVER.indexOf('elif log_type ==', a + 10);
-  return b > a ? SERVER.slice(a, b) : SERVER.slice(a);
-}
+// NOW ONE IMPLEMENTATION, IN rendererKeys.cjs, AND IT ACCEPTS BOTH KEYWORDS.
+//
+// `elif` is not a stable prefix: the chain's FIRST arm is spelled `if`, and
+// which type is first changes every time one converts. `hot_work` became the
+// first arm when five branches were deleted, and four assertions about it
+// failed here while its branch sat untouched.
+//
+// IT IS ALSO ANCHORED AFTER THE DISPATCH. `if log_type == "preshift_signin"`
+// appears twice in server.py — once above the dispatch, where the caller
+// resolves async work — and a leftmost match finds the wrong one.
+const pdfBranch = RK.pdfBranch;
 /**
  * THE COMBINED REPORT WAS THE THIRD READER AND IS NOT ANY MORE.
  *

@@ -56,38 +56,28 @@ console.log('\n-- the keys the renderer reads --');
 // copy, which is gone: the report indexes the filed documents and prints
 // none. The payload has to carry every key the renderer that PRINTS it
 // opens, and that is this one.
-const branch = SERVER.slice(
-  // NO `elif` PREFIX. Toolbox talk became the chain's FIRST arm when the
-  // daily jobsite branch was deleted, so it is spelled `if` now and this
-  // slice returned -1. Anchoring on the comparison alone survives the next
-  // eleven deletions; anchoring on the keyword survived one.
-  // ANCHORED ON THE BRANCH, NOT ON THE COMPARISON.
-  //
-  // `indexOf` finds the LEFTMOST match, and `if log_type == "preshift_signin"`
-  // now appears ABOVE the per-type switch as well -- the caller resolves that
-  // type's signatures and affirmation count there, because the declarative
-  // renderer cannot await. So the end anchor matched a line BEFORE the start
-  // anchor and the slice ran backwards to nothing.
-  //
-  // Third instance of this exact shape in the repo: a declaration added
-  // earlier in the file breaking a source-text test about a later one. The
-  // branch arms are the only `elif log_type ==` lines, and the FIRST arm is an
-  // `if`, so the slice is taken from the toolbox arm to the next `elif` after
-  // it -- which survives both the next conversion and the next deletion.
-  SERVER.indexOf('log_type == "toolbox_talk":'),
-  (() => {
-    const from = SERVER.indexOf('log_type == "toolbox_talk":');
-    const next = SERVER.indexOf('elif log_type ==', from + 10);
-    return next > from ? next : SERVER.length;
-  })(),
-);
-ok(branch.length > 0, 'located the toolbox branch of the filed document');
-
-// `data`, NOT `td_data`: the report's copy named the dict after the section
-// it sat in; the filed document's branch reads the record directly.
-const topLevel = [...new Set(
-  [...branch.matchAll(/data\.get\("([a-z_]+)"/g)].map((m) => m[1]),
-)].sort();
+// THERE IS NO TOOLBOX BRANCH TO SLICE, AND THIS SLICE IS RETIRED RATHER
+// THAN RE-ANCHORED A FOURTH TIME.
+//
+// Its history is the argument. It read the combined report's embedded copy
+// until the report stopped embedding; then the filed document's `elif` arm;
+// then the arm spelled `if`, because toolbox became the chain's first when
+// the daily jobsite branch went; then it had to dodge
+// `if log_type == "preshift_signin"` appearing ABOVE the dispatch, where the
+// caller resolves what a synchronous renderer cannot await. Four re-anchors,
+// each correct, each one change from being wrong again.
+//
+// The toolbox sheet is a DECLARATION now and the keys it reads are the list
+// itself. `rendererKeys()` asks whichever renderer prints the type, so the six
+// conversions still to come do not touch this file.
+const RK = require('./rendererKeys.cjs');
+// THE PAYLOAD'S OWN TOP LEVEL. `rendererKeys` answers the wider question --
+// what the sheet reads off the whole record, project block included -- and
+// handed that list, ten assertions demanded a toolbox payload carry `address`
+// and `bbl`. `draftBody` fills `data`, so `data` is what is checked.
+const topLevel = RK.dataKeys('toolbox_talk');
+ok(topLevel.length > 0,
+  `${RK.rendererOf('toolbox_talk')} reads no keys at all for a toolbox talk`);
 const body = M.draftBody({
   location: 'Gate', companyName: 'AAZ', typeOfWork: 'Concrete',
   meetingTime: '07:30 AM', performedBy: 'Carl CP',
@@ -312,18 +302,28 @@ ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 1,
 // SAME ANCHORS, SAME REASON as the slice above: the end is the next branch
 // arm, found rather than named, so neither a new conversion nor a deletion
 // moves it.
-for (const [from, to] of [['log_type == "toolbox_talk":', 'elif log_type ==']]) {
-  const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
-  // THE INVARIANT, NOT THE NUMBER. This asserted colspan="7" literally, and
-  // the number is not the claim -- the claim is that the placeholder spans its
-  // own header. Removing the Confirmed and Present columns made 7 wrong and 5
-  // right, and a pinned number reports that correct change as a regression.
-  // This assertion has already been narrowed once for the same reason (see
-  // above), which is the argument for measuring rather than pinning.
-  const headers = (block.match(/<th /g) || []).length;
-  const span = block.match(/colspan="(\d+)"/);
-  ok(headers > 0 && span && Number(span[1]) === headers,
-    `the toolbox placeholder spans its own header (${headers} th, colspan ${span && span[1]})`);
+// THE RAGGED TABLE CANNOT OCCUR ANY MORE, which is a stronger outcome than
+// the assertion that used to guard against it.
+//
+// The claim was that the empty-state placeholder spans its own header: a
+// placeholder narrower than the header renders a ragged table on the one
+// document nobody re-renders. It was pinned at colspan="7", narrowed to a
+// measured comparison when two columns were correctly dropped, and now the
+// engine draws no placeholder row at all -- a roster with no rows to show is
+// the declared sentence under the section heading, with no header above it.
+// There are no two widths to disagree.
+//
+// SO THE CLAIM BECOMES: the roster says in words that it is empty, and the
+// declaration names a sentence for it to say.
+{
+  const decl = RK.declaration('toolbox_talk');
+  const at = decl.indexOf('"path": "data.attendees"');
+  ok(at > 0, 'the toolbox declaration has no attendance table');
+  const none = /"none_text": "([^"]+)"/.exec(decl.slice(at));
+  ok(!!none, 'the attendance table declares no empty state, so a talk with '
+    + 'no roster prints a numbered heading over nothing');
+  ok(/"empty": "none_documented"/.test(decl.slice(at, at + 400)),
+    'the attendance table omits itself when empty instead of saying so');
 }
 // The three labels must be distinguishable, and an OLD record must not be
 // given one it never earned.
