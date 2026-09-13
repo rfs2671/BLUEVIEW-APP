@@ -70,6 +70,56 @@ And one that is not automatable: **the tool reports missing words, not missing
 meaning.** A word that survives in a different sentence still counts as
 present. Read the leftovers; do not just count them.
 
+## The corpus that drops what it cannot resolve
+
+**Read this before building any comparison corpus of your own.** It is the
+sharpest failure of this kind we have hit, because the instrument was correct
+and its INPUT was filtered.
+
+A local corpus of the 59 daily jobsite records was built by pulling each
+record's project document and storing **only the projects that resolved**. Two
+of those records name a `project_id` that is not in the projects collection at
+all. With no entry for it, the test stub's `find_one` fell back to "the first
+project I have" — and handed that substitute to **both** renderers. The diff
+came back clean.
+
+It was not clean. On production those two sheets were omitting the
+project-scoped Site Information section **entirely**, and saying nothing about
+why. Nine of 317 filed records across four types are in that state (defect
+A18).
+
+Three rules follow, and they apply to every corpus built from here:
+
+1. **Do not silently skip a related document that comes back empty.** Record
+   the absence and carry it into the fixture, so the renderer sees what
+   production sees.
+2. **A stub must never substitute a plausible value for a missing one.** A
+   `find_one` that falls back to the first available document makes every
+   missing reference look present, in both halves of the comparison at once.
+3. **Check what the sheet does when a reference is absent.** `empty: "omit"`
+   on a project-scoped section means the section VANISHES, which on the page
+   reads identically to a section that does not apply.
+
+## Six types have no production records, and their fixtures are not derived from data
+
+`ssc_daily_safety_log`, `hot_work`, `concrete_operations`, `crane_operations`,
+`excavation_monitoring` and `fall_protection` have **zero filed records**.
+Nothing in this baseline covers them and nothing ever will.
+
+For those six, a fixture is not a sample of production — it is **constructed**,
+and it is the only evidence those conversions will ever have. A field left out
+of the fixture is a field nobody will notice is missing from the sheet.
+
+**The substitute for a census is the screen that writes the payload.**
+`frontend/app/logbooks/<type>.jsx` is where a field either has a control behind
+it or does not. That check is what catches the class of defect a census would
+otherwise find: the daily jobsite log carried a field on 50 of 59 records,
+non-empty on 0 of 360, printing "N/A" on every filed log ever rendered, because
+the screen declared the state and hydrated it and no control ever set it.
+
+Any fixture file added here must say in its own header whether it was taken
+from real filed records or constructed. A reader will assume the former.
+
 ## It was exercised in both directions before it was needed
 
 `compare.py`'s healthy output is the words *Nothing was lost*.
