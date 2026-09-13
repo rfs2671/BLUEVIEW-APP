@@ -835,6 +835,8 @@ the diff is megabytes of ink.)*
 | 12 | `<ReportFrame />` removed as "the duplicate" | there were two. The one removed was the one a stop-focus CSS rule had been written for, leaving `.stage.report-focus .sheet-front` matching nothing and firing against nothing |
 | 13 | PII scan of a report PDF, `\b\d{7,}\b` for card numbers | SST cards are ALPHANUMERIC — `KSPNNWEFJ4`. The scan reported clean on a document carrying ten of them. Reading page 9 found them |
 | 14 | the orientation control run, 92 of 92 byte-identical | both sides were the new engine. See the lead above — it proved the old branch was unreachable and never asked whether the sheet still said what it used to |
+| 15 | a CI poll that exits when no check is `pending` | the backend suite's row was **not yet in the listing**. Nothing pending, so the loop reported SETTLED on six green checks and the seventh — the one that matters — appeared afterwards, red. Poll for the checks you REQUIRE BY NAME, never for the absence of pending |
+| 16 | a full-suite run that predates the last edit | the suite was green, then two tests were added, then only that one module was re-run, then it was committed. The bare-literal gate caught the new assertion in CI. **A suite run is a claim about the code as it was when it ran** — which is the same sentence as "a green suite is a claim about what RAN", one step further back |
 
 ### Five shapes, and the fourth is the one to fear
 

@@ -672,7 +672,9 @@ export default function SiteLogbooksViewer() {
           {data.project_address && <DocInfoRow icon={MapPin} text={data.project_address} />}
           <DocInfoRow icon={CloudSun} text={`${data.weather || 'N/A'} ${data.weather_temp || ''}${data.weather_wind ? ` — Wind: ${data.weather_wind}` : ''}`} />
           {(data.time_in || data.time_out) && <DocInfoRow icon={Clock} text={`Time In: ${data.time_in || 'N/A'}  |  Time Out: ${data.time_out || 'N/A'}`} />}
-          {data.areas_visited && <DocInfoRow icon={Eye} text={`Areas Visited: ${data.areas_visited}`} />}
+          {/* NO areas_visited ROW. Guarded on truthiness and the value
+              was empty on every record ever filed, so this line has
+              never once rendered. Removed with the field itself. */}
         </View>
 
         {data.general_description && (
