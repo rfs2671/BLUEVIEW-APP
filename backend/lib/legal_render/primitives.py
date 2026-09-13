@@ -68,6 +68,34 @@ from typing import Any, Dict, List
 from .formatters import FORMATTERS, NOT_RECORDED
 from .schema import LABEL_SETS, ROW_FORMATTERS
 
+# THE ATTESTATION REGISTRY IS A LEAF -- typing only, no server import -- so the
+# sentence a signer was SHOWN is referenced rather than retyped.
+#
+# RETYPING IT IS WRONG ON THE FIRST CHARACTER. The registry text is already
+# HTML-escaped and `certification` escapes what it is handed, so a copy turns
+# `worker's` into `worker&#39;s` on the page. And the whole value of that
+# registry is that every signature event stores the exact text the signer read,
+# so a snapshot can be checked against it -- a second copy makes that check a
+# comparison between two guesses.
+try:
+    from ..logbook.attestations import ATTESTATIONS as _ATTESTATIONS
+except Exception:  # pragma: no cover - a caller without the logbook package
+    _ATTESTATIONS = {}
+
+# THE ATTESTATION REGISTRY IS A LEAF -- typing only, no server import -- so the
+# sentence a signer was SHOWN is referenced rather than retyped.
+#
+# RETYPING IT IS WRONG ON THE FIRST CHARACTER. The registry text is already
+# HTML-escaped and `certification` escapes what it is handed, so a copy turns
+# `worker's` into `worker&#39;s` on the page. And the whole value of that
+# registry is that every signature event stores the exact text the signer read,
+# so a snapshot can be checked against it -- a second copy makes that check a
+# comparison between two guesses.
+try:
+    from ..logbook.attestations import ATTESTATIONS as _ATTESTATIONS
+except Exception:  # pragma: no cover - a caller without the logbook package
+    _ATTESTATIONS = {}
+
 # ── THE FOUR WEIGHTS. There are no others. ─────────────────────────────────
 _TITLE = "font:700 20px Helvetica,Arial,sans-serif;letter-spacing:-0.01em"
 _SECTION = ("font:700 10px Helvetica,Arial,sans-serif;letter-spacing:0.08em;"
@@ -179,7 +207,7 @@ def field_grid(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'border:{_RULE};">{cells}</table>')
 
 
-def cp_headcount(row: Any) -> str:
+def cp_headcount(row: Any, ctx: Dict = None) -> str:
     """A crew row's headcount, SAYING WHERE THE NUMBER CAME FROM.
 
     A daily 3301.2 log carries two headcounts from two provenances: the gate
@@ -217,10 +245,81 @@ def cp_headcount(row: Any) -> str:
     return _html.escape(f"{text} (CP) - gate recorded {gate_text}")
 
 
+def preshift_signature(row: Any, ctx: Dict = None) -> str:
+    """A worker's sign-in mark, in three states, from three keys off one row.
+
+    THE THREE ARE DIFFERENT CLAIMS and the old renderer drew all three:
+
+        a mark on file        the roster carries his signature
+        no signature on file  he is on the roster and signed nothing
+        image unavailable     a signature was recorded and cannot be shown
+
+    THE THIRD IS NOT THE SECOND. A resolution that failed is not a man who did
+    not sign, and collapsing them puts a deficiency on a filed record against
+    somebody who has none.
+    """
+    w = row if isinstance(row, dict) else {}
+    # `worker_signature` FIRST, WHICH IS WHAT THE ROSTER ACTUALLY STORES.
+    # The first version read only `signature` and drew nothing: 291 marks on
+    # 49 filed rosters, gone, and the word diff saw five unrelated words. The
+    # branch has always read this key first and the order is its order.
+    sig = (w.get("worker_signature") or w.get("signature")
+           or w.get("signature_data"))
+    if sig:
+        # ── THE MARK ITSELF, NOT A SENTENCE ABOUT IT ────────────────────
+        #
+        # The first version of this returned the words "Signature on file",
+        # and the old-against-new comparison caught what that cost: 291
+        # signature images on the branch's sheets, ZERO on the engine's,
+        # across 49 filed rosters. A man's own mark on a compliance record
+        # replaced by a claim that it exists.
+        #
+        # AND THE WORD DIFF ALONE WOULD NOT HAVE SEEN IT -- it would have
+        # reported five lost words, none of them about a signature. It was
+        # found by counting image tokens, which the comparison could not do
+        # until the instrument was repaired two days ago.
+        # THE MARK AND THE WORDS, WHICH IS WHAT THE BRANCH PRINTS. The
+        # image is the evidence; the line beneath it is the CLAIM, and a
+        # reader of a filed roster needs the claim even where the ink renders.
+        # Dropping it cost the phrase on 30 of 49 sheets -- caught by the same
+        # comparison, one pass after it caught the images themselves.
+        return (ink(sig, ctx or {}, present=True)
+                + f'<div style="{_LABEL}">Signature on file</div>')
+    if w.get("signin_id") or w.get("signature_unavailable"):
+        # RECORDED AND NOT DRAWABLE. The resolution runs before render and
+        # inlines what it found; an id with nothing behind it is a lookup that
+        # came back empty, not a refusal to sign.
+        return "Signature on file &mdash; image unavailable"
+    return ('<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>')
+
+
+def osha_cert_type(row: Any, ctx: Dict = None) -> str:
+    """The certification class the card prints, and whether it could be read.
+
+    NOTHING IS RESOLVED AT RENDER TIME. The register prints what the row
+    stores; a class derived from a card's colour, or a live certificate joined
+    in now, would make a filed document say something its own record does not.
+
+    THE UNVERIFIED MARKER IS AN OBSERVATION, NOT A JUDGEMENT. It says this
+    document could not read the card, which is a fact about the reading. It
+    does not say the number is wrong.
+    """
+    r = row if isinstance(row, dict) else {}
+    kind = str(r.get("certification_type") or "").strip()
+    out = _html.escape(kind) if kind else NOT_RECORDED
+    if r.get("unverified"):
+        out += ('<br /><span style="font:400 8px Helvetica,Arial,sans-serif;'
+                'letter-spacing:0.04em;color:#555;">UNVERIFIED &middot; card '
+                'could not be read</span>')
+    return out
+
+
 #: Name -> implementation, for the narrow set a TABLE hands the whole row to.
 #: See schema.ROW_FORMATTERS for why this exception exists and why it is a
 #: closed named set rather than a lambda in a declaration.
-ROW_FORMATTER_FNS = {"cp_headcount": cp_headcount}
+ROW_FORMATTER_FNS = {"cp_headcount": cp_headcount,
+                     "preshift_signature": preshift_signature,
+                     "osha_cert_type": osha_cert_type}
 
 
 def table(sec: Dict, records: List, ctx: Dict) -> str:
@@ -236,6 +335,30 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
         f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
         f'padding:3px 6px;text-align:left;">{_html.escape(lbl)}</th>'
         for _, lbl, _f in cols)
+    # ── A ROW THAT NAMES NOBODY IS NOT A ROW ────────────────────────────
+    #
+    # REQUESTED BY ALL THREE SCHEMA AGENTS INDEPENDENTLY, which is the signal
+    # it belongs here and not in three contexts. Five hand-written branches
+    # already state the rule -- the OSHA register, the toolbox roster, the
+    # pre-shift sheet, fall protection and excavation all drop a row carrying
+    # no identity.
+    #
+    # AND IT CANNOT BE LEFT TO THE DEVICE. The editors SEED empty rows and
+    # `forFiling` trims them at submit -- but a draft keeps them, and a draft
+    # is rendered. Without this an untouched seed row prints on a filed
+    # document: a crane lift the crane never made, an attendee nobody can
+    # identify, with ZERO WORDS LOST to a text diff because a blank row adds
+    # no words.
+    #
+    # A VALUE, NOT A KEY. The editors seed `{address: ""}`, so every seeded row
+    # CARRIES the key -- testing presence would pass every one of them
+    # through. That mistake was made once already, by an agent, and caught by
+    # its own comparison.
+    _need = sec.get("row_requires")
+    if _need:
+        records = [r for r in records
+                   if any(str(_get(r, k) or "").strip() for k in _need)]
+
     body = ""
     for idx, rec in enumerate(records, start=1):
         body += f'<tr style="break-inside:avoid;page-break-inside:avoid;">'
@@ -247,7 +370,11 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
             elif formatter in ROW_FORMATTERS:
                 # THE SUBJECT IS THE ROW. The declared path is "." and is not
                 # read: this cell is computed from several keys at once.
-                cell = ROW_FORMATTER_FNS[formatter](rec)
+                # ctx AS WELL AS THE ROW. A row formatter that draws a
+                # SIGNATURE needs the stroke reconstruction, which arrives in
+                # the context for the same reason `ink` takes it: one copy of
+                # that geometry, passed in, never reimplemented.
+                cell = ROW_FORMATTER_FNS[formatter](rec, ctx)
             else:
                 cell = _fmt(rec, path, formatter)
             body += (f'<td style="{_BODY};border:{_HAIRLINE};'
@@ -305,7 +432,37 @@ def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
 
     known_present = any(k in stored for k, _t in labels)
     items: List = list(labels) if known_present else []
-    items += [(k, str(k)) for k in stored if k not in known]
+    # TITLE-CASED, THE WAY `inspection_log` ALREADY DOES IT. This printed
+    # the raw snake_case key, so a precaution the label set did not know
+    # rendered as `gas_cylinders_secured` on an FDNY permit -- and a word diff
+    # cannot see it, because `words()` splits on the underscore and finds the
+    # same tokens either way. Two primitives in one file disagreeing about the
+    # same question is how that survived.
+    def _label_for(k):
+        """Title-case an IDENTIFIER; leave a SENTENCE exactly as written.
+
+        BOTH HALVES ARE LOAD-BEARING AND THEY COME FROM DIFFERENT FORMS.
+
+        An FDNY precaution the label set does not know is stored as
+        `gas_cylinders_secured`, and printing that raw puts a snake_case
+        identifier on a 3504 permit -- invisible to a word diff, because
+        `words()` splits on the underscore and finds the same tokens either
+        way.
+
+        The KIOSK keys its orientation checklist by the item's FULL ENGLISH
+        SENTENCE, and title-casing that turns "Site-specific hazards and
+        hazardous activities have been reviewed" into nonsense on a filed
+        record. That rule predates this engine and a test names it.
+
+        SO THE TEST IS THE SHAPE, NOT THE SOURCE: underscores or no spaces
+        means an identifier; anything else is already prose. `key_label` in
+        server.py has drawn exactly this line since it was written, and this
+        is that rule, not a second one.
+        """
+        s = str(k)
+        return s.replace("_", " ").title() if ("_" in s or " " not in s) else s
+
+    items += [(k, _label_for(k)) for k in stored if k not in known]
     if not items:
         return ""
 
@@ -332,11 +489,19 @@ def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
                      f'<td style="border:{_HAIRLINE};"></td>')
         rows += "</tr>"
 
+    # THE HEADINGS ARE THE DOCUMENT'S, NOT THE PRIMITIVE'S.
+    #
+    # `Topic` / `Reviewed` was hardcoded, and on an FDNY 3504 permit "Fire
+    # Watch Assigned -- Reviewed" claims the CP REVIEWED AN ITEM. The permit's
+    # claim is that a fire watch WAS ASSIGNED. Four types share this primitive
+    # and they do not share that sentence.
+    _item_h = _html.escape(str(sec.get("item_label") or "Topic"))
+    _mark_h = _html.escape(str(sec.get("mark_label") or "Reviewed"))
     head = ("".join(
         f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
-        f'padding:3px 6px;text-align:left;">Topic</th>'
+        f'padding:3px 6px;text-align:left;">{_item_h}</th>'
         f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
-        f'padding:3px 6px;text-align:left;">Reviewed</th>' for _ in range(2)))
+        f'padding:3px 6px;text-align:left;">{_mark_h}</th>' for _ in range(2)))
 
     return (f'<table style="width:100%;border-collapse:collapse;'
             f'border:{_RULE};">'
@@ -518,6 +683,110 @@ def appended_photographs(rows: List) -> str:
         f'border:{_RULE};">{items}</table></div>')
 
 
+def question_answers(sec: Dict, rec: Any, ctx: Dict) -> str:
+    """A fixed list of questions and the answers AS STORED.
+
+    -- WHY THIS IS NOT THE `checklist` PRIMITIVE ------------------------
+
+    A shed inspection answers in WORDS. The record stores "YES", "NO" or "N/A"
+    as strings, and `checklist` draws its box from the TRUTHINESS of whatever
+    it is handed -- so **every failed check would draw a ticked box**, on the
+    sheet an inspector reads to decide whether a sidewalk shed is safe.
+
+    That is the same defect `inspection_log` exists to prevent, on a different
+    form, which is why this is a third primitive and not a fourth mode of the
+    first. A primitive that grows a mode per form is the branch chain again.
+
+    THE ANSWER PRINTS VERBATIM. "N/A" is a third answer the inspector CHOSE,
+    not a missing value, and a renderer that folds it into Yes or No is
+    deciding something he decided differently.
+
+    AN EMPTY STRING IS UNANSWERED, NOT "No". The editors seed these keys, so a
+    key present and blank is a question nobody reached -- the same line
+    `checklist` draws between an unticked box and an absent one, held here
+    between an answer and a blank.
+
+    UNKNOWN KEYS PRINT AFTER THE KNOWN ONES, title-cased, so a question added
+    to the form and not yet to the label set still reaches the page instead of
+    disappearing off a filed document.
+    """
+    stored = _get(rec, sec.get("path", "")) or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    labels = LABEL_SETS[sec["labels"]]
+    known = dict(labels)
+    items = list(labels) + [(k, str(k).replace("_", " ").title())
+                            for k in stored if k not in known]
+    rows = ""
+    for key, text in items:
+        raw = stored.get(key)
+        answer = str(raw).strip() if raw is not None else ""
+        cell = _html.escape(answer) if answer else NOT_RECORDED
+        rows += (f'<tr style="break-inside:avoid;">'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                 f'{_html.escape(text)}</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                 f'width:16%;white-space:nowrap;">{cell}</td></tr>')
+    if not rows:
+        return ""
+    head = "".join(
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">{t}</th>'
+        for t in ("Question", "Answer"))
+    return (f'<table style="width:100%;border-collapse:collapse;'
+            f'border:{_RULE};">'
+            f'<thead style="display:table-header-group;"><tr>{head}</tr>'
+            f'</thead><tbody>{rows}</tbody></table>')
+
+
+def register(sec: Dict, subject: Any, ctx: Dict) -> str:
+    """A numbered statutory register: item, citation, and what was recorded.
+
+    THE ROWS ARRIVE RESOLVED. Which items a date requires, and what each one
+    says, is decided by the caller -- see this conversion's note. Each row is
+    {number, label, citation, body}, and `body` is markup the caller composed
+    because for this document the markup IS the per-item rule.
+
+    THE CITATION IS PART OF THE ITEM, not decoration. An inspector reading a
+    BC 3301.13.13 log checks items against the code section each one answers,
+    and a register that numbers its items without citing them is a list.
+    """
+    # RESOLVED FROM THE DECLARED PATH, like every other primitive. The
+    # first version took its subject AS the rows -- and under `scope: context`
+    # the subject is the whole context map, so iterating it yielded key
+    # STRINGS, every one was skipped as "not a dict", and the register drew
+    # nothing at all. Six filed sheets lost their entire statutory record and
+    # the comparison caught it as 17 missing words on every one.
+    rows = _get(subject, sec.get("path", "")) if sec.get("path") else subject
+    out = ""
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        num = _html.escape(str(row.get("number") or ""))
+        label = _html.escape(str(row.get("label") or ""))
+        cite = _html.escape(str(row.get("citation") or ""))
+        body = str(row.get("body") or "")
+        out += (
+            f'<tr style="break-inside:avoid;page-break-inside:avoid;">'
+            f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+            f'width:34%;vertical-align:top;">'
+            f'<strong>{num}. {label}</strong>'
+            + (f'<div style="{_LABEL}">{cite}</div>' if cite else "")
+            + f'</td>'
+            f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+            f'vertical-align:top;">{body}</td></tr>')
+    if not out:
+        return ""
+    head = "".join(
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">{t}</th>'
+        for t in ("Item", "Record"))
+    return (f'<table style="width:100%;border-collapse:collapse;'
+            f'border:{_RULE};">'
+            f'<thead style="display:table-header-group;"><tr>{head}</tr>'
+            f'</thead><tbody>{out}</tbody></table>')
+
+
 def filing_state(label: str, sentence: str) -> str:
     """The line under the letterhead when a record is not filed.
 
@@ -662,7 +931,19 @@ def signature(sec: Dict, rec: Any, ctx: Dict) -> str:
     The line is under the stroke and the stroke may cross it, which is what
     happens when somebody signs paper.
     """
-    _p = sec.get("path", "")
+    # ── ONE MARK, MORE THAN ONE PLACE IT MAY LIVE ───────────────────────
+    #
+    # The superintendent's log stores his signature on the presence block and
+    # falls back to the account's; the branch reads them in that order and a
+    # declaration naming only the second would print UNSIGNED over six filed
+    # records that carry a mark.
+    #
+    # FIRST PRESENT WINS, and PRESENCE is the test, not truth -- a key present
+    # and null still means "asked and unsigned" and must reach `ink` as that,
+    # rather than falling through to a path that happens to hold something.
+    _paths = sec.get("path", "")
+    _paths = [_paths] if isinstance(_paths, str) else list(_paths)
+    _p = next((p for p in _paths if _has(rec, p)), _paths[0] if _paths else "")
     sig = _get(rec, _p)
     mark = ink(sig, ctx, present=_has(rec, _p))
     who = FORMATTERS["name"](_get(rec, sec.get("name_path", "")))
@@ -705,20 +986,52 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         f'<div style="{_LABEL}">{_html.escape(lbl)}</div>'
         f'<div style="{_BODY}">{_fmt(rec, path, f)}</div></td>'
         for path, lbl, f in (sec.get("fields") or []))
+    # THE SENTENCE, REFERENCED WHERE ONE EXISTS. `statement_ref` names a key
+    # in the versioned attestation registry; `statement` is a literal, for a
+    # document whose sentence is not versioned there. A declaration may not
+    # carry both -- two sentences over one mark.
+    _ref = sec.get("statement_ref")
+    if _ref:
+        _statement = str((_ATTESTATIONS.get(_ref) or {}).get("text") or "")
+    else:
+        _statement = _html.escape(sec.get("statement", ""))
+
     _p = sec.get("signature_path", "")
-    mark = ink(_get(rec, _p), ctx, present=_has(rec, _p))
+    _sig = _get(rec, _p)
+    mark = ink(_sig, ctx, present=_has(rec, _p))
+
+    # ── THE TWO-NAMES RULE `signature` LEARNED, CARRIED HERE ────────────
+    #
+    # `signer_name` is stamped onto the mark at signing time; the fields above
+    # name whoever the RECORD says signed. Usually one man, occasionally not.
+    # `signature` was taught to print both when they differ during the daily
+    # jobsite conversion and THIS PRIMITIVE WAS NOT -- a fix that stopped at
+    # the first of two places that needed it.
+    #
+    # LATENT, NOT LIVE, and measured rather than assumed: 0 of 92 filed
+    # orientation records differ today. Fixed now because the next conversions
+    # bind three more certifications, and because "no record differs yet" is a
+    # fact with an expiry date.
+    _signer = ""
+    if isinstance(_sig, dict):
+        _signer = FORMATTERS["name"](
+            _sig.get("signer_name") or _sig.get("signerName") or "")
+    _named = {FORMATTERS["name"](_get(rec, path))
+              for path, _l, f in (sec.get("fields") or []) if f == "name"}
+    _also = ("" if not _signer or _signer in _named else
+             f'<div style="{_LABEL};padding-top:2px;">signed by {_signer}</div>')
     return (
         '<div style="break-inside:avoid;page-break-inside:avoid;">'
         f'<div style="{_BODY};border:{_RULE};border-top:none;padding:5px 6px;'
         'line-height:1.45;">'
-        f'{_html.escape(sec.get("statement", ""))}</div>'
+        f'{_statement}</div>'
         f'<table style="width:100%;border-collapse:collapse;border:{_RULE};'
         'border-top:none;"><tr>'
         f'{fields}'
         f'<td style="border:{_HAIRLINE};padding:3px 6px;width:34%;'
         'vertical-align:bottom;">'
         f'<div style="{_LABEL}">Signature</div>'
-        f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div></td>'
+        f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div>{_also}</td>'
         '</tr></table></div>')
 
 
@@ -727,6 +1040,8 @@ PRIMITIVE_FNS = {
     "field_grid": field_grid,
     "table": table,
     "inspection_log": inspection_log,
+    "question_answers": question_answers,
+    "register": register,
     "checklist": checklist,
     "narrative": narrative,
     "signature": signature,

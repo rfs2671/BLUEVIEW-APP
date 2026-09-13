@@ -120,6 +120,29 @@ EXPECTED_TOTAL = 65
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):
 
+    def test_this_gate_still_has_a_subject(self):
+        """RETIREMENT BY ANNOUNCEMENT.
+
+        This gate's purpose is COMPLETION: the pinned total may only fall, and
+        the day it reaches zero every assertion in this repository has a short
+        message instead of a source file. At zero the test above becomes
+        `assertEqual(0, 0)` and passes forever -- the work finished, and nobody
+        told.
+
+        A GATE THAT FINISHES ITS WORK WITH NOBODY TOLD IS A GATE NOBODY
+        REMOVES, and it sits in the suite looking like protection.
+
+        So the floor is here, and it carries the sentence that says what to do,
+        because a floor that fails without saying what to do next gets RAISED
+        rather than acted on.
+        """
+        self.assertGreater(
+            len(unreadable_failure_sites()), 0,
+            "every assertion that would print a whole source file has been "
+            "fixed. This gate has done its job. DELETE IT -- do not lower the "
+            "pin to zero and leave it running, because from here it can only "
+            "assert that an empty set is empty.")
+
     def test_the_total_matches_the_single_pinned_number(self):
         sites, _ = unreadable_failure_sites()
         self.assertEqual(

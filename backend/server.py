@@ -19783,6 +19783,79 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         f'{_amend_esc.escape(_amend_line)}</span></div>'
     ) if _amend_line else ""
 
+    # ── WHAT THE ENGINE CANNOT AWAIT, RESOLVED HERE ─────────────────────
+    #
+    # `render` is synchronous and will stay that way: a renderer that can
+    # await is a renderer that can query, and a declaration that can trigger a
+    # database read is the branch chain growing back with a different shape.
+    #
+    # SO THE CALLER DOES THE AWAITING. Both of these are pre-shift's, and both
+    # cross as DATA -- the same shape the filing-state line and the appended
+    # photographs already use.
+    _ctx_extra = {}
+    if log_type == "site_superintendent_log":
+        # WHICH ITEMS THE DATE REQUIRES, AND WHAT EACH ONE SAYS. Both live in
+        # `cs_applicable_items` / `_cs_item_body`, which hold the BC 3301.13.13
+        # selection rules and the per-item provenance lines. A declaration
+        # cannot express a date-dependent statutory item list without becoming
+        # a second copy of that rule.
+        try:
+            _cs_attr = await cs_attribution_for(
+                db, project_id, date, (data or {}).get("presence") or {})
+        except Exception as _e:                       # pragma: no cover
+            logger.warning(f"cs attribution failed: {_e}")
+            _cs_attr = None
+        _ctx_extra["register_rows"] = _cs_register_rows(
+            logbook, attribution=_cs_attr)
+        # THE ATTRIBUTION SENTENCE, WHICH IS ALSO DEFECT A2.
+        #
+        # It says how this log's superintendent was matched to the filing, and
+        # on the BC 3301.13.13 sheet it describes that match "by licence
+        # number" -- a term the DOB card does not use; the card carries a
+        # REGISTRATION number, and `registration_number` appears nowhere in
+        # this repository.
+        #
+        # IT IS CARRIED VERBATIM AND NOT CORRECTED HERE. A conversion's job is
+        # that the document still says what it said; changing the words on a
+        # filed compliance record is a separate decision with the operator's
+        # name on it, and it is recorded as A2 in the defect document.
+        if _cs_attr:
+            _ctx_extra["cs_attribution_sentence"] = attribution_sentence(
+                _cs_attr)
+
+    if log_type == "preshift_signin":
+        _ps_workers = list((data or {}).get("workers") or [])
+        try:
+            _ps_resolved = await _resolve_signin_signatures(_ps_workers)
+        except Exception as _e:                       # pragma: no cover
+            logger.warning(f"signin signature resolution failed: {_e}")
+            _ps_resolved = {}
+        # INLINED ONTO THE ROW, not passed alongside it. The row formatter is
+        # handed ONE row and must decide from it; a lookup table it would have
+        # to index is a second source of truth for the same cell.
+        #
+        # A COPY, NEVER THE STORED ROW. This document must not mutate the
+        # record it prints -- the row that reaches Mongo is the row the CP
+        # filed.
+        _rows = []
+        for _w in _ps_workers:
+            _w = dict(_w or {})
+            _sid = str(_w.get("signin_id") or "")
+            if _sid and not _w.get("signature"):
+                _hit = _ps_resolved.get(_sid)
+                if _hit:
+                    _w["signature"] = _hit
+                else:
+                    # RECORDED AND NOT DRAWABLE is not "did not sign".
+                    _w["signature_unavailable"] = True
+            _rows.append(_w)
+        _ctx_extra["rows_override"] = {"data.workers": _rows}
+        try:
+            _ctx_extra["preshift_affirmation_count"] = (
+                await preshift_affirmation_count(db, project_id, date))
+        except Exception as _e:                       # pragma: no cover
+            logger.warning(f"affirmation count failed: {_e}")
+
     # ── THE PER-TYPE SWITCH ─────────────────────────────────────────────
     #
     # A type with a schema renders through the one engine. Everything else
@@ -19848,6 +19921,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # on a flag and reads a UTC instant as a New York day; the engine
             # learns none of that for one block on one sheet.
             "appended_photographs": _appended_photo_rows(data),
+            **_ctx_extra,
             # CONTENT, NOT CHROME. Composed above this switch for the reason
             # written there.
             "amendment_html": amendment_html,
@@ -30736,6 +30810,56 @@ _CS_PROVENANCE_LINES = {
 }
 
 
+def _cs_register_rows(logbook, weekly_status=None, attribution=None,
+                      legal_record=True):
+    """The BC 3301.13.13 register as DATA: number, label, citation, body.
+
+    ── EXTRACTED SO TWO RENDERERS CANNOT DISAGREE ABOUT A STATUTE ───────
+
+    Which items a date requires is `cs_applicable_items(log_date)`, and what
+    each one says is `_cs_item_body` plus the provenance line for an item
+    adopted from the CP's own log. That is statutory selection and per-item
+    semantics, and it existed once, inside the branch's row loop.
+
+    The declarative sheet needs the same rows. Rather than restate the rule in
+    a schema -- a second copy of a code-section reading, which is exactly what
+    this engine exists to stop -- the loop moved here and both renderers call
+    it. `_superintendent_log_html` formats these rows into its own markup; the
+    engine's `register` primitive draws them into the sheet's.
+
+    THE BODY IS MARKUP AND THAT IS DELIBERATE. For this document the markup IS
+    the rule: a provenance line, a citation, an item deliberately not recorded
+    here. Handing the engine plain values would mean re-deriving all of it.
+    """
+    data = (logbook or {}).get("data") or {}
+    log_date = (logbook or {}).get("date")
+    presence = data.get("presence") or {}
+    cs_name = presence.get("printed_name") or (logbook or {}).get("cp_name") or ""
+
+    out = []
+    for item in cs_applicable_items(log_date):
+        block = data.get(item["key"])
+        if item["key"] == "weekly_meeting":
+            body = (weekly_status
+                    or '<span style="color:#64748b;">This log does not record '
+                       'the weekly meeting. It is kept elsewhere.</span>')
+        else:
+            body = _cs_item_body(
+                item, block if isinstance(block, dict) else {}, cs_name)
+        if item.get("provenance") and body != NOT_RECORDED:
+            _prov_line = _CS_PROVENANCE_LINES.get(cs_item_provenance(data))
+            if _prov_line:
+                body += ('<br /><span style="font-size:11px;color:#64748b;">'
+                         + _prov_line + '</span>')
+        out.append({
+            "number": item["number"],
+            "label": item["label"],
+            "citation": (item.get("citation") or "") if legal_record else "",
+            "body": body,
+        })
+    return out
+
+
 def _superintendent_log_html(logbook, weekly_status=None, attribution=None,
                              *, legal_record=True):
     """The whole section, built ONCE for both renderers.
@@ -30778,72 +30902,21 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None,
     presence = data.get("presence") or {}
     cs_name = presence.get("printed_name") or (logbook or {}).get("cp_name") or ""
 
+    # THE ROWS COME FROM THE ONE RESOLVER, so this renderer and the engine's
+    # `register` primitive cannot disagree about which items BC 3301.13.13
+    # requires on a date, or about what any of them says. The loop that used
+    # to live here is `_cs_register_rows`, unchanged in substance.
     rows = ""
-    for item in cs_applicable_items(log_date):
-        block = data.get(item["key"])
-        if item["key"] == "weekly_meeting":
-            # ITEM 10 IS A STATUS, NOT A FIELD, and it belongs in its own row
-            # rather than as a paragraph below the table -- an item of the
-            # eleven that is missing from the list of eleven reads as an
-            # omission. The obligation is WEEKLY: a daily field blank six days
-            # in seven teaches the reader that blank is normal here, and
-            # teaches the superintendent the same, which then bleeds into items
-            # 4 to 7 where a blank IS a finding.
-            # NOT COLLECTED IN THIS RELEASE, so it says so rather than
-            # rendering a blank a reader would take for "no meeting was due".
-            # `weekly_status` is the parameter the meeting record will supply:
-            # whether a BC 3301.13.19 meeting was recorded in the last seven
-            # days OF ACTIVE WORK, with days carrying no gate check-ins not
-            # counted, so a shutdown week cannot manufacture a violation.
-            body = (weekly_status
-                    or '<span style="color:#64748b;">This log does not record '
-                       'the weekly meeting. It is kept elsewhere.</span>')
-        else:
-            body = _cs_item_body(
-                item, block if isinstance(block, dict) else {}, cs_name)
-        # ── WHERE ITEM 2'S TEXT CAME FROM, PRINTED ON THE RECORD ──────────
-        #
-        # THE CLIENT HALF HAS LANDED. These lines were dark because
-        # `item_provenance` read `data["progress"]["source"]` and NOTHING WROTE
-        # IT: the superintendent screen never fetched the CP's log, so
-        # PROVENANCE_ADOPTED could not be produced by any code path that
-        # existed, and a flag with one reachable value carries nothing. The
-        # screen now offers the CP's filed summary for the date and records
-        # which way he went.
-        #
-        # BC 3301.13.13 item 2 is "the general progress of work", a fact about
-        # the site -- contrast item 3, expressly "the construction
-        # superintendent's activities". Nothing requires him to have composed
-        # the sentence, only that it be in HIS log over HIS signature. So
-        # adoption is legitimate and the document says which it was.
-        #
-        # AND IT MATTERS FROM 2027-01-01. Per the DOB Service Notice of
-        # 2025-12-18 the competent-person allowance sunsets then, after which
-        # the CS must be on site whenever work occurs: he becomes the WITNESS
-        # rather than the summariser and the derivation inverts. Once the two
-        # logs can disagree, which of them item 2 came from is the whole
-        # finding.
-        #
-        # UNMARKED PRINTS NOTHING, and that is a decision rather than an
-        # oversight. NOT_RECORDED is this codebase's sanctioned string for a
-        # field the form OFFERED and he left blank. Provenance was never
-        # offered on a log filed before the flag existed -- the app has no
-        # statement to make about it, rather than a statement that it is
-        # missing -- and one such record exists (2026-09-04). Printing
-        # "not recorded" there would report a gap in HIS answers that is
-        # really a gap in the app's history.
-        if item.get("provenance") and body != NOT_RECORDED:
-            _prov_line = _CS_PROVENANCE_LINES.get(cs_item_provenance(data))
-            if _prov_line:
-                body += ('<br /><span style="font-size:11px;color:#64748b;">'
-                         + _prov_line + '</span>')
-        cite = (item.get("citation") or "") if legal_record else ""
+    for _row in _cs_register_rows(logbook, weekly_status=weekly_status,
+                                  attribution=attribution,
+                                  legal_record=legal_record):
+        _cite = _row["citation"]
         rows += (
             f'<tr><td {_CS_TD} valign="top" width="34%">'
-            f'<strong>{item["number"]}. {item["label"]}</strong>'
-            + (f'<br /><span style="font-size:11px;color:#64748b;">{cite}</span>'
-               if cite else "")
-            + f'</td><td {_CS_TD} valign="top">{body}</td></tr>'
+            f'<strong>{_row["number"]}. {_row["label"]}</strong>'
+            + (f'<br /><span style="font-size:11px;color:#64748b;">{_cite}</span>'
+               if _cite else "")
+            + f'</td><td {_CS_TD} valign="top">{_row["body"]}</td></tr>'
         )
 
     _arrived = presence.get("arrived_at") or NOT_RECORDED
@@ -31041,7 +31114,32 @@ def _filed_log(logbooks, log_type):
     filed = [l for l in same_type if logbook_is_filed(l)]
     if filed:
         return max(filed, key=_order)
-    return same_type[0]
+
+    # ── AND NOTHING FILED MEANS NOTHING, NOT THE DRAFT ──────────────────
+    #
+    # This returned `same_type[0]`, described as preserving the old behaviour
+    # so a day with only an unfiled draft still rendered something. What it
+    # actually produced on the investor report was worse than a blank:
+    #
+    #   the card said FILED, because the caller tests `if document`
+    #   the card carried a THUMBNAIL of an unfiled document
+    #   and it carried a PUBLIC SHARE LINK, minted for that draft
+    #
+    # THE LINK IS THE PART THAT MATTERS. A card is a claim and can be wrong on
+    # paper; a link is ACCESS, handed to a lender, to a record nobody has
+    # signed. 755 tokens exist today and every one opens a filed record, so
+    # this path had never been taken -- which is why it is closed now rather
+    # than after it is.
+    #
+    # THE CARD ALREADY HAD THE RIGHT STATE. `CardState.MISSING` renders "Not
+    # filed" over a grey panel naming the date, which is true of a day whose
+    # only record is a draft. Nothing had to be designed; the fallback was
+    # routing around a state that already said the right thing.
+    #
+    # THE PER-LOGBOOK PDF IS UNAFFECTED. A draft can legitimately be opened
+    # there and says what it is -- the filing-state line under the letterhead.
+    # This is about the report that INDEXES filings.
+    return None
 
 
 # ── REPORT #N — ISSUED ONCE, PER PROJECT, AT SEND ──────────────────────────
@@ -31216,10 +31314,21 @@ async def _oriented_on_site_count(project_id: str, checkins: list) -> int:
     understates coverage, and a mockup that matched on name alone reported 10
     of 11 against the report's 11 of 11.
     """
+    # FILED ONLY, AND THIS IS A SEPARATE MECHANISM FROM `_filed_log`.
+    #
+    # Fixing the picker does not reach here: this is its own query and it
+    # carried no status clause, so a DRAFT orientation counted as coverage on
+    # the cover's compliance line. "Orientation on file" is a claim about a
+    # signed record.
+    #
+    # `is_locked` OR `status == submitted`, the same two clauses
+    # `logbook_is_filed` applies -- spelled as a Mongo filter because this
+    # reads five thousand rows and must not load them to filter in Python.
     rows = await db.logbooks.find(
         {"project_id": project_id,
          "log_type": "subcontractor_orientation",
-         "is_deleted": {"$ne": True}},
+         "is_deleted": {"$ne": True},
+         "$or": [{"is_locked": True}, {"status": "submitted"}]},
         {"data.worker_id": 1, "data.worker_name": 1}).to_list(5000)
     ids, names = set(), set()
     for row in rows:
@@ -31347,8 +31456,12 @@ async def generate_combined_report(
     # cached; a type that is owed and absent gets a grey panel naming the date,
     # never an empty document outline.
     on_site = gate.on_site
+    # FILED ONLY. The line below reads "N acknowledgments filed today" and
+    # this list had no status clause, so it counted drafts in a sentence that
+    # uses the word `filed`. Third place, second mechanism.
     orientations = [l for l in logbooks
-                    if l.get("log_type") == "subcontractor_orientation"]
+                    if l.get("log_type") == "subcontractor_orientation"
+                    and logbook_is_filed(l)]
     covered = await _oriented_on_site_count(project_id, checkins)
     preshift = _filed_log(logbooks, "preshift_signin")
     signins = len(((preshift or {}).get("data") or {}).get("signins") or [])

@@ -49,7 +49,8 @@ from __future__ import annotations
 import html as _html
 from typing import Any, Dict, List, Optional
 
-from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _has,
+from .primitives import (_BODY, _RULE, PRIMITIVE_FNS, _empty_note,
+                         _get, _has,
                          _section_close, _section_open, appended_photographs,
                          filing_state)
 from .schema import SCHEMAS
@@ -103,11 +104,39 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
         if not any(str(_get(subject, path) or "").strip() for path in req):
             return True
 
+    # ── THE PRESENCE FORM, FOR SECTIONS MADE OF TOGGLES ─────────────────
+    #
+    # `requires` tests a VALUE, which is right for a field somebody types
+    # into. It is wrong for a toggle: a form that seeds thirteen flags and
+    # stores five of them as `false` HAS answers on it, and
+    # `str(False or "")` is empty -- so the section would delete itself and
+    # take five labelled answers a reviewer gave with it.
+    #
+    # `_has` is already exactly this predicate: it is what tells UNSIGNED
+    # apart from never-asked, one level down.
+    reqp = sec.get("requires_present")
+    if reqp:
+        subject = _subject(sec, records, ctx)
+        if not any(_has(subject, path) for path in reqp):
+            return True
+
     if sec.get("scope") == "rows":
         # A REPEATING GROUP INSIDE ONE RECORD. Empty when the list is, which
         # is a different question from whether any record was filed.
-        return not (_get(records[0] if records else {},
-                         sec.get("path", "")) or [])
+        #
+        # AND `row_requires` COUNTS TOWARDS EMPTY. A register of nothing but
+        # seeded rows has entries in the record and NOTHING TO SHOW: drawing
+        # the table anyway prints column headers over no rows, which reads as
+        # a register that was started, when what is true is that nothing in it
+        # names anybody. The old branches omitted the table entirely and this
+        # is how the declaration says the same thing -- the section's declared
+        # `empty` decides what appears in its place.
+        _rows = _get(records[0] if records else {}, sec.get("path", "")) or []
+        _need = sec.get("row_requires")
+        if _need:
+            _rows = [r for r in _rows if isinstance(r, dict)
+                     and any(str(_get(r, k) or "").strip() for k in _need)]
+        return not _rows
     if sec.get("scope") == "each":
         return not records
     if sec.get("scope") == "project":
@@ -141,6 +170,18 @@ def _subject(sec: Dict, records: List, ctx: Dict):
         return ctx.get("project") or {}
     if scope == "each":
         return records
+    if scope == "context":
+        # THE RENDER CONTEXT ITSELF, for a section whose subject is neither the
+        # project nor any filed record -- a count the caller resolved because
+        # the engine cannot await anything. `project` already reads one named
+        # key off ctx; this reads the map.
+        return ctx
+    if scope == "context":
+        # THE RENDER CONTEXT ITSELF, for a section whose subject is neither the
+        # project nor any filed record -- a count the caller resolved because
+        # the engine cannot await anything. `project` already reads one named
+        # key off ctx; this reads the map.
+        return ctx
     if scope == "rows":
         # THE ROWS HELD INSIDE THE RECORD, handed to `table` in place of the
         # filed siblings it was originally written against. Every ordinary
@@ -148,7 +189,16 @@ def _subject(sec: Dict, records: List, ctx: Dict):
         # and its safety observations, and the same shape on most of the
         # eleven types after it -- and without this the engine could render a
         # roster of separately filed records but not a table on a form.
-        rows = _get(records[0] if records else {}, sec.get("path", "")) or []
+        # ROWS THE CALLER ALREADY RESOLVED, WHERE IT HAD TO. Pre-shift's
+        # signatures live in another collection and resolving them needs an
+        # await, so the caller inlines them onto copies of the rows and hands
+        # the list over. Every other type reads straight off the record.
+        #
+        # KEYED BY THE DECLARED PATH, so a schema cannot pick up rows meant
+        # for a different section by accident.
+        _over = (ctx.get("rows_override") or {}).get(sec.get("path", ""))
+        rows = _over if _over is not None else _get(
+            records[0] if records else {}, sec.get("path", "")) or []
         return [r for r in rows if isinstance(r, dict)]
     return records[0] if records else {}
 
@@ -246,8 +296,17 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
                         + _section_close())
             continue
         fn = PRIMITIVE_FNS[sec["primitive"]]
+        # A STATIC SENTENCE QUALIFYING THIS SECTION'S ANSWERS, when declared.
+        # NOT a narrative: a narrative binds a path and this text is not on the
+        # record. It is what stands between a seeded "No" and an affirmative
+        # safety-violation attestation.
+        _note = sec.get("note")
+        _note_html = (f'<div style="{_BODY};border:{_RULE};border-top:none;'
+                      f'padding:5px 6px;line-height:1.45;color:#333;">'
+                      f'{_html.escape(str(_note))}</div>') if _note else ""
         body.append(_section_open(sec)
                     + fn(sec, _subject(sec, records, ctx), ctx)
+                    + _note_html
                     + _section_close())
 
     cont = _html.escape(
@@ -266,5 +325,14 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         + str(ctx.get("amendment_html") or "")
         + "".join(body)
         + appended_photographs(ctx.get("appended_photographs") or [])
+        # A SCOPE LINE, BELOW THE SIGNATURE AND UNNUMBERED. Declared on the
+        # TYPE rather than as a section, because numbering it would read as
+        # part of the record and attaching it to the signature would read as
+        # part of the attestation -- and it is neither. It says what the
+        # document covers.
+        + (f'<div style="{_BODY};border-top:{_RULE};padding:4px 6px;'
+           f'margin:8px 0 0;color:#333;">'
+           f'{_html.escape(str(decl.get("footer_notice")))}</div>'
+           if decl.get("footer_notice") else "")
         + "</body></html>"
     )

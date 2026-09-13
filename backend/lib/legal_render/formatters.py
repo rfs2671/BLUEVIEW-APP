@@ -237,13 +237,220 @@ def toggle_list(v: Any) -> str:
     return _html.escape(", ".join(on))
 
 
+#: The spellings this product actually stores. Pre-shift writes the
+#: lowercase words; other forms write booleans.
+_YES_WORDS = {"yes", "y", "true", "1"}
+_NO_WORDS = {"no", "n", "false", "0"}
+
+
+def answer(v: Any) -> str:
+    """Yes, No, or whatever the man actually answered.
+
+    THREE ANSWERS AND AN ABSENCE, which is a different shape from `yes_no`:
+    this is for a field whose stored value is the ANSWER ITSELF rather than a
+    flag, so "N/A" is a third thing he chose and not a missing value.
+
+    UNRECOGNISED VALUES ARE RETURNED AS WRITTEN. A form that grows a fourth
+    option must print it, not fall back to one of the three -- and a renderer
+    guessing at a compliance answer is the defect this whole file exists to
+    refuse.
+    """
+    if v is None:
+        return NOT_RECORDED
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in _YES_WORDS:
+        return "Yes"
+    if low in _NO_WORDS:
+        return "No"
+    return _html.escape(s)
+
+
+def raw_name(v: Any) -> str:
+    """A name or a short entry, capitalised, and BLANK when there is none.
+
+    ── THREE AGENTS ASKED FOR THIS UNDER THREE NAMES ───────────────────
+
+    `name_or_blank` for a pre-shift company and an OSHA worker, `raw_name` for
+    a toolbox attendee, `raw_sentence` for a fall-protection defect column. One
+    rule: `name`'s capitalisation with `raw_text`'s empty.
+
+    WHY NEITHER EXISTING ONE WILL DO. `raw_text` keeps the blank and drops the
+    capitalisation, so a man's firm prints as he typed it, lower case, on a
+    filed record. `name` capitalises and prints the not-recorded phrase -- and
+    in a DEFECT column on a row that passed, or a company column the CP left
+    blank on purpose, that phrase is a finding against a row that has none.
+
+    A ROW IS THE RECORD. Its blank cells are not absences the document should
+    remark on; the row being there is the claim.
+    """
+    s = _s(v)
+    if not s:
+        return ""
+    return _html.escape(s[0].upper() + s[1:])
+
+
+def pass_fail(v: Any) -> str:
+    """A tri-state verdict. NULL IS NOT A PASS AND NEVER A FAIL.
+
+    REQUESTED BY TWO AGENTS for two types -- a concrete slump test and a
+    fall-protection equipment check -- and `yes_no` was the nearest fit for
+    both. It is not close enough: a FAILED slump on a filed BC 3315 record
+    would print "No", which is the same defect `inspection_log`'s docstring is
+    about, one form over.
+
+    "Fail" and "No" are not the same word on a compliance document. One is a
+    verdict on a test; the other is an answer to a question.
+    """
+    if v is None:
+        return NOT_RECORDED
+    if isinstance(v, bool):
+        return "Pass" if v else "Fail"
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in _YES_WORDS or low == "pass":
+        return "Pass"
+    if low in _NO_WORDS or low == "fail":
+        return "Fail"
+    return _html.escape(s)
+
+
+def affirmation_note(v: Any) -> str:
+    """How many workers affirmed at the gate, as a sentence.
+
+    A FACT ABOUT A DIFFERENT RECORD, and it says so. The sheet states how many
+    affirmations are on file for the day; it never puts an affirmation beside
+    a named man's row, because the stored roster does not carry one. That
+    distinction is the whole reason this is a footer count and not a column --
+    a per-row claim here once accused every worker on every filed sheet.
+
+    ZERO OMITS THE SECTION RATHER THAN REACHING THIS. `requires` tests
+    `_get(...) or ""`, and `0 or ""` is empty -- so a day with no affirmations
+    prints no heading at all, instead of a heading over a line saying none.
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return NOT_RECORDED
+    if n <= 0:
+        return NOT_RECORDED
+    return ("%d worker%s affirmed their sign-in at the gate for this date."
+            % (n, "" if n == 1 else "s"))
+
+
+def inspection_result(v: Any) -> str:
+    """A fall-protection equipment verdict. NULL IS NOT A PASS.
+
+    THREE OUTCOMES AND AN ABSENCE, and two of them are adverse. "Removed from
+    service" must never collapse into "Fail": one says the harness failed a
+    check, the other says it is off the site. An inspector reading a filed
+    register needs to know which, and a renderer that folds them has decided
+    something the CP recorded differently.
+
+    THE ADVERSE ONES ARE EMPHASISED, in the same weight `inspection_log` uses
+    for a failed item -- not a second spelling of emphasis, the same one.
+    """
+    if v is None:
+        return NOT_RECORDED
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in ("pass", "passed", "ok"):
+        return "Pass"
+    if low in ("fail", "failed"):
+        return "<strong>Fail</strong>"
+    if "removed" in low:
+        return "<strong>Removed from service</strong>"
+    return _html.escape(s)
+
+
+def vibration_status(v: Any) -> str:
+    """Whether a monitored reading crossed its threshold.
+
+    BOUND TO THE DATA MAP, like `weather_line`, because the answer needs three
+    keys: the threshold, the current reading, and the flag that says the
+    comparison was made.
+
+    BOTH READINGS AND THE FLAG, OR NOTHING. A status derived from one of them
+    is this renderer doing arithmetic on a compliance record. If the record
+    does not carry the comparison, the sheet says it was not recorded rather
+    than computing one.
+    """
+    d = v if isinstance(v, dict) else {}
+    threshold = _s(d.get("vibration_threshold"))
+    current = _s(d.get("vibration_current"))
+    if not threshold or not current or "vibration_over_threshold" not in d:
+        return NOT_RECORDED
+    over = bool(d.get("vibration_over_threshold"))
+    reading = _html.escape(f"{current} against {threshold}")
+    return (f"<strong>Over threshold</strong> &mdash; {reading}" if over
+            else f"Within threshold &mdash; {reading}")
+
+
+def tick_or_blank(v: Any) -> str:
+    """A tick, or nothing. NEVER "No", and never the not-recorded phrase.
+
+    FOR A COLUMN WHERE THE ROW IS THE RECORD. The OSHA register's Signed
+    column says a signature is on file; an empty cell says nothing, which is
+    correct, because the register's claim is about the certifications listed
+    and not about who signed what.
+
+    "No" THERE WOULD BE AN ASSERTION THE CP NEVER MADE -- the document stating
+    that a named man's signature is NOT on file. And the not-recorded phrase
+    would be a finding against a row that has none. Both are claims; a blank
+    cell is the absence of one.
+    """
+    if isinstance(v, bool):
+        return "&#10003;" if v else ""
+    s = _s(v)
+    if not s:
+        return ""
+    return "&#10003;" if s.lower() in _YES_WORDS else ""
+
+
 def yes_no(v: Any) -> str:
     """A stored boolean. ABSENT IS NOT NO -- it is not recorded, and a
     compliance document that prints "No" for a question nobody answered has
-    made a claim nobody made."""
-    if v is None or v == "":
+    made a claim nobody made.
+
+    ── IT INVERTED EVERY STORED "no", AND NOTHING HAD BOUND IT YET ──────
+
+    The body was `"Yes" if bool(v) else "No"`, and `bool("no")` is True.
+    Pre-shift stores its injury and PPE answers as the lowercase STRINGS 'yes'
+    and 'no' -- 329 rows in production, not one boolean -- so binding this
+    formatter there would have printed **Yes** under a column headed Injury
+    for every man who reported none, on 49 filed compliance records, on a
+    sheet that looked entirely normal.
+
+    Caught by a schema agent censusing the stored values before declaring the
+    field, which is the only reason it was caught at all: no shipped schema
+    had bound it, so no test could have failed.
+
+    A STRING IS NOT A BOOLEAN AND IS NOT COERCED AS ONE. The spellings this
+    product stores are read; anything else is returned as the record wrote it,
+    because a renderer that guesses at a compliance answer is worse than one
+    that quotes it.
+    """
+    if v is None:
         return NOT_RECORDED
-    return "Yes" if bool(v) else "No"
+    if isinstance(v, bool):
+        return "Yes" if v else "No"
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in _YES_WORDS:
+        return "Yes"
+    if low in _NO_WORDS:
+        return "No"
+    return _html.escape(s)
 
 
 #: THE WHOLE SET. A schema may name these and nothing else.
@@ -259,6 +466,16 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "bbl_block": bbl_block,
     "bbl_lot": bbl_lot,
     "yes_no": yes_no,
+    # Three agents asked for `raw_name` under three names, and two for
+    # `pass_fail`. `answer` is the three-state string `yes_no` refuses
+    # to coerce.
+    "answer": answer,
+    "raw_name": raw_name,
+    "pass_fail": pass_fail,
+    "tick_or_blank": tick_or_blank,
+    "inspection_result": inspection_result,
+    "vibration_status": vibration_status,
+    "affirmation_note": affirmation_note,
     "sub_company": sub_company,
     "weather_line": weather_line,
     "toggle_list": toggle_list,
