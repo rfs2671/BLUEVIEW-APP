@@ -50,7 +50,7 @@ import html as _html
 from typing import Any, Dict, List, Optional
 
 from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _has,
-                         _section_close, _section_open)
+                         _section_close, _section_open, filing_state)
 from .schema import SCHEMAS
 
 _PAGE_CSS = """
@@ -164,6 +164,18 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
     is to fall through to its existing branch, and an exception here would turn
     "not converted yet" into a failed document.
 
+    ── ctx["filing_state"] COMES FIRST ──────────────────────────────────
+
+    WHAT THIS DOCUMENT IS, BEFORE WHAT HAPPENED TO IT. A reader needs to know
+    a record is a draft before he reads that somebody amended it, and one
+    production record is both -- an amended toolbox talk still in draft --
+    which is what makes the ordering observable rather than theoretical.
+
+    It arrives as (label, sentence) rather than as markup, because unlike the
+    banner below it exists only on this sheet and its type is this file's to
+    decide. A schema cannot ask for it and cannot suppress it: no log type
+    gets a say in whether its own document announces that it was never filed.
+
     ── ctx["amendment_html"] IS CONTENT, NOT CHROME ─────────────────────
 
     An amended record says so on its own face, and that banner is composed by
@@ -208,6 +220,7 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         f'<div class="contheader">{cont}</div>'
         f'<div class="contfooter">{foot}</div>'
         + _head(ctx, decl)
+        + (filing_state(*ctx["filing_state"]) if ctx.get("filing_state") else "")
         + str(ctx.get("amendment_html") or "")
         + "".join(body)
         + "</body></html>"

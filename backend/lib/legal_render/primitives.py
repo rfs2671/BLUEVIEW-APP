@@ -296,6 +296,29 @@ def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'</thead><tbody>{rows}</tbody></table>')
 
 
+def filing_state(label: str, sentence: str) -> str:
+    """The line under the letterhead when a record is not filed.
+
+    A FACT, NOT A WARNING. No fill, no icon, no colour, no exclamation --
+    rules above and below and the same label-and-body pairing every section of
+    this sheet already uses, so it reads as part of the document rather than
+    as an error stuck onto one. A draft is an ordinary state of a record.
+
+    NOT A PRIMITIVE, and it is not in PRIMITIVE_FNS. A primitive is something
+    a SCHEMA may ask for, and no schema gets to decide whether its own type
+    announces that it was never filed. This is whole-document apparatus: it is
+    the same statement on every sheet the engine draws, and the engine places
+    it without being asked.
+    """
+    return (
+        f'<div style="border-top:{_RULE};border-bottom:{_RULE};'
+        f'padding:4px 6px;margin:0 0 10px 0;">'
+        f'<span style="{_LABEL};color:#000;text-transform:uppercase;">'
+        f'{_html.escape(label)}</span>'
+        f'<span style="{_BODY};padding-left:10px;">'
+        f'{_html.escape(sentence)}</span></div>')
+
+
 def narrative(sec: Dict, rec: Any, ctx: Dict) -> str:
     """Long text, full width, flowing. The section may have rules; the text
     does not sit in a box, because a box is what an input looks like."""
