@@ -431,7 +431,17 @@ export default function DailyJobsiteLog() {
   // carries them, so a record filed before the U1 rebuild still shows what it
   // said. Deleting the writer is forward-only; deleting the reader would
   // change what an already-signed document looks like.
-  const [areasVisited, setAreasVisited] = useState('');
+  // NO areas_visited. It was declared, written into the payload and
+  // hydrated back, and NO CONTROL ON THIS SCREEN EVER SET IT -- so every
+  // filed daily log printed "Areas Visited: N/A", on 50 of 59 records
+  // carrying the key and 0 of 360 carrying a value, deleted ones
+  // included.
+  //
+  // THE SAME DEFECT AS time_in/time_out, ONE FIELD OVER, and removed the
+  // same way rather than hidden: a line that never has content is not
+  // fixed by making it conditional. THIS LOG DOES NOT RECORD WHERE A
+  // PERSON VISITED -- it records where the WORK is, and the crew rows
+  // already carry that in `work_locations`.
 
   // ── Roster integrity ──────────────────────────────────────────────────
   // A short roster shown as complete is a fabricated record, so what the
@@ -507,12 +517,10 @@ export default function DailyJobsiteLog() {
     checklist_items: checklistItems,
     observations,
     visitors_deliveries: visitorsDeliveries,
-    areas_visited: areasVisited,
   }), [
     projectAddress, weather, weatherTemp, weatherWind, weatherFetchState,
     generalDescription,
     equipmentOnSite, checklistItems, observations, visitorsDeliveries,
-    areasVisited,
   ]);
 
   // ── AUTOSAVE ──────────────────────────────────────────────────────────
@@ -954,7 +962,10 @@ export default function DailyJobsiteLog() {
     // NO time_in / time_out HYDRATION. There is no state to hydrate into, and
     // reading a key nothing writes back is how a deleted state block leaves a
     // live call site behind.
-    if (d.areas_visited) setAreasVisited(d.areas_visited);
+    // NO areas_visited HYDRATION. There is no state to hydrate into, and
+    // reading a key nothing writes back is how a deleted state block
+    // leaves a live call site behind -- the note the two time fields
+    // left here when they went.
   };
 
   /**

@@ -66,7 +66,7 @@ import html as _html
 from typing import Any, Dict, List
 
 from .formatters import FORMATTERS, NOT_RECORDED
-from .schema import LABEL_SETS
+from .schema import LABEL_SETS, ROW_FORMATTERS
 
 # ── THE FOUR WEIGHTS. There are no others. ─────────────────────────────────
 _TITLE = "font:700 20px Helvetica,Arial,sans-serif;letter-spacing:-0.01em"
@@ -179,6 +179,50 @@ def field_grid(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'border:{_RULE};">{cells}</table>')
 
 
+def cp_headcount(row: Any) -> str:
+    """A crew row's headcount, SAYING WHERE THE NUMBER CAME FROM.
+
+    A daily 3301.2 log carries two headcounts from two provenances: the gate
+    table, computed from the check-ins, and the crew rows, which print what the
+    CP typed. Until this existed the crew row never said which kind it was, so
+    a number a person typed and a number a turnstile counted printed
+    identically on a signed record.
+
+    `4 (CP) - gate recorded 6` is the whole reason `gate_num_workers` is
+    retained: if the CP's correction simply replaced the turnstile's number,
+    nothing downstream -- an inspector, an audit, this renderer -- could tell
+    that a person had changed a gate count, or what it had been.
+
+    ABSENCE MEANS GATE. Drafts written before `num_workers_source` existed
+    carry no marker and hold numbers that came from the roster; labelling
+    those "(CP)" would put a false attribution on records already filed.
+
+    AN EMPTY HEADCOUNT IS "0", NOT "not recorded". That is this document's
+    existing spelling for a crew row with no number on it, and it is frozen:
+    the literal zero is a count, and the phrase would be a different claim.
+    """
+    act = row if isinstance(row, dict) else {}
+    raw = act.get("num_workers", "")
+    text = str(raw).strip() if raw is not None else ""
+    if text == "":
+        return "0"
+    if act.get("num_workers_source") != "cp":
+        return _html.escape(text)
+    gate = act.get("gate_num_workers")
+    gate_text = str(gate).strip() if gate is not None else ""
+    if gate_text == "":
+        # A hand-added crew: the CP's own assertion, with no gate count to
+        # stand over. It is still his number and still says so.
+        return _html.escape(f"{text} (CP)")
+    return _html.escape(f"{text} (CP) - gate recorded {gate_text}")
+
+
+#: Name -> implementation, for the narrow set a TABLE hands the whole row to.
+#: See schema.ROW_FORMATTERS for why this exception exists and why it is a
+#: closed named set rather than a lambda in a declaration.
+ROW_FORMATTER_FNS = {"cp_headcount": cp_headcount}
+
+
 def table(sec: Dict, records: List, ctx: Dict) -> str:
     """Dense, with a REPEATING HEADER and rows that cannot split.
 
@@ -200,6 +244,10 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
         for path, _lbl, formatter in cols:
             if formatter == "signature_ink":
                 cell = ink(_get(rec, path), ctx, present=_has(rec, path))
+            elif formatter in ROW_FORMATTERS:
+                # THE SUBJECT IS THE ROW. The declared path is "." and is not
+                # read: this cell is computed from several keys at once.
+                cell = ROW_FORMATTER_FNS[formatter](rec)
             else:
                 cell = _fmt(rec, path, formatter)
             body += (f'<td style="{_BODY};border:{_HAIRLINE};'
@@ -294,6 +342,180 @@ def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'border:{_RULE};">'
             f'<thead style="display:table-header-group;"><tr>{head}</tr>'
             f'</thead><tbody>{rows}</tbody></table>')
+
+
+def inspection_log(sec: Dict, rec: Any, ctx: Dict) -> str:
+    """The daily inspections. A FOURTH ANSWER, WHICH IS WHY IT IS NOT A
+    CHECKLIST.
+
+    ── THE TWO PRIMITIVES ASK DIFFERENT QUESTIONS ───────────────────────
+
+    `checklist` asks WAS THIS TOPIC REVIEWED, on one axis: a ticked box, an
+    unticked box, or the not-recorded phrase in words. Its docstring argues
+    that a glyph and a word are different KINDS of answer rather than two
+    values on one axis, and records that mixing them had to be undone once.
+
+    This asks WAS THIS THING WALKED AND WAS IT SATISFACTORY. Passed, failed
+    with a note that always prints, walked with no result recorded, or never
+    asked. Bolting that onto the checklist would put three kinds of answer on
+    one axis, which is the error that docstring is about.
+
+    THE SCOPE ARGUMENT SETTLED IT. Three more types want a checklist -- hot
+    work's precautions, crane pre-operation, concrete formwork -- and not one
+    of them wants a result, a fail or a note. The fail-with-note is one type's
+    requirement, and a separate primitive keeps it from becoming a permanent
+    branch inside the one four types share.
+
+    ── A FAILED INSPECTION MUST NOT PRINT AS A PASSED ONE ───────────────
+
+    Both old renderers once did `", ".join(k for k, v in chk.items() if v)`,
+    which was right while the value was a tick. The value became
+    {result, note}, and a dict is truthy -- so that line listed a FAILED item
+    in the inspected list, identically to a passed one, and dropped the note.
+    On a filed 3301-02 that is a document stating an inspection was fine when
+    the CP recorded that it was not.
+
+    ── "OTHER" IS NOT A PASS/FAIL ITEM ──────────────────────────────────
+
+    The other eight name a specific thing to look at, so pass and fail mean
+    something about that thing. "Other" names nothing, so a green
+    "Passed: Other" asserts that an unnamed inspection was fine -- a claim
+    with no subject. It is the CP writing WHAT he inspected, and the note is
+    the record. A stored pass/fail from before that change still renders.
+
+    ── A LEGACY RECORD KEEPS ITS OWN, THINNER CLAIM ─────────────────────
+
+    Eleven filed records carry {key: True} and no result anywhere. They print
+    as what they are: a list of the items ticked, in the device's own words,
+    with no result column and no absences invented. An already-filed document
+    does not acquire pass/fail semantics because the app later learned to
+    record them -- and a table of PASSED rows built out of bare ticks would be
+    exactly the first defect above, committed on purpose.
+    """
+    stored = _get(rec, sec.get("path", "")) or {}
+    if not isinstance(stored, dict) or not stored:
+        return ""
+    labels = dict(LABEL_SETS[sec["labels"]])
+    other_key = sec.get("other_key", "")
+
+    ordered = [k for k, _t in LABEL_SETS[sec["labels"]] if k in stored]
+    ordered += [k for k in stored if k not in labels]
+
+    def _label(key):
+        return labels.get(key) or str(key).replace("_", " ").title()
+
+    # ── THE LEGACY SHAPE, RENDERED AS THE CLAIM IT ACTUALLY MAKES ───────
+    if all(not isinstance(stored[k], dict) for k in ordered):
+        ticked = [_label(k) for k in ordered if stored[k]]
+        if not ticked:
+            return ""
+        return (f'<div style="{_BODY};border:{_RULE};border-top:none;'
+                f'padding:5px 6px;line-height:1.45;">'
+                f'{_html.escape(", ".join(ticked))}</div>')
+
+    rows = ""
+    also = []
+    for key in ordered:
+        value = stored[key]
+        label = _label(key)
+        note = ""
+        if isinstance(value, dict):
+            result = value.get("result")
+            note = str(value.get("note") or "").strip()
+            if key == other_key and not result:
+                if note:
+                    also.append(note)
+                continue
+            if result == "fail":
+                verdict = ("<strong>FAILED</strong>", note or NOT_RECORDED)
+            elif result == "pass":
+                verdict = ("Passed", note)
+            else:
+                # NOT A PASS. He did not walk it, and the sheet names that so
+                # its absence is visible rather than looking like an item that
+                # was never on the list.
+                verdict = ("Not inspected", note)
+        elif value:
+            # A bare tick in an otherwise-upgraded map. It says the CP looked
+            # and nothing about what he found, so it is not a pass.
+            verdict = ("Not inspected", "")
+        else:
+            verdict = (NOT_RECORDED, "")
+        rows += (f'<tr style="break-inside:avoid;">'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                 f'width:30%;">{_html.escape(label)}</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                 f'width:18%;white-space:nowrap;">{verdict[0]}</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                 f'{_html.escape(verdict[1])}</td></tr>')
+
+    for note in also:
+        rows += (f'<tr style="break-inside:avoid;">'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                 f'Also inspected</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                 f'&nbsp;</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                 f'{_html.escape(note)}</td></tr>')
+
+    if not rows:
+        return ""
+    head = "".join(
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">{t}</th>'
+        for t in ("Item", "Result", "Note"))
+    return (f'<table style="width:100%;border-collapse:collapse;'
+            f'border:{_RULE};">'
+            f'<thead style="display:table-header-group;"><tr>{head}</tr>'
+            f'</thead><tbody>{rows}</tbody></table>')
+
+
+def appended_photographs(rows: List) -> str:
+    """Photographs added to a record AFTER it was signed.
+
+    THE DATA ARRIVES RESOLVED AND THIS DRAWS IT. The walk is two levels deep,
+    filters on a flag and converts a UTC instant to the New York day -- three
+    features the engine would otherwise have to learn for one block on one
+    sheet. They stay in server.py beside the Eastern-day helper they already
+    use; what crosses is a list of what was appended, when and by whom.
+
+    NOT A WARNING BANNER, AND NOT server.py's AMBER ONE. That colour came here
+    on the amendment banner because twelve types still need that banner in
+    that form; nothing shares this one, so it is drawn in the sheet's own type
+    like everything else on the page.
+
+    THIS DOCUMENT HAS NO PHOTOGRAPHS ON IT. The per-logbook sheet has never
+    printed the pictures, only the record, so the marker cannot ride on a tile
+    the way it does on the investor report. It says the thing directly: how
+    many, when, and by whom. An inspector needs to know that four photographs
+    were added afterwards far more than he needs to see them.
+    """
+    if not rows:
+        return ""
+    items = ""
+    for i, row in enumerate(rows, start=1):
+        parts = [str(x) for x in (row.get("when"), row.get("who")) if x]
+        detail = (" · ".join(_html.escape(p) for p in parts)
+                  if parts else "")
+        items += (f'<tr><td style="{_BODY};border:{_HAIRLINE};'
+                  f'padding:3px 6px;width:30%;">Photograph {i}</td>'
+                  f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                  f'{detail}</td></tr>')
+    return (
+        f'<div style="break-inside:avoid;margin:0 0 10px 0;">'
+        f'<div style="{_LABEL};color:#000;text-transform:uppercase;'
+        f'border-top:{_RULE};padding:4px 6px 2px;">'
+        # THE SAME WORDS THE INVESTOR REPORT USES, and the same words the
+        # apparatus-marker registry names. That registry exists because this
+        # exact notice rendered on the report through two rulings and zero
+        # times on the legal PDF; a second wording here would put it back
+        # outside the one check written to catch it.
+        f'Added after filing</div>'
+        f'<div style="{_BODY};padding:0 6px 4px;line-height:1.45;">'
+        f'The photographs below were added to this record after it was filed '
+        f'and are not part of what was attested to at signing.</div>'
+        f'<table style="width:100%;border-collapse:collapse;'
+        f'border:{_RULE};">{items}</table></div>')
 
 
 def filing_state(label: str, sentence: str) -> str:
@@ -412,11 +634,26 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
         return (f'<img src="{src}" alt="" '
                 f'style="height:{_INK_MAX_H}px;width:auto;'
                 f'max-width:{_INK_MAX_W}px;display:block;" />') + banner
-    # A SIGNATURE OBJECT WITH NOTHING DRAWABLE IN IT still had an affirmation
-    # recorded against it, or conspicuously did not, and the old renderer
-    # printed that banner over the empty space. It is the only thing the
-    # document can say about a mark it cannot draw.
-    return banner
+    # ── RECORDED, AND NOT DRAWABLE ──────────────────────────────────────
+    #
+    # A signature object that carries neither strokes nor an image is still a
+    # signature the record asserts. The old renderer said so in words --
+    # "Test CP (signed)" -- and the first version of this function returned
+    # the affirmation banner over an empty signing area, which under a printed
+    # name reads as NOBODY SIGNED. On 8 filed daily logs that is the opposite
+    # of what the record says, and on two of them the banner directly above it
+    # read AFFIRMED.
+    #
+    # SIGNED AND UNSIGNED ARE NOW SYMMETRICAL, in the same small-caps the
+    # absence uses: one says the record carries a mark this document cannot
+    # draw, the other says the record carries no mark at all. Neither is the
+    # ink, and neither pretends to be.
+    #
+    # Caught by the old-branch-against-new-engine diff on the daily jobsite
+    # conversion, which is what that diff is for.
+    return ('<span style="font:700 8px Helvetica,Arial,sans-serif;'
+            'letter-spacing:0.06em;color:#555;">SIGNED &mdash; no image '
+            'recorded</span>') + banner
 
 
 def signature(sec: Dict, rec: Any, ctx: Dict) -> str:
@@ -426,15 +663,37 @@ def signature(sec: Dict, rec: Any, ctx: Dict) -> str:
     happens when somebody signs paper.
     """
     _p = sec.get("path", "")
-    mark = ink(_get(rec, _p), ctx, present=_has(rec, _p))
+    sig = _get(rec, _p)
+    mark = ink(sig, ctx, present=_has(rec, _p))
     who = FORMATTERS["name"](_get(rec, sec.get("name_path", "")))
+
+    # ── TWO NAMES, STATED RATHER THAN RECONCILED ────────────────────────
+    #
+    # `signer_name` is stamped onto the signature object AT SIGNING TIME from
+    # whatever the man typed; `name_path` is who the RECORD says the competent
+    # person is. They are usually the same man and occasionally are not -- one
+    # filed daily log names "2" on the record and "Michael" on the mark.
+    #
+    # The old renderer labelled the block with the SIGNER and this one printed
+    # only the record's name, so that filed sheet lost the name attached to
+    # its own signature. Both are printed when they differ, for the reason the
+    # two headcounts are both printed: each is a true statement about a
+    # different thing, and silently picking one deletes a fact.
+    signer = ""
+    if isinstance(sig, dict):
+        signer = FORMATTERS["name"](
+            sig.get("signer_name") or sig.get("signerName") or "")
+    also = ""
+    if signer and signer != who:
+        also = (f'<span style="{_LABEL};padding-left:8px;">'
+                f'signed by {signer}</span>')
     return (
         '<div style="break-inside:avoid;padding:6px;">'
         f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div>'
         f'<div style="border-top:{_RULE};padding-top:2px;">'
         f'<span style="{_BODY}">{who}</span>'
         f'<span style="{_LABEL};padding-left:8px;">'
-        f'{_html.escape(sec.get("role", ""))}</span></div></div>')
+        f'{_html.escape(sec.get("role", ""))}</span>{also}</div></div>')
 
 
 def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
@@ -467,6 +726,7 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
 PRIMITIVE_FNS = {
     "field_grid": field_grid,
     "table": table,
+    "inspection_log": inspection_log,
     "checklist": checklist,
     "narrative": narrative,
     "signature": signature,

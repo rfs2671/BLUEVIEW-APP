@@ -91,12 +91,26 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 SOURCE_KINDS = ("one", "group", "combined")
+
+#: WHOSE DATA A SECTION DRAWS.
+#:
+#:   project   the project document, from the render context
+#:   first     the first filed record on the sheet
+#:   each      every filed record on the sheet, as a list
+#:   rows      a REPEATING GROUP INSIDE one record, named by `path`
+#:
+#: `rows` is the one the forms actually needed. `table` was written against
+#: sibling FILED RECORDS -- the orientation drew a roster that way before it
+#: became one sheet per worker -- and every ordinary form instead holds its
+#: repeating groups in its own `data`: the daily log's crews and its safety
+#: observations, and the same shape on most of the eleven types after it.
+SCOPES = ("project", "first", "each", "rows")
 EMPTY_KINDS = ("omit", "none_documented", "blank_rows")
 
 #: Primitive names a section may claim. The engine holds the implementations;
 #: this list is what a schema is allowed to ask for.
 PRIMITIVES = ("field_grid", "table", "checklist", "narrative", "signature",
-              "certification")
+              "certification", "inspection_log")
 
 #: FORMATTER NAMES A PRIMITIVE HANDLES ITSELF, not value formatters.
 #:
@@ -112,11 +126,51 @@ PRIMITIVES = ("field_grid", "table", "checklist", "narrative", "signature",
 #: been broken once.
 PRIMITIVE_FORMATTERS = ("signature_ink",)
 
+#: FORMATTERS THAT ARE HANDED THE WHOLE ROW, not one value.
+#:
+#: `signature_ink` above established that a primitive may handle a named
+#: formatter itself. This is the same escape hatch for the same reason and it
+#: is kept just as narrow: a formatter takes ONE VALUE and returns a string,
+#: and the daily log's headcount cell reads THREE keys off its row --
+#: `num_workers`, `num_workers_source` and `gate_num_workers` -- to print
+#: `4 (CP) - gate recorded 6`.
+#:
+#: THE ALTERNATIVE WAS A LAMBDA IN THE DECLARATION, which `validate` refuses
+#: on the first line of its body, for the reason this module is named after. A
+#: closed named set implemented in a reviewed file is the whole difference.
+#:
+#: The column's path is written "." and ignored: the subject IS the row.
+ROW_FORMATTERS = ("cp_headcount",)
+
 #: Named label sets a checklist may point at, so the sentences a worker agreed
 #: to live in ONE place rather than in each schema that shows them.
 LABEL_SETS: Dict[str, List[tuple]] = {
     # frontend/app/logbooks/subcontractor_orientation.jsx ORIENTATION_SECTIONS,
     # and backend/server.py's ORIENTATION_ITEMS, which must agree with it.
+    # backend/server.py INSPECTION_ORDER, which is the order the device shows
+    # them in and therefore the order the man walked them.
+    #
+    # `other_checklist` IS LAST AND IS NOT A PASS/FAIL ITEM. The other eight
+    # name a specific thing to look at, so pass and fail mean something about
+    # that thing. "Other" names nothing, so a green "Passed: Other" on a filed
+    # 3301-02 asserts that an unnamed inspection was fine -- a claim with no
+    # subject. A section declares which key it is; the primitive prints the
+    # CP's note as the record instead.
+    "inspection_items": [
+        # THE WORDS `_inspection_label` PRODUCES, not better ones. Eleven
+        # filed records render through the legacy path as a list of these
+        # labels; "Neighbouring property" would be an improvement to a
+        # document that has already been signed.
+        ("street_frontage", "Street Frontage"),
+        ("fire_safety", "Fire Safety"),
+        ("perimeter_fence", "Perimeter Fence"),
+        ("fall_protections", "Fall Protections"),
+        ("neighbors_property", "Neighbors Property"),
+        ("license_spot_check", "License Spot Check"),
+        ("plans", "Plans"),
+        ("permits", "Permits"),
+        ("other_checklist", "Other Checklist"),
+    ],
     "orientation_items": [
         ("hard_hats", "Hard hats required at all times on site"),
         ("safety_boots", "Safety boots required (steel toe, ANSI rated)"),
@@ -203,6 +257,9 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
 
     for i, sec in enumerate(decl["sections"]):
         where = f"{log_type} section {i}"
+        if sec.get("scope") is not None and sec.get("scope") not in SCOPES:
+            raise SchemaError(f"{where}: unknown scope {sec.get('scope')!r}; "
+                              f"known: {SCOPES}")
         if sec.get("primitive") not in PRIMITIVES:
             raise SchemaError(f"{where}: unknown primitive "
                               f"{sec.get('primitive')!r}; known: {PRIMITIVES}")
@@ -215,13 +272,44 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
         for col in (sec.get("fields") or []) + (sec.get("columns") or []):
             if len(col) != 3:
                 raise SchemaError(f"{where}: a field is (path, label, formatter)")
-            if col[2] not in FORMATTERS and col[2] not in PRIMITIVE_FORMATTERS:
+            if (col[2] not in FORMATTERS
+                    and col[2] not in PRIMITIVE_FORMATTERS
+                    and col[2] not in ROW_FORMATTERS):
                 raise SchemaError(
                     f"{where}: unknown formatter {col[2]!r}. The set is closed "
                     f"on purpose -- add one to formatters.py and name it here. "
                     f"Known: {sorted(FORMATTERS)}")
-        if sec.get("primitive") == "checklist" and sec.get("labels") not in LABEL_SETS:
+            if col[2] in ROW_FORMATTERS and sec.get("primitive") != "table":
+                raise SchemaError(
+                    f"{where}: {col[2]!r} is handed the whole ROW, which only "
+                    f"a table has. A field grid's subject is a record.")
+        if (sec.get("primitive") in ("checklist", "inspection_log")
+                and sec.get("labels") not in LABEL_SETS):
             raise SchemaError(f"{where}: unknown label set {sec.get('labels')!r}")
+
+        # ── A SECTION MAY SAY WHICH OF ITS OWN PATHS MAKE IT EXIST ───────
+        #
+        # `_is_empty` answers from the RECORDS by default, and deliberately: a
+        # grid whose every cell reads "not recorded" is a record that was
+        # filed blank, which is a different fact from a section that does not
+        # apply. Some sections need the other answer -- the daily log's
+        # working hours are two keys nothing has written since the picker
+        # work, and declaring them without this would print two "not
+        # recorded" cells on all 59 filed records, reinstating the permanent
+        # N/A that branch deliberately removed.
+        req = sec.get("requires")
+        if req is not None:
+            if (not isinstance(req, (list, tuple)) or not req
+                    or not all(isinstance(x, str) and x for x in req)):
+                raise SchemaError(
+                    f"{where}: `requires` is a non-empty list of dotted "
+                    f"paths, got {req!r}")
+
+        # ── A TABLE OVER ROWS INSIDE ONE RECORD MUST SAY WHICH ROWS ──────
+        if sec.get("scope") == "rows" and not sec.get("path"):
+            raise SchemaError(
+                f"{where}: scope 'rows' draws a list held INSIDE one record "
+                f"and must name the path to it")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -229,6 +317,193 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 SCHEMAS: Dict[str, Dict[str, Any]] = {
+
+    # ── DAILY JOBSITE LOG ───────────────────────────────────────────────────
+    #
+    # THE LARGEST, THE MOST READ, AND THE ONE THAT WILL EVENTUALLY DECLARE
+    # `combined` WITH THE SUPERINTENDENT LOG. 59 filed records across 6
+    # projects; 39 of them carry one crew and the tail runs to eight.
+    #
+    # TITLE, SUBTITLE AND CITE COME FROM LOGBOOK_TYPE_REGISTRY rather than
+    # being retyped. The old branch welded the form number into the name --
+    # "Daily Jobsite Log (NYC DOB 3301-02)" -- and the registry already keeps
+    # the name, the form number and the code section as three fields, which is
+    # what the letterhead has three slots for.
+    #
+    # `areas_visited` IS NOT HERE, and its absence is the point. It was
+    # carried on 50 of 59 records, non-empty on none of 360 including the
+    # deleted ones, and printed "Areas Visited: N/A" on every filed daily log
+    # ever rendered. It is gone from the screen, the payload and this
+    # declaration together: the log does not record where a person visited, it
+    # records where the WORK is, and the crew rows already carry that.
+    "daily_jobsite": {
+        "title": "Daily Jobsite Log",
+        # THE FORM NUMBER STAYS ON THE SHEET. The old title welded it into the
+        # name -- "Daily Jobsite Log (NYC DOB 3301-02)" -- and the first draft
+        # of this schema dropped it for the code section alone. The diff caught
+        # it on 58 of 59 records: an inspector asks for the 3301-02 by that
+        # number, and a document that does not carry it is harder to file
+        # against. The registry keeps both, so the sheet does too.
+        "subtitle": "NYC DOB 3301-02 — to be maintained on site for inspection",
+        "cite": "§3301.2",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # THE WEATHER FIELD IS BOUND TO `data` ITSELF, not to a key.
+                # `weather_line` reads four of them -- condition, temperature,
+                # wind and the fetch state that overrides all three -- and it
+                # is still a formatter of ONE VALUE, because the value it is
+                # handed is the map.
+                #
+                # THE DESCRIPTION IS A FIELD, NOT A NARRATIVE. Measured on the
+                # 59 records: non-empty on 52, median 20 characters, longest
+                # 79. A full-width flowing block for twenty characters is a
+                # design asserting an essay that nobody wrote.
+                "n": 2, "title": "The Day", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data", "Weather", "weather_line"),
+                    ("cp_name", "Competent Person", "name"),
+                    ("data.general_description", "Description", "sentence"),
+                ],
+            },
+            {
+                # DECLARED WITH `requires`, WHICH IS WHY IT IS SAFE TO DECLARE
+                # AT ALL. Nothing has written these two keys since the picker
+                # work; without `requires` this section would print two "not
+                # recorded" cells on all 59 filed records, reinstating the
+                # permanent N/A the old branch deliberately removed.
+                #
+                # CONDITIONAL RATHER THAN DELETED, and the difference matters
+                # on a signed record: a log filed BEFORE that rebuild may
+                # carry real times, and deleting the section outright would
+                # remove them from a document that has already been read.
+                "n": 3, "title": "Working Hours", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "requires": ["data.time_in", "data.time_out"],
+                "fields": [
+                    # THE SAME PATHS `requires` NAMES. The first draft wrote
+                    # these two relative to the record and the `requires`
+                    # relative to its data map, so the section appeared and
+                    # both cells read "not recorded" -- the permanent N/A this
+                    # section exists to avoid, reached from the other side.
+                    ("data.time_in", "Time In", "time_of_day"),
+                    ("data.time_out", "Time Out", "time_of_day"),
+                ],
+            },
+            {
+                # "CP'S COUNT", NOT "WORKERS". This number is hand-typed by
+                # the competent person on the crew row; the report's headcount
+                # is counted at the GATE from check-ins. They disagree -- four
+                # here, three there -- and both are true statements about
+                # different things. Labelled at the point of use rather than
+                # reconciled, because silently picking one would delete a fact.
+                #
+                # `.` IS THE ROW. `cp_headcount` reads three keys off it.
+                "n": 4, "title": "Crew and Work Performed",
+                "primitive": "table", "scope": "rows",
+                "path": "data.activities", "empty": "none_documented",
+                "none_text": "No crews recorded on site.",
+                "columns": [
+                    ("crew_id", "Crew", "text"),
+                    ("company", "Company", "sub_company"),
+                    (".", "CP's count", "cp_headcount"),
+                    ("work_description", "Description", "sentence"),
+                    ("work_locations", "Location", "text"),
+                ],
+            },
+            {
+                # A SENTENCE, NOT A GRID, AND THAT IS THE UNRULED HALF. The
+                # five keys are a fixed set the screen shows as tickboxes, so
+                # the checklist primitive would be the more honest rendering
+                # and would close the gap where a stored `false` is
+                # indistinguishable from never having been asked. It would
+                # also visibly change a filed document, which is the operator's
+                # call and not a restyle's -- so this keeps exactly what the
+                # sheet says today and the choice stays open.
+                "n": 5, "title": "Equipment on Site", "primitive": "narrative",
+                "scope": "first", "path": "data.equipment_on_site",
+                "formatter": "toggle_list", "empty": "none_documented",
+            },
+            {
+                "n": 6, "title": "Daily Inspections",
+                "primitive": "inspection_log", "scope": "first",
+                "path": "data.checklist_items", "labels": "inspection_items",
+                "other_key": "other_checklist", "empty": "none_documented",
+                "none_text": "No inspections documented.",
+                # WITHOUT THIS a record carrying no checklist map rendered a
+                # numbered section bar with nothing beneath it, because
+                # emptiness defaults to "were any records filed" and one was.
+                "requires": ["data.checklist_items"],
+            },
+            {
+                # `corrected_immediately` IS NOT A COLUMN HERE. It is recorded
+                # on 5 observations, true on 1, and printed by nothing -- a
+                # live defect (A16), not something a conversion gets to fix on
+                # its own. Adding a column to a filed document is a change of
+                # substance and it is recorded rather than taken.
+                "n": 7, "title": "Safety Observations", "primitive": "table",
+                "scope": "rows", "path": "data.observations",
+                "empty": "none_documented",
+                "none_text": "No safety observations recorded.",
+                "columns": [
+                    ("description", "Observation", "sentence"),
+                    ("responsible_party", "Responsible", "name"),
+                    ("remedy", "Remedy", "sentence"),
+                ],
+            },
+            {
+                # Non-empty on 31 of 59, longest 55 characters. A field, for
+                # the same reason the description is one.
+                "n": 8, "title": "Visitors and Deliveries",
+                "primitive": "field_grid", "scope": "first", "empty": "omit",
+                "requires": ["data.visitors_deliveries"], "per_row": 1,
+                "fields": [
+                    ("data.visitors_deliveries", "Recorded", "sentence"),
+                ],
+            },
+            {
+                # NOT A CERTIFICATION, and the distinction is deliberate. The
+                # orientation sheet ends with a sworn sentence over the CP's
+                # mark because that document carries one. This one does not:
+                # the old branch printed his name, his signature and the
+                # superintendent's, and asserted nothing on his behalf.
+                # Inventing an attestation sentence here would put words on a
+                # signed 3301.2 record that the signer never said.
+                "n": 9, "title": "Competent Person Signature",
+                "primitive": "signature",
+                "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+            {
+                # ABSENT ON ALL 59 RECORDS, so `omit` and the engine's
+                # signature rule drop it exactly as the old branch did --
+                # `render_signature_html` returns "" on a falsy signature.
+                # Declared anyway, because the combined sheet will need it and
+                # a section that renders nothing costs nothing.
+                "n": 10, "title": "Superintendent Signature",
+                "primitive": "signature",
+                "scope": "first", "empty": "omit",
+                "path": "data.superintendent_signature",
+                "name_path": "data.superintendent_name",
+                "role": "Superintendent",
+            },
+        ],
+    },
 
     # ── SITE SAFETY ORIENTATION ─────────────────────────────────────────────
     #

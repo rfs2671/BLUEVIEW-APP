@@ -323,7 +323,12 @@ class TheRenderedDocument(unittest.TestCase):
         # is on the report. Neither number appears unlabelled, and where they
         # differ the report prints BOTH -- which is stronger than the old
         # cover, where one was a tile and the other a table column.
-        self.assertIn("CP&#39;s count", self.docs)
+        # UNESCAPED BEFORE THE COMPARISON. The branch wrote the apostrophe
+        # as &#39; and `html.escape` writes &#x27;; both are an apostrophe on
+        # paper, and an assertion that can be broken by which entity a library
+        # chose is not asserting the label.
+        import html as _h
+        self.assertIn("CP's count", _h.unescape(self.docs))
         self.assertIn("Gate check-ins", self.html)
         self.assertIn("on daily log", self.html)
 
@@ -500,28 +505,55 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
     """DEFECT 5 — Time In / Time Out / Areas Visited printed a permanent N/A
     because nothing in the app has ever written them."""
 
-    def test_nothing_writes_areas_visited(self):
-        """The premise, asserted rather than assumed. daily_jobsite.jsx holds
-        the state and hydrates it, but no control sets it."""
+    def test_areas_visited_is_gone_from_the_screen_entirely(self):
+        """IT WENT THE WHOLE WAY, LIKE THE TWO TIME FIELDS BEFORE IT.
+
+        This asserted that `setAreasVisited` had exactly ONE call site -- the
+        hydrate -- because the deal at the time was that the key kept
+        travelling and only the display was suppressed. A sibling test pinned
+        the payload key as untouched, with the note "the day a control is
+        added the row reappears on its own".
+
+        NO CONTROL WAS EVER ADDED. Measured before the ruling: the key is on
+        50 of 59 records and non-empty on 0 of 360 including the deleted ones,
+        so "Areas Visited: N/A" printed on every filed daily jobsite log there
+        has ever been.
+
+        AND THE FIELD WAS NEVER THE RIGHT ONE. The log does not record where a
+        person visited; it records where the WORK is, and the crew rows carry
+        that in `work_locations`. So the field was a duplicate of something
+        the document already printed, under a label describing a different
+        fact -- removed from the screen, the payload and the schema together.
+
+        ASSERTED ON CODE, NOT ON TEXT. The comments above discuss the removal
+        by name, and a prose mention of `setAreasVisited` must not keep this
+        green or red on its own.
+        """
         screen = (_BACKEND / ".." / "frontend" / "app" / "logbooks"
                   / "daily_jobsite.jsx").resolve().read_text(encoding="utf-8")
-        for setter in ("setAreasVisited",):
-            calls = re.findall(rf"\b{setter}\(", screen)
-            # EXACTLY ONE call site, and it is the hydrate in fetchData. The
-            # useState destructure carries no parens so it is not counted. A
-            # second caller means a control now writes the field — at which
-            # point this fails and the report row should be wired back on.
-            self.assertEqual(len(calls), 1,
-                             f"{setter} has a writer now — wire the row back on")
-            hydrate = re.search(rf"if \(d\.\w+\) {setter}\(", screen)
-            self.assertIsNotNone(hydrate, f"{setter}'s only caller is not the hydrate")
+        code = strip_js(screen)
+        for gone in ("areasVisited", "setAreasVisited", "areas_visited:",
+                     "d.areas_visited"):
+            self.assertNotIn(gone, code,
+                             f"{gone} survived the deletion in daily_jobsite.jsx")
+
+    def test_and_the_gate_tablet_stopped_reading_it_too(self):
+        """THE READER NOBODY HAD LOOKED AT. `app/site/logbooks.jsx` rendered
+        an Areas Visited row guarded on truthiness, so it never once appeared
+        -- a second dead reader of the same dead field, found only by censusing
+        every occurrence before removing it."""
+        viewer = (_BACKEND / ".." / "frontend" / "app" / "site"
+                  / "logbooks.jsx").resolve().read_text(encoding="utf-8")
+        self.assertNotIn("areas_visited", strip_js(viewer))
 
     def test_the_two_time_fields_are_gone_from_the_screen_entirely(self):
         """TIME IN / TIME OUT WENT FURTHER THAN THE ROW.
 
         This class used to assert that all THREE keys still travelled and only
-        the display was suppressed. For `areas_visited` that is still the deal.
-        For the two times it is not: the state, the payload keys and the
+        the display was suppressed. NOT ANY MORE, FOR ANY OF THEM: the times
+        went first and `areas_visited` followed by ruling once the census
+        showed no control had ever been added. For the two times: the state,
+        the payload keys and the
         hydrate lines are DELETED, because a field with no control is not a
         field the log collects, and the CP's own hours belong to item 1 of the
         superintendent log (`presence.arrived_at` / `presence.departed_at`),
@@ -557,13 +589,6 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         """
         self.assertIn("_times_line", _SINGLE)
         self.assertNotIn('data.get("time_in") or "N/A"', _SINGLE)
-
-    def test_the_areas_visited_payload_key_is_untouched(self):
-        """Display only, for the one key that still travels. The day a control
-        is added the row reappears on its own with no renderer change."""
-        screen = (_BACKEND / ".." / "frontend" / "app" / "logbooks"
-                  / "daily_jobsite.jsx").resolve().read_text(encoding="utf-8")
-        self.assertIn("areas_visited: areasVisited", screen)
 
     def test_BOTH_renderers_print_the_times_only_when_set(self):
         """THE PAIR, ASKED THE SAME QUESTION.
@@ -607,12 +632,19 @@ class TheAlwaysNAFieldsAreNotPrinted(unittest.TestCase):
         # field that is on the form and was left empty. The permanent "N/A"
         # that this class exists to prevent is banned from both renderers by
         # the source assertion above.
+        # `areas_visited` IS GONE FROM THE PRODUCT, not merely unprinted.
+        # Carried on 50 of 59 records and non-empty on none of 360 including
+        # the deleted ones, it printed "Areas Visited: N/A" on every filed
+        # daily log ever rendered. Removed from the screen, the payload and
+        # the schema together by operator ruling, so there is nothing left
+        # here to assert -- the log records where the WORK is, and the crew
+        # rows carry that.
         html2 = _render_documents(_DAY_WITH_DUPLICATE, jobsite_extra={
-            "time_in": "07:00", "time_out": "15:30", "areas_visited": "Cellar",
+            "time_in": "07:00", "time_out": "15:30",
         })
-        self.assertIn("Time In:", html2)
+        self.assertIn("Time In", html2)
         self.assertIn("07:00", html2)
-        self.assertIn("Cellar", html2)
+        self.assertNotIn("Areas Visited", html2)
 
 
 class TheTwoHeadcountsAreLabelled(unittest.TestCase):
@@ -877,9 +909,14 @@ class TestGroupThreeRendering(unittest.TestCase):
         see it — deliberately, since he is attesting to that sentence — so an
         empty one is a NORMAL state and the document has to be able to say so.
         """
+        # THE DAILY LOG RENDERS THROUGH THE ENGINE NOW, so the sheet states
+        # the same facts in the sheet's own shape: a label and its value in
+        # two cells rather than "Label: value" in one line of prose. The CLAIM
+        # is unchanged and is what is asserted; the punctuation of the old
+        # branch is not the claim.
         html = self._html({"general_description": ""})
-        i = html.index("Description:")
-        self.assertIn("Not recorded", html[i:i + 200])
+        i = html.index("Description")
+        self.assertIn("Not recorded", html[i:i + 300])
 
     def test_BOTH_renderers_stopped_defaulting_to_a_key_that_is_present(self):
         """The single-log PDF and the combined report each print this line, and
@@ -896,10 +933,15 @@ class TestGroupThreeRendering(unittest.TestCase):
         self.assertIn('general_description") or NOT_RECORDED', _SINGLE)
 
     def test_a_written_description_is_untouched(self):
+        # THE DAILY LOG RENDERS THROUGH THE ENGINE NOW, so the sheet states
+        # the same facts in the sheet's own shape: a label and its value in
+        # two cells rather than "Label: value" in one line of prose. The CLAIM
+        # is unchanged and is what is asserted; the punctuation of the old
+        # branch is not the claim.
         html = self._html({"general_description": "Rebar and formwork on L4"})
         self.assertIn("Rebar and formwork on L4", html)
-        i = html.index("Description:")
-        self.assertNotIn("Not recorded", html[i:i + 200])
+        i = html.index("Description")
+        self.assertNotIn("Not recorded", html[i:i + 300])
 
     # ── 13. "OTHER" IS NOT A PASS/FAIL ITEM ──────────────────────────────────
     def test_other_prints_what_was_inspected_not_a_verdict(self):
@@ -911,10 +953,18 @@ class TestGroupThreeRendering(unittest.TestCase):
             "fall_protections": {"result": "pass", "note": ""},
             "other_checklist": {"result": None, "note": "hoist gate latch"},
         }})
-        self.assertIn("Also inspected: hoist gate latch", html)
-        self.assertIn("Passed: Fall Protections", html)
+        # THE INSPECTION REGISTER IS A TABLE NOW -- item, result, note in
+        # three cells -- so the note and its row label are no longer one
+        # string. Every part of the claim is still asserted, and the last one
+        # is the one that matters: "Other" gets no verdict of its own.
+        self.assertIn("hoist gate latch", html)
+        self.assertIn("Also inspected", html)
+        self.assertIn("Fall Protections", html)
+        self.assertIn("Passed", html)
+        self.assertNotIn("Passed: Other", html)
         # It must not be listed as unwalked either — it WAS inspected.
-        self.assertNotIn("Not inspected: Other", html)
+        i = html.index("Also inspected")
+        self.assertNotIn("Not inspected", html[i:i + 200])
 
     def test_an_empty_other_prints_nothing_at_all(self):
         """Nothing typed is nothing to report — not an unwalked item, because
