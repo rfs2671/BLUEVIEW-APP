@@ -93,7 +93,8 @@ DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 #: what makes the rollback a one-line revert. The daily jobsite branch went the
 #: same way: deleted in the change after its own, with 59 of 59 records proving
 #: it could not run.
-IN_FLIGHT = {"preshift_signin", "osha_log", "scaffold_maintenance"}
+IN_FLIGHT = {"preshift_signin", "osha_log", "scaffold_maintenance",
+             "site_superintendent_log"}
 
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):

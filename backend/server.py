@@ -19793,6 +19793,36 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     # cross as DATA -- the same shape the filing-state line and the appended
     # photographs already use.
     _ctx_extra = {}
+    if log_type == "site_superintendent_log":
+        # WHICH ITEMS THE DATE REQUIRES, AND WHAT EACH ONE SAYS. Both live in
+        # `cs_applicable_items` / `_cs_item_body`, which hold the BC 3301.13.13
+        # selection rules and the per-item provenance lines. A declaration
+        # cannot express a date-dependent statutory item list without becoming
+        # a second copy of that rule.
+        try:
+            _cs_attr = await cs_attribution_for(
+                db, project_id, date, (data or {}).get("presence") or {})
+        except Exception as _e:                       # pragma: no cover
+            logger.warning(f"cs attribution failed: {_e}")
+            _cs_attr = None
+        _ctx_extra["register_rows"] = _cs_register_rows(
+            logbook, attribution=_cs_attr)
+        # THE ATTRIBUTION SENTENCE, WHICH IS ALSO DEFECT A2.
+        #
+        # It says how this log's superintendent was matched to the filing, and
+        # on the BC 3301.13.13 sheet it describes that match "by licence
+        # number" -- a term the DOB card does not use; the card carries a
+        # REGISTRATION number, and `registration_number` appears nowhere in
+        # this repository.
+        #
+        # IT IS CARRIED VERBATIM AND NOT CORRECTED HERE. A conversion's job is
+        # that the document still says what it said; changing the words on a
+        # filed compliance record is a separate decision with the operator's
+        # name on it, and it is recorded as A2 in the defect document.
+        if _cs_attr:
+            _ctx_extra["cs_attribution_sentence"] = attribution_sentence(
+                _cs_attr)
+
     if log_type == "preshift_signin":
         _ps_workers = list((data or {}).get("workers") or [])
         try:
@@ -30780,6 +30810,56 @@ _CS_PROVENANCE_LINES = {
 }
 
 
+def _cs_register_rows(logbook, weekly_status=None, attribution=None,
+                      legal_record=True):
+    """The BC 3301.13.13 register as DATA: number, label, citation, body.
+
+    ── EXTRACTED SO TWO RENDERERS CANNOT DISAGREE ABOUT A STATUTE ───────
+
+    Which items a date requires is `cs_applicable_items(log_date)`, and what
+    each one says is `_cs_item_body` plus the provenance line for an item
+    adopted from the CP's own log. That is statutory selection and per-item
+    semantics, and it existed once, inside the branch's row loop.
+
+    The declarative sheet needs the same rows. Rather than restate the rule in
+    a schema -- a second copy of a code-section reading, which is exactly what
+    this engine exists to stop -- the loop moved here and both renderers call
+    it. `_superintendent_log_html` formats these rows into its own markup; the
+    engine's `register` primitive draws them into the sheet's.
+
+    THE BODY IS MARKUP AND THAT IS DELIBERATE. For this document the markup IS
+    the rule: a provenance line, a citation, an item deliberately not recorded
+    here. Handing the engine plain values would mean re-deriving all of it.
+    """
+    data = (logbook or {}).get("data") or {}
+    log_date = (logbook or {}).get("date")
+    presence = data.get("presence") or {}
+    cs_name = presence.get("printed_name") or (logbook or {}).get("cp_name") or ""
+
+    out = []
+    for item in cs_applicable_items(log_date):
+        block = data.get(item["key"])
+        if item["key"] == "weekly_meeting":
+            body = (weekly_status
+                    or '<span style="color:#64748b;">This log does not record '
+                       'the weekly meeting. It is kept elsewhere.</span>')
+        else:
+            body = _cs_item_body(
+                item, block if isinstance(block, dict) else {}, cs_name)
+        if item.get("provenance") and body != NOT_RECORDED:
+            _prov_line = _CS_PROVENANCE_LINES.get(cs_item_provenance(data))
+            if _prov_line:
+                body += ('<br /><span style="font-size:11px;color:#64748b;">'
+                         + _prov_line + '</span>')
+        out.append({
+            "number": item["number"],
+            "label": item["label"],
+            "citation": (item.get("citation") or "") if legal_record else "",
+            "body": body,
+        })
+    return out
+
+
 def _superintendent_log_html(logbook, weekly_status=None, attribution=None,
                              *, legal_record=True):
     """The whole section, built ONCE for both renderers.
@@ -30822,72 +30902,21 @@ def _superintendent_log_html(logbook, weekly_status=None, attribution=None,
     presence = data.get("presence") or {}
     cs_name = presence.get("printed_name") or (logbook or {}).get("cp_name") or ""
 
+    # THE ROWS COME FROM THE ONE RESOLVER, so this renderer and the engine's
+    # `register` primitive cannot disagree about which items BC 3301.13.13
+    # requires on a date, or about what any of them says. The loop that used
+    # to live here is `_cs_register_rows`, unchanged in substance.
     rows = ""
-    for item in cs_applicable_items(log_date):
-        block = data.get(item["key"])
-        if item["key"] == "weekly_meeting":
-            # ITEM 10 IS A STATUS, NOT A FIELD, and it belongs in its own row
-            # rather than as a paragraph below the table -- an item of the
-            # eleven that is missing from the list of eleven reads as an
-            # omission. The obligation is WEEKLY: a daily field blank six days
-            # in seven teaches the reader that blank is normal here, and
-            # teaches the superintendent the same, which then bleeds into items
-            # 4 to 7 where a blank IS a finding.
-            # NOT COLLECTED IN THIS RELEASE, so it says so rather than
-            # rendering a blank a reader would take for "no meeting was due".
-            # `weekly_status` is the parameter the meeting record will supply:
-            # whether a BC 3301.13.19 meeting was recorded in the last seven
-            # days OF ACTIVE WORK, with days carrying no gate check-ins not
-            # counted, so a shutdown week cannot manufacture a violation.
-            body = (weekly_status
-                    or '<span style="color:#64748b;">This log does not record '
-                       'the weekly meeting. It is kept elsewhere.</span>')
-        else:
-            body = _cs_item_body(
-                item, block if isinstance(block, dict) else {}, cs_name)
-        # ── WHERE ITEM 2'S TEXT CAME FROM, PRINTED ON THE RECORD ──────────
-        #
-        # THE CLIENT HALF HAS LANDED. These lines were dark because
-        # `item_provenance` read `data["progress"]["source"]` and NOTHING WROTE
-        # IT: the superintendent screen never fetched the CP's log, so
-        # PROVENANCE_ADOPTED could not be produced by any code path that
-        # existed, and a flag with one reachable value carries nothing. The
-        # screen now offers the CP's filed summary for the date and records
-        # which way he went.
-        #
-        # BC 3301.13.13 item 2 is "the general progress of work", a fact about
-        # the site -- contrast item 3, expressly "the construction
-        # superintendent's activities". Nothing requires him to have composed
-        # the sentence, only that it be in HIS log over HIS signature. So
-        # adoption is legitimate and the document says which it was.
-        #
-        # AND IT MATTERS FROM 2027-01-01. Per the DOB Service Notice of
-        # 2025-12-18 the competent-person allowance sunsets then, after which
-        # the CS must be on site whenever work occurs: he becomes the WITNESS
-        # rather than the summariser and the derivation inverts. Once the two
-        # logs can disagree, which of them item 2 came from is the whole
-        # finding.
-        #
-        # UNMARKED PRINTS NOTHING, and that is a decision rather than an
-        # oversight. NOT_RECORDED is this codebase's sanctioned string for a
-        # field the form OFFERED and he left blank. Provenance was never
-        # offered on a log filed before the flag existed -- the app has no
-        # statement to make about it, rather than a statement that it is
-        # missing -- and one such record exists (2026-09-04). Printing
-        # "not recorded" there would report a gap in HIS answers that is
-        # really a gap in the app's history.
-        if item.get("provenance") and body != NOT_RECORDED:
-            _prov_line = _CS_PROVENANCE_LINES.get(cs_item_provenance(data))
-            if _prov_line:
-                body += ('<br /><span style="font-size:11px;color:#64748b;">'
-                         + _prov_line + '</span>')
-        cite = (item.get("citation") or "") if legal_record else ""
+    for _row in _cs_register_rows(logbook, weekly_status=weekly_status,
+                                  attribution=attribution,
+                                  legal_record=legal_record):
+        _cite = _row["citation"]
         rows += (
             f'<tr><td {_CS_TD} valign="top" width="34%">'
-            f'<strong>{item["number"]}. {item["label"]}</strong>'
-            + (f'<br /><span style="font-size:11px;color:#64748b;">{cite}</span>'
-               if cite else "")
-            + f'</td><td {_CS_TD} valign="top">{body}</td></tr>'
+            f'<strong>{_row["number"]}. {_row["label"]}</strong>'
+            + (f'<br /><span style="font-size:11px;color:#64748b;">{_cite}</span>'
+               if _cite else "")
+            + f'</td><td {_CS_TD} valign="top">{_row["body"]}</td></tr>'
         )
 
     _arrived = presence.get("arrived_at") or NOT_RECORDED

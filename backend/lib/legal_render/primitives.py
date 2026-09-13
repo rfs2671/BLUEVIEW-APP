@@ -701,6 +701,54 @@ def question_answers(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'</thead><tbody>{rows}</tbody></table>')
 
 
+def register(sec: Dict, subject: Any, ctx: Dict) -> str:
+    """A numbered statutory register: item, citation, and what was recorded.
+
+    THE ROWS ARRIVE RESOLVED. Which items a date requires, and what each one
+    says, is decided by the caller -- see this conversion's note. Each row is
+    {number, label, citation, body}, and `body` is markup the caller composed
+    because for this document the markup IS the per-item rule.
+
+    THE CITATION IS PART OF THE ITEM, not decoration. An inspector reading a
+    BC 3301.13.13 log checks items against the code section each one answers,
+    and a register that numbers its items without citing them is a list.
+    """
+    # RESOLVED FROM THE DECLARED PATH, like every other primitive. The
+    # first version took its subject AS the rows -- and under `scope: context`
+    # the subject is the whole context map, so iterating it yielded key
+    # STRINGS, every one was skipped as "not a dict", and the register drew
+    # nothing at all. Six filed sheets lost their entire statutory record and
+    # the comparison caught it as 17 missing words on every one.
+    rows = _get(subject, sec.get("path", "")) if sec.get("path") else subject
+    out = ""
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        num = _html.escape(str(row.get("number") or ""))
+        label = _html.escape(str(row.get("label") or ""))
+        cite = _html.escape(str(row.get("citation") or ""))
+        body = str(row.get("body") or "")
+        out += (
+            f'<tr style="break-inside:avoid;page-break-inside:avoid;">'
+            f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+            f'width:34%;vertical-align:top;">'
+            f'<strong>{num}. {label}</strong>'
+            + (f'<div style="{_LABEL}">{cite}</div>' if cite else "")
+            + f'</td>'
+            f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+            f'vertical-align:top;">{body}</td></tr>')
+    if not out:
+        return ""
+    head = "".join(
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">{t}</th>'
+        for t in ("Item", "Record"))
+    return (f'<table style="width:100%;border-collapse:collapse;'
+            f'border:{_RULE};">'
+            f'<thead style="display:table-header-group;"><tr>{head}</tr>'
+            f'</thead><tbody>{out}</tbody></table>')
+
+
 def filing_state(label: str, sentence: str) -> str:
     """The line under the letterhead when a record is not filed.
 
@@ -845,7 +893,19 @@ def signature(sec: Dict, rec: Any, ctx: Dict) -> str:
     The line is under the stroke and the stroke may cross it, which is what
     happens when somebody signs paper.
     """
-    _p = sec.get("path", "")
+    # ── ONE MARK, MORE THAN ONE PLACE IT MAY LIVE ───────────────────────
+    #
+    # The superintendent's log stores his signature on the presence block and
+    # falls back to the account's; the branch reads them in that order and a
+    # declaration naming only the second would print UNSIGNED over six filed
+    # records that carry a mark.
+    #
+    # FIRST PRESENT WINS, and PRESENCE is the test, not truth -- a key present
+    # and null still means "asked and unsigned" and must reach `ink` as that,
+    # rather than falling through to a path that happens to hold something.
+    _paths = sec.get("path", "")
+    _paths = [_paths] if isinstance(_paths, str) else list(_paths)
+    _p = next((p for p in _paths if _has(rec, p)), _paths[0] if _paths else "")
     sig = _get(rec, _p)
     mark = ink(sig, ctx, present=_has(rec, _p))
     who = FORMATTERS["name"](_get(rec, sec.get("name_path", "")))
@@ -943,6 +1003,7 @@ PRIMITIVE_FNS = {
     "table": table,
     "inspection_log": inspection_log,
     "question_answers": question_answers,
+    "register": register,
     "checklist": checklist,
     "narrative": narrative,
     "signature": signature,

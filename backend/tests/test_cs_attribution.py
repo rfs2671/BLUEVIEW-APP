@@ -249,7 +249,15 @@ class TheSentenceIsAFactNotAnAccusation(unittest.TestCase):
 class ItReachesTheDocument(unittest.TestCase):
     def test_both_renderers_resolve_it(self):
         src = (BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertEqual(src.count("await cs_attribution_for("), N_RENDERERS)
+        # ONE PER LIVE RENDERER, AND THE COUNT DERIVES FROM THE WINDOW.
+        # The superintendent sheet renders declaratively now, so the
+        # attribution is resolved above the dispatch and crosses in the render
+        # context. While the old branch still exists there are two call sites;
+        # the change that deletes it takes one away. Derived from whether that
+        # branch is there, so this line needs no edit on the day it goes.
+        _branch_alive = 'elif log_type == "site_superintendent_log":' in src
+        self.assertEqual(src.count("await cs_attribution_for("),
+                         N_RENDERERS + (1 if _branch_alive else 0))
 
     def test_the_sentence_sits_above_the_signature(self):
         html = server._superintendent_log_html(

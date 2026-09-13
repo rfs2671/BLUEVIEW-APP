@@ -316,7 +316,16 @@ class TheLegalPdfKeepsEverything(unittest.TestCase):
         self.assertIn('if legal_record else ""', body)          # citations
         self.assertIn("CS_LOG_ATTESTATION_HTML if legal_record", body)
         self.assertIn("show_affirmation=legal_record", body)
-        self.assertEqual(body.count("legal_record"), 4)          # 3 uses + param
+        # 4 -> 5. `_superintendent_log_html` now passes `legal_record`
+        # through to `_cs_register_rows`, which is where the per-item
+        # citations are decided -- the loop that used to read the flag inline
+        # moved out so that the branch and the engine's `register` primitive
+        # cannot disagree about which items BC 3301.13.13 requires.
+        #
+        # THE FLAG STILL GATES THE SAME THREE THINGS and the three assertions
+        # above are what say so; this number is the guard that nothing else
+        # started reading it.
+        self.assertEqual(body.count("legal_record"), 5)   # 3 uses + param + pass-through
 
 
 class TheRenderedOutputSaysSo(unittest.TestCase):

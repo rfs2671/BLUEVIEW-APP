@@ -110,7 +110,8 @@ EMPTY_KINDS = ("omit", "none_documented", "blank_rows")
 #: Primitive names a section may claim. The engine holds the implementations;
 #: this list is what a schema is allowed to ask for.
 PRIMITIVES = ("field_grid", "table", "checklist", "narrative", "signature",
-              "certification", "inspection_log", "question_answers")
+              "certification", "inspection_log", "question_answers",
+              "register")
 
 #: FORMATTER NAMES A PRIMITIVE HANDLES ITSELF, not value formatters.
 #:
@@ -298,6 +299,16 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
                 f"section that says nothing about its empty state gets one by "
                 f"accident, and on a compliance document the three kinds of "
                 f"empty are not interchangeable.")
+        _sp = sec.get("path")
+        if isinstance(_sp, (list, tuple)):
+            if not _sp or not all(isinstance(x, str) and x for x in _sp):
+                raise SchemaError(
+                    f"{where}: a list `path` is a non-empty list of dotted "
+                    f"paths, first present wins; got {_sp!r}")
+            if sec.get("primitive") != "signature":
+                raise SchemaError(
+                    f"{where}: only a signature may name more than one path")
+
         for col in (sec.get("fields") or []) + (sec.get("columns") or []):
             if len(col) != 3:
                 raise SchemaError(f"{where}: a field is (path, label, formatter)")
@@ -732,6 +743,101 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "primitive": "signature", "scope": "first", "empty": "omit",
                 "path": "cp_signature", "name_path": "cp_name",
                 "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── CONSTRUCTION SUPERINTENDENT LOG ─────────────────────────────────────
+    #
+    # SIX FILED RECORDS, and the only type whose register is DATE-DEPENDENT:
+    # which items BC 3301.13.13 requires is `cs_applicable_items(date)`. Those
+    # rows are resolved by the caller and drawn by `register` -- see
+    # `_cs_register_rows` for why that rule is not restated here.
+    #
+    # `source` IS `one`, NOT `combined`, AND THAT IS THIS CHANGE'S SCOPE. This
+    # log and the daily jobsite log are meant to print as one sheet eventually;
+    # all six of these records share a (project, date) with a daily log, so the
+    # path is exercisable. But `combined` changes WHICH RECORDS APPEAR on a
+    # document, and an old-against-new comparison of a sheet that grew a second
+    # record is not a comparison -- the two sides would not be about the same
+    # thing. The combined sheet is its own change, with its own comparison.
+    "site_superintendent_log": {
+        "title": "Construction Superintendent Log",
+        "subtitle": "BC 3301.13.13 \u2014 to be maintained on site for inspection",
+        "cite": "BC 3301.13.13",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "none_documented",
+                "none_text": ("The project this record names is not on file, "
+                              "so the site could not be identified."),
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # THE SUPERINTENDENT AND HIS HOURS. `printed_name` is what he
+                # typed on this record; `cp_name` is the account that filed it,
+                # and the branch prefers the first. Both are declared so the
+                # sheet does not lose the distinction the branch drew.
+                "n": 2, "title": "The Day", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data.presence.printed_name", "Superintendent", "name"),
+                    ("data.presence.arrived_at", "On site from", "time_of_day"),
+                    ("data.presence.departed_at", "Until", "time_of_day"),
+                ],
+            },
+            {
+                # THE STATUTORY REGISTER. Rows arrive resolved under
+                # `scope: context` because the item list depends on the date
+                # and each body carries its own provenance line.
+                "n": 3, "title": "Record of the Day",
+                "primitive": "register", "scope": "context",
+                "path": "register_rows", "requires": ["register_rows"],
+                "empty": "none_documented",
+                "none_text": "No items were required on this date.",
+            },
+            {
+                # THE ATTESTATION, REFERENCED. `site_superintendent_log`
+                # is in the versioned registry, so the sentence printed over
+                # his mark is the one every signature event stored -- not a
+                # retyped copy that would differ on its first escaped
+                # character.
+                "n": 4, "title": "Certification",
+                "primitive": "certification", "scope": "first",
+                "empty": "none_documented",
+                "statement_ref": "site_superintendent_log",
+                "fields": [
+                    ("data.presence.printed_name", "Name (Print)", "name"),
+                    ("date", "Date", "date_long"),
+                ],
+                "signature_path": "cp_signature",
+                "note": None,
+            },
+            {
+                # HOW THE SUPERINTENDENT WAS MATCHED TO THIS FILING, carried
+                # verbatim. The sentence describes the match "by licence
+                # number" and the DOB card carries a REGISTRATION number --
+                # defect A2, reported and not corrected inside a conversion.
+                "n": 5, "title": "Attribution", "primitive": "narrative",
+                "scope": "context", "path": "cs_attribution_sentence",
+                "formatter": "sentence",
+                "requires": ["cs_attribution_sentence"], "empty": "omit",
+            },
+            {
+                "n": 6, "title": "Superintendent Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": ["data.presence.signature", "cp_signature"],
+                "name_path": "data.presence.printed_name",
+                "role": "Construction Superintendent",
             },
         ],
     },
