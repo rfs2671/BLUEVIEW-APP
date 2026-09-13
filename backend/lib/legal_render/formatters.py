@@ -344,6 +344,56 @@ def affirmation_note(v: Any) -> str:
             % (n, "" if n == 1 else "s"))
 
 
+def inspection_result(v: Any) -> str:
+    """A fall-protection equipment verdict. NULL IS NOT A PASS.
+
+    THREE OUTCOMES AND AN ABSENCE, and two of them are adverse. "Removed from
+    service" must never collapse into "Fail": one says the harness failed a
+    check, the other says it is off the site. An inspector reading a filed
+    register needs to know which, and a renderer that folds them has decided
+    something the CP recorded differently.
+
+    THE ADVERSE ONES ARE EMPHASISED, in the same weight `inspection_log` uses
+    for a failed item -- not a second spelling of emphasis, the same one.
+    """
+    if v is None:
+        return NOT_RECORDED
+    s = _s(v)
+    if not s:
+        return NOT_RECORDED
+    low = s.lower()
+    if low in ("pass", "passed", "ok"):
+        return "Pass"
+    if low in ("fail", "failed"):
+        return "<strong>Fail</strong>"
+    if "removed" in low:
+        return "<strong>Removed from service</strong>"
+    return _html.escape(s)
+
+
+def vibration_status(v: Any) -> str:
+    """Whether a monitored reading crossed its threshold.
+
+    BOUND TO THE DATA MAP, like `weather_line`, because the answer needs three
+    keys: the threshold, the current reading, and the flag that says the
+    comparison was made.
+
+    BOTH READINGS AND THE FLAG, OR NOTHING. A status derived from one of them
+    is this renderer doing arithmetic on a compliance record. If the record
+    does not carry the comparison, the sheet says it was not recorded rather
+    than computing one.
+    """
+    d = v if isinstance(v, dict) else {}
+    threshold = _s(d.get("vibration_threshold"))
+    current = _s(d.get("vibration_current"))
+    if not threshold or not current or "vibration_over_threshold" not in d:
+        return NOT_RECORDED
+    over = bool(d.get("vibration_over_threshold"))
+    reading = _html.escape(f"{current} against {threshold}")
+    return (f"<strong>Over threshold</strong> &mdash; {reading}" if over
+            else f"Within threshold &mdash; {reading}")
+
+
 def tick_or_blank(v: Any) -> str:
     """A tick, or nothing. NEVER "No", and never the not-recorded phrase.
 
@@ -423,6 +473,8 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "raw_name": raw_name,
     "pass_fail": pass_fail,
     "tick_or_blank": tick_or_blank,
+    "inspection_result": inspection_result,
+    "vibration_status": vibration_status,
     "affirmation_note": affirmation_note,
     "sub_company": sub_company,
     "weather_line": weather_line,

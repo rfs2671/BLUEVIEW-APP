@@ -49,7 +49,8 @@ from __future__ import annotations
 import html as _html
 from typing import Any, Dict, List, Optional
 
-from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _has,
+from .primitives import (_BODY, _RULE, PRIMITIVE_FNS, _empty_note,
+                         _get, _has,
                          _section_close, _section_open, appended_photographs,
                          filing_state)
 from .schema import SCHEMAS
@@ -324,5 +325,14 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         + str(ctx.get("amendment_html") or "")
         + "".join(body)
         + appended_photographs(ctx.get("appended_photographs") or [])
+        # A SCOPE LINE, BELOW THE SIGNATURE AND UNNUMBERED. Declared on the
+        # TYPE rather than as a section, because numbering it would read as
+        # part of the record and attaching it to the signature would read as
+        # part of the attestation -- and it is neither. It says what the
+        # document covers.
+        + (f'<div style="{_BODY};border-top:{_RULE};padding:4px 6px;'
+           f'margin:8px 0 0;color:#333;">'
+           f'{_html.escape(str(decl.get("footer_notice")))}</div>'
+           if decl.get("footer_notice") else "")
         + "</body></html>"
     )

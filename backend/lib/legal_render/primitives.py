@@ -432,7 +432,37 @@ def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
 
     known_present = any(k in stored for k, _t in labels)
     items: List = list(labels) if known_present else []
-    items += [(k, str(k)) for k in stored if k not in known]
+    # TITLE-CASED, THE WAY `inspection_log` ALREADY DOES IT. This printed
+    # the raw snake_case key, so a precaution the label set did not know
+    # rendered as `gas_cylinders_secured` on an FDNY permit -- and a word diff
+    # cannot see it, because `words()` splits on the underscore and finds the
+    # same tokens either way. Two primitives in one file disagreeing about the
+    # same question is how that survived.
+    def _label_for(k):
+        """Title-case an IDENTIFIER; leave a SENTENCE exactly as written.
+
+        BOTH HALVES ARE LOAD-BEARING AND THEY COME FROM DIFFERENT FORMS.
+
+        An FDNY precaution the label set does not know is stored as
+        `gas_cylinders_secured`, and printing that raw puts a snake_case
+        identifier on a 3504 permit -- invisible to a word diff, because
+        `words()` splits on the underscore and finds the same tokens either
+        way.
+
+        The KIOSK keys its orientation checklist by the item's FULL ENGLISH
+        SENTENCE, and title-casing that turns "Site-specific hazards and
+        hazardous activities have been reviewed" into nonsense on a filed
+        record. That rule predates this engine and a test names it.
+
+        SO THE TEST IS THE SHAPE, NOT THE SOURCE: underscores or no spaces
+        means an identifier; anything else is already prose. `key_label` in
+        server.py has drawn exactly this line since it was written, and this
+        is that rule, not a second one.
+        """
+        s = str(k)
+        return s.replace("_", " ").title() if ("_" in s or " " not in s) else s
+
+    items += [(k, _label_for(k)) for k in stored if k not in known]
     if not items:
         return ""
 
@@ -459,11 +489,19 @@ def checklist(sec: Dict, rec: Any, ctx: Dict) -> str:
                      f'<td style="border:{_HAIRLINE};"></td>')
         rows += "</tr>"
 
+    # THE HEADINGS ARE THE DOCUMENT'S, NOT THE PRIMITIVE'S.
+    #
+    # `Topic` / `Reviewed` was hardcoded, and on an FDNY 3504 permit "Fire
+    # Watch Assigned -- Reviewed" claims the CP REVIEWED AN ITEM. The permit's
+    # claim is that a fire watch WAS ASSIGNED. Four types share this primitive
+    # and they do not share that sentence.
+    _item_h = _html.escape(str(sec.get("item_label") or "Topic"))
+    _mark_h = _html.escape(str(sec.get("mark_label") or "Reviewed"))
     head = ("".join(
         f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
-        f'padding:3px 6px;text-align:left;">Topic</th>'
+        f'padding:3px 6px;text-align:left;">{_item_h}</th>'
         f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
-        f'padding:3px 6px;text-align:left;">Reviewed</th>' for _ in range(2)))
+        f'padding:3px 6px;text-align:left;">{_mark_h}</th>' for _ in range(2)))
 
     return (f'<table style="width:100%;border-collapse:collapse;'
             f'border:{_RULE};">'
