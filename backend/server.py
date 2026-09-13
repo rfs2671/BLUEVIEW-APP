@@ -19716,6 +19716,19 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     )
     cp_sig_block = render_signature_html(logbook.get("cp_signature"), "CP Signature")
 
+    # ── A RECORD THAT IS NOT FILED SAYS SO, UNDER THE LETTERHEAD ────────
+    #
+    # PLAIN DATA, NOT HTML, and that is a deliberate difference from the
+    # amendment banner below. That banner is shared with the twelve types
+    # still on the old renderer and arrives pre-rendered because it already
+    # had a design. This line exists only on the engine's sheet, so composing
+    # its markup here would mean copying the engine's type tokens into this
+    # file -- a second spelling of the visual system. The words belong with
+    # the status constants; the ink belongs with the other primitives.
+    #
+    # ABOVE THE SWITCH, for the same reason the banner is: the switch returns.
+    _filing_state = filing_state_notice(logbook.get("status"))
+
     # ── AN AMENDED RECORD SAYS SO, ON ITS OWN FACE ──────────────────────
     #
     # `amendment_sentence` reads the CHILD document -- amendment_reason,
@@ -19804,6 +19817,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # signature under it was affirmed FOR THIS DOCUMENT -- and, when it
             # was not, prints the deficiency rather than a clean-looking blank.
             "signature_affirmation": _signature_affirmation_html,
+            # WHAT THIS DOCUMENT IS, before what happened to it. The engine
+            # draws this above the amendment banner: a reader needs to know a
+            # record is a draft before he reads that somebody amended it.
+            "filing_state": _filing_state,
             # CONTENT, NOT CHROME. Composed above this switch for the reason
             # written there.
             "amendment_html": amendment_html,
@@ -29127,6 +29144,60 @@ AMENDMENT_NONE = "not_amended"
 # `withdrawn_by` / `withdrawn_by_name` are NOT that second writer: they are the
 # ATTESTATION, and they answer a different question (who, and when).
 WITHDRAWN_STATUS = "withdrawn"
+
+#: The one state that needs no comment on a filed document. Everything else
+#: does, INCLUDING a value this file has never heard of -- see
+#: `filing_state_notice`, whose default arm is the reason it exists.
+FILED_STATUS = "submitted"
+DRAFT_STATUS = "draft"
+
+
+def filing_state_notice(status):
+    """(label, sentence) for a record that is NOT filed, or None when it is.
+
+    ── WHY THE SHEET CARRIES THIS AT ALL ────────────────────────────────
+
+    The old renderer's header printed the status on every document. The
+    declarative engine's letterhead does not, so the first type through it
+    stopped saying whether its record had been filed -- 3 of 92 orientation
+    records are drafts that now render exactly like the 89 filed ones. Defect
+    A17, found by diffing the old branch against the new engine.
+
+    ── "HAS NOT BEEN FILED", NOT "IS INCOMPLETE" ────────────────────────
+
+    Incomplete is a judgement about the CONTENTS of a record. Not filed is a
+    fact about its STATE, and only the second is something this document can
+    prove. The product already draws that line everywhere else -- UNAFFIRMED
+    states what is missing from a signature rather than accusing the signer;
+    the amendment banner says a reason was not recorded rather than calling
+    the amendment unjustified -- and the wording here follows it.
+
+    ── IT SAYS NOTHING ABOUT SIGNATURES ─────────────────────────────────
+
+    All six drafts in production carry `cp_signature` present and empty, so a
+    line reading "unsigned" would be true of every one of them today. It is
+    still not this apparatus's claim: the signature sections already print
+    UNSIGNED per mark, and two pieces of apparatus asserting the same thing is
+    how they come to disagree. The one that owns a claim keeps it.
+
+    ── THE DEFAULT ARM IS THE POINT ─────────────────────────────────────
+
+    An unrecognised status -- a new value, a migration, None, "" -- returns a
+    notice rather than None. Returning None there would print nothing, which
+    is indistinguishable from a filed record, which is A17 reintroduced
+    through the default branch of its own repair. It states the limit instead
+    of guessing, and names the value so a reader can act on it.
+    """
+    value = str(status or "").strip().lower()
+    if value == FILED_STATUS:
+        return None
+    if value == DRAFT_STATUS:
+        return ("Draft", "This record has not been filed.")
+    if value == WITHDRAWN_STATUS:
+        return ("Withdrawn",
+                "This record was filed and has since been withdrawn.")
+    return ("Status not recorded",
+            "This document cannot state whether this record was filed.")
 
 # The Mongo clause, written once. Every selector that hunts for unfinished work
 # keys on `is_locked: {$ne: True}` or `status: {$ne: "submitted"}`, and a

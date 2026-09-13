@@ -295,7 +295,7 @@ as *no*.
 
 ---
 
-### A17. A converted type's sheet no longer says it is a DRAFT
+### A17. A converted type's sheet no longer says it is a DRAFT — CLOSED 2026-09-13
 
 `lib/legal_render/engine.py` — the engine's letterhead carries the title,
 citation and date. The old document's header carried `STATUS: SUBMITTED` or
@@ -315,6 +315,34 @@ list that this belongs on once the operator rules.
 the redesign deliberately replaced, so whether it returns — and where it sits on
 a document whose whole visual argument is that it looks like filed paper — is a
 design decision, not a mechanical restoration.
+
+**Closed 2026-09-13.** A rule-bounded line under the letterhead, black on white,
+no fill and no icon, carrying a small-caps label and one sentence in the sheet's
+own type. It renders only when the record is **not** filed: printing FILED on
+all 311 would make the word invisible by repetition and make the absent case
+indistinguishable from a renderer that forgot.
+
+| status | line |
+|---|---|
+| `draft` | DRAFT — This record has not been filed. |
+| `withdrawn` | WITHDRAWN — This record was filed and has since been withdrawn. |
+| anything else, including absent | STATUS NOT RECORDED — This document cannot state whether this record was filed. |
+
+The third row is the one that matters. An unrecognised status printing nothing
+would be indistinguishable from a filed record, which is this defect
+reintroduced through the default arm of its own repair.
+
+**"Has not been filed", not "is incomplete":** incomplete is a judgement about a
+record's contents; not filed is a fact about its state, and only the second is
+something the document can prove.
+
+**It says nothing about signatures.** All six drafts carry `cp_signature`
+present and empty, so a line reading "unsigned" would be true of every one today
+— and the signature sections already print UNSIGNED per mark. Two pieces of
+apparatus asserting the same thing is how they come to disagree.
+
+Status is now the third row on `WHOLE_DOCUMENT_APPARATUS`, so the positional
+guard covers it.
 
 **Found:** 2026-09-12, by the old-branch-against-new-engine diff.
 

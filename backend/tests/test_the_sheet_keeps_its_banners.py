@@ -92,10 +92,10 @@ UNAFFIRMED = {"paths": _STROKES, "signerName": "alex rivera"}
 
 
 def _logbook(log_type="subcontractor_orientation", *, amended=False,
-             cp_sig=AFFIRMED, worker_sig=UNAFFIRMED):
+             cp_sig=AFFIRMED, worker_sig=UNAFFIRMED, status="submitted"):
     lb = {
         "_id": "lb1", "project_id": "p1", "date": "2026-09-09",
-        "log_type": log_type, "cp_name": "daniel kaplan", "status": "submitted",
+        "log_type": log_type, "cp_name": "daniel kaplan", "status": status,
         "cp_signature": cp_sig,
         "data": {"worker_name": "alex rivera",
                  "worker_company": "Premier Builders Inc.",
@@ -386,6 +386,151 @@ class AnAmendedRecordSaysSoWhicheverRendererDrawsIt(unittest.TestCase):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  THE FILING STATE LINE
+# ══════════════════════════════════════════════════════════════════════════
+
+class ARecordThatIsNotFiledSaysSo(unittest.TestCase):
+    """DEFECT A17. The old header printed the status on every document; the
+    engine's letterhead printed none, so 3 of 92 orientation records were
+    drafts rendering exactly like the 89 filed ones."""
+
+    def test_a_draft_says_it_has_not_been_filed(self):
+        html = _render(_logbook(status="draft"))
+        self.assertIn("DRAFT", html.upper())
+        self.assertIn("This record has not been filed.", html)
+
+    def test_a_withdrawn_record_says_that_instead(self):
+        """A DIFFERENT CLAIM, NOT A SHADE OF THE SAME ONE. A withdrawn record
+        WAS filed and was then retracted; a draft never was. Collapsing them
+        would tell a reader the wrong history."""
+        html = _render(_logbook(status="withdrawn"))
+        self.assertIn("WITHDRAWN", html.upper())
+        self.assertIn("has since been withdrawn", html)
+        self.assertNotIn("This record has not been filed.", html)
+
+    def test_a_filed_sheet_says_nothing_at_all(self):
+        """Printing FILED on all 311 would make the word invisible by
+        repetition and make the ABSENT case indistinguishable from a renderer
+        that forgot. Silence is reserved for the state needing no comment."""
+        html = _render(_logbook(status="submitted"))
+        for word in ("has not been filed", "has since been withdrawn",
+                     "cannot state whether"):
+            self.assertNotIn(word, html)
+
+    def test_an_unknown_status_states_the_limit_rather_than_guessing(self):
+        """THE ROW THIS WHOLE REPAIR TURNS ON, and the easiest to leave out.
+        A value this code has never heard of printing NOTHING would be
+        indistinguishable from a filed record -- A17 reintroduced through the
+        default arm of its own fix."""
+        for bad in ("locked", "", None, "SUBMITTED_PENDING_REVIEW"):
+            with self.subTest(status=bad):
+                html = _render(_logbook(status=bad))
+                self.assertIn("STATUS NOT RECORDED", html.upper())
+                self.assertIn("cannot state whether this record was filed",
+                              html)
+
+    def test_the_case_of_the_stored_value_does_not_decide_it(self):
+        """`submitted` and `Submitted` are the same filed record, and a sheet
+        that announced the second as unfiled would be making an accusation out
+        of a capital letter."""
+        self.assertIsNone(server.filing_state_notice("Submitted"))
+        self.assertIsNone(server.filing_state_notice(" submitted "))
+
+
+class TheLineIsAFactNotAWarning(unittest.TestCase):
+    """A watermark says "this is a copy of something". A line says "this record
+    is not filed", which is what is true. A draft is an ORDINARY state of a
+    record, and the document says which state and stops."""
+
+    def setUp(self):
+        self.out = primitives.filing_state(
+            *server.filing_state_notice("draft"))
+
+    def test_it_carries_no_alarm_colour(self):
+        """The amber of an unaffirmed signature and of an amended record are
+        both warnings about something that went wrong. This is not one."""
+        for alarm in ("#d97706", "#b45309", "#92400e", "#b91c1c", "#dc2626",
+                      "#16a34a"):
+            with self.subTest(colour=alarm):
+                self.assertNotIn(alarm, self.out)
+
+    def test_and_no_icon(self):
+        for glyph in ("&#9888;", "⚠", "!", "&#10003;"):
+            with self.subTest(glyph=glyph):
+                self.assertNotIn(glyph, self.out)
+
+    def test_it_is_drawn_in_the_sheets_own_type(self):
+        """Not hand-styled at the call site. Composing this markup in
+        server.py would mean a second copy of the engine's type tokens there,
+        which is the drift this engine exists to end."""
+        from lib.legal_render import primitives as _p
+        self.assertIn(_p._RULE, self.out)
+        self.assertIn(_p._LABEL, self.out)
+        self.assertIn(_p._BODY, self.out)
+
+    def test_the_words_are_escaped(self):
+        out = primitives.filing_state("<b>x", "a & b")
+        self.assertNotIn("<b>x", out)
+        self.assertIn("a &amp; b", out)
+
+
+class NoSchemaGetsASayInIt(unittest.TestCase):
+    """WHOLE-DOCUMENT APPARATUS, NOT A PRIMITIVE. A primitive is something a
+    schema may ASK for, and no log type gets to decide whether its own
+    document announces that it was never filed."""
+
+    def test_it_is_not_in_the_primitive_registry(self):
+        self.assertNotIn("filing_state", primitives.PRIMITIVE_FNS)
+
+    def test_and_a_schema_may_not_name_it(self):
+        from lib.legal_render import schema as _schema
+        self.assertNotIn("filing_state", _schema.PRIMITIVES)
+
+    def test_every_converted_type_gets_the_line(self):
+        """THE CENSUS, so a type converted later cannot quietly miss it. It is
+        derived from CONVERTED_TYPES rather than named, because a hand-written
+        list is a check with an expiry date nobody set."""
+        self.assertGreaterEqual(len(legal_render.CONVERTED_TYPES), 1)
+        for t in sorted(legal_render.CONVERTED_TYPES):
+            with self.subTest(log_type=t):
+                html = _render(_logbook(t, status="draft"))
+                self.assertIn("This record has not been filed.", html)
+
+
+class WhatThisDocumentIsBeforeWhatHappenedToIt(unittest.TestCase):
+    """THE ORDERING, AND IT IS NOT OBSERVABLE IN PRODUCTION YET.
+
+    One filed record is both a draft and an amendment -- a toolbox talk from
+    2026-09-01 -- and toolbox talks still render through the old branch, so no
+    sheet the ENGINE draws currently carries both lines. The combination is
+    real, it is one conversion away, and it is pinned here on a constructed
+    record rather than left until it appears.
+    """
+
+    def setUp(self):
+        self.html = _render(_logbook(status="draft", amended=True))
+
+    def test_both_lines_are_present(self):
+        self.assertIn("This record has not been filed.", self.html)
+        self.assertIn("AMENDED RECORD", self.html)
+
+    def test_the_filing_state_comes_first(self):
+        """A reader needs to know a record is a draft BEFORE he reads that
+        somebody amended it. The other order invites him to weigh a correction
+        to a document that was never filed in the first place."""
+        self.assertLess(self.html.index("This record has not been filed."),
+                        self.html.index("AMENDED RECORD"))
+
+    def test_and_both_sit_under_the_letterhead(self):
+        self.assertLess(self.html.index("Site Safety Orientation Record"),
+                        self.html.index("This record has not been filed."))
+
+    def test_the_first_section_still_follows_them(self):
+        self.assertLess(self.html.index("AMENDED RECORD"),
+                        self.html.index("1. Site Information"))
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  THE GENERAL GUARD
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -411,17 +556,13 @@ class ApparatusComposedBelowTheDispatchCannotReachAConvertedType(
 
     #: name -> the assignment that composes it.
     #:
-    #: ONE CANDIDATE IS DELIBERATELY NOT ON THIS LIST YET. The old document's
-    #: header carried STATUS: SUBMITTED or STATUS: DRAFT and the engine's
-    #: letterhead carries neither, so 3 of 92 orientation records are drafts
-    #: that no longer say so (defect A17). It is the same shape as the two
-    #: below and it is left off on purpose: the status sat in the dark header
-    #: the redesign replaced, so where it belongs on a sheet designed to look
-    #: like filed paper is a decision, not a restoration. Add it here when that
-    #: decision is made -- this comment is the reminder, and the defect
-    #: document is the record.
+    #: THE FILING STATE WAS ON THIS LIST AS A COMMENT BEFORE IT WAS ON IT AS A
+    #: ROW, which is the only reason it was not lost twice. It was found by the
+    #: old-branch diff, recorded as defect A17, left unbuilt pending a design
+    #: decision, and named here so the gap could not go quiet in the meantime.
     WHOLE_DOCUMENT_APPARATUS = {
         "the amendment banner": "amendment_html = (",
+        "the filing state line": "_filing_state = filing_state_notice(",
     }
 
     def setUp(self):
@@ -456,11 +597,13 @@ class ApparatusComposedBelowTheDispatchCannotReachAConvertedType(
         arm = self.fn[:self.exit]
         i = arm.index("legal_render.render(")
         self.assertIn('"amendment_html": amendment_html', arm[i:])
+        self.assertIn('"filing_state": _filing_state', arm[i:])
 
     def test_the_engine_places_what_it_is_given(self):
         src = io.open(BACKEND / "lib" / "legal_render" / "engine.py",
                       encoding="utf-8").read()
         self.assertIn('ctx.get("amendment_html")', src)
+        self.assertIn('ctx.get("filing_state")', src)
 
 
 if __name__ == "__main__":
