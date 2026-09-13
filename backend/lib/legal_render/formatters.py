@@ -321,6 +321,27 @@ def pass_fail(v: Any) -> str:
     return _html.escape(s)
 
 
+def tick_or_blank(v: Any) -> str:
+    """A tick, or nothing. NEVER "No", and never the not-recorded phrase.
+
+    FOR A COLUMN WHERE THE ROW IS THE RECORD. The OSHA register's Signed
+    column says a signature is on file; an empty cell says nothing, which is
+    correct, because the register's claim is about the certifications listed
+    and not about who signed what.
+
+    "No" THERE WOULD BE AN ASSERTION THE CP NEVER MADE -- the document stating
+    that a named man's signature is NOT on file. And the not-recorded phrase
+    would be a finding against a row that has none. Both are claims; a blank
+    cell is the absence of one.
+    """
+    if isinstance(v, bool):
+        return "&#10003;" if v else ""
+    s = _s(v)
+    if not s:
+        return ""
+    return "&#10003;" if s.lower() in _YES_WORDS else ""
+
+
 def yes_no(v: Any) -> str:
     """A stored boolean. ABSENT IS NOT NO -- it is not recorded, and a
     compliance document that prints "No" for a question nobody answered has
@@ -378,6 +399,7 @@ FORMATTERS: Dict[str, Callable[[Any], str]] = {
     "answer": answer,
     "raw_name": raw_name,
     "pass_fail": pass_fail,
+    "tick_or_blank": tick_or_blank,
     "sub_company": sub_company,
     "weather_line": weather_line,
     "toggle_list": toggle_list,

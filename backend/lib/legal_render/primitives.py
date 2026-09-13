@@ -68,6 +68,34 @@ from typing import Any, Dict, List
 from .formatters import FORMATTERS, NOT_RECORDED
 from .schema import LABEL_SETS, ROW_FORMATTERS
 
+# THE ATTESTATION REGISTRY IS A LEAF -- typing only, no server import -- so the
+# sentence a signer was SHOWN is referenced rather than retyped.
+#
+# RETYPING IT IS WRONG ON THE FIRST CHARACTER. The registry text is already
+# HTML-escaped and `certification` escapes what it is handed, so a copy turns
+# `worker's` into `worker&#39;s` on the page. And the whole value of that
+# registry is that every signature event stores the exact text the signer read,
+# so a snapshot can be checked against it -- a second copy makes that check a
+# comparison between two guesses.
+try:
+    from ..logbook.attestations import ATTESTATIONS as _ATTESTATIONS
+except Exception:  # pragma: no cover - a caller without the logbook package
+    _ATTESTATIONS = {}
+
+# THE ATTESTATION REGISTRY IS A LEAF -- typing only, no server import -- so the
+# sentence a signer was SHOWN is referenced rather than retyped.
+#
+# RETYPING IT IS WRONG ON THE FIRST CHARACTER. The registry text is already
+# HTML-escaped and `certification` escapes what it is handed, so a copy turns
+# `worker's` into `worker&#39;s` on the page. And the whole value of that
+# registry is that every signature event stores the exact text the signer read,
+# so a snapshot can be checked against it -- a second copy makes that check a
+# comparison between two guesses.
+try:
+    from ..logbook.attestations import ATTESTATIONS as _ATTESTATIONS
+except Exception:  # pragma: no cover - a caller without the logbook package
+    _ATTESTATIONS = {}
+
 # ── THE FOUR WEIGHTS. There are no others. ─────────────────────────────────
 _TITLE = "font:700 20px Helvetica,Arial,sans-serif;letter-spacing:-0.01em"
 _SECTION = ("font:700 10px Helvetica,Arial,sans-serif;letter-spacing:0.08em;"
@@ -217,10 +245,58 @@ def cp_headcount(row: Any) -> str:
     return _html.escape(f"{text} (CP) - gate recorded {gate_text}")
 
 
+def preshift_signature(row: Any) -> str:
+    """A worker's sign-in mark, in three states, from three keys off one row.
+
+    THE THREE ARE DIFFERENT CLAIMS and the old renderer drew all three:
+
+        a mark on file        the roster carries his signature
+        no signature on file  he is on the roster and signed nothing
+        image unavailable     a signature was recorded and cannot be shown
+
+    THE THIRD IS NOT THE SECOND. A resolution that failed is not a man who did
+    not sign, and collapsing them puts a deficiency on a filed record against
+    somebody who has none.
+    """
+    w = row if isinstance(row, dict) else {}
+    sig = w.get("signature") or w.get("signature_data")
+    if sig:
+        return "Signature on file"
+    if w.get("signin_id") or w.get("signature_unavailable"):
+        # RECORDED AND NOT DRAWABLE. The resolution runs before render and
+        # inlines what it found; an id with nothing behind it is a lookup that
+        # came back empty, not a refusal to sign.
+        return "Signature on file &mdash; image unavailable"
+    return ('<span style="color:#b91c1c;">NO SIGNATURE ON FILE</span>')
+
+
+def osha_cert_type(row: Any) -> str:
+    """The certification class the card prints, and whether it could be read.
+
+    NOTHING IS RESOLVED AT RENDER TIME. The register prints what the row
+    stores; a class derived from a card's colour, or a live certificate joined
+    in now, would make a filed document say something its own record does not.
+
+    THE UNVERIFIED MARKER IS AN OBSERVATION, NOT A JUDGEMENT. It says this
+    document could not read the card, which is a fact about the reading. It
+    does not say the number is wrong.
+    """
+    r = row if isinstance(row, dict) else {}
+    kind = str(r.get("certification_type") or "").strip()
+    out = _html.escape(kind) if kind else NOT_RECORDED
+    if r.get("unverified"):
+        out += ('<br /><span style="font:400 8px Helvetica,Arial,sans-serif;'
+                'letter-spacing:0.04em;color:#555;">UNVERIFIED &middot; card '
+                'could not be read</span>')
+    return out
+
+
 #: Name -> implementation, for the narrow set a TABLE hands the whole row to.
 #: See schema.ROW_FORMATTERS for why this exception exists and why it is a
 #: closed named set rather than a lambda in a declaration.
-ROW_FORMATTER_FNS = {"cp_headcount": cp_headcount}
+ROW_FORMATTER_FNS = {"cp_headcount": cp_headcount,
+                     "preshift_signature": preshift_signature,
+                     "osha_cert_type": osha_cert_type}
 
 
 def table(sec: Dict, records: List, ctx: Dict) -> str:
@@ -729,6 +805,16 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         f'<div style="{_LABEL}">{_html.escape(lbl)}</div>'
         f'<div style="{_BODY}">{_fmt(rec, path, f)}</div></td>'
         for path, lbl, f in (sec.get("fields") or []))
+    # THE SENTENCE, REFERENCED WHERE ONE EXISTS. `statement_ref` names a key
+    # in the versioned attestation registry; `statement` is a literal, for a
+    # document whose sentence is not versioned there. A declaration may not
+    # carry both -- two sentences over one mark.
+    _ref = sec.get("statement_ref")
+    if _ref:
+        _statement = str((_ATTESTATIONS.get(_ref) or {}).get("text") or "")
+    else:
+        _statement = _html.escape(sec.get("statement", ""))
+
     _p = sec.get("signature_path", "")
     _sig = _get(rec, _p)
     mark = ink(_sig, ctx, present=_has(rec, _p))
@@ -757,7 +843,7 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         '<div style="break-inside:avoid;page-break-inside:avoid;">'
         f'<div style="{_BODY};border:{_RULE};border-top:none;padding:5px 6px;'
         'line-height:1.45;">'
-        f'{_html.escape(sec.get("statement", ""))}</div>'
+        f'{_statement}</div>'
         f'<table style="width:100%;border-collapse:collapse;border:{_RULE};'
         'border-top:none;"><tr>'
         f'{fields}'

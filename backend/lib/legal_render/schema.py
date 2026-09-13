@@ -104,7 +104,7 @@ SOURCE_KINDS = ("one", "group", "combined")
 #: became one sheet per worker -- and every ordinary form instead holds its
 #: repeating groups in its own `data`: the daily log's crews and its safety
 #: observations, and the same shape on most of the eleven types after it.
-SCOPES = ("project", "first", "each", "rows")
+SCOPES = ("project", "first", "each", "rows", "context")
 EMPTY_KINDS = ("omit", "none_documented", "blank_rows")
 
 #: Primitive names a section may claim. The engine holds the implementations;
@@ -140,7 +140,7 @@ PRIMITIVE_FORMATTERS = ("signature_ink",)
 #: closed named set implemented in a reviewed file is the whole difference.
 #:
 #: The column's path is written "." and ignored: the subject IS the row.
-ROW_FORMATTERS = ("cp_headcount",)
+ROW_FORMATTERS = ("cp_headcount", "preshift_signature", "osha_cert_type")
 
 #: Named label sets a checklist may point at, so the sentences a worker agreed
 #: to live in ONE place rather than in each schema that shows them.
@@ -318,6 +318,16 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
                 raise SchemaError(
                     f"{where}: `row_requires` is a non-empty list of keys, "
                     f"got {rr!r}")
+
+        if sec.get("statement") and sec.get("statement_ref"):
+            raise SchemaError(
+                f"{where}: a certification may name `statement_ref` OR carry a "
+                f"literal `statement`, not both -- two sentences over one mark")
+
+        if sec.get("statement") and sec.get("statement_ref"):
+            raise SchemaError(
+                f"{where}: a certification may name `statement_ref` OR carry a "
+                f"literal `statement`, not both -- two sentences over one mark")
 
         req = sec.get("requires")
         if req is not None:

@@ -157,6 +157,18 @@ def _subject(sec: Dict, records: List, ctx: Dict):
         return ctx.get("project") or {}
     if scope == "each":
         return records
+    if scope == "context":
+        # THE RENDER CONTEXT ITSELF, for a section whose subject is neither the
+        # project nor any filed record -- a count the caller resolved because
+        # the engine cannot await anything. `project` already reads one named
+        # key off ctx; this reads the map.
+        return ctx
+    if scope == "context":
+        # THE RENDER CONTEXT ITSELF, for a section whose subject is neither the
+        # project nor any filed record -- a count the caller resolved because
+        # the engine cannot await anything. `project` already reads one named
+        # key off ctx; this reads the map.
+        return ctx
     if scope == "rows":
         # THE ROWS HELD INSIDE THE RECORD, handed to `table` in place of the
         # filed siblings it was originally written against. Every ordinary
@@ -262,8 +274,17 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
                         + _section_close())
             continue
         fn = PRIMITIVE_FNS[sec["primitive"]]
+        # A STATIC SENTENCE QUALIFYING THIS SECTION'S ANSWERS, when declared.
+        # NOT a narrative: a narrative binds a path and this text is not on the
+        # record. It is what stands between a seeded "No" and an affirmative
+        # safety-violation attestation.
+        _note = sec.get("note")
+        _note_html = (f'<div style="{_BODY};border:{_RULE};border-top:none;'
+                      f'padding:5px 6px;line-height:1.45;color:#333;">'
+                      f'{_html.escape(str(_note))}</div>') if _note else ""
         body.append(_section_open(sec)
                     + fn(sec, _subject(sec, records, ctx), ctx)
+                    + _note_html
                     + _section_close())
 
     cont = _html.escape(
