@@ -876,6 +876,43 @@ has done this per entry since it was written, and it is the one gate in this
 document whose failures have all been true. That is not a coincidence — it is
 the argument for the rule.
 
+### A test made redundant by a wider rule
+
+**A wider rule covering a narrower one is not a reason to stop checking the
+narrower one.**
+
+A test that a broader guarantee has made redundant does not fail. It passes —
+for a reason that is no longer the reason it was written for. The day the
+broader guarantee changes, it goes quiet instead of red, and nobody notices,
+because nothing about it ever looked wrong.
+
+**The instance.** `_filed_log` used to fall back to the first record of a type
+when nothing was filed, and a test proved that a *withdrawn* correction could
+not win that fallback — it kept the unsigned parent instead. The fallback was
+then removed entirely: nothing unfiled reaches the report at all. The old test's
+claim is now true, but true because of a rule that has nothing to do with
+withdrawal, and it would keep passing if the withdrawal clause were deleted
+tomorrow.
+
+The fix is not to delete it and not to leave it. It is to **add the case where
+the narrower rule still decides something on its own** — here, a day where a
+record *is* filed, so both are candidates and the withdrawal clause is what
+picks. The pair is what notices if the fallback ever returns.
+
+### Fixtures that were correct by accident
+
+Seven fixtures across four files carried no `status`. That was harmless for as
+long as the report rendered an unfiled record the same as a filed one — so
+nothing in the suite had to distinguish them, and nothing did.
+
+When the rule changed, four tests about roster rendering began slicing a
+document that was no longer there. **Their subject was always what a filed
+sheet prints, and not one of them said so.**
+
+> A fixture that omits the field a rule depends on is a fixture that agrees
+> with the rule by accident. It reports on the rule's absence as confidently as
+> on its presence.
+
 ### Five shapes, and the fourth is the one to fear
 
 **THE TARGET IS WRONG.** 1, 4, 9. The check runs, answers honestly, and is

@@ -676,6 +676,12 @@ def _logbook_with(photo):
     return {
         "_id": "lb1", "project_id": "proj1", "company_id": "co_test",
         "log_type": "daily_jobsite", "date": "2026-08-07",
+        # FILED. The report no longer prints an UNFILED record at all --
+        # no card, no thumbnail, and no public share link for a draft --
+        # so a fixture with no status is one the report correctly
+        # ignores. This test is about which PHOTOGRAPHS a filed record
+        # emits, not about drafts.
+        "status": "submitted",
         "cp_signature": {"paths": [[1, 2]], "affirmed": True, "affirmedAt": "2026-08-09T12:00:00Z"},
         "cp_name": "Casey CP",
         "data": {"activities": [{

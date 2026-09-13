@@ -31041,7 +31041,32 @@ def _filed_log(logbooks, log_type):
     filed = [l for l in same_type if logbook_is_filed(l)]
     if filed:
         return max(filed, key=_order)
-    return same_type[0]
+
+    # ── AND NOTHING FILED MEANS NOTHING, NOT THE DRAFT ──────────────────
+    #
+    # This returned `same_type[0]`, described as preserving the old behaviour
+    # so a day with only an unfiled draft still rendered something. What it
+    # actually produced on the investor report was worse than a blank:
+    #
+    #   the card said FILED, because the caller tests `if document`
+    #   the card carried a THUMBNAIL of an unfiled document
+    #   and it carried a PUBLIC SHARE LINK, minted for that draft
+    #
+    # THE LINK IS THE PART THAT MATTERS. A card is a claim and can be wrong on
+    # paper; a link is ACCESS, handed to a lender, to a record nobody has
+    # signed. 755 tokens exist today and every one opens a filed record, so
+    # this path had never been taken -- which is why it is closed now rather
+    # than after it is.
+    #
+    # THE CARD ALREADY HAD THE RIGHT STATE. `CardState.MISSING` renders "Not
+    # filed" over a grey panel naming the date, which is true of a day whose
+    # only record is a draft. Nothing had to be designed; the fallback was
+    # routing around a state that already said the right thing.
+    #
+    # THE PER-LOGBOOK PDF IS UNAFFECTED. A draft can legitimately be opened
+    # there and says what it is -- the filing-state line under the letterhead.
+    # This is about the report that INDEXES filings.
+    return None
 
 
 # ── REPORT #N — ISSUED ONCE, PER PROJECT, AT SEND ──────────────────────────
@@ -31216,10 +31241,21 @@ async def _oriented_on_site_count(project_id: str, checkins: list) -> int:
     understates coverage, and a mockup that matched on name alone reported 10
     of 11 against the report's 11 of 11.
     """
+    # FILED ONLY, AND THIS IS A SEPARATE MECHANISM FROM `_filed_log`.
+    #
+    # Fixing the picker does not reach here: this is its own query and it
+    # carried no status clause, so a DRAFT orientation counted as coverage on
+    # the cover's compliance line. "Orientation on file" is a claim about a
+    # signed record.
+    #
+    # `is_locked` OR `status == submitted`, the same two clauses
+    # `logbook_is_filed` applies -- spelled as a Mongo filter because this
+    # reads five thousand rows and must not load them to filter in Python.
     rows = await db.logbooks.find(
         {"project_id": project_id,
          "log_type": "subcontractor_orientation",
-         "is_deleted": {"$ne": True}},
+         "is_deleted": {"$ne": True},
+         "$or": [{"is_locked": True}, {"status": "submitted"}]},
         {"data.worker_id": 1, "data.worker_name": 1}).to_list(5000)
     ids, names = set(), set()
     for row in rows:
@@ -31347,8 +31383,12 @@ async def generate_combined_report(
     # cached; a type that is owed and absent gets a grey panel naming the date,
     # never an empty document outline.
     on_site = gate.on_site
+    # FILED ONLY. The line below reads "N acknowledgments filed today" and
+    # this list had no status clause, so it counted drafts in a sentence that
+    # uses the word `filed`. Third place, second mechanism.
     orientations = [l for l in logbooks
-                    if l.get("log_type") == "subcontractor_orientation"]
+                    if l.get("log_type") == "subcontractor_orientation"
+                    and logbook_is_filed(l)]
     covered = await _oriented_on_site_count(project_id, checkins)
     preshift = _filed_log(logbooks, "preshift_signin")
     signins = len(((preshift or {}).get("data") or {}).get("signins") or [])

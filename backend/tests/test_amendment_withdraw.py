@@ -931,8 +931,24 @@ class TheReportNeverSelectsOne(unittest.TestCase):
         unsigned_parent = {"_id": "p2", "log_type": "daily_jobsite",
                            "created_at": T0, "status": "draft"}
         withdrawn = _child("c2", status="withdrawn", created_at=T0)
-        got = server._filed_log([withdrawn, unsigned_parent], "daily_jobsite")
-        self.assertEqual(got["_id"], "p2")
+        # THE FALLBACK IS GONE ENTIRELY, so neither reaches the report: not
+        # the withdrawn correction, and not the unsigned parent either. The
+        # leak this test was written for cannot happen by this route or any
+        # other. The withdrawal clause is still asserted on its own below,
+        # against a day where something IS filed -- a wider rule that happens
+        # to cover a narrower one is not a reason to stop checking it.
+        self.assertIsNone(
+            server._filed_log([withdrawn, unsigned_parent], "daily_jobsite"),
+            "an unfiled record reached the report's document picker")
+
+    def test_a_withdrawn_child_loses_to_a_FILED_parent(self):
+        """The withdrawal clause where it still decides something: both are
+        candidates, one is filed, and the withdrawn correction must not win on
+        recency."""
+        got = server._filed_log(
+            [_child("c3", status="withdrawn", created_at=T0), self.PARENT],
+            "daily_jobsite")
+        self.assertEqual(got["_id"], "p1")
 
     def test_a_day_with_ONLY_a_withdrawn_document_renders_nothing(self):
         """Better a blank section than a record nobody stands behind."""

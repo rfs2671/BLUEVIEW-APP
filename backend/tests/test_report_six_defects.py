@@ -104,9 +104,25 @@ class _Db:
 # one carrying his card id from the gate, one from legacy carrying none. This
 # is a FILED record, so no endpoint fix can change it; the report must render
 # what is stored, and the test must see that.
+# ── EVERY RECORD HERE IS FILED, AND IT HAS TO SAY SO NOW ─────────────────
+#
+# These fixtures carried no status. That was harmless while `_filed_log` fell
+# back to the first match of a type whether or not anything was filed -- so an
+# unmarked record rendered exactly like a signed one and nothing in the suite
+# had to distinguish them.
+#
+# THE REPORT NO LONGER PRINTS AN UNFILED RECORD AT ALL. A draft is not counted,
+# not indexed, and gets no card, no thumbnail and no share link. So a fixture
+# with no status is now a fixture the report correctly ignores, and four tests
+# about roster rendering started slicing a document that was not there.
+#
+# `status: submitted` is what these records always MEANT -- the subject is what
+# a filed sheet prints, not what an unfiled one does. The one test that IS
+# about a draft says so in its own name.
 _DAY_WITH_DUPLICATE = {
     "preshift": {
         "_id": "lb_ps", "log_type": "preshift_signin", "date": "2026-08-12",
+        "status": "submitted",
         "data": {"company": "AAZ", "workers": [
             {"name": "WILMER CARRILLO", "company": "AAZ", "osha_number": "SST-1",
              "had_injury": "no", "inspected_ppe": "yes"},
@@ -117,6 +133,7 @@ _DAY_WITH_DUPLICATE = {
     },
     "toolbox": {
         "_id": "lb_tb", "log_type": "toolbox_talk", "date": "2026-08-12",
+        "status": "submitted",
         "data": {"attendees": [
             {"name": "Segundo Pilamunga", "company": "AAZ"},
             {"name": "", "company": ""},                          # nameless seed
@@ -124,6 +141,7 @@ _DAY_WITH_DUPLICATE = {
     },
     "jobsite": {
         "_id": "lb_dj", "log_type": "daily_jobsite", "date": "2026-08-12",
+        "status": "submitted",
         "data": {"activities": [{
             "crew_id": "C1", "company": "AAZ", "num_workers": "4",
             "work_description": "Rebar installation", "work_locations": "",
@@ -778,8 +796,12 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
                 "signed": False, "date": "2026-08-14"}
         day = {
             **_DAY_WITH_DUPLICATE,
+            # FILED, for the same reason as every other fixture in this file
+            # -- see the note on _DAY_WITH_DUPLICATE. This test is about what a
+            # filed register does with a seed row, not about drafts.
             "osha": {"_id": "lb_osha", "log_type": "osha_log",
-                     "date": "2026-08-12", "data": {"entries": [seed]}},
+                     "date": "2026-08-12", "status": "submitted",
+                     "data": {"entries": [seed]}},
         }
         html = _render_documents_with_osha(day)
         self.assertIn("OSHA / SST Certification Log", html)
@@ -799,6 +821,12 @@ class TheTwoRenderersAgreeOnAnEmptyRow(unittest.TestCase):
         html = _render_documents_with_osha({**_DAY_WITH_DUPLICATE,
                                   "osha": {"_id": "lb_osha", "log_type": "osha_log",
                                            "date": "2026-08-12",
+                                           # FILED. See the note on
+                                           # _DAY_WITH_DUPLICATE: an unfiled
+                                           # record is not on the report at
+                                           # all now, and this test's subject
+                                           # is what a filed register prints.
+                                           "status": "submitted",
                                            "data": {"entries": [real]}}})
         self.assertIn("4YU1RY8KKM", html)
         # Reworded by finding 5: the register prints the class name the card
@@ -1120,11 +1148,36 @@ class TestAmendmentSupersedesOnceSigned(unittest.TestCase):
         self.assertIn("AMENDMENT", self._day([original, child]))
         self.assertIn("AMENDMENT", self._day([child, original]))
 
-    def test_a_day_with_only_an_unfiled_draft_still_renders_it(self):
-        """Unchanged behaviour: nothing filed falls back to the first match
-        rather than blanking the section."""
+    def test_a_day_with_only_an_unfiled_draft_renders_NOTHING_for_it(self):
+        """THE RULING REVERSED, AND THE OLD ONE IS WORTH READING FIRST.
+
+        This asserted the opposite: "nothing filed falls back to the first
+        match rather than blanking the section." The intent was kindness -- a
+        day with a draft on it should show something rather than a hole.
+
+        WHAT IT ACTUALLY PRODUCED WAS WORSE THAN A HOLE. The caller tests `if
+        document`, so the draft got a card reading FILED, a thumbnail of an
+        unsigned page, and A PUBLIC SHARE LINK minted for it, on a document
+        that goes to a lender. A card is a claim and can be argued with; a link
+        is ACCESS.
+
+        Measured before the change: 755 share tokens exist and every one opens
+        a filed record, so this path had never been taken. It is closed now
+        rather than after it is.
+
+        THE HOLE WAS NEVER THE ALTERNATIVE. `CardState.MISSING` renders "Not
+        filed" over a grey panel naming the date, which is exactly true of a
+        day whose only record is a draft. The fallback was routing around a
+        state that already said the right thing.
+
+        THE PER-LOGBOOK PDF IS UNAFFECTED -- a draft opens there and says what
+        it is, under the letterhead. This is about the report that INDEXES
+        filings.
+        """
         draft = self._tb("d1", text="ONLY DRAFT", locked=False, status="draft", created=9)
-        self.assertIn("ONLY DRAFT", self._day([draft]))
+        out = self._day([draft])
+        self.assertNotIn("ONLY DRAFT", out,
+                         "an unfiled draft reached the investor report")
 
     def test_every_call_site_goes_through_the_resolver(self):
         """Ten hand-written picks is how this pair drifted twice. One resolver,
