@@ -50,6 +50,7 @@ import html as _html
 from typing import Any, Dict, List, Optional
 
 from .primitives import (_BODY, _RULE, PRIMITIVE_FNS, _empty_note,
+                         _row_survives,
                          _get, _has,
                          _section_close, _section_open, appended_photographs,
                          filing_state)
@@ -132,10 +133,13 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
         # is how the declaration says the same thing -- the section's declared
         # `empty` decides what appears in its place.
         _rows = _get(records[0] if records else {}, sec.get("path", "")) or []
-        _need = sec.get("row_requires")
-        if _need:
+        # THE SAME PREDICATE THE PRIMITIVE USES. Two copies of this test is
+        # how a section counts itself non-empty and then draws no rows -- a
+        # numbered heading over nothing, which is the failure
+        # test_every_declared_section_draws.py exists for.
+        if sec.get("row_requires") or sec.get("row_requires_present"):
             _rows = [r for r in _rows if isinstance(r, dict)
-                     and any(str(_get(r, k) or "").strip() for k in _need)]
+                     and _row_survives(r, sec)]
         return not _rows
     if sec.get("scope") == "each":
         return not records

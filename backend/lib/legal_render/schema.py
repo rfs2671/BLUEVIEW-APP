@@ -151,6 +151,52 @@ LABEL_SETS: Dict[str, List[tuple]] = {
     # backend/server.py SCAFFOLD_QUESTIONS -- nineteen questions a shed
     # inspection answers in WORDS, not ticks. See  for why
     # that distinction is load-bearing.
+    # ── THE THREE ITEM LISTS THE LAST SIX CONVERSIONS NEED ──────────────────
+    #
+    # LIFTED VERBATIM FROM THE BRANCHES, key and label and ORDER. Each of these
+    # was a tuple list inside its own arm of the per-type chain, and the label
+    # is the sentence the CP tapped on the screen and the inspector reads on
+    # the sheet. Those two have to be the same words: the FDNY permit editor
+    # once said "(35ft)" and "Covered/Protected" where every reader printed
+    # "(35 ft)" and "Covered / Protected", so the CP ticked one sentence and
+    # the inspector read another.
+    #
+    # frontend/src/utils/portedFormPayloads.test.cjs asserts the device's list
+    # against these, key for key and word for word, and reads them through
+    # `labelSet()` -- so a label edited on one side and not the other fails
+    # rather than shipping.
+    "hot_work_precautions": [
+        ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
+        ("fire_extinguisher_present", "Fire Extinguisher Present"),
+        ("sprinklers_operational", "Sprinklers Operational"),
+        ("combustibles_covered", "Combustibles Covered / Protected"),
+        ("fire_watch_assigned", "Fire Watch Assigned"),
+        ("ventilation_adequate", "Ventilation Adequate"),
+        ("permit_posted", "Permit Posted at Location"),
+    ],
+    "crane_pre_operation": [
+        ("wire_ropes", "Wire Ropes Inspected"),
+        ("hooks_latches", "Hooks & Latches Secure"),
+        ("brakes", "Brakes Functional"),
+        ("outriggers", "Outriggers Deployed"),
+        ("load_chart", "Load Chart Available"),
+        ("boom_condition", "Boom Condition OK"),
+        ("anti_two_block", "Anti Two-Block Device"),
+        ("fire_extinguisher", "Fire Extinguisher Present"),
+        ("signals_reviewed", "Signals Reviewed"),
+        ("area_barricaded", "Area Barricaded"),
+        ("wind_speed_checked", "Wind Speed Checked"),
+        ("power_lines_clear", "Power Lines Clear"),
+        ("load_weight_known", "Load Weight Known"),
+        ("rigging_inspected", "Rigging Inspected"),
+        ("swing_radius_clear", "Swing Radius Clear"),
+    ],
+    "concrete_formwork": [
+        ("shores_plumb", "Shores Plumb"),
+        ("bracing_adequate", "Bracing Adequate"),
+        ("formwork_clean", "Formwork Clean"),
+        ("no_gaps", "No Gaps"),
+    ],
     "scaffold_maintenance_questions": [
         ("signs_on_parapets", "Are the signs on the parapets?"),
         ("base_plates_mudsills", "Are the base plates and mudsills secured?"),
@@ -347,6 +393,17 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
                 raise SchemaError(
                     f"{where}: `{key}` is a non-empty list of dotted paths, "
                     f"got {r!r}")
+
+        for _rk in ("row_requires", "row_requires_present"):
+            _rv = sec.get(_rk)
+            if _rv is not None and (
+                    not isinstance(_rv, (list, tuple)) or not _rv
+                    or not all(isinstance(x, str) and x for x in _rv)):
+                raise SchemaError(
+                    f"{where}: `{_rk}` is a non-empty list of row keys")
+            if _rv is not None and sec.get("primitive") != "table":
+                raise SchemaError(
+                    f"{where}: `{_rk}` filters ROWS and only a table has any")
 
         rr = sec.get("row_requires")
         if rr is not None:
@@ -838,6 +895,806 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "path": ["data.presence.signature", "cp_signature"],
                 "name_path": "data.presence.printed_name",
                 "role": "Construction Superintendent",
+            },
+        ],
+    },
+
+    # ── HOT WORK PERMIT ─────────────────────────────────────────────────────
+    #
+    # ZERO PRODUCTION RECORDS, and that is a fact about this conversion rather
+    # than a gap in the baseline. There is nothing to diff, so the evidence is
+    # backend/tests/fixtures/filed_sheets/fixtures_checklist_cluster.py
+    # rendered through BOTH renderers -- the branch is still in server.py, so
+    # the old side is the old renderer and not a reconstruction of it.
+    #
+    # THE FIXTURE'S `partial` RECORD IS THE ONE THAT MATTERS. Two of the seven
+    # precautions answered and five ABSENT: a sheet that draws five empty
+    # boxes there is a permit asserting that sprinklers, ventilation and the
+    # fire watch were each considered and declined. `checklist` draws the
+    # third state in words, which is the whole reason it is not just boxes.
+    "hot_work": {
+        # THE REGISTRY'S LABEL, NOT THE BRANCH'S. The branch printed "Hot Work
+        # Permit"; every other surface in the product says "Hot Work Permit
+        # Log", because the document is the LOG and the permit is the FDNY
+        # paper the admin holds. This sheet has never been the permit.
+        "title": "Hot Work Permit Log",
+        "subtitle": "Welding, cutting and brazing — to be maintained on site "
+                    "for inspection",
+        "cite": "FC §3504",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # NO `requires`. Every field here is a question the permit
+                # form asks, so a grid of absences on a record filed blank is
+                # the truth about that record -- which is exactly the case
+                # `_is_empty` is documented as deliberately NOT collapsing.
+                "n": 2, "title": "The Work", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data.work_type", "Work Type", "text"),
+                    ("data.location", "Location", "name"),
+                    ("data.worker_name", "Worker", "name"),
+                    # An FDNY certificate-of-fitness number is an identifier.
+                    ("data.worker_cert_number", "Worker Cert #", "text"),
+                    ("data.start_time", "Start Time", "time_of_day"),
+                    ("data.end_time", "End Time", "time_of_day"),
+                    ("data.fire_watch_name", "Fire Watch", "name"),
+                    # PENDING `derived_time`. THIS VALUE IS NOT A RECORDED
+                    # TIME: hotWorkModel.calcFireWatchEnd derives it as work
+                    # end + 30 minutes and the editor captures no real
+                    # fire-watch end at all. The branch prints the qualifier
+                    # "(default: work end + 30 min)" beside it for that reason
+                    # -- FDNY can require 60 -- and `time_of_day` prints the
+                    # bare number, which reads as a watch-until somebody set.
+                    # See the request filed with this declaration.
+                    ("data.fire_watch_end_time", "Fire Watch Until",
+                     "fire_watch_default"),
+                    # THE CP'S NAME IS A FIELD, NOT ONLY A SIGNATURE
+                    # CAPTION. The branch printed "CP: <name>" whenever
+                    # `cp_name` was set and independently of the mark; bound
+                    # only to the signature section it vanishes with that
+                    # section on a record that never carried a `cp_signature`
+                    # key. The daily log declares it in both places.
+                    ("cp_name", "Competent Person", "name"),
+                ],
+            },
+            {
+                # THE EXISTING `checklist`, PLUS A LABEL SET. No result, no
+                # fail, no note -- `inspection_log` exists for the daily
+                # jobsite register's fourth answer and is not reached for here.
+                #
+                # `none_documented` RATHER THAN `omit`: the precautions are
+                # the permit. A hot work sheet that simply has no precautions
+                # section reads as a form that did not ask, and this one asks.
+                "n": 3, "title": "Pre-Work Precautions",
+                "primitive": "checklist", "scope": "first",
+                "path": "data.precautions", "labels": "hot_work_precautions",
+                # THE PERMIT'S OWN WORDS. The branch printed
+                # `Precaution | Confirmed`; the primitive's default is
+                # `Topic | Reviewed`, and "Fire Watch Assigned -- Reviewed"
+                # claims the CP reviewed an item when what the permit asserts
+                # is that a fire watch WAS ASSIGNED.
+                "item_label": "Precaution", "mark_label": "Confirmed",
+                "empty": "none_documented",
+                "none_text": "No precautions documented.",
+            },
+            {
+                "n": 4, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── CRANE OPERATIONS ────────────────────────────────────────────────────
+    #
+    # ZERO PRODUCTION RECORDS. See the hot work note above for what stands in
+    # for a baseline and why.
+    #
+    # THE CHECKLIST AND THE LIFT LOG ARE TWO DIFFERENT KINDS OF SECTION and
+    # the order is the branch's: the pre-operation checks come BEFORE the
+    # lifts, because that is the order they happened in and the checklist is
+    # what licenses the lifts.
+    "crane_operations": {
+        "title": "Crane Operations Log",
+        "subtitle": "Pre-operation inspection and load log — to be maintained "
+                    "on site for inspection",
+        "cite": "§3319",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                "n": 2, "title": "The Crane", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data.crane_type", "Crane Type", "name"),
+                    # A manufacturer's or operator's marking, not prose.
+                    ("data.crane_id", "Crane ID", "text"),
+                    ("data.operator_name", "Operator", "name"),
+                    ("data.operator_license", "Operator License", "text"),
+                    # THE CP'S NAME IS A FIELD, NOT ONLY A SIGNATURE
+                    # CAPTION. The branch printed "CP: <name>" whenever
+                    # `cp_name` was set and independently of the mark; bound
+                    # only to the signature section it vanishes with that
+                    # section on a record that never carried a `cp_signature`
+                    # key. The daily log declares it in both places.
+                    ("cp_name", "Competent Person", "name"),
+                ],
+            },
+            {
+                # FIFTEEN ITEMS, AND STEP 2 IS INCOMPLETE UNTIL ALL FIFTEEN
+                # ARE ANSWERED (craneOperationsModel.incompleteSteps). A
+                # half-walked checklist is precisely what the device's pip
+                # exists to show, so the sheet must not flatten the unanswered
+                # ones into unticked boxes.
+                "n": 3, "title": "Pre-Operation Checklist",
+                "primitive": "checklist", "scope": "first",
+                "path": "data.pre_operation_checklist",
+                "labels": "crane_pre_operation", "empty": "none_documented",
+                # `Item | Confirmed`, which is what the branch printed. Four
+                # types share this primitive and they do not share a sentence.
+                "item_label": "Item", "mark_label": "Confirmed",
+                "none_text": "No pre-operation checks documented.",
+            },
+            {
+                # `text` AND `sentence`, NOT `raw_text`, AND THE DAILY LOG
+                # SETTLED IT. A lift row exists because a lift happened, so
+                # every cell on it is a question that was asked -- the same
+                # reading the crew table takes, which prints `sentence` for a
+                # description and `text` for a location. The toolbox roster
+                # takes the other reading for the opposite reason.
+                #
+                # NO UNITS. load_weight and radius are stored as the operator
+                # typed them and the editor captures no unit; adding one here
+                # would be a fabrication on a §3319 record.
+                #
+                # PENDING `row_requires`: the branch drops a row with none of
+                # time / description / load_weight / radius set, and this
+                # table cannot. An untouched EMPTY_LOAD_ENTRY printing here is
+                # a lift the crane never made.
+                "n": 4, "title": "Lift Log", "primitive": "table",
+                "scope": "rows", "path": "data.load_entries",
+                # AN UNTOUCHED SEED IS NOT A LIFT. `EMPTY_LOAD_ENTRY` carries
+                # all four keys blank, and the branch dropped it; without this
+                # the sheet printed a numbered row and four empty cells on a
+                # crane log where nothing was lifted.
+                "row_requires": ["time", "description", "load_weight",
+                                 "radius"],
+                "empty": "none_documented",
+                "none_text": "No lifts recorded.",
+                "columns": [
+                    ("time", "Time", "text"),
+                    ("description", "Description", "sentence"),
+                    ("load_weight", "Load Weight", "text"),
+                    ("radius", "Radius", "text"),
+                ],
+            },
+            {
+                "n": 5, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── CONCRETE OPERATIONS ─────────────────────────────────────────────────
+    #
+    # ZERO PRODUCTION RECORDS. See the hot work note above.
+    #
+    # A CONCRETE SAFETY MANAGER INSTRUMENT, which is why it is major-building
+    # only and carries no site-condition toggle. The citation is the
+    # registry's corrected pair -- it used to carry §3310.4, the SITE SAFETY
+    # COORDINATOR's section, on the CSM's log.
+    "concrete_operations": {
+        "title": "Concrete Operations Log",
+        "subtitle": "Slump tests and formwork inspection — to be maintained "
+                    "on site for inspection",
+        "cite": "§3310.10 / §3315",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # `weather_conditions` IS THE CHIP THE CP TAPPED, NOT A FETCH.
+                # It is one of seven stored words (concreteOperationsModel
+                # WEATHER_OPTIONS) and has nothing to do with the daily log's
+                # `weather` map, so `weather_line` -- which reads a fetch state
+                # and a temperature off a map -- is the wrong formatter and
+                # would print the whole-line "could not be retrieved" message
+                # over a word the CP chose.
+                #
+                # volume_ordered and temperature are UNIT-LESS as entered.
+                "n": 2, "title": "The Pour", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("data.pour_location", "Pour Location", "name"),
+                    ("data.concrete_supplier", "Supplier", "name"),
+                    ("data.mix_design", "Mix Design", "text"),
+                    ("data.volume_ordered", "Volume Ordered", "text"),
+                    ("data.weather_conditions", "Weather", "text"),
+                    ("data.temperature", "Temperature", "text"),
+                    # THE CP'S NAME IS A FIELD, NOT ONLY A SIGNATURE
+                    # CAPTION. The branch printed "CP: <name>" whenever
+                    # `cp_name` was set and independently of the mark; bound
+                    # only to the signature section it vanishes with that
+                    # section on a record that never carried a `cp_signature`
+                    # key. The daily log declares it in both places.
+                    ("cp_name", "Competent Person", "name"),
+                ],
+            },
+            {
+                # PENDING `pass_fail`. `pass` IS TRI-STATE -- EMPTY_SLUMP_TEST
+                # seeds it null -- and the branch prints Pass, Fail, or
+                # nothing, never a Fail the CP did not record. `yes_no` is the
+                # closest existing formatter and it prints the WRONG TWO
+                # WORDS: "Yes" where a filed §3315 record says "Pass". See the
+                # request filed with this declaration.
+                #
+                # PENDING `row_requires`: the branch drops a row with no time,
+                # no value and a null verdict. An untouched EMPTY_SLUMP_TEST
+                # printing here is a slump test nobody performed.
+                "n": 3, "title": "Slump Tests", "primitive": "table",
+                "scope": "rows", "path": "data.slump_tests",
+                # AN UNTOUCHED `EMPTY_SLUMP_TEST` IS NOT A TEST -- and a
+                # RECORDED FAILURE IS. `pass` is tri-state and seeded null, so
+                # the value test alone would drop every failed slump off a BC
+                # 3315 pour record while keeping the passes: `str(False or "")`
+                # is empty. The branch tested all three and asked a different
+                # question of the third.
+                "row_requires": ["time", "value"],
+                "row_requires_present": ["pass"],
+                "empty": "none_documented",
+                "none_text": "No slump tests recorded.",
+                "columns": [
+                    ("time", "Time", "text"),
+                    ("value", "Slump", "text"),
+                    # `pass_fail`, WHICH THE DECLARATION ASKED FOR AND
+                    # WHICH NOW EXISTS. Its docstring names this column: a
+                    # FAILED slump on a filed BC 3315 record printed "No"
+                    # under a heading reading Result. "Fail" and "No" are not
+                    # the same word on a compliance document -- one is a
+                    # verdict on a test, the other an answer to a question --
+                    # and the comparison reported `pass` and `fail` as words
+                    # the old sheet had and the new one did not.
+                    ("pass", "Result", "pass_fail"),
+                ],
+            },
+            {
+                "n": 4, "title": "Formwork Inspection",
+                "primitive": "checklist", "scope": "first",
+                "path": "data.formwork_checklist",
+                "labels": "concrete_formwork", "empty": "none_documented",
+                "item_label": "Item", "mark_label": "Confirmed",
+                "none_text": "No formwork inspection documented.",
+            },
+            {
+                "n": 5, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── EXCAVATION MONITORING ───────────────────────────────────────────────
+    #
+    # ZERO PRODUCTION RECORDS, AND THAT IS THE HARD PART RATHER THAN THE EASY
+    # ONE. Every other conversion can be checked against filed documents; this
+    # one cannot, now or ever. So the evidence is
+    # backend/tests/fixtures/legal_render/excavation_monitoring.json, which
+    # exercises all 23 paths the old branch read, and the substitute for a
+    # field census is the SCREEN: every path declared below is written by
+    # `excavationMonitoringModel.draftBody`, which is the one place the payload
+    # shape is decided, so no field here can be the next `areas_visited`.
+    #
+    # TITLE, SUBTITLE AND CITE ARE THE REGISTRY'S, not the branch's. The branch
+    # printed "Excavation Monitoring"; the registry entry has carried the word
+    # Log, the subtitle and §3304 all along, and the letterhead has three slots
+    # for exactly those three fields.
+    "excavation_monitoring": {
+        "title": "Excavation Monitoring Log",
+        "subtitle": "Adjacent building monitoring & vibration",
+        "cite": "§3304",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # THE COMPETENT PERSON'S NAME DOES NOT HANG OFF HIS SIGNATURE,
+                # AND THE DIFF IS WHY THIS SECTION EXISTS. The branch printed
+                # `CP: <name>` as a line of its own, independent of any mark.
+                # The first draft of this schema printed his name only inside
+                # the signature block -- which is `empty: omit` and disappears
+                # when the record carries no `cp_signature` key at all -- so on
+                # three of the eight fixture cases the competent person's name
+                # fell off the document entirely. A filed §3304 record naming
+                # nobody is the loss this whole comparison exists to catch, and
+                # it failed toward looking fine: a tidy sheet, one section
+                # shorter.
+                #
+                # The daily jobsite log already carries his name in a field
+                # grid for the same reason; this is that section's shape.
+                "n": 2, "title": "The Day", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("cp_name", "Competent Person", "name"),
+                ],
+            },
+            {
+                # `requires_present`, NOT `requires`, AND THE DIFFERENCE IS
+                # TWO ANSWERS A PERSON GAVE. The two condition switches are
+                # ordinary booleans seeded false -- draftBody writes `!!value`
+                # on every save -- so `requires` would test `str(False or "")`,
+                # find nothing, and delete a section carrying five labelled
+                # answers from any record that answered No to everything. The
+                # branch asks the other question through `has()`, which counts
+                # a bool as present whatever its value.
+                #
+                # THE PATHS ARE THE FIELDS' OWN PATHS, all five of them. The
+                # daily jobsite log shipped with `requires` naming `data.x` and
+                # its field naming `x`, so the section appeared with every cell
+                # reading "not recorded" -- the permanent N/A it existed to
+                # avoid, reached from the other side.
+                "n": 3, "title": "Excavation", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "requires_present": [
+                    "data.excavation_depth", "data.soil_type",
+                    "data.protection_system", "data.groundwater_observed",
+                    "data.atmospheric_testing",
+                ],
+                "fields": [
+                    # A RAW NUMBER, AND NO UNIT IS ADDED. The editor captures
+                    # none, and a document that supplies one is asserting a
+                    # measurement nobody made.
+                    ("data.excavation_depth", "Excavation Depth", "text"),
+                    ("data.soil_type", "Soil Type", "text"),
+                    ("data.protection_system", "Protection System", "text"),
+                    # `yes_no`, NOT a checklist: these two have two states and
+                    # both are answers. The screen's own comment says so.
+                    ("data.groundwater_observed", "Groundwater Observed", "yes_no"),
+                    ("data.atmospheric_testing", "Atmospheric Testing", "yes_no"),
+                ],
+            },
+            {
+                # `requires` HERE, AND `requires_present` ABOVE, BECAUSE THE
+                # TWO SECTIONS ASK DIFFERENT QUESTIONS. The branch gates this
+                # block on a READING existing -- `if v_thr or v_cur` -- not on
+                # the keys being carried, because with neither reading there is
+                # no vibration to annotate and the whole block is dropped.
+                # Both paths named are field paths.
+                #
+                # THE STATUS IS BOUND TO `data`, the way the daily log's
+                # weather is: `vibration_status` reads the threshold, the
+                # current reading and the derived flag, and is still a
+                # formatter of one value because the value is the map. The
+                # over-threshold flag is only meaningful ALONGSIDE both
+                # readings -- `isOverThreshold` returns false when either is
+                # unparseable, which is not the claim "within threshold".
+                "n": 4, "title": "Vibration", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "requires": ["data.vibration_threshold",
+                             "data.vibration_current"],
+                "fields": [
+                    ("data.vibration_threshold", "Threshold", "text"),
+                    ("data.vibration_current", "Current", "text"),
+                    ("data", "Status", "vibration_status"),
+                ],
+            },
+            {
+                # A MONITORING POINT IS A BUILDING, and `row_requires` is the
+                # declaration of that rule. A row carrying a baseline and a
+                # current reading with NO ADDRESS is vibration data attributed
+                # to no structure: it names no building to inspect, no owner to
+                # notify and no work to stop, and the whole purpose of this log
+                # is telling the DOB which adjacent building moved.
+                #
+                # IT CANNOT BE LEFT TO THE DEVICE. `buildingsForFiling` drops
+                # these rows at SUBMIT and a DRAFT keeps them, and a draft is
+                # rendered.
+                #
+                # THE READINGS ARE `raw_text`, NOT `text`. A half-taken
+                # measurement -- an address and a baseline, no current yet --
+                # is a real row, and "— Not recorded" in the empty cell is a
+                # finding against a reading nobody has taken yet. The branch
+                # leaves it blank and so does this.
+                "n": 5, "title": "Adjacent-Structure Monitoring Points",
+                "primitive": "table", "scope": "rows",
+                "path": "data.adjacent_buildings",
+                "row_requires": ["address"],
+                "empty": "none_documented",
+                "none_text": "No adjacent-structure monitoring points recorded.",
+                "columns": [
+                    ("address", "Location", "name"),
+                    ("baseline_reading", "Baseline", "raw_text"),
+                    ("current_reading", "Current", "raw_text"),
+                    # DERIVED, NEVER TYPED. `calcDelta` yields '' when either
+                    # reading is unparseable, because "no reading" and "no
+                    # movement" are opposite findings on an excavation record.
+                    ("delta", "Movement (Δ)", "raw_text"),
+                ],
+            },
+            {
+                # NOT A CERTIFICATION. The branch printed his name and his mark
+                # and asserted nothing on his behalf; inventing an attestation
+                # here would put words on a signed §3304 record the signer
+                # never said.
+                "n": 6, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── FALL PROTECTION EQUIPMENT LOG ───────────────────────────────────────
+    #
+    # ZERO PRODUCTION RECORDS. The evidence is
+    # backend/tests/fixtures/legal_render/fall_protection.json, exercising all
+    # 24 paths the branch read; every row key declared below is in
+    # `fallProtectionModel.ROW_KEYS` and set by a control on the screen.
+    #
+    # NO `cite`, AND THE ABSENCE IS THE POINT. The registry entry carries no
+    # `dob_reference` because OSHA 1926.502(d)(21) mandates the INSPECTION and
+    # not a written record of it; the documented periodic inspection comes from
+    # ANSI Z359, an industry consensus standard, which is not law. The key is
+    # absent rather than "" so that nothing can print an empty citation, and
+    # this declaration keeps that shape: a missing key, not an empty one.
+    "fall_protection": {
+        "title": "Fall Protection Equipment Log",
+        "subtitle": "Equipment inspection — industry standard, not DOB-required",
+        "source": {"kind": "one"},
+        # WHAT THE DOCUMENT IS NOT, BELOW THE SIGNATURE. server.py:4820 draws
+        # the distinction: a SCOPE line qualifies a document the reader has
+        # already read and belongs in the footer; an ATTESTATION says what the
+        # signature claims and belongs above it. This is the first, so it is a
+        # declaration key rather than a section -- numbered under a grey bar it
+        # would read as part of the record, and attached to the signature
+        # section it would read as part of the attestation.
+        #
+        # THE SAME WORDS AS server.FALL_PROTECTION_NOTICE, which is one
+        # constant precisely so the app cannot say two different things about
+        # what this log is. The engine cannot import server; if this sentence
+        # and that constant are ever to differ, the difference must be a
+        # decision and not a copy going stale.
+        "footer_notice": (
+            "OSHA 1926.502(d)(21) requires that this equipment be inspected "
+            "before each use. It does not require a written record of each "
+            "inspection. This log follows ANSI Z359, an industry consensus "
+            "standard, and is not a DOB or OSHA filing."
+        ),
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # HIS NAME IS NOT PART OF HIS SIGNATURE. Same finding as the
+                # excavation log's section 2, found the same way: the signature
+                # block is `empty: omit` and vanishes with the key, taking the
+                # only printing of `cp_name` with it.
+                "n": 2, "title": "The Day", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("cp_name", "Competent Person", "name"),
+                ],
+            },
+            {
+                # THE ROWS LIVE UNDER `activities` and that name is not
+                # decoration: `get_logbook_activity_photo` -- the one
+                # production read of a logbook photo -- indexes
+                # `data.activities[ai].photos[pi]`. Binding anywhere else would
+                # mean a second photo reader, and a second reader is how a
+                # record and its photographs drift apart.
+                #
+                # `row_requires` ON `worker_name`: the claim a row makes is
+                # that a named man's fall-arrest equipment was inspected, so a
+                # nameless row asserts it about somebody the record cannot
+                # identify. `rowsForFiling` drops these at submit and a draft
+                # keeps them, so the sheet has to draw the line itself.
+                "n": 3, "title": "Equipment Inspections",
+                "primitive": "table", "scope": "rows",
+                "path": "data.activities",
+                "row_requires": ["worker_name"],
+                "empty": "none_documented",
+                "none_text": "No equipment inspections recorded.",
+                "columns": [
+                    ("worker_name", "Worker", "name"),
+                    # `sub_company`, AND THE BRANCH DOES NOT DO THIS -- IT IS
+                    # A DEFECT THIS CONVERSION CLOSES BY BINDING THE RULE THAT
+                    # ALREADY EXISTS. `buildRowsFromCheckins` copies `company`
+                    # straight off the gate check-in, and register_and_checkin
+                    # stamps the literal "UNASSIGNED" onto a check-in whose sub
+                    # was not on the project roster (server.py:15908). The
+                    # branch prints it through `_capitalize_first`, so a filed
+                    # fall-protection register can name a worker's firm as
+                    # UNASSIGNED -- which is precisely the sentinel-read-as-a-
+                    # company that `_display_sub_company` was written to stop
+                    # on the daily log, applied to one renderer and not this
+                    # one. Reported separately; the formatter is bound here
+                    # because the rule is the product's, not this sheet's.
+                    #
+                    # THE COST IS NAMED: a hand-added row whose company the CP
+                    # simply left blank now reads "Pending assignment" rather
+                    # than blank, which is a slightly stronger claim than the
+                    # record makes. It is the lesser of the two: a pending row
+                    # is better than a false firm.
+                    ("company", "Company", "sub_company"),
+                    ("equipment_type", "Equipment", "name"),
+                    # THE MANUFACTURER'S MARKING AND THE DATE AS ENTERED, both
+                    # identifiers. Blank is blank: a row whose serial was never
+                    # legible is not a row with an unrecorded field.
+                    ("equipment_id", "ID / Serial", "raw_text"),
+                    ("manufacture_date", "Mfg Date", "raw_text"),
+                    # SEEDED NULL, AND A NULL IS NOT A PASS. `inspection_result`
+                    # also keeps "Removed from service" as its own verdict:
+                    # a failed component on the rack and one taken out of use
+                    # are different facts, and collapsing them would be this
+                    # renderer grading equipment.
+                    ("result", "Result", "inspection_result"),
+                    # ABSENT IS NOT NO. 1926.502(d)(19) makes an impact-loaded
+                    # component mandatory to remove from service, so a silent
+                    # "No" is the answer that keeps it in use.
+                    ("impact_loaded", "Impact Loaded", "yes_no"),
+                    # `raw_name`, NOT `sentence`. On a row graded Pass
+                    # there was nothing to find; "— Not recorded" in that cell
+                    # is a finding against a row that has none.
+                    ("defect_found", "Defect", "raw_name"),
+                    ("action_taken", "Action Taken", "raw_name"),
+                    # `raw_name`, NOT `name`. Not every item on this
+                    # register has an anchor -- a harness does not -- so a
+                    # blank cell is a column that does not apply to the row,
+                    # and "— Not recorded" there would be a finding against it.
+                    # `raw_text` was the first binding and the diff caught it:
+                    # "Roof davit, east parapet" came back lowercase, because
+                    # raw_text does not raise the first letter and the branch's
+                    # `_capitalize_first` does.
+                    ("anchor_point", "Anchor", "raw_name"),
+                ],
+            },
+            {
+                "n": 4, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── SSC / SSM DAILY SAFETY LOG ──────────────────────────────────────────
+    #
+    # ZERO PRODUCTION RECORDS. The evidence is
+    # backend/tests/fixtures/legal_render/ssc_daily_safety_log.json, exercising
+    # all 22 paths the branch read. The payload is thirteen frozen top-level
+    # keys and `sscDailySafetyLogModel.draftBody` writes every one of them on
+    # every save, so no path below can go missing and none can be unwritten.
+    #
+    # THE WEATHER IS `text`, NOT `weather_line`, AND THAT IS A DECISION. This
+    # log's weather is one of seven chips the coordinator taps; the daily
+    # jobsite log's is FETCHED, and every rule `weather_line` holds -- the
+    # fetch state overriding the values, wind appended -- is a rule about a
+    # reading this form never takes. Declaring it here would assert this log
+    # fetches weather, and would blank a chip somebody actually tapped the day
+    # a `weather_fetch_state` key ever appeared in this payload. See the
+    # report: on every payload `draftBody` can produce the two render
+    # identically today, so this is a choice about meaning, not appearance.
+    "ssc_daily_safety_log": {
+        "title": "SSC/SSM Daily Safety Log",
+        "subtitle": "Site Safety Coordinator/Manager daily report",
+        "cite": "§3310.4/§3310.5",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # THE SIGNER'S NAME, NOT HANGING OFF HIS MARK. Same finding as
+                # the other two logs. It is separate from section 3 as well as
+                # from the signature: section 3 is gated on four payload keys,
+                # so a log whose site block was never filled would otherwise
+                # print no name either.
+                "n": 2, "title": "The Day", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                "fields": [
+                    ("date", "Date", "date_long"),
+                    ("cp_name", "SSC / SSM", "name"),
+                ],
+            },
+            {
+                # THE PAYLOAD'S OWN ADDRESS, NOT THE PROJECT'S, AND BOTH ARE ON
+                # THE SHEET. `prefillFromProject` copies the address and the
+                # SSP number onto the record at creation; the project document
+                # can be edited afterwards and this one cannot. Section 1 says
+                # where the job is now, this says what the coordinator signed.
+                # Reconciling them would delete one of two true statements.
+                #
+                # PLAIN `requires`, because all four are strings: an empty
+                # string here is a key nothing wrote, which is the question
+                # `requires` already asks. The branch's `has()` agrees on
+                # strings and only diverges on booleans, which are section 3.
+                "n": 3, "title": "Site", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 2,
+                # `requires_present`, NOT `requires`. The value test reads
+                # `str(0 or "")` as empty, so a site with a RECORDED ZERO men
+                # on it deleted this whole section -- address, safety plan
+                # number and weather with it -- and the sheet numbered itself
+                # 1, 2, 4. A count of zero is an answer.
+                "requires_present": ["data.project_address", "data.ssp_number",
+                                     "data.weather",
+                                     "data.workers_on_site_count"],
+                "fields": [
+                    ("data.project_address", "Project Address", "text"),
+                    ("data.ssp_number", "Site Safety Plan #", "text"),
+                    ("data.weather", "Weather", "text"),
+                    ("data.workers_on_site_count", "Workers on Site", "text"),
+                ],
+            },
+            {
+                # FIVE BOOLEANS SEEDED FALSE, so `requires_present` for the
+                # same reason excavation's switches need it: `requires` would
+                # delete this section from a record that answered No five
+                # times, which is a record with five answers on it.
+                #
+                # A FIELD GRID, NOT A CHECKLIST, AND THE PRIMITIVE'S OWN
+                # DOCSTRING IS WHY. `checklist` draws THREE states over a
+                # stored map at one path; these are five flat top-level keys
+                # with two states each, and a tickbox would put "answered No"
+                # and "never asked" on one axis -- the error that primitive
+                # records having had to undo once.
+                #
+                # THE CAVEAT IS THE SECTION'S, NOT THE DOCUMENT'S. A rendered
+                # "No" here may be an untouched default rather than a
+                # deliberate negative finding, and on a DOB record a bare "No"
+                # beside "Fire Protection in Place" read as an affirmative
+                # safety-violation attestation is a finding nobody made.
+                "n": 4, "title": "Compliance", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "requires_present": [
+                    "data.incidents_reported", "data.safety_meetings_held",
+                    "data.fire_protection_in_place",
+                    "data.housekeeping_satisfactory", "data.ppe_compliance",
+                ],
+                "note": ('Compliance items default to "No" if not explicitly '
+                         'set by the reviewer.'),
+                "fields": [
+                    # THE LABELS ARE COMPLIANCE_FLAGS', WORD FOR WORD.
+                    # portedFormPayloads.test.cjs pins the device's list
+                    # against this renderer's; a better wording here would be
+                    # an improvement to a document that has been signed.
+                    ("data.incidents_reported", "Incidents Reported", "yes_no"),
+                    ("data.safety_meetings_held", "Safety Meetings Held", "yes_no"),
+                    ("data.fire_protection_in_place", "Fire Protection in Place", "yes_no"),
+                    ("data.housekeeping_satisfactory", "Housekeeping Satisfactory", "yes_no"),
+                    ("data.ppe_compliance", "PPE Compliance", "yes_no"),
+                ],
+            },
+            {
+                # THE GATE NAMES A PATH THAT IS NOT A FIELD, DELIBERATELY, AND
+                # THIS IS THE ONE PLACE IN THESE THREE SCHEMAS THAT DOES IT.
+                # The branch's rule is `show_incident or any(has(...))`: once
+                # an incident is REPORTED the three prompts are accounted for
+                # whether or not they were written, because an unanswered
+                # prompt on a day something happened is an unanswered question
+                # rather than silence. Dropping `data.incidents_reported` from
+                # this list would lose three labelled absences on exactly the
+                # days they matter most.
+                #
+                # NOT THE daily-jobsite TRAP. That was `data.time_in` in the
+                # gate and `time_in` in the field -- one path spelled two ways,
+                # so the section appeared with every cell reading "not
+                # recorded". Here the three field paths are all in the list and
+                # spelled identically; the fourth is a condition, not a field.
+                #
+                # PER ROW 1. Prose the coordinator typed, full width, the way
+                # the daily log's visitors line is -- these are prompts with
+                # answers, not an essay, and `narrative` binds one path.
+                "n": 5, "title": "Narrative", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 1,
+                "requires": ["data.site_conditions",
+                             "data.safety_violations_observed",
+                             "data.corrective_actions_taken",
+                             "data.incidents_reported"],
+                "fields": [
+                    ("data.site_conditions", "Site Conditions", "sentence"),
+                    ("data.safety_violations_observed",
+                     "Safety Violations Observed", "sentence"),
+                    ("data.corrective_actions_taken",
+                     "Corrective Actions Taken", "sentence"),
+                ],
+            },
+            {
+                # ON THE SHEET ONLY WHEN AN INCIDENT WAS REPORTED, and then
+                # ALWAYS -- "— Not recorded" here is the unanswered question
+                # the branch insists on. `requires` on a boolean is exactly an
+                # is-true test: `str(True or "")` is truthy and
+                # `str(False or "")` is not.
+                #
+                # `incident_details` IS CARRIED WHETHER OR NOT THE FLAG IS SET
+                # -- draftBody says so, so it is not deleted when somebody
+                # un-ticks the flag by mistake -- and this section is why that
+                # detail stays off the page until the flag says it belongs.
+                "n": 6, "title": "Incident", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 1,
+                "requires": ["data.incidents_reported"],
+                "fields": [
+                    ("data.incident_details", "Incident Details", "sentence"),
+                ],
+            },
+            {
+                # THE ROLE IS THE SIGNER'S, NOT THE COMPETENT PERSON'S. The
+                # branch labels this block "SSC / SSM Signature" and that is
+                # who signs a §3310.4 log; printing "Competent Person" would
+                # name the wrong office on a filed record.
+                "n": 7, "title": "SSC / SSM Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "SSC / SSM",
             },
         ],
     },

@@ -462,6 +462,44 @@ needs both.
 
 ---
 
+### A22. No filed PDF declares its language, and no table declares its headers
+
+`backend/server.py` (the branch shell) and `lib/legal_render/engine.py` (the
+engine's) — both document heads.
+
+**What it is:** neither renderer emits `<html lang="en">`, and no table on any
+sheet emits `<th scope="col">`. Measured on both, 2026-09-13:
+
+| | branch | engine |
+|---|---|---|
+| `<html lang=>` | absent | absent |
+| `<th scope=>` | 0 | 0 |
+| `<img alt=>` | 0 of 0 | 0 of 0 |
+| PDF metadata beyond `<title>` | none | none |
+
+**Why it has never been reported.** It is not a regression — it was never
+there — and every comparison this migration has run diffs the VISIBLE TEXT of
+two documents. `lang` and `scope` are attributes; they are in the document and
+not on the page, which is the whole of harness instance 20. A21 was the same
+category and was found only by luck.
+
+**What it costs.** A PDF with no `lang` is one a screen reader guesses the
+language of, and it guesses from the reader's locale rather than the
+document's. A `<table>` with no `scope` is one a screen reader cannot navigate
+by column: the roster of men on a §3301.12.3 attendance record reads as a flat
+run of cells. These sheets go to inspectors, lenders and insurers, and the
+product has no idea who reads them how.
+
+**Why it is not fixed inside a conversion.** A conversion's job is that the
+document still says what it said. This changes what the document IS — its
+declared language and its declared structure — and it applies to both
+renderers and to every type at once. It is small and it is its own change.
+
+**Found:** 2026-09-13, by measuring the off-page category after A21 rather than
+listing it from memory.
+
+---
+
 ## B. Closed on 2026-09-11
 
 These were live when triaged and are not any more. Listed so nobody works them

@@ -139,32 +139,140 @@ DATA: Dict[str, dict] = {
                       "no_horseplay": False},
         "worker_signature": UNAFFIRMED,
     },
-    "hot_work": {
-        "permit_number": "HW-118", "location": "roof bulkhead",
-        "start_time": "08:00", "end_time": "14:00",
-        "fire_watch_name": "carl cp",
-        "precautions": {"extinguisher_present": True, "fire_watch": True},
-    },
-    "crane_operations": {
-        "crane_type": "mobile", "operator_name": "wilmer carrillo",
-        "load_entries": [{"time": "07:30", "description": "steel",
-                          "weight": "2.1t"}],
-    },
-    "concrete_operations": {
-        "pour_location": "third floor slab", "mix_design": "4000 psi",
-        "volume": "42 cy", "supplier": "aaz concrete",
-    },
-    "excavation_monitoring": {
-        "vibration_threshold": "0.5", "vibration_current": "0.2",
-        "vibration_over_threshold": False, "depth": "8 ft",
-    },
-    "fall_protection": {
-        "equipment": [{"type": "harness", "id": "H-4",
-                       "inspection_result": "pass"}],
-    },
-    "ssc_daily_safety_log": {
-        "notes": "site secure at close of business",
-    },
+    # ── THE SIX WITH NO PRODUCTION RECORDS ─────────────────────────
+    #
+    # DERIVED FROM THE UNION of what the branch reads and what the
+    # declaration binds, then written out as a literal so a reviewer
+    # can look at the record and say whether it is a plausible permit.
+    # The first version filled 6 of the 9 paths a hot work permit
+    # needs and none of crane's checklist, so both renderers drew the
+    # same emptiness and the comparison agreed about nothing.
+    #
+    # EACH ONE CARRIES ITS OWN ADVERSE CASE. A record where every
+    # answer is yes cannot show that a no prints as a no.
+    # FDNY 3504. One precaution answered NO and four yes: a permit
+    # where every box is ticked cannot show that a refusal prints as
+    # a refusal.
+    "hot_work": {"end_time": "14:00",
+     "fire_watch_end_time": "14:30",
+     "fire_watch_name": "carl cp",
+     "location": "Roof bulkhead",
+     "precautions": {"area_cleared": True,
+                     "combustibles_covered": False,
+                     "fire_extinguisher_present": True,
+                     "fire_watch_assigned": True,
+                     "sprinklers_operational": True},
+     "start_time": "08:00",
+     "work_type": "Brazing",
+     "worker_cert_number": "FDNY-W-4471",
+     "worker_name": "wilmer carrillo"},
+
+    # One load at a short radius and one at a long one,
+    # because the radius is what makes a weight safe or not.
+    "crane_operations": {"crane_id": "CR-7",
+     "crane_type": "Mobile",
+     "load_entries": [{"description": "Steel beam",
+                       "load_weight": "2.1 t",
+                       "radius": "38 ft",
+                       "time": "07:30"},
+                      {"description": "Rebar bundle",
+                       "load_weight": "0.8 t",
+                       "radius": "52 ft",
+                       "time": "09:15"}],
+     "operator_license": "NYC-CO-88213",
+     "operator_name": "segundo pilamunga",
+     "pre_operation_checklist": {"brakes": True,
+                                 "hooks_latches": True,
+                                 "load_chart": False,
+                                 "outriggers": True,
+                                 "wire_ropes": True}},
+
+    # One slump test PASS and one FAIL. A pour record
+    # where every test passed cannot show that a failure
+    # prints as a failure.
+    "concrete_operations": {"concrete_supplier": "aaz concrete",
+     "formwork_checklist": {"bracing_adequate": True,
+                            "formwork_clean": False,
+                            "shores_plumb": True},
+     "mix_design": "4000 psi",
+     "pour_location": "Third floor slab",
+     "slump_tests": [{"pass": True,
+                      "time": "08:10",
+                      "value": "4.5 in"},
+                     {"pass": False,
+                      "time": "11:40",
+                      "value": "6.0 in"}],
+     "temperature": "58F",
+     "volume_ordered": "42 cy",
+     "weather_conditions": "Overcast"},
+
+    # Two adjacent buildings, one of them moving. A
+    # monitoring log where nothing moved cannot show
+    # that a reading over the threshold says so.
+    "excavation_monitoring": {"adjacent_buildings": [{"address": "586 Thomas S Boyland",
+                             "baseline_reading": "0.00 in",
+                             "current_reading": "0.02 in",
+                             "delta": "+0.02 in"},
+                            {"address": "590 Thomas S Boyland",
+                             "baseline_reading": "0.00 in",
+                             "current_reading": "0.31 in",
+                             "delta": "+0.31 in"}],
+     "atmospheric_testing": True,
+     "excavation_depth": "8 ft",
+     "groundwater_observed": False,
+     "protection_system": "Sloping and benching",
+     "soil_type": "Type B",
+     "vibration_current": "0.21 in/sec",
+     # THE FLAG, WHICH IS WHAT MAKES THE STATUS A COMPARISON AND NOT
+     # ARITHMETIC. `vibration_status` refuses to derive a verdict from the two
+     # readings -- that would be this renderer doing sums on a compliance
+     # record -- so a fixture without it prints "Status — Not recorded" for a
+     # reading well under its threshold. The app computes it
+     # (`isOverThreshold`); 0.21 against 0.50 is False.
+     "vibration_over_threshold": False,
+     "vibration_threshold": "0.50 in/sec"},
+
+    # One harness that PASSED with no defect, and one lanyard
+    # REMOVED FROM SERVICE -- which `inspection_result` must
+    # not fold into Fail: one says the harness failed a check,
+    # the other says it is off the site.
+    "fall_protection": {"activities": [{"action_taken": "",
+                     "anchor_point": "Roof davit",
+                     "company": "aaz",
+                     "defect_found": "",
+                     "equipment_id": "H-4",
+                     "equipment_type": "Harness",
+                     "impact_loaded": False,
+                     "manufacture_date": "2024-03-11",
+                     "result": "pass",
+                     "worker_name": "wilmer carrillo"},
+                    {"action_taken": "Tagged and removed from site",
+                     "anchor_point": "Beam clamp",
+                     "company": "quality plumbing",
+                     "defect_found": "Frayed webbing at the thimble",
+                     "equipment_id": "L-9",
+                     "equipment_type": "Lanyard",
+                     "impact_loaded": True,
+                     "manufacture_date": "2019-08-02",
+                     "result": "removed from service",
+                     "worker_name": "segundo pilamunga"}]},
+
+    # Every one of the thirteen fields the branch reads.
+    # This sheet is almost entirely yes/no answers, and
+    # an unanswered one is not a No.
+    "ssc_daily_safety_log": {"corrective_actions_taken": "None required",
+     "fire_protection_in_place": True,
+     "housekeeping_satisfactory": True,
+     "incident_details": "",
+     "incidents_reported": False,
+     "ppe_compliance": True,
+     "project_address": "588 Thomas S Boyland",
+     "safety_meetings_held": True,
+     "safety_violations_observed": "no",
+     "site_conditions": "Dry and secure",
+     "ssp_number": "SSP-2026-0441",
+     "weather": "Clear",
+     "workers_on_site_count": "26"},
 }
 
 
