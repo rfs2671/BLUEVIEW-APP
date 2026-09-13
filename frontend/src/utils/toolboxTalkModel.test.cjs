@@ -61,8 +61,25 @@ const branch = SERVER.slice(
   // daily jobsite branch was deleted, so it is spelled `if` now and this
   // slice returned -1. Anchoring on the comparison alone survives the next
   // eleven deletions; anchoring on the keyword survived one.
+  // ANCHORED ON THE BRANCH, NOT ON THE COMPARISON.
+  //
+  // `indexOf` finds the LEFTMOST match, and `if log_type == "preshift_signin"`
+  // now appears ABOVE the per-type switch as well -- the caller resolves that
+  // type's signatures and affirmation count there, because the declarative
+  // renderer cannot await. So the end anchor matched a line BEFORE the start
+  // anchor and the slice ran backwards to nothing.
+  //
+  // Third instance of this exact shape in the repo: a declaration added
+  // earlier in the file breaking a source-text test about a later one. The
+  // branch arms are the only `elif log_type ==` lines, and the FIRST arm is an
+  // `if`, so the slice is taken from the toolbox arm to the next `elif` after
+  // it -- which survives both the next conversion and the next deletion.
   SERVER.indexOf('log_type == "toolbox_talk":'),
-  SERVER.indexOf('log_type == "preshift_signin":'),
+  (() => {
+    const from = SERVER.indexOf('log_type == "toolbox_talk":');
+    const next = SERVER.indexOf('elif log_type ==', from + 10);
+    return next > from ? next : SERVER.length;
+  })(),
 );
 ok(branch.length > 0, 'located the toolbox branch of the filed document');
 
@@ -292,8 +309,10 @@ ok((SERVER.match(/<th \{TH\}>Added by<\/th>/g) || []).length === 1,
 // (B10). Scoped to the two toolbox tables, which is what it was always about.
 // Same over-broad shape as four earlier assertions on this project.
 // Same anchors, same reason as the slice above.
-for (const [from, to] of [['log_type == "toolbox_talk":',
-  'log_type == "preshift_signin":']]) {
+// SAME ANCHORS, SAME REASON as the slice above: the end is the next branch
+// arm, found rather than named, so neither a new conversion nor a deletion
+// moves it.
+for (const [from, to] of [['log_type == "toolbox_talk":', 'elif log_type ==']]) {
   const block = SERVER.slice(SERVER.indexOf(from), SERVER.indexOf(to));
   // THE INVARIANT, NOT THE NUMBER. This asserted colspan="7" literally, and
   // the number is not the claim -- the claim is that the placeholder spans its
