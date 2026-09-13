@@ -839,6 +839,44 @@ the diff is megabytes of ink.)*
 | 15b | a patch script's `replace` with no assertion on the count | the registry line never applied. `sub()` asserts a count of one and fails loudly; a bare `s.replace(a, b)` that matches nothing returns the string unchanged and reports success. Written in my own patch, in the same session as three warnings about exactly this |
 | 16 | a full-suite run that predates the last edit | the suite was green, then two tests were added, then only that one module was re-run, then it was committed. The bare-literal gate caught the new assertion in CI. **A suite run is a claim about the code as it was when it ran** — which is the same sentence as "a green suite is a claim about what RAN", one step further back |
 
+### A check narrower than its subject, and the same error with the opposite sign
+
+Two verifications of the converted sheets reported the product as broken. Both
+were the checker.
+
+**117 of 254 records flagged, every one correct.** The check asked whether the
+*document* contained the word UNAFFIRMED and compared that to the competent
+person's own verdict. A sheet carries several marks — an orientation has an
+affirmed CP beside an unaffirmed worker — so the page says both, truthfully.
+**A document-level question cannot answer a per-mark claim.**
+
+**8 records flagged for being more careful than the check.** It looked for
+`AFFIRMED for this document`, and those eight are the *fourth* affirmation
+state: affirmed, with a claimed time that failed validation, which the banner
+renders as `AFFIRMED — claimed time NOT VERIFIED` because it refuses to present
+an unverifiable claim as fact. The sheet was saying **more** than the phrase
+being looked for, and was marked wrong for it.
+
+> A check narrower than its subject does not merely miss things. It penalises
+> the subject for exceeding it, and the report reads as a defect in the code.
+
+**And the pair completes the family.** The baseline's image blindness was
+**silent when it should have spoken** — a conversion that dropped every
+signature would have reported zero lost words. These two **spoke when they
+should have been silent**. Same error, opposite sign: an instrument whose
+resolution does not match its subject's.
+
+### A wait condition a past state can satisfy is not a wait
+
+A CI poll waited for "both suites reported and nothing pending". That was
+already true of the **previous** run, whose results were still the latest ones
+because the new run had not been created yet — so it returned history as the
+verdict on a commit CI had not seen.
+
+Second poll of this shape; the first exited on a listing that did not yet
+contain the backend row at all. Both now wait on runs whose **head SHA is the
+commit just pushed**, which no past state can satisfy.
+
 ### The rule that comes out of all of them
 
 **A gate whose subject population can reach zero needs an assertion that the
