@@ -65,7 +65,21 @@ def _doc(log_type: str, data: dict) -> dict:
 
 
 #: A real render, not the source text. What the inspector's PDF is built from.
-HTML = render(_doc("daily_jobsite", {"weather": "Clear", "notes": "n"}))
+#:
+#: NO LONGER `daily_jobsite`, AND THE REASON IS THE SUBJECT OF THIS FILE. Every
+#: rule below is about the print CSS `generate_single_logbook_html` emits --
+#: the @page box, the wrapper release, the shell-row exemption. The daily log
+#: moved onto the declarative engine, which builds its own document with its
+#: own stylesheet, so a daily-log render stopped containing the CSS this file
+#: is about and eight assertions failed against a renderer that had not
+#: changed.
+#:
+#: THE SPECIMEN MUST EXERCISE THE SUBJECT -- which is the note already written
+#: two lines below about `HTML_H3`, arriving a second time for the same file.
+#: A toolbox talk still renders through the branch chain and will until it is
+#: converted, at which point this moves again to whatever still does.
+HTML = render(_doc("toolbox_talk", {"topic": "Ladder safety",
+                                    "attendees": [{"name": "A Rivera"}]}))
 
 #: A SECOND SPECIMEN, BECAUSE THE FIRST NEVER REACHED THE CODE UNDER TEST.
 #: `sub_title` is the only source of <h3> in this renderer and it is called from

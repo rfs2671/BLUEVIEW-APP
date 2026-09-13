@@ -173,9 +173,24 @@ class ADeclarationMayNotContainCode(unittest.TestCase):
 
 class TheSwitchIsNarrow(unittest.TestCase):
 
-    def test_exactly_one_type_is_converted(self):
-        self.assertEqual(set(legal_render.CONVERTED_TYPES),
-                         {"subcontractor_orientation"})
+    def test_every_converted_type_is_a_type_the_app_DEFINES(self):
+        """THIS WAS A HAND-WRITTEN SET AND IT EXPIRED ON THE SECOND
+        CONVERSION.
+
+        It read `== {"subcontractor_orientation"}`, which said "the switch is
+        narrow" at a moment when narrow meant one. Twelve conversions follow,
+        so as written it was a line somebody would edit twelve times without
+        reading -- and a check nobody reads is a check that is not running.
+
+        WHAT IS ACTUALLY WORTH ASSERTING SURVIVES THE WHOLE MIGRATION: a name
+        in CONVERTED_TYPES that no log type answers to is a schema the dispatch
+        can never reach, which fails silently and forever.
+        """
+        defined = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
+        unknown = sorted(set(legal_render.CONVERTED_TYPES) - defined)
+        self.assertEqual(unknown, [],
+                         f"these have schemas and are not log types: {unknown}")
+        self.assertTrue(legal_render.CONVERTED_TYPES)
 
     def test_the_engine_returns_None_for_everything_else(self):
         """Not an exception. 'Not converted yet' must not become a failed

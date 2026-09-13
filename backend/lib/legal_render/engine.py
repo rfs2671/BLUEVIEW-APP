@@ -50,7 +50,8 @@ import html as _html
 from typing import Any, Dict, List, Optional
 
 from .primitives import (PRIMITIVE_FNS, _empty_note, _get, _has,
-                         _section_close, _section_open, filing_state)
+                         _section_close, _section_open, appended_photographs,
+                         filing_state)
 from .schema import SCHEMAS
 
 _PAGE_CSS = """
@@ -86,6 +87,27 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
     is a different fact from a section that does not apply, and the document
     must be able to tell a reader which.
     """
+    # ── A SECTION MAY NAME THE PATHS THAT MAKE IT EXIST ─────────────────
+    #
+    # Checked FIRST, because it is the one case where the section's own
+    # content decides and not the records. The daily log's working hours are
+    # two keys nothing has written since the picker work: declared without
+    # this they would print two "not recorded" cells on all 59 filed records,
+    # reinstating the permanent N/A that branch deliberately removed.
+    #
+    # PRESENCE OF A VALUE, NOT OF A KEY. `time_in` is present and empty on 43
+    # records; what makes the section exist is a time, not a key.
+    req = sec.get("requires")
+    if req:
+        subject = _subject(sec, records, ctx)
+        if not any(str(_get(subject, path) or "").strip() for path in req):
+            return True
+
+    if sec.get("scope") == "rows":
+        # A REPEATING GROUP INSIDE ONE RECORD. Empty when the list is, which
+        # is a different question from whether any record was filed.
+        return not (_get(records[0] if records else {},
+                         sec.get("path", "")) or [])
     if sec.get("scope") == "each":
         return not records
     if sec.get("scope") == "project":
@@ -119,6 +141,15 @@ def _subject(sec: Dict, records: List, ctx: Dict):
         return ctx.get("project") or {}
     if scope == "each":
         return records
+    if scope == "rows":
+        # THE ROWS HELD INSIDE THE RECORD, handed to `table` in place of the
+        # filed siblings it was originally written against. Every ordinary
+        # form keeps its repeating groups this way -- the daily log's crews
+        # and its safety observations, and the same shape on most of the
+        # eleven types after it -- and without this the engine could render a
+        # roster of separately filed records but not a table on a form.
+        rows = _get(records[0] if records else {}, sec.get("path", "")) or []
+        return [r for r in rows if isinstance(r, dict)]
     return records[0] if records else {}
 
 
@@ -163,6 +194,17 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
     RETURNS None RATHER THAN RAISING for an unconverted type: the caller's job
     is to fall through to its existing branch, and an exception here would turn
     "not converted yet" into a failed document.
+
+    ── ctx["appended_photographs"] COMES LAST, BELOW THE SIGNATURES ─────
+
+    AND THAT IS A DELIBERATE MOVE. The old branch printed this notice above
+    the CP's name and his mark, inside the block the signatures close. These
+    photographs arrived AFTER he signed and are explicitly not part of what he
+    attested to, so printing them above his signature puts them inside the
+    attestation on the page while the words say they are outside it.
+
+    Below the mark, the sheet reads the way the fact does: here is the record,
+    here is who attested to it, and here is what was added afterwards.
 
     ── ctx["filing_state"] COMES FIRST ──────────────────────────────────
 
@@ -223,5 +265,6 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         + (filing_state(*ctx["filing_state"]) if ctx.get("filing_state") else "")
         + str(ctx.get("amendment_html") or "")
         + "".join(body)
+        + appended_photographs(ctx.get("appended_photographs") or [])
         + "</body></html>"
     )

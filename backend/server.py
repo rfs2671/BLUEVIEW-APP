@@ -457,6 +457,49 @@ def _appended_photo_notice(data: dict) -> str:
     """
     import html as _h
 
+    rows = _appended_photo_rows(data)
+    if not rows:
+        return ""
+    items = "".join(
+        f'<li style="margin:0 0 4px;">Photograph {i}'
+        + (f' &mdash; {" &middot; ".join(_h.escape(x) for x in (r["when"], r["who"]) if x)}'
+           if (r["when"] or r["who"]) else "")
+        + "</li>"
+        for i, r in enumerate(rows, start=1))
+    return (
+        '<div style="margin:16px 0 0;padding:8px 10px;border:1px solid #92400e;'
+        'background:#fffbeb;">'
+        '<p style="margin:0 0 6px;font-size:13px;font-weight:700;'
+        f'color:#92400e;">&#9888; {_h.escape(_PHOTO_ADDED_AFTER_FILING_LABEL)}'
+        '</p>'
+        '<p style="margin:0 0 6px;font-size:12px;color:#334155;">'
+        'The photographs listed below were added to this record after it was '
+        'filed and are not part of what was attested to at signing.</p>'
+        '<ul style="margin:0;padding-left:18px;font-size:12px;color:#334155;">'
+        + items + "</ul></div>"
+    )
+
+
+def _appended_photo_rows(data: dict) -> list:
+    """WHAT WAS APPENDED, WHEN AND BY WHOM -- as data, not as markup.
+
+    ── THE WALK LIVES HERE BECAUSE THE ENGINE SHOULD NOT LEARN IT ───────
+
+    Two levels of nesting, a filter on a flag, and a UTC instant converted to
+    the New York day. Teaching the declarative engine bracket paths, a row
+    filter and an Eastern-day formatter would be three new features serving
+    one block on one sheet -- and this helper is called by exactly one branch,
+    so there is no sharing to build for.
+
+    So the resolution stays beside `_as_eastern_instant`, which it already
+    uses, and the ENGINE DRAWS THE RESULT in the sheet's own type. That is the
+    shape the filing-state line proved out: data through the context, ink in
+    the primitive. The amendment banner crosses as markup instead, and only
+    because twelve types still need it in exactly that form.
+
+    THE NEW YORK DAY, for the same reason the caption reads it that way:
+    `added_at` is a UTC instant and 21:00 EDT is already tomorrow in UTC.
+    """
     rows = []
     for _ai, _a in enumerate((data or {}).get("activities") or []):
         for _pi, _p in enumerate((_a or {}).get("photos") or []):
@@ -479,28 +522,8 @@ def _appended_photo_notice(data: dict) -> str:
                     pass
                 _parts.append(f"{_when.strftime('%b')} {_when.day}, {_when.year}")
             _who = str(_p.get("added_by_name") or "").strip()
-            if _who:
-                _parts.append(_who)
-            rows.append(
-                f'<li style="margin:0 0 4px;">Photograph {len(rows) + 1}'
-                + (f' &mdash; {" &middot; ".join(_h.escape(x) for x in _parts)}'
-                   if _parts else "")
-                + "</li>"
-            )
-    if not rows:
-        return ""
-    return (
-        '<div style="margin:16px 0 0;padding:8px 10px;border:1px solid #92400e;'
-        'background:#fffbeb;">'
-        '<p style="margin:0 0 6px;font-size:13px;font-weight:700;'
-        f'color:#92400e;">&#9888; {_h.escape(_PHOTO_ADDED_AFTER_FILING_LABEL)}'
-        '</p>'
-        '<p style="margin:0 0 6px;font-size:12px;color:#334155;">'
-        'The photographs listed below were added to this record after it was '
-        'filed and are not part of what was attested to at signing.</p>'
-        '<ul style="margin:0;padding-left:18px;font-size:12px;color:#334155;">'
-        + "".join(rows) + "</ul></div>"
-    )
+            rows.append({"when": _parts[0] if _parts else "", "who": _who})
+    return rows
 
 
 def _photo_added_after_filing_caption(photo: dict) -> str:
@@ -19821,6 +19844,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # draws this above the amendment banner: a reader needs to know a
             # record is a draft before he reads that somebody amended it.
             "filing_state": _filing_state,
+            # RESOLVED HERE, DRAWN THERE. The walk is two levels deep, filters
+            # on a flag and reads a UTC instant as a New York day; the engine
+            # learns none of that for one block on one sheet.
+            "appended_photographs": _appended_photo_rows(data),
             # CONTENT, NOT CHROME. Composed above this switch for the reason
             # written there.
             "amendment_html": amendment_html,
@@ -19924,7 +19951,6 @@ async def generate_single_logbook_html(logbook: dict) -> str:
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
                 f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description") or NOT_RECORDED)}<br />'
                 f'{_times_line}'
-                f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(data.get("areas_visited") or "N/A")}'
             )
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
@@ -30305,23 +30331,26 @@ class WeatherParts(NamedTuple):
 
 
 def _weather_parts(data) -> "WeatherParts":
-    """THE ONE RESOLUTION. See `_display_weather` below for why each rule is
-    what it is; this function holds them and that one composes from it."""
-    d = data or {}
-    state = str(d.get("weather_fetch_state") or "").strip().lower()
-    if state in ("offline", "error"):
-        # THE FETCH STATE WINS over whatever the other fields hold. A
-        # temperature printed beside "could not be retrieved" is two claims
-        # about one reading, so no parts are offered at all.
-        return WeatherParts("— Weather could not be retrieved")
-    condition = str(d.get("weather") or "").strip()
-    temperature = str(d.get("weather_temp") or "").strip()
-    body = " ".join(p for p in (condition, temperature) if p)
-    if not body:
-        return WeatherParts(NOT_RECORDED)
-    wind = str(d.get("weather_wind") or "").strip()
-    line = f"{body} — Wind: {wind}" if wind else body
-    return WeatherParts(line, condition, temperature, wind)
+    """THE ONE RESOLUTION, AND IT LIVES IN lib/legal_render/formatters.py NOW.
+
+    ── WHY IT MOVED, AND WHY THIS FUNCTION DID NOT ──────────────────────
+
+    The declarative engine needs the same sentence for the daily log's weather
+    field, and `legal_render` must never import `server`. Copying the rules
+    there would have made a second place where a day's weather is composed --
+    which is the drift that took two banners off ninety-two filed records.
+
+    So the rules went and the CALLER stayed. This keeps its name, its arity
+    and its NamedTuple, so `_display_weather` returns the same bytes it always
+    has, every existing caller is untouched, and the source test that pins
+    this pair still counts what it counted.
+
+    THE RULES THEMSELVES ARE UNCHANGED, and are written out where they now
+    live: the fetch state wins over the values, an empty body is not recorded,
+    wind is appended, and all three parts are empty whenever the line is a
+    whole-line message.
+    """
+    return WeatherParts(*legal_render.formatters.weather_parts(data))
 
 
 def _display_weather(data):

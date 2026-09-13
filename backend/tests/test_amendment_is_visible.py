@@ -195,7 +195,16 @@ class TheFiledDocumentCarriesIt(unittest.TestCase):
     def test_it_sits_above_the_content(self):
         """A fact about the RECORD, not about one section of it, so it goes
         at the top of the page rather than beside whichever item it changed."""
-        html = self._render(_child())
+        # A BRANCH-RENDERED TYPE, because this claim is about the BRANCH's
+        # page. The daily jobsite log moved onto the declarative engine, which
+        # builds a different document with no `<td>` content cell and no
+        # "(NYC DOB 3301-02)" heading, so this assertion started reporting on
+        # markup that no longer exists rather than on a placement that had
+        # changed. The engine's own placement -- filing state, then this
+        # banner, then section 1 -- is pinned in
+        # test_the_sheet_keeps_its_banners.py, where the sibling half of this
+        # rule lives.
+        html = self._render(_child(log_type="toolbox_talk", data={}))
         # THE CONTENT CELL, isolated. The document names its type three
         # times -- the `<title>`, the dark header, the section heading -- and
         # the first two are always before anything. The claim is about the
@@ -205,7 +214,7 @@ class TheFiledDocumentCarriesIt(unittest.TestCase):
         cell = cell[:cell.index("</td>")]
         self.assertLess(
             cell.index("AMENDED RECORD"),
-            cell.index("Daily Jobsite Log (NYC DOB 3301-02)"),
+            cell.index("Tool Box Talk"),   # three words, as the type prints
             "the amendment notice is below the content it qualifies")
 
     def test_an_ORDINARY_log_carries_no_banner(self):

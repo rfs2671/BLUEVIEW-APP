@@ -74,6 +74,22 @@ CONVERTED = set(legal_render.CONVERTED_TYPES)
 #: Every type the app defines.
 DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 
+#: THE ONE TYPE ALLOWED TO HAVE BOTH RENDERERS RIGHT NOW.
+#:
+#: The dispatch's own note requires the old branch to be deleted in the change
+#: AFTER the conversion, once the new sheet has rendered in production and been
+#: read. So for exactly one change per type there are deliberately two
+#: renderers, and this names which type is in that window.
+#:
+#: IT HOLDS AT MOST ONE NAME, asserted below. "We are mid-conversion" is a true
+#: sentence about one type at a time; a list of three would be the thirteen
+#: branches growing back under a different justification.
+#:
+#: EMPTYING IT IS THE DELETION CHANGE. The next change removes the daily
+#: jobsite branch and this name together, and the census below goes back to
+#: refusing every overlap.
+IN_FLIGHT = {"daily_jobsite"}
+
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):
     """THE VACUITY GUARD. Every assertion below is a set difference, and a
@@ -94,13 +110,39 @@ class AConvertedTypeKeepsNoBranch(unittest.TestCase):
     def test_no_converted_type_still_has_a_hand_written_branch(self):
         """THE ASSERTION. A branch the dispatch returns before is dead code
         that looks alive, and the next reader to fix a defect on that document
-        will fix the copy nobody prints."""
-        shadowed = sorted(CONVERTED & BRANCHED)
+        will fix the copy nobody prints.
+
+        EXCEPT THE ONE TYPE MID-CONVERSION. See IN_FLIGHT: the rollback for a
+        conversion is removing a name from CONVERTED_TYPES, which is only a
+        rollback while the branch it falls back TO still exists. So the branch
+        outlives the conversion by exactly one change.
+        """
+        shadowed = sorted((CONVERTED & BRANCHED) - IN_FLIGHT)
         self.assertEqual(
             shadowed, [],
             f"these types render through the engine AND keep their old "
             f"branch: {shadowed}. The branch cannot run -- delete it, as "
             f"the dispatch's own note requires.")
+
+    def test_at_most_one_type_is_in_flight(self):
+        """THE BOUND ON THE EXCEPTION. One type mid-conversion is a fact; two
+        is the beginning of a backlog of shadowed branches, which is the thing
+        this file exists to prevent."""
+        self.assertLessEqual(
+            len(IN_FLIGHT), 1,
+            f"{sorted(IN_FLIGHT)} are all mid-conversion. Finish one before "
+            f"starting the next, or the shadowed branches accumulate again.")
+
+    def test_an_in_flight_type_is_actually_in_both_places(self):
+        """THE EXEMPTION EXPIRES ON ITS OWN. A name left here after its branch
+        was deleted is a hole nobody is watching, so it must name a real
+        overlap or fail."""
+        for t in sorted(IN_FLIGHT):
+            with self.subTest(log_type=t):
+                self.assertIn(t, CONVERTED, f"{t} has no schema")
+                self.assertIn(t, BRANCHED,
+                              f"{t}'s branch is already gone -- remove it from "
+                              f"IN_FLIGHT, the conversion is finished")
 
     def test_every_unconverted_type_still_has_one(self):
         """THE OTHER DIRECTION, so the census is not satisfied by deleting
@@ -114,7 +156,8 @@ class AConvertedTypeKeepsNoBranch(unittest.TestCase):
 
     def test_the_orientation_sheet_is_the_one_that_has_been_converted(self):
         """Named, so a reader of a failure knows which conversion this file
-        was written for and can count the ones since."""
+        was written for and can count the ones since. Its branch is gone,
+        which is what a FINISHED conversion looks like."""
         self.assertIn("subcontractor_orientation", CONVERTED)
         self.assertNotIn("subcontractor_orientation", BRANCHED)
 
