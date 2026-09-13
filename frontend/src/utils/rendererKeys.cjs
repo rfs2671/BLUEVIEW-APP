@@ -53,6 +53,11 @@ const SCHEMA = read(path.join(BACKEND, 'lib', 'legal_render', 'schema.py'));
 // the keys it reads live in the row formatter rather than in the declaration.
 const PRIMITIVES = read(
   path.join(BACKEND, 'lib', 'legal_render', 'primitives.py'));
+// AND THE FORMATTERS, which hold the closed vocabularies a filed record is
+// printed in -- the three attendee provenances, the three answers, the
+// verdicts. A branch used to hold each of those as its own helper.
+const FORMATTERS = read(
+  path.join(BACKEND, 'lib', 'legal_render', 'formatters.py'));
 
 /** Every type the declarative engine has a schema for. */
 function convertedTypes() {
@@ -288,6 +293,6 @@ function rendererOf(logType) {
 }
 
 module.exports = {
-  SERVER, SCHEMA, convertedTypes, declaration, pdfBranch, rendererKeys,
+  SERVER, SCHEMA, PRIMITIVES, FORMATTERS, convertedTypes, declaration, pdfBranch, rendererKeys,
   rendererOf, labelSet, declFields, rowKeys, rowRequires, dataKeys,
 };

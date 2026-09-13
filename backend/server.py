@@ -28680,33 +28680,6 @@ def _signature_affirmation_html(sig):
     )
 
 
-def _attendee_source_label(a) -> str:
-    """WHOSE CLAIM PUT THIS MAN ON THE SHEET.
-
-    Three provenances, recorded by the app as `added_from`:
-
-      'gate'         he checked in TODAY - the gate says he was on site
-      'weekly_gap'   he worked this WEEK; the CP is asserting he attended
-      'manual'       the CP typed him in; the app knows nothing about him
-
-    A toolbox talk is a WEEKLY obligation built from a DAILY roster, so the CP
-    can now add men who worked earlier in the week. That is a genuinely weaker
-    claim than a gate check-in, and a signed attendance record that renders the
-    two identically is the stronger one lending its authority to the weaker -
-    which is the whole reason the field is stored.
-
-    AN OLD RECORD HAS NO `added_from`. Every attendee filed before the field
-    existed came from the gate or from the CP's own typing with no way to tell
-    which, and inventing a label for those would be the same false confidence
-    this column exists to remove. They read as an em-dash: we do not know, and
-    the record says so.
-    """
-    raw = str((a or {}).get("added_from") or "").strip().lower()
-    return {
-        "gate": "Gate",
-        "weekly_gap": "CP &mdash; this week",
-        "manual": "CP &mdash; added",
-    }.get(raw, "&mdash;")
 
 
 
@@ -29405,7 +29378,7 @@ def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
     are three.
 
     This column printed an em dash for a clean row. Everywhere else in this
-    file an em dash means "we do not know" -- _attendee_source_label says so in
+    file an em dash means "we do not know" -- `attendee_source` says so in
     those words -- and the same table uses it in four other columns for
     genuinely absent data. One row could print an em dash five times meaning
     four different things, and the fifth was the only one that meant "verified".

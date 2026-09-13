@@ -1,7 +1,7 @@
 """The OSHA register says what it checked, and what it could not.
 
 THE REVIEW COLUMN PRINTED AN EM DASH FOR A CLEAN ROW. Everywhere else in this
-file an em dash means "we do not know" -- `_attendee_source_label` says so in
+file an em dash means "we do not know" -- `attendee_source` says so in
 those words, and fall_protection renders "&mdash; Not recorded". The Review
 column used that same glyph for its VERIFIED-CLEAN answer, on a table where the
 other four columns use it for genuinely-absent data. One row could print an em
