@@ -103,6 +103,22 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
         if not any(str(_get(subject, path) or "").strip() for path in req):
             return True
 
+    # ── THE PRESENCE FORM, FOR SECTIONS MADE OF TOGGLES ─────────────────
+    #
+    # `requires` tests a VALUE, which is right for a field somebody types
+    # into. It is wrong for a toggle: a form that seeds thirteen flags and
+    # stores five of them as `false` HAS answers on it, and
+    # `str(False or "")` is empty -- so the section would delete itself and
+    # take five labelled answers a reviewer gave with it.
+    #
+    # `_has` is already exactly this predicate: it is what tells UNSIGNED
+    # apart from never-asked, one level down.
+    reqp = sec.get("requires_present")
+    if reqp:
+        subject = _subject(sec, records, ctx)
+        if not any(_has(subject, path) for path in reqp):
+            return True
+
     if sec.get("scope") == "rows":
         # A REPEATING GROUP INSIDE ONE RECORD. Empty when the list is, which
         # is a different question from whether any record was filed.

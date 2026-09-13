@@ -297,6 +297,28 @@ def validate(log_type: str, decl: Dict[str, Any]) -> None:
         # work, and declaring them without this would print two "not
         # recorded" cells on all 59 filed records, reinstating the permanent
         # N/A that branch deliberately removed.
+        # ── TWO KEYS THAT SAY WHEN A SECTION EXISTS, AND ONE THAT SAYS
+        #    WHEN A ROW DOES ─────────────────────────────────────────────
+        for key in ("requires", "requires_present"):
+            r = sec.get(key)
+            if r is not None and (
+                    not isinstance(r, (list, tuple)) or not r
+                    or not all(isinstance(x, str) and x for x in r)):
+                raise SchemaError(
+                    f"{where}: `{key}` is a non-empty list of dotted paths, "
+                    f"got {r!r}")
+
+        rr = sec.get("row_requires")
+        if rr is not None:
+            if sec.get("primitive") != "table":
+                raise SchemaError(f"{where}: `row_requires` filters ROWS, "
+                                  f"which only a table has")
+            if (not isinstance(rr, (list, tuple)) or not rr
+                    or not all(isinstance(x, str) and x for x in rr)):
+                raise SchemaError(
+                    f"{where}: `row_requires` is a non-empty list of keys, "
+                    f"got {rr!r}")
+
         req = sec.get("requires")
         if req is not None:
             if (not isinstance(req, (list, tuple)) or not req

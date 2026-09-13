@@ -236,6 +236,30 @@ def table(sec: Dict, records: List, ctx: Dict) -> str:
         f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
         f'padding:3px 6px;text-align:left;">{_html.escape(lbl)}</th>'
         for _, lbl, _f in cols)
+    # ── A ROW THAT NAMES NOBODY IS NOT A ROW ────────────────────────────
+    #
+    # REQUESTED BY ALL THREE SCHEMA AGENTS INDEPENDENTLY, which is the signal
+    # it belongs here and not in three contexts. Five hand-written branches
+    # already state the rule -- the OSHA register, the toolbox roster, the
+    # pre-shift sheet, fall protection and excavation all drop a row carrying
+    # no identity.
+    #
+    # AND IT CANNOT BE LEFT TO THE DEVICE. The editors SEED empty rows and
+    # `forFiling` trims them at submit -- but a draft keeps them, and a draft
+    # is rendered. Without this an untouched seed row prints on a filed
+    # document: a crane lift the crane never made, an attendee nobody can
+    # identify, with ZERO WORDS LOST to a text diff because a blank row adds
+    # no words.
+    #
+    # A VALUE, NOT A KEY. The editors seed `{address: ""}`, so every seeded row
+    # CARRIES the key -- testing presence would pass every one of them
+    # through. That mistake was made once already, by an agent, and caught by
+    # its own comparison.
+    _need = sec.get("row_requires")
+    if _need:
+        records = [r for r in records
+                   if any(str(_get(r, k) or "").strip() for k in _need)]
+
     body = ""
     for idx, rec in enumerate(records, start=1):
         body += f'<tr style="break-inside:avoid;page-break-inside:avoid;">'
@@ -706,7 +730,29 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         f'<div style="{_BODY}">{_fmt(rec, path, f)}</div></td>'
         for path, lbl, f in (sec.get("fields") or []))
     _p = sec.get("signature_path", "")
-    mark = ink(_get(rec, _p), ctx, present=_has(rec, _p))
+    _sig = _get(rec, _p)
+    mark = ink(_sig, ctx, present=_has(rec, _p))
+
+    # ── THE TWO-NAMES RULE `signature` LEARNED, CARRIED HERE ────────────
+    #
+    # `signer_name` is stamped onto the mark at signing time; the fields above
+    # name whoever the RECORD says signed. Usually one man, occasionally not.
+    # `signature` was taught to print both when they differ during the daily
+    # jobsite conversion and THIS PRIMITIVE WAS NOT -- a fix that stopped at
+    # the first of two places that needed it.
+    #
+    # LATENT, NOT LIVE, and measured rather than assumed: 0 of 92 filed
+    # orientation records differ today. Fixed now because the next conversions
+    # bind three more certifications, and because "no record differs yet" is a
+    # fact with an expiry date.
+    _signer = ""
+    if isinstance(_sig, dict):
+        _signer = FORMATTERS["name"](
+            _sig.get("signer_name") or _sig.get("signerName") or "")
+    _named = {FORMATTERS["name"](_get(rec, path))
+              for path, _l, f in (sec.get("fields") or []) if f == "name"}
+    _also = ("" if not _signer or _signer in _named else
+             f'<div style="{_LABEL};padding-top:2px;">signed by {_signer}</div>')
     return (
         '<div style="break-inside:avoid;page-break-inside:avoid;">'
         f'<div style="{_BODY};border:{_RULE};border-top:none;padding:5px 6px;'
@@ -718,7 +764,7 @@ def certification(sec: Dict, rec: Any, ctx: Dict) -> str:
         f'<td style="border:{_HAIRLINE};padding:3px 6px;width:34%;'
         'vertical-align:bottom;">'
         f'<div style="{_LABEL}">Signature</div>'
-        f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div></td>'
+        f'<div style="min-height:{_INK_MAX_H + 4}px;">{mark}</div>{_also}</td>'
         '</tr></table></div>')
 
 
