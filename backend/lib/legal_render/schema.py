@@ -110,7 +110,7 @@ EMPTY_KINDS = ("omit", "none_documented", "blank_rows")
 #: Primitive names a section may claim. The engine holds the implementations;
 #: this list is what a schema is allowed to ask for.
 PRIMITIVES = ("field_grid", "table", "checklist", "narrative", "signature",
-              "certification", "inspection_log")
+              "certification", "inspection_log", "question_answers")
 
 #: FORMATTER NAMES A PRIMITIVE HANDLES ITSELF, not value formatters.
 #:
@@ -147,6 +147,35 @@ ROW_FORMATTERS = ("cp_headcount", "preshift_signature", "osha_cert_type")
 LABEL_SETS: Dict[str, List[tuple]] = {
     # frontend/app/logbooks/subcontractor_orientation.jsx ORIENTATION_SECTIONS,
     # and backend/server.py's ORIENTATION_ITEMS, which must agree with it.
+    # backend/server.py SCAFFOLD_QUESTIONS -- nineteen questions a shed
+    # inspection answers in WORDS, not ticks. See  for why
+    # that distinction is load-bearing.
+    "scaffold_maintenance_questions": [
+        ("signs_on_parapets", "Are the signs on the parapets?"),
+        ("base_plates_mudsills", "Are the base plates and mudsills secured?"),
+        ("scaffold_pins_bolts", "Are the scaffold pins and bolts installed?"),
+        ("legs_poles_plumb",
+         "Are the legs and poles plumb, braced and not displaced?"),
+        ("tie_ins_spaced",
+         "Are tie-ins correctly spaced, properly secured and the correct amount?"),
+        ("cross_braces",
+         "Are cross braces fully attached, not bent, and not missing?"),
+        ("pipe_clamps_tight", "Are pipe clamps tight?"),
+        ("window_jacks_tight", "Are window jacks tight?"),
+        ("planks_secured", "Are all the planks secured?"),
+        ("decking_planks_condition", "Are decking and planks in good condition?"),
+        ("deck_fully_planked", "Is deck fully planked?"),
+        ("gaps_open_spaces", "Are there gaps or open spaces on decking?"),
+        ("guardrails_toe_boards",
+         "Are the guardrails and toe boards secured at all places where required?"),
+        ("netting_extension", "Is the netting extension of full length and height?"),
+        ("netting_secured", "Is the netting secured?"),
+        ("parapet_height", "Is the parapet the proper height and secured?"),
+        ("lights_working", "Are the lights working?"),
+        ("deck_clean", "Is the deck clean and free of debris?"),
+        ("drawings_on_site", "Drawings on site for inspection?"),
+    ],
+
     # backend/server.py INSPECTION_ORDER, which is the order the device shows
     # them in and therefore the order the man walked them.
     #
@@ -497,6 +526,215 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
     # Review column reads differently on two renderings of one filed document
     # cannot be validated against a single moment -- which is the thing
     # Bulletin 2024-007 sec V.6 asks of a signature.,
+
+    "osha_log": {
+        # THE NAME ON THE FILED DOCUMENT, NOT THE NAME IN THE APP.
+        #
+        # LOGBOOK_TYPE_REGISTRY labels this "OSHA Log Book" and the branch has
+        # printed "OSHA / SST Certification Log" at the head of every filed
+        # record there has ever been. The two have disagreed since before this
+        # conversion; taking the registry's word would have renamed 39 filed
+        # documents, and the one an inspector asks for by name is the one on
+        # the paper.
+        #
+        # THE DISAGREEMENT ITSELF IS RECORDED, not resolved here: which name
+        # the app's own screens should use is a product question, and a
+        # restyle is not the place to answer it.
+        "title": "OSHA / SST Certification Log",
+        "subtitle": "Worker certifications register",
+        "cite": "OSHA 1926",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # `row_requires` ON `worker_name` AND NOTHING ELSE, which is
+                # the branch's own guard verbatim. It used to read five fields
+                # any-of and printed a row carrying only a card number -- a
+                # certification on a signed register belonging to nobody named.
+                #
+                # THE UNVERIFIED MARKER RIDES IN THE CERT TYPE CELL because it
+                # is a statement about the class, not about the worker: a row
+                # reading "SST Unspecified" with nothing beside it asserts a
+                # credential on file that the gate could not actually read. It
+                # is on 5 of the 39 filed records and it is the half of this
+                # column that fails toward looking fine if it is dropped.
+                #
+                # THE SIGNED COLUMN IS A TICK OR NOTHING. `yes_no` would print
+                # "No" against every unticked row, which on a register is the
+                # CP asserting that a signature is NOT on file -- a finding he
+                # never made. The old branch's empty cell is the whole claim.
+                "n": 2, "title": "Certifications Recorded",
+                "primitive": "table", "scope": "rows", "path": "data.entries",
+                "empty": "none_documented",
+                "none_text": "No certifications were recorded on this register.",
+                "row_requires": ["worker_name"],
+                "columns": [
+                    ("worker_name", "Worker", "raw_name"),
+                    ("company", "Company", "raw_name"),
+                    (".", "Cert Type", "osha_cert_type"),
+                    ("card_number", "Card #", "raw_text"),
+                    ("expiration", "Expiration", "raw_text"),
+                    ("signed", "Signed", "tick_or_blank"),
+                ],
+            },
+            {
+                # THE SAME `statement_ref` ARGUMENT AS THE PRE-SHIFT SHEET, and
+                # the same registry. This one carries the sentence that says
+                # what the CP's mark does and does not attest to -- that the
+                # register is a true copy of what the system held, and NOT that
+                # the physical cards were inspected. A conversion that dropped
+                # it would leave his signature over a register with no stated
+                # limit on what it claims.
+                "n": 3, "title": "Certification", "primitive": "certification",
+                "scope": "first", "empty": "omit",
+                "statement_ref": "osha_log",
+                "fields": [
+                    ("cp_name", "Name (Print)", "name"),
+                ],
+                "signature_path": "cp_signature",
+                "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
+
+    # ── SCAFFOLD MAINTENANCE LOG ────────────────────────────────────────────
+    #
+    # THE SIDEWALK-SHED DAILY INSPECTION. 9 filed records, all submitted, none
+    # amended.
+    #
+    # `question_answers` AND NOT `checklist`, AND THE DIFFERENCE IS NOT
+    # COSMETIC. The 19 checks are answered with the STRINGS 'YES', 'NO' and
+    # 'N/A'. `checklist` draws a ticked or unticked box from the truth of the
+    # stored value, and the string "NO" is truthy in Python -- so every failed
+    # check on a shed inspection would have printed as a ticked box, on the
+    # document a DOB inspector reads to find out whether the shed is safe.
+    # `inspection_log` is wrong for a different reason: it asks pass / fail
+    # with a note, and there is no note here and no fourth answer.
+    #
+    # AN N/A THE CP CHOSE IS A REAL ANSWER and renders as chosen. An unanswered
+    # question reads "— Not recorded" and never a silent NO.,
+
+    "scaffold_maintenance": {
+        "title": "Scaffold Maintenance Log",
+        "subtitle": "NYC DOB — Daily while scaffold is up",
+        "cite": "§3314",
+        "source": {"kind": "one"},
+        "sections": [
+            {
+                "n": 1, "title": "Site Information", "primitive": "field_grid",
+                "scope": "project", "empty": "omit",
+                "fields": [
+                    ("address", "Job Address", "text"),
+                    ("bbl", "Borough", "bbl_borough"),
+                    ("nyc_bin", "BIN", "text"),
+                    ("bbl", "Block", "bbl_block"),
+                    ("bbl", "Lot", "bbl_lot"),
+                    ("company_name", "General Contractor", "name"),
+                ],
+            },
+            {
+                # `requires` NAMES ALL NINE, AND THE FIELDS NAME THE SAME NINE
+                # PATHS. That is the daily jobsite conversion's mistake written
+                # down: its gate said `data.time_in` and its field said
+                # `time_in`, so the section appeared with every cell reading
+                # "not recorded". Read this list against the one below it.
+                #
+                # ALL NINE PRINT ONCE ANY ONE OF THEM DOES, which is the old
+                # branch's rule and the right one for a permit block: the
+                # labels are on the form either way, so a silent omission would
+                # hide which of them the CP left blank.
+                #
+                # `phone` IS EMPTY ON ALL 9 FILED RECORDS and prints
+                # "— Not recorded" on every one. That is NOT the daily log's
+                # `areas_visited` case and it is not dropped for it: there is a
+                # live control for it on the screen, the census is nine
+                # records, and removing a permit contact from a filed shed
+                # inspection on that evidence is a decision for the operator.
+                # Recorded in the report instead.
+                #
+                # THE DATES STAY AS FILED, `text` AND NOT `date_long`. The
+                # installation and expiration dates are read against a DOB
+                # permit, and the word-level diff that guards this whole
+                # conversion CANNOT SEE DIGITS -- a date reformatted here would
+                # be the one change on the sheet that no check could catch.
+                "n": 2, "title": "Scaffold", "primitive": "field_grid",
+                "scope": "first", "empty": "omit", "per_row": 3,
+                "requires": [
+                    "data.general_info.scaffold_erector",
+                    "data.general_info.renters_name",
+                    "data.general_info.permit_number",
+                    "data.general_info.phone",
+                    "data.general_info.installation_date",
+                    "data.general_info.expiration_date",
+                    "data.general_info.scaffold_height",
+                    "data.general_info.num_platforms",
+                    "data.general_info.shed_type",
+                ],
+                "fields": [
+                    ("data.general_info.scaffold_erector",
+                     "Scaffold Erector", "name"),
+                    ("data.general_info.renters_name", "Renter", "name"),
+                    ("data.general_info.permit_number", "Permit #", "text"),
+                    ("data.general_info.phone", "Phone #", "text"),
+                    ("data.general_info.installation_date",
+                     "Installation Date", "text"),
+                    ("data.general_info.expiration_date", "Expiration", "text"),
+                    ("data.general_info.scaffold_height",
+                     "Scaffold Height", "text"),
+                    ("data.general_info.num_platforms",
+                     "Platforms Decked", "text"),
+                    ("data.general_info.shed_type", "Shed Type", "text"),
+                ],
+            },
+            {
+                # THE LABEL SET IS THE SENTENCE HE ANSWERED. A shed inspection
+                # is 19 questions in the order the CP walks them, and a sheet
+                # that asked a slightly better-worded question of an
+                # already-filed answer would be wrong about what he said.
+                #
+                # `requires` ON THE MAP ITSELF, for the reason the daily log's
+                # inspections carry one: without it a record holding no answers
+                # renders a numbered section bar with nothing beneath it,
+                # because emptiness otherwise asks whether any record was filed
+                # and one was.
+                "n": 3, "title": "Inspection Checklist",
+                "primitive": "question_answers", "scope": "first",
+                "path": "data.answers",
+                "labels": "scaffold_maintenance_questions",
+                "requires": ["data.answers"],
+                "empty": "none_documented",
+                "none_text": "No inspection answers were recorded.",
+            },
+            {
+                # NOT A CERTIFICATION, AND THE TEST IS THE ATTESTATION
+                # REGISTRY. Nine of the twelve types print no sentence above
+                # their signature and this is one of them --
+                # lib/logbook/attestations.py records that as
+                # NONE_ON_DOCUMENT rather than leaving it absent, so the
+                # question has already been answered for this type by the code
+                # that writes its signature events. Inventing a sentence here
+                # would put words on a signed §3314 record that the signer
+                # never said, and would contradict every snapshot already
+                # stored against it.
+                "n": 4, "title": "Competent Person Signature",
+                "primitive": "signature", "scope": "first", "empty": "omit",
+                "path": "cp_signature", "name_path": "cp_name",
+                "role": "Competent Person",
+            },
+        ],
+    },
 
     # ── DAILY JOBSITE LOG ───────────────────────────────────────────────────
     #

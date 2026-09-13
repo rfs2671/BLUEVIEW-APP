@@ -122,8 +122,20 @@ def _is_empty(sec: Dict, records: List, ctx: Dict) -> bool:
     if sec.get("scope") == "rows":
         # A REPEATING GROUP INSIDE ONE RECORD. Empty when the list is, which
         # is a different question from whether any record was filed.
-        return not (_get(records[0] if records else {},
-                         sec.get("path", "")) or [])
+        #
+        # AND `row_requires` COUNTS TOWARDS EMPTY. A register of nothing but
+        # seeded rows has entries in the record and NOTHING TO SHOW: drawing
+        # the table anyway prints column headers over no rows, which reads as
+        # a register that was started, when what is true is that nothing in it
+        # names anybody. The old branches omitted the table entirely and this
+        # is how the declaration says the same thing -- the section's declared
+        # `empty` decides what appears in its place.
+        _rows = _get(records[0] if records else {}, sec.get("path", "")) or []
+        _need = sec.get("row_requires")
+        if _need:
+            _rows = [r for r in _rows if isinstance(r, dict)
+                     and any(str(_get(r, k) or "").strip() for k in _need)]
+        return not _rows
     if sec.get("scope") == "each":
         return not records
     if sec.get("scope") == "project":

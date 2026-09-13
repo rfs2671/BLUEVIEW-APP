@@ -645,6 +645,62 @@ def appended_photographs(rows: List) -> str:
         f'border:{_RULE};">{items}</table></div>')
 
 
+def question_answers(sec: Dict, rec: Any, ctx: Dict) -> str:
+    """A fixed list of questions and the answers AS STORED.
+
+    -- WHY THIS IS NOT THE `checklist` PRIMITIVE ------------------------
+
+    A shed inspection answers in WORDS. The record stores "YES", "NO" or "N/A"
+    as strings, and `checklist` draws its box from the TRUTHINESS of whatever
+    it is handed -- so **every failed check would draw a ticked box**, on the
+    sheet an inspector reads to decide whether a sidewalk shed is safe.
+
+    That is the same defect `inspection_log` exists to prevent, on a different
+    form, which is why this is a third primitive and not a fourth mode of the
+    first. A primitive that grows a mode per form is the branch chain again.
+
+    THE ANSWER PRINTS VERBATIM. "N/A" is a third answer the inspector CHOSE,
+    not a missing value, and a renderer that folds it into Yes or No is
+    deciding something he decided differently.
+
+    AN EMPTY STRING IS UNANSWERED, NOT "No". The editors seed these keys, so a
+    key present and blank is a question nobody reached -- the same line
+    `checklist` draws between an unticked box and an absent one, held here
+    between an answer and a blank.
+
+    UNKNOWN KEYS PRINT AFTER THE KNOWN ONES, title-cased, so a question added
+    to the form and not yet to the label set still reaches the page instead of
+    disappearing off a filed document.
+    """
+    stored = _get(rec, sec.get("path", "")) or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    labels = LABEL_SETS[sec["labels"]]
+    known = dict(labels)
+    items = list(labels) + [(k, str(k).replace("_", " ").title())
+                            for k in stored if k not in known]
+    rows = ""
+    for key, text in items:
+        raw = stored.get(key)
+        answer = str(raw).strip() if raw is not None else ""
+        cell = _html.escape(answer) if answer else NOT_RECORDED
+        rows += (f'<tr style="break-inside:avoid;">'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;">'
+                 f'{_html.escape(text)}</td>'
+                 f'<td style="{_BODY};border:{_HAIRLINE};padding:3px 6px;'
+                 f'width:16%;white-space:nowrap;">{cell}</td></tr>')
+    if not rows:
+        return ""
+    head = "".join(
+        f'<th style="{_LABEL};color:#000;background:{_BAR};border:{_HAIRLINE};'
+        f'padding:3px 6px;text-align:left;">{t}</th>'
+        for t in ("Question", "Answer"))
+    return (f'<table style="width:100%;border-collapse:collapse;'
+            f'border:{_RULE};">'
+            f'<thead style="display:table-header-group;"><tr>{head}</tr>'
+            f'</thead><tbody>{rows}</tbody></table>')
+
+
 def filing_state(label: str, sentence: str) -> str:
     """The line under the letterhead when a record is not filed.
 
@@ -886,6 +942,7 @@ PRIMITIVE_FNS = {
     "field_grid": field_grid,
     "table": table,
     "inspection_log": inspection_log,
+    "question_answers": question_answers,
     "checklist": checklist,
     "narrative": narrative,
     "signature": signature,

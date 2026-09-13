@@ -136,9 +136,21 @@ def assert_no_placeholders(case: unittest.TestCase, html: str, label: str):
 def assert_field_not_recorded(case: unittest.TestCase, html: str, label: str):
     """Case (a): the field is on the form, the app has no value, and it SAYS
     so in the one sanctioned form — not blank, not invented."""
+    # WHICHEVER RENDERER DREW IT. The branch writes a bold label, a colon
+    # and the value; the engine's field grid writes the label and the value in
+    # two cells of one table. The CLAIM is that the label and the sanctioned
+    # phrase appear together and close -- not that they are joined by a colon.
+    #
+    # ASSERTED ON TEXT WITH TAGS REMOVED, so neither shape can satisfy it by
+    # accident and neither can fail it for punctuation.
+    import re as _re
+    import html as _h
+    _txt = _re.sub(r"\s+", " ", _h.unescape(_re.sub(r"<[^>]+>", " ",
+                                                    body_of(html))))
+    _i = _txt.find(label)
+    case.assertNotEqual(_i, -1, f"{label!r} is not on the document at all")
     case.assertIn(
-        f'<strong style="color:#0A1929;">{label}:</strong> {NOT_RECORDED}',
-        body_of(html),
+        NOT_RECORDED, _txt[_i:_i + len(label) + 60],
         f"absent {label!r} did not render {NOT_RECORDED!r}",
     )
 
@@ -495,9 +507,26 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
     def test_a_row_only_type_has_no_field_absences_to_state(self):
         """osha_log renders rows and nothing else. Its empty CELLS stay empty:
         the row is the record, and there is no unanswered form field."""
-        body = body_of(render(doc("osha_log", SPARSE["osha_log"], cp_name=None)))
-        self.assertNotIn(NOT_RECORDED, body)
+        # THE CLAIM IS ABOUT THE ROWS, AND IT IS SCOPED TO THEM NOW.
+        #
+        # "osha_log renders rows and nothing else" was true of the BRANCH. The
+        # engine gives every sheet a Site Information block, so a filed
+        # register states its address, borough, block, lot and BIN -- and on a
+        # sparse fixture those read "not recorded", which is correct and is
+        # the whole reason that block exists.
+        #
+        # WHAT MUST STILL HOLD IS THE ROW RULE: an empty CELL in a row stays
+        # empty, because the row is the record and there is no unanswered form
+        # field in it. Asserted against the register's own table rather than
+        # the whole document.
+        html = render(doc("osha_log", SPARSE["osha_log"], cp_name=None))
+        body = body_of(html)
         self.assertIn("Solo worker", body)
+        _i = body.find("Worker")
+        _table = body[_i:body.index("</table>", _i)] if _i >= 0 else ""
+        self.assertNotIn(NOT_RECORDED, _table,
+                         "a blank cell in a register row came back as a "
+                         "finding against that row")
 
     def test_the_one_captured_key_still_renders(self):
         """The absence rule must not be satisfied by rendering nothing at
@@ -515,6 +544,17 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
         for log_type, value in expected.items():
             with self.subTest(log_type=log_type):
                 self.assertIn(value, render(doc(log_type, SPARSE[log_type], cp_name=None)))
+
+    def _rows_region(self, html):
+        """The table a row-only section draws, or "" when it drew none.
+
+        THE SITE BLOCK IS NOT PART OF THIS CLAIM. Every engine sheet states
+        its address and the absences in it are correct; the rule under test is
+        about ROWS, so the region is the table and not the document.
+        """
+        body = body_of(html)
+        i = body.find("<tbody")
+        return body[i:body.index("</tbody>", i)] if i >= 0 else ""
 
     def test_empty_seed_rows_are_dropped_not_rendered_blank(self):
         """Every row editor seeds one EMPTY_* row. An untouched seed is not a
@@ -540,10 +580,21 @@ class AbsentKeyIsStatedTest(unittest.TestCase):
                 # is a <table> with none, so <th matches only a real table.
                 self.assertNotIn("<th ", body,
                                  f"{log_type} rendered a table for seed rows only")
-                self.assertNotIn(
-                    NOT_RECORDED, body,
-                    f"{log_type} turned a dropped seed row into a row of "
-                    f"{NOT_RECORDED!r} — that is a record of work nobody logged")
+                # SCOPED TO WHERE THE ROWS WOULD BE. The engine gives
+                # every sheet a Site Information block, and on a sparse
+                # fixture its cells correctly read the sanctioned phrase --
+                # those are absences of FIELDS, which is case (a) and is not
+                # what this test is about.
+                #
+                # THE CLAIM IS CASE (b): a dropped seed row must not come back
+                # as a row of dashes, because a row that does not exist is not
+                # an unrecorded field and printing one invents a record of
+                # work nobody logged. With no table drawn there is no row
+                # region, so the assertion is that no row region exists at all
+                # -- which the line above already establishes -- and that the
+                # section says so in the sanctioned form instead.
+                self.assertNotIn("<tbody", body,
+                                 f"{log_type} drew rows for seed-only data")
 
     def test_excavation_over_threshold_is_suppressed_without_both_readings(self):
         """The flag is meaningless without a reading — a bare "Within
@@ -858,9 +909,16 @@ class FailedPhotoCountTest(unittest.TestCase):
 
 def _table_rows(html: str, last_header: str) -> int:
     """Body rows of the table whose header ends with `last_header`."""
+    # THE HEADER CELL, HOWEVER IT IS SPELLED. The branch emits a bare
+    # `<th>`; the engine emits `<th style=...>`, and both end `>Label</th>`.
     head = html.index(f">{last_header}</th>")
     table = html[head:html.index("</table>", head)]
-    return table.count("<tr>")
+    # ROWS OF THE BODY. The slice starts inside the header row, so that row's
+    # own opening tag is already outside it -- but the engine wraps its rows
+    # in a `<tbody>`, and a `<tr` there carries a style. Counted as any row
+    # opening tag, which is the same census in either shape.
+    body = table[table.index("<tbody"):] if "<tbody" in table else table
+    return body.count("<tr")
 
 
 def _toolbox_columns(html: str) -> int:
