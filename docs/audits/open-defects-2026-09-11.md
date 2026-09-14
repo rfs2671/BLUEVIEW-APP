@@ -673,3 +673,25 @@ section A. Six of the defects it describes were closed between the triage and
 the writing, which is the best evidence that **every row needs re-checking
 against main before anyone acts on it**. The branch names are where to look, not
 what to merge.
+
+---
+
+## G. Superseded by the consolidated list, 2026-09-13
+
+**Everything in this document is carried into
+`docs/audits/one-defect-list-2026-09-13.md`**, together with every finding of
+the thirteen-type render migration, ordered by whether a filed document says
+something untrue and then by whether anyone can reach it.
+
+**Four verdicts here changed when they were re-measured** rather than copied,
+which is this document's own first warning applied to itself:
+
+| entry | said | measured 2026-09-13 |
+|---|---|---|
+| A15 "Areas Visited: N/A" on every filed daily log | live, 59 records | **0 — fixed by #514** |
+| A10 a role label where a signer's name goes | partially closed | **0 sheets — fixed** |
+| A19 helpers with no caller | six | **eight** |
+| A16 "corrected immediately" recorded and not printed | live | **live, and it is 4 records** |
+
+This document stays as the record of what was known on 2026-09-11 and how it
+was found. Work from the consolidated list.
