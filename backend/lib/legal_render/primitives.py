@@ -154,11 +154,20 @@ def _fmt(rec: Any, path: str, formatter: str) -> str:
     return FORMATTERS[formatter](_get(rec, path))
 
 
-def _section_open(sec: Dict) -> str:
+def _section_open(sec: Dict, n: int = None) -> str:
     """The numbered grey bar every section wears. `break-inside: avoid` on the
     wrapper and `break-after: avoid` on the bar, so a heading is never the last
-    thing on a sheet with its content overleaf."""
-    n = sec.get("n")
+    thing on a sheet with its content overleaf.
+
+    THE NUMBER IS PASSED IN, NOT READ OFF THE DECLARATION. `sec["n"]` is the
+    ORDER a section appears in; what a reader counts is what is in front of
+    him, and 118 of 317 filed records skipped a number because a section that
+    omitted itself took its number with it. The caller counts what it draws.
+
+    IT STILL FALLS BACK to the declared value, so a caller that has not been
+    taught to count gets the old behaviour rather than an unnumbered sheet.
+    """
+    n = sec.get("n") if n is None else n
     label = f"{n}. {sec.get('title', '')}" if n else sec.get("title", "")
     return (
         '<div style="break-inside:avoid;margin:0 0 10px 0;">'

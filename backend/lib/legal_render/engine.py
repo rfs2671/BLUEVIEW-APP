@@ -290,15 +290,27 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
 
     ctx = dict(ctx or {})
     body = []
+    # THE NUMBER ON THE PAGE COUNTS THE SECTIONS ON THE PAGE. A section that
+    # omits itself used to take its declared number with it and leave the gap
+    # -- 118 of 317 filed records printed 1, 2, 4 -- and a document that skips
+    # a number says a section was removed. `sec["n"]` is the ORDER; this is the
+    # count.
+    #
+    # A SECTION THAT SAYS "none documented" IS STILL ON THE PAGE and still
+    # takes a number: it is telling the reader something, which is the whole
+    # difference between `none_documented` and `omit`.
+    drawn = 0
     for sec in decl["sections"]:
         empty_kind = sec.get("empty")
         if _is_empty(sec, records, ctx):
             if empty_kind == "omit":
                 continue
-            body.append(_section_open(sec)
+            drawn += 1
+            body.append(_section_open(sec, drawn)
                         + _empty_note(sec.get("none_text", "None documented."))
                         + _section_close())
             continue
+        drawn += 1
         fn = PRIMITIVE_FNS[sec["primitive"]]
         # A STATIC SENTENCE QUALIFYING THIS SECTION'S ANSWERS, when declared.
         # NOT a narrative: a narrative binds a path and this text is not on the
@@ -308,7 +320,7 @@ def render(log_type: str, records: List[Dict], ctx: Dict) -> Optional[str]:
         _note_html = (f'<div style="{_BODY};border:{_RULE};border-top:none;'
                       f'padding:5px 6px;line-height:1.45;color:#333;">'
                       f'{_html.escape(str(_note))}</div>') if _note else ""
-        body.append(_section_open(sec)
+        body.append(_section_open(sec, drawn)
                     + fn(sec, _subject(sec, records, ctx), ctx)
                     + _note_html
                     + _section_close())

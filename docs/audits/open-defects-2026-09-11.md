@@ -500,6 +500,61 @@ listing it from memory.
 
 ---
 
+### A23. 118 of 317 filed records skip a section number — CLOSED 2026-09-13
+
+`lib/legal_render/engine.py` — the section loop, and `primitives._section_open`.
+
+**What it did:** the section number was the declaration's `"n"`, printed
+verbatim. A section that omitted itself — `empty: "omit"`, or a `requires`
+that the record does not satisfy — took its number off the page and left the
+gap:
+
+    daily_jobsite  2026-03-10:  prints [1, 2, 4, 5, 6, 7, 8, 9]
+    daily_jobsite  2026-04-13:  prints [1, 2, 4, 5, 6, 7, 9]
+
+**Measured in production, 2026-09-13:**
+
+| type | records skipping a number |
+|---|---|
+| daily_jobsite | 58 |
+| preshift_signin | 28 |
+| subcontractor_orientation | 15 |
+| site_superintendent_log | 6 |
+| toolbox_talk | 6 |
+| osha_log | 5 |
+| **total** | **118 of 317** |
+
+**Why it matters more than the missing content.** A document that skips a
+number says a section was REMOVED. A reader cannot tell an omitted section
+from a redacted one, and an inspector holding a sheet that goes 2, 4 has to ask
+what 3 was — nothing on the page answers him. The omission itself is often
+correct: the section did not apply, or the record carries nothing for it.
+Saying so silently, by leaving a hole in the numbering, is the part that is
+wrong.
+
+**It is the same class as the rest of this migration** — a document asserting
+something the record does not support — and it was invisible to every
+comparison, because both renderers printed the same declared numbers.
+
+**Found:** while reading the thirteen mock sheets. The daily jobsite mock
+printed `1, 2, 4 … 7, 9` and the SSC mock printed `1, 2, 4` for a different
+cause (A20's sibling: `requires` failing on a recorded zero, fixed in the same
+session).
+
+**Fixed:** the engine counts the sections it draws and hands each one its
+number. `"n"` stays in the declaration as the ORDER, which is a fact about the
+document's design; what a reader counts is what is in front of him, and that
+can only be known at render time. A section that prints *"none documented"* is
+still on the page and still takes a number — it is telling the reader
+something, which is the whole difference between `none_documented` and `omit`.
+
+**Guarded by** `test_every_declared_section_draws.py::TheNumbersOnThePage
+CountThePageAndNotTheDeclaration`, on a full fixture and on an almost-empty
+record, plus an assertion that the declared `n` is still unique and ordered —
+it stopped being the printed number and did not stop mattering.
+
+---
+
 ## B. Closed on 2026-09-11
 
 These were live when triaged and are not any more. Listed so nobody works them

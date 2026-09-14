@@ -202,6 +202,79 @@ def _text(html: str) -> str:
     return re.sub(r"\s+", " ", _h.unescape(s)).strip()
 
 
+class TheNumbersOnThePageCountThePageAndNotTheDeclaration(unittest.TestCase):
+    """118 OF 317 FILED RECORDS SKIPPED A NUMBER.
+
+        daily_jobsite 2026-03-10: prints [1, 2, 4, 5, 6, 7, 8, 9]
+        daily_jobsite 2026-04-13: prints [1, 2, 4, 5, 6, 7, 9]
+
+    Six of the thirteen types, measured in production. A section that omits
+    itself -- `empty: "omit"`, or a `requires` that is not met -- took its
+    declared number off the page and left the gap.
+
+    A DOCUMENT THAT SKIPS A NUMBER SAYS A SECTION WAS REMOVED, and on a filed
+    compliance record that reads worse than the missing content: an inspector
+    holding a sheet that goes 2, 4 has to ask what 3 was, and nothing on the
+    page answers him.
+
+    NOT A COSMETIC RULE. It is the same class as the rest of this migration --
+    the document asserting something the record does not support -- and the
+    assertion is on the RENDERED sheet because that is the only place the
+    question can be asked.
+    """
+
+    #: THE SECTION BAR, NOT EVERY NUMBER ON THE PAGE. The first version read
+    #: the flattened text and counted the superintendent register's OWN row
+    #: numbers -- "1. Superintendent presence", "2. General progress" -- and
+    #: reported the sheet as printing 1,2,3,1,2,3,4... A probe that cannot
+    #: tell a section heading from a numbered ROW is measuring the wrong
+    #: thing, and would have hidden the defect it was written for.
+    _BAR = re.compile(r"page-break-after:avoid;\">(\d+)\.\s")
+
+    def _numbers(self, html):
+        return [int(m) for m in self._BAR.findall(html)]
+    def test_every_converted_type_numbers_itself_from_one(self):
+        for log_type in sorted(legal_render.CONVERTED_TYPES):
+            with self.subTest(log_type=log_type):
+                ns = self._numbers(_render(_fixture(log_type)))
+                self.assertEqual(
+                    ns, list(range(1, len(ns) + 1)),
+                    f"{log_type} prints {ns}. A number missing from the run "
+                    f"is a section a reader will think was removed.")
+
+    def test_and_a_sheet_with_sections_MISSING_still_counts_from_one(self):
+        """THE CASE THAT PRODUCED THE DEFECT. The fixture above fills every
+        declared path, so every section draws and the numbers cannot gap. A
+        record that fills almost nothing is the one that skipped."""
+        for log_type in sorted(legal_render.CONVERTED_TYPES):
+            with self.subTest(log_type=log_type):
+                bare = {"_id": "lb1", "project_id": "p1", "date": "2026-09-09",
+                        "log_type": log_type, "status": "submitted",
+                        "cp_name": "daniel kaplan", "data": {}}
+                ns = self._numbers(_render(bare))
+                self.assertEqual(
+                    ns, list(range(1, len(ns) + 1)),
+                    f"{log_type} on an almost-empty record prints {ns}")
+
+    def test_the_declared_numbers_are_still_unique_and_ordered(self):
+        """`n` STOPPED BEING THE PRINTED NUMBER AND DID NOT STOP MATTERING.
+
+        It is the ORDER the sections appear in. A declaration numbered 1, 2, 2,
+        5 is one nobody has read, and nothing else in the suite would say so
+        now that the page no longer shows those numbers.
+        """
+        for log_type in sorted(legal_render.CONVERTED_TYPES):
+            with self.subTest(log_type=log_type):
+                ns = [s["n"] for s in
+                      legal_render.SCHEMAS[log_type]["sections"]]
+                self.assertEqual(ns, sorted(set(ns)),
+                                 f"{log_type} declares {ns}")
+
+    def test_there_are_converted_types_to_check(self):
+        """THE VACUITY GUARD. Three loops over a set that can empty."""
+        self.assertGreaterEqual(len(legal_render.CONVERTED_TYPES), 1)
+
+
 class EveryDeclaredSectionPutsSomethingOnThePage(unittest.TestCase):
 
     def test_there_are_converted_types_to_check(self):
