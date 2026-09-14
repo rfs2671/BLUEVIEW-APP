@@ -137,27 +137,9 @@ class TheSentenceSaysWhoAndWhen(unittest.TestCase):
         self.assertIn("Roy Fishman", s)
 
 
-def _types_with_an_arm():
-    """The types whose arm is still in the per-type chain.
-
-    AN ARM DELETED IS NOT THE SAME AS AN ARM NOTHING REACHES. Every type is
-    declared now, so the chain never runs -- but six arms are still there for
-    one more change, and that is what a rollback falls back to.
-
-    `daily_jobsite` HAS NO ARM, and that is the trap this closes: rolling it
-    back reached the GENERIC arm, which renders a title and the word Status.
-    The assertion that the result was not the engine's sheet passed, because
-    the generic arm is not the engine either. It was the wrong branch, not no
-    branch.
-
-    FOUND, NEVER NAMED, and anchored after the dispatch -- `if log_type ==
-    "preshift_signin"` also appears ABOVE it, where the caller resolves what a
-    synchronous renderer cannot await.
-    """
-    import re as _re
-    src = Path(server.__file__).read_text(encoding="utf-8")
-    i = src.index("if log_type in legal_render.CONVERTED_TYPES:")
-    return _re.findall(r'\n    (?:el)?if log_type == "(\w+)":', src[i:])
+# RETIRED 2026-09-13: `_types_with_an_arm` -- its only caller was
+# `test_it_sits_above_the_content`, retired above with the last
+# hand-written branch.
 
 
 class TheFiledDocumentCarriesIt(unittest.TestCase):

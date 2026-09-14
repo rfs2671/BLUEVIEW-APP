@@ -174,27 +174,9 @@ def _page_text(page) -> str:
     return " ".join(out)
 
 
-def _types_with_an_arm():
-    """The types whose arm is still in the per-type chain.
-
-    AN ARM DELETED IS NOT THE SAME AS AN ARM NOTHING REACHES. Every type is
-    declared now, so the chain never runs -- but six arms are still there for
-    one more change, and that is what a rollback falls back to.
-
-    `daily_jobsite` HAS NO ARM, and that is the trap this closes: rolling it
-    back reached the GENERIC arm, which renders a title and the word Status.
-    The assertion that the result was not the engine's sheet passed, because
-    the generic arm is not the engine either. It was the wrong branch, not no
-    branch.
-
-    FOUND, NEVER NAMED, and anchored after the dispatch -- `if log_type ==
-    "preshift_signin"` also appears ABOVE it, where the caller resolves what a
-    synchronous renderer cannot await.
-    """
-    import re as _re
-    src = Path(server.__file__).read_text(encoding="utf-8")
-    i = src.index("if log_type in legal_render.CONVERTED_TYPES:")
-    return _re.findall(r'\n    (?:el)?if log_type == "(\w+)":', src[i:])
+# RETIRED 2026-09-13: `_types_with_an_arm` -- the two assertions that
+# used it are retired above. There are no arms; a helper that finds
+# them is a helper that returns an empty list to nobody.
 
 
 @unittest.skipIf(HTML is None and not os.environ.get("CI"),
@@ -258,40 +240,12 @@ class TheCoverCarriesTheFirstSection(unittest.TestCase):
         html = asyncio.run(server.generate_combined_report(PROJECT, DATE))
         return HTML(string=html).render().pages
 
-    def test_the_shell_rows_are_on_the_document_that_still_has_a_shell(self):
-        """A rule on `tr.shell` is inert unless the rows carry it.
-
-        THE SHELL MOVED, AND SO DID THE COUNT. The investor report was an
-        email-style layout and is now three composed pages; the per-logbook
-        PDF is the email-style document, and it is the one whose rows must
-        carry the class its exemption names.
-        """
-        # THE SPECIMEN IS DERIVED, AND THIS IS THE THIRD FILE TO NEED IT.
-        # `toolbox_talk` was named here; it converted, and the engine's sheet
-        # has no email shell at all -- no `tr.shell`, because it is not that
-        # kind of document. The count went to zero and the rule it checks was
-        # untouched.
-        # THE ROLLBACK PATH. Every type is declared, so nothing routes to
-        # the chain -- but the arms are still there for one more change, and
-        # this is the document a one-line rollback produces.
-        _t = _types_with_an_arm()[0]
-        _keep = legal_render.schema.CONVERTED_TYPES
-        _names = frozenset(set(_keep) - {_t})
-        legal_render.schema.CONVERTED_TYPES = _names
-        legal_render.CONVERTED_TYPES = _names
-        try:
-            html = asyncio.run(server.generate_single_logbook_html(
-                {"_id": "lb0", "project_id": PROJECT, "date": DATE,
-                 "log_type": _t, "status": "submitted",
-                 "cp_name": "carl cp", "data": {"notes": "note"}}))
-        finally:
-            legal_render.schema.CONVERTED_TYPES = _keep
-            legal_render.CONVERTED_TYPES = _keep
-        self.assertNotIn(
-            "PROJECT RECORD", html,
-            f"{_t} has no branch left, so the email shell is gone with it "
-            f"and this assertion has nothing to protect. RETIRE IT.")
-        self.assertGreaterEqual(html.count('<tr class="shell">'), 3)
+    # RETIRED 2026-09-13: `test_the_shell_rows_are_on_the_document_that_still_has_a_shell`
+    # -- no document has an email shell any more. The per-type chain built it and every arm is deleted; the engine's sheet is a different document with a different stylesheet, and `tr.shell` appears in neither.
+    #
+    # BOTH OF THESE SKIP WITHOUT WEASYPRINT, so the local run
+    # reported green and CI found them. Third time in this
+    # migration that the skip count was the finding.
 
     def test_and_the_investor_report_has_no_shell_to_protect(self):
         """THE OTHER HALF, AND IT IS WHY THE DEFECT CANNOT RECUR HERE. The
@@ -364,31 +318,12 @@ class TheNestedRowsAreStillProtected(unittest.TestCase):
         if HTML is None:
             self.fail(f"weasyprint did not import in CI: {_IMPORT_ERROR}")
 
-    def test_the_exemption_names_a_class_and_not_the_bare_element(self):
-        """THE RULE MOVED TO THE DOCUMENT THAT STILL HAS A SHELL.
-
-        It was anchored to the combined report's stylesheet, and deliberately:
-        server.py held two print blocks and an unanchored `index("@media
-        print")` read the wrong renderer and passed on the strength of the
-        other one's `tr.shell`. There is one print block now -- the
-        per-logbook PDF's -- because the report's went with its shell, so the
-        anchor is the renderer itself.
-
-        BOTH HALVES STILL MATTER on that document. The bare rule is what keeps
-        a man's name and his check-in time on one sheet; the class is what
-        stops it being applied to the whole document.
-        """
-        src = Path(server.generate_single_logbook_html.__code__.co_filename
-                   ).read_text(encoding="utf-8")
-        i = src.index("async def generate_single_logbook_html(")
-        block = src[i:src.index("</style>", i)]
-        # DOUBLED BRACES. This block is inside an f-string, so the source
-        # carries `{{` where the rendered stylesheet carries `{`. The original
-        # assertion had them doubled for the same reason and I un-doubled them
-        # when re-anchoring; CI caught it.
-        self.assertIn("tr.shell {{ page-break-inside: auto", block)
-        # The bare rule survives, or nothing is protected any more.
-        self.assertIn("tr {{ page-break-inside: avoid", block)
+    # RETIRED 2026-09-13: `test_the_exemption_names_a_class_and_not_the_bare_element`
+    # -- the print block it read went with the renderer that emitted it. The rule it defended -- a bare `tr { page-break-inside: avoid }` relocating a whole document -- cannot recur, because the engine scopes break-inside to the rows it draws and has no wrapper row to match.
+    #
+    # BOTH OF THESE SKIP WITHOUT WEASYPRINT, so the local run
+    # reported green and CI found them. Third time in this
+    # migration that the skip count was the finding.
 
 
 if __name__ == "__main__":
