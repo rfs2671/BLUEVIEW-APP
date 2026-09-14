@@ -49,6 +49,10 @@ from lib.voice_ingest import (  # noqa: E402
     VoiceIngestResult,
     USER_REPLY_NO_SPEECH,
     USER_REPLY_PROCESSING_FAILED,
+    USER_REPLY_TOO_LONG,
+    MAX_AUDIO_BYTES,
+    MAX_AUDIO_DURATION_SEC,
+    should_reject_audio,
     NO_SPEECH_PROB_THRESHOLD,
     MIN_TRANSCRIPT_CHARS,
     PRICING,
@@ -454,12 +458,29 @@ class TestProcessVoiceNote(unittest.TestCase):
             return TranslateResult(**base)
         return _fn
 
-    def test_happy_path(self):
+    def test_happy_path_english_skips_the_translate_call(self):
+        """The default stub speaks English, and English no longer pays for a
+        round trip whose whole job is to hand the text back unchanged.
+
+        THIS TEST USED TO ASSERT THE OPPOSITE. It read
+        `assertGreater(translate_cost_usd, 0)` — an English transcript had to
+        cost a translation or the suite failed. That was the old behavior
+        written down, not a requirement: the translate prompt says "if the
+        input is already English, return it UNCHANGED", and Whisper had
+        already reported the language before the call was made."""
+        translate_called = []
+
+        async def _spy_translate(text, *, openai_api_key, http_client=None):
+            translate_called.append(text)
+            return TranslateResult(
+                english=text, tokens_in=80, tokens_out=12, cost_usd=0.0001,
+            )
+
         result = _run(process_voice_note(
             b"<ogg>",
             openai_api_key="sk-test",
             whisper_fn=self._stub_whisper(),
-            translate_fn=self._stub_translate(),
+            translate_fn=_spy_translate,
         ))
         self.assertTrue(result.ok)
         self.assertEqual(
@@ -468,8 +489,138 @@ class TestProcessVoiceNote(unittest.TestCase):
         )
         self.assertEqual(result.language_detected, "english")
         self.assertGreater(result.telemetry["whisper_cost_usd"], 0.0)
-        self.assertGreater(result.telemetry["translate_cost_usd"], 0.0)
+        self.assertEqual(translate_called, [])
+        self.assertTrue(result.telemetry["translate_skipped"])
+        self.assertEqual(result.telemetry["translate_cost_usd"], 0.0)
         self.assertFalse(result.telemetry["translate_fell_back"])
+
+    def test_happy_path_non_english_still_translates(self):
+        """The other half of the gate. Anything not labelled English pays for
+        the call, which is the entire point of having it."""
+        result = _run(process_voice_note(
+            b"<ogg>",
+            openai_api_key="sk-test",
+            whisper_fn=self._stub_whisper(
+                transcript="tenemos cuatro trabajadores en la cuarta planta",
+                language="spanish",
+            ),
+            translate_fn=self._stub_translate(
+                english="we have four workers on the fourth floor",
+            ),
+        ))
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            result.english_transcript,
+            "we have four workers on the fourth floor",
+        )
+        self.assertFalse(result.telemetry["translate_skipped"])
+        self.assertGreater(result.telemetry["translate_cost_usd"], 0.0)
+
+    def test_unknown_language_translates_rather_than_guessing(self):
+        """Whisper returning no language is not evidence of English. The
+        unknown case takes the paid path, because passing an unread
+        transcript through as English is the failure that matters."""
+        result = _run(process_voice_note(
+            b"<ogg>",
+            openai_api_key="sk-test",
+            whisper_fn=self._stub_whisper(language=None),
+            translate_fn=self._stub_translate(),
+        ))
+        self.assertTrue(result.ok)
+        self.assertFalse(result.telemetry["translate_skipped"])
+        self.assertGreater(result.telemetry["translate_cost_usd"], 0.0)
+
+    def test_non_latin_script_labelled_english_is_still_translated(self):
+        """A label is not proof. Short, noisy, code-switched site audio gets
+        mislabelled, and the script check is the cheap half of the guard."""
+        result = _run(process_voice_note(
+            b"<ogg>",
+            openai_api_key="sk-test",
+            whisper_fn=self._stub_whisper(
+                transcript="\u4eca\u5929\u6211\u4eec\u5728\u56db\u697c\u6d47\u7b51",
+                language="english",
+            ),
+            translate_fn=self._stub_translate(english="pouring on four today"),
+        ))
+        self.assertTrue(result.ok)
+        self.assertFalse(result.telemetry["translate_skipped"])
+        self.assertEqual(result.english_transcript, "pouring on four today")
+
+    # ── The duration cap ──────────────────────────────────────────────
+
+    def test_oversized_audio_never_reaches_whisper(self):
+        """The gate has to close BEFORE the model, because Whisper bills on
+        upload and reports duration on the way back. A cap that reads the
+        reported duration refuses a call that has already been paid for."""
+        whisper_called = []
+
+        async def _spy_whisper(audio_bytes, *, openai_api_key, http_client=None):
+            whisper_called.append(len(audio_bytes))
+            raise AssertionError("Whisper must not be called for oversized audio")
+
+        result = _run(process_voice_note(
+            b"x" * (MAX_AUDIO_BYTES + 1),
+            openai_api_key="sk-test",
+            whisper_fn=_spy_whisper,
+            translate_fn=self._stub_translate(),
+        ))
+        self.assertFalse(result.ok)
+        self.assertEqual(whisper_called, [])
+        self.assertEqual(result.error_kind, "audio_too_long")
+        self.assertEqual(result.user_reply, USER_REPLY_TOO_LONG)
+        self.assertIn("audio_too_large", result.telemetry["rejected_reason"])
+        self.assertEqual(result.telemetry["audio_bytes_size"], MAX_AUDIO_BYTES + 1)
+
+    def test_audio_at_the_limit_is_admitted(self):
+        """Exactly at the ceiling passes. A cap that rejects its own boundary
+        value is a cap one byte lower than the one written down."""
+        result = _run(process_voice_note(
+            b"x" * MAX_AUDIO_BYTES,
+            openai_api_key="sk-test",
+            whisper_fn=self._stub_whisper(),
+            translate_fn=self._stub_translate(),
+        ))
+        self.assertTrue(result.ok)
+
+    def test_a_two_minute_note_at_the_real_bitrate_is_not_refused(self):
+        """WhatsApp encodes voicenotes near 16 kbps, and the byte gate assumes
+        up to 32. A note at the cap, at the real bitrate, must pass — a
+        ceiling that refuses ordinary site traffic is worse than a loose one."""
+        two_minutes_at_16kbps = int(120 * 16 * 1000 / 8)
+        refused, _reason = should_reject_audio(two_minutes_at_16kbps)
+        self.assertFalse(refused)
+
+    def test_over_cap_duration_stops_the_translate_call(self):
+        """The byte gate is loose by design, so a long note can still get
+        transcribed. Once Whisper reports the true duration, the second paid
+        call is the one still worth stopping."""
+        translate_called = []
+
+        async def _spy_translate(text, *, openai_api_key, http_client=None):
+            translate_called.append(text)
+            return TranslateResult(
+                english=text, tokens_in=0, tokens_out=0, cost_usd=0.0,
+            )
+
+        result = _run(process_voice_note(
+            b"<ogg>",
+            openai_api_key="sk-test",
+            whisper_fn=self._stub_whisper(
+                duration_sec=MAX_AUDIO_DURATION_SEC + 45,
+                transcript="tenemos cuatro trabajadores",
+                language="spanish",
+            ),
+            translate_fn=_spy_translate,
+        ))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_kind, "audio_too_long")
+        self.assertEqual(translate_called, [])
+        self.assertIn("duration_over_cap", result.telemetry["rejected_reason"])
+        # The real duration is kept next to the byte count. That pairing is
+        # the only way ASSUMED_MAX_BITRATE_KBPS ever gets corrected.
+        self.assertGreater(result.telemetry["whisper_duration_sec"],
+                           MAX_AUDIO_DURATION_SEC)
+        self.assertGreater(result.telemetry["audio_bytes_size"], 0)
 
     def test_low_confidence_short_circuits(self):
         # no_speech_prob just over threshold → ok=False, no translate call.
