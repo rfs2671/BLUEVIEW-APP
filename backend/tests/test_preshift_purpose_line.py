@@ -271,14 +271,9 @@ class PlacementIsTheDistinction(unittest.TestCase):
         self.assertLess(t.index(ATTESTATION), t.index("Name (Print)"),
                         "a signer must see the claim before making it")
 
-    def test_the_fall_protection_scope_notice_stays_below_its_signature(self):
-        """A footer qualifying a document the reader has already read. If this
-        ever flips, the two kinds of purpose line have been confused."""
-        blocks = self._blocks("+ FALL_PROTECTION_NOTICE")
-        self.assertEqual(len(blocks), N_RENDERERS)
-        for b in blocks:
-            anchor = "cp_sig_block" if "cp_sig_block" in b else "render_signature_html"
-            self.assertGreater(b.index("FALL_PROTECTION_NOTICE"), b.index(anchor))
+    # RETIRED 2026-09-13: `test_the_fall_protection_scope_notice_stays_below_its_signature` -- the notice is a declaration key now; test_every_declared_section_draws.py renders it.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
 
 class NothingElseOnTheSheetMoved(unittest.TestCase):

@@ -286,12 +286,32 @@ console.log('\n-- the payload, and the machinery it plugs into --');
     + 'folder off — naming it anything else would mean a second uploader');
 }
 {
-  const branch = SERVER.slice(SERVER.indexOf('elif log_type == "fall_protection":'));
-  const cut = branch.slice(0, branch.indexOf('elif log_type ==', 10));
-  ok(/data\.get\("activities"\)/.test(cut), 'the PDF renderer reads activities');
-  ok(/if not has\(r, "worker_name"\)/.test(cut),
+  // THE THREE CLAIMS, WHERE THEY NOW LIVE. This sliced the
+  // `elif log_type == "fall_protection":` arm; that arm was deleted with the
+  // last six conversions and the slice returned nothing, which reads exactly
+  // like a renderer that stopped reading the roster.
+  const RK = require('./rendererKeys.cjs');
+  ok(RK.dataKeys('fall_protection').includes('activities'),
+    'the PDF renderer reads activities');
+  ok(JSON.stringify(RK.rowRequires('fall_protection', 'data.activities'))
+     === JSON.stringify(['worker_name']),
     'and drops a row that names nobody');
-  ok(/FALL_PROTECTION_NOTICE/.test(cut), 'and prints the notice on the document');
+  // THE SCOPE NOTICE IS A DECLARATION KEY, not a section: it says what this
+  // log is NOT, below the signature, and numbering it would read as part of
+  // the record. The words are `server.FALL_PROTECTION_NOTICE`'s, and the
+  // engine cannot import server -- so the declaration carries them and this
+  // asserts the two have not drifted.
+  const decl = RK.declaration('fall_protection');
+  const m = /"footer_notice": \(?\s*"([^"]+)"/.exec(decl);
+  ok(!!m, 'and prints the notice on the document');
+  const words = (s) => s.replace(/\s+/g, ' ').trim().slice(0, 60);
+  const server_notice = /FALL_PROTECTION_NOTICE = \(?\s*"([^"]+)"/
+    .exec(SERVER);
+  if (m && server_notice) {
+    ok(words(m[1]) === words(server_notice[1]),
+      'the sheet and FALL_PROTECTION_NOTICE say the same thing about what '
+      + 'this log is not');
+  }
 }
 {
   // ONE RENDERER PRINTS THIS SECTION NOW, AND THE RULE IS ASSERTED ON IT

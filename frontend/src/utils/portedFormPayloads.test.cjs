@@ -512,7 +512,16 @@ ok(/unlinkedNote/.test(OSHA_SCREEN),
 // IT IS ALSO ANCHORED AFTER THE DISPATCH. `if log_type == "preshift_signin"`
 // appears twice in server.py — once above the dispatch, where the caller
 // resolves async work — and a leftmost match finds the wrong one.
-const pdfBranch = RK.pdfBranch;
+// THE SOURCE THAT RENDERS THE TYPE, not "the branch" -- there are none left.
+// All thirteen arms are deleted and every type is a declaration, so this
+// returns the declaration; it still asks both, because a caller checking that
+// the device writes what the renderer reads should not have to know which
+// file the renderer lives in.
+//
+// THE LOCAL NAME STAYS `pdfBranch` AT SIX CALL SITES AND THAT WOULD BE A LIE,
+// so it does not: the name is what told four earlier readers of this file
+// where to look.
+const pdfSource = RK.rendererSource;
 /**
  * THE COMBINED REPORT WAS THE THIRD READER AND IS NOT ANY MORE.
  *
@@ -543,14 +552,17 @@ function kioskBranch(name, nextName) {
 const uniq = (xs) => [...new Set(xs)].sort();
 const grab = (src, re) => [...src.matchAll(re)].map((m) => m[1]);
 
-/** Every TOP-LEVEL payload key a PDF branch reads. */
-function pdfTopKeys(branch) {
-  return uniq([
-    ...grab(branch, /data\.get\("([a-z_]+)"/g),
-    // field_lines' 3-tuples: ("key", "Label", _formatter),
-    ...grab(branch, /\("([a-z_]+)",\s*"[^"]*",\s*_/g),
-    ...grab(branch, /toggle_block\(data,\s*"([a-z_]+)"/g),
-  ]);
+/**
+ * Every TOP-LEVEL payload key the filed document reads, BY TYPE.
+ *
+ * It took a slice of source and scanned it for three spellings the branches
+ * used -- `data.get("x")`, a `field_lines` 3-tuple, a `toggle_block` call. A
+ * declaration writes none of those: it binds `"data.x"`. So the question moved
+ * to `RK.dataKeys`, which answers it from whichever side the type is on, and
+ * this takes the TYPE rather than text.
+ */
+function pdfTopKeys(logType) {
+  return RK.dataKeys(logType);
 }
 /** Every top-level key a combined-report branch reads. */
 const reportTopKeys = (branch) => uniq(grab(branch, /\bd\.get\("([a-z_]+)"/g));
@@ -598,7 +610,7 @@ function assertPayloadCovers(label, body, sources) {
 // ═══ CONCRETE OPERATIONS ═════════════════════════════════════════════════════
 console.log('\n-- concrete_operations: the eight top-level keys --');
 
-const concPdf = pdfBranch('concrete_operations');
+const concPdf = pdfSource('concrete_operations');
 reportEmbedsNothing('concrete_operations');
 const concKiosk = kioskBranch('renderConcreteOperations', 'renderScaffoldMaintenance');
 
@@ -606,7 +618,7 @@ const concBody = CONC.draftBody({}, [], {});
 ok(kioskSpecs(concKiosk).length > 0,
   'concrete_operations: the kiosk DocFields specs list was found, not silently empty');
 const concKeys = assertPayloadCovers('concrete_operations', concBody, [
-  ['PDF renderer', concPdf, pdfTopKeys(concPdf)],
+  ['PDF renderer', concPdf, pdfTopKeys('concrete_operations')],
   ['kiosk inspector', concKiosk, kioskTopKeys(concKiosk)],
 ]);
 ok(concKeys.length === 8,
@@ -623,8 +635,8 @@ ok(concBody.formwork_checklist && !Object.keys(concBody.formwork_checklist).leng
 // THE FOUR FORMWORK ITEMS, key AND label, out of BOTH renderers' own lists.
 // The label must match word for word: the device and the filed PDF have to ask
 // the same thing, or the CP answered something the document does not say.
-for (const [name, branch] of [['PDF renderer', concPdf]]) {
-  const items = tupleList(branch);
+for (const [name, items] of [['PDF renderer', RK.itemList('concrete_operations', 'FORMWORK_ITEMS',
+                             'concrete_formwork')]]) {
   ok(items.length === 4, `${name} lists 4 formwork items (got ${items.length})`);
   const bad = items.filter((q, i) => (
     CONC.FORMWORK_ITEMS[i]?.key !== q.key || CONC.FORMWORK_ITEMS[i]?.label !== q.label
@@ -718,7 +730,7 @@ ok(!CONC.incompleteSteps({
 // ═══ CRANE OPERATIONS ════════════════════════════════════════════════════════
 console.log('\n-- crane_operations: the six top-level keys --');
 
-const cranePdf = pdfBranch('crane_operations');
+const cranePdf = pdfSource('crane_operations');
 reportEmbedsNothing('crane_operations');
 const craneKiosk = kioskBranch('renderCraneOperations', 'renderExcavationMonitoring');
 
@@ -726,7 +738,7 @@ const craneBody = CRANE.draftBody({}, {}, []);
 ok(kioskSpecs(craneKiosk).length > 0,
   'crane_operations: the kiosk DocFields specs list was found, not silently empty');
 const craneKeys = assertPayloadCovers('crane_operations', craneBody, [
-  ['PDF renderer', cranePdf, pdfTopKeys(cranePdf)],
+  ['PDF renderer', cranePdf, pdfTopKeys('crane_operations')],
   ['kiosk inspector', craneKiosk, kioskTopKeys(craneKiosk)],
 ]);
 ok(craneKeys.length === 6,
@@ -740,8 +752,8 @@ ok(craneBody.pre_operation_checklist
   'pre_operation_checklist is an empty MAP — every check unrecorded, which is where it starts');
 
 // THE FIFTEEN PRE-OP CHECKS, key AND label, out of BOTH renderers' own lists.
-for (const [name, branch] of [['PDF renderer', cranePdf]]) {
-  const items = tupleList(branch);
+for (const [name, items] of [['PDF renderer', RK.itemList('crane_operations', 'CRANE_PREOP',
+                             'crane_pre_operation')]]) {
   ok(items.length === 15, `${name} lists 15 pre-operation checks (got ${items.length})`);
   const bad = items.filter((q, i) => (
     CRANE.PRE_OP_CHECKLIST_ITEMS[i]?.key !== q.key
@@ -810,7 +822,7 @@ ok(CRANE.incompleteSteps({
 // ═══ EXCAVATION MONITORING ═══════════════════════════════════════════════════
 console.log('\n-- excavation_monitoring: the nine top-level keys --');
 
-const excPdf = pdfBranch('excavation_monitoring');
+const excPdf = pdfSource('excavation_monitoring');
 reportEmbedsNothing('excavation_monitoring');
 const excKiosk = kioskBranch('renderExcavationMonitoring', 'renderConcreteOperations');
 
@@ -818,7 +830,7 @@ ok(kioskSpecs(excKiosk).length > 0,
   'excavation_monitoring: the kiosk DocFields specs list was found, not silently empty');
 const excBody = EXC.draftBody({}, []);
 const excKeys = assertPayloadCovers('excavation_monitoring', excBody, [
-  ['PDF renderer', excPdf, pdfTopKeys(excPdf)],
+  ['PDF renderer', excPdf, pdfTopKeys('excavation_monitoring')],
   ['kiosk inspector', excKiosk, kioskTopKeys(excKiosk)],
 ]);
 ok(excKeys.length === 9,
@@ -840,7 +852,12 @@ ok(Object.prototype.hasOwnProperty.call(excBody, 'vibration_over_threshold'),
   + 'used to omit it, and the drain pushes what the autosave wrote');
 ok(excBody.vibration_over_threshold === false,
   'and it is a real boolean, which is what the renderer branches on');
-const excGate = /has\(data, "vibration_over_threshold"\)/.test(excPdf);
+// THE STATUS LINE IS STILL GATED ON THE KEY BEING PRESENT, and it is
+// `vibration_status` that gates it now: the formatter refuses to derive a
+// verdict from two readings without the flag that says the comparison was
+// made. The branch tested `has(data, ...)`; the rule did not move, its home
+// did.
+const excGate = /"vibration_over_threshold" not in d/.test(RK.FORMATTERS);
 ok(excGate,
   'the renderer still gates the Status line on the key being present');
 
@@ -938,7 +955,11 @@ ok(EXC.draftBody({}, excMixed, { forFiling: true }).adjacent_buildings.length ==
 // and the combined report's embedded copy dropped a row with no address,
 // read from each one's own source so they could not drift. The report embeds
 // no filed document, so there is one source and nothing to drift from.
-ok(/if not has\(b, "address"\)/.test(excPdf),
+// A MONITORING POINT WITH NO ADDRESS IS NOT A ROW -- a reading about a
+// building the record cannot name. `row_requires` states it now.
+ok(JSON.stringify(RK.rowRequires('excavation_monitoring',
+                                 'data.adjacent_buildings'))
+   === JSON.stringify(['address']),
   'the per-logbook PDF drops a row with no address');
 
 // ── TWO REAL BOOLEANS, DELIBERATELY NOT A THREE-STATE MAP ───────────────────
@@ -956,9 +977,13 @@ console.log('\n-- excavation_monitoring: the two switches have TWO states --');
 
 ok(/_yn = lambda v: "Yes" if v else "No"/.test(SERVER),
   'the yes/no formatter has no not-recorded branch');
-ok(/\("groundwater_observed", "Groundwater Observed", _yn\)/.test(excPdf),
+// AND THE TWO BOOLEANS GO THROUGH THE YES/NO FORMATTER. The branch named
+// `_yn` in a 3-tuple; the declaration names `yes_no` in one.
+ok(RK.declFields('excavation_monitoring').some(
+  (f) => f.path === 'data.groundwater_observed' && f.formatter === 'yes_no'),
   'and groundwater is rendered through it');
-ok(/\("atmospheric_testing", "Atmospheric Testing", _yn\)/.test(excPdf),
+ok(RK.declFields('excavation_monitoring').some(
+  (f) => f.path === 'data.atmospheric_testing' && f.formatter === 'yes_no'),
   'and so is atmospheric testing');
 for (const k of ['groundwater_observed', 'atmospheric_testing']) {
   ok(excBody[k] === false, `${k} is present and FALSE on a blank log, never absent`);
@@ -989,7 +1014,7 @@ ok(EXC.incompleteSteps({
 // ═══ HOT WORK ════════════════════════════════════════════════════════════════
 console.log('\n-- hot_work: the nine top-level keys --');
 
-const hwPdf = pdfBranch('hot_work');
+const hwPdf = pdfSource('hot_work');
 reportEmbedsNothing('hot_work');
 const hwKiosk = kioskBranch('renderHotWork', 'renderCraneOperations');
 
@@ -1003,7 +1028,7 @@ const hwKioskKeys = uniq([
   ...grab(hwSpecs, /\['([a-z_]+)',\s*t\(/g),
 ]);
 const hwKeys = assertPayloadCovers('hot_work', hwBody, [
-  ['PDF renderer', hwPdf, pdfTopKeys(hwPdf)],
+  ['PDF renderer', hwPdf, pdfTopKeys('hot_work')],
   ['kiosk inspector', hwKiosk, hwKioskKeys],
 ]);
 ok(hwKeys.length === 9,
@@ -1021,8 +1046,8 @@ ok(hwBody.precautions && !Object.keys(hwBody.precautions).length,
 console.log('\n-- hot_work: one sentence, on the device and on the permit --');
 
 const EN = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
-for (const [name, branch] of [['PDF renderer', hwPdf]]) {
-  const items = tupleList(branch);
+for (const [name, items] of [['PDF renderer', RK.itemList('hot_work', 'HW_PRECAUTIONS',
+                             'hot_work_precautions')]]) {
   ok(items.length === 7, `${name} lists 7 precautions (got ${items.length})`);
   const bad = items.filter((q, i) => (
     HW.PRECAUTION_ITEMS[i]?.key !== q.key || HW.PRECAUTION_ITEMS[i]?.label !== q.label
@@ -1093,7 +1118,7 @@ ok(!HW.incompleteSteps({
 // ═══ SSC DAILY SAFETY LOG ════════════════════════════════════════════════════
 console.log('\n-- ssc_daily_safety_log: the thirteen top-level keys --');
 
-const sscPdf = pdfBranch('ssc_daily_safety_log');
+const sscPdf = pdfSource('ssc_daily_safety_log');
 reportEmbedsNothing('ssc_daily_safety_log');
 const sscKiosk = kioskBranch('renderSscDailySafetyLog', 'renderOshaLog');
 
@@ -1113,15 +1138,22 @@ const sscKioskKeys = uniq([
   ...grab(sscKiosk, /\bdata\.([a-z_]+)/g),
   ...grab(sscKiosk, /\['([a-z_]+)',\s*t\(/g),
 ]);
-// The PDF branch keeps its flags and its narrative prompts in two named lists
-// that field_lines never sees, so both are read out by name.
-const sscPdfFlags = namedList(sscPdf, 'SSC_FLAGS', '[', ']');
-const sscPdfNarrative = namedList(sscPdf, 'NARRATIVE_FIELDS', '(', '\n        )');
+// THE FLAGS AND THE NARRATIVE PROMPTS. The branch kept them in two named
+// lists that `field_lines` never saw; the declaration binds them as ordinary
+// fields, so they are read as `{key, label}` pairs off whichever side exists.
+const sscPdfFlags = RK.declFields('ssc_daily_safety_log')
+  .filter((f) => SSC.COMPLIANCE_FLAGS.some(
+    (c) => f.path === `data.${c.key}`))
+  .map((f) => ({ key: f.path.split('.').pop(), label: f.label }));
+const sscPdfNarrative = RK.declFields('ssc_daily_safety_log')
+  .filter((f) => SSC.NARRATIVE_FIELDS.some((c) => f.path === `data.${c.key}`))
+  .map((f) => ({ key: f.path.split('.').pop(), label: f.label }));
 ok(sscPdfFlags.length > 0 && sscPdfNarrative.length > 0,
   'ssc_daily_safety_log: the flag and narrative lists were found in the '
   + 'renderer that prints the sheet');
 const sscPdfKeys = uniq([
-  ...pdfTopKeys(sscPdf), ...listKeys(sscPdfFlags), ...listKeys(sscPdfNarrative),
+  ...pdfTopKeys('ssc_daily_safety_log'),
+  ...sscPdfFlags.map((x) => x.key), ...sscPdfNarrative.map((x) => x.key),
 ]);
 
 const sscBody = SSC.draftBody({});
@@ -1138,12 +1170,15 @@ ok(Object.keys(sscBody).length === 13,
 // own lists. The label must match word for word: the device and the filed PDF
 // have to ask the same thing.
 const SSC_EN = fs.readFileSync(path.join(FRONTEND, 'src', 'i18n', 'en.js'), 'utf8');
-for (const [name, src, model] of [
+// THE LISTS ARRIVE AS `{key, label}` PAIRS NOW, not as source text to be
+// scanned -- `RK.declFields` reads the declaration's own triples. The regex
+// below matched a tuple spelling that only ever existed in the branch, and
+// running it over an ARRAY raised rather than reporting zero, which is the
+// good case.
+for (const [name, items, model] of [
   ['PDF renderer flags', sscPdfFlags, SSC.COMPLIANCE_FLAGS],
   ['PDF renderer narrative', sscPdfNarrative, SSC.NARRATIVE_FIELDS],
 ]) {
-  const items = [...src.matchAll(/\("([a-z_]+)",\s*"([^"]+)"\)/g)]
-    .map((m) => ({ key: m[1], label: m[2] }));
   ok(items.length === model.length,
     `${name} lists ${model.length} items (got ${items.length})`);
   const bad = items.filter((q, i) => (
@@ -1176,8 +1211,17 @@ for (const f of SSC.COMPLIANCE_FLAGS) {
 // answered No five times.
 console.log(String.fromCharCode(10) + '-- ssc_daily_safety_log: the five switches are recorded --');
 
-ok(/val = _yn\(data\.get\(key\)\) if has\(data, key\) else NOT_RECORDED/.test(sscPdf),
+// AN UNANSWERED SWITCH AND A SWITCH ANSWERED No ARE DIFFERENT CLAIMS on a
+// signed record. The branch spelled it `_yn(...) if has(...) else
+// NOT_RECORDED`; the declaration binds `yes_no`, which is the formatter that
+// draws that line -- `None` reads as not-recorded and `False` reads as No.
+//
+// ASSERTED ON THE FORMATTER, because that is where the distinction lives.
+ok(/if v is None:\n {8}return NOT_RECORDED/.test(RK.FORMATTERS),
   'the renderer distinguishes an absent flag from a recorded No');
+ok(RK.declFields('ssc_daily_safety_log').filter(
+  (f) => f.formatter === 'yes_no').length >= 5,
+  'the five compliance switches are not bound to the yes/no formatter');
 for (const f of SSC.COMPLIANCE_FLAGS) {
   ok(sscBody[f.key] === false,
     `${f.key} is present and FALSE on a blank day, never absent`);
@@ -1187,14 +1231,25 @@ for (const f of SSC.COMPLIANCE_FLAGS) {
 }
 // Both filed surfaces qualify a rendered "No" as possibly an untouched default,
 // and the screen says the same thing before the SSC signs.
-ok(/Compliance items default to "No" if not explicitly set by the reviewer/.test(sscPdf),
+// THE CAVEAT IS A DECLARED NOTE ON THE SECTION NOW. These five are
+// ToggleRows seeded false, so a bare "No" must not read as an affirmative
+// safety-violation attestation on a DOB record.
+// THE SENTENCE WRAPS IN THE DECLARATION, across a string concatenation and
+// a line break, so the whitespace between its words is not a single space.
+// Matched loosely on purpose: the CLAIM is that the caveat is on the sheet,
+// not that it is typed on one line.
+ok(/Compliance items default to "No"[\s\S]{0,40}not explicitly[\s\S]{0,40}reviewer/
+  .test(sscPdf),
   'the PDF still qualifies a bare "No" as a possible untouched default');
 
 console.log('\n-- ssc_daily_safety_log: the incident detail --');
 
 // THE RENDERERS' OWN RULE: the detail is printed only when an incident was
 // reported — but if one WAS, a missing detail is an unanswered question.
-ok(/show_incident = bool\(data\.get\("incidents_reported"\)\)/.test(sscPdf),
+// THE DETAIL IS PRINTED ONLY WHEN AN INCIDENT WAS REPORTED -- and if one
+// WAS, a missing detail is an unanswered question rather than a blank. The
+// branch computed `show_incident`; the declaration says it with `requires`.
+ok(/"requires": \["data\.incidents_reported"\]/.test(sscPdf),
   'the PDF gates the incident narrative on the flag');
 ok(SSC.incidentDetailsApply({ incidents_reported: true }) === true,
   'the screen asks for the detail under exactly that condition');
@@ -1248,9 +1303,14 @@ ok(SSC.narrativeWrittenCount({ site_conditions: '   ' }) === 0,
 // checklistMap, so the rule is executed once here rather than trusted twice.
 console.log('\n-- checklistMap: absent / false / true, and back --');
 
-ok(/key present and False is an explicit No while `key absent` is\s*\n?\s*#?\s*untouched/i.test(SERVER)
-  || /key absent` is\s+untouched/i.test(SERVER),
-  'the backend still states the absent-vs-false convention this module implements');
+// THE CONVENTION MOVED WITH THE RENDERER THAT IMPLEMENTED IT. `server.py`
+// stated it in `toggle_map_rows`, which went with the last branch; the
+// checklist primitive and the `yes_no` formatter carry it now, and the
+// sentence is theirs.
+ok(/present and False is an explicit No/i.test(RK.PRIMITIVES + RK.FORMATTERS)
+  || /absent key is untouched/i.test(RK.PRIMITIVES + RK.FORMATTERS),
+  'the backend still states the absent-vs-false convention this module '
+  + 'implements');
 
 const ITEMS = [{ key: 'a' }, { key: 'b' }];
 let m = {};

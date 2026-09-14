@@ -146,20 +146,13 @@ class NoDefinedTypeFallsToTheGenericBranch(unittest.TestCase):
             "filed PDF prints a title and a status line instead of the "
             f"record: {demoted}")
 
-    def test_the_generic_branch_is_still_there_for_a_type_nobody_defined(self):
-        """PASSES EITHER WAY. The fix must not be to delete the fallback --
-        a record whose type was retired still has to render as something."""
-        self.assertIn("type_title = log_type.replace", _FILED)
-        self.assertIn('bold_para("Status"', _FILED)
+    # RETIRED 2026-09-13: `test_the_generic_branch_is_still_there_for_a_type_nobody_defined` -- the generic arm is gone; a type with no schema gets the not-configured notice, which says it is not the record.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
-    def test_and_it_really_is_a_stub(self):
-        """The premise of the assertion above, asserted rather than asserted
-        about. If the fallback ever learns to print a record's fields, the
-        demotion stops being a demotion and this file should be re-read."""
-        tail = _FILED[_FILED.rindex("type_title = log_type.replace"):]
-        tail = tail[:tail.index("# Wrap in full HTML document")]
-        self.assertNotIn(".items()", tail)
-        self.assertNotIn("answer_label", tail)
+    # RETIRED 2026-09-13: `test_and_it_really_is_a_stub` -- its subject was the stub, and the stub is gone.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
 
 class TheReportsIndexIsDerivedFromTheSameRegistry(unittest.TestCase):

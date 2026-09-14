@@ -76,34 +76,30 @@ ALL_TYPES = ("daily_jobsite", "toolbox_talk", "preshift_signin", "hot_work",
 #: raises rather than returning a sheet the engine built, and the floor below
 #: says what that means: the branch-side claims in this file have lost their
 #: subject and are to be retired, not repointed.
-_BRANCHED = ALL_TYPES[0]
-
-
-def _render_through_the_branch(log_type=None, **kw):
-    """One document, rendered by the CHAIN, with the type rolled back.
-
-    REFUSES RATHER THAN FALLING BACK. If the arm is gone the engine renders it
-    and the result would look like a branch document to every assertion that
-    only reads words -- which is precisely the silence this file exists to
-    refuse.
-    """
-    t = log_type or _BRANCHED
-    keep = legal_render.schema.CONVERTED_TYPES
-    names = frozenset(set(keep) - {t})
-    legal_render.schema.CONVERTED_TYPES = names
-    legal_render.CONVERTED_TYPES = names
-    try:
-        html = _render(t, **kw)
-    finally:
-        legal_render.schema.CONVERTED_TYPES = keep
-        legal_render.CONVERTED_TYPES = keep
-    if "PROJECT RECORD" in html:
-        raise AssertionError(
-            f"{t} has no hand-written branch left, so this rendered through "
-            f"the ENGINE. That is the end of the migration, not a broken "
-            f"test: every branch-side claim in this file has lost its subject "
-            f"and should be RETIRED rather than repointed at a converted type.")
-    return html
+#: RETIRED 2026-09-13. There is no branch to render through.
+#:
+#: All thirteen arms are deleted and so is the email-shell document they built.
+#: `_render_through_the_branch` took its specimen the way a rollback would --
+#: by removing the type from CONVERTED_TYPES for one render -- and with no arm
+#: left that reaches the not-configured notice, which is a document about a
+#: missing renderer and not a renderer.
+#:
+#: THE CLAIMS THAT WENT WITH IT, and where their surviving halves live:
+#:
+#:   * two frozen renders are identical   -> asserted on the ENGINE's sheet by
+#:     TheEngineReadsNoClock, which is the stronger form: the engine reads no
+#:     clock at all, so it needs no freeze to be deterministic.
+#:   * the branch stamps a generation time -> there is no branch. The operator's
+#:     ruling removed the stamp from the engine's sheet, and
+#:     test_the_sheet_keeps_its_banners.py asserts what the sheet DOES carry.
+#:   * two unfrozen renders differ         -> the contrast it provided was
+#:     against the engine, and with one renderer there is nothing to contrast.
+#:
+#: NOT DELETED QUIETLY. A reader who comes looking for "the test that proved
+#: the freeze was real" should find this note rather than an absence.
+# RETIRED 2026-09-13: `_render_through_the_branch` -- there is no branch to render through.
+# The last hand-written branch was deleted with the final six
+# conversions; see the module note above.
 
 _PROJECT = {"_id": "p1", "name": "588 Thomas",
             "address": "588 Thomas S Boyland Street",
@@ -261,16 +257,24 @@ class TheSwitchIsNarrow(unittest.TestCase):
     def test_the_dispatch_happens_before_the_chain(self):
         """A switch below the first branch would never be reached for a type
         the chain already handles."""
+        # THERE IS NO CHAIN LEFT TO BE BEFORE.
+        #
+        # The claim was that the dispatch precedes the per-type arms, because
+        # a switch below the first arm would never be reached for a type the
+        # chain already handles. All thirteen arms are deleted; the dispatch
+        # is the only thing in the function that decides anything.
+        #
+        # SO THE CLAIM BECOMES ITS SURVIVING HALF: nothing in this renderer
+        # decides what to draw except the dispatch and the declaration it
+        # reads. A second `log_type ==` comparison appearing here is the chain
+        # growing back.
         i = _SRC.index("if log_type in legal_render.CONVERTED_TYPES")
-        # THE FIRST ARM OF THE CHAIN, FOUND RATHER THAN NAMED. This
-        # named `daily_jobsite`, and that branch was deleted the
-        # moment its conversion finished -- the same shape as the
-        # three slices that broke when `osha_log` became the last
-        # named branch. The chain's first arm moves every time a type
-        # is converted; what does not move is that there IS one.
-        m = re.compile('\\n    if log_type == "\\w+":').search(_SRC[i:])
-        self.assertIsNotNone(m, "the per-type chain has no first branch")
-        self.assertLess(i, i + m.start())
+        self.assertGreater(i, 0)
+        fn = _SRC[i:]
+        fn = fn[:fn.index("\n@") if "\n@" in fn else len(fn)]
+        self.assertNotIn('log_type == "', fn,
+                         "the per-type chain is growing back inside the "
+                         "renderer the engine replaced")
 
 
 class TheTwelveUnconvertedTypesStillRender(unittest.TestCase):
@@ -301,74 +305,25 @@ class TheComparisonIsRepeatable(unittest.TestCase):
     it was the generation timestamp this renderer stamps into every footer.
     """
 
-    def test_there_IS_a_branch_rendered_type_to_make_these_claims_about(self):
-        """THE FLOOR UNDER THE SPECIMEN.
+    # RETIRED 2026-09-13: `test_there_IS_a_branch_rendered_type_to_make_these_claims_about` -- the floor fired; this is it acting.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
-        `_STILL_BRANCHED` shrinks by one with every conversion. When it empties,
-        `_BRANCHED` below raises at import and this file stops running rather
-        than passing -- so this names the moment in a sentence instead.
+    # RETIRED 2026-09-13: `test_two_renders_with_the_clock_frozen_are_identical` -- the freeze it proved is unnecessary: the engine reads no clock, asserted by TheEngineReadsNoClock.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
-        WHAT TO DO WHEN IT FAILS: every assertion in this class and in
-        `TheEngineSheetIsDeterministic` that contrasts the engine against the
-        branch has lost its subject, because there is no branch left. Retire
-        them; do not repoint them at a converted type, which would make each
-        one quietly assert the opposite of what it says.
-        """
-        # THE FLOOR MOVED FROM "IS THERE AN UNCONVERTED TYPE" TO "IS THERE
-        # A BRANCH". Every type is converted now and the branches are still
-        # there for one more change -- that IS the rollback -- so the question
-        # the assertions below need answered is whether the chain can still
-        # render, not whether anything routes to it.
-        _render_through_the_branch()
+    # RETIRED 2026-09-13: `test_and_WITHOUT_freezing_they_differ_only_in_length_preserving_ways` -- the trap it executed was the branch's generation stamp.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
-    def test_two_renders_with_the_clock_frozen_are_identical(self):
-        a = _render_through_the_branch()
-        b = _render_through_the_branch()
-        self.assertEqual(a, b,
-                         "this renderer is not deterministic even with the "
-                         "clock frozen, so no byte-for-byte comparison of it "
-                         "can mean anything")
+    # RETIRED 2026-09-13: `test_the_frozen_marker_actually_reaches_the_page` -- no renderer stamps a wall clock onto a page any more.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
-    def test_and_WITHOUT_freezing_they_differ_only_in_length_preserving_ways(self):
-        """The trap itself, executed. `gen_time` is why an unfrozen comparison
-        reads as a total regression: same length, different bytes."""
-        a = _render_through_the_branch(freeze=False)
-        b = _render_through_the_branch(freeze=False)
-        if a != b:
-            self.assertEqual(len(a), len(b),
-                             "the renders differ in LENGTH as well, so the "
-                             "cause is no longer just the timestamp and this "
-                             "note needs updating")
-
-    def test_the_frozen_marker_actually_reaches_the_page(self):
-        """A freeze that patched the wrong name would leave the clock running
-        and this whole class would pass while proving nothing.
-
-        ── POINTED AT A TYPE THAT STILL HAS A CLOCK ────────────────────
-
-        This is the BRANCH renderer's half. It stamps "Generated on <time>"
-        into every document it wraps, so a freeze that missed would show up
-        THE TYPE IS NO LONGER NAMED. It was `toolbox_talk`, and the note
-        here said "when it converts this moves to whichever type still does"
-        -- which is a repair somebody has to remember. `_STILL_BRANCHED`
-        does it, and the floor above says what to do when it runs out.
-
-        IT RETIRES WHEN THE LAST CLOCK-STAMPING RENDERER DOES, not before --
-        and `test_a_renderer_that_stamps_a_clock_still_exists` below fails
-        loudly on the day that happens, rather than letting this quietly
-        assert nothing.
-        """
-        self.assertIn("FROZEN", _render_through_the_branch())
-
-    def test_a_renderer_that_stamps_a_clock_still_exists(self):
-        """THE GUARD ON THE GUARD ABOVE.
-
-        The moment no renderer stamps a wall clock onto a page, the assertion
-        above has nothing to find and would fail -- which is correct, and is
-        the signal to retire it rather than to repoint it again. Named here so
-        that failure arrives as a sentence instead of a puzzle.
-        """
-        self.assertIn("Generated on", _render_through_the_branch())
+    # RETIRED 2026-09-13: `test_a_renderer_that_stamps_a_clock_still_exists` -- it named the day this would happen, and this is that day.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
     def test_the_freeze_reaches_the_ENGINE_sheet_too(self):
         """THE ENGINE'S HALF, AND IT IS A DIFFERENT ROUTE.
@@ -486,19 +441,9 @@ class TheEngineReadsNoClock(unittest.TestCase):
                          "one record, so nothing about a byte comparison of "
                          "it can be trusted")
 
-    def test_the_branch_renderer_does_NOT_share_that_property(self):
-        """THE CONTRAST, so the claim above is not true of everything and
-        therefore says nothing. A branch-rendered document stamps its
-        generation time and two unfrozen renders of it differ."""
-        a = _render_through_the_branch(freeze=False)
-        b = _render_through_the_branch(freeze=False)
-        if a == b:
-            self.skipTest("two unfrozen branch renders landed in the same "
-                          "second; the contrast is real but not observable "
-                          "in this run")
-        self.assertEqual(len(a), len(b),
-                         "the branch renders differ in LENGTH as well, so the "
-                         "cause is no longer just the timestamp")
+    # RETIRED 2026-09-13: `test_the_branch_renderer_does_NOT_share_that_property` -- the contrast was against the branch.
+    # The last hand-written branch was deleted with the final six
+    # conversions; see the module note above.
 
 
 class TheOrientationSheetSaysWhatTheSchemaDeclares(unittest.TestCase):
@@ -587,13 +532,13 @@ class TheOrientationSheetSaysWhatTheSchemaDeclares(unittest.TestCase):
             {"kind": "one"})
         # The group read in server.py is gated on the DECLARATION, so a type
         # that does not declare `group` cannot reach it.
-        # SLICED TO THE FIRST ARM OF THE CHAIN, FOUND RATHER THAN NAMED --
-        # the third slice in this repo to end at a branch that was later
-        # deleted, after the three that ended at `osha_log`.
+        #
+        # THE SLICE NO LONGER ENDS AT AN ARM -- there are none. It ends where
+        # the function does, which is the fourth anchor this one assertion has
+        # had and the first that cannot move again.
         _i = _SRC.index("if log_type in legal_render.CONVERTED_TYPES")
-        _m = re.compile('\\n    if log_type == "\\w+":').search(_SRC[_i:])
-        self.assertIsNotNone(_m, "the per-type chain has no first branch")
-        body = _SRC[_i:_i + _m.start()]
+        body = _SRC[_i:]
+        body = body[:body.index("\n@") if "\n@" in body else len(body)]
         self.assertIn('.get("kind") == "group"', body)
         self.assertIn("db.logbooks.find(", body)
         self.assertLess(
