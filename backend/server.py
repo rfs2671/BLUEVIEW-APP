@@ -38009,6 +38009,57 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             if isinstance(qid, str) and qid:
                 quoted_message_id = qid
 
+        # ── WHO WROTE THE MESSAGE THIS ONE IS REPLYING TO ──────────────────
+        #
+        # _is_bot_addressed's docstring has always claimed that a reply to a bot
+        # message counts as addressing the bot. It could not: the only thing
+        # this parser returned about a quoted message was its TEXT, and the
+        # bot's replies do not contain "@levelog", so the check fell through to
+        # "not addressed" every time.
+        #
+        # Measured, that is where the crew falls off. "Done 2" and "Done 3" —
+        # replies to a checklist the bot itself posted — were among eleven
+        # unaddressed messages out of thirty-four that were real answers to the
+        # bot, silently dropped.
+        #
+        # TWO SIGNALS, AND fromMe IS THE STRONG ONE. If WhatsApp says the quoted
+        # message was sent by this account, it was the bot; there is no other
+        # writer on this number. The participant JID is the fallback for
+        # payloads that carry the author but not the flag, and it is matched
+        # against the same identifier set an @mention is matched against, so an
+        # auto-learned LID works here too.
+        quoted_from_me = False
+        quoted_author = ""
+        for src in (quoted_node, msg, inner):
+            if not isinstance(src, dict):
+                continue
+            qid = src.get("id")
+            if isinstance(qid, dict) and qid.get("fromMe") is not None:
+                if src is quoted_node:
+                    quoted_from_me = bool(qid.get("fromMe"))
+                    break
+        if isinstance(quoted_node, dict) and not quoted_from_me:
+            if quoted_node.get("fromMe") is not None:
+                quoted_from_me = bool(quoted_node.get("fromMe"))
+        for src in (msg, inner):
+            if not isinstance(src, dict):
+                continue
+            ctx = src.get("contextInfo") or src.get("context_info") or {}
+            if isinstance(ctx, dict):
+                for key in ("participant", "quotedParticipant", "remoteJid"):
+                    v = ctx.get(key)
+                    if isinstance(v, str) and v:
+                        quoted_author = v
+                        break
+            if quoted_author:
+                break
+        if not quoted_author and isinstance(quoted_node, dict):
+            for key in ("author", "from", "participant"):
+                v = quoted_node.get(key)
+                if isinstance(v, str) and v:
+                    quoted_author = v
+                    break
+
         # Mentions — WhatsApp's native @-mention (tap @ then pick a contact)
         # doesn't put "@Levelog" in the body as text; it stores the mentioned
         # contact's JID(s) in mentionedJidList / mentionedIds / contextInfo.
@@ -38069,6 +38120,8 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "quoted_type": quoted_type,
             "quoted_is_audio": quoted_is_audio,
             "quoted_message_id": quoted_message_id,
+            "quoted_from_me": quoted_from_me,
+            "quoted_author": quoted_author,
             "mentioned_jids": mentioned_jids,
             "is_group": is_group,
             "group_id": from_field if is_group else None,
@@ -38180,6 +38233,62 @@ def _decrypt_whatsapp_media(
 # audio_diag row. Keys: mediakey_found(bool), mediakey_len(int),
 # decrypt_attempted(bool), decrypt_produced_ogg(bool), decrypt_error(str).
 _AUDIO_DIAG_KEY = "__audio_diag__"
+
+
+# ── FIVE WRITERS, TWO FORMATS, ONE READER ──────────────────────────────────
+#
+# whatsapp_contacts is written from six places and they do not agree on what a
+# phone number looks like. The activation backfill strips to digits
+# (15165494475); every other writer passes through the E.164 value
+# normalize_phone produced (+15165494475). Both lookups searched for the digits
+# of the sender's WhatsApp JID, which never carries a plus.
+#
+# So every contact row written since the integration was switched on has been
+# unfindable. Silently, on both sides: the row is there and looks right, and the
+# bot simply never answers. The checklist refusal message even tells the user to
+# fix it in Settings, which runs the writer that produces the format that does
+# not match.
+#
+# FIXED ON THE READ, NOT THE WRITE, DELIBERATELY. Normalising the writers means
+# a migration over live rows to repair the ones already stored, and it leaves
+# the next writer free to invent a third format. Normalising the read costs one
+# $in over a handful of candidates, repairs every existing row without touching
+# the database, and cannot be undone by a future call site.
+#
+# The candidates are the formats this codebase actually produces, not every
+# format imaginable. A US 11-digit number with a country code also answers to
+# its 10-digit self, because that is what a user types into a profile field.
+def _contact_phone_variants(phone: str) -> list:
+    """Every spelling of one number that any writer in this repo can produce."""
+    digits = re.sub(r"\D", "", phone or "")
+    if not digits:
+        return []
+    out = [digits, f"+{digits}"]
+    if len(digits) == 11 and digits.startswith("1"):
+        bare = digits[1:]
+        out += [bare, f"+{bare}", f"+1{bare}"]
+    elif len(digits) == 10:
+        out += [f"1{digits}", f"+1{digits}"]
+    seen = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+async def _find_whatsapp_contact(phone: str) -> Optional[dict]:
+    """A contact row for this number in any format a writer here can produce.
+
+    `user_id: {$ne: None}` is carried from the original queries and matters:
+    deleting a user nulls that field rather than dropping the row, so a
+    deleted user's number must not resolve to a live contact."""
+    variants = _contact_phone_variants(phone)
+    if not variants:
+        return None
+    try:
+        return await db.whatsapp_contacts.find_one(
+            {"phone": {"$in": variants}, "user_id": {"$ne": None}},
+        )
+    except Exception as e:
+        logger.warning(f"contact lookup failed for {phone[-4:]}: {e}")
+        return None
 
 
 async def download_audio(parsed_msg: dict) -> Optional[bytes]:
@@ -39407,7 +39516,19 @@ def _default_bot_config() -> dict:
         "daily_summary_enabled": False,
         "daily_summary_time": "17:00",       # 24h EST HH:MM
         "daily_summary_days": [1, 2, 3, 4, 5],  # ISO weekday Mon=1 Sun=7
-        "checklist_extraction_enabled": False,
+        # ── ON, BECAUSE NOBODY SWITCHES ON A FEATURE THEY DO NOT KNOW EXISTS ─
+        #
+        # This defaulted False and the reasoning was sound in isolation: do not
+        # surprise an existing group with behaviour it did not ask for. What it
+        # missed is that there is no screen that advertises the feature either,
+        # so "off by default" and "does not exist" are the same thing to every
+        # user who has not read the source.
+        #
+        # The surprise argument still holds for anything the bot sends
+        # UNPROMPTED, which is why daily_summary_enabled stays False: a digest
+        # arriving at 17:00 in a group that never asked for one is spam. A
+        # checklist only appears when somebody asks for one.
+        "checklist_extraction_enabled": True,
         "checklist_frequency": "daily",       # "daily" | "on_demand"
         "checklist_time": "16:00",
         "features": {
@@ -39418,13 +39539,30 @@ def _default_bot_config() -> dict:
             # Default ON — the tool is the bot's whole reason to know the
             # plans, and it's gated behind the indexing pipeline anyway.
             "plan_queries": True,
-            # "strict" (default): bot only replies when explicitly addressed
-            #   via @levelog / @<botphone> / "levelog ..." prefix, OR to a
-            #   voice note / follow-up text sent within 3 min of the sender's
-            #   own explicit @levelog message (the session window).
-            # "loose": also triggers on intent-starter words like "who",
-            #   "show", "what", "where", "find" anywhere in the message.
-            "address_mode": "strict",
+            # ── LOOSE, AND THE DEFAULT FLIPPED ON MEASUREMENT ──────────────
+            #
+            # This was "strict" and strict was measured losing about a third of
+            # the real questions put to it: eleven of thirty-four unaddressed
+            # messages in the only live group were questions the bot could have
+            # answered. Not one was malformed. People were talking normally.
+            #
+            # Strict is the right default for a bot in a group of strangers.
+            # This is a bot in a crew's own group, on a site, where the people
+            # typing have hard hats on and will not learn a syntax.
+            #
+            # WHAT MAKES LOOSE SAFE IS NOT THE TRIGGER LIST, IT IS NOREPLY. A
+            # message that trips a trigger without being meant for the bot
+            # reaches the agent, which answers NOREPLY and stays silent. So the
+            # cost of a false trigger is one gpt-4o-mini call, not an
+            # interruption — and the cap in _vision_budget_exceeded is what
+            # keeps that from being unbounded.
+            #
+            # "strict" is still there and still works, per group, for anyone
+            # who wants it.
+            "address_mode": "loose",
+            # Group voicenotes. See _process_whatsapp_message for why this was
+            # off, and why it is worth another try before the trial.
+            "voice_notes": True,
         },
         "cross_project_summary": False,
     }
@@ -39438,7 +39576,7 @@ _WHATSAPP_CONFIG_KEYS = {
 }
 _WHATSAPP_FEATURE_KEYS = {
     "who_on_site", "dob_status", "open_items", "material_detection", "plan_queries",
-    "address_mode",
+    "address_mode", "voice_notes",
 }
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -40931,6 +41069,54 @@ _VQA_PROMPT = (
 )
 
 
+# ── THE CEILING THE METER WAS BUILT TO MAKE POSSIBLE ───────────────────────
+#
+# lib/vision_meter.py shipped the count first and attached no limit, on the
+# stated grounds that a ceiling reads a number and there was no number. There is
+# one now, and turning plan queries on by default is what makes the limit
+# necessary rather than theoretical: an unbounded inbound channel is now wired
+# to a paid vision model with nothing between them.
+#
+# PER PROJECT PER DAY, BECAUSE THAT IS THE UNIT THE ROWS ALREADY HAVE.
+# vision_calls is keyed (day, project_id, endpoint), and a WhatsApp group maps
+# to exactly one project, so "per group" and "per project" are the same cap with
+# no new bookkeeping.
+#
+# THE NUMBER IS A CIRCUIT BREAKER, NOT A BUDGET. A plan question costs one call
+# per candidate sheet until one answers, so a handful of real questions is tens
+# of calls and a loop is thousands. 300 sits far above a day of genuine use by a
+# crew and far below anything that would show up on an invoice as a surprise.
+# Revisit it from real rows after the trial rather than from this comment.
+#
+# AND IT REFUSES OUT LOUD. A silent cap would read as the bot being broken,
+# which is the failure this whole change set exists to stop.
+VISION_DAILY_CAP_PER_PROJECT = 300
+
+
+async def _vision_budget_exceeded(project_id: Optional[str]) -> bool:
+    """True when this project has already spent its day's vision calls.
+
+    Reads the meter's own rows — there is no second counter to drift. Never
+    raises: a budget check that fails open costs money, and a budget check that
+    fails closed costs a superintendent his answer. Money is the cheaper one to
+    be wrong about here, and the meter still records every call either way."""
+    try:
+        from lib.vision_meter import eastern_day, COLLECTION
+        day = eastern_day()
+        total = 0
+        cursor = db[COLLECTION].find({
+            "date": day,
+            "project_id": str(project_id) if project_id else None,
+            "endpoint": {"$in": [VISION_WHATSAPP_VQA, VISION_PLAN_INDEX_PAGE]},
+        })
+        async for row in cursor:
+            total += int(row.get("calls") or 0)
+        return total >= VISION_DAILY_CAP_PER_PROJECT
+    except Exception as e:
+        logger.warning(f"vision budget check failed (allowing): {e}")
+        return False
+
+
 async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
                            sheet_number: str, sheet_title: str,
                            project_id: Optional[str] = None) -> Optional[str]:
@@ -41126,6 +41312,18 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     """
     if not QWEN_API_KEY:
         await send_whatsapp_message(group_id, "Plan queries are not configured.")
+        return
+
+    # THE CEILING, CHECKED BEFORE THE ACK. Checking it after would promise to go
+    # look and then refuse, which reads worse than a straight no. See
+    # VISION_DAILY_CAP_PER_PROJECT for why the cap exists and why it speaks.
+    if await _vision_budget_exceeded(project_id):
+        await send_whatsapp_message(
+            group_id,
+            "I've hit today's limit on drawing lookups for this project. "
+            "Open the sheet in the app, or ask me again tomorrow.",
+        )
+        logger.warning(f"vision daily cap hit for project {project_id}")
         return
 
     # 1. Immediate ack (needs to be fast — construction sites have poor signal)
@@ -41332,6 +41530,12 @@ def _digits_match_bot(digits: str, bot_ids: Optional[list] = None) -> bool:
     return False
 
 
+# The product's own name, as a whole word. Matched case-insensitively against
+# the lowered body, so one pattern covers "Levelog", "LEVELOG" and "@levelog"
+# — the @ is not a word character, so \b sits between it and the L.
+_LEVELOG_NAME_RE = re.compile(r"\blevelog\b")
+
+
 def _has_explicit_bot_mention(
     body: str,
     bot_phone_digits: str,  # kept for backwards compat; prefer _bot_identifier_digits()
@@ -41369,12 +41573,18 @@ def _has_explicit_bot_mention(
         if _digits_match_bot(digits, bot_ids):
             return True
 
-    # 3. Literal text fallback — people will still type '@Levelog' in
-    # contexts where the native @mention is lost (web paste, some 3rd-party
-    # clients, or just habit).
-    if low.startswith("@levelog") or low.startswith("levelog ") or low == "levelog":
-        return True
-    if "@levelog" in low:
+    # 3. The NAME, anywhere in the message — not only the handle, and not only
+    # at the front.
+    #
+    # THIS USED TO REQUIRE A PREFIX. The test was `startswith("@levelog")` or
+    # `startswith("levelog ")`, which accepts "levelog who is on site" and
+    # rejects "ask levelog who is on site", "levelog, who is on site" and
+    # "who is on site levelog". Nobody on a site says "at levelog"; they say
+    # the name, in the middle of a sentence, with a comma after it.
+    #
+    # A word boundary rather than a substring, so "levelogging" does not match
+    # and neither does a URL with the name in it.
+    if _LEVELOG_NAME_RE.search(low):
         return True
 
     return False
@@ -41432,6 +41642,75 @@ async def _is_in_bot_session(group_id: str, sender: str) -> bool:
         return False
 
 
+# ── THE ONE-TIME NUDGE ─────────────────────────────────────────────────────
+#
+# Kept next to the session helpers because it uses the same collection and the
+# same TTL mechanism, and because both exist for the same reason: the bot has
+# to behave like something that is listening even when it decides not to speak.
+
+NUDGE_COOLDOWN_SECONDS = 60 * 60 * 24  # once a day per group
+
+NUDGE_TEXT = (
+    "I'm here — say \"levelog\" or reply to one of my messages and I'll answer."
+)
+
+_QUESTION_WORDS = (
+    "who", "what", "when", "where", "why", "how", "which",
+    "can ", "could ", "do ", "does ", "did ", "is ", "are ", "any ",
+)
+
+
+def _looks_like_a_question(body: str) -> bool:
+    """Shaped like a question, cheaply and without a model.
+
+    A question mark is the strong signal. The word list is for the people who
+    do not type one, which on a phone is most of them — and it is anchored to
+    the START of the message, because "what" in the middle of a sentence is
+    usually a statement ("that's what I said")."""
+    if not body:
+        return False
+    text = body.strip()
+    if len(text) < 4:
+        return False
+    if text.endswith("?"):
+        return True
+    low = text.lower()
+    return any(low.startswith(w) for w in _QUESTION_WORDS)
+
+
+async def _nudge_once(group_id: str) -> None:
+    """Tell a group how to reach the bot, at most once a day.
+
+    Never raises: a nudge that fails is a missed hint, and turning that into
+    an exception would take down the message-processing path behind it."""
+    if not group_id:
+        return
+    try:
+        now = datetime.now(timezone.utc)
+        existing = await db.whatsapp_conversation_state.find_one({
+            "kind": "nudge", "group_id": group_id,
+        })
+        if existing:
+            exp = existing.get("expires_at")
+            if exp is not None:
+                exp = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+                if exp > now:
+                    return
+        await db.whatsapp_conversation_state.update_one(
+            {"kind": "nudge", "group_id": group_id},
+            {"$set": {
+                "kind":       "nudge",
+                "group_id":   group_id,
+                "expires_at": now + timedelta(seconds=NUDGE_COOLDOWN_SECONDS),
+                "updated_at": now,
+            }},
+            upsert=True,
+        )
+        await send_whatsapp_message(group_id, NUDGE_TEXT)
+    except Exception as e:
+        logger.debug(f"nudge skipped for {group_id}: {e}")
+
+
 async def _is_bot_addressed(
     body: str,
     bot_phone_digits: str,
@@ -41443,53 +41722,106 @@ async def _is_bot_addressed(
     quoted_body: str = "",
     mentioned_jids: Optional[list] = None,
     quoted_mentioned_jids: Optional[list] = None,
+    quoted_from_bot: bool = False,
 ) -> bool:
     """Decide whether this message should route through the agent.
 
     Modes:
-      strict (default, recommended):
-        - Text: requires an explicit @levelog / levelog / @<botphone> mention,
-          OR is a reply to a bot message, OR is from a sender in an active
-          bot session (they just @mentioned within 3 min).
-        - Voice: only when quoting a bot message, or when the sender has an
-          active bot session, or when the quoted text itself mentions
-          @levelog.
+      Both modes:
+        - the name "levelog" as a whole word anywhere in the message, the
+          handle, or a native @mention matching the bot's phone or LID
+        - a reply to a message that mentioned the bot
+        - a reply to one of the BOT'S OWN messages
+        - any message from a sender with a live session (180s, and it rolls
+          forward on every exchange, not only on an explicit mention)
 
-      loose (legacy):
-        - Voice always routes; text routes on any intent-starter word.
+      loose (the default for new groups) adds:
+        - any voice note
+        - any message containing a soft-trigger word
+
+    Loose is the default because strict was measured losing about a third of
+    the real questions put to it. What keeps loose from being noisy is the
+    agent's NOREPLY hatch: a message that trips a trigger without being for
+    the bot is answered with silence, so the cost is a model call rather than
+    an interruption.
     """
-    # Explicit mention — always True in either mode
+    # ── WHY THIS WAS REBUILT ───────────────────────────────────────────────
+    #
+    # Measured against the only real traffic this bot has ever had: eleven of
+    # thirty-four unaddressed group messages were questions the bot could have
+    # answered and never saw. "Who's on site?", "Permit status?", "Done 2".
+    # Not one of them was malformed. They were people talking normally to
+    # something they believed was listening.
+    #
+    # Three separate rules were each dropping a share of them, and all three
+    # are fixed below rather than traded off against each other:
+    #
+    #   1. The soft-trigger list was unreachable outside loose mode, and loose
+    #      was not the default.
+    #   2. A reply to one of the bot's own messages did not count, because the
+    #      only thing known about a quoted message was its text.
+    #   3. The session window ran from the last EXPLICIT mention rather than
+    #      the last exchange, so a live conversation died at 180 seconds.
+    #
+    # The decision is now computed once and the session is marked once, at the
+    # bottom, for every route in. That ordering is the fix for (3): it used to
+    # be marked only on the two explicit branches, so riding the window never
+    # renewed it.
+    reason = ""
+
+    # Explicit mention — the name, the handle, or a native @mention JID.
     if _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
-        if group_id and sender:
-            await _mark_bot_session(group_id, sender)
-        return True
+        reason = "mention"
 
-    # Quoted/reply context: the bot was mentioned in the message this one
-    # is replying to (either via native @mention JID or literal text).
-    if _has_explicit_bot_mention(quoted_body, bot_phone_digits, quoted_mentioned_jids):
-        if group_id and sender:
-            await _mark_bot_session(group_id, sender)
-        return True
+    # The message being replied to mentioned the bot.
+    elif _has_explicit_bot_mention(quoted_body, bot_phone_digits, quoted_mentioned_jids):
+        reason = "quoted_mention"
 
-    if mode == "loose":
-        # Legacy behavior — any voice, or any soft-trigger word
+    # ── REPLYING TO THE BOT IS ADDRESSING THE BOT ──────────────────────────
+    #
+    # This is what the docstring above has always promised and the code never
+    # did. It holds in BOTH modes, because it is not a heuristic: tapping
+    # reply on a message is the most explicit thing a person can do short of
+    # typing the name, and on this number the only other writer is the bot.
+    elif quoted_from_bot:
+        reason = "reply_to_bot"
+
+    # An open conversation. Checked before the soft triggers so a follow-up
+    # inside the window routes on the window rather than on a chance word,
+    # and checked in BOTH modes — loose used to return before reaching it.
+    elif group_id and sender and await _is_in_bot_session(group_id, sender):
+        reason = "session"
+
+    elif mode == "loose":
+        # Any voice note, or any soft-trigger word. The NOREPLY escape hatch
+        # is what makes this safe to leave on: a message that trips a trigger
+        # but is not for the bot reaches the agent, which answers NOREPLY and
+        # says nothing. Loose mode costs model calls, not interruptions.
         if is_voice:
-            return True
-        if body:
+            reason = "voice"
+        elif body:
             low = body.strip().lower()
             for t in _BOT_ADDRESS_SOFT_TRIGGERS:
                 if t in low:
-                    return True
+                    reason = f"trigger:{t.strip()}"
+                    break
+
+    if not reason:
         return False
 
-    # Strict mode from here down
-    if group_id and sender and await _is_in_bot_session(group_id, sender):
-        # Sender recently addressed the bot — route follow-ups (text or voice)
-        # through the agent so "@levelog who's on site" → "voice: also show me
-        # the roof" works naturally.
-        return True
-
-    return False
+    # ── ONE MARK, EVERY ROUTE IN, WHICH IS THE POINT ───────────────────────
+    #
+    # Marking here rather than on the explicit branches is what makes the
+    # window roll forward. A person who tags the bot, gets an answer, and asks
+    # two follow-ups now has a live window three exchanges later; before, the
+    # clock started on the tag and ran out mid-conversation.
+    if group_id and sender:
+        await _mark_bot_session(group_id, sender)
+    logger.info(
+        f"addressed via {reason} group={group_id[-10:] if group_id else '?'} "
+        f"sender={sender[-4:] if sender else '?'} mode={mode}"
+    )
+    return True
 
 
 # Tool schema for the GPT-4o-mini agent
@@ -41731,7 +42063,10 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • start_permit_renewal returned insurance blockers → end with: 'Want "
     "    the direct Settings link to upload insurance?'\n"
     "Never append a next-step question when the user's message was ALREADY "
-    "answering your previous one. Don't pester.\n\n"
+    "answering your previous one. Don't pester.\n"
+    "AT MOST ONE QUESTION, AND ONLY WHEN THE ANSWER IS ACTIONABLE. A follow-up "
+    "on every single reply stops reading as helpful and starts reading as a "
+    "machine that will not stop talking. If the answer is complete, end.\n\n"
     # ──── THE PARALLEL CLAIM WAS FALSE AND IT HAS BEEN DELETED ───────────
     #
     # This paragraph used to end "The tool system runs them in parallel when
@@ -41779,23 +42114,53 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "discipline=PL if drainage else GN; 'rooftop' → floor=roof; 'basement/cellar' "
     "→ floor=cellar. For 'show me <sheet>' call query_plan with best-guess args — "
     "never ask the user to rephrase a drawing request.\n\n"
-    "STYLE:\n"
-    "Keep replies under 80 words unless listing many items. Use the tool's exact "
-    "numbers, dates, job numbers — don't round or summarize them away. Never "
-    "invent data that wasn't returned. When a link is in the tool output, keep "
-    "it intact — that URL is how the user takes the next action."
+    # ── WHO IS ACTUALLY READING THIS ───────────────────────────────────────
+    #
+    # A superintendent, on a phone, outdoors, holding something in the other
+    # hand. He is not going to scroll a paragraph and he is not going to parse
+    # a table. The old style rule said "under 80 words unless listing many
+    # items", which is a length budget rather than a shape, and a model given a
+    # length budget spends all of it.
+    #
+    # So the rule is now the shape: one fact per line, the number first, and an
+    # offer instead of the long version. "Want the full list?" is one tap; a
+    # twelve-line roster he did not ask for is a scroll.
+    #
+    # NO MARKDOWN, AND THAT IS NOT A STYLE PREFERENCE. WhatsApp renders *bold*
+    # and _italic_ and nothing else. Every #, -, |, `, and ** the model emits
+    # arrives as literal punctuation in the middle of a sentence, which is how
+    # a bot starts looking broken to someone who has never seen markdown.
+    "STYLE — WRITE LIKE A FOREMAN, NOT A SYSTEM:\n"
+    "One fact per line. Lead each line with the number or the name, not with a "
+    "preamble. No greeting, no sign-off, no restating the question.\n"
+    "Three lines is a normal answer. Six is a long one. Past that, give the "
+    "headline and offer the rest: 'Want the full list?'\n"
+    "PLAIN TEXT ONLY. This is WhatsApp, not a document. No #, no bullets, no "
+    "tables, no code blocks, no ** — they arrive as literal characters. "
+    "WhatsApp's own *single asterisks* for bold are fine, used sparingly.\n"
+    "Use the tool's exact numbers, dates and job numbers — never round or "
+    "summarise them away, and never invent data that wasn't returned. When a "
+    "link is in the tool output, keep it intact: that URL is how the user takes "
+    "the next action.\n"
+    "If something is empty, say so in four words and stop. 'Nobody on site "
+    "today.' Not a paragraph about why."
 )
 
 _AGENT_NOREPLY_CLAUSE = (
-    " If the user's message is off-topic (casual chatter between workers not directed at you), "
-    "respond with the single word NOREPLY and no other text."
+    " This message was NOT addressed to you directly — it reached you because it "
+    "mentioned a word this group watches for, or because the sender was recently "
+    "talking to you. Most such messages are two workers talking to each other. "
+    "If it is not a question you can answer from your tools, respond with the "
+    "single word NOREPLY and no other text. Silence is the correct answer far "
+    "more often than not on this path, and answering a message that was not for "
+    "you is worse than missing one that was."
 )
 
 _AGENT_EXPLICIT_CLAUSE = (
-    " The user just addressed you explicitly with '@levelog' or the bot's phone mention. "
-    "This message is definitely for you. You MUST call a tool OR give a direct text reply — "
-    "never respond NOREPLY for an explicitly-addressed message. If you don't know which tool "
-    "fits, make your best guess and try."
+    " The user addressed you directly — by name, by mention, or by replying to one "
+    "of your own messages. This message is definitely for you. You MUST call a tool "
+    "OR give a direct text reply — never respond NOREPLY for a directly-addressed "
+    "message. If you don't know which tool fits, make your best guess and try."
 )
 
 
@@ -42425,10 +42790,28 @@ async def _process_whatsapp_message(payload: dict):
             # This is how an unlinked group becomes linked: user pastes the
             # 6-digit code we generated, webhook fires, we record group_id on
             # the pending link code, user clicks Verify in the app.
+            # ── ANYWHERE IN THE MESSAGE, NOT THE WHOLE MESSAGE ─────────────
+            #
+            # This was `re.match(r"^\s*(\d{6})\s*$")`, anchored at both ends,
+            # so "481920" linked and "code 481920" did not. A person pasting a
+            # code into a group chat types a word in front of it about half the
+            # time, and the failure is the worst kind: nothing happens, the app
+            # says the code was never confirmed, and the natural response is to
+            # generate another code and fail the same way.
+            #
+            # THE LOOSENING IS SAFE BECAUSE THE CODE STILL HAS TO EXIST. A
+            # six-digit run in ordinary chatter — a door code, a phone
+            # extension, a permit number fragment — is looked up and found to be
+            # nothing. To link a group by accident, a message would have to
+            # contain the exact six digits of a code generated in the last five
+            # minutes for a project in that company and not yet used. That is
+            # not a collision anybody will hit, and the operator still has to
+            # confirm in the app before anything is bound.
+            #
+            # Every run is tried, not just the first, because "job 4471 code
+            # 481920" has two.
             body_for_code = parsed.get("body") or ""
-            code_match = re.match(r"^\s*(\d{6})\s*$", body_for_code)
-            if code_match:
-                code_val = code_match.group(1)
+            for code_val in re.findall(r"\b(\d{6})\b", body_for_code):
                 code_doc = await db.whatsapp_link_codes.find_one({"code": code_val})
                 if code_doc and not code_doc.get("verified"):
                     await db.whatsapp_link_codes.update_one(
@@ -42438,6 +42821,7 @@ async def _process_whatsapp_message(payload: dict):
                     logger.info(
                         f"whatsapp link: group {group_id} registered code {code_val}"
                     )
+                    break
 
             # Look up linked group
             group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id, "active": True})
@@ -42452,14 +42836,42 @@ async def _process_whatsapp_message(payload: dict):
             features = bot_config.get("features", {}) or {}
             bot_enabled = bot_config.get("bot_enabled", True)
 
-            # Voicenotes are not processed by the bot for now. WaAPI's
-            # download-media returns encrypted .enc bytes and the
-            # mediaKey resolution was unreliable. Text-only is the
-            # product decision. Silently ignore — message still stored
-            # in history below. Quoted voicenotes (text reply to a
-            # voicenote with @Levelog) are also silently ignored.
+            # ── VOICE IS HOW THE TARGET USER TALKS ─────────────────────────
+            #
+            # This block used to store the message and return, dropping the
+            # audio. The reason was recorded and was real: WaAPI's
+            # download-media returned encrypted .enc bytes and mediaKey
+            # resolution was unreliable, so text-only was the product call.
+            #
+            # It is being reopened because of who the product is for. Field
+            # supervisors talk; they do not type with gloves on in February.
+            # A construction bot that cannot hear a voice note has refused the
+            # input method its user actually reaches for.
+            #
+            # AND THE DOWNLOAD PATH IS NO LONGER THE ONE THAT FAILED. The DM
+            # branch has been running `download_audio` against WaAPI's own
+            # download-media action — which resolves the media key server-side
+            # rather than making us do it — through a working Whisper pipeline
+            # the whole time. Nothing in `download_audio` is group-specific: it
+            # keys off the serialized message id. So the group path takes the
+            # same route rather than a second implementation of it.
+            #
+            # WHETHER IT WORKS AGAINST THIS WaAPI ACCOUNT IS NOT KNOWN FROM THE
+            # CODE, and this comment will not pretend otherwise. It could not be
+            # tested here: it needs a real voicenote through a real instance. It
+            # is behind `features.voice_notes` so it can be switched off per
+            # group in one call, and `/whatsapp/debug/audio-probe` shows exactly
+            # which WaAPI endpoints answered and with what. One voicenote in the
+            # trial group settles it.
+            #
+            # FAILURE IS VISIBLE NOW, WHICH IS THE SMALLER HALF OF THE POINT.
+            # The old behaviour was silence: the speaker got nothing back and
+            # had no way to know the bot had not heard. If the download fails
+            # the bot says so and asks for text.
             body = parsed["body"]
-            if parsed.get("has_audio") or parsed.get("quoted_is_audio"):
+            voice_notes_on = features.get("voice_notes", True)
+
+            if parsed.get("has_audio") and not voice_notes_on:
                 try:
                     await db.whatsapp_messages.insert_one({
                         "group_id":   group_id,
@@ -42479,7 +42891,112 @@ async def _process_whatsapp_message(payload: dict):
                     pass
                 return
 
-            # Store message (always — history is not subject to bot_enabled)
+            if parsed.get("has_audio") and bot_enabled:
+                # IDEMPOTENT ON message_id, because WaAPI redelivers. Whisper
+                # is billed per second and a redelivered webhook must not pay
+                # twice; whatsapp_voice_events is the same ledger the DM path
+                # uses for this.
+                voice_message_id = parsed.get("message_id") or ""
+                already = None
+                if voice_message_id:
+                    try:
+                        already = await db.whatsapp_voice_events.find_one(
+                            {"message_id": voice_message_id},
+                        )
+                    except Exception:
+                        already = None
+                if already is not None:
+                    return
+
+                audio_bytes = await download_audio(parsed)
+                if not audio_bytes:
+                    try:
+                        await db.whatsapp_messages.insert_one({
+                            "group_id":   group_id,
+                            "project_id": project_id,
+                            "company_id": msg_company_id,
+                            "sender":     sender,
+                            "body":       "(voicenote — download failed)",
+                            "has_audio":  True,
+                            "message_id": voice_message_id,
+                            "timestamp":  datetime.fromtimestamp(
+                                parsed["timestamp"], tz=timezone.utc
+                            ) if parsed.get("timestamp") else now,
+                            "created_at": now,
+                            "skipped":    "voice_download_failed",
+                        })
+                        await db.whatsapp_voice_events.insert_one({
+                            "message_id": voice_message_id,
+                            "company_id": msg_company_id,
+                            "group_id":   group_id,
+                            "sender":     sender,
+                            "english_transcript": "",
+                            "original_transcript": "",
+                            "language_detected": None,
+                            "no_speech_prob": None,
+                            "user_reply": "download_failed",
+                            "error_kind": "download_failed",
+                            "telemetry":  {"audio_bytes_size": 0},
+                            "received_at": now,
+                        })
+                    except Exception:
+                        pass
+                    await send_whatsapp_message(
+                        group_id,
+                        "Couldn't play that voice note. Send it as text and "
+                        "I'll answer.",
+                    )
+                    return
+
+                from lib.voice_ingest import process_voice_note as _process_voice
+                vresult = await _process_voice(
+                    audio_bytes,
+                    openai_api_key=OPENAI_API_KEY,
+                    sentry_capture=(
+                        (lambda m, level="warning":
+                            sentry_sdk.capture_message(m, level=level))
+                        if _SENTRY_AVAILABLE and sentry_sdk is not None
+                        else None
+                    ),
+                )
+                del audio_bytes
+
+                try:
+                    await db.whatsapp_voice_events.insert_one({
+                        "message_id": voice_message_id,
+                        "company_id": msg_company_id,
+                        "group_id":   group_id,
+                        "sender":     sender,
+                        "english_transcript":  vresult.english_transcript,
+                        "original_transcript": vresult.original_transcript,
+                        "language_detected":   vresult.language_detected,
+                        "no_speech_prob":      vresult.no_speech_prob,
+                        "user_reply":          vresult.user_reply,
+                        "error_kind":          vresult.error_kind,
+                        "telemetry":           vresult.telemetry,
+                        "received_at":         now,
+                    })
+                except Exception as _e:
+                    logger.warning(f"group voice event insert skipped: {_e}")
+
+                if not vresult.ok:
+                    # "I didn't catch that" and "too long" are both worth
+                    # saying out loud. The speaker is standing there waiting.
+                    if vresult.user_reply:
+                        await send_whatsapp_message(group_id, vresult.user_reply)
+                    return
+
+                # THE TRANSCRIPT IS THE MESSAGE FROM HERE DOWN. Everything
+                # below — storage, addressing, the agent — runs on it exactly
+                # as if it had been typed, which is the whole point: there is
+                # no second pipeline for spoken questions.
+                body = vresult.english_transcript or body
+                parsed["body"] = body
+
+            # Store message (always — history is not subject to bot_enabled).
+            # `transcribed` marks a row whose body is Whisper's words rather
+            # than the sender's typing, so anyone reading the corpus later can
+            # tell speech from text instead of guessing.
             await db.whatsapp_messages.insert_one({
                 "group_id": group_id,
                 "project_id": project_id,
@@ -42487,6 +43004,7 @@ async def _process_whatsapp_message(payload: dict):
                 "sender": sender,
                 "body": body,
                 "has_audio": parsed["has_audio"],
+                "transcribed": bool(parsed["has_audio"]),
                 "message_id": parsed["message_id"],
                 "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
                 "created_at": now,
@@ -42593,9 +43111,7 @@ async def _process_whatsapp_message(payload: dict):
                         # Silent — do not respond per spec
                         return
                     # Condition 2: sender must be a registered admin/owner/cp
-                    contact = await db.whatsapp_contacts.find_one(
-                        {"phone": sender, "user_id": {"$ne": None}}
-                    )
+                    contact = await _find_whatsapp_contact(sender)
                     sender_role = None
                     if contact and contact.get("user_id"):
                         user_doc = await db.users.find_one(
@@ -42655,6 +43171,18 @@ async def _process_whatsapp_message(payload: dict):
                 _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids)
                 or _has_explicit_bot_mention(quoted_body, bot_phone_digits, None)
             )
+            # Is the message this one replies to one of OURS? fromMe is the
+            # strong signal; the author JID is the fallback, matched against
+            # the same identifier set an @mention is matched against so an
+            # auto-learned LID counts.
+            quoted_from_bot = bool(parsed.get("quoted_from_me"))
+            if not quoted_from_bot:
+                qa = parsed.get("quoted_author") or ""
+                if qa:
+                    quoted_from_bot = _digits_match_bot(
+                        _jid_digits(str(qa)), _bot_identifier_digits(),
+                    )
+
             is_addressed = await _is_bot_addressed(
                 body,
                 bot_phone_digits,
@@ -42664,6 +43192,7 @@ async def _process_whatsapp_message(payload: dict):
                 mode=address_mode,
                 quoted_body=quoted_body,
                 mentioned_jids=mentioned_jids,
+                quoted_from_bot=quoted_from_bot,
             )
             if is_addressed:
                 reply = await _run_group_agent(
@@ -42679,6 +43208,25 @@ async def _process_whatsapp_message(payload: dict):
                     await send_whatsapp_message(group_id, reply)
                 return
 
+            # ── A QUESTION NOBODY ANSWERED IS WORSE THAN A WRONG ANSWER ────
+            #
+            # Silence is the failure mode this integration teaches. A person
+            # asks something the bot could answer, the addressing test says no,
+            # and nothing happens — so they learn the bot is broken and stop
+            # asking. That is exactly how the only real group went quiet:
+            # eleven questions in, nothing out, and then no more questions.
+            #
+            # SAYING IT ONCE IS THE ENTIRE DESIGN. A bot that answers every
+            # unaddressed question with a correction is worse than one that
+            # says nothing, so this fires at most once per group per day and
+            # is keyed in the same TTL collection everything else uses. One
+            # person seeing it is enough; they tell the others.
+            #
+            # And only for something SHAPED like a question. A statement that
+            # happens not to address the bot is not a failed interaction.
+            if bot_enabled and _looks_like_a_question(body):
+                await _nudge_once(group_id)
+
             # Material request detection gated on the features flag
             if features.get("material_detection", True) and body and len(body) >= 15:
                 detection = await _detect_material_request(body, str(project_id), msg_company_id)
@@ -42693,7 +43241,7 @@ async def _process_whatsapp_message(payload: dict):
 
         # --- DIRECT message ---
         # Look up contact
-        contact = await db.whatsapp_contacts.find_one({"phone": sender, "user_id": {"$ne": None}})
+        contact = await _find_whatsapp_contact(sender)
         if not contact:
             # Unknown or unregistered number — stay silent
             return
@@ -43192,6 +43740,34 @@ async def whatsapp_group_link_verify(
         {"_id": code_doc["_id"]},
         {"$set": {"verified": True}},
     )
+
+    # ── THE FIRST SIXTY SECONDS DECIDE WHETHER ANYONE ASKS A SECOND TIME ────
+    #
+    # Until now the group's entire introduction to the bot was a six-digit
+    # number that nothing responded to. Everyone in the chat watched something
+    # get added, watched it say nothing, and had no reason to believe it did
+    # anything at all — and the one measured group went quiet after eleven
+    # unanswered questions, which is what that silence buys.
+    #
+    # WHAT THIS MESSAGE HAS TO DO IS NAME THE FOUR THINGS IT KNOWS AND GET OUT
+    # OF THE WAY. No syntax to learn, because there is no longer a syntax: the
+    # name works anywhere in a sentence, a reply to the bot works, and in loose
+    # mode an ordinary question usually works on its own. Promising a format
+    # would teach a rule the crew does not need and would then have to unlearn.
+    #
+    # Best-effort. A group that is linked but did not get a greeting is a worse
+    # first impression, not a failed link, so this must never turn a successful
+    # 200 into an error.
+    try:
+        await send_whatsapp_message(
+            group_id,
+            "Levelog here. I can tell you who's on site, permit and DOB "
+            "status, what's still open, and where materials are.\n"
+            "Just ask — no special format. Voice notes work too.",
+        )
+    except Exception as e:
+        logger.warning(f"welcome message failed for {group_id}: {e}")
+
     return {"status": "linked", "group_id": group_id, "project_id": project_id}
 
 
