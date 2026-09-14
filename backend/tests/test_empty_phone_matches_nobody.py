@@ -227,16 +227,59 @@ class EveryCallSiteGoesThroughIt(unittest.TestCase):
     """A helper that two of three sites use is not a fix; it is a fourth
     spelling."""
 
-    def test_no_hand_rolled_phone_lookup_survives(self):
-        hits = re.findall(r'"phone":\s*\{"\$in"', _CODE)
-        self.assertEqual(len(hits), 1,
-                         "a phone $in query outside the helper — the guard is "
-                         "back to being something a call site must remember")
+    # The helpers allowed to issue a phone $in query, and the collection each
+    # one owns. A phone lookup anywhere else is a call site that has to
+    # remember the guard, which is the defect this whole file exists to stop.
+    #
+    # THIS USED TO BE A COUNT OF ONE. That was the right assertion while
+    # `workers` was the only collection looked up by phone. `whatsapp_contacts`
+    # is now looked up the same way, by `_find_whatsapp_contact`, for a reason
+    # with nothing to do with empty strings: five of its six writers store
+    # +1XXXXXXXXXX and both readers searched bare digits, so every row written
+    # since the WhatsApp integration was switched on was unfindable.
+    #
+    # A count cannot tell a second helper apart from a hand-rolled query at a
+    # call site, so it fails on the fix and passes on the regression it is
+    # guarding against — the wrong way round. What the count was standing in
+    # for is asserted directly instead: every phone $in in the file is inside
+    # one of these functions.
+    _PHONE_LOOKUP_HELPERS = (
+        "async def _worker_by_phone",
+        "async def _find_whatsapp_contact",
+    )
 
-    def test_the_one_that_survives_is_the_helper(self):
-        i = _CODE.index("async def _worker_by_phone")
-        j = _CODE.index("\n@api_router", i)
-        self.assertIn('"phone": {"$in"', _CODE[i:j])
+    def _helper_spans(self):
+        """(start, end) of each allowed helper, end being the next top-level
+        def or decorator."""
+        spans = []
+        for marker in self._PHONE_LOOKUP_HELPERS:
+            i = _CODE.index(marker)
+            ends = [
+                _CODE.find(pat, i + len(marker))
+                for pat in ("\n@api_router", "\nasync def ", "\ndef ")
+            ]
+            j = min(e for e in ends if e != -1)
+            spans.append((i, j))
+        return spans
+
+    def test_no_hand_rolled_phone_lookup_survives(self):
+        spans = self._helper_spans()
+        stray = []
+        for m in re.finditer(r'"phone":\s*\{"\$in"', _CODE):
+            if not any(a <= m.start() < b for a, b in spans):
+                line = _CODE.count("\n", 0, m.start()) + 1
+                stray.append(line)
+        self.assertEqual(stray, [],
+                         f"a phone $in query outside every helper, at line(s) "
+                         f"{stray} — the guard is back to being something a "
+                         f"call site must remember")
+
+    def test_each_helper_still_carries_its_query(self):
+        """A helper that no longer issues the query has been gutted, and the
+        test above would go quiet rather than fail."""
+        for (a, b), marker in zip(self._helper_spans(), self._PHONE_LOOKUP_HELPERS):
+            with self.subTest(helper=marker):
+                self.assertIn('"phone": {"$in"', _CODE[a:b])
 
     def test_all_three_endpoints_call_it(self):
         tree = ast.parse(_RAW)
