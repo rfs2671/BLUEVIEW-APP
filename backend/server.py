@@ -19531,26 +19531,11 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     )
     TD = 'style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;"'
     
-    def section_title(text):
-        return (
-            '<table cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 12px 0;">'
-            '<tr><td style="font-size:16px;font-weight:600;color:#0A1929;'
-            f'padding-bottom:8px;border-bottom:2px solid #e2e8f0;">{text}</td></tr></table>'
-        )
     
     def bold_para(label, value):
         return f'<p style="color:#475569;margin:6px 0;"><strong style="color:#0A1929;">{label}:</strong> {value}</p>'
     
-    def info_box(content):
-        return (
-            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            'style="margin:12px 0;"><tr><td style="background-color:#f1f5f9;'
-            f'padding:16px;border-radius:8px;color:#334155;" bgcolor="#f1f5f9">'
-            f'{_metadata_columns(content)}</td></tr></table>'
-        )
 
-    def sub_title(text):
-        return f'<h3 style="color:#0A1929;margin:16px 0 8px;font-size:14px;">{text}</h3>'
 
     # ── ABSENT IS STATED, NEVER IMPLIED ──────────────────────────────────────
     # This renderer is read by a DOB inspector. A key the CP never filled must
@@ -19584,109 +19569,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     # `fNotRecorded` in en.js, on the rule that one record must read the same in
     # the app and in the PDF. The entity and the character render identically.
 
-    def has(d, key):
-        if not isinstance(d, dict) or key not in d:
-            return False
-        v = d[key]
-        if isinstance(v, bool):
-            return True
-        if v is None:
-            return False
-        if isinstance(v, str):
-            return v.strip() != ""
-        if isinstance(v, (list, dict, tuple, set)):
-            return len(v) > 0
-        return True
 
     _raw = lambda v: v
     _yn = lambda v: "Yes" if v else "No"
 
-    def field_lines(d, specs):
-        """[(key, label, fmt)] -> one info_box line per spec, ALWAYS.
 
-        Case (a): a key the CP never filled still gets its line, reading
-        "— Not recorded". The label is on the form either way, so a silent
-        omission would hide which questions went unanswered.
 
-        The one exception is the whole-section case: if NOT ONE of the specs
-        is on the document there is no section to annotate, and the box is not
-        rendered at all rather than fabricating a full page of absences.
-        """
-        if not any(has(d, key) for key, *_rest in specs):
-            return []
-        out = []
-        for key, label, fmt in specs:
-            val = fmt(d.get(key)) if has(d, key) else NOT_RECORDED
-            out.append(f'<strong style="color:#0A1929;">{label}:</strong> {val}')
-        return out
 
-    def maybe_info_box(lines):
-        return info_box("<br />".join(lines)) if lines else ""
 
-    def rows_table(headers, rows_html):
-        head = "".join(f'<th {TH}>{h}</th>' for h in headers)
-        return (
-            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
-            'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            f'<tr>{head}</tr>{rows_html}</table>'
-        )
 
-    def cell(v):
-        """A cell inside a row that EXISTS — case (b) territory.
 
-        An empty cell stays empty. The ROW is the record here, and the
-        combined report prints a bare em-dash in the same place
-        (server.py:17562-17565); neither form asserts a value.
-        """
-        return f'<td {TD}>{"" if v is None else v}</td>'
-
-    def key_label(k):
-        """Fallback label for a map key the label list does not know.
-
-        A snake_case key becomes Title Case. Anything else is rendered VERBATIM
-        — the kiosk keys its orientation checklist by the item's full English
-        sentence (backend/checkin.html:674-687, 1574-1579), and title-casing a
-        sentence turns a compliance line into nonsense.
-        """
-        s = str(k)
-        return s.replace("_", " ").title() if ("_" in s or " " not in s) else s
-
-    def toggle_map_rows(m, items):
-        """Rows for a sparse toggle map — case (a) over a FIXED checklist.
-
-        The editors seed these maps as {} and write a key only once the CP taps
-        it, so `key present and False` is an explicit No while `key absent` is
-        untouched. An untouched item reads "— Not recorded", never a silent
-        "No" — the same convention generate_combined_report uses for these
-        exact checklists (server.py:17482-17487, :17549-17554, :17912-17917).
-
-        The full checklist is only asserted once the map is keyed the way the
-        in-app editor keys it. The kiosk keys its orientation checklist by the
-        item's full English SENTENCE (backend/checkin.html:674-687), so a map
-        carrying none of the known keys renders only what it carries — listing
-        18 snake_case items as unrecorded against a kiosk document would be a
-        finding about a form that was never used.
-        """
-        if not isinstance(m, dict) or not m:
-            return ""
-        labels = dict(items)
-        known_present = [k for k, _ in items if k in m]
-        ordered = [k for k, _ in items] if known_present else []
-        ordered += [k for k in m.keys() if k not in labels]
-        rows = ""
-        for k in ordered:
-            val = _yn(m.get(k)) if k in m else NOT_RECORDED
-            rows += (f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
-                     f'<td {TD}>{val}</td></tr>')
-        return rows
-
-    def toggle_block(d, key, items, title, col_label):
-        """A titled table for a sparse toggle map. An absent/empty map is a
-        whole absent SECTION and renders nothing at all."""
-        rows = toggle_map_rows(d.get(key), items)
-        if not rows:
-            return ""
-        return sub_title(title) + rows_table([col_label, "Confirmed"], rows)
 
     # Build type-specific content
     body_html = ""
@@ -19908,464 +19800,79 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             f"legal_render has a schema for {log_type!r} and returned no "
             f"sheet; the filed document would have printed as a stub")
 
-    if log_type == "hot_work":
-        # frontend/src/utils/hotWorkModel.js — draftBody decides the payload
-        # shape and PRECAUTION_ITEMS the seven keys and labels. The screen
-        # (app/logbooks/hot_work.jsx) holds none of it. The list below is
-        # duplicated here because this renderer has no access to that bundle;
-        # frontend/src/utils/portedFormPayloads.test.cjs asserts the two agree,
-        # key for key and word for word — the editor used to say "(35ft)" and
-        # "Covered/Protected" where every reader printed "(35 ft)" and
-        # "Covered / Protected", so the CP ticked one sentence and the
-        # inspector read another.
-        type_title = "Hot Work Permit"
-        HW_PRECAUTIONS = [
-            ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
-            ("fire_extinguisher_present", "Fire Extinguisher Present"),
-            ("sprinklers_operational", "Sprinklers Operational"),
-            ("combustibles_covered", "Combustibles Covered / Protected"),
-            ("fire_watch_assigned", "Fire Watch Assigned"),
-            ("ventilation_adequate", "Ventilation Adequate"),
-            ("permit_posted", "Permit Posted at Location"),
-        ]
-        # The editor captures NO real fire-watch end time — it DERIVES
-        # fire_watch_end_time as work end + 30 min
-        # (hotWorkModel.calcFireWatchEnd).
-        # FDNY can require 60, so it is labelled as the computed default it
-        # is and never asserted as a recorded watch-until. It rides in the
-        # spec list so an absent one reads "— Not recorded" like any other
-        # field rather than vanishing.
-        _fw_default = (
-            lambda v: f'{v} <span style="color:#94a3b8;">(default: work end + 30 min)</span>'
-        )
-        hw_lines = field_lines(data, [
-            ("work_type", "Work Type", _raw),
-            ("location", "Location", _capitalize_first),
-            ("worker_name", "Worker", _capitalize_first),
-            ("worker_cert_number", "Worker Cert #", _raw),
-            ("start_time", "Start Time", _raw),
-            ("end_time", "End Time", _raw),
-            ("fire_watch_name", "Fire Watch", _capitalize_first),
-            ("fire_watch_end_time", "Fire Watch Until", _fw_default),
-        ])
-        body_html = (
-            maybe_info_box(hw_lines)
-            + toggle_block(data, "precautions", HW_PRECAUTIONS,
-                           "Pre-Work Precautions", "Precaution")
-            + cp_name_line + cp_sig_block
-        )
+    # THE CHAIN IS GONE, AND SO IS THE DOCUMENT IT BUILT.
+    #
+    # Thirteen hand-written arms composed an email-shell document with its
+    # own stylesheet, and every one of them has been converted and deleted.
+    # The dispatch above either returns the engine's sheet or raises --
+    # `legal_render.render` declines only a type with no schema, and there
+    # is no such type -- so nothing below this point could ever run again.
+    #
+    # WHAT WENT WITH IT: the `@page` box and the `@media print` width
+    # release, the `tr.shell` exemption, `section_title`, `field_lines`,
+    # `maybe_info_box`, `cell` and `toggle_block`. Their rules live in
+    # lib/legal_render as primitives and formatters; the markup was the
+    # only thing that did not move, and it was the only thing left.
 
-    elif log_type == "crane_operations":
-        # frontend/src/utils/craneOperationsModel.js — draftBody decides the
-        # payload shape, PRE_OP_CHECKLIST_ITEMS the fifteen keys and labels,
-        # EMPTY_LOAD_ENTRY the lift row. The screen (app/logbooks/
-        # crane_operations.jsx) holds none of it. The list below is duplicated
-        # here because this renderer has no access to that bundle;
-        # frontend/src/utils/portedFormPayloads.test.cjs asserts the two agree,
-        # key for key and word for word.
-        type_title = "Crane Operations"
-        CRANE_PREOP = [
-            ("wire_ropes", "Wire Ropes Inspected"),
-            ("hooks_latches", "Hooks & Latches Secure"),
-            ("brakes", "Brakes Functional"),
-            ("outriggers", "Outriggers Deployed"),
-            ("load_chart", "Load Chart Available"),
-            ("boom_condition", "Boom Condition OK"),
-            ("anti_two_block", "Anti Two-Block Device"),
-            ("fire_extinguisher", "Fire Extinguisher Present"),
-            ("signals_reviewed", "Signals Reviewed"),
-            ("area_barricaded", "Area Barricaded"),
-            ("wind_speed_checked", "Wind Speed Checked"),
-            ("power_lines_clear", "Power Lines Clear"),
-            ("load_weight_known", "Load Weight Known"),
-            ("rigging_inspected", "Rigging Inspected"),
-            ("swing_radius_clear", "Swing Radius Clear"),
-        ]
-        # load_weight / radius are unit-less strings exactly as the operator
-        # typed them — the editor captures no unit, so none is printed.
-        load_rows = ""
-        for le in (data.get("load_entries") or []):
-            if not isinstance(le, dict):
-                continue
-            if not any(has(le, k) for k in ("time", "description", "load_weight", "radius")):
-                continue      # an untouched EMPTY_LOAD_ENTRY seed, not a lift
-            load_rows += (
-                "<tr>"
-                + cell(le.get("time"))
-                + cell(_capitalize_first(le.get("description", "")))
-                + cell(le.get("load_weight"))
-                + cell(le.get("radius"))
-                + "</tr>"
-            )
-        lift_html = (
-            sub_title("Lift Log")
-            + rows_table(["Time", "Description", "Load Weight", "Radius"], load_rows)
-        ) if load_rows else ""
-        body_html = (
-            maybe_info_box(field_lines(data, [
-                ("crane_type", "Crane Type", _capitalize_first),
-                ("crane_id", "Crane ID", _raw),
-                ("operator_name", "Operator", _capitalize_first),
-                ("operator_license", "Operator License", _raw),
-            ]))
-            + toggle_block(data, "pre_operation_checklist", CRANE_PREOP,
-                           "Pre-Operation Checklist", "Item")
-            + lift_html
-            + cp_name_line + cp_sig_block
-        )
+    # ── A TYPE NOTHING RENDERS: A DOCUMENT, NOT A STUB AND NOT A 500 ───────
+    #
+    # THE CHAIN IS GONE AND SO IS ITS GENERIC ARM. That arm printed the type's
+    # title and the word Status for anything nobody had written a branch for,
+    # and the dispatch above calls that "a statutory document demoted to a
+    # stub" -- filed and signed looking deliberate.
+    #
+    # DELETING IT OUTRIGHT WAS THE WRONG FIX AND A TEST SAID SO FIRST:
+    #
+    #     PASSES EITHER WAY. The fix must not be to delete the fallback --
+    #     a record whose type was retired still has to render as something.
+    #
+    # That is right. A type is retired by a code change; the RECORDS filed
+    # under it are not, and an inspector who asks for one must get a document
+    # rather than a server error. Measured 2026-09-13: zero stored records
+    # carry a type without a schema, so nothing takes this path today -- which
+    # is a fact about today and not a reason to have no path.
+    #
+    # SO IT SAYS WHAT IT IS. Not the record's contents dressed as a sheet --
+    # there is no renderer for them, and inventing one field layout for an
+    # unknown type is how the stub came to look deliberate. It carries the
+    # record's IDENTITY, states plainly that no renderer is configured, and
+    # tells the reader to ask for the record another way. A document that
+    # admits what it cannot show is not a compliance record and does not read
+    # like one.
+    # LOCALLY IMPORTED, like the other three escapers in this file. `server`
+    # has no module-level `html` -- the name is shadowed by the HTML strings it
+    # builds -- and every place that needs it imports it under its own alias.
+    import html as _esc
+    _t = _esc.escape(str(log_type or "").replace("_", " ").title() or
+                     "Unrecognised record")
+    logger.error(
+        f"no renderer for log_type={log_type!r} (logbook "
+        f"{logbook.get('_id')!r}); served the not-configured notice")
+    return (
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        f"<title>{_t} — {_esc.escape(str(project_name))} — "
+        f"{_esc.escape(str(date))}</title>"
+        "<style>@page { size: Letter portrait; margin: 0.75in; }"
+        "body{font:400 11px Helvetica,Arial,sans-serif;color:#111;margin:0;}"
+        "</style></head><body>"
+        "<div style=\"border:1px solid #111;padding:16px;\">"
+        "<div style=\"font:700 8px Helvetica,Arial,sans-serif;"
+        "letter-spacing:0.12em;color:#555;\">PROJECT RECORD — "
+        "NOT RENDERABLE</div>"
+        f"<div style=\"font:700 18px Helvetica,Arial,sans-serif;"
+        f"margin:6px 0 10px;\">{_t}</div>"
+        f"<div>Job: {_esc.escape(str(project_address or project_name))}</div>"
+        f"<div>Date: {_esc.escape(str(date))}</div>"
+        f"<div>Status: {_esc.escape(str(logbook.get('status') or ''))}</div>"
+        f"<div>Record: {_esc.escape(str(logbook.get('_id') or ''))}</div>"
+        "<p style=\"margin:14px 0 0;\">This record was filed under a logbook "
+        "type for which no renderer is configured, so its contents cannot be "
+        "printed. <strong>This page is not the record.</strong> The stored "
+        "record is intact; ask for it through support rather than treating "
+        "this page as the filing.</p>"
+        "</div></body></html>"
+    )
 
-    elif log_type == "excavation_monitoring":
-        # frontend/src/utils/excavationMonitoringModel.js — draftBody decides
-        # the payload shape and is the ONE place `delta` and
-        # vibration_over_threshold are derived, so the autosave, the flush and
-        # the submit all write the same document. The screen
-        # (app/logbooks/excavation_monitoring.jsx) holds none of it.
-        type_title = "Excavation Monitoring"
-        exc_lines = field_lines(data, [
-            # excavation_depth is a raw number — the editor captures no unit.
-            ("excavation_depth", "Excavation Depth", _raw),
-            ("soil_type", "Soil Type", _raw),
-            ("protection_system", "Protection System", _raw),
-            ("groundwater_observed", "Groundwater Observed", _yn),
-            ("atmospheric_testing", "Atmospheric Testing", _yn),
-        ])
-        # The over-threshold flag is only meaningful ALONGSIDE a reading. With
-        # no reading the STATUS reads "— Not recorded" — a bare "Within
-        # threshold" over no measurement is a finding the CP never made
-        # (generate_combined_report does the same, server.py:17606-17612).
-        # With neither reading there is no vibration section to annotate and
-        # the whole block is dropped.
-        v_thr = str(data.get("vibration_threshold") or "").strip()
-        v_cur = str(data.get("vibration_current") or "").strip()
-        vib_html = ""
-        if v_thr or v_cur:
-            if v_thr and v_cur and has(data, "vibration_over_threshold"):
-                status = (
-                    '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
-                    if data.get("vibration_over_threshold") else "Within threshold"
-                )
-            else:
-                status = NOT_RECORDED
-            vib_lines = [
-                f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr or NOT_RECORDED}',
-                f'<strong style="color:#0A1929;">Current:</strong> {v_cur or NOT_RECORDED}',
-                f'<strong style="color:#0A1929;">Status:</strong> {status}',
-            ]
-            vib_html = sub_title("Vibration") + info_box("<br />".join(vib_lines))
-
-        # Units and per-reading timestamps are NOT captured, so there is no
-        # unit in the headers and no time column — readings render as entered.
-        bld_rows = ""
-        for b in (data.get("adjacent_buildings") or []):
-            if not isinstance(b, dict):
-                continue
-            # A MONITORING POINT IS A BUILDING. The rule was any-of four, so a
-            # row carrying a baseline and a current reading with NO ADDRESS
-            # printed — vibration data attributed to no structure. Nobody can
-            # act on it: the whole purpose of the log is telling the DOB which
-            # adjacent building moved and by how much.
-            #
-            # THE SAME OWNER RULE the OSHA register, the toolbox roster, the
-            # pre-shift sheet and the fall-protection log apply to a WORKER.
-            # Here the thing that owns the row is an address.
-            if not has(b, "address"):
-                continue
-            bld_rows += (
-                "<tr>"
-                + cell(_capitalize_first(b.get("address", "")))
-                + cell(b.get("baseline_reading"))
-                + cell(b.get("current_reading"))
-                + cell(b.get("delta"))
-                + "</tr>"
-            )
-        bld_html = (
-            sub_title("Adjacent-Structure Monitoring Points")
-            + rows_table(["Location", "Baseline", "Current", "Movement (&Delta;)"], bld_rows)
-        ) if bld_rows else ""
-
-        body_html = (
-            maybe_info_box(exc_lines) + vib_html + bld_html
-            + cp_name_line + cp_sig_block
-        )
-
-    elif log_type == "concrete_operations":
-        # frontend/src/utils/concreteOperationsModel.js — draftBody decides the
-        # payload shape, FORMWORK_ITEMS the four keys and labels,
-        # EMPTY_SLUMP_TEST the slump row. The screen (app/logbooks/
-        # concrete_operations.jsx) holds none of it. The list below is
-        # duplicated here because this renderer has no access to that bundle;
-        # frontend/src/utils/portedFormPayloads.test.cjs asserts the two agree,
-        # key for key and word for word.
-        type_title = "Concrete Operations"
-        FORMWORK_ITEMS = [
-            ("shores_plumb", "Shores Plumb"),
-            ("bracing_adequate", "Bracing Adequate"),
-            ("formwork_clean", "Formwork Clean"),
-            ("no_gaps", "No Gaps"),
-        ]
-        slump_rows = ""
-        for st in (data.get("slump_tests") or []):
-            if not isinstance(st, dict):
-                continue
-            t = str(st.get("time", "")).strip()
-            v = str(st.get("value", "")).strip()
-            p = st.get("pass")
-            if not t and not v and p is None:
-                continue      # an untouched EMPTY_SLUMP_TEST seed
-            # `pass` is TRI-STATE (EMPTY_SLUMP_TEST seeds it null). Null is
-            # rendered as nothing — never as a Fail the CP did not record.
-            if p is True:
-                result = '<span style="color:#15803d;font-weight:600;">Pass</span>'
-            elif p is False:
-                result = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
-            else:
-                result = ""
-            slump_rows += "<tr>" + cell(t) + cell(v) + cell(result) + "</tr>"
-        slump_html = (
-            sub_title("Slump Tests")
-            + rows_table(["Time", "Slump", "Result"], slump_rows)
-        ) if slump_rows else ""
-
-        body_html = (
-            maybe_info_box(field_lines(data, [
-                ("pour_location", "Pour Location", _capitalize_first),
-                ("concrete_supplier", "Supplier", _capitalize_first),
-                ("mix_design", "Mix Design", _raw),
-                # volume_ordered / temperature are unit-less as entered.
-                ("volume_ordered", "Volume Ordered", _raw),
-                ("weather_conditions", "Weather", _raw),
-                ("temperature", "Temperature", _raw),
-            ]))
-            + slump_html
-            + toggle_block(data, "formwork_checklist", FORMWORK_ITEMS,
-                           "Formwork Inspection", "Item")
-            + cp_name_line + cp_sig_block
-        )
-
-    elif log_type == "ssc_daily_safety_log":
-        # frontend/src/utils/sscDailySafetyLogModel.js — draftBody decides the
-        # payload shape, COMPLIANCE_FLAGS the five keys and labels and
-        # NARRATIVE_FIELDS the three prompts. The screen
-        # (app/logbooks/ssc_daily_safety_log.jsx) holds none of it. Both lists
-        # below are duplicated here because this renderer has no access to that
-        # bundle; frontend/src/utils/portedFormPayloads.test.cjs asserts they
-        # agree, key for key and word for word.
-        type_title = "SSC Daily Safety Log"
-        SSC_FLAGS = [
-            ("incidents_reported", "Incidents Reported"),
-            ("safety_meetings_held", "Safety Meetings Held"),
-            ("fire_protection_in_place", "Fire Protection in Place"),
-            ("housekeeping_satisfactory", "Housekeeping Satisfactory"),
-            ("ppe_compliance", "PPE Compliance"),
-        ]
-        # The five are a fixed list: once ANY of them is on the document the
-        # rest read "— Not recorded" rather than dropping out of the table.
-        # This renderer will not assert a negative finding from a key that is
-        # not on the record.
-        #
-        # THE RENDERER THIS WAS CONTRASTED WITH IS GONE. The note named
-        # `generate_combined_report`, which printed a bare "No" for an absent
-        # flag; it embeds no filed document now, so this is the only rendering
-        # of these five and there is nothing to disagree with. The DISTINCTION
-        # is the point and it stays: an unanswered switch and a switch
-        # answered No are different claims on a signed record.
-        flag_rows = ""
-        if any(has(data, key) for key, _ in SSC_FLAGS):
-            for key, label in SSC_FLAGS:
-                val = _yn(data.get(key)) if has(data, key) else NOT_RECORDED
-                flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
-        # These five are ToggleRows seeded false, so a rendered "No" may be an
-        # untouched default rather than a deliberate negative finding. Say so —
-        # a bare "No" must not read as an affirmative safety-violation
-        # attestation on a DOB record.
-        flags_html = (
-            sub_title("Compliance")
-            + rows_table(["Item", "Status"], flag_rows)
-            + '<p style="color:#94a3b8;font-size:11px;font-style:italic;margin:2px 0 0;">'
-              'Compliance items default to "No" if not explicitly set by the reviewer.</p>'
-        ) if flag_rows else ""
-
-        # An unwritten narrative reads "— Not recorded", never an asserted
-        # "none" that could pass for a negative finding the CP never made
-        # (generate_combined_report, server.py:17859-17862). All three go
-        # together: once the narrative section exists, every prompt on it is
-        # accounted for.
-        NARRATIVE_FIELDS = (
-            ("site_conditions", "Site Conditions"),
-            ("safety_violations_observed", "Safety Violations Observed"),
-            ("corrective_actions_taken", "Corrective Actions Taken"),
-        )
-        # Incident detail is only meaningful when an incident was reported —
-        # but if one WAS, a missing detail is an unanswered question, not
-        # silence.
-        show_incident = bool(data.get("incidents_reported"))
-        narrative = ""
-        if show_incident or any(has(data, k) for k, _ in NARRATIVE_FIELDS):
-            for key, label in NARRATIVE_FIELDS:
-                val = _sentence_case(data.get(key)) if has(data, key) else NOT_RECORDED
-                narrative += bold_para(label, val)
-            if show_incident:
-                detail = (
-                    _sentence_case(data.get("incident_details"))
-                    if has(data, "incident_details") else NOT_RECORDED
-                )
-                narrative += bold_para("Incident Details", detail)
-        narrative_html = (sub_title("Narrative") + narrative) if narrative else ""
-
-        body_html = (
-            maybe_info_box(field_lines(data, [
-                ("project_address", "Project Address", _capitalize_first),
-                ("ssp_number", "Site Safety Plan #", _raw),
-                ("weather", "Weather", _raw),
-                ("workers_on_site_count", "Workers on Site", _raw),
-            ]))
-            + flags_html
-            + narrative_html
-            + cp_name_line
-            + render_signature_html(logbook.get("cp_signature"), "SSC / SSM Signature")
-        )
-
-    elif log_type == "fall_protection":
-        # frontend/src/utils/fallProtectionModel.js — draftBody writes
-        # { activities: rows }, and each row carries the keys below.
-        #
-        # THE ROWS LIVE UNDER `activities` because get_logbook_activity_photo —
-        # the ONE production read of a logbook photo — indexes
-        # data.activities[ai].photos[pi]. Anywhere else means either no photos
-        # on the report or a second photo reader, and a second reader is how a
-        # record and its photos drift apart (device round 6, item 5).
-        type_title = "Fall Protection Equipment Log"
-        fp_rows = ""
-        for r in (data.get("activities") or []):
-            if not isinstance(r, dict):
-                continue
-            # A ROW THAT NAMES NOBODY IS NOT A ROW — the Group 1 rule. Here the
-            # claim is that a man's fall-arrest equipment was inspected, so a
-            # nameless row asserts it about somebody the record cannot name.
-            if not has(r, "worker_name"):
-                continue
-            result = str(r.get("result") or "").strip()
-            if result == "Pass":
-                result_cell = '<span style="color:#15803d;font-weight:600;">Pass</span>'
-            elif result == "Fail":
-                result_cell = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
-            elif result:
-                # "Removed from service" — a stronger statement than Fail, and
-                # a different one. Printed as recorded, never collapsed into it.
-                result_cell = (
-                    '<span style="color:#b91c1c;font-weight:700;">'
-                    + _capitalize_first(result) + '</span>'
-                )
-            else:
-                # TRI-STATE, seeded null. An inspection nobody performed must
-                # never print as a Pass.
-                result_cell = NOT_RECORDED
-            impact = r.get("impact_loaded")
-            # Same three states. A silent "No" here is the answer that keeps
-            # impact-loaded equipment in service (1926.502(d)(19)).
-            impact_cell = (NOT_RECORDED if impact is None
-                           else ("Yes" if impact else "No"))
-            fp_rows += (
-                "<tr>"
-                + cell(_capitalize_first(r.get("worker_name", "")))
-                + cell(_capitalize_first(r.get("company", "")))
-                + cell(_capitalize_first(r.get("equipment_type", "")))
-                # equipment_id is the manufacturer's marking — an identifier,
-                # rendered raw. So is the date, as entered.
-                + cell(r.get("equipment_id"))
-                + cell(r.get("manufacture_date"))
-                + cell(result_cell)
-                + cell(impact_cell)
-                + cell(_sentence_case(r.get("defect_found") or ""))
-                + cell(_sentence_case(r.get("action_taken") or ""))
-                + cell(_capitalize_first(r.get("anchor_point", "")))
-                + "</tr>"
-            )
-        body_html = (
-            (rows_table(
-                ["Worker", "Company", "Equipment", "ID / Serial", "Mfg Date",
-                 "Result", "Impact Loaded", "Defect", "Action Taken", "Anchor"],
-                fp_rows) if fp_rows else "")
-            + cp_name_line + cp_sig_block
-            # WHAT THIS DOCUMENT IS, printed on the document itself. A reader
-            # who finds it in a compliance packet must not take it for a
-            # required filing, and the packet is exactly where it will be found.
-            + '<p style="color:#64748b;font-size:11px;line-height:1.6;'
-              'margin:18px 0 0;border-top:1px solid #e2e8f0;padding-top:10px;">'
-            + FALL_PROTECTION_NOTICE + '</p>'
-        )
-
-    else:
-        type_title = log_type.replace("_", " ").title()
-        body_html = bold_para("Status", logbook.get("status", "N/A"))
-
-    # Wrap in full HTML document
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{type_title} — {project_name} — {date}</title>
-<style>body{{font-family:Arial,sans-serif;margin:0;padding:0;color:#334155;background:#fff;}}
-table{{border-collapse:collapse;}}
-
-/* PRINT / PDF. Ported from generate_combined_report -- see this function's
-   docstring for why it was missing: the combined report fixed the 680px dead
-   strip on an A4 page and nobody carried the fix to the other renderer of the
-   same records. Only h3 and tr appear below because those are the only
-   selectors this renderer actually emits; the combined report's h2 and
-   .doc-section rules have nothing here to match. */
-@page {{ size: A4; margin: 12mm; }}
-@media print {{
-  .wrapper {{ width: 100% !important; max-width: 100% !important; }}
-
-  /* A HEADING MUST NOT BE THE LAST THING ON A PAGE. A sub-head alone at the
-     foot of a sheet with its content overleaf is the shape a reader takes
-     for a truncated document. */
-  h3 {{ page-break-after: avoid; break-after: avoid-page; }}
-
-  /* NEVER SPLIT A ROW. A man's name on one sheet and his check-in time on
-     the next is not a roster entry.
-
-     BUT NOT THE THREE SHELL ROWS, AND THIS IS THE HALF THE COMBINED REPORT
-     GOT WRONG. This document's outer table is an email-style layout shell:
-     header row, ONE content row holding the entire body, footer row. An
-     unqualified `tr` rule matches that content row, so WeasyPrint refuses to
-     split the whole document and relocates it to a fresh sheet -- leaving
-     page 1 carrying nothing but the header. That is measured, not predicted:
-     on the combined report, whose shell is the same shape, deleting this one
-     rule moved a 461px section off page 2 and back onto page 1.
-
-     The rule is wanted for the roster tables NESTED inside the content cell
-     and for nothing else, so the shell rows opt out by class rather than by
-     a `> tbody >` combinator that depends on where the parser puts an
-     anonymous tbody. */
-  tr {{ page-break-inside: avoid; break-inside: avoid; }}
-  tr.shell {{ page-break-inside: auto; break-inside: auto; }}
-
-  /* One line of a paragraph stranded by itself reads as a fragment. */
-  p, li {{ orphans: 3; widows: 3; }}
-}}
-</style></head>
-<body style="margin:0;padding:0;background-color:#ffffff;">
-<table cellpadding="0" cellspacing="0" border="0" width="100%" class="wrapper" style="max-width:700px;margin:0 auto;">
-<tr class="shell"><td style="background-color:#0A1929;padding:24px 40px;color:#fff;" bgcolor="#0A1929">
-<span style="font-size:10px;letter-spacing:3px;text-transform:uppercase;color:#60a5fa;">LEVELOG</span><br/>
-<span style="font-size:20px;font-weight:600;">{type_title}</span><br/>
-<span style="font-size:13px;color:#94a3b8;">{project_name} — {project_address}</span>
-<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;"><tr>
-<td style="padding-right:24px;vertical-align:top;"><span style="font-size:10px;text-transform:uppercase;color:#64748b;">DATE</span><br/><span style="font-size:15px;color:#fff;">{date}</span></td>
-<td style="vertical-align:top;"><span style="font-size:10px;text-transform:uppercase;color:#64748b;">STATUS</span><br/><span style="font-size:15px;color:#fff;">{logbook.get("status", "N/A").upper()}</span></td>
-</tr></table>
-</td></tr>
-<tr class="shell"><td style="padding:24px 40px;background-color:#ffffff;" bgcolor="#ffffff">
-{amendment_html}
-{section_title(type_title)}
-{body_html}
-</td></tr>
-<tr class="shell"><td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
-<span style="font-size:11px;color:#94a3b8;">Generated on {gen_time}</span><br/>
-<span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;">LEVELOG CONSTRUCTION MANAGEMENT</span>
-</td></tr></table></body></html>"""
-    
-    return html
-	
 # ==================== STATS / DASHBOARD ====================
 @api_router.get("/stats/dashboard")
 async def get_dashboard_stats(current_user = Depends(get_current_user)):

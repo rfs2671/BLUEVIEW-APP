@@ -1,36 +1,37 @@
-"""A CONVERTED TYPE HAS ONE RENDERER, AND THE OLD ONE IS GONE.
+"""THE CHAIN IS GONE. THIS IS WHAT IS LEFT TO SAY ABOUT IT.
 
-── THE RULE THE ENGINE WROTE INTO ITS OWN DISPATCH ────────────────────────
+── WHAT THIS FILE USED TO BE ──────────────────────────────────────────────
 
-    # And a converted type's old branch is deleted in the FOLLOWING change,
-    # once it has rendered in production and been read. Required, not optional:
-    # "we will delete it later" is how one `if` acquired thirteen branches.
+A census. It read every arm of `generate_single_logbook_html`'s per-type chain,
+every schema in `lib/legal_render`, and every type in the registry, and refused
+three things:
 
-That sentence is the whole reason this file exists. The conversion is
-type-by-type and the rollback is one line -- remove a name from
-`CONVERTED_TYPES` -- which is only true while the branch it rolls back TO still
-exists. So for one change per type there are deliberately two renderers, and
-the second must not survive the change after it.
+  * a CONVERTED type keeping its old branch -- dead code that looks alive, and
+    the next reader to fix a defect on that document fixes the copy nobody
+    prints;
+  * an UNCONVERTED type with no branch -- the engine's fall-through reaching a
+    generic arm that printed a title and the word Status on a statutory record;
+  * more than one type in the overlap window without somebody counting it.
 
-NOTHING WAS CHECKING. The orientation sheet went through the engine in #509 and
-its branch sat shadowed for the whole of #510: ninety-three lines that could
-not run, that every reader of this function had to read, and that a later
-editor could have "fixed" against a document nobody was printing.
+── AND WHY IT IS NOT THAT ANY MORE ────────────────────────────────────────
 
-── WHY A SHADOWED BRANCH IS WORSE THAN DEAD CODE ──────────────────────────
+All thirteen types are declared and all thirteen arms are deleted. The chain
+does not exist, so two of those three refusals have no subject: there is no
+branch to shadow and no unconverted type to strand. `BRANCHED` is empty, and
+every set difference against an empty set passes while proving nothing -- which
+is the exact vacuity this file was written to refuse, so it refuses it about
+itself.
 
-It is dead code that looks alive. `elif log_type == "subcontractor_orientation"`
-reads as the renderer for that type, and the fact that a line eight hundred
-lines earlier returns before it ever gets there is not visible from where the
-branch is written. A reader fixing a defect on the orientation sheet would have
-found it, changed it, tested nothing, and shipped.
+THE THIRD CLAIM SURVIVES AND IS WORTH MORE THAN THE OTHER TWO EVER WERE: the
+chain must not grow back. Thirteen branches came from "we will delete it
+later", and the cheapest moment to refuse the fourteenth is before it is
+written.
 
-── AND THE OTHER DIRECTION ────────────────────────────────────────────────
+── SO THE FILE IS NOW TWO ASSERTIONS AND A FLOOR ──────────────────────────
 
-An UNCONVERTED type must keep its branch, or the engine's fall-through has
-nothing to fall to and the document prints as a title and the word Status.
-Both directions are asserted, because a census that only checks one of them is
-satisfied by deleting everything.
+Every defined type has a schema. Nothing in the filed renderer switches on
+`log_type`. And the registry is non-empty, because both of those pass
+gloriously on nothing.
 """
 
 from __future__ import annotations
@@ -62,285 +63,91 @@ def _filed_renderer() -> str:
     node = next(n for n in ast.walk(_TREE)
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and n.name == "generate_single_logbook_html")
-    return "".join(_SRC.splitlines(keepends=True)[node.lineno - 1:node.end_lineno])
+    return "".join(
+        _SRC.splitlines(keepends=True)[node.lineno - 1:node.end_lineno])
 
 
-def _the_chain() -> str:
-    """The per-type chain ONLY, located from the dispatch that precedes it.
-
-    ── THE CENSUS USED TO READ THE WHOLE FUNCTION ──────────────────────────
-
-        BRANCHED = set(re.findall(r'(?:el)?if log_type == "(\\w+)"',
-                                  _filed_renderer()))
-
-    and `generate_single_logbook_html` contains two `if log_type ==` statements
-    that are NOT chain arms: the block above the dispatch that resolves the
-    async work a declaration cannot do, for `site_superintendent_log` and
-    `preshift_signin`. While both types also had arms the two sets matched and
-    nothing showed. The moment their arms were deleted this census reported two
-    branches that do not exist, and `IN_FLIGHT` -- which must EQUAL the real
-    overlap -- would have had to name two phantoms to go green.
-
-    FOURTH INSTANCE OF THE SAME SHAPE in this file's own history: a pattern
-    that means "a chain arm" and matches every occurrence of its own text.
-    Three test slices and a frontend slice have been broken by it already, and
-    each was fixed by anchoring AFTER something that is only ever in the right
-    place. This is that fix for the census.
-
-    THE ANCHOR IS THE DISPATCH, which cannot move: a switch below the chain's
-    first arm would never be reached for a type the chain handles, and
-    `test_the_dispatch_happens_before_the_chain` asserts exactly that.
-    """
-    fn = _filed_renderer()
-    d = fn.index("if log_type in legal_render.CONVERTED_TYPES:")
-    m = re.compile('\\n    (?:el)?if log_type == "\\w+":').search(fn, d)
-    if not m:
-        raise AssertionError(
-            "the per-type chain has no arms left. That is the END of this "
-            "migration, not a broken test: every type renders through the "
-            "engine and there is no branch for anything to shadow. Retire "
-            "this file -- its subject is gone.")
-    return fn[m.start():]
-
-
-#: Every type with a hand-written arm of the per-type chain.
-BRANCHED = set(re.findall(r'(?:el)?if log_type == "(\w+)"', _the_chain()))
+#: Every type the app defines. The registry is the product's own list.
+DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
 
 #: Every type the declarative engine has a schema for.
 CONVERTED = set(legal_render.CONVERTED_TYPES)
 
-#: Every type the app defines.
-DEFINED = {t["key"] for t in server.LOGBOOK_TYPE_REGISTRY}
-
-#: THE ONE TYPE ALLOWED TO HAVE BOTH RENDERERS RIGHT NOW.
-#:
-#: The dispatch's own note requires the old branch to be deleted in the change
-#: AFTER the conversion, once the new sheet has rendered in production and been
-#: read. So for exactly one change per type there are deliberately two
-#: renderers, and this names which type is in that window.
-#:
-#: IT HOLDS AT MOST ONE NAME, asserted below. "We are mid-conversion" is a true
-#: sentence about one type at a time; a list of three would be the thirteen
-#: branches growing back under a different justification.
-#:
-#: EMPTYING IT IS THE DELETION CHANGE. The next change removes the daily
-#: jobsite branch and this name together, and the census below goes back to
-#: refusing every overlap.
-#: ONE NAME WHILE A CONVERSION IS OPEN, EMPTY OTHERWISE. Pre-shift renders
-#: through the engine now and keeps its branch for exactly one change, which is
-#: what makes the rollback a one-line revert. The daily jobsite branch went the
-#: same way: deleted in the change after its own, with 59 of 59 records proving
-#: it could not run.
-#: EMPTY, WHICH IS THE ORDINARY STATE. All five branches went in this change,
-#: each after its sheet had rendered in production and been read: 317 of 317
-#: filed records across seven types, 0 raised, 0 making a claim the record does
-#: not support. The window is shut and the census below refuses every overlap
-#: again.
-#: SIX, AND THIS IS THE LAST TIME THIS SET IS NOT EMPTY. The final six types
-#: render through the engine in this change and keep their branches for exactly
-#: one more, which is what makes the rollback a one-line revert. The change
-#: after this one deletes them and empties this set for good -- and at that
-#: point the chain has no arms at all, which several floors in this suite are
-#: written to announce rather than fail quietly over.
-IN_FLIGHT = {"hot_work", "crane_operations", "concrete_operations",
-             "excavation_monitoring", "fall_protection",
-             "ssc_daily_safety_log"}
-
 
 class TheCensusFoundSomethingToCompare(unittest.TestCase):
-    """THE VACUITY GUARD. Every assertion below is a set difference, and a
-    regex that stops matching makes all of them pass on an empty set."""
-
-    def test_the_branch_chain_was_read(self):
-        """THE FLOOR, AND IT TRACKS THE MIGRATION RATHER THAN A NUMBER.
-
-        This was `>= 10`, which was true when three types were converted and
-        became false at seven -- on a correct deletion. A floor that has to be
-        edited down after every change is a floor somebody edits down without
-        reading it.
-
-        WHAT IT IS ACTUALLY FOR is that the regex still matches something: an
-        empty `BRANCHED` makes every set difference below pass. So the claim is
-        that the chain has arms, and the sentence says what it means when it
-        does not."""
-        self.assertGreaterEqual(
-            len(BRANCHED), 1,
-            "the chain has no arms, so every census below is a difference "
-            "against an empty set and passes vacuously. If that is because "
-            "the migration finished, this file's subject is gone -- retire "
-            "it. If it is because the regex stopped matching, fix the regex.")
-
-    def test_the_chain_and_the_registry_agree_on_what_is_left(self):
-        """THE STRONGER HALF, which is available now that the census reads the
-        chain and nothing else: the arms remaining are EXACTLY the types with
-        no schema. Not a floor -- the real number, whatever it is."""
-        # PLUS THE ONES MID-CONVERSION. An arm survives its conversion by
-        # exactly one change -- that is what makes the rollback a one-line
-        # revert -- so during the window the chain carries the unconverted
-        # types AND the in-flight ones, and nothing else.
-        self.assertEqual(sorted(BRANCHED),
-                         sorted((DEFINED - CONVERTED) | IN_FLIGHT))
-
-    def test_the_schema_list_was_read(self):
-        self.assertGreaterEqual(len(CONVERTED), 1)
+    """THE VACUITY GUARD. Both assertions below are about `DEFINED`, and an
+    empty registry satisfies them without meaning anything."""
 
     def test_the_registry_was_read(self):
         self.assertGreaterEqual(len(DEFINED), 12)
 
+    def test_the_renderer_was_read(self):
+        self.assertGreater(len(_filed_renderer()), 2000)
 
-class AConvertedTypeKeepsNoBranch(unittest.TestCase):
 
-    def test_no_converted_type_still_has_a_hand_written_branch(self):
-        """THE ASSERTION. A branch the dispatch returns before is dead code
-        that looks alive, and the next reader to fix a defect on that document
-        will fix the copy nobody prints.
+class EveryDefinedTypeHasASchema(unittest.TestCase):
 
-        EXCEPT THE ONE TYPE MID-CONVERSION. See IN_FLIGHT: the rollback for a
-        conversion is removing a name from CONVERTED_TYPES, which is only a
-        rollback while the branch it falls back TO still exists. So the branch
-        outlives the conversion by exactly one change.
+    def test_nothing_is_stranded(self):
+        """THE CLAIM THE GENERIC ARM USED TO ABSORB.
+
+        A type with no schema reaches the not-configured notice -- a document
+        that says it is NOT the record and names what is missing. That is the
+        right behaviour for a retired type with live records, and the wrong
+        one for a type the product currently offers: filing a logbook whose
+        PDF cannot print it is a hole nobody would find until an inspector
+        asked.
         """
-        shadowed = sorted((CONVERTED & BRANCHED) - IN_FLIGHT)
-        self.assertEqual(
-            shadowed, [],
-            f"these types render through the engine AND keep their old "
-            f"branch: {shadowed}. The branch cannot run -- delete it, as "
-            f"the dispatch's own note requires.")
-
-    def test_IN_FLIGHT_is_EXACTLY_the_overlap(self):
-        """THE BOUND, AND IT IS EXACT RATHER THAN A CEILING.
-
-        This was `len(IN_FLIGHT) <= 1`, which protected against a backlog of
-        shadowed branches by allowing only one type to be mid-conversion. A
-        ceiling is the weaker instrument: it permits a name that is stale and
-        it permits an overlap that is not listed, so long as the count is
-        small.
-
-        WHAT THE RULE IS ACTUALLY FOR is that no branch is shadowed without
-        somebody counting it. Asserting that this set EQUALS the real overlap
-        says that directly: a type converted and not listed fails, a type
-        listed and finished fails, and the number is whatever the truth is.
-
-        THE WINDOW IS ONE CHANGE WIDE, NOT ONE TYPE WIDE. A batch converted
-        together is deleted together in the change that follows, and the thing
-        the original rule protected -- branches accumulating across changes --
-        is unchanged by how many types one change carries. The ordinary state
-        is still EMPTY, and `test_the_window_is_shut_between_conversions`
-        below says so.
-        """
-        overlap = CONVERTED & BRANCHED
-        self.assertEqual(
-            sorted(IN_FLIGHT), sorted(overlap),
-            "IN_FLIGHT does not match the types that really have both "
-            "renderers. A name missing here is a shadowed branch nobody is "
-            "counting; a name left here is an exemption with nothing behind "
-            "it.")
-
-    def test_the_window_is_shut_between_conversions(self):
-        """The ordinary state is EMPTY, and this is the line that notices when
-        a batch is converted and its branches are not deleted next.
-
-        IT IS A SKIP, NOT A FAILURE, while a conversion is genuinely open --
-        because the open window is legitimate and a red suite during it would
-        train somebody to ignore this file. What it refuses to do is stay
-        silent: the message names the batch and the change that owes the
-        deletion."""
-        if IN_FLIGHT:
-            self.skipTest(
-                f"{len(IN_FLIGHT)} type(s) mid-conversion: "
-                f"{sorted(IN_FLIGHT)}. The NEXT change deletes those branches "
-                f"and empties this set. If you are reading this on a tree "
-                f"where that change has already landed, the set is stale.")
-        self.assertEqual(IN_FLIGHT, set())
-
-    def test_an_in_flight_type_is_actually_in_both_places(self):
-        """THE EXEMPTION EXPIRES ON ITS OWN. A name left here after its branch
-        was deleted is a hole nobody is watching, so it must name a real
-        overlap or fail."""
-        for t in sorted(IN_FLIGHT):
-            with self.subTest(log_type=t):
-                self.assertIn(t, CONVERTED, f"{t} has no schema")
-                self.assertIn(t, BRANCHED,
-                              f"{t}'s branch is already gone -- remove it from "
-                              f"IN_FLIGHT, the conversion is finished")
-
-    def test_every_unconverted_type_still_has_one(self):
-        """THE OTHER DIRECTION, so the census is not satisfied by deleting
-        everything. Without a branch the engine's fall-through reaches the
-        generic arm, which prints a title and the word Status."""
-        stranded = sorted(DEFINED - CONVERTED - BRANCHED)
+        stranded = sorted(DEFINED - CONVERTED)
         self.assertEqual(
             stranded, [],
-            f"these types have no schema and no branch, so the filed PDF "
-            f"prints a stub instead of the record: {stranded}")
+            f"these types can be filed and cannot be printed: {stranded}. "
+            f"Their PDF is the not-configured notice, which says in words "
+            f"that it is not the record.")
 
-    def test_the_orientation_sheet_is_the_one_that_has_been_converted(self):
-        """Named, so a reader of a failure knows which conversion this file
-        was written for and can count the ones since. Its branch is gone,
-        which is what a FINISHED conversion looks like."""
-        self.assertIn("subcontractor_orientation", CONVERTED)
-        self.assertNotIn("subcontractor_orientation", BRANCHED)
-
-    def test_all_SEVEN_finished_conversions_look_like_finished_ones(self):
-        """THE COUNT AT THE END OF THIS CHANGE, named the same way. Five
-        branches went in one change because five sheets had rendered in
-        production and been read -- 317 of 317 filed records across seven
-        types, 0 raised, 0 making a claim the record does not support.
-
-        THE TWO PRE-DISPATCH BLOCKS ARE NOT BRANCHES, and two of these names
-        are why: `preshift_signin` and `site_superintendent_log` still appear
-        in `if log_type ==` statements ABOVE the dispatch, where the caller
-        resolves async work a declaration cannot. The census reads the chain
-        alone; if it ever goes back to reading the function, this assertion is
-        the one that fails."""
-        for t in ("subcontractor_orientation", "daily_jobsite",
-                  "preshift_signin", "osha_log", "scaffold_maintenance",
-                  "site_superintendent_log", "toolbox_talk"):
-            with self.subTest(log_type=t):
-                self.assertIn(t, CONVERTED, f"{t} lost its schema")
-                self.assertNotIn(t, BRANCHED,
-                                 f"{t}'s branch is back, or the census is "
-                                 f"reading something that is not the chain")
-
-
-class TheDispatchDoesNotDEGRADEAConvertedType(unittest.TestCase):
-    """`if _sheet:` is what lets an UNCONVERTED type reach its own branch, and
-    it stays for that. A CONVERTED type reaching it is a contradiction."""
-
-    def test_a_converted_type_that_renders_nothing_raises(self):
-        block = _filed_renderer()
-        i = block.index("if log_type in legal_render.CONVERTED_TYPES:")
-        # THE FIRST ARM OF THE CHAIN, FOUND RATHER THAN NAMED. This
-        # named `daily_jobsite`, and that branch was deleted the
-        # moment its conversion finished -- the same shape as the
-        # three slices that broke when `osha_log` became the last
-        # named branch. The chain's first arm moves every time a type
-        # is converted; what does not move is that there IS one.
-        m = re.compile('\\n    if log_type == "\\w+":').search(block[i:])
-        self.assertIsNotNone(m, "the per-type chain has no first branch")
-        arm = block[i:i + m.start()]
-        self.assertIn("raise RuntimeError", arm,
-                      "a converted type that produced no sheet falls through "
-                      "to the generic arm, which prints a title and the word "
-                      "Status on a statutory record")
-
-    def test_and_the_fall_through_survives_for_an_unconverted_type(self):
-        """The half that must NOT change: the whole conversion strategy is
-        that an unconverted type reaches its existing renderer untouched."""
-        self.assertIn("if _sheet:", _filed_renderer())
-
-    def test_render_returns_None_only_for_a_type_with_no_schema(self):
-        """THE PREMISE OF BOTH ASSERTIONS ABOVE, checked rather than assumed.
-        If the engine ever learned to decline a type it has a schema for, the
-        raise would fire on a document that was rendering perfectly well
-        yesterday."""
+    def test_and_the_engine_declines_only_what_it_has_no_schema_for(self):
+        """THE PREMISE OF THE ASSERTION ABOVE. If `render` ever learned to
+        decline a type it HAS a schema for, every one of the thirteen would
+        reach the notice on the day it did."""
         self.assertIsNone(legal_render.render("not_a_log_type", [], {}))
         src = io.open(BACKEND / "lib" / "legal_render" / "engine.py",
                       encoding="utf-8").read()
         body = src[src.index("def render("):]
-        self.assertEqual(body.count("return None"), 1,
-                         "the engine has a second way to decline a type, and "
-                         "the dispatch treats declining as a contradiction")
+        self.assertEqual(body.count("return None"), 1)
+
+
+class TheChainDoesNotGrowBack(unittest.TestCase):
+    """THIRTEEN BRANCHES CAME FROM 'WE WILL DELETE IT LATER'.
+
+    The cheapest moment to refuse the fourteenth is before it is written, and
+    this is the only assertion in the suite positioned to do it."""
+
+    def test_the_filed_renderer_switches_on_no_type(self):
+        # ANCHORED AFTER THE DISPATCH, and the first run of this assertion is
+        # why. `if log_type == "preshift_signin"` and its superintendent twin
+        # appear ABOVE it, where the caller resolves the async work a
+        # synchronous renderer cannot do -- signin signatures, an affirmation
+        # count, the BC 3301.13.13 register. Those are not chain arms, and a
+        # census that counts them reports the chain as growing back on a tree
+        # where it is gone.
+        #
+        # FIFTH INSTANCE of this shape in the repository, and the second in
+        # this very file.
+        _fn = _filed_renderer()
+        _after = _fn[_fn.index("if log_type in legal_render.CONVERTED_TYPES:"):]
+        arms = re.findall(r'(?:el)?if log_type == "(\w+)"', _after)
+        self.assertEqual(
+            arms, [],
+            f"a per-type branch is back in the filed renderer for {arms}. "
+            f"Whatever it does belongs in that type's declaration: a "
+            f"primitive, a formatter, or a key on the section. If it "
+            f"genuinely cannot be declared, that is a finding about the "
+            f"engine and it goes in the defect document -- not into an `if`.")
+
+    def test_and_the_dispatch_is_still_the_thing_that_decides(self):
+        """The other half: refusing a chain means nothing if the dispatch
+        itself was removed."""
+        self.assertIn("if log_type in legal_render.CONVERTED_TYPES:",
+                      _filed_renderer())
 
 
 if __name__ == "__main__":

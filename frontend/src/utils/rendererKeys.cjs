@@ -310,6 +310,46 @@ function rowRequires(logType, dataPath) {
   return [...m[1].matchAll(/"?([a-z_0-9]+)"?/g)].map((x) => x[1]);
 }
 
+/**
+ * THE SOURCE THAT RENDERS THIS TYPE — a declaration, or a chain arm.
+ *
+ * `pdfBranch` returns the arm and NOTHING ELSE, deliberately: a function
+ * called "branch" that quietly hands back a declaration is the misnaming that
+ * caused most of the repairs in this file's history. This is the other
+ * question, asked by its own name.
+ *
+ * ALL THIRTEEN ARMS ARE DELETED, so today this is always the declaration. It
+ * still asks both, because a caller should not have to know that and because
+ * the answer is the honest one either way.
+ */
+function rendererSource(logType) {
+  return convertedTypes().has(logType)
+    ? declaration(logType) : pdfBranch(logType);
+}
+
+/**
+ * A named tuple list, whichever side of the migration it is on.
+ *
+ * The branches kept their item lists inline -- `SSC_FLAGS`, `HW_PRECAUTIONS`,
+ * `FORMWORK_ITEMS` -- and the declarations keep the same lists in
+ * `LABEL_SETS`. Same keys, same labels, same order; a caller asking "what does
+ * this document ask about" should not care which file the answer is in.
+ *
+ * `fallback` names the LABEL_SET to read once the branch is gone.
+ */
+function itemList(logType, branchName, fallbackLabelSet) {
+  if (!convertedTypes().has(logType)) {
+    const branch = pdfBranch(logType);
+    const a = branch.indexOf(`${branchName} = [`);
+    if (a >= 0) {
+      const block = branch.slice(a, branch.indexOf('\n        ]', a));
+      return [...block.matchAll(/\("([a-z_0-9]+)",\s*"([^"]+)"\)/g)]
+        .map((m) => ({ key: m[1], label: m[2] }));
+    }
+  }
+  return labelSet(fallbackLabelSet);
+}
+
 /** Which renderer prints this type, as a word, for a failure message. */
 function rendererOf(logType) {
   return convertedTypes().has(logType) ? 'the declaration' : 'the branch';
@@ -318,4 +358,5 @@ function rendererOf(logType) {
 module.exports = {
   SERVER, SCHEMA, PRIMITIVES, FORMATTERS, convertedTypes, declaration, pdfBranch, rendererKeys,
   rendererOf, labelSet, declFields, rowKeys, rowRequires, dataKeys,
+  rendererSource, itemList,
 };

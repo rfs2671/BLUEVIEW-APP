@@ -123,7 +123,12 @@ def unreadable_failure_sites():
 #: `server.py` printed 47,000 lines. The claims got stronger, not weaker: they
 #: now ask the filed record what it says instead of asking the source that used
 #: to build it.
-EXPECTED_TOTAL = 61
+#: 61 -> 60 on 2026-09-13, when the last hand-written branch was deleted.
+#: `test_single_logbook_print_width.py` was retired with it -- its subject was
+#: the print CSS that renderer emitted, and the renderer is gone -- and the
+#: branch-side claims in test_the_legal_render_engine.py went the same way.
+#: Each carried an assertion whose failure would have printed all of server.py.
+EXPECTED_TOTAL = 60
 
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):

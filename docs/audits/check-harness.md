@@ -1945,6 +1945,68 @@ decorator when there is one.
 
 ---
 
+## 17. A truthiness test standing in for a presence test
+
+**This is a class, not four bugs, and every instance has failed toward the
+document looking better than the site.**
+
+| # | where | the test | what it cost |
+|---|---|---|---|
+| 1 | `yes_no` | `bool(v)` on a stored string | `bool("no")` is True — **Yes** under a column headed Injury for every man reporting none, on 49 filed records |
+| 2 | `toggle_list` | `if v else` on `{}` | the seeded map fell in with the absent one — 32 filed daily logs stopped saying **Equipment: None** (A20) |
+| 3 | section `requires` | `str(0 or "")` | a site with a **recorded zero** men lost its address, safety plan number and weather, and the sheet numbered itself 1, 2, 4 |
+| 4 | `row_requires` | `str(False or "")` | a slump test recorded as **FAIL** would have dropped off a BC 3315 pour register while every passing row stayed |
+
+**They are one mistake.** Python's truthiness collapses four different things
+into false — `None`, `""`, `0`, `False`, `{}` — and on a compliance record
+three of those are ANSWERS and one is an absence. A test that cannot tell them
+apart answers for the CP.
+
+**And the direction is never random.** In all four the record was *asked and
+answered*, and the sheet printed the answer of a form nobody filled in: no
+injury became injury, ticked-nothing became not-asked, zero men became no site
+block, a failed test became no test. **Every one made the document read better
+than the site.** That is not coincidence — the falsy value is what a *blank*
+looks like, so collapsing them always erases the negative answer and never the
+positive one.
+
+### The rule
+
+*Never test a compliance value for truth. Test it for PRESENCE, and decide what
+each present value means.* `_has` is the predicate; `is None` is the question.
+A value test is correct only where blank and absent genuinely mean the same
+thing — a free-text field nobody typed into — and that is worth saying out loud
+where it is used.
+
+### The shape of the fix
+
+Both engine-level instances were closed the same way and it is the shape to
+reach for: **one predicate, shared by everyone who asks the question.**
+
+    requires          -> requires_present          (section)
+    row_requires      -> row_requires_present      (row)
+
+ORed with the value test rather than replacing it, because a seeded row still
+has to be dropped and a seeded `{address: ""}` still carries its key. And
+`_row_survives` is called by BOTH the primitive that draws the rows and the
+emptiness check that decides whether the section exists — two copies of that
+test is how a section counts itself non-empty and then draws no rows.
+
+### Where else to look
+
+Anywhere a compliance answer can be `0`, `False` or `{}`:
+
+* a count — headcount, workers on site, photographs, rows;
+* a tri-state seeded null — `pass`, `signed`, `impact_loaded`;
+* a toggle map the editor seeds as `{}`;
+* a boolean the screen seeds as `False` before anyone touches it.
+
+**Not swept.** The four above are the measured instances; the rule is applied
+on touch, per the standing harness rule about new rules with live
+counterexamples.
+
+---
+
 ## 15. Work that is DONE and not PROPOSED does not exist
 
 Every other section in this document is about a check that fails to detect
