@@ -189,3 +189,82 @@ def test_parse_card_counts_before_it_spends_and_after_it_validates():
         f"order is lookup={lookup} meter={meter} vlm={vlm}; an unresolvable "
         "request must cost nothing and must not be counted as spend"
     )
+
+
+# ── The WhatsApp side, which nothing counted until now ────────────────────
+
+
+def test_every_qwen_call_site_is_metered():
+    """THE SET USED TO NAME TWO AND THE SYSTEM HAD FOUR.
+
+    Both extra sites were on the WhatsApp path — the one input to this
+    system that nobody at Levelog controls — and neither recorded anything.
+    This test is written against the POST, not against a list of function
+    names, so a fifth call site added later fails here rather than going
+    quiet: anything that posts to QWEN_API_BASE must have a
+    record_vision_call ahead of it in the same function."""
+    import re
+    src = Path(__file__).resolve().parents[1] / "server.py"
+    text = src.read_text(encoding="utf-8")
+    tree = ast.parse(text)
+
+    posts_to_qwen = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = ast.get_source_segment(text, node) or ""
+        if "QWEN_API_BASE" not in body or "chat/completions" not in body:
+            continue
+        posts_to_qwen.append((node.name, body))
+
+    assert posts_to_qwen, "no Qwen call sites found — has the base URL moved?"
+
+    unmetered = []
+    for name, body in posts_to_qwen:
+        meter = body.find("record_vision_call")
+        post = body.find("chat/completions")
+        if meter == -1 or meter > post:
+            # The card-audit adapter is metered by its caller in
+            # card_audit.py, with the project_id this level does not have.
+            # Counting it here too would double every card parse.
+            if name == "_card_audit_vlm_adapter":
+                continue
+            unmetered.append(name)
+
+    assert not unmetered, (
+        f"paid vision calls with no count before them: {unmetered}"
+    )
+
+
+def test_plan_indexing_counts_per_page_not_per_upload():
+    """A forty-sheet set is forty calls from one user action. The count sits
+    inside _index_single_page, which is the loop body, so the row says forty
+    — not one."""
+    import server
+    lines = _call_lines(server._index_single_page, "client_http.post")
+    assert "record_vision_call" in lines, "plan indexing is not metered"
+    assert lines["record_vision_call"] < lines["client_http.post"]
+
+
+def test_whatsapp_vqa_counts_per_sheet_not_per_question():
+    """_handle_plan_query walks its candidate sheets until one answers, so a
+    question about something the set does not show costs the whole list. The
+    count is inside the per-sheet function for that reason."""
+    import server
+    lines = _call_lines(server._qwen_visual_qa, "client_http.post")
+    assert "record_vision_call" in lines, "WhatsApp VQA is not metered"
+    assert lines["record_vision_call"] < lines["client_http.post"]
+
+
+def test_vqa_does_not_count_a_call_it_never_makes():
+    """The guard clause returns before the meter. An unconfigured key or an
+    empty buffer is not spend, and counting it would put a number in the row
+    that no invoice will ever match."""
+    src = textwrap.dedent(inspect.getsource(__import__("server")._qwen_visual_qa))
+    tree = ast.parse(src)
+    guard = min(n.lineno for n in ast.walk(tree) if isinstance(n, ast.Return))
+    meter = min(n.lineno for n in ast.walk(tree)
+                if isinstance(n, ast.Call)
+                and ast.unparse(n.func) == "record_vision_call")
+    assert guard < meter, "the meter fires before the no-key guard returns"
+

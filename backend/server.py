@@ -3181,6 +3181,8 @@ from lib.ocr_text import norm_ocr_str  # noqa: E402
 from lib.vision_meter import (  # noqa: E402
     record_vision_call,
     VISION_UPLOAD_OSHA,
+    VISION_PLAN_INDEX_PAGE,
+    VISION_WHATSAPP_VQA,
 )
 
 
@@ -38438,6 +38440,15 @@ async def _index_single_page(
     )
 
     # 2. Qwen summary.
+    #
+    # COUNTED PER PAGE, WHICH IS THE UNIT THAT SPENDS. The upload is one user
+    # action and this is one call inside a loop over every page of it, so a
+    # per-upload count would report a forty-sheet set as 1. Counted before the
+    # post for the reason the meter's own docstring gives: a call that errors
+    # after the provider has billed it is still spend.
+    await record_vision_call(
+        db, endpoint=VISION_PLAN_INDEX_PAGE, project_id=project_id,
+    )
     summary_text = ""
     b64 = base64.b64encode(page_image_bytes).decode("ascii")
     try:
@@ -39274,11 +39285,27 @@ _VQA_PROMPT = (
 
 
 async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
-                           sheet_number: str, sheet_title: str) -> Optional[str]:
+                           sheet_number: str, sheet_title: str,
+                           project_id: Optional[str] = None) -> Optional[str]:
     """Ask Qwen2.5-VL a question about a single rendered plan page.
-    Returns plain-text answer (possibly 'NOT_SHOWN_ON_SHEET'), or None on failure."""
+    Returns plain-text answer (possibly 'NOT_SHOWN_ON_SHEET'), or None on failure.
+
+    `project_id` is metering only — it never reaches the model. It is optional
+    so an existing caller cannot break by omitting it; those calls count under
+    "unknown" rather than not at all."""
     if not QWEN_API_KEY or not jpeg_bytes:
         return None
+
+    # COUNTED PER SHEET, NOT PER QUESTION. _handle_plan_query walks its
+    # candidate list and calls this once for each until one answers, so a
+    # question about something the set does not show costs the length of the
+    # list. A per-question count would hide exactly that case.
+    #
+    # After the QWEN_API_KEY guard, because a call that was never made is not
+    # spend; before the post, because a call that 500s has still been billed.
+    await record_vision_call(
+        db, endpoint=VISION_WHATSAPP_VQA, project_id=project_id,
+    )
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
     prompt = _VQA_PROMPT.format(
         sheet_number=sheet_number or "(unknown)",
@@ -39544,6 +39571,7 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
                 continue
             answer = await _qwen_visual_qa(
                 jpeg, effective_question, sheet_number, sheet_title,
+                project_id=project_id,
             )
             if not answer or "NOT_SHOWN_ON_SHEET" in answer.upper():
                 continue
@@ -40057,10 +40085,30 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "    the direct Settings link to upload insurance?'\n"
     "Never append a next-step question when the user's message was ALREADY "
     "answering your previous one. Don't pester.\n\n"
+    # ──── THE PARALLEL CLAIM WAS FALSE AND IT HAS BEEN DELETED ───────────
+    #
+    # This paragraph used to end "The tool system runs them in parallel when
+    # possible." Nothing on the agent path has ever run a tool in parallel.
+    # Both execution branches below are `for tc in tool_calls: await ...` — a
+    # Python for loop, one await at a time, and there is no asyncio.gather
+    # anywhere in _run_group_agent. Two tools cost two round trips end to end.
+    #
+    # A sentence in a system prompt is not documentation, it is an input. This
+    # one told the model that a two-tool turn costs what a one-tool turn costs,
+    # on a path where it costs twice, and the model has no way to find out.
+    #
+    # AND "COMBINE RESULTS IN ONE REPLY" DOES NOT ALWAYS HOLD EITHER. When one
+    # of the two tools is query_plan or start_checklist, the async-dispatch
+    # branch fires them and returns None — the combined reply the model was
+    # just instructed to write is thrown away and the async handler speaks
+    # instead. So the exception is stated here rather than left to be found.
     "MULTI-STEP REASONING:\n"
     "If a single user message needs two tools (e.g. 'any permits expiring and do "
     "we have insurance coverage for the renewal?'), call both and combine results "
-    "in one reply. The tool system runs them in parallel when possible.\n\n"
+    "in one reply. Tools run one after another, never at once, so a two-tool turn "
+    "takes noticeably longer than a one-tool turn — prefer a single tool when one "
+    "answers the question. Exception: query_plan and start_checklist send their own "
+    "reply; when you call either, do not also write a combined reply.\n\n"
     "PERMIT RENEWAL FLOW:\n"
     "When the user says yes/confirm/renew after you suggested a renewal, call "
     "start_permit_renewal with the permit they implied (latest ⚠️ from your prior "
@@ -41649,13 +41697,33 @@ async def whatsapp_update_group_config(
                 detail=f"Unknown feature keys: {sorted(unknown_features)}",
             )
         for k, v in f.items():
-            # address_mode is the one non-boolean feature — it's a string enum.
+            # address_mode is the one non-boolean feature — it's a string enum,
+            # so it skips the isinstance(v, bool) check below.
+            #
+            # ── AND IT USED TO SKIP THE WRITE WITH IT ──────────────────────
+            #
+            # The `continue` that ended this branch jumped past the set_ops
+            # line at the bottom of the loop. So a request carrying
+            # features.address_mode was validated, accepted, answered 200, and
+            # DISCARDED. The value never reached the document.
+            #
+            # That made the setting unreachable by any supported means:
+            # GroupConfigPanel does not render a control for it, and the API
+            # that does accept it silently dropped it, which left a direct
+            # database write as the only way to put a group into loose mode.
+            #
+            # A 200 on a write that did not happen is the worst shape this can
+            # take. Nothing in the response, the logs or the config panel
+            # distinguishes it from success, and the symptom shows up somewhere
+            # else entirely — as a bot that keeps ignoring the crew after
+            # somebody already turned the setting off.
             if k == "address_mode":
                 if v not in ("strict", "loose"):
                     raise HTTPException(
                         status_code=422,
                         detail="features.address_mode must be 'strict' or 'loose'",
                     )
+                set_ops[f"bot_config.features.{k}"] = v
                 continue
             if not isinstance(v, bool):
                 raise HTTPException(
@@ -43414,6 +43482,11 @@ async def _card_audit_vlm_adapter(jpeg_bytes: bytes, prompt: str) -> str:
     """Used by card_audit.enrollment_parse_card to extract card fields."""
     if not QWEN_API_KEY or not jpeg_bytes:
         return ""
+
+    # NOT METERED HERE, AND THAT IS NOT AN OMISSION. This adapter is the
+    # transport for card_audit.enrollment_parse_card, which already records
+    # VISION_PARSE_CARD itself (card_audit.py) — with the project_id that is
+    # not in scope at this level. A count here would double every card parse.
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
     try:
         async with ServerHttpClient(timeout=60.0) as client_http:

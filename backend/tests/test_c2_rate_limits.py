@@ -601,3 +601,63 @@ def _async_return(value):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhatsappWebhookRule(unittest.TestCase):
+    """The webhook was never unlimited — it inherited DEFAULT_LIMIT, which is
+    a real ceiling nobody chose, counted in a bucket keyed "__default__" and
+    shared with every other unmatched /api/ route from the same address.
+
+    Naming it buys two things: its own counter, and a number with a reason."""
+
+    def setUp(self):
+        rate_limits.reset_counter()
+
+    def tearDown(self):
+        rate_limits.reset_counter()
+
+    def test_the_webhook_matches_its_own_rule(self):
+        matched = rate_limits._match_rule("POST", "/api/whatsapp/webhook")
+        self.assertIsNotNone(matched, "webhook fell through to the default")
+        route_key, limit, kind = matched
+        self.assertEqual(route_key, "/api/whatsapp/webhook")
+        self.assertEqual(limit, "120/1 minute")
+        # No JWT on a webhook, so "user" would downgrade to IP anyway. Saying
+        # "ip" is saying what actually happens.
+        self.assertEqual(kind, "ip")
+
+    def test_it_does_not_share_a_counter_with_other_api_routes(self):
+        """Before the rule, a burst on any other unmatched /api/ path from
+        WaAPI's address ate the webhook's allowance and vice versa."""
+        other = rate_limits._match_rule("POST", "/api/whatsapp/webhook")[0]
+        self.assertNotEqual(other, "__default__")
+
+    def test_a_crew_sized_burst_is_not_refused(self):
+        """Sixty in a minute is a twenty-person group arguing hard. The live
+        group produced 624 webhook deliveries across its whole life, so the
+        cap has to sit well clear of anything people actually generate."""
+        req = _fake_request(client_host="203.0.113.9")
+        for _ in range(60):
+            self.assertIsNone(rate_limits.evaluate(
+                method="POST", path="/api/whatsapp/webhook",
+                request=req, jwt_secret=None,
+            ))
+
+    def test_a_runaway_sender_is_eventually_refused(self):
+        """What the cap is for: a loop, not a crew. Note that a 429 here is a
+        dropped message, not a deferred one — WaAPI's retry behavior is its
+        own and undocumented to us — which is why the number sits above human
+        traffic and why the spend ceiling lives on the paid calls instead."""
+        req = _fake_request(client_host="203.0.113.10")
+        blocked = None
+        for _ in range(200):
+            blocked = rate_limits.evaluate(
+                method="POST", path="/api/whatsapp/webhook",
+                request=req, jwt_secret=None,
+            )
+            if blocked:
+                break
+        self.assertIsNotNone(blocked, "the webhook was never refused")
+        self.assertEqual(blocked["error"], "rate_limit_exceeded")
+        self.assertEqual(blocked["_route_key"], "/api/whatsapp/webhook")
+

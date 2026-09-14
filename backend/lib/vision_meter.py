@@ -72,7 +72,36 @@ logger = logging.getLogger(__name__)
 # deliberately rather than inheriting silence.
 VISION_UPLOAD_OSHA = "upload_osha_card"
 VISION_PARSE_CARD = "enrollment_parse_card"
-VISION_ENDPOINTS = frozenset({VISION_UPLOAD_OSHA, VISION_PARSE_CARD})
+
+# ── THE SET NAMED THE CARD PATHS AND STOPPED THERE ────────────────────────
+#
+# Two endpoints were named here and both are genuinely counted — upload_osha_
+# card in server.py, enrollment_parse_card in card_audit.py. What the set did
+# not say is that they are not the only paid vision calls in the system. There
+# are four, and the two below went to the same model, on the same account, with
+# nothing recording that they happened.
+#
+# The uncounted two are the WhatsApp side, which this module predates:
+#
+#   plan_index_page  — one call PER PAGE of an uploaded plan set. A forty-sheet
+#                      architectural set is forty calls from a single upload,
+#                      and nothing counted any of them.
+#   whatsapp_visual_qa — one call per CANDIDATE SHEET while answering a plan
+#                      question, not one per question. The handler walks its
+#                      candidate list until a sheet answers, so a question
+#                      about something not shown costs the whole list.
+#
+# Both are driven by inbound WhatsApp traffic, which is the one input to this
+# system that nobody at Levelog controls.
+VISION_PLAN_INDEX_PAGE = "plan_index_page"
+VISION_WHATSAPP_VQA = "whatsapp_visual_qa"
+
+VISION_ENDPOINTS = frozenset({
+    VISION_UPLOAD_OSHA,
+    VISION_PARSE_CARD,
+    VISION_PLAN_INDEX_PAGE,
+    VISION_WHATSAPP_VQA,
+})
 
 COLLECTION = "vision_calls"
 
@@ -129,4 +158,5 @@ async def record_vision_call(
 __all__ = [
     "record_vision_call", "eastern_day", "meter_key", "COLLECTION",
     "VISION_ENDPOINTS", "VISION_UPLOAD_OSHA", "VISION_PARSE_CARD",
+    "VISION_PLAN_INDEX_PAGE", "VISION_WHATSAPP_VQA",
 ]

@@ -187,6 +187,99 @@ def estimate_translate_cost_usd(tokens_in: int, tokens_out: int) -> float:
     return round(cost, 6)
 
 
+# ──────────────────────────────────────────────────────────────────
+# The duration cap
+# ──────────────────────────────────────────────────────────────────
+#
+# THERE WAS NO CEILING ON THIS AT ALL. process_voice_note took whatever
+# bytes the caller handed it and posted them to Whisper. WhatsApp's own
+# voicenote limit is measured in tens of minutes, and Whisper bills by the
+# minute of audio, so one held thumb was an unbounded charge with no line
+# in this file to stop it.
+#
+# THE GATE HAS TO BE ON BYTES, BECAUSE DURATION ARRIVES TOO LATE. Whisper
+# reports `duration` in its response — that is, after the audio has been
+# uploaded, transcribed and billed. A cap that reads `wr.duration_sec`
+# refuses a call that has already been paid for. The only figure available
+# before the spend is len(audio_bytes), so that is what the ceiling is
+# written against, and MAX_AUDIO_DURATION_SEC is converted into it here.
+#
+# THE BITRATE IS AN ASSUMPTION AND IT IS DELIBERATELY GENEROUS. WhatsApp
+# encodes voicenotes as Opus in Ogg, mono, typically 16 kbps ≈ 2 KB/s.
+# ASSUMED_MAX_BITRATE_KBPS is set to twice that, so a legitimate note at
+# the real bitrate is never refused for being dense. The cost of erring
+# this way is that a note encoded at the true 16 kbps can reach roughly
+# twice MAX_AUDIO_DURATION_SEC before the byte gate closes — the gate is a
+# ceiling on spend, not a precise stopwatch, and a ceiling that rejects
+# real site traffic is worse than one that is loose.
+#
+# AND THE TRUE DURATION IS STILL CHECKED AFTERWARDS. Whisper's own
+# `duration` is compared against the cap once it comes back. That check
+# cannot refund the transcription, and it is not pretending to: what it
+# does is stop the translate call that would otherwise follow, and put the
+# real number in telemetry next to the byte count, which is the only way
+# ASSUMED_MAX_BITRATE_KBPS ever gets corrected from real traffic.
+MAX_AUDIO_DURATION_SEC = 120.0
+ASSUMED_MAX_BITRATE_KBPS = 32.0
+MAX_AUDIO_BYTES = int(MAX_AUDIO_DURATION_SEC * ASSUMED_MAX_BITRATE_KBPS * 1000 / 8)
+
+USER_REPLY_TOO_LONG = (
+    "That voice note is too long for me to read. "
+    "Send one under two minutes, or type it."
+)
+
+
+def should_reject_audio(n_bytes: int) -> tuple[bool, str]:
+    """Return (True, reason) when a buffer is too big to send to Whisper.
+
+    Pure, no network, and called BEFORE the model — see the note above for
+    why the gate is on bytes rather than on the duration Whisper reports."""
+    if n_bytes > MAX_AUDIO_BYTES:
+        return True, f"audio_too_large ({n_bytes} bytes > {MAX_AUDIO_BYTES})"
+    return False, ""
+
+
+# ──────────────────────────────────────────────────────────────────
+# The translation gate
+# ──────────────────────────────────────────────────────────────────
+#
+# EVERY TRANSCRIPT WENT TO gpt-4o-mini, INCLUDING THE ENGLISH ONES. The
+# translate prompt says "if the input is already English, return it
+# UNCHANGED", which is a correct instruction and a paid round trip to
+# carry it out. Whisper has already reported the language by that point
+# and the field was being stored for telemetry and read by nobody.
+#
+# So an English transcript now skips the call and passes through. What is
+# saved is a whole model round trip per English voicenote, which on a New
+# York site is most of them.
+#
+# AND A LABEL IS NOT PROOF. Whisper mislabels short, noisy or code-switched
+# audio, and site speech is all three. A wrong "english" label with no
+# second check means untranslated Spanish reaching a superintendent's
+# summary, which is a worse failure than the call this saves. The script
+# test below is the cheap half of that guard: any run of non-Latin letters
+# forces the translation regardless of the label, so a mislabelled Mandarin
+# or Arabic note is still translated. A mislabelled Spanish note is NOT
+# caught by it — Spanish is Latin script — and the honest statement is that
+# this gate trades that case for the saving. `translate_skipped` in
+# telemetry is what makes the trade measurable.
+_ENGLISH_LABELS = frozenset({"en", "eng", "english"})
+
+
+def _is_english(language: Optional[str], transcript: str) -> bool:
+    """True only when Whisper called it English AND the text looks it."""
+    if not language:
+        return False                      # unknown language → translate
+    if str(language).strip().lower() not in _ENGLISH_LABELS:
+        return False
+    # Non-Latin letters in something labelled English means the label is
+    # wrong. Punctuation, digits and whitespace are ignored.
+    for ch in transcript:
+        if ch.isalpha() and ord(ch) > 0x024F:
+            return False
+    return True
+
+
 def should_short_circuit(
     transcript: str, no_speech_prob: Optional[float],
 ) -> tuple[bool, str]:
@@ -462,7 +555,21 @@ async def process_voice_note(
         "translate_cost_usd": 0.0,
         "translate_fell_back": False,
         "audio_bytes_size": len(audio_bytes) if audio_bytes else 0,
+        "translate_skipped": False,
+        "rejected_reason": None,
     }
+
+    # ── Size gate, before the model, because after it the bill exists ──
+    too_big, big_reason = should_reject_audio(telemetry["audio_bytes_size"])
+    if too_big:
+        logger.info(f"[voice_ingest] rejected: {big_reason}")
+        telemetry["rejected_reason"] = big_reason
+        return VoiceIngestResult(
+            ok=False,
+            user_reply=USER_REPLY_TOO_LONG,
+            error_kind="audio_too_long",
+            telemetry=telemetry,
+        )
 
     # ── Whisper ────────────────────────────────────────────────────
     try:
@@ -508,7 +615,43 @@ async def process_voice_note(
             telemetry=telemetry,
         )
 
-    # ── Translate ──────────────────────────────────────────────────
+    # ── The true duration, now that it exists ──────────────────────
+    #
+    # This cannot un-bill the transcription above. It stops the translate
+    # call, and it records how far past the cap the byte gate let this one
+    # through — which is the measurement that tells us whether
+    # ASSUMED_MAX_BITRATE_KBPS is set too high.
+    if wr.duration_sec and wr.duration_sec > MAX_AUDIO_DURATION_SEC:
+        logger.info(
+            f"[voice_ingest] over cap after transcription: "
+            f"{wr.duration_sec:.1f}s > {MAX_AUDIO_DURATION_SEC}s "
+            f"({telemetry['audio_bytes_size']} bytes passed the byte gate)"
+        )
+        telemetry["rejected_reason"] = f"duration_over_cap ({wr.duration_sec:.1f}s)"
+        return VoiceIngestResult(
+            ok=False,
+            original_transcript=wr.transcript,
+            language_detected=wr.language,
+            no_speech_prob=wr.no_speech_prob,
+            user_reply=USER_REPLY_TOO_LONG,
+            error_kind="audio_too_long",
+            telemetry=telemetry,
+        )
+
+    # ── Translate, unless it is already English ────────────────────
+    if _is_english(wr.language, wr.transcript):
+        telemetry["translate_skipped"] = True
+        telemetry["translate_fell_back"] = False
+        return VoiceIngestResult(
+            ok=True,
+            english_transcript=wr.transcript,
+            original_transcript=wr.transcript,
+            language_detected=wr.language,
+            no_speech_prob=wr.no_speech_prob,
+            telemetry=telemetry,
+        )
+
+    telemetry["translate_skipped"] = False
     tr = await _translate(
         wr.transcript,
         openai_api_key=openai_api_key,

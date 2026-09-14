@@ -149,6 +149,32 @@ RATE_LIMITS: List[Tuple[str, str, str, str]] = [
     ("PATCH", "/api/projects/{id}", "30/5 minutes", "user"),
     ("DELETE", "/api/projects/{id}", "10/5 minutes", "user"),
 
+    # ── WhatsApp webhook (IP-scoped; WaAPI is the only caller) ────
+    #
+    # IT WAS NEVER UNLIMITED, AND IT WAS NEVER NAMED EITHER. /api/whatsapp/
+    # webhook matched no rule, so it inherited DEFAULT_LIMIT — 100/1 minute,
+    # kind "user", downgraded to IP because a webhook carries no JWT. That is a
+    # real ceiling and it was an accident: nobody chose 100, and the counter
+    # key was "__default__", shared with every other unmatched /api/ route from
+    # the same address.
+    #
+    # NAMING IT BUYS THE COUNTER AND THE NUMBER. The route now has its own
+    # bucket, and 120/minute is a figure with a reason: the live group produced
+    # 624 webhook deliveries across its entire life to 2026-04-20, and a
+    # twenty-person group arguing through an incident does not reach two a
+    # second. Anything above this is a loop, not a crew.
+    #
+    # AND A 429 HERE IS A LOST MESSAGE, NOT A DEFERRED ONE. Every other rule in
+    # this table refuses a caller who can see the refusal and try again. WaAPI
+    # gets a 429 that no person will ever read, and whether it retries is its
+    # behavior and not ours — undocumented to us, and not something this file
+    # should assume. So the cap is set where it cannot plausibly be reached by
+    # people, and the real ceiling on cost lives on the paid calls downstream
+    # (see lib/vision_meter.py), where refusing spends nothing and drops
+    # nothing. This entry is a circuit breaker on a runaway sender. It is not
+    # the spend control, and it should not be tuned down to act as one.
+    ("POST", "/api/whatsapp/webhook", "120/1 minute", "ip"),
+
     # ── Admin (IP-scoped — should never get hit hard) ─────────────
     # /api/admin/_sentry_test gets its own tighter rule because it
     # raises by design and we don't want it abused into a
