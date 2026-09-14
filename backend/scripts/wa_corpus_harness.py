@@ -50,6 +50,7 @@ import os
 import re
 import sys
 from collections import Counter
+from pathlib import Path
 
 # The gate in server.py::_detect_material_request. One number, one strip().
 MIN_BODY_CHARS = 15
@@ -176,7 +177,19 @@ def report_prefilter(gated) -> None:
 
 async def classify(rows, api_key: str) -> dict:
     """Run the deployed prompt over each message. Costs money; opt-in."""
-    import httpx
+    # ServerHttpClient, NOT httpx.AsyncClient, AND CI IS RIGHT TO INSIST.
+    #
+    # The rule is in .github: nothing under backend/ may open a raw async httpx
+    # client, because the wrapper is what refuses a request to an Akamai-
+    # protected DOB host. This script talks to api.openai.com and would never
+    # trip that guard, which is exactly the reasoning that makes a per-file
+    # exemption worthless — the next script copies this one.
+    #
+    # It costs nothing here. lib/server_http.py imports stdlib and httpx and
+    # nothing else, so the standing rule of this file — no server import, no
+    # database driver — is intact.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from lib.server_http import ServerHttpClient
 
     SYSTEM = """You analyze construction site WhatsApp messages to detect material requests.
 A material request is when someone asks for construction materials to be ordered or delivered.
@@ -189,7 +202,7 @@ If this is a material request, return JSON:
 If NOT a material request, return: {"is_request": false}"""
 
     out = {}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with ServerHttpClient(timeout=30) as client:
         for i, r in enumerate(rows, 1):
             body = _text(r)
             try:
