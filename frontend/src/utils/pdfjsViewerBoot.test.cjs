@@ -285,11 +285,26 @@ ok(!!run.listeners['vv:resize'],
 //    under test is the SHAPE of the suite, not a rasteriser.
 // ═══════════════════════════════════════════════════════════════════════════
 
-function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3 } = {}) {
+function bootLive({
+  search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf',
+  pages = 3,
+  // How long a rasterisation takes on the fake clock. The default of 5 is
+  // what section 8 has always used; the isolation cases below set it long
+  // ENOUGH TO OUTLAST THE SUITE'S OWN 2000 ms DELAY, because that is the real
+  // condition — on the operator's phone the band's sheets reported 5109 ms
+  // and the suite started on top of them.
+  slotRenderMs = 5,
+} = {}) {
   const posted = [];
   const listeners = {};
   const renders = [];
   const timers = [];
+  const observers = [];
+  // `renderMsFor` lets a case give each variant a DIFFERENT duration, which is
+  // the only way to prove a median picks the middle value rather than the last
+  // one it happened to see.
+  const hooks = { renderMsFor: null };
+  const marks = { drainAt: null, readyAt: null };
   let now = 0;
   let nextId = 1;
   let inFlight = 0;
@@ -333,11 +348,12 @@ function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3
         const scale = (opts && opts.viewport && opts.viewport.__scale) || 0;
         inFlight += 1;
         if (inFlight > maxInFlight) maxInFlight = inFlight;
-        const rec = { page: n, scale, startedAt: now, endedAt: null };
+        const rec = { page: n, scale, startedAt: now, endedAt: null, inFlightAtStart: inFlight };
         renders.push(rec);
+        const ms = hooks.renderMsFor ? hooks.renderMsFor(rec) : slotRenderMs;
         let cancelled = false;
         const promise = new Promise((resolve, reject) => {
-          schedule(5, () => {
+          schedule(ms, () => {
             inFlight -= 1;
             rec.endedAt = now;
             if (cancelled) {
@@ -396,11 +412,27 @@ function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3
     navigator: { userAgent: 'stub', deviceMemory: 4, hardwareConcurrency: 8 },
     performance: { now: () => now, getEntriesByType: () => [] },
     XMLHttpRequest: XHR,
-    IntersectionObserver: function IO() { this.observe = () => {}; this.disconnect = () => {}; },
+    // AN OBSERVER THAT RECORDS RATHER THAN SWALLOWS. It still fires nothing on
+    // its own — `deliverIO()` is the only thing that delivers a batch — so
+    // every case above, which never calls it, behaves exactly as it did when
+    // this was a no-op stub and no slot render ever happened.
+    IntersectionObserver: function IO(cb) {
+      const io = this;
+      io.cb = cb;
+      io.els = [];
+      io.live = true;
+      io.observe = (el) => { io.els.push(el); };
+      io.disconnect = () => { io.live = false; io.els = []; };
+      observers.push(io);
+    },
     pdfjsLib: {
       GlobalWorkerOptions: {},
       OPS: { paintImageXObject: 1, paintJpegXObject: 2, paintImageMaskXObject: 3 },
-      getDocument: () => ({ promise: Promise.resolve(pdfStub) }),
+      // THE WORKER PATH THIS STUB REPRESENTS is the one the device really
+      // runs: `pdf.worker.min.js` defines `globalThis.pdfjsWorker` before
+      // pdf.js loads, so pdf.js never constructs a real Worker. The stub says
+      // so, because the viewer is about to be asked to report it.
+      getDocument: () => ({ promise: Promise.resolve(pdfStub), _worker: { _webWorker: null } }),
     },
     setTimeout: (fn, ms) => schedule(ms, fn),
     clearTimeout: () => {},
@@ -423,8 +455,20 @@ function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3
   sandbox.window.scrollTo = () => {};
   sandbox.window.addEventListener = (t, f) => { listeners[`win:${t}`] = f; };
   sandbox.window.removeEventListener = () => {};
+  // The real `pdf.worker.min.js` <script> defines this global before pdf.js
+  // runs. It is the whole reason the rasteriser is on the main thread, and the
+  // viewer is asked below to state that rather than leave it to a comment.
+  sandbox.pdfjsWorker = { WorkerMessageHandler: {} };
   sandbox.window.ReactNativeWebView = {
-    postMessage: (s) => { try { posted.push(JSON.parse(s)); } catch (_e) {} },
+    postMessage: (s) => {
+      let m = null;
+      try { m = JSON.parse(s); } catch (_e) { return; }
+      posted.push(m);
+      // STAMPED WITH THE FAKE CLOCK, because "the queue was empty" is a claim
+      // about a MOMENT and the posts themselves carry no time.
+      if (m && m.type === 'pdf-ready' && marks.readyAt === null) marks.readyAt = now;
+      if (m && m.type === 'pdf-probe' && m.probe === 'drain' && marks.drainAt === null) marks.drainAt = now;
+    },
   };
   sandbox.window.visualViewport = {
     scale: 1,
@@ -436,6 +480,14 @@ function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3
     vm.createContext(sandbox);
     vm.runInContext(viewerScript(), sandbox, { filename: 'viewer.html' });
   } catch (e) { threw = e; }
+
+  function deliverIO() {
+    const io = observers.filter((o) => o.live).pop();
+    if (!io) return 0;
+    const entries = io.els.map((el) => ({ target: el, isIntersecting: true }));
+    io.cb(entries);
+    return entries.length;
+  }
 
   // Drain: give the event loop a turn, settle microtasks, then fire the
   // earliest due timer, and repeat.
@@ -467,12 +519,50 @@ function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3
     }
   }
 
-  return { posted, listeners, renders, sandbox, pump, get threw() { return threw; },
+  // Stop at a MOMENT rather than at exhaustion. `pump()` runs the clock to the
+  // end, which is no use when the thing under test is what the page does while
+  // work is still in flight.
+  //
+  // ⚠️ THE PREDICATE IS CHECKED AFTER THE MICROTASKS SETTLE AND BEFORE THE NEXT
+  // TIMER FIRES, and the order is the whole correctness of this function. With
+  // the check at the TOP of the loop instead, an iteration that satisfies the
+  // predicate during its microtask drain STILL went on to fire a timer — so
+  // `pumpUntil(pdf-ready)` could return with the suite's 2000 ms timer already
+  // run. That is not hypothetical: it passed locally and failed on CI, where
+  // the only timer left at that moment WAS the suite's, and the drain therefore
+  // happened before the case had delivered a single page to the observer. The
+  // rows came back `inflight: 0, pending: 6` — the queue technically empty,
+  // for entirely the wrong reason.
+  //
+  // Checking after the drain and before the fire makes "stop the instant this
+  // becomes true" mean what it says, on any machine.
+  async function pumpUntil(pred, maxSteps = 5000) {
+    for (let step = 0; step < maxSteps; step += 1) {
+      await new Promise((r) => setImmediate(r));
+      for (let k = 0; k < 12; k += 1) await Promise.resolve();
+      if (pred()) return true;
+      if (!timers.length) continue;
+      timers.sort((a, b) => (a.at - b.at) || (a.id - b.id));
+      const t = timers.shift();
+      if (t.at > now) now = t.at;
+      try { t.fn(); } catch (e) { threw = threw || e; }
+    }
+    return pred();
+  }
+
+  return { posted, listeners, renders, sandbox, pump, pumpUntil, deliverIO, hooks, marks,
+    get now() { return now; },
+    get threw() { return threw; },
     get maxInFlight() { return maxInFlight; } };
 }
 
+/** Rows of one probe kind, in the order the page posted them. */
+function probeData(posted, kind) {
+  return posted.filter((m) => m && m.type === 'pdf-probe' && m.probe === kind).map((m) => m.data);
+}
+
 async function main() {
-  console.log('\n── the A/B suite runs its three scales twice ──────────────────\n');
+  console.log('\n── the A/B suite runs its three scales three times ────────────\n');
 
   const live = bootLive();
   await live.pump();
@@ -486,40 +576,63 @@ async function main() {
     + `(saw: ${probes.map((m) => m.probe).join(', ') || 'nothing'})`);
 
   const ab = probes.filter((m) => m.probe === 'render-ab').map((m) => m.data);
-  const withPass = ab.filter((d) => d && (d.pass === 1 || d.pass === 2));
+  const withPass = ab.filter((d) => d && d.pass >= 1 && d.pass <= 3);
 
-  ok(withPass.filter((d) => d.pass === 1).length === 3,
-    `pass 1 runs all three scales (got ${withPass.filter((d) => d.pass === 1).length})`);
-  ok(withPass.filter((d) => d.pass === 2).length === 3,
-    `pass 2 runs all three scales (got ${withPass.filter((d) => d.pass === 2).length})`);
+  // THREE RUNS, NOT TWO. Two readings of the same variant have no middle: if
+  // they disagree there is nothing to prefer, and a mean of two is dragged the
+  // whole way by one outlier. Three is the smallest count with a median, and
+  // the median is the statistic a first-run warm-up cost cannot move.
+  for (const pass of [1, 2, 3]) {
+    ok(withPass.filter((d) => d.pass === pass).length === 3,
+      `pass ${pass} runs all three scales (got ${withPass.filter((d) => d.pass === pass).length})`);
+  }
 
   // ORDER. The claim under test is "the first render of a page is the
-  // expensive one", so the second pass must come AFTER the first and repeat
-  // the same three in the same sequence. A shuffled or interleaved second
-  // pass would answer a different question.
-  ok(withPass.length === 6
+  // expensive one", so each pass must come AFTER the last and repeat the same
+  // three in the same sequence. A shuffled or interleaved pass would answer a
+  // different question.
+  ok(withPass.length === 9
     && withPass.slice(0, 3).every((d) => d.pass === 1)
-    && withPass.slice(3).every((d) => d.pass === 2),
-    `the six A/B renders are pass 1 then pass 2, not interleaved (got: ${
+    && withPass.slice(3, 6).every((d) => d.pass === 2)
+    && withPass.slice(6).every((d) => d.pass === 3),
+    `the nine A/B renders are pass 1 then 2 then 3, not interleaved (got: ${
       withPass.map((d) => d.pass).join(',') || 'none'})`);
 
-  // LIKE FOR LIKE. Pass 2 that rendered different scales would not be a
-  // repeat of pass 1 at all.
+  // LIKE FOR LIKE. A pass that rendered different scales would not be a repeat
+  // of the first at all.
   const p1 = withPass.filter((d) => d.pass === 1).map((d) => d.scale);
   const p2 = withPass.filter((d) => d.pass === 2).map((d) => d.scale);
-  ok(p1.length === 3 && p2.length === 3 && p1.every((s, i) => s === p2[i]),
-    `pass 2 repeats pass 1's exact scales (p1=${p1.join('/')} p2=${p2.join('/')})`);
+  const p3 = withPass.filter((d) => d.pass === 3).map((d) => d.scale);
+  ok(p1.length === 3 && p2.length === 3 && p3.length === 3
+    && p1.every((s, i) => s === p2[i] && s === p3[i]),
+    `every pass repeats pass 1's exact scales (p1=${p1.join('/')} p2=${p2.join('/')} p3=${p3.join('/')})`);
 
-  // And the same page, or it is not a warm-up reading.
-  ok(withPass.length === 6 && withPass.every((d) => d.page === 1),
-    'both passes render the same page');
+  // And the same page, or it is not a repeat reading.
+  ok(withPass.length === 9 && withPass.every((d) => d.page === 1),
+    'all three passes render the same page');
 
   // DISTINGUISHABLE IN THE LOG. PDFViewer.native.jsx dumps `label` verbatim
   // into the shareable probe log; two identically-labelled rows would be
   // unreadable in exactly the artefact the operator sends back.
   const labels = withPass.map((d) => d.label);
-  ok(new Set(labels).size === 6,
-    `all six rows carry a distinct label (${labels.join(' | ')})`);
+  ok(new Set(labels).size === 9,
+    `all nine rows carry a distinct label (${labels.join(' | ')})`);
+
+  // ── AND EVERY ONE OF THEM SAYS THE QUEUE WAS EMPTY ─────────────────────
+  //
+  // THE ROWS BEFORE THIS CHANGE WERE WORTHLESS AND NOTHING SAID SO. The suite
+  // starts 2000 ms after `pdf-ready` while the band's own sheets are still
+  // rasterising — on the operator's phone they reported 5109 ms — so every
+  // variant's wall clock contained the queue's wait and the three numbers were
+  // being compared to each other through a shared, moving contention term.
+  //
+  // A FUTURE READER MUST BE ABLE TO SEE THAT IT WAS ISOLATED, not take it on
+  // trust from a comment in a file they do not have open, which is why the
+  // claim rides in the row itself rather than in the suite's own sequencing.
+  ok(withPass.length === 9
+    && withPass.every((d) => d.inflight === 0 && d.pending === 0),
+    `every A/B row states the queue was empty when it ran (got: ${
+      withPass.map((d) => `${d.inflight}/${d.pending}`).join(' ') || 'no field at all'})`);
 
   // SEQUENCED, WHICH IS THE PREMISE. Two rasterisations sharing a thread each
   // contain the other's time — the exact defect the render cap is being
@@ -528,10 +641,227 @@ async function main() {
   ok(live.maxInFlight === 1,
     `no two renders are ever in flight at once (peak ${live.maxInFlight})`);
 
+  console.log('\n── the median, and the three raw values it came from ──────────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 9. A MEDIAN, WITH ITS WORKING SHOWN.
+  //
+  //    Three runs are only worth taking if the summary is the MIDDLE one. A
+  //    "median" that is really the last value, or the mean, would hide exactly
+  //    the thing three runs were taken to expose — a first-run cost that lands
+  //    on one reading and not the other two.
+  //
+  //    So the durations are made DIFFERENT PER PASS here. With every run the
+  //    same length (which is what the default stub gives) `median === last ===
+  //    mean` and the assertion would pass on any of the three implementations.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    // Per variant, in pass order: 30, 10, 20 ms. Median 20, mean 20 — no: mean
+    // is 20 as well, so the durations are chosen so the three candidates
+    // differ. 30/10/26: median 26, mean 22, last 26. Still ambiguous against
+    // "last". 30/10/20 gives median 20 and last 20 too.
+    //
+    // THE ONE ORDERING THAT SEPARATES ALL THREE is largest last:
+    //   runs 12, 30, 60  ->  median 30, mean 34, last 60, first 12.
+    const seq = [12, 30, 60];
+    const seen = {};
+    const s = bootLive();
+    s.hooks.renderMsFor = (rec) => {
+      const key = String(rec.scale);
+      seen[key] = (seen[key] || 0) + 1;
+      return seq[(seen[key] - 1) % seq.length];
+    };
+    await s.pump();
+
+    const med = probeData(s.posted, 'render-ab-median');
+    ok(med.length === 3,
+      `one median row per variant (got ${med.length}: ${med.map((d) => d && d.variant).join(', ') || 'none'})`);
+
+    ok(med.length === 3 && med.every((d) => Array.isArray(d.runs) && d.runs.length === 3),
+      'each median row carries the three raw values it was computed from');
+
+    // THE RAW VALUES ARE IN PASS ORDER, not sorted. Sorted raws would throw
+    // away the only thing that says WHICH run was the slow one — which is the
+    // entire warm-up question.
+    ok(med.length === 3 && med.every((d) => String(d.runs) === String(seq)),
+      `the raw values are in pass order, not sorted (got ${
+        med.map((d) => `[${(d.runs || []).join(',')}]`).join(' ') || 'none'})`);
+
+    ok(med.length === 3 && med.every((d) => d.medianMs === 30),
+      `the median is the middle value and not the last or the mean `
+      + `(runs 12/30/60 -> wanted 30, got ${med.map((d) => d.medianMs).join(', ') || 'nothing'})`);
+
+    ok(med.length === 3 && med.every((d) => d.minMs === 12 && d.maxMs === 60),
+      'and the spread is reported beside it');
+
+    // The variant has to be nameable, or three rows of numbers mean nothing.
+    ok(med.length === 3 && new Set(med.map((d) => d.variant)).size === 3
+      && med.every((d) => typeof d.scale === 'number' && typeof d.megapixels === 'number'),
+      `each median row names its variant and its size (${
+        med.map((d) => `${d.variant}@${d.megapixels}MP`).join(' | ')})`);
+  }
+
+  console.log('\n── layout() is timed per page, not just in total ──────────────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 10. WHAT `layout()` COSTS, PAGE BY PAGE.
+  //
+  //     `layout()` chains `doc.getPage(n)` for EVERY page before anything is
+  //     rendered — on a 26-sheet plan that is 26 sequential page parses on the
+  //     main thread, purely to read `getViewport({scale:1})` for placeholder
+  //     sizing. It has been the leading suspect for the open stall, and the
+  //     total alone cannot settle it: a layout that is slow because of ONE bad
+  //     page and one that is slow because all 26 cost the same are different
+  //     defects with different fixes.
+  //
+  //     `layoutMs` on its own has been emitted since the first probe round.
+  //     The per-page split has not, and it is the half that says which.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const s = bootLive({ pages: 7 });
+    await s.pump();
+    const lay = probeData(s.posted, 'layout')[0];
+    ok(!!lay, 'the layout cost is reported at all');
+    ok(!!lay && lay.numPages === 7,
+      `and says how many pages it walked (got ${lay && lay.numPages})`);
+    ok(!!lay && Array.isArray(lay.perPageGetPageMs) && lay.perPageGetPageMs.length === 7,
+      `with one getPage reading per page (got ${
+        lay && Array.isArray(lay.perPageGetPageMs) ? lay.perPageGetPageMs.length : 'no array'})`);
+    ok(!!lay && typeof lay.getPageMedianMs === 'number'
+      && typeof lay.getPageMinMs === 'number' && typeof lay.getPageMaxMs === 'number',
+      'and min / median / max beside it, so one bad page can be told from 26 equal ones');
+    // The parts cannot exceed the whole, or the split is measuring something
+    // other than the function it claims to be inside.
+    ok(!!lay && typeof lay.getPageTotalMs === 'number' && typeof lay.sizeTotalMs === 'number'
+      && (lay.getPageTotalMs + lay.sizeTotalMs) <= lay.layoutMs + 1,
+      `the per-page parts add up inside the total (getPage ${lay && lay.getPageTotalMs} + `
+      + `sizing ${lay && lay.sizeTotalMs} <= layout ${lay && lay.layoutMs})`);
+
+    // AND THE ANSWER HAS TO BE READABLE IN ONE ROW. `open.totalMs` already
+    // contains layout; carrying `layoutMs` beside it is what lets a reader see
+    // the share without cross-referencing two posts from a phone screenshot.
+    const open = probeData(s.posted, 'open')[0];
+    ok(!!open && typeof open.layoutMs === 'number' && typeof open.totalMs === 'number',
+      `the open row carries the layout share beside the total (got ${
+        open ? `${open.layoutMs} of ${open.totalMs}` : 'no open row'})`);
+    ok(!!open && open.layoutMs <= open.totalMs,
+      'and layout is inside the open, which is what makes the share meaningful');
+  }
+
+  console.log('\n── which worker is actually live, said by the running code ────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 11. THE WORKER PATH, STATED RATHER THAN INFERRED.
+  //
+  //     The file's comment says the `<script src="pdf.worker.min.js">` tag
+  //     defines `globalThis.pdfjsWorker` and that pdf.js therefore skips the
+  //     real-Worker attempt and rasterises on the main thread. EVERY
+  //     PERFORMANCE CONCLUSION IN THIS FILE RESTS ON THAT, and nothing has ever
+  //     checked it. A pdf.js version that stopped honouring the global, or a
+  //     staging order that loaded the two scripts the other way round, would
+  //     change the answer silently and every reading would be reinterpreted
+  //     against the wrong model.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const s = bootLive();
+    await s.pump();
+    const wp = probeData(s.posted, 'workerpath')[0];
+    ok(!!wp, 'the viewer reports which worker path is live');
+    // BEFORE `getDocument`, which is the only moment the answer is decided.
+    // Read afterwards it proves nothing: pdf.js may have defined things itself.
+    ok(!!wp && wp.globalWorkerDefinedBeforeGetDocument === true,
+      `and says whether globalThis.pdfjsWorker existed BEFORE getDocument (got ${
+        wp && wp.globalWorkerDefinedBeforeGetDocument})`);
+    ok(!!wp && wp.workerSrc === 'pdf.worker.min.js',
+      `and what GlobalWorkerOptions.workerSrc is set to (got ${JSON.stringify(wp && wp.workerSrc)})`);
+    ok(!!wp && typeof wp.verdict === 'string' && /fake|main-thread/i.test(wp.verdict),
+      `and names the path in words a reader can act on (got ${JSON.stringify(wp && wp.verdict)})`);
+  }
+
+  console.log('\n── the suite waits for the queue to empty ─────────────────────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 12. THE ISOLATION ITSELF, WITH REAL CONTENTION TO ISOLATE FROM.
+  //
+  //     Asserting `inflight: 0` on a harness where no slot render ever happens
+  //     asserts nothing — the field would read 0 on a viewer that never
+  //     drained anything. So this case puts SIX slot renders in flight, each
+  //     outlasting the suite's own 2000 ms delay, which is the condition on the
+  //     operator's phone: the suite started on top of the band and every
+  //     variant's number contained the wait.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const s = bootLive({ pages: 6, slotRenderMs: 5000 });
+    // Run only as far as the document being open. The suite's timer is armed
+    // at this moment and is 2000 ms away.
+    await s.pumpUntil(() => s.posted.some((m) => m && m.type === 'pdf-ready'));
+    const delivered = s.deliverIO();
+    ok(delivered === 6,
+      `the band really does hand over a crowd (${delivered} pages in one callback)`);
+
+    // ⚠️ THE SIX MUST ACTUALLY BE RUNNING BEFORE THE SUITE IS LET NEAR THEM.
+    // `renderSlot` starts on a microtask (it waits for `doc.getPage`), so
+    // immediately after `deliverIO()` nothing is in flight yet. Handing
+    // straight to `pump()` from here lets the clock jump to the suite's 2000 ms
+    // timer with the queue still empty — which is precisely the CI failure the
+    // note on `pumpUntil` describes, and it makes the whole case pass for the
+    // wrong reason. This settles the microtasks WITHOUT advancing the clock,
+    // and says so out loud rather than assuming it worked.
+    await s.pumpUntil(() => s.renders.length >= 6);
+    ok(s.renders.length >= 6,
+      `and the six are really in flight before the suite is due (${s.renders.length} started, `
+      + `clock at ${s.now} ms of the 2000 the suite waits)`);
+    ok(s.now < 2000,
+      `with the suite's timer still ahead of us, not behind (clock ${s.now} ms)`);
+
+    await s.pump();
+
+    ok(!s.threw, `the viewer survives a suite that had to wait${
+      s.threw ? ` — ${String(s.threw && s.threw.stack).split('\n')[0]}` : ''}`);
+
+    const drain = probeData(s.posted, 'drain')[0];
+    ok(!!drain, 'the suite says out loud that it drained the queue first');
+    // THERE WAS SOMETHING TO DRAIN. Without this the case would pass on a
+    // viewer that drained nothing because nothing was running.
+    ok(!!drain && drain.inflightAtStart >= 2,
+      `and there really was contention to drain (${drain && drain.inflightAtStart} renders in flight)`);
+    ok(!!drain && drain.drained === true && drain.waitedMs > 0,
+      `and it waited for them rather than measuring through them (waited ${drain && drain.waitedMs} ms)`);
+
+    // THE STRUCTURAL PROOF, independent of the field the page emits about
+    // itself: from the moment the drain completed, no rasterisation ever
+    // started while another was running.
+    // `drainAt` NULL IS A FAILURE, not a permissive filter. Compared with
+    // null every render is "after the drain" and this case would go green on a
+    // viewer that never drained at all.
+    const after = s.marks.drainAt === null
+      ? [] : s.renders.filter((r) => r.startedAt >= s.marks.drainAt);
+    ok(s.marks.drainAt !== null && after.length >= 9,
+      `the suite's own renders all fall after the drain (${after.length} of ${s.renders.length}${
+        s.marks.drainAt === null ? '; no drain was ever posted' : ''})`);
+    ok(after.length > 0 && after.every((r) => r.inFlightAtStart === 1),
+      `and each one started alone (peaks: ${[...new Set(after.map((r) => r.inFlightAtStart))].join(',')})`);
+
+    // AND THE ROWS SAY SO. Same claim, from the page's own mouth, which is
+    // what a reader of the shared log actually has.
+    const rows = probeData(s.posted, 'render-ab').filter((d) => d && d.pass);
+    ok(rows.length === 9 && rows.every((d) => d.inflight === 0 && d.pending === 0),
+      `all nine rows report an empty queue (got ${
+        rows.map((d) => `${d.inflight}/${d.pending}`).join(' ') || 'nothing'})`);
+
+    // THE VIEWER IS HANDED BACK. A suspension that is never lifted is a viewer
+    // that stops drawing pages for the rest of the session — a far worse bug
+    // than the measurement error being fixed.
+    const resumed = probeData(s.posted, 'resume')[0];
+    ok(!!resumed && resumed.suspended === false,
+      `the normal render path is switched back on afterwards (${JSON.stringify(resumed)})`);
+  }
+
   // ── AND NONE OF IT HAPPENS WITH THE FLAG OFF ───────────────────────────
-  // The probe is inert unless `probe=1`. A second pass doubles the suite's
-  // cost, so this is the assertion that keeps that cost off every reader who
-  // is not being measured.
+  // The probe is inert unless `probe=1`. Three passes is half again the
+  // suite's old cost, and a drain that suspended the render path for a reader
+  // who is not being measured would be a defect and not a measurement, so
+  // this is the assertion that keeps all of it off everybody else.
   {
     const off = bootLive({ search: '?file=file%3A%2F%2F%2Fplan.pdf' });
     await off.pump();
@@ -541,6 +871,23 @@ async function main() {
       'with the flag off the viewer posts no probe readings at all');
     ok(off.posted.some((m) => m && m.type === 'pdf-ready'),
       'and still opens the document');
+  }
+
+  // AND THE SHIPPING RENDER PATH IS NEVER SUSPENDED FOR A READER WHO IS NOT
+  // BEING MEASURED. With the flag off the band must rasterise exactly as it
+  // always did — this is the one that would catch a drain gate left ungated.
+  {
+    const off = bootLive({ search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 6, slotRenderMs: 5000 });
+    await off.pumpUntil(() => off.posted.some((m) => m && m.type === 'pdf-ready'));
+    off.deliverIO();
+    await off.pumpUntil(() => off.renders.length >= 6);
+    await off.pump();
+    const drawn = new Set(off.renders.map((r) => r.page));
+    ok(drawn.size === 6,
+      `with the probe off every in-band sheet is still rasterised (got ${drawn.size} of 6)`);
+    ok(off.maxInFlight > 1,
+      `and the shipping path is byte-identical — still uncapped and still `
+      + `concurrent (peak ${off.maxInFlight}); the queue cap is PR #544's job, not this one`);
   }
 }
 
