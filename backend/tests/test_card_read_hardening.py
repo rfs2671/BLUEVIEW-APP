@@ -57,6 +57,10 @@ from lib import vision_model as vm  # noqa: E402
 
 payload = server._osha_ocr_payload
 
+# The day the outage was found, and the day the ten-card downscale run was
+# made. Fixed so an expiry ceiling is the same distance away every run.
+NOW_C = datetime(2026, 9, 15, 12, 0, 0, tzinfo=timezone.utc)
+
 
 # ══ 0 — THE PREMISE, ASSERTED RATHER THAN REMEMBERED ═══════════════════════
 
@@ -250,6 +254,159 @@ def test_every_observed_real_expiry_shape_is_survivable(raw):
             # a field that was never read.
             assert row["expiration_raw_rejected"] == raw
             assert row["review_reason"], raw
+
+
+# ══ A PARTIAL EXPIRY MUST NEVER BECOME A DATE ══════════════════════════════
+#
+# WHERE THIS CAME FROM. The ten-card downscale verification of 2026-09-15 read
+# WILMER CARRILLO's card as `'05/35'` at stored size and `'35'` at 1024 px. The
+# resolution was not the cause — three re-reads at 1024 px returned `'05/35'`,
+# as did 1280 and 1600 — so it was a MODEL FLAKE, and a model flake is not
+# something a bound can fix. It can happen on any card, at any size, on any
+# call. What it produces is HALF A FIELD.
+#
+# Half a field is the dangerous shape, and it is dangerous in a way a garbage
+# field is not. `'EXP'` is obviously not a date and nobody will ever be tempted
+# to read one out of it. `'35'` and `'2035'` LOOK like a year, and the reading
+# is one `strptime` format away: add `'%Y'` and `'2035'` silently becomes
+# 1 January 2035 — a date printed on nothing, on a §3301 compliance record,
+# nine years in the future, clearing every gate for the whole of that time.
+# `'05/'` is worse still: it looks like the front of `'05/35'`, and the year
+# is simply gone.
+#
+# THE REQUIREMENT IS THE SAME ONE `parse_cert_date` IS BUILT ON — accept what
+# is unambiguous BY CONSTRUCTION, refuse what is unambiguous only BY
+# CONVENTION — but it is pinned HERE, on the shapes a DROPPED READ produces,
+# rather than on the shapes a whole card produces. The two sets are different
+# and the second is the one this PR's retry path exists for.
+#
+# MEASURED, NOT ASSUMED: every case below already behaves. Nothing in server.py
+# changed for this block. It is a regression pin on a property that is one
+# format string from being lost, and the flake that motivated it is live.
+
+_PARTIAL_EXPIRIES = [
+    "35",        # THE WILMER FLAKE, verbatim: the card says 05/35
+    "05/",       # the other half, the year dropped instead of the month
+    "2035",      # YEAR ONLY, four digits — one '%Y' from becoming a date
+    "2030",      # THE WORST YEAR-ONLY: inside the 7-year ceiling, so nothing
+                 # downstream would catch it. Under a '%Y' parser this becomes
+                 # 1 January 2030, a FUTURE date on a legible class, and
+                 # _sst_cert_state reports the card 'valid' for four years.
+                 # '2035' is caught by the ceiling; this one is caught by
+                 # nothing but the parser's refusal.
+    "27",        # year only, two digits: 2027 or 1927, and one is expired
+    "EXP",       # the word beside the date, read instead of the date
+    "/35",       # a separator survived and the month did not
+    "05/3",      # a truncated year: 2003? 2030? 2035?
+    "20",        # two digits that are neither a month nor a year on their own
+]
+
+
+@pytest.mark.parametrize("raw", _PARTIAL_EXPIRIES)
+def test_a_partial_expiry_never_parses_to_a_date(raw):
+    """The parser itself. No format in CERT_DATE_FORMATS may read half a
+    field, and asking it must not raise on the way to saying no."""
+    assert server.parse_cert_date(raw) is None, (
+        f"{raw!r} became a date; half a read is not an expiry"
+    )
+
+
+@pytest.mark.parametrize("raw", _PARTIAL_EXPIRIES)
+def test_a_partial_expiry_is_suppressed_by_the_expiry_gate(raw):
+    """`evaluate_cert_expiry` is the one gate the scanner AND the backfill go
+    through, so pinning it here covers both entry points."""
+    stored_exp, suppressed, reason = server.evaluate_cert_expiry(
+        raw, None, "SST_SUPERVISOR", NOW_C)
+    assert stored_exp is None, raw
+    assert suppressed is True, raw
+    assert reason == "EXPIRY_UNPARSEABLE", raw
+
+
+@pytest.mark.parametrize("raw", _PARTIAL_EXPIRIES)
+def test_a_partial_expiry_lands_as_null_plus_a_review_flag(raw):
+    """END TO END, through the boundary the model's answer actually crosses.
+    Three things at once, and all three are the requirement:
+      * the stored expiry is NULL, not a guess;
+      * the row is FLAGGED, so a human is asked;
+      * the raw value is KEPT, so the human has something to correct from.
+    """
+    got = payload({"name": "Wilmer Carrillo", "sst_number": "JU0FMHPJQ1",
+                   "card_type": "SST", "card_class": "SUPERVISOR",
+                   "expiration": raw})
+    certs, _ = server.build_worker_certifications(
+        [], got.model_dump(), "JU0FMHPJQ1", None, NOW_C)
+    assert certs, raw
+    row = certs[0]
+    assert row["expiration_date"] is None, (
+        f"{raw!r} was stored as {row['expiration_date']!r}"
+    )
+    assert row["needs_review"] is True, raw
+    assert row["review_reason"] == "EXPIRY_UNPARSEABLE", raw
+    assert row["expiration_raw_rejected"] == raw, raw
+    assert row["extraction_completeness"] < 1.0, raw
+
+
+@pytest.mark.parametrize("raw", _PARTIAL_EXPIRIES)
+def test_a_partial_expiry_never_reads_as_a_valid_credential(raw):
+    """The consequence, not the mechanism. `_sst_cert_state` is what the
+    check-in gate asks, and a partial must reach it as 'unknown' — never
+    'valid', which would let the card through, and never an exception."""
+    got = payload({"name": "Wilmer Carrillo", "sst_number": "JU0FMHPJQ1",
+                   "card_type": "SST", "card_class": "SUPERVISOR",
+                   "expiration": raw})
+    certs, _ = server.build_worker_certifications(
+        [], got.model_dump(), "JU0FMHPJQ1", None, NOW_C)
+    assert server._sst_cert_state(certs[0], NOW_C) == "unknown", raw
+
+
+@pytest.mark.parametrize("raw", _PARTIAL_EXPIRIES)
+def test_a_partial_stored_as_a_string_is_still_not_a_date(raw):
+    """THE SECOND-ORDER PATH. `_sst_cert_state` re-reads a STORED expiry with
+    `datetime.fromisoformat`, which Python 3.11 widened considerably — it now
+    accepts `'20350101'` and `'2035-W01'`. None of these shapes may slip
+    through there either, on a legacy row the scanner never wrote."""
+    state = server._sst_cert_state(
+        {"type": "SST_SUPERVISOR", "expiration_date": raw,
+         "class_source": "text_only"},
+        NOW_C,
+    )
+    assert state == "unknown", f"{raw!r} read as {state!r}"
+
+
+def test_the_whole_field_still_parses_when_the_model_reads_it_all():
+    """THE CONTROL. If everything above passed because NOTHING parses, it
+    proves nothing. A whole field, written the one way that is unambiguous BY
+    CONSTRUCTION, is a date and the gate stores it."""
+    stored_exp, suppressed, reason = server.evaluate_cert_expiry(
+        "2030-05-31", None, "SST_SUPERVISOR", NOW_C)
+    assert stored_exp is not None
+    assert (suppressed, reason) == (False, None)
+    assert stored_exp.year == 2030 and stored_exp.month == 5
+
+
+def test_wilmers_own_date_is_refused_for_a_SECOND_reason():
+    """NOT THE SAME FINDING, and worth separating so neither hides the other.
+    `'05/35'` is refused by the parser for being ambiguous. A fully-read
+    `'2035-05-31'` parses cleanly and is then refused AGAIN, by the 7-year
+    ceiling — 2035 is nine years past NOW_C. Both refusals are correct and the
+    reasons differ, so a reviewer looking at his row can tell which happened."""
+    assert server.evaluate_cert_expiry("05/35", None, "SST_SUPERVISOR", NOW_C) \
+        == (None, True, "EXPIRY_UNPARSEABLE")
+    assert server.evaluate_cert_expiry(
+        "2035-05-31", None, "SST_SUPERVISOR", NOW_C) \
+        == (None, True, "EXPIRY_IMPLAUSIBLE")
+
+
+def test_no_year_only_format_has_been_added_to_the_parser():
+    """A COUNT, because the temptation is specific and named. `'%Y'` is the
+    one-character change that turns every case above into a date, and it would
+    do it silently — the tests above would go red, and this one says why in a
+    sentence rather than in eight parametrised failures."""
+    assert "%Y" not in tuple(server.CERT_DATE_FORMATS), (
+        "a bare-year format reads '2035' as 1 January 2035; a year is not an "
+        "expiry date and half a read is not a year"
+    )
+    assert tuple(server.CERT_DATE_FORMATS) == ("%m/%d/%Y", "%Y-%m-%d")
 
 
 def test_a_mixed_case_card_number_is_one_card_not_two():

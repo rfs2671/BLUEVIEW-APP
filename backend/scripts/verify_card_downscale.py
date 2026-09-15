@@ -28,6 +28,22 @@ count. It reads R2 and calls the model; that is all.
 
 EXIT CODE IS THE ANSWER: 0 when every card agreed on card number and expiry,
 1 when any card lost either. Read the status, not the prose.
+
+BOTH SIDES ARE NORMALISED FIRST, through `lib/ocr_text.norm_ocr_str` — the
+same rule `_osha_ocr_payload` applies where the model's answer is parsed. A
+field neither read could see comes back as `''` from one call and `'null'` from
+the other, and comparing those raw scored a card as LOST and exited 1 on a
+clean result. See `_norm`.
+
+RUN OF 2026-09-15, ten stored cards, stored size vs 1024 px long edge:
+ZERO real losses. Card numbers identical at both sizes on every card that had
+one (JU0FMHPJQ1, W95MUFUCTS, YHFGZBU4EZ, 4YU1RY8KKM, U15D86ETRN). Two rows
+flagged, both artefacts: one `'' vs 'null'` on a field neither read saw — the
+comparison bug this module now fixes — and WILMER CARRILLO `'05/35'` vs `'35'`,
+which DID NOT REPRODUCE: three re-reads at 1024 px returned `05/35`, as did
+1280 and 1600. A model flake, not a resolution limit. The flake is the reason
+the retry-and-degrade path exists: the model does occasionally drop part of a
+field, at any size.
 """
 from __future__ import annotations
 
@@ -41,15 +57,31 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from lib.ocr_text import norm_ocr_str                            # noqa: E402
+
 CRITICAL = ("sst_number", "expiration")
 ALSO_REPORTED = ("name", "card_type", "card_class", "issued", "card_dominant_color")
 
 
 def _norm(v):
-    """Compare like a person would: case and spacing are not a difference."""
-    if v is None:
+    """Compare like a person would: case and spacing are not a difference.
+
+    AND NEITHER ARE TWO SPELLINGS OF NOTHING. This used to be `upper()` over a
+    raw `str(v)`, which made `''` and `'null'` different values — so a card
+    whose expiry NEITHER read could see was scored as a loss, and a clean
+    ten-card run exited 1 telling the operator to raise OSHA_VISION_MAX_EDGE.
+    That is a false red, and a harness whose exit code is the answer cannot
+    afford one: it trains the reader to skip the status and trust the prose.
+
+    `norm_ocr_str` is the SAME rule `_osha_ocr_payload` applies at the boundary
+    where the model's answer is parsed (see lib/ocr_text.py). Both sides go
+    through it, so "the model read nothing" compares equal to itself however
+    the model spelled it, and only a real disagreement is a loss.
+    """
+    s = norm_ocr_str(v)
+    if s is None:
         return None
-    return "".join(str(v).split()).upper()
+    return "".join(s.split()).upper()
 
 
 async def _read(server, image_b64: str, label: str):
@@ -150,8 +182,16 @@ async def main() -> int:
         card_lost = False
         for field in CRITICAL:
             a, b = getattr(full, field), getattr(small, field)
-            same = _norm(a) == _norm(b)
-            print(f"    {'OK ' if same else 'LOST'} {field}: {a!r} -> {b!r}")
+            na, nb = _norm(a), _norm(b)
+            same = na == nb
+            # "NONE" IS NOT "OK", AND IT IS NOT A LOSS EITHER. A field neither
+            # read could see says nothing about the bound, and printing it as
+            # OK invites the reader to count it as a card that survived.
+            if same and na is None:
+                verdict = "----"
+            else:
+                verdict = "OK  " if same else "LOST"
+            print(f"    {verdict} {field}: {a!r} -> {b!r}")
             if not same:
                 card_lost = True
         for field in ALSO_REPORTED:
