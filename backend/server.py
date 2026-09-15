@@ -30646,7 +30646,14 @@ async def generate_combined_report(
     }
 
     cards = []
-    for number, log_type in enumerate(required, start=1):
+    # THE REGISTER READS THE SAME LIST THE RATIO READS, and it reads it off the
+    # same object. This loop ran over `required` -- every type the project
+    # carries -- while the ratio counts `due`, so on 857 Prescott Pl the
+    # Tuesday page printed five numbered records under "1 of 3", two of them
+    # for logs that Tuesday did not owe and nobody filed. `register()` is
+    # `due + extra`: the day's obligations, then the records filed without
+    # being owed. See its note in lib/report/model.py.
+    for number, log_type in enumerate(required_logs.register(), start=1):
         document = _filed_log(logbooks, log_type)
         thumbnail = await _logbook_thumbnail_url(document) if document else None
         link = ""
@@ -30655,10 +30662,15 @@ async def generate_combined_report(
                 str(document.get("_id") or ""))
             if token:
                 link = _public_logbook_url(token)
-        if document:
-            state = report_view.CardState.FILED
-        elif log_type in due:
-            state = report_view.CardState.MISSING
+        # OWED IS THE FIRST QUESTION NOW, because it is the one the ratio
+        # asks. A card on the register is either an obligation this date
+        # carried -- filed or not -- or a record that exists without being
+        # owed, and `register()` admits nothing else. NOT_DUE therefore means
+        # FILED-BUT-NOT-OWED and only that; it keeps its document, and the
+        # completeness block counts it under "Additional records filed".
+        if log_type in due:
+            state = (report_view.CardState.FILED if document
+                     else report_view.CardState.MISSING)
         else:
             state = report_view.CardState.NOT_DUE
         cards.append({

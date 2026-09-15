@@ -1119,10 +1119,16 @@ def render_page_2(view: ReportView) -> str:
 #: AMBER IS FOR A REQUIRED RECORD THAT IS OWED AND ABSENT, and for nothing
 #: else. "Not due today" is not a deficiency and takes the muted ink; a filed
 #: record takes green, which on this document means FILED and only that.
+#:
+#: "FILED · NOT DUE TODAY" SAYS BOTH HALVES, because a card in that state now
+#: has a document on it. "Not due today" alone, printed under a thumbnail of a
+#: signed record, reads as a caption on the document rather than an answer
+#: about the ratio -- and the one thing a reader must be able to see is why a
+#: record that is plainly filed is not in the count above it.
 STATE_WORDS = {
     CardState.FILED: ("filed", "Filed"),
     CardState.MISSING: ("missing", "Not filed"),
-    CardState.NOT_DUE: ("not_due", "Not due today"),
+    CardState.NOT_DUE: ("not_due", "Filed &middot; not due today"),
 }
 
 
@@ -1143,7 +1149,11 @@ def render_record(card: CardView) -> str:
     under every card was the third time a reader was told the same thing.
     """
     css, words = STATE_WORDS[card.state]
-    filed = card.state is CardState.FILED
+    # THE EVIDENCE FOLLOWS THE DOCUMENT, NOT THE STATE. `card.documented` is
+    # true for a filed record whether or not this date owed it; asking
+    # `state is FILED` here would have set the absence wording under a
+    # toolbox talk that was filed. See `CardView.documented`.
+    filed = card.documented
 
     if filed and card.thumbnail:
         doc = f'<div class="doc"><img src="{esc(card.thumbnail)}" /></div>'

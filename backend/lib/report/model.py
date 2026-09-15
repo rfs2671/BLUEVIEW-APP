@@ -381,6 +381,43 @@ class RequiredLogsState:
     def missing_names(self) -> List[str]:
         return [self.label(t) for t in self.missing]
 
+    def register(self) -> List[str]:
+        """THE TYPES THE RECORD INDEX PRINTS -- OFF THE SAME FIELDS AS THE RATIO.
+
+        THE REGISTER USED TO ITERATE `required` AND THE RATIO COUNTS `due`,
+        which are not the same list on any project that carries a weekly or an
+        as-needed type. On 857 Prescott Pl the Tuesday report printed five
+        numbered records -- including a "Tool Box Talk" and a "Subcontractor
+        Safety Orientation", neither owed and neither filed -- under a ratio of
+        "1 of 3". Two lists describing one day, disagreeing about what the day
+        required, and a reader who counted the register got a different answer
+        from the reader who read the number.
+
+        SO THE REGISTER IS DERIVED HERE, from the fields the ratio is derived
+        from, and the disagreement stops being a thing anybody has to remember:
+        there is one object and both answers come out of it.
+
+        `due` FIRST, THEN `extra`, AND THE ORDER IS THE CLAIM. Records 1..N are
+        the obligations this date carried -- exactly the ratio's denominator --
+        and everything after is a record filed without being owed, which is the
+        figure the completeness block already prints beside the ratio and
+        never sums with it.
+
+        WHAT IS DROPPED IS THE ROW ABOUT NOTHING: a type that was not owed
+        today and was not filed either. That is the only row that leaves, and
+        it described neither an obligation nor a document.
+
+        WHAT IS NOT DROPPED IS A FILED RECORD. A toolbox talk filed on Monday
+        is on Monday's register, carrying its document and its link, because a
+        filed compliance record disappearing from the record index would be a
+        worse defect than the card this replaces. It is simply outside a ratio
+        that never counted it.
+
+        Both halves are filtered out of `required`, so the project's own
+        ordering survives within each.
+        """
+        return self.due + self.extra
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  WHAT BOTH PAGES CONSUME
