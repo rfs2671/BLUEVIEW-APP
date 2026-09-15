@@ -1,5 +1,5 @@
 /**
- * IT ACTUALLY PAINTS. The reason line, rendered.
+ * IT ACTUALLY PAINTS. Both the reason line and the card check, rendered.
  *
  * WHY THIS FILE EXISTS AND WHY IT IS NOT A SOURCE SCAN. Everything else that
  * guards these screens parses source. Mount smoke does execute a component, but
@@ -12,16 +12,16 @@
  *     mount smoke    sees no console error and passes
  *     the CP         sees an empty box next to a man holding a card
  *
- * So this executes the REAL component out of app/logbooks/preshift_signin.jsx
- * -- not a copy of it -- through react-dom/server, and asserts the words are
+ * So this executes the REAL components out of app/logbooks/preshift_signin.jsx
+ * -- not a copy of them -- through react-dom/server, and asserts the words are
  * in the output. `react-native` is stubbed to host elements because the
  * question is which TEXT the component chooses, not how a View lays out; the
  * conditional logic under test is the component's own and is not stubbed.
  *
  * A COPY OF THE JSX HERE WOULD PROVE NOTHING. That is the failure this repo has
  * hit repeatedly -- an assertion that matched a duplicate rather than the
- * shipped code -- so the component is imported by name from the screen file
- * and the loader FAILS LOUDLY if that export is missing.
+ * shipped code -- so the components are imported by name from the screen file
+ * and the loader FAILS LOUDLY if either export is missing.
  *
  * Run:  node src/utils/sstCardFlagPaints.test.cjs
  */
@@ -114,12 +114,14 @@ function ok(cond, label) {
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
 
-// THE LOADER'S OWN GUARD. If the screen stops exporting this, every assertion
+// THE LOADER'S OWN GUARD. If the screen stops exporting these, every assertion
 // below would render `undefined` and this file must fail loudly rather than
 // quietly measuring nothing.
 ok(typeof screen.SstFlagLines === 'function',
   'preshift_signin.jsx exports SstFlagLines (the real component, not a copy)');
-if (typeof screen.SstFlagLines !== 'function') {
+ok(typeof screen.CardCheckLines === 'function',
+  'preshift_signin.jsx exports CardCheckLines (the real component, not a copy)');
+if (typeof screen.SstFlagLines !== 'function' || typeof screen.CardCheckLines !== 'function') {
   console.log(`\n${passed} passed, ${failed + 1} failed`);
   process.exit(1);
 }
@@ -169,23 +171,92 @@ ok(paint(screen.SstFlagLines, { sstStatus: 'valid' }) === '',
 ok(paint(screen.SstFlagLines, {}) === '',
   'no status paints nothing');
 
-// ── The two gates that live in renderWorkerFlags ───────────────────────────
+// ── The attestation ────────────────────────────────────────────────────────
+console.log('\nthe card check, painted');
+
+const openHtml = words(paint(screen.CardCheckLines, {
+  cardNumber: '4YU1RY8KKM', open: true,
+}));
+ok(openHtml.includes(copy.CARD_CHECK_STATEMENT),
+  'the ruled statement is painted verbatim');
+ok(openHtml.includes(copy.cardCheckScopeNote('4YU1RY8KKM')),
+  'the scope note is painted, WITH the actual card number in it');
+ok(openHtml.includes('4YU1RY8KKM'),
+  'the card number is SHOWN, not merely stored');
+ok(openHtml.includes(copy.CARD_CHECK_AFFIRM), 'the affirm control is painted');
+ok(openHtml.includes(copy.CARD_CHECK_REFUSE),
+  'THE REFUSAL PATH IS PAINTED -- if the only way out is to affirm, the '
+  + 'attestation is worthless');
+
+const closed = words(paint(screen.CardCheckLines, { cardNumber: '4YU1RY8KKM' }));
+ok(closed.includes(copy.CARD_CHECK_AFFIRM),
+  'the opener is painted before the dialog is open');
+ok(!closed.includes(copy.CARD_CHECK_STATEMENT),
+  'and the statement is not affirmed by a single tap -- it is a confirm step');
+
+const noNumber = words(paint(screen.CardCheckLines, { cardNumber: null }));
+ok(!noNumber.includes(copy.CARD_CHECK_AFFIRM),
+  'NO CARD NUMBER, NO CONTROL -- a clearance keyed on null would carry to '
+  + 'every future card');
+ok(noNumber.includes(copy.CARD_CHECK_NO_NUMBER),
+  'and the screen says why the control is absent rather than showing nothing');
+ok(!words(paint(screen.CardCheckLines, { cardNumber: '' })).includes(copy.CARD_CHECK_AFFIRM),
+  'an empty card number is the same as none');
+
+const done = words(paint(screen.CardCheckLines, {
+  cardNumber: '4YU1RY8KKM',
+  checkedByName: 'Carl CP',
+  checkedAt: '2026-09-03T14:20:00Z',
+  checkedNumber: '4YU1RY8KKM',
+}));
+ok(done.includes('Carl CP') && done.includes('2026-09-03') && done.includes('4YU1RY8KKM'),
+  'once recorded it paints WHO, WHEN and AGAINST WHICH CARD NUMBER');
+ok(!done.includes(copy.CARD_CHECK_AFFIRM),
+  'and stops offering the control it has already been given');
+
+// THE CARD NUMBER CHANGED SINCE THE CHECK. The clearance does not carry, and
+// the screen must not claim it does.
+const stale = words(paint(screen.CardCheckLines, {
+  cardNumber: 'NEWCARD123',
+  checkedByName: 'Carl CP',
+  checkedAt: '2026-09-03T14:20:00Z',
+  checkedNumber: '4YU1RY8KKM',
+}));
+ok(stale.includes(copy.CARD_CHECK_AFFIRM),
+  'a check recorded against a DIFFERENT card number re-offers the control');
+ok(!stale.includes('Card checked by Carl CP'),
+  'and does not report the stale check as if it still stood');
+
+// NEVER these words, anywhere in what is painted.
+const BANNED = /\b(approve|dismiss|ignore|override|acknowledge)\b/i;
+for (const [label, html] of [['open', openHtml], ['closed', closed], ['done', done]]) {
+  ok(!BANNED.test(html),
+    `${label}: never approve/dismiss/ignore/override/acknowledge`);
+}
+
+// ── The three gates that live in renderWorkerFlags ─────────────────────────
 // SOURCE ASSERTIONS, AND LABELLED AS SUCH. renderWorkerFlags is a closure over
-// component state, so it cannot be rendered from here the way SstFlagLines
-// can. These pin the decisions that are made OUTSIDE it and that no amount of
-// rendering a leaf would catch. Comments are stripped first for the reason
-// recorded in fix1FlaggedWorkerSurfaces.test.cjs: prose about a rule is not
-// the rule.
+// component state, so it cannot be rendered from here the way the two
+// components above can. These pin the decisions that are made OUTSIDE them and
+// that no amount of rendering a leaf would catch. Comments are stripped first
+// for the reason recorded in fix1FlaggedWorkerSurfaces.test.cjs: prose about a
+// rule is not the rule.
 console.log('\nthe gates in renderWorkerFlags (source, not render)');
 
 const screenCode = fs.readFileSync(SCREEN, 'utf8')
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .split('\n').filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
 
+ok(/canAct && canCardCheck && f\.sst_row_known \?/.test(screenCode),
+  'the card check is offered ONLY for a worker the flagged endpoint actually '
+  + 'returned — an absent row must not be reported as "no card number recorded"');
+ok(/const canCardCheck = f\.sst_status === 'unknown';/.test(screenCode),
+  "and only where the CARD is what is in doubt — looking at an expired card "
+  + 'does not renew it');
 ok(/!sstReviewable \? null :/.test(screenCode),
   'naming a third status on screen did not hand it an approve/deny it never had');
-ok((screenCode.match(/styles=\{styles\}/g) || []).length === 1,
-  'the component is handed the per-render styles (this screen themes per '
+ok((screenCode.match(/styles=\{styles\}/g) || []).length === 2,
+  'both components are handed the per-render styles (this screen themes per '
   + 'render; a module-level `styles` here is the "styles is not defined" crash '
   + 'mount smoke was written for)');
 

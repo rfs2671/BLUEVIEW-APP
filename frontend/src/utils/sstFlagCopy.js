@@ -1,5 +1,6 @@
 /**
- * What the CP is told about a flagged SST card.
+ * What the CP is told about a flagged SST card, and what he confirms when he
+ * says he checked it.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHY THIS IS A MODULE AND NOT A TERNARY
@@ -48,11 +49,19 @@
  * which is false of the second. Where neither vocabulary says anything the copy
  * says "class OR expiry", and does not pretend to know which.
  *
- * WHAT THIS MODULE DOES NOT DO. It changes no verdict, no flag and no queue
- * membership — it only decides which sentence a flagged row prints. Every one
- * of the 25 certs flagged in production keeps its flag, its `review_reason` and
- * its place on the roster; what changes is that the CP is told which of them he
- * is looking at.
+ * WHAT THE COPY HALF DOES NOT DO. It changes no verdict, no flag and no queue
+ * membership — it only decides which sentence a flagged row prints.
+ *
+ * ──────────────────────────────────────────────────────────────────────────────
+ * THE ATTESTATION WORDING IS RULED
+ *
+ * The CP is attesting that he SAW THE PHYSICAL CARD. That is a different claim
+ * from dismissing a warning, and the words are ruled accordingly: the control
+ * says "I checked this card" and never approve / dismiss / ignore / override /
+ * acknowledge. The scope note SHOWS the card number rather than merely storing
+ * it, because the clearance is keyed to that number and dies with it. And there
+ * is a refusal path: if the only way out of the dialog is to affirm, the
+ * attestation is worthless.
  */
 
 // ── Statuses ────────────────────────────────────────────────────────────────
@@ -162,6 +171,40 @@ export function sstFlagCopy({ sstStatus, reviewReason, unknownReason } = {}) {
   // `expired` and `expiring_soon` are complete claims on their own: the title
   // says the whole thing and a second line would only pad it.
   return { title, detail: '' };
+}
+
+// ── The attestation, ruled wording ──────────────────────────────────────────
+
+/** What he confirms. NOT "approve", not "dismiss" -- what he SAW. */
+export const CARD_CHECK_STATEMENT =
+  "I have seen this worker's physical SST card. The name, card number and "
+  + 'class on the card match what is shown here.';
+
+/** Shown directly under the statement, with the number spelled out. */
+export const cardCheckScopeNote = (cardNumber) =>
+  `Recorded against card number ${cardNumber}. If this worker's card number `
+  + 'changes, this check does not carry over and the card must be checked again.';
+
+export const CARD_CHECK_AFFIRM = 'I checked this card';
+
+/** THE WAY OUT THAT IS NOT AN AFFIRMATION. Nothing is recorded by it. */
+export const CARD_CHECK_REFUSE = 'I could not check this card';
+
+/**
+ * There is nothing to attest against, so the control is not offered at all --
+ * a clearance keyed on a null card number would carry to every future card.
+ */
+export const CARD_CHECK_NO_NUMBER =
+  'No card number is recorded for this worker, so there is nothing to check '
+  + 'the card against.';
+
+/** Who, when, and against which card number. */
+export function cardCheckedLine({ name, at, cardNumber } = {}) {
+  const day = typeof at === 'string' ? at.slice(0, 10) : '';
+  let who = 'Card checked';
+  if (name) who += ` by ${name}`;
+  if (day) who += ` on ${day}`;
+  return `${who} — recorded against card number ${cardNumber}.`;
 }
 
 export default sstFlagCopy;
