@@ -37909,6 +37909,61 @@ async def _handle_dob_status(project_id: str) -> str:
     return "\n".join(lines)
 
 
+async def _handle_daily_log(project_id: str, date: Optional[str] = None) -> str:
+    """The daily jobsite / OSHA log for one day.
+
+    ── WHY THIS TOOL EXISTS ───────────────────────────────────────────────
+    #
+    # Measured: "show me OSHA log" reached query_plan, which searched the
+    # DRAWING index for a safety log, found sheets whose text mentions "log",
+    # and sent them. The routing was not wrong about the words — it was wrong
+    # because the log had no home, and a request with no tool falls to whatever
+    # tool will take it.
+    #
+    # `open_items` already read this collection but only ever for TODAY and
+    # only the uncorrected observations. A question about the log itself, or
+    # about a particular day, had nothing to call.
+    #
+    # THE DATE ARRIVES RESOLVED. The agent is told to compute "last Thursday"
+    # against the NOW line in its context block and pass YYYY-MM-DD; this does
+    # not parse English, because two date parsers disagreeing is worse than
+    # one."""
+    if not project_id:
+        return "Could not determine project."
+    day = (date or "").strip() or eastern_today()
+    try:
+        log = await db.daily_logs.find_one(
+            {"project_id": str(project_id), "date": day,
+             "is_deleted": {"$ne": True}},
+        )
+    except Exception as e:
+        logger.warning(f"daily log read failed for {project_id} {day}: {e}")
+        return f"Couldn't read the log for {day}."
+
+    if not log:
+        # NAMED, NOT "no log found". "Nothing for Thursday 11 Sep" is checkable;
+        # "no daily log found" leaves the reader unsure which day was looked at.
+        return f"No daily log filed for {day}."
+
+    obs = log.get("observations") or []
+    open_obs = [o for o in obs if not o.get("corrected")]
+    lines = [f"Daily log {day}:"]
+    status = log.get("status") or log.get("state")
+    if status:
+        lines.append(f"  status: {status}")
+    signed = log.get("signed_by_name") or log.get("signed_by")
+    if signed:
+        lines.append(f"  signed by {signed}")
+    lines.append(f"  {len(obs)} observation(s), {len(open_obs)} uncorrected")
+    for i, o in enumerate(open_obs[:8], 1):
+        desc = (o.get("description") or o.get("note") or "").strip()
+        if desc:
+            lines.append(f"  {i}. {desc[:120]}")
+    if len(open_obs) > 8:
+        lines.append(f"  (+{len(open_obs) - 8} more)")
+    return "\n".join(lines)
+
+
 async def _handle_open_items(project_id: str) -> str:
     """Return uncorrected observations from today's daily log."""
     # Eastern: `date` on daily_logs is a New York calendar day, so an evening
@@ -40821,10 +40876,14 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     if not candidates:
         await send_whatsapp_message(
             group_id,
-            "Couldn't find a matching sheet in the indexed drawings. "
-            "Try a sheet number (A-301, ME-401) or a description like "
-            "'4th floor mechanical plan'. If your plans are new, make sure "
-            "they've finished indexing in the app.",
+            # "Try a sheet number (A-301, ME-401)" was the old copy, and it is
+            # the exact thing the stance forbids: it hands the problem back to
+            # a superintendent who does not carry the drawing list in his head.
+            # The agent now has the full sheet index in its context, so it can
+            # map a description onto a sheet itself — and when retrieval finds
+            # nothing, the honest report is that nothing matched, not homework.
+            "Nothing in the indexed drawings matched that. If the plans were "
+            "uploaded recently, they may still be indexing.",
             reply_to=reply_to,
         )
         return
@@ -41461,6 +41520,30 @@ _AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "daily_log",
+            "description": (
+                "Return the daily jobsite log for a date — the OSHA log, the "
+                "daily log, the jobsite log, sign-ins, what was filed. USE THIS "
+                "for any question about a LOG or a DAY's filing. Never use "
+                "query_plan for a log: logs are database records, not drawings. "
+                "Pass `date` as YYYY-MM-DD resolved against the NOW line in your "
+                "context; omit it for today."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "YYYY-MM-DD. Omit for today.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "dob_status",
             "description": "Return DOB status, permits, and recent violations for the project.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -41616,7 +41699,29 @@ _AGENT_TOOLS = [
 ]
 
 
+# ── THE STANCE COMES FIRST, BECAUSE IT DECIDES THE OTHER RULES ─────────────
+#
+# Everything below this is mechanics — which tool, what shape, how long. This
+# paragraph is the disposition the mechanics serve, and it is first because a
+# model that reads "answer the question the person means" before it reads the
+# routing table routes differently.
+#
+# Each sentence answers a specific failure from the 2026-09-14 live tests:
+# a roster question at 23:33 answered "nobody" instead of naming the last
+# working day; a superintendent told to supply a sheet number he does not carry
+# in his head; a CP-approval question answered from the model's own prior; and
+# replies that ended by asking another question.
+_AGENT_STANCE = (
+    "You are the GC's assistant. You know this project. Answer the question the "
+    "person means, not the literal one. If today's data is empty because it's "
+    "outside working hours, answer for the last working day and say which day. "
+    "Never make the user name a sheet. Never invent policy — if the data doesn't "
+    "say, say the data doesn't say. One reply, no follow-up questions unless the "
+    "request is genuinely ambiguous.\n\n"
+)
+
 _AGENT_SYSTEM_PROMPT_BASE = (
+    _AGENT_STANCE +
     "You are Levelog Assistant — a WhatsApp bot for a NYC GC/expediter who needs "
     "a smart, proactive teammate in their project group chat. Act like the "
     "project manager's right hand: brief, specific, and always one step ahead.\n\n"
@@ -41642,7 +41747,27 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "  • 'plan', 'drawing', 'sheet', elevation/section/detail/schedule, "
     "    'show me A-101/ME-401', any question about what's shown on a drawing → "
     "    query_plan. ONLY for visual drawings.\n"
+    "  • 'daily log', 'OSHA log', 'jobsite log', 'log for <date>', 'what was "
+    "    filed', 'sign-ins' → daily_log. NEVER query_plan.\n"
     "  • 'create checklist' → start_checklist.\n\n"
+    # ── THE PLAN PIPELINE IS FOR DRAWINGS, AND ONLY FOR DRAWINGS ───────────
+    #
+    # Measured: "show me OSHA log" reached query_plan, which searched the
+    # DRAWING index for a safety log, found sheets that mention "log", and sent
+    # them. Every one of those is a confident wrong answer, and the cost is not
+    # only the wrong reply — it is a Qwen call per candidate sheet on a
+    # question that never needed a vision model at all.
+    #
+    # Stated as an EXCLUSION LIST rather than a description, because "about the
+    # drawings" is exactly the kind of judgement a model talks itself into.
+    "QUERY_PLAN IS ONLY FOR CONSTRUCTION DRAWINGS AND SPECS:\n"
+    "Use it for what is DRAWN or SPECIFIED — dimensions, materials, details, "
+    "schedules, what appears on a sheet, which sheet shows a thing.\n"
+    "NEVER use it for: daily logs, OSHA logs, jobsite logs, sign-ins, check-ins, "
+    "workers, rosters, SST or OSHA cards, CP reviews, permits, DOB filings, "
+    "violations, complaints, checklists, material deliveries or open items. "
+    "Every one of those has its own tool and lives in the database, not on a "
+    "drawing. If no tool fits, say so — do not fall back to query_plan.\n\n"
     "PROACTIVE NEXT-STEP DOCTRINE — this is what makes you feel human:\n"
     "After every tool call, look at the result and offer the obvious next action "
     "as a 1-line question. The user should rarely have to ask for the follow-up.\n"
@@ -41711,6 +41836,17 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "Only ask a clarifying question when: (a) a permit/sheet/worker identifier is "
     "truly ambiguous after a tool result, or (b) renewal needs data not in the DB. "
     "Never ask 'which permit?' when there's only one active permit matching.\n\n"
+    # A model asked "last Thursday" with no date in its context computes one
+    # from whatever it believes today is, which is its training cutoff. The
+    # context block states the date, the weekday and the timezone; this says to
+    # use it.
+    "DATES:\n"
+    "The context block above gives the current date, weekday and timezone. "
+    "Resolve every relative date against THAT and never against your own sense "
+    "of the date: 'yesterday', 'last Thursday', 'this week' are all computed "
+    "from the NOW line. State the date you resolved to in your reply "
+    "('Thursday 11 Sep: …') so a wrong reading is visible immediately.\n"
+    "If a tool needs a date, pass the resolved YYYY-MM-DD, not the phrase.\n\n"
     "DATA TRUST:\n"
     "Tool output for permits includes '⚠️ Nd left' flags. When the user asks "
     "'expiring in next N days' or 'need renewal', count permits whose days-left ≤ N "
@@ -41740,6 +41876,9 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     # arrives as literal punctuation in the middle of a sentence, which is how
     # a bot starts looking broken to someone who has never seen markdown.
     "STYLE — WRITE LIKE A FOREMAN, NOT A SYSTEM:\n"
+    "LEAD WITH THE ANSWER. First line answers the question; everything else is "
+    "support. Then CITE THE SOURCE — the sheet number, the date, the reviewer's "
+    "name — so the reader can check it. Then stop.\n"
     "One fact per line. Lead each line with the number or the name, not with a "
     "preamble. No greeting, no sign-off, no restating the question.\n"
     "Three lines is a normal answer. Six is a long one. Past that, give the "
@@ -42086,6 +42225,275 @@ async def _handle_checklist_assignment_reply(
     return "\n".join(lines)
 
 
+# ── WHAT THE AGENT KNOWS BEFORE IT IS ASKED ────────────────────────────────
+#
+# Every failure in the 2026-09-14 live tests had the same shape underneath: the
+# agent was answering from a blank slate plus whatever a tool happened to
+# return. It did not know the date, so "last Thursday" was a guess. It did not
+# know the roster was empty because it was 23:33, so an empty answer read as
+# "nobody works here". It did not know which sheets exist, so it asked the
+# superintendent to name one. And it did not know a CP had reviewed a card, so
+# it answered from its own prior.
+#
+# None of that is a prompt-wording problem and none of it is fixable by adding
+# another instruction. The model was missing the facts, so the facts are
+# assembled fresh on every message and put in front of it.
+#
+# ── IT IS BUILT PER CALL, AND THAT COSTS SOMETHING ─────────────────────────
+#
+# Six reads against Mongo before the model is called. They are cheap — counts
+# and one projection-limited sheet list — and they are the difference between
+# an assistant and an autocomplete. The sheet index is the largest piece and is
+# capped: a set with hundreds of sheets would otherwise push the prompt past
+# what is worth paying for on every message.
+#
+# NEVER RAISES. A context block that failed would take the whole reply with it,
+# and a degraded answer beats no answer. Every section is independently
+# guarded; a section that cannot be read is omitted rather than faked, because
+# an absent line and a line saying "0" mean different things and the model has
+# no way to tell them apart.
+_SHEET_INDEX_CAP = 120
+
+
+def _eastern_now() -> datetime:
+    """Now, in the timezone the site actually works in.
+
+    A UTC clock is wrong by four or five hours here, which at 20:00 EDT means
+    the agent reads a New York evening as the next calendar day and answers
+    "today" with a day that has not started."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+async def _last_working_day(project_id: str, before: datetime) -> Optional[datetime]:
+    """The most recent day this project had a check-in, at or before `before`.
+
+    THE DEFINITION IS DELIBERATE: a working day is a day somebody checked in,
+    not a weekday. Sites work Saturdays and stop for weather, and a calendar
+    rule would confidently name a day nobody was there."""
+    try:
+        row = await db.checkins.find_one(
+            {"project_id": str(project_id),
+             "is_deleted": {"$ne": True},
+             "check_in_time": {"$lte": before}},
+            {"check_in_time": 1},
+            sort=[("check_in_time", -1)],
+        )
+    except Exception as e:
+        logger.warning(f"last working day lookup failed for {project_id}: {e}")
+        return None
+    t = (row or {}).get("check_in_time")
+    return t if isinstance(t, datetime) else None
+
+
+async def _roster_snapshot(project_id: str, day: datetime) -> dict:
+    """Head count and card tally for one calendar day, Eastern."""
+    try:
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        rows = await db.checkins.find(
+            {"project_id": str(project_id),
+             "is_deleted": {"$ne": True},
+             "check_in_time": {"$gte": start, "$lt": end}},
+            {"sst_status": 1, "review_decision": 1, "worker_name": 1},
+        ).to_list(500)
+    except Exception as e:
+        logger.warning(f"roster snapshot failed for {project_id}: {e}")
+        return {}
+    pending = [r for r in rows
+               if (r.get("sst_status") in ("expired", "unknown", "missing"))
+               and not r.get("review_decision")]
+    return {
+        "count": len(rows),
+        "tally": _sst_tally([r.get("sst_status") for r in rows]),
+        "pending_review": len(pending),
+    }
+
+
+async def _sheet_index_lines(project_id: str) -> list:
+    """Every sheet in this project, one line each: number and title.
+
+    ── THIS IS WHY THE BOT STOPS ASKING FOR A SHEET NAME ──────────────────
+    #
+    # "Try a sheet number (A-301, ME-401)" was the answer to a superintendent
+    # who does not carry the drawing list in his head and should not have to.
+    # With the index in front of it the model can map "the roof plan" or "the
+    # wall types" onto a real sheet without a round trip.
+    #
+    # Capped, because a large set would otherwise dominate every prompt on the
+    # project. The cap is reported when it bites, so a silently truncated list
+    # is not mistaken for a complete one."""
+    try:
+        rows = await db.document_page_index.find(
+            {"project_id": str(project_id), "sheet_number": {"$ne": None}},
+            {"sheet_number": 1, "sheet_title": 1},
+        ).limit(_SHEET_INDEX_CAP + 1).to_list(_SHEET_INDEX_CAP + 1)
+    except Exception as e:
+        logger.warning(f"sheet index failed for {project_id}: {e}")
+        return []
+    seen, out = set(), []
+    for r in rows:
+        sn = (r.get("sheet_number") or "").strip()
+        if not sn or sn in seen:
+            continue
+        seen.add(sn)
+        title = (r.get("sheet_title") or "").strip()
+        out.append(f"{sn} — {title}" if title else sn)
+    return sorted(out)
+
+
+async def _agent_context_block(
+    project_id: str, features: Dict[str, Any], address_mode: str,
+) -> str:
+    """The facts, assembled fresh for this message."""
+    lines = ["── WHAT YOU KNOW ABOUT THIS PROJECT RIGHT NOW ──"]
+
+    # Project identity.
+    try:
+        p = await db.projects.find_one({"_id": to_query_id(project_id)}) or {}
+        ident = [p.get("name") or "", p.get("address") or p.get("location") or ""]
+        ident = [x for x in ident if x]
+        if ident:
+            lines.append(f"PROJECT: {' — '.join(dict.fromkeys(ident))}")
+        ids = []
+        if p.get("nyc_bin"):
+            ids.append(f"BIN {p['nyc_bin']}")
+        if p.get("bbl"):
+            ids.append(f"BBL {p['bbl']}")
+        if ids:
+            lines.append(f"  {', '.join(ids)}")
+        co = await db.companies.find_one(
+            {"_id": to_query_id(p.get("company_id"))}) if p.get("company_id") else None
+        if co and co.get("name"):
+            lines.append(f"  GC: {co['name']}")
+    except Exception as e:
+        logger.warning(f"context: project section failed: {e}")
+
+    # The clock. Stated in full because "last Thursday" is resolved against it.
+    now = _eastern_now()
+    lines.append(
+        f"NOW: {now.strftime('%A %Y-%m-%d %H:%M')} America/New_York")
+
+    # Roster, today and on the last day anybody was here.
+    try:
+        today = await _roster_snapshot(project_id, now)
+        if today:
+            bits = [f"{today['count']} checked in today"]
+            if today.get("tally"):
+                bits.append(today["tally"])
+            lines.append("ROSTER TODAY: " + "; ".join(bits))
+        lwd = await _last_working_day(project_id, now)
+        if lwd:
+            lwd_local = lwd.astimezone(now.tzinfo) if now.tzinfo else lwd
+            same_day = lwd_local.date() == now.date()
+            if not same_day or not today.get("count"):
+                prev = await _roster_snapshot(project_id, lwd_local)
+                bits = [f"{lwd_local.strftime('%A %Y-%m-%d')}",
+                        f"{prev.get('count', 0)} checked in"]
+                if prev.get("tally"):
+                    bits.append(prev["tally"])
+                if prev.get("pending_review"):
+                    bits.append(
+                        f"{prev['pending_review']} awaiting CP review")
+                lines.append("LAST WORKING DAY: " + "; ".join(bits))
+        elif not today.get("count"):
+            lines.append("LAST WORKING DAY: no check-ins on record for this project")
+    except Exception as e:
+        logger.warning(f"context: roster section failed: {e}")
+
+    # Counts the agent is asked about constantly.
+    # READ FROM THE SAME COLLECTIONS THE TOOLS READ. The first draft of this
+    # invented `daily_jobsite_logs` and `permits` from the names of the tools,
+    # and both are wrong: open items live in `daily_logs.observations` keyed by
+    # an Eastern date STRING, and permits are `dob_logs` rows with
+    # record_type="permit". A context block that quietly counts zero because it
+    # queried a collection nobody writes is worse than no context block, since
+    # the model reports the zero as fact.
+    try:
+        log = await db.daily_logs.find_one(
+            {"project_id": str(project_id), "date": eastern_today()},
+            {"observations": 1},
+        )
+        if log is None:
+            lines.append("OPEN ITEMS: no daily log filed for today")
+        else:
+            obs = log.get("observations") or []
+            open_obs = [o for o in obs if not o.get("corrected")]
+            lines.append(
+                f"OPEN ITEMS: {len(open_obs)} uncorrected of {len(obs)} "
+                f"observations on today's log")
+    except Exception as e:
+        logger.warning(f"context: open items failed: {e}")
+    try:
+        permits = await db.dob_logs.find(
+            {"project_id": str(project_id), "record_type": "permit",
+             "is_deleted": {"$ne": True}},
+            {"expiration_date": 1},
+        ).to_list(300)
+        soon = 0
+        for pm in permits:
+            exp = pm.get("expiration_date")
+            if isinstance(exp, datetime):
+                exp_aware = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+                days = (exp_aware - datetime.now(timezone.utc)).days
+                if 0 <= days <= 30:
+                    soon += 1
+        lines.append(
+            f"PERMITS: {len(permits)} on file, {soon} expiring within 30 days")
+    except Exception as e:
+        logger.warning(f"context: permits failed: {e}")
+
+    # The drawing list, so nobody is asked to name a sheet.
+    try:
+        sheets = await _sheet_index_lines(project_id)
+        if sheets:
+            shown = sheets[:_SHEET_INDEX_CAP]
+            lines.append(f"SHEET INDEX ({len(shown)} sheets):")
+            lines.extend(f"  {x}" for x in shown)
+            if len(sheets) > _SHEET_INDEX_CAP:
+                lines.append(
+                    f"  (…{len(sheets) - _SHEET_INDEX_CAP} more not listed; "
+                    f"ask query_plan by description)")
+        else:
+            lines.append("SHEET INDEX: no drawings indexed for this project yet")
+    except Exception as e:
+        logger.warning(f"context: sheet index failed: {e}")
+
+    # What this group is allowed to do, so the agent does not offer what is off.
+    try:
+        on = [k for k, v in (features or {}).items()
+              if v is True and k != "address_mode"]
+        lines.append(f"GROUP: address_mode={address_mode}; enabled={', '.join(sorted(on)) or 'none'}")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+# ── THE GROUP AGENT RUNS ON gpt-4o; THE CLASSIFIERS STAY ON mini ───────────
+#
+# mini was the right call while the agent's whole job was picking a tool from a
+# routing table. It is the wrong call now: it is being asked to read a context
+# block, resolve a relative date against it, choose between eleven tools, and
+# refuse to answer from prior — and every one of the 2026-09-14 failures was a
+# judgement failure rather than a knowledge failure.
+#
+# THE OTHER THREE CALLS STAY ON mini DELIBERATELY. Material detection and the
+# DM label classifier emit ONE LABEL from a fixed set, and the plan-query parser
+# fills a fixed schema. None of them reasons, all of them run on traffic the
+# agent never sees, and moving them would multiply the cost of the one path
+# that fires on every unaddressed message for no gain.
+#
+# 800 tokens, up from 500. A reply that leads with the answer and cites its
+# source is longer than a reply that does neither, and a truncated answer is
+# worse than a slightly slower one.
+AGENT_MODEL = "gpt-4o"
+AGENT_MAX_TOKENS = 800
+
+
 async def _run_group_agent(
     *,
     project_id: str,
@@ -42096,6 +42504,7 @@ async def _run_group_agent(
     features: Dict[str, Any],
     explicit_mention: bool = False,
     reply_to: Optional[str] = None,
+    address_mode: str = "loose",
 ) -> Optional[str]:
     # `body` is already a parameter of this function — the user's message, as
     # sent. It is passed down to the tool dispatcher below so the plan handler
@@ -42172,6 +42581,24 @@ async def _run_group_agent(
     else:
         system_prompt = _AGENT_SYSTEM_PROMPT_BASE + _AGENT_NOREPLY_CLAUSE
 
+    # ── BUILT FRESH, AND APPENDED RATHER THAN PREPENDED ────────────────────
+    #
+    # The static prompt goes first and the volatile facts go after it, because
+    # the static half is the prefix a cache can reuse across every message in
+    # every group. Putting today's roster at the front would change the first
+    # token of every request and throw the cache away on every call.
+    #
+    # A failure here costs the facts, not the reply: the agent falls back to
+    # what it had before this existed, which is where it was last week.
+    try:
+        context_block = await _agent_context_block(
+            project_id, features, address_mode,
+        )
+        if context_block:
+            system_prompt = f"{system_prompt}\n\n{context_block}"
+    except Exception as e:
+        logger.warning(f"agent context block failed for {group_id}: {e}")
+
     messages = [
         {"role": "system", "content": system_prompt},
         *history_msgs,
@@ -42187,6 +42614,10 @@ async def _run_group_agent(
         if name == "list_workers" and not features.get("who_on_site", True):
             continue
         if name == "dob_status" and not features.get("dob_status", True):
+            continue
+        # daily_log rides the open_items flag: both read daily_logs, and a
+        # group that has turned off site-log questions has turned off both.
+        if name == "daily_log" and not features.get("open_items", True):
             continue
         if name == "open_items" and not features.get("open_items", True):
             continue
@@ -42207,9 +42638,9 @@ async def _run_group_agent(
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": "gpt-4o-mini",
+                        "model": AGENT_MODEL,
                         "temperature": 0.2,
-                        "max_tokens": 500,
+                        "max_tokens": AGENT_MAX_TOKENS,
                         "tools": enabled_tools,
                         "tool_choice": "auto",
                         "messages": messages,
@@ -42367,6 +42798,8 @@ async def _dispatch_agent_tool(
             return await _handle_dob_status(project_id)
         if name == "active_permits":
             return await _handle_active_permits(project_id)
+        if name == "daily_log":
+            return await _handle_daily_log(project_id, args.get("date"))
         if name == "open_items":
             return await _handle_open_items(project_id)
         if name == "material_status":
@@ -43211,6 +43644,7 @@ async def _process_whatsapp_message(payload: dict):
                     features=features,
                     explicit_mention=explicit_mention,
                     reply_to=reply_to,
+                    address_mode=address_mode,
                 )
                 if reply:
                     await send_whatsapp_message(group_id, reply,
