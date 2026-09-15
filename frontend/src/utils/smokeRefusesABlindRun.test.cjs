@@ -60,8 +60,25 @@ ok(dotDirAncestor('/tmp/smoke-copy/frontend') === null,
 
 // `.` AND `..` ARE NAVIGATION, NOT DIRECTORIES. path.resolve removes them, but
 // the predicate excludes them anyway so it cannot become wrong if that changes.
-ok(dotDirAncestor('./frontend') === null, 'a leading ./ is not a dot-directory');
-ok(dotDirAncestor('../frontend') === null, 'a leading ../ is not a dot-directory');
+//
+// ABSOLUTE BASE, AND THAT IS THE WHOLE POINT OF THIS FIX. These two read
+//     dotDirAncestor('./frontend')
+// which `path.resolve` completes against `process.cwd()` — so run from an agent
+// worktree the resolved path is `…/.claude/worktrees/…/frontend`, the predicate
+// correctly answers ".claude", and THE TEST FAILS. A test written to catch a
+// dot-directory hazard, failing because of a dot-directory. It was green on CI
+// and red for anyone running it where the defect actually lives, which is the
+// one place it most needed to work.
+//
+// A test about a path must not read the path it happens to be standing in.
+ok(dotDirAncestor(path.join(path.sep, 'clean', 'base', '.', 'frontend')) === null,
+  'a "." navigation segment is not a dot-directory');
+ok(dotDirAncestor(path.join(path.sep, 'clean', 'base', '..', 'frontend')) === null,
+  'a ".." navigation segment is not a dot-directory');
+// And the property that makes the two above meaningful: cwd is never consulted.
+const fromElsewhere = dotDirAncestor(path.join(path.sep, 'clean', 'frontend'));
+ok(fromElsewhere === null,
+  'an absolute clean path is clean regardless of where the test is run from');
 
 // ── and the script still carries it ─────────────────────────────────────────
 ok(/function dotDirAncestor\(/.test(src),
