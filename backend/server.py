@@ -41000,7 +41000,7 @@ async def _answer_plan_from_chunks(project_id: str, route_text: str,
     # and spec lines, quoting the line. An attribute with no line carrying a
     # value falls through to the vision model on the single best sheet.
     """
-    kind, attribute = plan_extract.question_kind(route_text)
+    kind, _attribute = plan_extract.question_kind(route_text)
     if not kind:
         chunks = []
     else:
@@ -41010,30 +41010,9 @@ async def _answer_plan_from_chunks(project_id: str, route_text: str,
         has_v3 = bool(await db.document_page_chunks.find_one(
             {"project_id": str(project_id)}, {"_id": 1}))
         return has_v3, None
-    terms = plan_extract.question_terms(route_text, parsed.get("keywords"))
-    if not terms:
-        return True, None
-    subject = " ".join(terms)
-    if kind == "count":
-        hits = plan_extract.answer_count(chunks, terms)
-        if hits:
-            return True, {"text": plan_extract.format_count_answer(subject, hits),
-                          "outcome": "chunk_count"}
-        mentions = plan_extract.answer_existence(chunks, terms)
-        return True, {"text": plan_extract.format_not_stated(mentions),
-                      "outcome": "chunk_count_not_stated"}
-    if kind == "exists":
-        hits = plan_extract.answer_existence(chunks, terms)
-        if hits:
-            return True, {"text": plan_extract.format_existence_answer(subject, hits),
-                          "outcome": "chunk_exists"}
-        return True, {"text": "Not found on indexed drawings.",
-                      "outcome": "chunk_exists_not_found"}
-    hits = plan_extract.answer_attribute(chunks, terms, attribute)
-    if hits:
-        return True, {"text": plan_extract.format_attribute_answer(subject, attribute, hits),
-                      "outcome": "chunk_attribute"}
-    return True, None
+    # The same function the local harness calls, so a before-merge run answers
+    # exactly what WhatsApp would.
+    return True, plan_extract.answer_question(chunks, route_text, parsed.get("keywords"))
 
 
 def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> None:

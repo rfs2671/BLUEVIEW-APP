@@ -110,11 +110,15 @@ def _parse_pages(spec: str, total: int) -> set:
 def _sheet_pattern(sheet: str) -> re.Pattern:
     """S-100 also finds S-100.00, the way the debug endpoint's filter does.
 
-    Only a DIGIT may not follow. pypdf joins a title block's cells without a
-    separator — 'S-100.00LIGHT GAUGE' is what a real sheet's layer reads — so
-    refusing a following letter misses the sheet the text is printed on."""
+    pypdf joins a title block's cells without a separator, on both sides:
+    'S-100.00LIGHT GAUGE', '2S-001.00GENERAL NOTES', 'A-500.0024 OF 31'. So a
+    digit may precede, and the decimal suffix is exactly two digits with
+    anything after it. A drawing list names every sheet, so text selection can
+    also pick an index page — use --pick when the page is known."""
     base = re.escape(sheet.strip())
-    return re.compile(r"(?<![A-Za-z0-9])" + base + r"(?:\.\d+)?(?![\d.])", re.IGNORECASE)
+    if re.search(r"\.\d{2}$", sheet.strip()):
+        return re.compile(r"(?<![A-Za-z])" + base, re.IGNORECASE)
+    return re.compile(r"(?<![A-Za-z])" + base + r"(?:\.\d{2}|(?![\d.]))", re.IGNORECASE)
 
 
 def _ocr(image_bytes: bytes):
@@ -169,19 +173,50 @@ def _make_vlm_call(base: str, model: str, key: str, counter: dict):
     return call
 
 
-_COUNT_RE = re.compile(r"\b(how many|how much|number of|count|total|quantity)\b", re.IGNORECASE)
-_STOP = {"how", "many", "much", "what", "is", "are", "the", "a", "an", "of", "on", "in",
-         "any", "there", "number", "count", "total", "do", "we", "have", "type", "thickness",
-         "gauge", "for", "does", "it", "show", "me", "levelog"}
+VLM_FALLBACK = ("(no text answer - WhatsApp sends this to the vision model "
+                "on the single best sheet)")
 
 
-def _terms(question: str) -> list:
-    words = [w for w in re.findall(r"[a-z0-9]+", question.lower())
-             if w not in _STOP and len(w) > 1]
-    return words[:2]
+def _answers(asks, chunks, model, out_root: Path) -> str:
+    """pe.answer_question is the function _answer_plan_from_chunks calls, so
+    these are the answers WhatsApp would give from this extraction."""
+    answers = []
+    for q in asks:
+        kind, attribute = pe.question_kind(q)
+        ans = pe.answer_question(chunks, q, None)
+        text = ans["text"] if ans else VLM_FALLBACK
+        answers.append({"question": q, "kind": kind, "attribute": attribute,
+                        "terms": pe.question_terms(q), "answer": text,
+                        "outcome": ans["outcome"] if ans else "vlm_fallback",
+                        "model": model})
+        print(f"\nQ: {q}\n   [{kind or 'none'}{'/' + attribute if attribute else ''}]"
+              f" terms={pe.question_terms(q)}\nA: {text}")
+    out_root.mkdir(parents=True, exist_ok=True)
+    apath = out_root / "answers.json"
+    apath.write_text(json.dumps(answers, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(apath)
+
+
+def _chunks_from_saved(folder: Path) -> list:
+    chunks = []
+    for f in sorted(folder.glob("*/*.json")):
+        rec = json.loads(f.read_text(encoding="utf-8"))
+        for c in pe.build_chunks(rec["fields"]):
+            c["sheet_number"] = rec["fields"].get("sheet_number")
+            c["page_number"] = rec.get("page_number")
+            c["file"] = rec.get("file")
+            chunks.append(c)
+    return chunks
 
 
 async def main_async(args) -> int:
+    if args.answers_from:
+        folder = Path(args.answers_from)
+        chunks = _chunks_from_saved(folder)
+        print(f"answering from saved extraction in {folder}: {len(chunks)} chunks, no model calls")
+        print(_answers(args.ask, chunks, "(saved extraction)", folder))
+        return 0
+
     base = os.environ.get("QWEN_API_BASE") or os.environ.get("QWEN_BASE_URL") or ""
     model = os.environ.get("QWEN_MODEL") or ""
     key = os.environ.get("QWEN_API_KEY") or ""
@@ -195,12 +230,21 @@ async def main_async(args) -> int:
         texts = _page_texts(pdf_bytes)
         total = len(texts)
         selected = _parse_pages(args.pages, total) if args.pages else set()
-        if wanted:
+        picked = False
+        for spec in args.pick:
+            name_part, _, pages = spec.rpartition(":")
+            if name_part and name_part.lower() in Path(pdf).name.lower():
+                selected |= _parse_pages(pages, total)
+                picked = True
+        if args.pick and not picked and not args.pages:
+            plan.append((pdf, pdf_bytes, texts, []))
+            continue
+        if wanted and not args.pick:
             pats = [_sheet_pattern(s) for s in wanted]
             for i, t in enumerate(texts, start=1):
                 if any(p.search(t or "") for p in pats):
                     selected.add(i)
-        if not args.pages and not wanted:
+        if not args.pages and not wanted and not args.pick:
             selected = set(range(1, total + 1))
         plan.append((pdf, pdf_bytes, texts, sorted(selected)))
 
@@ -286,28 +330,7 @@ async def main_async(args) -> int:
                   f"  flags={bad or 'none'}")
 
     if args.ask:
-        answers = []
-        for q in args.ask:
-            terms = _terms(q)
-            if _COUNT_RE.search(q):
-                hits = pe.answer_count(all_chunks, terms)
-                text = pe.format_count_answer(" ".join(terms), hits)
-                kind = "count"
-            else:
-                hits = pe.answer_existence(all_chunks, terms)
-                text = pe.format_existence_answer(" ".join(terms), hits)
-                kind = "existence"
-            if not text:
-                mentioned = pe.answer_existence(all_chunks, terms)
-                sheets = sorted({h["sheet"] for h in mentioned if h.get("sheet")})
-                text = "Not stated on the indexed drawings." + (
-                    f" Mentioned on: {', '.join(sheets)}." if sheets else "")
-            answers.append({"question": q, "kind": kind, "terms": terms,
-                            "answer": text, "hits": hits, "model": model})
-            print(f"\nQ: {q}\nA: {text}")
-        apath = out_root / "answers.json"
-        apath.write_text(json.dumps(answers, indent=2, ensure_ascii=False), encoding="utf-8")
-        written.append(str(apath))
+        written.append(_answers(args.ask, all_chunks, model, out_root))
 
     print(f"\nvision calls made: {counter['calls']}")
     print("written:")
@@ -318,14 +341,22 @@ async def main_async(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("pdf", nargs="+", help="PDF file(s) of the drawing set")
+    ap.add_argument("pdf", nargs="*", help="PDF file(s) of the drawing set")
+    ap.add_argument("--answers-from", default="",
+                    help="answer --ask from a previous --out folder; no PDFs, no model calls")
     ap.add_argument("--sheets", default="", help="comma list, e.g. S-001,S-100,A-500.00")
     ap.add_argument("--pages", default="", help="1-based page list, e.g. 1,3-5")
+    ap.add_argument("--pick", action="append", default=[],
+                    help='FILENAME_PART:PAGES, e.g. "AR - 3.28:24"; repeatable')
     ap.add_argument("--out", default="plan-out")
     ap.add_argument("--ask", action="append", default=[], help="question; repeatable")
     ap.add_argument("--ocr", action="store_true", help="Textract for pages with no text layer")
     ap.add_argument("--raw", action="store_true", help="include raw model output and page text")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, make no calls")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     return asyncio.run(main_async(ap.parse_args()))
 
 

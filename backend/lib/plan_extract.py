@@ -1028,8 +1028,40 @@ def format_not_stated(mentions: List[Dict[str, Any]]) -> str:
     return base + (f" Mentioned on {', '.join(sheets[:4])}." if sheets else "")
 
 
+def answer_question(chunks: List[Dict[str, Any]], text: str,
+                    keywords: Optional[List[Any]] = None) -> Optional[Dict[str, str]]:
+    """The one dispatch both the WhatsApp handler and the local harness call.
+
+    {"text", "outcome"}, or None when the text cannot answer it and the caller
+    should go to the vision model (an attribute with no value line, or a
+    question that is none of count / exists / attribute)."""
+    kind, attribute = question_kind(text)
+    if not kind or not chunks:
+        return None
+    terms = question_terms(text, keywords)
+    if not terms:
+        return None
+    subject = " ".join(terms)
+    if kind == "count":
+        hits = answer_count(chunks, terms)
+        if hits:
+            return {"text": format_count_answer(subject, hits), "outcome": "chunk_count"}
+        return {"text": format_not_stated(answer_existence(chunks, terms)),
+                "outcome": "chunk_count_not_stated"}
+    if kind == "exists":
+        hits = answer_existence(chunks, terms)
+        if hits:
+            return {"text": format_existence_answer(subject, hits), "outcome": "chunk_exists"}
+        return {"text": "Not found on indexed drawings.", "outcome": "chunk_exists_not_found"}
+    hits = answer_attribute(chunks, terms, attribute)
+    if hits:
+        return {"text": format_attribute_answer(subject, attribute, hits),
+                "outcome": "chunk_attribute"}
+    return None
+
+
 __all__ = [
-    "question_kind", "question_terms", "answer_attribute", "format_attribute_answer",
+    "answer_question", "question_kind", "question_terms", "answer_attribute", "format_attribute_answer",
     "format_not_stated", "ATTRIBUTE_PATTERNS",
     "EXTRACTION_VERSION", "SECTIONS", "SECTION_MAX_TOKENS", "REPEAT_MIN_RUN",
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
