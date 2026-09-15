@@ -297,12 +297,29 @@ function loopsOverSlots(n) {
   return hit;
 }
 
+// THE CENSUS IS DERIVED, NOT LISTED. Naming `renderSlot` and only
+// `renderSlot` made this check answerable by renaming: move the call behind a
+// one-line helper and the loop looks innocent while rasterising just the same.
+// So: every function from which renderSlot is REACHABLE is a function that can
+// begin a rasterisation, and a call to any of them inside a slots loop is the
+// defect regardless of what it is called.
+const renderStarters = new Set(['renderSlot']);
+for (let grew = true; grew;) {
+  grew = false;
+  for (const [name, node] of fns) {
+    if (renderStarters.has(name)) continue;
+    const calls = callsIn(node.body);
+    if ([...renderStarters].some((s) => calls.has(s))) { renderStarters.add(name); grew = true; }
+  }
+}
+ok(renderStarters.size >= 1, `the call graph finds ${renderStarters.size} way(s) into a render`);
+
 const unguardedBulkRenders = [];
 walk(script, (loop) => {
   if (!loopsOverSlots(loop)) return;
   walk(loop.body, (n) => {
     if (n.type !== 'CallExpression') return;
-    if (!(n.callee.type === 'Identifier' && n.callee.name === 'renderSlot')) return;
+    if (!(n.callee.type === 'Identifier' && renderStarters.has(n.callee.name))) return;
     let guarded = false;
     walk(loop.body, (g) => {
       if (g.type !== 'IfStatement') return;
@@ -313,6 +330,80 @@ walk(script, (loop) => {
 });
 ok(unguardedBulkRenders.length === 0,
   'no loop over every slot rasterises unconditionally');
+
+// ── AND THE STRONGER FORM, WHICH IS WHAT ACTUALLY BOUNDS IT NOW ──────────
+//
+// The loop check above is a check on ONE SHAPE of the bug. The class is
+// "nothing bounds how many rasterisations are in flight", and a guarded loop
+// that starts twelve of them one at a time down a scroll is the same defect
+// with better manners. What bounds it is that renderSlot has exactly ONE
+// caller and that caller is governed by a numeric cap.
+{
+  const FN_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+  /** Calls made by THIS function body, not by functions nested inside it.
+   *  `callsIn` descends through nested functions, which makes the top-level
+   *  IIFE — and every scope enclosing pumpQueue — look like a caller. */
+  function directCallsIn(root) {
+    const out = new Set();
+    (function rec(n) {
+      if (!n || typeof n !== 'object') return;
+      if (n !== root && typeof n.type === 'string' && FN_TYPES.has(n.type)) return;
+      if (n.type === 'CallExpression' && n.callee && n.callee.type === 'Identifier') {
+        out.add(n.callee.name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc' || k === 'leadingComments' || k === 'trailingComments') continue;
+        const v = n[k];
+        if (Array.isArray(v)) v.forEach(rec);
+        else if (v && typeof v === 'object' && typeof v.type === 'string') rec(v);
+      }
+    }(root));
+    return out;
+  }
+
+  const callers = [];
+  for (const [name, node] of fns) {
+    if (name === 'renderSlot') continue;
+    if (directCallsIn(node.body).has('renderSlot')) callers.push(name);
+  }
+  // Calls from anonymous function expressions — observer callbacks, promise
+  // handlers — count too. That is exactly where the twelve came from.
+  let anonCalls = 0;
+  walk(script, (n) => {
+    if (n.type !== 'FunctionExpression' && n.type !== 'ArrowFunctionExpression') return;
+    if (directCallsIn(n.body).has('renderSlot')) anonCalls += 1;
+  });
+  ok(callers.length === 1 && anonCalls === 0,
+    `renderSlot has exactly one door into it (named: ${callers.join(', ') || 'none'}; `
+    + `anonymous: ${anonCalls})`);
+
+  // The cap governs the LOOP that starts the work, so read it off the loop's
+  // own test — not off any `<` that happens to appear in the body, which is
+  // how a scan for "the last comparison" picks up the nearest-first search.
+  const pump = callers.length === 1 ? fns.get(callers[0]) : null;
+  let capName = null;
+  if (pump) {
+    walk(pump.body, (n) => {
+      if (n.type !== 'WhileStatement' && n.type !== 'ForStatement') return;
+      walk(n.test || {}, (t) => {
+        if (t.type !== 'BinaryExpression') return;
+        if (t.operator !== '<' && t.operator !== '<=') return;
+        if (t.right.type === 'Identifier' && !capName) capName = t.right.name;
+      });
+    });
+  }
+  ok(!!capName, `and it starts work only while under a named cap (${capName || 'none found'})`);
+
+  let capValue = null;
+  walk(script, (n) => {
+    if (n.type !== 'VariableDeclarator' || !n.id || n.id.type !== 'Identifier') return;
+    if (n.id.name !== capName) return;
+    if (n.init && n.init.type === 'NumericLiteral') capValue = n.init.value;
+  });
+  ok(typeof capValue === 'number' && capValue >= 1 && capValue <= 2,
+    `and the cap is a small number (${capName} = ${capValue})`);
+}
 
 // The fallback branch itself: `if (typeof IntersectionObserver === "undefined")`.
 let fallbackBranch = null;
@@ -334,22 +425,68 @@ ok(fromFallback.has('addEventListener') || fromFallback.has('setTimeout')
   'the fallback re-evaluates on scroll rather than drawing the set once');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 5. THE WINDOW IS A NUMBER, AND A SMALL ONE.
-//    An unbounded or absurd budget would satisfy everything above and still
-//    hold the whole set.
+// 5. THE BUDGET IS IN BYTES, AND IT IS READ OFF THE REAL CANVAS.
+//
+//    WAS: `KEEP_RENDERED`, a page count. It never bound anything — trim()
+//    skips any page still marked visible and the band marks several — and a
+//    count is the wrong unit besides: the same seven sheets are 31 MB at the
+//    viewport scale and 336 MB once the reader has pinched in, which is the
+//    figure a renderer gets killed at. The unit that runs out is megabytes.
+//
+//    AND IT HAS TO BE DERIVED, NOT ASSUMED. A budget computed from a constant
+//    "MB per sheet" is a page count wearing a different name and would be
+//    wrong by an order of magnitude the moment someone zooms. The cost of a
+//    slot must be read from the width and height the canvas actually got.
 // ═══════════════════════════════════════════════════════════════════════════
-let keep = null;
+let budget = null;
 walk(script, (n) => {
   if (n.type !== 'VariableDeclarator' || !n.id || n.id.type !== 'Identifier') return;
-  if (n.id.name !== 'KEEP_RENDERED') return;
-  if (n.init && n.init.type === 'NumericLiteral') keep = n.init.value;
+  if (n.id.name !== 'CANVAS_BUDGET_BYTES') return;
+  if (n.init && n.init.type === 'NumericLiteral') budget = n.init.value;
+  // `96 * 1048576` reads better than the literal, so fold it.
+  if (n.init && n.init.type === 'BinaryExpression' && n.init.operator === '*'
+    && n.init.left.type === 'NumericLiteral' && n.init.right.type === 'NumericLiteral') {
+    budget = n.init.left.value * n.init.right.value;
+  }
 });
-ok(typeof keep === 'number', 'the page declares a KEEP_RENDERED budget');
-// Lower bound: at rootMargin 150% four or five sheets are near the viewport at
-// once, and evicting one of those would leave it blank until it left the
-// screen and came back. Upper bound: the budget is the memory ceiling.
-ok(typeof keep === 'number' && keep >= 5 && keep <= 12,
-  `KEEP_RENDERED (${keep}) covers the near band without holding the set`);
+ok(typeof budget === 'number', 'the page declares a byte budget for resident canvases');
+// Lower bound: the band is unfreeable, so a budget below it would ask trim()
+// for something it can never deliver. Upper bound: the crash reports were at
+// 250-350 MB.
+ok(typeof budget === 'number' && budget >= 48 * 1048576 && budget <= 192 * 1048576,
+  `the budget (${budget ? (budget / 1048576).toFixed(0) : '?'} MB) covers the near band `
+  + 'without approaching the ceiling a renderer dies at');
+
+// The cost function must reach for a canvas dimension, not a constant.
+{
+  const sizers = [...fns.entries()].filter(([, node]) => {
+    let readsW = false;
+    let readsH = false;
+    walk(node.body, (n) => {
+      if (n.type !== 'MemberExpression' || n.computed) return;
+      if (n.property.type !== 'Identifier') return;
+      if (n.property.name === 'width') readsW = true;
+      if (n.property.name === 'height') readsH = true;
+    });
+    return readsW && readsH;
+  }).map(([name]) => name);
+
+  let trimFn = null;
+  for (const [name, node] of fns) {
+    if (!callsIn(node.body).has('releaseSlot')) continue;
+    // trim() is the one that both frees AND compares against the budget.
+    let usesBudget = false;
+    walk(node.body, (n) => {
+      if (n.type === 'Identifier' && n.name === 'CANVAS_BUDGET_BYTES') usesBudget = true;
+    });
+    if (usesBudget) trimFn = name;
+  }
+  ok(!!trimFn, `the evictor compares against the byte budget (${trimFn || 'nothing does'})`);
+
+  const fromTrim = trimFn ? reachable(fns.get(trimFn)) : new Set();
+  ok(sizers.some((n) => fromTrim.has(n)),
+    'and sizes each slot from the canvas it actually allocated, not from an assumed scale');
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 6. THE PAGE NOW OUTLIVES THE DOCUMENT, AND MUST NOT ACCUMULATE THEM.

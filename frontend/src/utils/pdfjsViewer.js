@@ -47,9 +47,12 @@ import { Asset } from 'expo-asset';
  *   page LEAVING the viewport, so nothing ever came back. A 200-sheet plan set
  *   scrolled end to end accumulated the whole thing and Chromium killed the
  *   renderer, which is what the crash-after-load reports were. The page now
- *   holds a bounded window of rasterised sheets (KEEP_RENDERED) and frees the
- *   rest — removing the element AND zeroing width/height, because removal on
- *   its own does not drop the bitmap.
+ *   holds the rasterised sheets under a BYTE budget (CANVAS_BUDGET_BYTES) and
+ *   frees the rest — removing the element AND zeroing width/height, because
+ *   removal on its own does not drop the bitmap. Bytes rather than a page
+ *   count because the same seven sheets are 31 MB at the viewport scale and
+ *   336 MB once the reader has pinched in, and it is the megabytes that run
+ *   out.
  *
  * ⚠️ ASSET PLACEMENT IS A HUMAN STEP. assets/pdfjs/*.txt currently hold
  *    documented placeholders, not the real pdf.js build. `ensurePdfJsViewer()`
@@ -90,7 +93,19 @@ const STAMP_NAME = '.stamp';
 //       device that already staged `6` would keep rasterising 12.58 MP a
 //       sheet on every open and the change would reach nobody. The app code
 //       would be new and the viewer would be old.
-const VIEWER_VERSION = '7';
+//   9 — ONE RENDER AT A TIME, NEAREST FIRST, AND A BUDGET IN BYTES. A dozen
+//       visible sheets started a dozen concurrent rasterisations on one
+//       thread and each one's wall clock contained all the others; and
+//       `KEEP_RENDERED = 7` never bound anything because `trim()` skips any
+//       page still in the band. THIS BUMP IS THE FIX'S DELIVERY MECHANISM and
+//       is not optional: viewer.html is written to disk once and re-used until
+//       this string changes, so a device already staged at `8` would keep the
+//       unbounded queue and the page-count window, and the change would reach
+//       nobody. The app code would be new and the viewer would be old.
+//       (Stacked above `8`, the two-pass warm-up probe. If that has not landed
+//       yet, this is still a move and still correct — the stamp only has to
+//       change, not to be consecutive.)
+const VIEWER_VERSION = '9';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -174,15 +189,73 @@ const VIEWER_SCRIPT = [
   // the observer's rootMargin and the no-observer sweep, so the two paths
   // agree on what is near.
   '  var BAND = 1.5;',
-  // THE WINDOW. At BAND = 1.5 the near set spans four viewport heights, which
-  // on a phone is four or five full-width sheets, so anything smaller than
-  // that would have the observer and the evictor fighting: a page still inside
-  // the band would be freed and then never redrawn, because
-  // IntersectionObserver reports threshold CROSSINGS, not steady state. 7 is
-  // the near set plus roughly a page of hysteresis each side — a flick back
-  // lands on a canvas that is still there — and it caps the page at about 7
-  // sheets of bitmap (~30–50 MB) no matter how long the set is.
-  '  var KEEP_RENDERED = 7;',
+  // ── ONE RASTERISATION AT A TIME, AND THE THREAD IS THE REASON ──────────
+  //
+  // `renderSlot` guards per slot (`if (slot.busy) return;`) and nothing capped
+  // the GLOBAL in-flight count. The observer's first callback arrives with
+  // every in-band page in one batch, so a dozen rasterisations started on one
+  // thread and each one's wall clock contained all the others. Measured on the
+  // operator's phone, 26-sheet plan, 1.2 MP a sheet:
+  //
+  //     4585 4591 4749 4912 5323 5465 5886 6304 6310 6668
+  //     6935 7529 7601 7933 8214 8790 8970 9004 9281 9490
+  //
+  // A monotonic climb, which is the signature of contention and not of size:
+  // the SAME 1.2 MP page renders in 2252 ms uncontended, and 11.2 MP in 727.
+  // The ten seconds of white screen was page 1 waiting in a queue nobody
+  // bounded.
+  //
+  // TOTAL WORK IS UNCHANGED. What changes is that the sheet the reader is
+  // looking at finishes in its own uncontended time instead of last, behind
+  // eleven he cannot see.
+  //
+  // WHY 1 AND NOT 2. The thread is the resource. There is no worker — a
+  // file:// origin forces pdf.js onto the main thread, and the probe measured
+  // a real Worker rendering page 1 in 6520 ms, so off-thread is not an option
+  // to hold this open for. Two concurrent rasterisations on one thread is the
+  // same contention in miniature. If 1 leaves prefetch too slow, 2 is a tuning
+  // question and this constant is the one edit that answers it.
+  '  var MAX_CONCURRENT_RENDERS = 1;',
+  // ── THE RESIDENT BITMAP IS BOUNDED IN BYTES, NOT IN PAGES ──────────────
+  //
+  // WAS: `KEEP_RENDERED = 7`, which has NEVER BOUND ANYTHING. `trim()` skips
+  // any page marked `visible` and the band marks several, so the window could
+  // not close below the near set whatever the number said.
+  //
+  // AND A PAGE COUNT IS THE WRONG UNIT ANYWAY. The same seven pages are 31 MB
+  // at the viewport scale and 350 MB once the reader has pinched in — the
+  // executing test measures 336 MB held under the old constant at the zoomed
+  // scale, which is precisely the figure the renderer was being killed at. A
+  // budget has to be in the unit that runs out.
+  //
+  // WHY 96 MB, with the arithmetic it was picked from. At the current scale a
+  // sheet is 1329x886 = 4.49 MB of RGBA:
+  //
+  //   the whole 26-sheet plan   117 MB   — just above the budget, so a plan
+  //                                        set of this size is very nearly
+  //                                        all cached and scroll-back is free
+  //   96 MB holds                21 sheets
+  //   the unfreeable near set     8 sheets, 36 MB (BAND 1.5 is ~3.6 sheets
+  //                                        either side), leaving ~13 sheets
+  //                                        of real hysteresis on top of it
+  //   zoomed in                   2 sheets at 48-50 MB each — which is what
+  //                                        BAND_SHARP 0.25 makes unfreeable
+  //                                        anyway, so the budget blanks
+  //                                        nothing new there and replaces a
+  //                                        measured 336 MB with a hard ceiling
+  //
+  // 96 MB of bitmap is comfortable in a Chromium renderer on the device this
+  // ships to; the crash reports were at 250-350 MB.
+  //
+  // EVICTION IS NOT FREE, which is the whole reason this got bigger rather
+  // than smaller. A sheet is ~857 decode operations — 710 FlateDecode and 147
+  // DCTDecode — and throwing one away costs seconds to recreate. That is the
+  // operator's 5-6 second scroll-back. Every eviction is a debt.
+  //
+  // DERIVED FROM THE ACTUAL CANVAS, never from an assumed scale: `trim()`
+  // reads width and height off the bitmap that was really allocated, so the
+  // budget still holds when a reader zooms in and sheets become 48 MB each.
+  '  var CANVAS_BUDGET_BYTES = 96 * 1048576;',
   // ── SHARPNESS ON DEMAND, WHICH IS WHAT #413 SHOULD HAVE BEEN ───────────
   //
   // #413 was right about the resolution and wrong about when to pay for it.
@@ -208,10 +281,10 @@ const VIEWER_SCRIPT = [
   // instead.
   '  var ZOOM_SHARP = 1.25;',
   // THE BAND, ONCE THE EXPENSIVE SCALE IS IN USE. This is the fix for the
-  // zoom-then-reload, and KEEP_RENDERED could not have been: `trim()` never
-  // frees a page that is still in the band, so at BAND = 1.5 the four or five
-  // near sheets are unfreeable whatever the window is set to. Seven sheets at
-  // 12.58 MP is 350 MB of bitmap and five is still 250 MB, which is what gets
+  // zoom-then-reload, and a page-count window could not have been: `trim()`
+  // never frees a page that is still in the band, so at BAND = 1.5 the four or
+  // five near sheets are unfreeable whatever the window is set to. Seven
+  // sheets at 12.58 MP is 350 MB of bitmap and five is still 250 MB, which gets
   // a Chromium renderer killed and reloaded. A reader who has pinched in is
   // looking at ONE sheet; 0.25 spans a viewport and a half either side, so
   // the near set is one or two.
@@ -362,7 +435,8 @@ const VIEWER_SCRIPT = [
   '    d.MAX_CANVAS_EDGE = MAX_CANVAS_EDGE;',
   '    d.MAX_CANVAS_PX = MAX_CANVAS_PX;',
   '    d.BAND = BAND;',
-  '    d.KEEP_RENDERED = KEEP_RENDERED;',
+  '    d.CANVAS_BUDGET_BYTES = CANVAS_BUDGET_BYTES;',
+  '    d.MAX_CONCURRENT_RENDERS = MAX_CONCURRENT_RENDERS;',
   '    probePost("env", d);',
   '  }',
   '',
@@ -746,6 +820,10 @@ const VIEWER_SCRIPT = [
   // Setting width and height to 0 drops the bitmap there and then, which is
   // the only step that actually returns the megabytes.
   '  function releaseSlot(slot){',
+  // A slot being given back must not still be waiting in line for a render.
+  // Same reason the generation stamp exists below: the work is for a canvas
+  // that is about to stop existing.
+  '    dequeue(slot);',
   '    if (slot.task) { try { slot.task.cancel(); } catch (e) {} slot.task = null; }',
   // Anything already in flight for this slot renders into a canvas we are
   // about to throw away; the generation stamp tells it not to attach.
@@ -769,21 +847,107 @@ const VIEWER_SCRIPT = [
   '    rendered.push(slot);',
   '  }',
   '',
-  // Hold the window down to KEEP_RENDERED, oldest first. A page still inside
-  // the band is skipped, never freed — the observer would not fire for it
-  // again and it would sit blank on screen.
+  // WHAT A SLOT IS ACTUALLY COSTING, read off the bitmap that was allocated
+  // rather than recomputed from a scale. RGBA, four bytes a pixel — the
+  // backing store a canvas holds whatever was drawn into it.
+  '  function canvasBytes(slot){',
+  '    var c = slot.canvas;',
+  '    if (!c) return 0;',
+  '    return (c.width || 0) * (c.height || 0) * 4;',
+  '  }',
+  '',
+  // Hold the resident bitmap under the byte budget, least-recently-wanted
+  // first. A page still inside the band is skipped, never freed — the observer
+  // would not fire for it again and it would sit blank on screen.
   '  function trim(){',
-  '    var i = 0;',
-  '    while (rendered.length > KEEP_RENDERED && i < rendered.length) {',
+  '    var total = 0, i;',
+  '    for (i = 0; i < rendered.length; i++) total = total + canvasBytes(rendered[i]);',
+  '    i = 0;',
+  '    while (total > CANVAS_BUDGET_BYTES && i < rendered.length) {',
   '      if (rendered[i].visible) { i = i + 1; continue; }',
+  '      total = total - canvasBytes(rendered[i]);',
   '      releaseSlot(rendered.splice(i, 1)[0]);',
   '    }',
   '  }',
   '',
+  // ── THE QUEUE, AND WHY ORDER MATTERS AS MUCH AS THE CAP ────────────────
+  //
+  // A queue of one that still starts with sheet 12 because sheet 12 came first
+  // out of the observer's callback fixes nothing — the reader still watches a
+  // white screen while eleven sheets he cannot see are drawn ahead of his.
+  //
+  // SO THE CHOICE IS RE-MADE EVERY TIME, not fixed when the page was queued.
+  // `pumpQueue` scans for the nearest sheet at the instant a slot comes free,
+  // which is the only moment it can act on the answer; a page that was nearest
+  // when it went in is not nearest ten seconds later, and a priority queue
+  // that sorted once would be a FIFO with extra steps.
+  //
+  // O(n) a pick, on a queue that is the band — a handful of entries. A heap
+  // would have to be re-heapified on every scroll anyway, because the key is
+  // the reader's position and not a property of the page.
+  '  var queue = [];',
+  '  var inFlight = 0;',
+  '',
+  // Distance from the viewport in CSS pixels: 0 for anything on screen, and
+  // how far off it is otherwise. Ties among on-screen sheets fall to queue
+  // order, which is page order — the top of the viewport, where the reader is
+  // looking.
+  '  function nearness(slot){',
+  '    var h = window.innerHeight || document.documentElement.clientHeight || 800;',
+  '    var r = slot.el.getBoundingClientRect();',
+  '    if (r.bottom < 0) return -r.bottom;',
+  '    if (r.top > h) return r.top - h;',
+  '    return 0;',
+  '  }',
+  '',
+  '  function enqueue(slot){',
+  '    if (slot.done) { touch(slot); return; }',
+  '    if (slot.busy) return;',
+  '    if (queue.indexOf(slot) < 0) queue.push(slot);',
+  '  }',
+  '',
+  // A sheet the reader has scrolled away from comes straight back out. Queued
+  // work for a page nobody is looking at is work stolen from the page they
+  // are.
+  '  function dequeue(slot){',
+  '    var i = queue.indexOf(slot);',
+  '    if (i >= 0) queue.splice(i, 1);',
+  '  }',
+  '',
+  '  function pumpQueue(){',
+  '    while (inFlight < MAX_CONCURRENT_RENDERS && queue.length) {',
+  '      var bi = 0, bd = nearness(queue[0]), i, d;',
+  '      for (i = 1; i < queue.length; i++) {',
+  '        d = nearness(queue[i]);',
+  '        if (d < bd) { bd = d; bi = i; }',
+  '      }',
+  '      var slot = queue.splice(bi, 1)[0];',
+  '      if (slot.done || slot.busy) continue;',
+  // RE-CHECKED AT THE MOMENT OF STARTING, not at the moment of queueing. The
+  // reader may have moved a long way while this sat in line, and the observer
+  // does not always get to report it first.
+  '      if (!slot.visible && !inBand(slot)) continue;',
+  '      renderSlot(slot);',
+  '    }',
+  '  }',
+  '',
+  // THE ONLY CALLER OF THIS IS `pumpQueue`. Everything else enqueues, which is
+  // what keeps the cap honest: there is no second door into a rasterisation.
   '  function renderSlot(slot){',
   '    if (slot.done) { touch(slot); return; }',
   '    if (slot.busy) return;',
   '    slot.busy = true;',
+  '    inFlight = inFlight + 1;',
+  // EXACTLY ONCE, on every path out — resolved, cancelled, generation-stale or
+  // thrown. A leaked count is a viewer that stops rendering for good, which is
+  // a worse failure than the one being fixed.
+  '    var settled = false;',
+  '    function finish(){',
+  '      if (settled) return;',
+  '      settled = true;',
+  '      inFlight = inFlight - 1;',
+  '      pumpQueue();',
+  '    }',
   '    var gen = slot.gen;',
   // PROBE: `pt0` and the stamps below are plain locals on the real render
   // path. They cost two subtractions and a branch when the probe is off, and
@@ -791,7 +955,7 @@ const VIEWER_SCRIPT = [
   // be measuring a different one, warm, with the operator list already parsed.
   '    var pt0 = PROBE ? pnow() : 0;',
   '    doc.getPage(slot.n).then(function(page){',
-  '      if (slot.gen !== gen) { slot.busy = false; try { page.cleanup(); } catch (e) {} return null; }',
+  '      if (slot.gen !== gen) { slot.busy = false; finish(); try { page.cleanup(); } catch (e) {} return null; }',
   '      slot.page = page;',
   '      var ptGetPage = PROBE ? pnow() : 0;',
   '      var vp1 = page.getViewport({ scale: 1 });',
@@ -833,7 +997,7 @@ const VIEWER_SCRIPT = [
   '            totalMs: r1(ptRender1 - pt0)',
   '          });',
   '        }',
-  '        if (slot.gen !== gen) { canvas.width = 0; canvas.height = 0; return; }',
+  '        if (slot.gen !== gen) { canvas.width = 0; canvas.height = 0; finish(); return; }',
   // A slot released and re-requested mid-render can have two renders land on
   // it. Whatever was here loses its bitmap before it loses its parent.
   '        if (slot.canvas && slot.canvas !== canvas) {',
@@ -845,10 +1009,12 @@ const VIEWER_SCRIPT = [
   '        slot.done = true;',
   '        touch(slot);',
   '        trim();',
+  '        finish();',
   '      });',
   '    })["catch"](function(e){',
   '      slot.task = null;',
   '      slot.busy = false;',
+  '      finish();',
   '      if (e && e.name === "RenderingCancelledException") return;',
   '      post({ type: "pdf-page-error", page: slot.n, detail: String(e) });',
   '    });',
@@ -861,14 +1027,19 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   // The no-IntersectionObserver path, and the same shape as the observer's
-  // callback: mark what is near, draw only that, then trim. Bounded by
-  // KEEP_RENDERED exactly like the observer path.
+  // callback: mark what is near, QUEUE only that, trim, then let the queue
+  // start one. Bounded by the byte budget and the render cap exactly like the
+  // observer path — the two must not disagree about either.
+  //
+  // THE WHOLE BAND GOES IN BEFORE ANYTHING STARTS, which is the point: the
+  // nearest sheet can only be chosen once the candidates are all known.
   '  function sweep(){',
   '    for (var i = 0; i < slots.length; i++) {',
   '      slots[i].visible = inBand(slots[i]);',
-  '      if (slots[i].visible) renderSlot(slots[i]);',
+  '      if (slots[i].visible) enqueue(slots[i]); else dequeue(slots[i]);',
   '    }',
   '    trim();',
+  '    pumpQueue();',
   '  }',
   '',
   '  var sweepPending = false;',
@@ -898,18 +1069,26 @@ const VIEWER_SCRIPT = [
   '      sweep();',
   '      return;',
   '    }',
+  // THE BATCH IS THE OPPORTUNITY. A callback arrives with every page that
+  // crossed the threshold — at first observation, that is the whole band. The
+  // old shape called renderSlot on each as it went and started a dozen
+  // rasterisations on one thread. This one records the whole batch first and
+  // only then asks the queue to start ONE, which is what makes "nearest first"
+  // a question that can be answered at all.
   '    io = new IntersectionObserver(function(entries){',
   '      for (var i = 0; i < entries.length; i++) {',
   '        var slot = entries[i].target.__slot;',
   '        if (!slot) continue;',
   '        if (entries[i].isIntersecting) {',
   '          slot.visible = true;',
-  '          renderSlot(slot);',
+  '          enqueue(slot);',
   '        } else {',
   '          slot.visible = false;',
+  '          dequeue(slot);',
   '        }',
   '      }',
   '      trim();',
+  '      pumpQueue();',
   '    }, { rootMargin: (band() * 100) + "% 0px" });',
   '    for (var j = 0; j < slots.length; j++) io.observe(slots[j].el);',
   '  }',
@@ -983,6 +1162,11 @@ const VIEWER_SCRIPT = [
   '      releaseSlot(slots[i]);',
   '    }',
   '    rendered.length = 0;',
+  // releaseSlot() takes each one out of the line above; this is the belt to
+  // that pair of braces, because `resetDocument` empties `slots` straight
+  // after and a slot still queued would be a reference to a page that no
+  // longer has a document behind it.
+  '    queue.length = 0;',
   // The only point at which the file bytes can go — see the note at
   // getDocument below.
   '    if (doc) { try { doc.destroy(); } catch (e) {} doc = null; }',
