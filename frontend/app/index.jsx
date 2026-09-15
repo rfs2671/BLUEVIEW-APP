@@ -48,6 +48,19 @@ const adminActions = [
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
   { title: 'Superintendents', subtitle: 'CS one-job rule', path: '/admin/superintendent', icon: HardHat },
   { title: 'Safety Staff', subtitle: 'SSC / SSM registry', path: '/admin/safety-staff', icon: Shield },
+  // A ROUTE WITH NO LINK IS NOT SHIPPED. `app/admin/device-capabilities.jsx`
+  // has existed and worked since the viewer probe landed, and NOTHING
+  // REFERENCED IT — zero occurrences of the path outside the screen's own
+  // file. It was reachable only by someone who already knew the Expo Router
+  // path, which meant the one measurement that decides whether off-thread
+  // rasterisation is available could not be taken by the person holding the
+  // phone. The `levelog://` deep link is registered (app.json `scheme`) but a
+  // messaging app does not render a custom scheme as tappable, and there is
+  // no https App Link to fall back on: `android.intentFilters` is null.
+  //
+  // So the entry point ships with the screen. It is the fourth thing this week
+  // that was complete, correct and invisible.
+  { title: 'Device Check', subtitle: 'Viewer capabilities', path: '/admin/device-capabilities', icon: Smartphone },
 ];
 
 // 2-column grid tile
