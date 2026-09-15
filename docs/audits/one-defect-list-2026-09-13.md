@@ -234,3 +234,80 @@ The fifty routes are the honest edge of that: nobody has read them.
 **Nothing in Tier 1 LIVE is being worked from here.** Each of T1.1 and T1.2 is a
 one-line change that alters what a filed compliance record says, and that is a
 decision, not a repair.
+
+---
+
+# CORRECTION, 2026-09-15 — EVERY COUNT ABOVE IS UNSCOPED
+
+**A census without a tenant scope is not a census.** Every number in this
+document, and every number reported during the 2026-09-14 six-item
+investigation, was taken across ALL companies without saying so. The database
+holds three:
+
+```
+6a32a11051c7a54c476d2149  test                        13 workers,  4 projects
+6a5e153cc7ac7a6451aa2d32  BLUEVIEW CONSTRUCTION INC   62 workers,  2 projects
+6a9ebab885757b18bb7a0ec5  Blueview llc                 0 workers,  1 project
+```
+
+The `test` company is the operator's, and it holds SEEDED workers, seeded
+check-ins and seeded logbooks — sequential phone numbers (347-555-0101, 0103,
+0105, 0106, 0113), `created_at` values inside a single second, and eleven
+workers sharing one card expiry because a seeder wrote the same value eleven
+times.
+
+## What that did to item 1
+
+| | reported | test | **real (Blueview)** |
+|---|---|---|---|
+| flagged certifications | 25 | 13 | **12** |
+| of which `EXPIRY_UNPARSEABLE` | 17 | **13** | **4** |
+| recovered by the ISO parser widening (#538) | 12 | **12** | **0** |
+
+**The parser widening cleared twelve SEED rows and zero real workers.** Hector
+Ramirez's "expired card" is a seeded date, not a man with a problem. The four
+real `EXPIRY_UNPARSEABLE` rows are all Build 2 cases and none is recoverable by
+a parser: `WILMER CARRILLO '05/35'`, `Juan Lopez '10272029'`, `Geovany Baten
+'062427'`, and the `null` worker.
+
+The larger half of real item 1 is the **8 Blueview workers carrying
+`CLASS_UNVERIFIED`**, which nothing shipped on 2026-09-15 addresses.
+
+## What it did to the other censuses
+
+| census | contaminated? | real share |
+|---|---|---|
+| item 1 — flagged certs | **badly** | 13 of 17 were seed |
+| items 3/4 — project-days short | **yes** | 33 of 325 logbooks are test, plus 20 on deleted/missing projects |
+| item 2 — roster marks UNAFFIRMED | barely | **298 of 302 marks are Blueview** |
+| the four mixed-case card numbers | no | **all four Blueview** |
+| item 5 — the superintendent tile | no | 588 Thomas is Blueview |
+| item 6 — the numbered reports | no | all three Blueview |
+
+Item 2 — the defect that reached filed compliance documents — was real. Items
+3/4's ratio was a mixed number.
+
+## The shape, recorded
+
+**Four separate populations this week turned out to be test data:** the `2`
+account, 857 Prescott, the WhatsApp corpus, and now the twelve seeded
+certifications. Three of the four were caught by the operator, not by the
+agent that produced the count.
+
+**The rule: scope every census by `company_id` and say which company each
+number belongs to, in the same sentence as the number.** An unscoped count is
+not a smaller version of the truth — it is a different claim, and in every one
+of these four cases it was inflated in the direction that made the work look
+more urgent than it was.
+
+## Two orphan shapes, separated
+
+Reported imprecisely first as "a project whose company_id matches no company".
+They are two different things:
+
+- **9 logbooks name project `698d2c1753e831fc0051274e`, which does not exist.**
+  Dated 2026-02-27 to 2026-03-13, all filed by user `69a0a437578e2bea1b746ab3`,
+  none locked. This is A18's known set, not a new finding.
+- **30 projects carry a `company_id` that resolves to no company document — and
+  every one of them is `is_deleted: True`**, under companies that were also
+  deleted. Cleanup debris, not a live defect. No live project is orphaned.

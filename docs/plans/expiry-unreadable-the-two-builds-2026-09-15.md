@@ -229,3 +229,64 @@ users when its real population is five.
 - The card-number case defect (`_card_number_shape` is case-sensitive and
   nothing uppercases on write). Its own change, already in flight.
 - PR #530's card-check attestation. Parked, and neither build depends on it.
+
+---
+
+# CORRECTION, 2026-09-15 — THE CENSUS ABOVE IS NOT TENANT-SCOPED
+
+Everything above counts across all three companies in the database. It should
+have counted one. Scoped to **BLUEVIEW CONSTRUCTION INC**, the real numbers are:
+
+| | unscoped (above) | test company | **Blueview** |
+|---|---|---|---|
+| flagged certifications | 25 | 13 | **12** |
+| `EXPIRY_UNPARSEABLE` | 17 | **13** | **4** |
+| recoverable by Build 1 | 12 | **12** | **0** |
+
+**Build 1 cleared twelve seeded rows and zero real workers.** The eleven
+identical `'2027-10-03'` expiries were not a crew handed cards together; they
+were a seeder writing one value eleven times into the operator's test company,
+alongside sequential phone numbers and `created_at` values inside a single
+second. Hector Ramirez's recovered-then-expired card is seeded data.
+
+**Build 1 was still worth shipping and worth running.** The parser was genuinely
+narrow, the widening is correct for any real ISO date that arrives next, and
+executing the backfill proved the planner against real database rows rather than
+a fixture — 12 written, idempotent, converged, the planner's verdicts identical
+to the gate's. It simply did not help anybody.
+
+**Build 2's real population is four, and three of them are the interesting
+ones:**
+
+```
+WILMER CARRILLO   '05/35'      two readings
+Juan Lopez        '10272029'   unambiguous by convention only
+Geovany Baten     '062427'     two readings, one of them an expired card
+null              'null'       the closed OCR artefact
+```
+
+Every real `EXPIRY_UNPARSEABLE` row needs a human with the card. Not one is
+recoverable by widening a parser — which means **the whole of the real expiry
+problem is Build 2**, and Build 1's value was structural, not remedial.
+
+## AND THE LARGER HALF OF ITEM 1 IS NOT THE EXPIRY AT ALL
+
+Of the 12 real flagged certifications, **8 are `CLASS_UNVERIFIED`**, not
+`EXPIRY_UNPARSEABLE`: Jose David Hernandez Pena, Jhonatan Tipantuna, Angel
+Lopez, Pablo Andrade, risthian M Cabrera, Amaury ayala ontero, Abel Alvarez,
+Marcelino c garcia.
+
+**It is not the colour-only path.** `class_source` is `None` on all eight, not
+`color_only` or `conflict`, and `resolve_card_class` returns
+`{'sst_type': 'SST_UNSPECIFIED', 'class_source': None, 'review_reason':
+'CLASS_UNVERIFIED', 'color': ''}` for every one of them — because their stored
+`osha_data` carries `card_type=None, card_class=None, card_color=None`. The scan
+captured a number and an expiry and **no class information whatsoever**. That is
+a different failure from Wilmer Carrillo's colour-only case, and it is not
+curable by reading colour better.
+
+Two of the eight (Jose David Hernandez Pena, Jhonatan Tipantuna) additionally
+carry a stored `type` of `SST_LIMITED`, which is in `SST_DEAD_CLASSES`, so they
+would remain flagged even if the class resolved.
+
+That is its own investigation and its own build. Not this one.
