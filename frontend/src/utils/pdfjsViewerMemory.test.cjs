@@ -297,22 +297,98 @@ function loopsOverSlots(n) {
   return hit;
 }
 
+// ⚠️ THE CENSUS IS DERIVED, NOT A NAME. This used to look for `renderSlot`
+// BY NAME inside a slots loop. The render path now routes through `enqueue`,
+// so that check would have passed on an empty set and said nothing, for ever —
+// a gate that goes quiet the moment the thing it guards is renamed is not a
+// gate. Every function from which `renderSlot` is reachable IS a function that
+// can begin a rasterisation, whatever it is called, and a call to any of them
+// inside a slots loop is the defect.
+const rasterisers = new Set(['renderSlot']);
+for (let grew = true; grew;) {
+  grew = false;
+  for (const [name, node] of fns) {
+    if (rasterisers.has(name)) continue;
+    for (const called of callsIn(node.body)) {
+      if (rasterisers.has(called)) { rasterisers.add(name); grew = true; break; }
+    }
+  }
+}
+ok(rasterisers.size >= 2,
+  `the call graph finds the functions that can begin a rasterisation (${
+    [...rasterisers].join(', ')})`);
+
 const unguardedBulkRenders = [];
 walk(script, (loop) => {
   if (!loopsOverSlots(loop)) return;
   walk(loop.body, (n) => {
     if (n.type !== 'CallExpression') return;
-    if (!(n.callee.type === 'Identifier' && n.callee.name === 'renderSlot')) return;
+    if (!(n.callee.type === 'Identifier' && rasterisers.has(n.callee.name))) return;
     let guarded = false;
     walk(loop.body, (g) => {
       if (g.type !== 'IfStatement') return;
       walk(g, (inner) => { if (inner === n) guarded = true; });
     });
-    if (!guarded) unguardedBulkRenders.push(n);
+    if (!guarded) unguardedBulkRenders.push(n.callee.name);
   });
 });
 ok(unguardedBulkRenders.length === 0,
-  'no loop over every slot rasterises unconditionally');
+  `no loop over every slot starts work unconditionally (found: ${
+    unguardedBulkRenders.join(', ') || 'none'})`);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4b. THE INVARIANT THE CAP ACTUALLY RESTS ON.
+//
+//     A guarded loop that starts twelve rasterisations one at a time down a
+//     scroll is the same defect with better manners, and the loop check above
+//     cannot see it. What rules it out is narrower and is the thing to assert:
+//     `renderSlot` HAS EXACTLY ONE CALLER, and that caller starts work only
+//     while under a named numeric cap.
+// ═══════════════════════════════════════════════════════════════════════════
+const renderSlotCallers = [];
+for (const [name, node] of fns) {
+  if (name === 'renderSlot') continue;
+  if (callsIn(node.body).has('renderSlot')) renderSlotCallers.push(name);
+}
+ok(renderSlotCallers.length === 1,
+  `renderSlot has exactly one door into it (callers: ${
+    renderSlotCallers.join(', ') || 'none'})`);
+
+// AND THAT CALLER IS CAPPED. The loop it lives in must test a NAMED constant,
+// not a literal buried in a condition — a cap nobody can find is a cap nobody
+// will keep.
+let capName = null;
+let capValue = null;
+if (renderSlotCallers.length === 1) {
+  const pump = fns.get(renderSlotCallers[0]);
+  walk(pump.body, (n) => {
+    if (n.type !== 'WhileStatement' && n.type !== 'ForStatement') return;
+    let startsWork = false;
+    walk(n.body, (c) => {
+      if (c.type === 'CallExpression' && c.callee.type === 'Identifier'
+        && c.callee.name === 'renderSlot') startsWork = true;
+    });
+    if (!startsWork || !n.test) return;
+    walk(n.test, (t) => {
+      if (t.type !== 'BinaryExpression') return;
+      for (const side of [t.left, t.right]) {
+        if (side && side.type === 'Identifier' && /^[A-Z][A-Z0-9_]+$/.test(side.name)) {
+          capName = side.name;
+        }
+      }
+    });
+  });
+}
+ok(!!capName, `and it starts work only while under a named cap (found ${capName})`);
+if (capName) {
+  walk(script, (n) => {
+    if (n.type !== 'VariableDeclarator' || !n.id || n.id.type !== 'Identifier') return;
+    if (n.id.name !== capName) return;
+    if (n.init && n.init.type === 'NumericLiteral') capValue = n.init.value;
+  });
+}
+ok(capValue === 1,
+  `and the cap is 1 — the thread is the resource (${capName} = ${capValue})`);
 
 // The fallback branch itself: `if (typeof IntersectionObserver === "undefined")`.
 let fallbackBranch = null;
@@ -334,22 +410,85 @@ ok(fromFallback.has('addEventListener') || fromFallback.has('setTimeout')
   'the fallback re-evaluates on scroll rather than drawing the set once');
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 5. THE WINDOW IS A NUMBER, AND A SMALL ONE.
-//    An unbounded or absurd budget would satisfy everything above and still
-//    hold the whole set.
+// 5. THE BUDGET IS IN MEGAPIXELS, PRICED OFF THE CANVAS, AND CAN BE REACHED.
+//
+//    ⚠️ IT USED TO BE `KEEP_RENDERED = 7` AND IT NEVER BOUND ANYTHING.
+//    `trim()` skipped any page marked `visible`, and `visible` was set by an
+//    observer whose rootMargin IS THE BAND — so the band marked several sheets
+//    unfreeable at once and the "window of 7" could sit at any size the band
+//    happened to be. Measured: the same seven sheets, 27.4 MB un-zoomed and
+//    336 MB zoomed in.
+//
+//    THREE THINGS HAVE TO HOLD and none of them implies the others:
+//      a. the budget is in pixels, not pages;
+//      b. each slot is priced from the canvas it ACTUALLY allocated, so the
+//         number survives any change of scale;
+//      c. the only thing that may not be freed is what is ON SCREEN — if the
+//         evictor still protected the band, (a) and (b) would both be true and
+//         the budget would still be unreachable.
 // ═══════════════════════════════════════════════════════════════════════════
-let keep = null;
+ok(!fns.has('KEEP_RENDERED') && !/KEEP_RENDERED/.test(scriptText),
+  'the page-count window is gone, not left beside the new one');
+
+let budgetMp = null;
 walk(script, (n) => {
   if (n.type !== 'VariableDeclarator' || !n.id || n.id.type !== 'Identifier') return;
-  if (n.id.name !== 'KEEP_RENDERED') return;
-  if (n.init && n.init.type === 'NumericLiteral') keep = n.init.value;
+  if (n.id.name !== 'CANVAS_BUDGET_MP') return;
+  if (n.init && n.init.type === 'NumericLiteral') budgetMp = n.init.value;
 });
-ok(typeof keep === 'number', 'the page declares a KEEP_RENDERED budget');
-// Lower bound: at rootMargin 150% four or five sheets are near the viewport at
-// once, and evicting one of those would leave it blank until it left the
-// screen and came back. Upper bound: the budget is the memory ceiling.
-ok(typeof keep === 'number' && keep >= 5 && keep <= 12,
-  `KEEP_RENDERED (${keep}) covers the near band without holding the set`);
+ok(typeof budgetMp === 'number', 'the page declares a megapixel budget for resident canvases');
+// Lower bound: two sheets can be partly on screen at once and neither may be
+// freed, so a budget under that floor is one trim() can never reach. Upper
+// bound: renderer kills were reported at 250-350 MB and pdf.js holds the file
+// buffer on top of this.
+ok(typeof budgetMp === 'number' && budgetMp >= 32 && budgetMp <= 64,
+  `CANVAS_BUDGET_MP (${budgetMp} MP = ${budgetMp * 4} MB) clears the on-screen `
+  + 'floor without approaching the kill threshold');
+
+// (b) PRICED OFF THE CANVAS. A cost derived from a scale would be a page count
+// wearing a different name and wrong the moment the scale moved.
+const pricer = fns.get('canvasPixels');
+ok(!!pricer, 'a function prices a slot');
+let readsCanvasDims = false;
+if (pricer) {
+  let w = false;
+  let h = false;
+  walk(pricer.body, (n) => {
+    if (n.type !== 'MemberExpression' || n.computed) return;
+    if (n.property.type !== 'Identifier') return;
+    if (n.property.name === 'width') w = true;
+    if (n.property.name === 'height') h = true;
+  });
+  readsCanvasDims = w && h;
+}
+ok(readsCanvasDims,
+  'and it does so from the canvas\'s own width and height, not from an assumed scale');
+
+// (c) THE PROTECTION RULE. The evictor must consult something that means "on
+// screen" and must NOT be gated on band membership.
+const trimFn = fns.get('trim');
+ok(!!trimFn, 'the evictor still exists');
+const fromTrim = trimFn ? reachable(trimFn.body) : new Set();
+ok(fromTrim.has('onScreen'),
+  'the evictor asks whether a sheet is ON SCREEN before sparing it');
+ok(fromTrim.has('canvasPixels'),
+  'and prices every resident slot through the canvas pricer');
+let comparesBudget = false;
+if (trimFn) {
+  walk(trimFn.body, (n) => {
+    if (n.type === 'Identifier' && n.name === 'CANVAS_BUDGET_MP') comparesBudget = true;
+  });
+}
+ok(comparesBudget, 'reading the budget constant rather than a literal');
+let mentionsNear = false;
+if (trimFn) {
+  walk(trimFn.body, (n) => {
+    if (n.type === 'MemberExpression' && !n.computed
+      && n.property.type === 'Identifier' && n.property.name === 'near') mentionsNear = true;
+  });
+}
+ok(!mentionsNear,
+  'and band membership does NOT veto an eviction — that is the bug KEEP_RENDERED had');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 6. THE PAGE NOW OUTLIVES THE DOCUMENT, AND MUST NOT ACCUMULATE THEM.
