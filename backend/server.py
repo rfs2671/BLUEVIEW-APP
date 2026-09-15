@@ -3682,6 +3682,140 @@ def card_image_may_be_replaced(worker, new_image) -> bool:
     )
 
 
+# ── THE DATE FORMATS A CERTIFICATION MAY BE READ FROM ───────────────────────
+#
+# TWO. AND THE SECOND ONE IS NOT AN ARBITRARY ADDITION -- IT IS THE ONLY OTHER
+# SHAPE THAT CANNOT BE MISREAD.
+#
+# This used to be `%m/%d/%Y` and nothing else, as a nested `_parse_mdy` inside
+# build_worker_certifications. Measured on production 2026-09-15: of 75
+# certifications, 17 had their expiry REFUSED and kept raw -- and TWELVE of
+# those 17 were `'2027-10-03'` (x11) and `'2026-05-06'`, valid unambiguous
+# ISO-8601 dates. Twelve men were flagged for the parser's narrowness and not
+# for anything wrong with their card.
+CERT_DATE_FORMATS = ("%m/%d/%Y", "%Y-%m-%d")
+
+
+def parse_cert_date(s):
+    """Read an SST/OSHA card date. Returns a UTC datetime, or None.
+
+    THE RULE, AND IT IS LOAD-BEARING:
+
+        ACCEPT what is unambiguous BY CONSTRUCTION.
+        REFUSE what is unambiguous only BY CONVENTION.
+
+    `%Y-%m-%d` is on the accepting side because ISO 8601 is SELF-DESCRIBING: a
+    four-digit leading field cannot be a month or a day, so there is exactly
+    one reading of `2027-10-03` and no assumption is needed to get it.
+
+    ** DO NOT ADD `'10272029'`, `'062427'` OR `'05/35'` TO THIS PARSER. **
+    You will want to. They are all real production values, all currently sent
+    to a human, and `10272029` in particular reads as 27 October 2029 to any
+    person who glances at it. That reading is available ONLY to someone who
+    already assumes month-day-year; the eight digits themselves do not say
+    which field comes first, and under a different assumption they are 10
+    December 7202. `062427` is 06/24/2027 or 06/24/1927 -- and ONE OF THOSE IS
+    AN EXPIRED CARD. `05/35` is May 2035, or May the 35th (impossible) with the
+    year lost.
+
+    The reason those three are refused is NOT that they are hard to read. It is
+    that the parser would be GUESSING, and a guess about an expiry date on a
+    §3301 compliance record is the thing this product does not do. They belong
+    on the human correction path with `'illegible'`, which is the same judgement
+    made out loud. See docs/plans/expiry-unreadable-the-two-builds-2026-09-15.md.
+
+    test_iso_expiry_widening.TheAmbiguousShapesStayRefused pins all three, and
+    test_the_parser_accepts_exactly_two_formats pins the COUNT, so a third
+    format cannot arrive quietly.
+
+    THIS PARSER READS BOTH DATES ON THE CARD -- the expiry AND `issued`. See
+    the census in WideningAlsoWidensTheIssueDate: zero stored `issued` strings
+    on production are ISO, so no existing row gains an issue date here, but a
+    future scan can, and an issue date that parses gives the `exp <= issue`
+    sanity check and the SST_TEMPORARY ceiling something to act on.
+    """
+    for fmt in CERT_DATE_FORMATS:
+        try:
+            return datetime.strptime(str(s), fmt).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def evaluate_cert_expiry(raw_expiry, issue_dt, sst_type, now):
+    """THE EXPIRY GATE, AS ONE FUNCTION. Returns (stored_exp, suppressed, reason).
+
+    EXTRACTED SO THE BACKFILL CANNOT DRIFT FROM THE SCANNER. This block used to
+    live only inside build_worker_certifications, which meant a backfill that
+    wanted to recover a refused date had two choices: re-implement the rules,
+    or hand-assign `needs_review = False`. The second is what made PR #530 look
+    like a cure and got it parked. Now there is one gate and both callers go
+    through it, so a recovered date is judged by the same plausibility rules
+    that judged it the first time -- including the ones that can REFUSE it
+    again.
+
+    The rules, unchanged:
+      * a raw value the parser will not read  -> EXPIRY_UNPARSEABLE, suppressed
+      * an expiry at or before the issue date -> EXPIRY_IMPLAUSIBLE, suppressed
+      * an expiry past the class-aware ceiling -> EXPIRY_IMPLAUSIBLE, suppressed
+    A PAST expiry is NOT suppressed and never has been: an expired card is a
+    fact about the card, and `_sst_cert_state` reports it as 'expired'.
+    """
+    exp_dt = parse_cert_date(raw_expiry) if raw_expiry else None
+    if raw_expiry and exp_dt is None:
+        return None, True, "EXPIRY_UNPARSEABLE"
+    if exp_dt is not None:
+        # THE CEILING IS CLASS-AWARE, because a TEMPORARY card lives SIX
+        # MONTHS from issue, not five years. Against the flat 7-year ceiling
+        # a misread date four years out cleared silently, and
+        # `_sst_cert_state` would then read the card as valid for years past
+        # its life. Once colour has proposed SST_TEMPORARY the app knows the
+        # real bound, so it uses it.
+        #
+        # Applied ONLY when the class is known to be temporary. An unknown
+        # class keeps the loose ceiling: tightening it on a card we cannot
+        # identify would suppress real expiries on ordinary 5-year cards.
+        if sst_type == "SST_TEMPORARY":
+            _base = issue_dt or now
+            ceiling = _base + timedelta(days=31 * SST_TEMPORARY_VALID_MONTHS)
+        else:
+            ceiling = now.replace(year=now.year + SST_EXPIRY_MAX_YEARS)
+        if (issue_dt is not None and exp_dt <= issue_dt) or exp_dt > ceiling:
+            return None, True, "EXPIRY_IMPLAUSIBLE"
+    return exp_dt, False, None
+
+
+def derive_cert_review(name_ok, number_ok, class_ok, stored_exp,
+                       class_source, gate_reason, resolver_reason=None):
+    """THE REVIEW VERDICT, AS ONE FUNCTION. Returns (needs_review, reason,
+    extraction_completeness).
+
+    Extracted alongside `evaluate_cert_expiry` and for the same reason: the
+    backfill must RE-DERIVE the flag from the recovered date, never lower it by
+    hand. Sharing the expressions is the only way "the same gate" is a fact
+    rather than a claim in a commit message.
+    """
+    reason = gate_reason
+    # The resolver's own reason wins when the expiry gate had none: it is
+    # more specific (CLASS_CONFLICTED / CLASS_FROM_COLOR_UNCONFIRMED /
+    # CLASS_EXPIRED_SCHEME all say something CLASS_UNVERIFIED cannot).
+    if reason is None and resolver_reason:
+        reason = resolver_reason
+    if not class_ok and reason is None:
+        reason = "CLASS_UNVERIFIED"
+    completeness = round(
+        (int(name_ok) + int(number_ok) + int(class_ok) + int(bool(stored_exp))) / 4, 3
+    )
+    # A COLOUR-DERIVED CLASS ALWAYS NEEDS A HUMAN. Same scoping as
+    # _sst_cert_state and for the same reason: forcing review on `text_only`
+    # too would put every card in the queue until the client ships colour,
+    # which is how a review queue becomes something nobody reads.
+    needs_review = not (name_ok and number_ok and class_ok and bool(stored_exp))
+    if class_source in ("color_only", "conflict"):
+        needs_review = True
+    return needs_review, reason, completeness
+
+
 def build_worker_certifications(existing_certs, osha_data, osha_number, osha_card_image, now):
     """Given prior certs + ONE OCR scan, return (worker_certs, not_sst).
 
@@ -3735,12 +3869,6 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
     # None unless the scan was of a card that is not an SST card at all.
     not_sst = None
     od = osha_data or {}
-
-    def _parse_mdy(s):
-        try:
-            return datetime.strptime(str(s), "%m/%d/%Y").replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            return None
 
     # Resolve ONE class for this ONE image (Amendment B).
     card_type = str(od.get("card_type") or "").strip().upper()
@@ -3799,52 +3927,16 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         class_source = _res["class_source"]
         color_seen = _res["color"]
         class_ok = sst_type in SST_CLASS_TYPES and sst_type not in SST_DEAD_CLASSES
-        issue_dt = _parse_mdy(od.get("issued"))
-        exp_dt = _parse_mdy(raw_expiry) if raw_expiry else None
-
-        suppressed = False
-        reason = None
-        if raw_expiry and exp_dt is None:
-            suppressed = True
-            reason = "EXPIRY_UNPARSEABLE"
-        elif exp_dt is not None:
-            # THE CEILING IS CLASS-AWARE, because a TEMPORARY card lives SIX
-            # MONTHS from issue, not five years. Against the flat 7-year ceiling
-            # a misread date four years out cleared silently, and
-            # `_sst_cert_state` would then read the card as valid for years past
-            # its life. Once colour has proposed SST_TEMPORARY the app knows the
-            # real bound, so it uses it.
-            #
-            # Applied ONLY when the class is known to be temporary. An unknown
-            # class keeps the loose ceiling: tightening it on a card we cannot
-            # identify would suppress real expiries on ordinary 5-year cards.
-            if sst_type == "SST_TEMPORARY":
-                _base = issue_dt or now
-                ceiling = _base + timedelta(days=31 * SST_TEMPORARY_VALID_MONTHS)
-            else:
-                ceiling = now.replace(year=now.year + SST_EXPIRY_MAX_YEARS)
-            if (issue_dt is not None and exp_dt <= issue_dt) or exp_dt > ceiling:
-                suppressed = True
-                reason = "EXPIRY_IMPLAUSIBLE"
-        stored_exp = None if suppressed else exp_dt
-        # The resolver's own reason wins when the expiry gate had none: it is
-        # more specific (CLASS_CONFLICTED / CLASS_FROM_COLOR_UNCONFIRMED /
-        # CLASS_EXPIRED_SCHEME all say something CLASS_UNVERIFIED cannot).
-        if reason is None and _res["review_reason"]:
-            reason = _res["review_reason"]
-        if not class_ok and reason is None:
-            reason = "CLASS_UNVERIFIED"
-
-        completeness = round(
-            (int(name_ok) + int(number_ok) + int(class_ok) + int(bool(stored_exp))) / 4, 3
-        )
-        # A COLOUR-DERIVED CLASS ALWAYS NEEDS A HUMAN. Same scoping as
-        # _sst_cert_state and for the same reason: forcing review on `text_only`
-        # too would put every card in the queue until the client ships colour,
-        # which is how a review queue becomes something nobody reads.
-        needs_review = not (name_ok and number_ok and class_ok and bool(stored_exp))
-        if class_source in ("color_only", "conflict"):
-            needs_review = True
+        issue_dt = parse_cert_date(od.get("issued"))
+        # THE EXPIRY GATE AND THE REVIEW VERDICT NOW LIVE ABOVE, at module
+        # level, so backend/scripts/backfill_iso_expiry.py can push a recovered
+        # date back through the SAME rules instead of re-implementing them or
+        # hand-lowering the flag. The rules themselves did not change here.
+        stored_exp, suppressed, reason = evaluate_cert_expiry(
+            raw_expiry, issue_dt, sst_type, now)
+        needs_review, reason, completeness = derive_cert_review(
+            name_ok, number_ok, class_ok, stored_exp, class_source,
+            reason, _res["review_reason"])
         card_no = osha_number or None
 
         # Prefer an exact card-number match (any state — a verified match is
