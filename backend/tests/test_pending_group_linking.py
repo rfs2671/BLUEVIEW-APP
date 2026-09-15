@@ -377,16 +377,24 @@ class RelinkingClearsTheConversation(unittest.TestCase):
 
     def test_moving_to_a_different_project_deletes_the_draft(self):
         db = self._db("proj_b")
+        # `kind` is part of the row now — see
+        # test_conversation_state_holds_more_than_one_row.py for why a bare
+        # group_id filter stopped being unambiguous.
         db["whatsapp_conversation_state"].rows.append(
-            {"group_id": "g1@g.us", "awaiting": "checklist_assignment"})
+            {"kind": "checklist", "group_id": "g1@g.us",
+             "awaiting": "checklist_assignment"})
         _call(db, "post", "/api/whatsapp/pending-groups/g1@g.us/link",
               json={"project_id": "proj_a"})
         self.assertEqual(db["whatsapp_conversation_state"].rows, [])
 
     def test_relinking_to_the_same_project_leaves_it_alone(self):
         db = self._db("proj_a")
+        # `kind` is part of the row now — see
+        # test_conversation_state_holds_more_than_one_row.py for why a bare
+        # group_id filter stopped being unambiguous.
         db["whatsapp_conversation_state"].rows.append(
-            {"group_id": "g1@g.us", "awaiting": "checklist_assignment"})
+            {"kind": "checklist", "group_id": "g1@g.us",
+             "awaiting": "checklist_assignment"})
         _call(db, "post", "/api/whatsapp/pending-groups/g1@g.us/link",
               json={"project_id": "proj_a"})
         self.assertEqual(len(db["whatsapp_conversation_state"].rows), 1)
