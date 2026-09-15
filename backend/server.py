@@ -21616,6 +21616,13 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
 
     return {"message": "Dropbox folder linked", "folder_path": norm}
 
+def _public_index_status(status: Optional[dict]) -> Optional[dict]:
+    """What a file's index status may show a user: the verdict and why."""
+    if not isinstance(status, dict) or not status.get("state"):
+        return None
+    return {k: status.get(k) for k in ("state", "reason", "disciplines", "covered_by", "at")}
+
+
 @api_router.get("/projects/{project_id}/dropbox-files")
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
     """Get files from project's linked Dropbox folder (R2-backed with Dropbox fallback).
@@ -21693,6 +21700,8 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
                 "r2_url": proxy_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
                 "source": rec.get("source", "dropbox_sync"),
+                # "Combined set — skipped" in Plans & Files, with its reason.
+                "index_status": _public_index_status(rec.get("index_status")),
             })
         return files
 
@@ -39793,7 +39802,93 @@ async def _auto_aggregate_project_model(project_id: str) -> None:
         )
 
 
-async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
+# ── A COMBINED SET IS NOT INDEXED ─────────────────────────────────────────
+#
+# See plan_text.combined_set_decision. The status is stored on the file so
+# Plans & Files can say why a PDF has no index, instead of looking broken.
+COMBINED_SET_SKIPPED = "skipped_combined_set"
+# reindex-all queues every file at once, so a combined set can reach this gate
+# before the discipline sets it duplicates have any rows. It then waits for
+# them — outside the indexing semaphore — and decides once they exist.
+COMBINED_DEFER_SECONDS = 120
+COMBINED_MAX_DEFERRALS = 30
+
+
+async def _discipline_sets(project_id: str, file_id: str) -> Tuple[Dict[str, List[str]], bool]:
+    """({file name: sheet prefixes}, other PDFs still unindexed).
+
+    A discipline set is another live PDF whose index rows mostly carry a real
+    sheet number."""
+    files = await db.project_files.find(
+        {"project_id": project_id, "is_deleted": {"$ne": True},
+         "index_status.state": {"$ne": COMBINED_SET_SKIPPED},
+         "name": {"$regex": r"\.pdf$", "$options": "i"}},
+        {"_id": 1, "name": 1},
+    ).to_list(2000)
+    others = {str(f["_id"]): (f.get("name") or str(f["_id"])) for f in files
+              if str(f["_id"]) != file_id}
+    if not others:
+        return {}, False
+    rows = await db.document_page_index.find(
+        {"project_id": project_id, "file_id": {"$in": list(others)}},
+        {"file_id": 1, "sheet_number": 1},
+    ).to_list(50000)
+    by_file: Dict[str, list] = {}
+    for r in rows:
+        by_file.setdefault(r.get("file_id"), []).append(r.get("sheet_number"))
+    sets: Dict[str, List[str]] = {}
+    pending = False
+    for fid, name in others.items():
+        numbers = by_file.get(fid)
+        if not numbers:
+            pending = True
+            continue
+        ids = [str(n).upper() for n in numbers
+               if n and plan_text.SHEET_ID_RE.fullmatch(str(n).upper())]
+        if ids and len(ids) >= 0.5 * len(numbers):
+            sets[name] = sorted({i.split("-")[0] for i in ids})
+    return sets, pending
+
+
+def _defer_index(project_id: str, company_id: str, file_record: dict,
+                 deferral: int, profile: dict) -> None:
+    async def _later():
+        await asyncio.sleep(COMBINED_DEFER_SECONDS)
+        await _index_pdf_file(project_id, company_id, file_record,
+                              _deferral=deferral, _profile=profile)
+    asyncio.create_task(_later())
+
+
+async def _combined_set_gate(project_id: str, company_id: str, file_record: dict,
+                             file_id: str, profile: dict, deferral: int) -> bool:
+    """True: index this file. False: it was skipped, or deferred."""
+    if not plan_text.looks_combined(profile):
+        return True
+    try:
+        sets, pending = await _discipline_sets(project_id, file_id)
+    except Exception as e:
+        logger.warning(f"combined-set check failed for {file_id}: {e!r} — indexing it")
+        return True
+    decision = plan_text.combined_set_decision(profile, sets)
+    name = file_record.get("name") or file_id
+    if decision:
+        status = dict(decision, state=COMBINED_SET_SKIPPED, at=datetime.now(timezone.utc))
+        await db.project_files.update_one(
+            {"_id": to_query_id(file_id), "project_id": project_id},
+            {"$set": {"index_status": status}},
+        )
+        logger.info(f"Plan index: {name} skipped as a combined set — {decision['reason']}")
+        return False
+    if pending and deferral < COMBINED_MAX_DEFERRALS:
+        logger.info(f"Plan index: {name} looks like a combined set; waiting for the "
+                    f"project's other PDFs to index (check {deferral + 1}/{COMBINED_MAX_DEFERRALS})")
+        _defer_index(project_id, company_id, file_record, deferral + 1, profile)
+        return False
+    return True
+
+
+async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
+                          _deferral: int = 0, _profile: Optional[dict] = None):
     """Download a PDF from R2 and index each page into document_page_index.
 
     Quiet no-op when QWEN_API_KEY isn't set (we still can't run text-only
@@ -39813,6 +39908,14 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
             f"{file_record.get('name')}"
         )
         return
+
+    # A deferred combined-set check re-runs here, before any download, and
+    # without taking an indexing slot while it waits.
+    if _profile is not None:
+        _fid = str(file_record.get("_id") or file_record.get("id") or "")
+        if not await _combined_set_gate(project_id, company_id, file_record, _fid,
+                                        _profile, _deferral):
+            return
 
     async with _PDF_INDEX_FILE_SEMAPHORE:
         file_id = str(file_record.get("_id") or file_record.get("id") or "")
@@ -39888,6 +39991,19 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
         boilerplate = plan_extract.boilerplate_lines(texts)
         tag_vocab = plan_text.tag_vocabulary(layouts) if layouts else plan_text.SEED_TAGS
         drawing_index = plan_text.drawing_list_index(layouts) if layouts else {}
+
+        # Before any page goes to the vision model.
+        if layouts and _profile is None:
+            profile = plan_text.file_sheet_profile(layouts)
+            if not await _combined_set_gate(project_id, company_id, file_record, file_id,
+                                            profile, _deferral):
+                return
+        if layouts and file_record.get("index_status"):
+            # Indexed after all — a stale "skipped" must not stay on screen.
+            await db.project_files.update_one(
+                {"_id": to_query_id(file_id), "project_id": project_id},
+                {"$unset": {"index_status": ""}},
+            )
 
         # Render page-by-page (bounded memory) and fire Qwen in parallel with
         # a small semaphore so peak concurrency is 3 per file.
@@ -40255,7 +40371,7 @@ async def _live_plan_file_ids(project_id: str) -> list:
     """
     try:
         rows = await db.project_files.find(
-            {"project_id": project_id, "is_deleted": {"$ne": True}},
+            {"project_id": project_id, "is_deleted": {"$ne": True}, "index_status.state": {"$ne": COMBINED_SET_SKIPPED}},
             {"_id": 1},
         ).to_list(2000)
         return [str(r["_id"]) for r in rows]
@@ -46491,6 +46607,7 @@ async def get_document_index_status(
             "total_pages": total_pages,
             "indexed_pages": indexed,
             "last_indexed_at": (most_recent or {}).get("indexed_at"),
+            "index_status": _public_index_status(fr.get("index_status")),
         })
 
     return {

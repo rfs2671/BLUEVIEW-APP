@@ -1322,6 +1322,18 @@ export default function ProjectFilesScreen() {
                           {isColliding(file, collisions) && (
                             <Text style={s.collisionNote}>{COLLISION_NOTE}</Text>
                           )}
+                          {/* WHY THIS PDF HAS NO PLAN INDEX. A whole-project
+                              re-issue whose pages mostly carry no sheet number
+                              is not sent to the drawing model: its sheets are
+                              already indexed from the discipline sets. Said
+                              here so a missing index reads as a decision. */}
+                          {file.index_status?.state === 'skipped_combined_set' && (
+                            <Text style={s.indexSkippedNote} numberOfLines={3}>
+                              <Text style={s.indexSkippedLabel}>Combined set — skipped. </Text>
+                              {file.index_status.reason
+                                || 'Its sheets are already indexed from the discipline sets.'}
+                            </Text>
+                          )}
                         </View>
 
                         {/* Actions */}
@@ -1618,6 +1630,15 @@ function buildStyles(colors, isDark) {
     lineHeight: 16,
     color: semantic.neutral,
     marginTop: 4,
+  },
+  indexSkippedNote: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: semantic.neutral,
+    marginTop: 4,
+  },
+  indexSkippedLabel: {
+    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,

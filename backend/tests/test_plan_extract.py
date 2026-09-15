@@ -565,6 +565,55 @@ class AVectorPageMakesOneCall(unittest.TestCase):
                                           drawing_index={"S-001.00": 2}))
         self.assertEqual(out["fields"]["revision"], "4")
 
+    def _thin_plan(self):
+        """P-100.00's shape: room labels only, 1,393 characters on 36x24."""
+        blocks = [{"bbox": [100, 100, 200, 110], "lines": ["LIVING AREA"], "text": "LIVING AREA"},
+                  {"bbox": [2400, 1600, 2550, 1640], "lines": ["P-100.00"], "text": "P-100.00"}]
+        return {"page_number": 2, "width": 2592, "height": 1728, "fractions_rebuilt": 0,
+                "fractions_unverified": [], "tables": [], "blocks": blocks,
+                "text": "LIVING AREA\n" + "KITCHENETTE\n" * 110 + "P-100.00"}
+
+    def test_a_thin_plan_with_no_notes_gets_the_notes_call(self):
+        prompts = []
+
+        async def vlm(image_b64, prompt, max_tokens):
+            prompts.append(prompt)
+            if '{"notes": [' in prompt:
+                return (json.dumps({"notes": [{"number": "1", "text": "COLD & HOT WATER SHALL BE COPPER TYPE L."}]}), "stop")
+            return (json.dumps({"sheet_number": "P-100.00", "sheet_type": "plan"}), "stop")
+
+        layout = self._thin_plan()
+        self.assertLess(pe.text_density(layout), pe.NOTES_FALLBACK_MAX_DENSITY)
+        out = _run(pe.extract_vector_page(image_b64="x", layout=layout, vlm_call=vlm))
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(out["vlm_calls"], 2)
+        self.assertEqual(out["fields"]["notes_source"], "vision")
+        self.assertEqual(out["fields"]["notes"][0]["text"], "COLD & HOT WATER SHALL BE COPPER TYPE L.")
+        self.assertIn("notes_found:1", out["flags"]["notes_fallback"])
+
+    def test_no_fallback_for_a_sheet_that_is_not_a_plan(self):
+        calls = []
+
+        async def vlm(image_b64, prompt, max_tokens):
+            calls.append(prompt)
+            return (json.dumps({"sheet_number": "P-100.00", "sheet_type": "elevation"}), "stop")
+
+        out = _run(pe.extract_vector_page(image_b64="x", layout=self._thin_plan(), vlm_call=vlm))
+        self.assertEqual((len(calls), out["vlm_calls"]), (1, 1))
+        self.assertNotIn("notes_fallback", out["flags"])
+
+    def test_no_fallback_when_the_text_has_notes_or_enough_text(self):
+        async def vlm(image_b64, prompt, max_tokens):
+            return (json.dumps({"sheet_number": "S-001.00", "sheet_type": "plan"}), "stop")
+
+        out = _run(pe.extract_vector_page(image_b64="x", layout=self.LAYOUT, vlm_call=vlm))
+        self.assertEqual(out["vlm_calls"], 1, "notes came from the text layer")
+        self.assertEqual(out["fields"]["notes_source"], "text")
+        dense = dict(self._thin_plan(), text="WORD " * 2000)
+        self.assertGreater(pe.text_density(dense), pe.NOTES_FALLBACK_MAX_DENSITY)
+        out = _run(pe.extract_vector_page(image_b64="x", layout=dense, vlm_call=vlm))
+        self.assertEqual(out["vlm_calls"], 1)
+
     def test_a_failed_call_still_yields_the_text(self):
         async def vlm(*a):
             raise TimeoutError()

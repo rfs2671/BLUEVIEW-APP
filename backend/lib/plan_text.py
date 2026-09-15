@@ -767,7 +767,96 @@ def fields_from_layout(layout: Dict[str, Any], boilerplate: FrozenSet[str] = fro
     }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# A combined set: the whole project re-issued as one PDF
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 588 Thomas S Boyland St carries "588 THOMAS BOYLAND ST SET_UPDATED.pdf" —
+# 44 pages of sheets that are also uploaded as their own discipline sets, most
+# with no sheet number in the title block. Indexed, it pays for every sheet
+# twice, and with no sheet numbers the supersession pass cannot tell its pages
+# are the same sheets, so a question can be answered from the duplicate.
+
+COMBINED_MAX_TITLE_ID_SHARE = 0.5
+
+# The prefixes a sheet id on a NYC set actually uses. Anything else that looks
+# like an id in the text — 'NY-112', 'FO-202', 'AJ-208' — is a code, a detail
+# reference or a UL system, and must not make a file look like a discipline
+# nobody else covers.
+DISCIPLINE_PREFIXES = frozenset({
+    "A", "AR", "S", "ST", "P", "PL", "M", "MH", "ME", "E", "EL", "FA", "FP", "SP",
+    "SSP", "G", "GN", "T", "Z", "C", "L", "RCP", "D", "EN", "DM", "LS",
+})
+
+
+def _prefix(sheet_id: str) -> str:
+    return sheet_id.split("-")[0].upper()
+
+
+def file_sheet_profile(layouts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
+    """How much of a file carries its own sheet numbers, and which disciplines
+    its text shows."""
+    vector = title_pages = 0
+    title_prefixes: set = set()
+    text_prefixes: set = set()
+    for L in layouts:
+        if not L or len((L.get("text") or "").strip()) < 100:
+            continue
+        vector += 1
+        tids = sheet_ids(title_region(L))
+        if tids:
+            title_pages += 1
+            title_prefixes |= {_prefix(i) for i in tids}
+        text_prefixes |= {_prefix(i) for i in sheet_ids(L.get("text") or "")}
+    return {
+        "vector_pages": vector,
+        "title_id_pages": title_pages,
+        "title_prefixes": sorted(p for p in title_prefixes if p in DISCIPLINE_PREFIXES),
+        "text_prefixes": sorted(p for p in text_prefixes if p in DISCIPLINE_PREFIXES),
+    }
+
+
+def looks_combined(profile: Dict[str, Any]) -> bool:
+    """Most of its pages have no sheet number in the title block."""
+    vp = int(profile.get("vector_pages") or 0)
+    return vp > 0 and int(profile.get("title_id_pages") or 0) / vp < COMBINED_MAX_TITLE_ID_SHARE
+
+
+def combined_set_decision(profile: Dict[str, Any],
+                          discipline_sets: Dict[str, Iterable[str]]) -> Optional[Dict[str, Any]]:
+    """The skip, with its reason — or None, and the file is indexed.
+
+    Skipped only when BOTH hold: most pages lack a title-block sheet number,
+    and every discipline the file shows is already covered by the project's
+    own discipline sets. A file whose disciplines cannot be read at all is
+    indexed: nothing says it is a duplicate."""
+    if not looks_combined(profile):
+        return None
+    disciplines = set(profile.get("text_prefixes") or [])
+    if not disciplines:
+        return None
+    covering = {name: {p.upper() for p in prefixes}
+                for name, prefixes in (discipline_sets or {}).items()}
+    covering = {name: ps for name, ps in covering.items() if ps & disciplines}
+    covered = set().union(*covering.values()) if covering else set()
+    if not disciplines <= covered:
+        return None
+    vp = int(profile["vector_pages"])
+    missing = vp - int(profile["title_id_pages"])
+    return {
+        "reason": (f"{missing} of {vp} pages have no sheet number in the title block, and "
+                   f"every discipline it shows ({', '.join(sorted(disciplines))}) is already "
+                   f"indexed from its own set."),
+        "disciplines": sorted(disciplines),
+        "covered_by": sorted(covering),
+        "title_id_pages": int(profile["title_id_pages"]),
+        "vector_pages": vp,
+    }
+
+
 __all__ = [
+    "file_sheet_profile", "looks_combined", "combined_set_decision", "DISCIPLINE_PREFIXES",
+    "COMBINED_MAX_TITLE_ID_SHARE",
     "normalize_glyphs", "split_stacked_fraction", "rebuild_line", "layout_from_dict",
     "page_layouts", "page_dict_from_chars", "drawing_list_index",
     "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",

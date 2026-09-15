@@ -612,7 +612,9 @@ export default function WhatsAppGroupsScreen() {
                                     {f.file_name}
                                   </Text>
                                   <Text style={{ fontSize: 11, color: colors.text.muted, marginTop: 2 }}>
-                                    {f.indexed_pages || 0} / {f.total_pages || 0} pages indexed
+                                    {f.index_status?.state === 'skipped_combined_set'
+                                      ? 'Combined set — skipped'
+                                      : `${f.indexed_pages || 0} / ${f.total_pages || 0} pages indexed`}
                                   </Text>
                                 </View>
                                 <Pressable

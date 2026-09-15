@@ -34,8 +34,17 @@ def _run(coro):
 _MISSING = object()
 
 
+def _get_path(doc, key):
+    cur = doc
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return _MISSING
+        cur = cur[part]
+    return cur
+
+
 def _match_one(doc, key, cond):
-    val = doc.get(key, _MISSING)
+    val = _get_path(doc, key)
     if isinstance(cond, dict) and any(k.startswith("$") for k in cond):
         for op, arg in cond.items():
             v = None if val is _MISSING else val
@@ -47,6 +56,11 @@ def _match_one(doc, key, cond):
                 return False
             if op == "$gte" and not (v is not None and v >= arg):
                 return False
+            if op == "$regex":
+                import re as _re
+                flags = _re.I if "i" in (cond.get("$options") or "") else 0
+                if not (isinstance(v, str) and _re.search(arg, v, flags)):
+                    return False
         return True
     return (None if val is _MISSING else val) == cond
 
@@ -95,6 +109,8 @@ class _Coll:
         for r in self.rows:
             if _matches(r, q):
                 r.update(u.get("$set", {}))
+                for k in u.get("$unset", {}):
+                    r.pop(k, None)
                 return _Res(1)
         if upsert:
             row = dict(q)
@@ -471,6 +487,67 @@ class AVectorPageIsOneCallAndItsSpecPageIsStillChunked(unittest.TestCase):
         self.assertEqual(row["sheet_number"], "S-001.00")
         self.assertTrue(row["page_complete"])
         self.assertTrue(db.document_page_chunks.rows)
+
+
+class ACombinedSetIsNotSentToVision(unittest.TestCase):
+
+    PROFILE = {"vector_pages": 44, "title_id_pages": 6,
+               "title_prefixes": ["A"], "text_prefixes": ["A"]}
+
+    def setUp(self):
+        self.db = _Db()
+        p = mock.patch.object(server, "db", self.db)
+        p.start()
+        self.addCleanup(p.stop)
+        self.db.project_files.rows.extend([
+            {"_id": "combo", "project_id": "p1", "name": "588 THOMAS BOYLAND ST SET_UPDATED.pdf"},
+            {"_id": "ar", "project_id": "p1", "name": "AR - 3.28.25.pdf"},
+        ])
+
+    def _gate(self, deferral=0):
+        return _run(server._combined_set_gate(
+            "p1", "c1", {"_id": "combo", "name": "588 THOMAS BOYLAND ST SET_UPDATED.pdf"},
+            "combo", self.PROFILE, deferral))
+
+    def test_covered_by_an_indexed_discipline_set_it_is_skipped_and_says_why(self):
+        self.db.document_page_index.rows.extend([
+            {"project_id": "p1", "file_id": "ar", "sheet_number": "A-100.00"},
+            {"project_id": "p1", "file_id": "ar", "sheet_number": "A-101.00"},
+        ])
+        self.assertFalse(self._gate())
+        status = self.db.project_files.rows[0]["index_status"]
+        self.assertEqual(status["state"], "skipped_combined_set")
+        self.assertEqual(status["covered_by"], ["AR - 3.28.25.pdf"])
+        self.assertIn("no sheet number in the title block", status["reason"])
+
+    def test_it_waits_while_the_discipline_sets_are_still_unindexed(self):
+        deferred = []
+        with mock.patch.object(server, "_defer_index", lambda *a: deferred.append(a)):
+            self.assertFalse(self._gate())
+        self.assertEqual(len(deferred), 1)
+        self.assertNotIn("index_status", self.db.project_files.rows[0])
+
+    def test_after_the_last_wait_it_is_indexed(self):
+        with mock.patch.object(server, "_defer_index", lambda *a: self.fail("deferred again")):
+            self.assertTrue(self._gate(deferral=server.COMBINED_MAX_DEFERRALS))
+
+    def test_a_skipped_file_is_not_live_for_retrieval(self):
+        self.db.project_files.rows[0]["index_status"] = {"state": "skipped_combined_set"}
+        self.assertEqual(_run(server._live_plan_file_ids("p1")), ["ar"])
+
+    def test_both_file_listings_carry_the_status(self):
+        for fn in (server.get_project_dropbox_files, server.get_document_index_status):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("_public_index_status(", inspect.getsource(fn))
+        self.assertEqual(
+            server._public_index_status({"state": "skipped_combined_set", "reason": "r",
+                                         "title_id_pages": 6, "internal": 1}),
+            {"state": "skipped_combined_set", "reason": "r", "disciplines": None,
+             "covered_by": None, "at": None})
+
+    def test_the_gate_runs_before_any_page_is_indexed(self):
+        src = inspect.getsource(server._index_pdf_file)
+        self.assertLess(src.index("_combined_set_gate("), src.index("_process_page(n)"))
 
 
 class TheSkipThresholdDidNotMove(unittest.TestCase):

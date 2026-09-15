@@ -316,6 +316,43 @@ class LinesFollowTheDrawingOrder(unittest.TestCase):
         self.assertEqual(len(page["blocks"]), 2)
 
 
+class ACombinedSetIsRecognised(unittest.TestCase):
+    """The shape measured on 588 THOMAS BOYLAND ST SET_UPDATED.pdf: 44 vector
+    pages, 6 with a title-block sheet number, text showing A- sheets (and an
+    'OC-' code that is not a discipline)."""
+
+    PROFILE = {"vector_pages": 44, "title_id_pages": 6,
+               "title_prefixes": ["A"], "text_prefixes": ["A"]}
+
+    def test_the_profile_ignores_codes_that_look_like_sheet_ids(self):
+        page = {"width": 2592, "height": 1728, "text": "x" * 120 + "\nOC-202 NY-112 A-300",
+                # Mid-sheet, inside no edge strip: this is body text, not a title block.
+                "blocks": [B("x" * 120 + "\nOC-202 NY-112 A-300", (800, 800, 1400, 900))]}
+        p = pt.file_sheet_profile([page, None])
+        self.assertEqual((p["vector_pages"], p["title_id_pages"]), (1, 0))
+        self.assertEqual(p["text_prefixes"], ["A"])
+
+    def test_covered_by_the_discipline_sets_is_skipped_with_a_reason(self):
+        d = pt.combined_set_decision(self.PROFILE, {"AR - 3.28.25.pdf": ["A", "GN", "RCP", "T", "Z"],
+                                                    "PL - 6.29.26.pdf": ["P"]})
+        self.assertEqual(d["covered_by"], ["AR - 3.28.25.pdf"])
+        self.assertEqual(d["disciplines"], ["A"])
+        self.assertIn("38 of 44 pages have no sheet number in the title block", d["reason"])
+
+    def test_a_discipline_nobody_else_covers_is_indexed(self):
+        profile = dict(self.PROFILE, text_prefixes=["A", "E"])
+        self.assertIsNone(pt.combined_set_decision(profile, {"AR.pdf": ["A"]}))
+
+    def test_a_file_whose_pages_carry_sheet_numbers_is_not_a_combined_set(self):
+        profile = dict(self.PROFILE, title_id_pages=30)
+        self.assertFalse(pt.looks_combined(profile))
+        self.assertIsNone(pt.combined_set_decision(profile, {"AR.pdf": ["A"]}))
+
+    def test_a_file_with_no_readable_disciplines_is_indexed(self):
+        profile = dict(self.PROFILE, text_prefixes=[])
+        self.assertIsNone(pt.combined_set_decision(profile, {"AR.pdf": ["A"]}))
+
+
 class ThePdfLibraryIsImportedInOnePlace(unittest.TestCase):
 
     def test_only_page_layouts_imports_it(self):

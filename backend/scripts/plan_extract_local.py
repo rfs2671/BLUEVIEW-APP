@@ -220,6 +220,23 @@ async def main_async(args) -> int:
         if selected:
             plan.append((pdf, pdf_bytes, fast, selected))
 
+    # THE COMBINED-SET RULE, as production applies it. Production reads the
+    # discipline sets' sheet numbers from their index rows; this reads the
+    # title-block ids of the other PDFs passed in. Same decision function.
+    profiles = {pdf: pt.file_sheet_profile(fast) for pdf, _b, fast, _s in plan}
+    sets = {Path(pdf).name: p["title_prefixes"] for pdf, p in profiles.items()
+            if not pt.looks_combined(p)}
+    kept = []
+    for item in plan:
+        name = Path(item[0]).name
+        decision = pt.combined_set_decision(
+            profiles[item[0]], {n: p for n, p in sets.items() if n != name})
+        if decision:
+            print(f"  SKIPPED {name}: combined set — {decision['reason']}")
+            continue
+        kept.append(item)
+    plan = kept
+
     n_pages = sum(len(p[3]) for p in plan)
     vector = sum(1 for _pdf, _b, fast, sel in plan for p in sel
                  if pe.classify_text_source(fast[p - 1]["text"]) == "vector")
@@ -305,6 +322,8 @@ async def main_async(args) -> int:
                 path = folder / f"{safe}__p{page_num:03d}.json"
                 path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
                 written.append(str(path))
+                if "notes_fallback" in result["flags"]:
+                    counter["fallback"] = counter.get("fallback", 0) + 1
                 bad = {k: v for k, v in result["flags"].items() if v}
                 print(f"  p{page_num:>3} {sheet:<14} {source:<6} calls={record['vlm_calls']} "
                       f"{record['seconds']:>5}s flags={bad or 'none'}", flush=True)
@@ -314,7 +333,8 @@ async def main_async(args) -> int:
     if args.ask:
         written.append(_answers(args.ask, all_chunks, model, out_root))
 
-    print(f"\nvision calls made: {counter['calls']}")
+    print(f"\nvision calls made: {counter['calls']} "
+          f"(notes fallback on {counter.get('fallback', 0)} page(s))")
     print(f"written: {len(written)} files under {out_root}")
     return 0
 
