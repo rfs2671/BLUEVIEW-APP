@@ -305,6 +305,12 @@ function bootRender(opts = {}) {
     dpr = 2,
     zoom = 1,
     pageH = 150,
+    // THE DEVICE'S REAL CANVAS DIMENSION LIMIT. The operator's Pixel 10 Pro XL
+    // passes a 16384 edge — the probe's ladder measured it — and the viewer is
+    // no longer allowed to assume that of every device. A canvas asked for
+    // more than this refuses the assignment, which is the signal the real
+    // thing gives and the one `measureCanvasEdge()` reads.
+    deviceMaxEdge = 16384,
   } = opts;
   const PAGE_H = pageH;
 
@@ -337,17 +343,32 @@ function bootRender(opts = {}) {
     const el = {
       tag,
       style: {}, textContent: '', innerHTML: '', className: '',
-      parentNode: null, __slot: null, width: 0, height: 0,
+      parentNode: null, __slot: null,
       appendChild() {}, removeChild() {},
       getBoundingClientRect() {
         return (typeof el.__i === 'number') ? rectFor(el.__i) : { top: 0, bottom: PAGE_H };
       },
-      getContext: () => ({
+      getContext: () => (el.__w > 0 && el.__h > 0 ? {
         fillStyle: '', fillRect() {},
         getImageData: () => ({ data: [0, 0, 0, 255] }),
-      }),
+      } : null),
       addEventListener(t, f) { listeners[`el:${t}`] = f; },
     };
+    // A CANVAS THAT CAN REFUSE. A real one does not throw when asked for an
+    // edge past the device limit — it silently keeps the old value, which is
+    // exactly why `measureCanvasEdge()` has to read the property BACK rather
+    // than trust the assignment. Modelling the refusal is the only way the
+    // unknown-capability branch can be exercised at all.
+    el.__w = 0;
+    el.__h = 0;
+    Object.defineProperty(el, 'width', {
+      get() { return el.__w; },
+      set(v) { if (tag !== 'canvas' || v <= deviceMaxEdge) el.__w = v; },
+    });
+    Object.defineProperty(el, 'height', {
+      get() { return el.__h; },
+      set(v) { if (tag !== 'canvas' || v <= deviceMaxEdge) el.__h = v; },
+    });
     if (tag === 'div') { el.__i = divs; divs += 1; }
     if (tag === 'canvas') canvases.push(el);
     return el;
@@ -365,26 +386,31 @@ function bootRender(opts = {}) {
       render(o) {
         inFlight += 1;
         if (inFlight > maxInFlight) maxInFlight = inFlight;
+        const scale = (o && o.viewport && o.viewport.__scale) || 0;
         const rec = {
           page: n,
           order: renders.length,
-          canvasW: o && o.canvasContext ? 0 : 0,
+          scale,
+          // THE TIER, DERIVED FROM THE CANVAS RATHER THAN ANNOUNCED. The page
+          // could tell the harness which tier it thinks it is rendering; the
+          // pixel count is what the reader and the byte budget actually get.
+          mp: (ptW * scale * ptH * scale) / 1e6,
           inFlightAtStart: inFlight,
+          cancelled: false,
         };
         renders.push(rec);
         if (hooks.onRenderStart) hooks.onRenderStart(rec);
-        let cancelled = false;
         const promise = new Promise((resolve, reject) => {
           schedule(5, () => {
             inFlight -= 1;
-            if (cancelled) {
+            if (rec.cancelled) {
               const e = new Error('cancelled');
               e.name = 'RenderingCancelledException';
               reject(e);
             } else resolve();
           });
         });
-        return { promise, cancel() { cancelled = true; } };
+        return { promise, cancel() { rec.cancelled = true; } };
       },
     };
     return page;
@@ -515,17 +541,31 @@ function bootRender(opts = {}) {
     }
   }
 
+  // A LIVE canvas is one that still holds its backing store. `releaseSlot`
+  // zeroes width and height, which is the only step that actually returns the
+  // megabytes, so a zeroed element is a freed one.
+  const live = () => canvases.filter((c) => c.width > 0 && c.height > 0);
+  // SHARP vs DRAFT, told apart by size and not by a label. A draft is ~0.5 MP
+  // (2 MB) and a sharp sheet ~16 MP (64 MB); anything over 8 MP is
+  // unambiguously the expensive tier whatever the sheet's aspect.
+  const SHARP_MIN_PX = 8e6;
+  const sharpLive = () => live().filter((c) => c.width * c.height >= SHARP_MIN_PX);
+
   return {
     posted, listeners, renders, canvases, sandbox, pump, deliverIO, hooks,
     setScroll(v) { scrollTop = v; },
     get scrollTop() { return scrollTop; },
     get threw() { return threw; },
     get maxInFlight() { return maxInFlight; },
-    livePages() { return canvases.filter((c) => c.width > 0 && c.height > 0).length; },
+    livePages() { return live().length; },
+    sharpPages() { return sharpLive().length; },
+    largestEdge() { return live().reduce((a, c) => Math.max(a, c.width, c.height), 0); },
+    largestCanvas() {
+      return live().reduce((a, c) => ((c.width * c.height) > (a.width * a.height) ? c : a),
+        { width: 0, height: 0 });
+    },
     canvasBytes() {
-      return canvases
-        .filter((c) => c.width > 0 && c.height > 0)
-        .reduce((a, c) => a + (c.width * c.height * 4), 0);
+      return live().reduce((a, c) => a + (c.width * c.height * 4), 0);
     },
   };
 }
@@ -648,12 +688,23 @@ async function main() {
       `one at a time across the whole document (peak ${s.maxInFlight})`);
   }
 
-  // ── AND THE SAME BUDGET HOLDS WHEN THE PAGES GET BIG ───────────────────
-  // A reader who has pinched in gets 12.58 MP sheets — about 50 MB each. The
-  // budget must derive the page count from the ACTUAL canvas at render time,
-  // not from a scale someone assumed.
+  // ── AND THE SAME BUDGET HOLDS WHEN THE READER PINCHES IN ───────────────
+  //
+  // WHAT THIS CASE USED TO ASSERT, AND WHY IT NO LONGER CAN. Under the single
+  // tier, a pinch was the RESOLUTION switch: every in-band sheet jumped to
+  // 12.58 MP / ~50 MB, and the case checked that the budget then kept only two
+  // or three of them. With the progressive tiers the pinch no longer changes
+  // any sheet's scale — the one in front of the reader was already sharp the
+  // moment it became primary, and the rest are drafts whatever the zoom is.
+  // Asserting the old shape here would be asserting a design that is gone.
+  //
+  // WHAT IS STILL TRUE, AND IS THE PART THAT MATTERED: the budget is priced
+  // off the canvas that was really allocated, so the expensive sheet is
+  // counted at its real 64 MB and the ceiling holds. And the pinch still does
+  // the one thing it is now for — BAND_SHARP narrows the prefetch, so a reader
+  // examining one sheet is not also holding four he is not looking at.
   {
-    const s = bootRender({ zoom: 2, pageH: REAL_PAGE_H });
+    const s = bootRender({ ptW: 2592, ptH: 1728, zoom: 2, pageH: REAL_PAGE_H });
     await s.pump();
     for (let i = 0; i < PAGES; i += 1) {
       s.setScroll(i * (REAL_PAGE_H + PAGE_GAP));
@@ -662,14 +713,15 @@ async function main() {
     }
     const kept = s.livePages();
     const bytes = s.canvasBytes();
-    const perPage = kept ? bytes / kept : 0;
-    ok(perPage > 32 * MB,
-      `the zoomed sheets really are the expensive ones (${(perPage / MB).toFixed(1)} MB each)`);
-    ok(kept > 0 && kept <= 3,
-      `zoomed in, the same budget keeps only ${kept} sheet(s) — the count is `
-      + 'derived from the canvas, not assumed');
-    ok(bytes > 0 && bytes <= 128 * MB,
-      `and the ceiling still holds at the expensive scale (${(bytes / MB).toFixed(1)} MB)`);
+    ok(s.sharpPages() === 1,
+      `pinched in, exactly one sheet is at the expensive tier (${s.sharpPages()})`);
+    const big = s.largestCanvas();
+    ok(big.width * big.height * 4 > 32 * MB,
+      `and it really is the expensive one (${((big.width * big.height * 4) / MB).toFixed(1)} MB, `
+      + `${big.width}x${big.height})`);
+    ok(kept > 0 && bytes > 0 && bytes <= 128 * MB,
+      `the ceiling still holds with an expensive sheet resident (${
+        (bytes / MB).toFixed(1)} MB over ${kept} sheets)`);
   }
 
   // ── THE BAND IS NOT TIGHTENED ──────────────────────────────────────────
@@ -692,6 +744,266 @@ async function main() {
     ok(!!m, 'the cap is a named constant');
     ok(!!m && Number(m[1]) === 1,
       `and it is 1 — the thread is the resource (found ${m ? m[1] : 'nothing'})`);
+  }
+
+  console.log('\n── the sheet in front of the reader arrives in two passes ─────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 9. PROGRESSIVE RENDER, AND WHY A CAP ALONE IS NOT ENOUGH.
+  //
+  //    The queue cap above fixes the ORDER — the reader's sheet is drawn
+  //    first instead of twelfth. It does not change what that first draw
+  //    COSTS, and the operator's isolated numbers say the cost is mostly
+  //    fixed: 0.5 MP renders in ~465 ms and 11.2 MP in 732 ms, so roughly
+  //    450 ms is per-page decode and only ~25 ms is per megapixel.
+  //
+  //    THAT SPLIT IS THE WHOLE DESIGN. It means a cheap first pass is barely
+  //    cheaper than an expensive one, so there is no point drafting anything
+  //    the reader is not looking at — but it also means the reader can have
+  //    SOMETHING at 465 ms instead of nothing at 1400, and the sharp pass can
+  //    follow it on the same page without ever having been in the way.
+  //
+  //    SO: every in-band sheet gets a draft, and ONLY the sheet actually on
+  //    screen is ever promoted. An off-screen sheet that got a sharp pass
+  //    would be 64 MB spent on something nobody is reading.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const s = bootRender({ pageH: REAL_PAGE_H });
+    await s.pump();
+    s.deliverIO();
+    await s.pump();
+
+    ok(!s.threw, `the viewer opens progressively without throwing${
+      s.threw ? ` — ${String(s.threw && s.threw.stack).split('\n')[0]}` : ''}`);
+
+    const first = s.renders[0];
+    const second = s.renders[1];
+    ok(!!first && first.page === 1 && first.mp < 1,
+      `the first thing drawn is a DRAFT of the sheet on screen (page ${
+        first && first.page}, ${first && first.mp.toFixed(2)} MP — wanted page 1 under 1 MP)`);
+    ok(!!second && second.page === 1 && second.mp > 8,
+      `and the very next thing is the SHARP pass for that same sheet (page ${
+        second && second.page}, ${second && second.mp.toFixed(1)} MP — wanted page 1 over 8 MP)`);
+
+    // NOT AFTER THE NEIGHBOURS. Two drafts of pages the reader cannot fully
+    // see are ~930 ms, which is the difference between a sharp sheet at 1.4 s
+    // and one at 2.4 s — and 1.5 s is the acceptance.
+    ok(s.renders.length > 1 && s.renders[1].page === 1,
+      'the sharp pass jumps ahead of the neighbours\' drafts, because nearness '
+      + 'orders the queue and the sheet on screen is the only one at distance 0');
+
+    // ONLY THE SHEET ON SCREEN. Every other page must stay a draft forever.
+    const sharpPages = new Set(s.renders.filter((r) => r.mp > 8).map((r) => r.page));
+    ok(sharpPages.size === 1 && sharpPages.has(1),
+      `no off-screen sheet is ever promoted (sharp pages: ${[...sharpPages].join(',') || 'none'})`);
+
+    // AND EVERY IN-BAND SHEET STILL GETS SOMETHING. A progressive render that
+    // only ever drew one page would have replaced a slow viewer with an empty
+    // one.
+    const drafted = new Set(s.renders.filter((r) => r.mp < 1).map((r) => r.page));
+    ok(drafted.size >= 3,
+      `the rest of the band is still drafted behind it (${drafted.size} pages drafted)`);
+    ok(s.maxInFlight === 1, `and still one rasterisation at a time (peak ${s.maxInFlight})`);
+  }
+
+  // ── THE PROMOTION FOLLOWS THE READER ───────────────────────────────────
+  // A sharp pass pinned to page 1 for the life of the document would be the
+  // same defect in a different place. Scroll, and the sheet now on screen is
+  // the one that gets promoted.
+  {
+    const s = bootRender({ pageH: REAL_PAGE_H });
+    await s.pump();
+    s.deliverIO();
+    await s.pump();
+    s.setScroll(5 * (REAL_PAGE_H + PAGE_GAP));
+    s.deliverIO();
+    await s.pump();
+    const sharpPages = s.renders.filter((r) => r.mp > 8).map((r) => r.page);
+    ok(sharpPages.includes(6),
+      `the sheet scrolled to is promoted in its turn (sharp: ${sharpPages.join(',') || 'none'})`);
+
+    // ── AND NEVER TWO SHARP SHEETS AT ONCE ───────────────────────────────
+    // This is the invariant the byte budget is priced on. A sharp sheet is
+    // 64 MB; two would be 128 MB of bitmap before a single draft is counted,
+    // and the budget below would be a number with no relationship to what the
+    // page actually holds.
+    ok(s.sharpPages() <= 1,
+      `only one sharp sheet is ever resident (${s.sharpPages()} live)`);
+  }
+
+  console.log('\n── work for a sheet the reader left is stopped, not finished ──\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 10. CANCEL ON LEAVING THE BAND.
+  //
+  //     `dequeue` already takes an abandoned sheet out of the LINE. It does
+  //     nothing about one that has already started, and with one render at a
+  //     time that in-flight sheet is holding the only thread there is — so
+  //     the page the reader just scrolled to waits behind a page he has left.
+  //
+  //     Two mechanisms, and they are NOT interchangeable:
+  //       RenderTask.cancel()  stops the WORK. Only pdf.js can stop
+  //                            rasterising, and this is the only thing that
+  //                            asks it to.
+  //       slot.gen             stops the RESULT being used. cancel() is a
+  //                            request, not a guarantee, and a render can
+  //                            still complete in the window after it.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const s = bootRender({ pageH: REAL_PAGE_H });
+    await s.pump();
+    s.hooks.onRenderStart = (rec) => {
+      if (rec.order !== 0) return;
+      // ONE TURN LATER, NOT INSIDE page.render(). The stub calls this hook
+      // from within `page.render(...)`, which is BEFORE the viewer has
+      // assigned the returned task to `slot.task` — there is nothing to cancel
+      // yet at that instant, and a real scroll never lands there. Scheduling
+      // it puts the scroll where a reader's would be: after the render has
+      // started and while it is still running.
+      s.sandbox.setTimeout(() => {
+        s.setScroll(20 * (REAL_PAGE_H + PAGE_GAP));
+        s.deliverIO();
+      }, 1);
+    };
+    s.deliverIO();
+    await s.pump();
+    ok(!s.threw, `leaving the band mid-render does not throw${
+      s.threw ? ` — ${String(s.threw && s.threw.stack).split('\n')[0]}` : ''}`);
+    ok(s.renders[0] && s.renders[0].cancelled === true,
+      'the rasterisation already running for the abandoned sheet is CANCELLED, '
+      + 'not left to finish — with one thread, finishing it is the reader waiting');
+    const drawn = new Set(s.renders.map((r) => r.page));
+    ok(drawn.has(21),
+      `and the sheet the reader went to is drawn (drawn: ${[...drawn].sort((a, b) => a - b).join(',')})`);
+  }
+
+  console.log('\n── the edge cap is measured, not assumed ─────────────────────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 11. FIT TO MAX_CANVAS_PX, NOT TO A 4096 EDGE.
+  //
+  //     `MAX_CANVAS_EDGE = 4096` was the binding clamp on every large sheet,
+  //     which is why a 36x48 drawing landed at 85 ppi and why the file's own
+  //     comment says lowering TARGET_PPI would change nothing. The operator's
+  //     device passes a 16384 edge — the probe's ladder measured it — so the
+  //     cap was leaving resolution unused for no reason anyone had checked.
+  //
+  //     MEASURED, NOT ASSUMED. 16384 is this device. A cheap read at boot says
+  //     what THIS device does, an absolute guard bounds what any device may be
+  //     asked for, and an unknown answer falls back to the 4096 the viewer has
+  //     always shipped rather than to the optimistic number.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    // 36x24" landscape: 2592x1728 pt. Fitting 16 MP gives 4899 x 3266, which
+    // is 136 ppi across the 36" — against 85 ppi at a 4096 edge.
+    const s = bootRender({ ptW: 2592, ptH: 1728, pageH: REAL_PAGE_H });
+    await s.pump();
+    s.deliverIO();
+    await s.pump();
+    const big = s.largestCanvas();
+    const px = big.width * big.height;
+    ok(px > 14e6 && px <= 16e6 + 1,
+      `the sharp sheet fills the 16 MP budget (${big.width}x${big.height} = ${
+        (px / 1e6).toFixed(1)} MP)`);
+    ok(big.width > 4096,
+      `and is no longer held at a 4096 edge (${big.width} px across)`);
+    const ppi = big.width / 36;
+    ok(ppi > 130 && ppi < 142,
+      `which is ~136 ppi on a 36" sheet rather than 85 (got ${ppi.toFixed(0)})`);
+  }
+
+  // ── AND A DEVICE THAT IS NOT HIS ───────────────────────────────────────
+  // The whole point of measuring is that the answer differs. A WebView that
+  // refuses anything past 4096 must be held there, not handed a canvas it
+  // cannot allocate — a silent refusal is a blank sheet, which is worse than
+  // a soft one.
+  {
+    const s = bootRender({ ptW: 2592, ptH: 1728, pageH: REAL_PAGE_H, deviceMaxEdge: 4096 });
+    await s.pump();
+    s.deliverIO();
+    await s.pump();
+    ok(!s.threw, `a 4096-limited device still opens${
+      s.threw ? ` — ${String(s.threw && s.threw.stack).split('\n')[0]}` : ''}`);
+    ok(s.largestEdge() > 0 && s.largestEdge() <= 4096,
+      `and every canvas it allocates fits inside what it will give (largest edge ${
+        s.largestEdge()})`);
+    ok(s.renders.length > 0,
+      'and it still draws — the fallback is a smaller sheet, never no sheet');
+  }
+
+  // ── THE ABSOLUTE GUARD IS STILL THERE ──────────────────────────────────
+  // A measured capability is a reading off one WebView, and a WebView that
+  // over-reports would be handed an allocation that takes the renderer down.
+  // The guard is what nothing may exceed regardless of what the device claims.
+  {
+    const src = fs.readFileSync(VIEWER, 'utf8');
+    const guard = /var MAX_CANVAS_EDGE = (\d+);/.exec(src);
+    ok(!!guard, 'there is still an absolute edge guard');
+    ok(!!guard && Number(guard[1]) >= 4096 && Number(guard[1]) <= 32768,
+      `and it is a sane ceiling rather than removed (${guard ? guard[1] : 'gone'})`);
+    ok(/var CANVAS_EDGE_FALLBACK = 4096;/.test(src),
+      'and an unknown capability falls back to the 4096 this viewer has always '
+      + 'shipped, not to the optimistic number');
+    ok(/function measureCanvasEdge\(\)/.test(src),
+      'the capability is read off the device rather than assumed');
+  }
+
+  console.log('\n── the byte budget re-derived against a 64 MB sheet ───────────\n');
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // 12. THE BUDGET SURVIVES THE BIGGER SHEET.
+  //
+  //     96 MB was derived when the expensive sheet was 12.58 MP / 50 MB. A
+  //     sharp sheet is now 16 MP — 64 MB of RGBA — and the budget has to be
+  //     re-derived against that or it is a number inherited from arithmetic
+  //     that no longer applies.
+  //
+  //     WHAT HAS TO FIT: one sharp sheet (64 MB, and never two — see 9) plus
+  //     the whole 26-sheet plan cached as 0.5 MP drafts (52 MB) = 116 MB.
+  //     128 MB is that with slack.
+  //
+  //     AND IT IS PRICED OFF THE CANVAS, which is why it survived the change
+  //     at all: `canvasBytes()` reads width and height off the bitmap that was
+  //     really allocated, so it prices a 2 MB draft and a 64 MB sharp sheet
+  //     correctly with no knowledge of tiers whatsoever.
+  // ═════════════════════════════════════════════════════════════════════════
+  {
+    const s = bootRender({ ptW: 2592, ptH: 1728, pageH: REAL_PAGE_H });
+    await s.pump();
+    let peakBytes = 0;
+    let peakSharp = 0;
+    for (let i = 0; i < PAGES; i += 1) {
+      s.setScroll(i * (REAL_PAGE_H + PAGE_GAP));
+      s.deliverIO();
+      await s.pump();
+      peakBytes = Math.max(peakBytes, s.canvasBytes());
+      peakSharp = Math.max(peakSharp, s.sharpPages());
+    }
+    ok(peakSharp === 1,
+      `never more than one sharp sheet across a whole document (peak ${peakSharp})`);
+    ok(peakBytes <= 128 * MB,
+      `and the resident bitmap never passes the budget (peak ${(peakBytes / MB).toFixed(1)} MB)`);
+    // NOT NEARLY EMPTY EITHER. Every eviction is a ~465 ms re-decode, and a
+    // budget that threw the plan away to stay small would be paying for
+    // memory with the reader's scroll-back.
+    ok(s.livePages() >= 16,
+      `while still caching the scroll-back (${s.livePages()} of ${PAGES} sheets resident)`);
+    ok(s.maxInFlight === 1, `one at a time throughout (peak ${s.maxInFlight})`);
+  }
+
+  {
+    const src = fs.readFileSync(VIEWER, 'utf8');
+    const b = /var CANVAS_BUDGET_BYTES = (\d+) \* 1048576;/.exec(src);
+    ok(!!b, 'the budget is a named constant in megabytes');
+    ok(!!b && Number(b[1]) === 128,
+      `re-derived against the 64 MB sharp sheet: 64 + 26 drafts at 2 MB = 116, `
+      + `so 128 (found ${b ? b[1] : 'nothing'})`);
+    ok(/function canvasBytes\(slot\)\{/.test(src)
+      && /\(c\.width \|\| 0\) \* \(c\.height \|\| 0\) \* 4/.test(src),
+      'and the cost is still read off the canvas that was really allocated, '
+      + 'never inferred from a scale — which is why it survived the tier change');
+    ok(/var DRAFT_CANVAS_PX = 500000;/.test(src),
+      'the draft tier is a named pixel budget, so raising it is one edit');
   }
 }
 

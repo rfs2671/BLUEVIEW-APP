@@ -105,7 +105,17 @@ const STAMP_NAME = '.stamp';
 //       (Stacked above `8`, the two-pass warm-up probe. If that has not landed
 //       yet, this is still a move and still correct — the stamp only has to
 //       change, not to be consecutive.)
-const VIEWER_VERSION = '9';
+//  10 — PROGRESSIVE RENDER, A MEASURED EDGE CAP, AND THE BUDGET RE-DERIVED.
+//       The queue in `9` fixed the ORDER; this fixes what the reader's first
+//       sheet COSTS. Also takes `9` off the table because the isolated probe
+//       (PR #546) claimed it for a measurement-only change — stacking rather
+//       than renumbering, because the stamp only has to CHANGE, not to be
+//       consecutive, and a device staged at `9` by either branch must
+//       re-stage for this one. THIS BUMP IS THE FIX'S DELIVERY MECHANISM:
+//       viewer.html is written once and re-used until this string moves, so a
+//       device already staged would keep rasterising the whole band at one
+//       tier, keep the 4096 edge cap, and the change would reach nobody.
+const VIEWER_VERSION = '10';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -156,35 +166,147 @@ const VIEWER_SCRIPT = [
   '(function(){',
   '  var msgEl = document.getElementById("msg");',
   '  var pagesEl = document.getElementById("pages");',
-  '  var MAX_CANVAS_PX = 16000000;',   // ~16MP per page, keeps big plans off the OOM killer
-  '  var MAX_CANVAS_EDGE = 4096;',
+  '  var MAX_CANVAS_PX = 16000000;',   // ~16MP per page — now the BINDING cap, see below
+  // ── THE EDGE CAP IS AN ABSOLUTE GUARD, NOT A WORKING LIMIT ─────────────
+  //
+  // WAS 4096, AND IT WAS THE CLAMP THAT BOUND EVERYTHING. A 36x48 sheet asked
+  // for 7200 px on the long edge and got 4096 — 85 ppi — so `MAX_CANVAS_PX`
+  // was never reached on any large-format sheet and 11 of the 16 megapixels
+  // this viewer had already budgeted for were simply never used.
+  //
+  // 4096 WAS A GUESS ABOUT THE DEVICE. The probe's canvas ladder measured the
+  // operator's Pixel 10 Pro XL passing a 16384 square — 268 MP, verified by
+  // touching the far corner with getImageData, not by asking a compatibility
+  // table. So the cap was costing resolution on the one device the complaint
+  // came from, for a limit that device does not have.
+  //
+  // THE THREE NUMBERS NOW HAVE THREE DIFFERENT JOBS:
+  //   MAX_CANVAS_EDGE       the ABSOLUTE guard. Nothing may ever be asked for
+  //                         more than this however capable the device reports
+  //                         itself, because a WebView that over-reports would
+  //                         be handed an allocation that takes the renderer
+  //                         down and there is no recovering from that.
+  //   CANVAS_EDGE_FALLBACK  what is used when the capability CANNOT be read.
+  //                         Deliberately the 4096 this viewer has always
+  //                         shipped: an unknown device gets the answer that
+  //                         has been in the field for months, never the
+  //                         optimistic one.
+  //   MAX_CANVAS_PX         the working cap, and now the one that binds. On a
+  //                         36x24 sheet 16 MP is 4899 x 3266 — 136 ppi, up
+  //                         from 85 — and on a 36x48 it is 3463 x 4618.
+  //
+  // WHY THE AREA AND NOT THE EDGE IS THE RIGHT THING TO CAP: the area is what
+  // costs memory (4 bytes a pixel) and what the byte budget is priced in. An
+  // edge cap prices nothing — it penalises long thin sheets hardest and lets a
+  // square one through at four times the bytes.
+  '  var MAX_CANVAS_EDGE = 16384;',
+  '  var CANVAS_EDGE_FALLBACK = 4096;',
+  // ── THE FIRST PASS: SOMETHING ON SCREEN IN UNDER HALF A SECOND ─────────
+  //
+  // THE MEASUREMENT THIS COMES FROM. Uncontended on the operator's phone,
+  // 0.5 MP renders in ~465 ms and 11.2 MP in 732 ms. Twenty-two times the
+  // pixels for 1.6x the time — so roughly 450 ms of every page render is FIXED
+  // per-page decode (these sheets carry 710 Flate and 147 DCT image operators)
+  // and only about 25 ms of it is per megapixel.
+  //
+  // THAT SPLIT IS THE WHOLE DESIGN. It means there is no point drafting
+  // anything the reader is not looking at — a draft is barely cheaper than the
+  // real thing — but it also means the sheet in front of him can be on screen
+  // at ~465 ms instead of blank until 1400, and the sharp pass can follow on
+  // the same sheet without ever having been in the way.
+  //
+  // ⚠️ 0.5 MP IS SOFT, AND THE ARITHMETIC SAYS SO. On a 36x24 sheet it is
+  // 866 x 577 — 24 ppi, below even the 32.5 ppi the pre-#413 viewer gave. It
+  // is a PLACEHOLDER that shows the drawing's shape, not a readable render;
+  // readability arrives with the sharp pass ~950 ms later. Because the cost is
+  // mostly fixed, raising this is nearly free: 2 MP would be ~500 ms (35 ms
+  // more) and 48 ppi. This is the first constant to revisit once PR #546's
+  // isolated medians come back, and it is a named constant so that revisit is
+  // one edit.
+  '  var DRAFT_CANVAS_PX = 500000;',
   // THE RESOLUTION FLOOR FOR LARGE-FORMAT SHEETS. PDF user units are 1/72",
   // so scale = TARGET_PPI/72 renders at this density whatever the page
-  // measures. 150 is a statement of intent, not a promise: the two caps above
-  // bind first on anything bigger than about 27x27 inches, so an arch-E sheet
-  // lands at 4096px on the long edge — 85 ppi — and asking for more here
-  // changes nothing until those move.
+  // measures.
   //
-  // ⚠️ DO NOT "JUST LOWER THIS" TO MAKE THE VIEWER FASTER. An earlier note
-  // here said to, and it is a trap. Run the arithmetic on a 36x48 sheet
-  // (2592 x 3456 pt) before touching the number:
+  // ⚠️ THE OLD NOTE HERE SAID LOWERING THIS WOULD CHANGE NOTHING, AND THAT IS
+  // NO LONGER TRUE. It was true while MAX_CANVAS_EDGE = 4096 clamped every
+  // large sheet to 85 ppi whatever this asked for. With the area cap now
+  // binding instead, this number is live again on sheets between about 27x27
+  // and the 16 MP ceiling. The old table, kept because it explains what
+  // changed:
   //
-  //   TARGET_PPI  scale  long edge          effect
-  //   150         2.083  7200 -> clamped    4096 px, 85.3 ppi
-  //   120         1.667  5760 -> clamped    4096 px, 85.3 ppi   — no change
-  //    96         1.333  4608 -> clamped    4096 px, 85.3 ppi   — no change
-  //    85         1.181  4082                4082 px, 85.0 ppi  — barely
-  //    84         1.167  4032                4032 px, 84.0 ppi  — now it moves
+  //   36x48 sheet (2592 x 3456 pt)     WAS (edge 4096)   NOW (16 MP area)
+  //   TARGET_PPI 150  scale 2.083      4096 px, 85 ppi   4618 px, 96 ppi
+  //   TARGET_PPI 120  scale 1.667      4096 px, 85 ppi   4320 px, 90 ppi
+  //   TARGET_PPI  96  scale 1.333      4096 px, 85 ppi   3456 px, 72 ppi
   //
-  // MAX_CANVAS_EDGE is the binding clamp, so ANY value from ~85 upward
-  // produces a byte-identical render and costs exactly the same. The first
-  // value that makes a phone faster is one that has already dropped below the
-  // clamp — and once below it, `viewportS` takes over on a phone at 32.5 ppi
+  // So lowering it now DOES cost resolution, on exactly the sheets this viewer
+  // exists for. The reason not to lower it is unchanged and is stronger: the
+  // cost of a render is mostly fixed per page, so buying speed with pixels
+  // buys almost nothing — which is what the draft tier above is for instead.
+  //
+  // The note below is retained because the trap it describes is still a trap:
+  // once a scale drops below the viewport-anchored one, `viewportS` takes over
+  // on a phone at 32.5 ppi
   // and every bit of the legibility #413 bought is gone. There is no setting
   // of this constant that trades a little sharpness for a little speed; it is
-  // all or nothing, which is precisely why the floor is now gated on the zoom
-  // (see `sharp` below) rather than shrunk.
+  // all or nothing, which is precisely why the tier is chosen by WHICH SHEET
+  // the reader is looking at rather than by shrinking this.
   '  var TARGET_PPI = 150;',
+  // ── WHAT THIS DEVICE WILL ACTUALLY ALLOCATE ────────────────────────────
+  //
+  // Corrected once at boot by `measureCanvasEdge()`; until then, and forever
+  // on a device that cannot answer, it is the conservative fallback.
+  //
+  // WHY A STRIP AND NOT A SQUARE. The probe's capability ladder allocates
+  // edge x edge, and 16384 square is 268 MP — a gigabyte of RGBA. That is the
+  // most expensive thing on the probe page and is emphatically not something
+  // to do on every open for every reader. What actually has to be known is the
+  // DIMENSION limit, and a 16384 x 8 strip answers exactly that question for
+  // 512 KB. The AREA is bounded separately and independently by
+  // MAX_CANVAS_PX, which is 16 MP — far below any area limit a WebView that
+  // accepts a 16384 dimension is likely to impose.
+  //
+  // READ BACK, NOT ASSUMED. A canvas asked for more than it will give does not
+  // throw; it silently keeps its previous width. Comparing the property
+  // afterwards is the only reading that is true, and touching the far corner
+  // with getImageData is what proves the backing store is real rather than a
+  // context that accepts draws and keeps nothing.
+  '  var measuredCanvasEdge = 0;',
+  '  function canvasEdgeLimit(){',
+  '    var e = measuredCanvasEdge > 0 ? measuredCanvasEdge : CANVAS_EDGE_FALLBACK;',
+  '    return Math.min(e, MAX_CANVAS_EDGE);',
+  '  }',
+  '  function measureCanvasEdge(){',
+  '    var ladder = [4096, 8192, 12288, 16384], best = 0, i, c, ctx, px;',
+  '    for (i = 0; i < ladder.length; i++) {',
+  '      if (ladder[i] > MAX_CANVAS_EDGE) break;',
+  '      c = null;',
+  '      try {',
+  '        c = document.createElement("canvas");',
+  '        c.width = ladder[i]; c.height = 8;',
+  '        if (c.width !== ladder[i]) { c.width = 0; c.height = 0; break; }',
+  '        ctx = c.getContext("2d");',
+  '        if (!ctx) { c.width = 0; c.height = 0; break; }',
+  '        ctx.fillStyle = "#fff";',
+  '        ctx.fillRect(ladder[i] - 1, 7, 1, 1);',
+  '        px = ctx.getImageData(ladder[i] - 1, 7, 1, 1);',
+  '        c.width = 0; c.height = 0;',
+  '        if (!(px && px.data && px.data[3] === 255)) break;',
+  '        best = ladder[i];',
+  '      } catch (e) {',
+  '        try { if (c) { c.width = 0; c.height = 0; } } catch (e2) {}',
+  '        break;',
+  '      }',
+  '    }',
+  // ZERO IS "UNKNOWN", and unknown means the fallback — never the top of the
+  // ladder. A device that fell over on the very first rung has told us
+  // something, and what it told us is not "assume 16384".
+  '    measuredCanvasEdge = best;',
+  '    probePost("canvas-edge", { measured: best, fallback: CANVAS_EDGE_FALLBACK,',
+  '      guard: MAX_CANVAS_EDGE, inUse: canvasEdgeLimit(),',
+  '      known: best > 0 });',
+  '  }',
   // How far either side of the viewport a page counts as "near". Feeds both
   // the observer's rootMargin and the no-observer sweep, so the two paths
   // agree on what is near.
@@ -228,34 +350,52 @@ const VIEWER_SCRIPT = [
   // scale, which is precisely the figure the renderer was being killed at. A
   // budget has to be in the unit that runs out.
   //
-  // WHY 96 MB, with the arithmetic it was picked from. At the current scale a
-  // sheet is 1329x886 = 4.49 MB of RGBA:
+  // ── RE-DERIVED AGAINST THE 64 MB SHEET, WHICH IS WHY IT MOVED ──────────
   //
-  //   the whole 26-sheet plan   117 MB   — just above the budget, so a plan
-  //                                        set of this size is very nearly
-  //                                        all cached and scroll-back is free
-  //   96 MB holds                21 sheets
-  //   the unfreeable near set     8 sheets, 36 MB (BAND 1.5 is ~3.6 sheets
-  //                                        either side), leaving ~13 sheets
-  //                                        of real hysteresis on top of it
-  //   zoomed in                   2 sheets at 48-50 MB each — which is what
-  //                                        BAND_SHARP 0.25 makes unfreeable
-  //                                        anyway, so the budget blanks
-  //                                        nothing new there and replaces a
-  //                                        measured 336 MB with a hard ceiling
+  // 96 MB was derived when the expensive sheet was 12.58 MP / ~50 MB and every
+  // in-band page was rendered at one scale. Both halves of that have changed:
+  // the sharp tier now fits MAX_CANVAS_PX and is 16 MP — 64 MB of RGBA — and
+  // only ONE sheet is ever at that tier. A budget inherited from arithmetic
+  // that no longer applies is a number, not a bound.
   //
-  // 96 MB of bitmap is comfortable in a Chromium renderer on the device this
-  // ships to; the crash reports were at 250-350 MB.
+  // WHAT HAS TO FIT, and this is the whole derivation:
   //
-  // EVICTION IS NOT FREE, which is the whole reason this got bigger rather
-  // than smaller. A sheet is ~857 decode operations — 710 FlateDecode and 147
-  // DCTDecode — and throwing one away costs seconds to recreate. That is the
-  // operator's 5-6 second scroll-back. Every eviction is a debt.
+  //   one sharp sheet            64 MB   16 MP x 4 bytes. NEVER TWO — the
+  //                                      demote in `setPrimary()` is what
+  //                                      guarantees it, not this number.
+  //   the 26-sheet plan as        52 MB   26 x 0.5 MP x 4 bytes. At this size
+  //   drafts                             the whole set stays cached, so
+  //                                      scroll-back costs no re-decode at
+  //                                      all.
+  //                             ------
+  //                              116 MB
   //
-  // DERIVED FROM THE ACTUAL CANVAS, never from an assumed scale: `trim()`
-  // reads width and height off the bitmap that was really allocated, so the
-  // budget still holds when a reader zooms in and sheets become 48 MB each.
-  '  var CANVAS_BUDGET_BYTES = 96 * 1048576;',
+  // 128 MB is that with 12 MB of slack for a sheet whose aspect pushes its
+  // draft over 0.5 MP, and it is a round number.
+  //
+  // AND `trim()` CAN ALWAYS REACH IT. The unfreeable floor — a page still in
+  // the band is skipped, never freed — is one sharp sheet plus about seven
+  // band drafts: 64 + 14 = 78 MB, comfortably under. A budget below that floor
+  // would have `trim()` walking the list every render and freeing nothing.
+  //
+  // MEASURED CONTEXT: the crash reports were at 250-350 MB, and the executing
+  // test measured 336 MB held under the old page-count window. 128 MB is a
+  // hard ceiling well under that, on top of which pdf.js still holds the ~30 MB
+  // file buffer and its own decode caches.
+  //
+  // EVICTION IS CHEAPER THAN IT WAS, and the number is smaller for it than it
+  // would otherwise be. Under the old single-tier render an evicted sheet cost
+  // a full re-decode at the display scale — the operator's 5-6 second
+  // scroll-back. It now costs a DRAFT, ~465 ms, because a sheet the reader
+  // scrolls back to is not the primary until he stops on it.
+  //
+  // DERIVED FROM THE ACTUAL CANVAS, never from an assumed scale — and that is
+  // precisely why it survived the tier change at all. `canvasBytes()` reads
+  // width and height off the bitmap that was really allocated, so it prices a
+  // 2 MB draft and a 64 MB sharp sheet correctly with no knowledge of tiers
+  // whatsoever. Had it been derived from a scale, this change would have
+  // silently invalidated it.
+  '  var CANVAS_BUDGET_BYTES = 128 * 1048576;',
   // ── SHARPNESS ON DEMAND, WHICH IS WHAT #413 SHOULD HAVE BEEN ───────────
   //
   // #413 was right about the resolution and wrong about when to pay for it.
@@ -433,6 +573,10 @@ const VIEWER_SCRIPT = [
   '    d.hasIntersectionObserver = (typeof IntersectionObserver !== "undefined");',
   '    try { d.hasTransferControl = typeof document.createElement("canvas").transferControlToOffscreen === "function"; } catch (e) { d.hasTransferControl = false; }',
   '    d.MAX_CANVAS_EDGE = MAX_CANVAS_EDGE;',
+  '    d.CANVAS_EDGE_FALLBACK = CANVAS_EDGE_FALLBACK;',
+  '    d.measuredCanvasEdge = measuredCanvasEdge;',
+  '    d.canvasEdgeInUse = canvasEdgeLimit();',
+  '    d.DRAFT_CANVAS_PX = DRAFT_CANVAS_PX;',
   '    d.MAX_CANVAS_PX = MAX_CANVAS_PX;',
   '    d.BAND = BAND;',
   '    d.CANVAS_BUDGET_BYTES = CANVAS_BUDGET_BYTES;',
@@ -790,8 +934,12 @@ const VIEWER_SCRIPT = [
   '    var anchor = (floorOn && ppiS > viewportS) ? "ppi" : "viewport";',
   '    var w = vp1.width * s, h = vp1.height * s;',
   '    var clamp = "none";',
-  '    if (w > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / w); w = vp1.width * s; h = vp1.height * s; clamp = "edge-w"; }',
-  '    if (h > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / h); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "edge-h" : clamp + "+edge-h"); }',
+  // THE EDGE CLAMP IS NOW THE DEVICE'S, NOT A LITERAL. `canvasEdgeLimit()` is
+  // min(what this WebView demonstrably allocates, MAX_CANVAS_EDGE) and falls
+  // back to the 4096 this viewer always shipped when it cannot be read.
+  '    var edgeCap = canvasEdgeLimit();',
+  '    if (w > edgeCap) { s = s * (edgeCap / w); w = vp1.width * s; h = vp1.height * s; clamp = "edge-w"; }',
+  '    if (h > edgeCap) { s = s * (edgeCap / h); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "edge-h" : clamp + "+edge-h"); }',
   '    if (w * h > MAX_CANVAS_PX) { s = s * Math.sqrt(MAX_CANVAS_PX / (w * h)); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "maxpx" : clamp + "+maxpx"); }',
   '    return { s: s, w: w, h: h, clamp: clamp, dpr: dpr, baseWidth: baseWidth,',
   '             anchor: anchor, floor: floorOn, ppi: 72 * s, targetPpi: TARGET_PPI };',
@@ -807,11 +955,54 @@ const VIEWER_SCRIPT = [
   // MAX_CANVAS_PX actually permit for this page, and the A/B renders at it so
   // the unused headroom has a render time and a ppi against it.
   '  function ceilingScaleInfo(vp1){',
-  '    var s = Math.min(MAX_CANVAS_EDGE / vp1.width, MAX_CANVAS_EDGE / vp1.height);',
+  '    var edgeCap = canvasEdgeLimit();',
+  '    var s = Math.min(edgeCap / vp1.width, edgeCap / vp1.height);',
   '    var w = vp1.width * s, h = vp1.height * s;',
   '    var clamp = (w >= h) ? "edge-w" : "edge-h";',
   '    if (w * h > MAX_CANVAS_PX) { s = s * Math.sqrt(MAX_CANVAS_PX / (w * h)); w = vp1.width * s; h = vp1.height * s; clamp = clamp + "+maxpx"; }',
   '    return { s: s, w: w, h: h, clamp: clamp };',
+  '  }',
+  '',
+  // ── THE TWO TIERS ──────────────────────────────────────────────────────
+  //
+  // ONE ENTRY POINT FOR THE RENDER PATH, so a tier cannot be chosen in one
+  // place and priced in another. `targetScaleInfo` is untouched and still
+  // carries the anchor/floor/clamp reasoning the probe and the scale-anchor
+  // gate read; this is the thin thing on top of it that says which of the two
+  // a given render is.
+  //
+  //   draft  fit to DRAFT_CANVAS_PX. Anchored to the SHEET, not to the
+  //          viewport, because the point is a fixed, predictable cost per
+  //          page — a viewport-anchored draft would be 1.2 MP on this phone
+  //          and 5 MP on a tablet, and the whole design rests on the draft
+  //          being cheap everywhere.
+  //   sharp  the PPI floor, held to the caps: `targetScaleInfo(vp1, 1.5,
+  //          true)`. With the edge cap now the device's, the AREA cap binds
+  //          and the answer is the 16 MP fit — 4899 x 3266, 136 ppi, on a
+  //          36x24 sheet.
+  //
+  // NEVER FEWER PIXELS THAN THE DRAFT. On a small page — a letter-size
+  // logbook — the viewport-anchored sharp scale can be below a 0.5 MP fit, and
+  // a "sharp" pass that made the sheet blurrier would be absurd. Taking the
+  // max means the promotion can only ever improve the picture.
+  '  function draftScaleInfo(vp1){',
+  '    var s = Math.sqrt(DRAFT_CANVAS_PX / (vp1.width * vp1.height));',
+  '    var edgeCap = canvasEdgeLimit();',
+  '    var w = vp1.width * s, h = vp1.height * s;',
+  '    if (w > edgeCap) { s = s * (edgeCap / w); w = vp1.width * s; h = vp1.height * s; }',
+  '    if (h > edgeCap) { s = s * (edgeCap / h); w = vp1.width * s; h = vp1.height * s; }',
+  '    return { s: s, w: w, h: h, clamp: "draft", tier: "draft" };',
+  '  }',
+  '',
+  '  function tierScaleInfo(vp1, tier){',
+  '    if (tier === "sharp") {',
+  '      var sh = targetScaleInfo(vp1, 1.5, true);',
+  '      var dr = draftScaleInfo(vp1);',
+  '      if (sh.s < dr.s) { dr.tier = "sharp"; return dr; }',
+  '      sh.tier = "sharp";',
+  '      return sh;',
+  '    }',
+  '    return draftScaleInfo(vp1);',
   '  }',
   '',
   // Give a page back. Detaching the <canvas> is NOT enough: the element is
@@ -839,6 +1030,42 @@ const VIEWER_SCRIPT = [
   '    slot.el.innerHTML = "";',
   '    slot.done = false;',
   '    slot.busy = false;',
+  // The slot is showing nothing, so it is at no tier. Leaving a stale `tier`
+  // here would have `enqueue` decide the sheet is already correct and never
+  // draw it again.
+  '    slot.tier = null;',
+  '    slot.wantTier = null;',
+  '  }',
+  '',
+  // ── STOPPING WORK vs DISCARDING A RESULT: TWO MECHANISMS, ONE JOB EACH ──
+  //
+  // These are NOT interchangeable and neither one covers the other's case.
+  //
+  //   RenderTask.cancel()  STOPS THE WORK. pdf.js is the only thing that can
+  //                        stop rasterising, and this is the only way to ask
+  //                        it. With MAX_CONCURRENT_RENDERS = 1 the in-flight
+  //                        render holds the only thread there is, so a sheet
+  //                        the reader has left is not merely wasted — it is
+  //                        the sheet he IS looking at, waiting. Its promise
+  //                        rejects with RenderingCancelledException, which the
+  //                        catch below already swallows silently.
+  //
+  //   slot.gen             STOPS THE RESULT BEING USED. cancel() is a request,
+  //                        not a guarantee: a render can complete in the
+  //                        window between the call and the promise settling,
+  //                        and `releaseSlot` may already have thrown the
+  //                        canvas away. The generation stamp is what makes
+  //                        that late `.then` discard its canvas instead of
+  //                        attaching it to a slot that has moved on.
+  //
+  // SO: `releaseSlot` does BOTH, because it is discarding the slot's identity.
+  // Leaving the band does cancel ONLY, because the slot keeps its identity and
+  // may be re-rendered later at the same generation — and if cancel loses the
+  // race and the render lands anyway, attaching it is harmless and slightly
+  // useful: the page is out of band, so `trim()` can now free it on merit.
+  '  function cancelInFlight(slot){',
+  '    if (!slot.task) return;',
+  '    try { slot.task.cancel(); } catch (e) {}',
   '  }',
   '',
   '  function touch(slot){',
@@ -900,8 +1127,80 @@ const VIEWER_SCRIPT = [
   '    return 0;',
   '  }',
   '',
+  // ── THE PRIMARY SHEET: THE ONE, AND ONLY ONE, THAT GETS A SHARP PASS ───
+  //
+  // "On screen" is not good enough. On the operator's device a sheet is 886 px
+  // against an 883 px viewport, so through most of a scroll TWO pages are
+  // partly visible — and two sharp sheets is 128 MB of bitmap before a single
+  // draft is counted, which is the budget spent twice over on a question
+  // nobody asked. The primary is the single page showing the MOST of itself,
+  // which is the one the reader is actually reading.
+  '  var primary = null;',
+  '  function visibleHeight(slot){',
+  '    var h = window.innerHeight || document.documentElement.clientHeight || 800;',
+  '    var r = slot.el.getBoundingClientRect();',
+  '    var top = r.top > 0 ? r.top : 0;',
+  '    var bot = r.bottom < h ? r.bottom : h;',
+  '    return bot > top ? bot - top : 0;',
+  '  }',
+  '',
+  // THE DEMOTE IS WHAT MAKES "NEVER TWO SHARP SHEETS" TRUE, and it is not the
+  // budget's job — `trim()` cannot free a page that is still in the band, and
+  // the sheet that has just stopped being primary almost always still is.
+  //
+  // TWO WAYS DOWN, chosen by whether the reader can see it:
+  //   fully off screen   free the bitmap NOW. 64 MB back immediately and
+  //                      nobody sees anything change, because there is
+  //                      nothing on screen to change.
+  //   still partly on    queue a DRAFT of it instead. `renderSlot` renders
+  //   screen             into a fresh canvas and only swaps at the end, so
+  //                      the sharp bitmap stays up until its replacement is
+  //                      ready and the reader never sees a blank strip.
+  '  function setPrimary(next){',
+  '    if (primary === next) return;',
+  '    var old = primary;',
+  '    primary = next;',
+  '    if (old && old.tier === "sharp") {',
+  '      if (nearness(old) > 0) {',
+  '        releaseSlot(old);',
+  '        var ri = rendered.indexOf(old);',
+  '        if (ri >= 0) rendered.splice(ri, 1);',
+  '        if (old.visible || inBand(old)) enqueue(old);',
+  '      } else {',
+  '        old.wantTier = "draft";',
+  '        enqueue(old);',
+  '      }',
+  '    }',
+  '    if (next) {',
+  // A sheet with nothing on it is drafted first and promoted when that lands;
+  // one that is already drawn goes straight for the sharp pass.
+  '      next.wantTier = next.tier ? "sharp" : "draft";',
+  '      enqueue(next);',
+  '    }',
+  '  }',
+  '',
+  // Re-read after every observer callback and every sweep, because the answer
+  // is a property of where the reader is and not of any page.
+  '  function refreshPrimary(){',
+  '    var best = null, bestH = 0, i, vh;',
+  '    for (i = 0; i < slots.length; i++) {',
+  '      vh = visibleHeight(slots[i]);',
+  '      if (vh > bestH) { bestH = vh; best = slots[i]; }',
+  '    }',
+  '    setPrimary(bestH > 0 ? best : null);',
+  '  }',
+  '',
+  // What this slot SHOULD be showing, given where it is. Everything the band
+  // holds is a draft; the primary alone is sharp.
+  '  function wantedTier(slot){ return (slot === primary) ? "sharp" : "draft"; }',
+  '',
+  // ENQUEUE MEANS "THIS SHEET IS NOT SHOWING WHAT IT SHOULD BE". Under one
+  // tier that was the same thing as "has no canvas", which is why the old
+  // guard was `if (slot.done) return`. With two tiers a drawn page can still
+  // be wrong, and a drawn page that is right must still not be re-queued.
   '  function enqueue(slot){',
-  '    if (slot.done) { touch(slot); return; }',
+  '    if (!slot.wantTier) slot.wantTier = wantedTier(slot);',
+  '    if (slot.tier === slot.wantTier) { touch(slot); return; }',
   '    if (slot.busy) return;',
   '    if (queue.indexOf(slot) < 0) queue.push(slot);',
   '  }',
@@ -914,15 +1213,42 @@ const VIEWER_SCRIPT = [
   '    if (i >= 0) queue.splice(i, 1);',
   '  }',
   '',
+  // ── WHAT COMES FIRST, WHEN TWO SHEETS ARE EQUALLY NEAR ─────────────────
+  //
+  // Nearness is still the primary key and it is what makes the acceptance
+  // arithmetic work: at open exactly one sheet is at distance 0, so its draft
+  // runs (~465 ms) and then its sharp pass (~950 ms) — both ahead of the
+  // neighbours' drafts, which are at distance 13 px and up. First readable
+  // sheet ~465 ms, sharp ~1.4 s.
+  //
+  // THE TIE-BREAK IS WHERE THE MEMORY INVARIANT LIVES. Two sheets are at
+  // distance 0 whenever the reader is mid-scroll, and the order among them
+  // decides whether two sharp bitmaps can ever exist at once:
+  //
+  //   0  a sheet with NOTHING on it            — the reader sees a hole
+  //   1  a demote: sharp bitmap to be replaced — 64 MB waiting to come back
+  //   2  a promote: draft to be sharpened      — already legible-ish
+  //
+  // A demote outranking a promote is what guarantees the old sharp sheet is
+  // gone before the new one is allocated. It costs the promote one draft
+  // (~465 ms) on a scroll, and buys a hard ceiling on the expensive tier.
+  '  function pickRank(slot){',
+  '    if (!slot.tier) return 0;',
+  '    if (slot.tier === "sharp" && slot.wantTier === "draft") return 1;',
+  '    return 2;',
+  '  }',
+  '',
   '  function pumpQueue(){',
   '    while (inFlight < MAX_CONCURRENT_RENDERS && queue.length) {',
-  '      var bi = 0, bd = nearness(queue[0]), i, d;',
+  '      var bi = 0, bd = nearness(queue[0]), br = pickRank(queue[0]), i, d, r;',
   '      for (i = 1; i < queue.length; i++) {',
   '        d = nearness(queue[i]);',
-  '        if (d < bd) { bd = d; bi = i; }',
+  '        r = pickRank(queue[i]);',
+  '        if (d < bd || (d === bd && r < br)) { bd = d; br = r; bi = i; }',
   '      }',
   '      var slot = queue.splice(bi, 1)[0];',
-  '      if (slot.done || slot.busy) continue;',
+  '      if (slot.busy) continue;',
+  '      if (slot.tier === slot.wantTier) continue;',
   // RE-CHECKED AT THE MOMENT OF STARTING, not at the moment of queueing. The
   // reader may have moved a long way while this sat in line, and the observer
   // does not always get to report it first.
@@ -934,8 +1260,15 @@ const VIEWER_SCRIPT = [
   // THE ONLY CALLER OF THIS IS `pumpQueue`. Everything else enqueues, which is
   // what keeps the cap honest: there is no second door into a rasterisation.
   '  function renderSlot(slot){',
-  '    if (slot.done) { touch(slot); return; }',
   '    if (slot.busy) return;',
+  // THE TIER IS FIXED HERE AND CARRIED THROUGH, not re-read inside the
+  // promise. The reader can move while this runs, and a render that computed
+  // its scale at the start and its tier at the end would attach a canvas
+  // whose size does not match what the slot claims to be holding — which is
+  // the byte budget mispricing itself.
+  '    var tier = slot.wantTier || wantedTier(slot);',
+  '    if (slot.tier === tier) { touch(slot); return; }',
+  '    slot.wantTier = tier;',
   '    slot.busy = true;',
   '    inFlight = inFlight + 1;',
   // EXACTLY ONCE, on every path out — resolved, cancelled, generation-stale or
@@ -959,7 +1292,7 @@ const VIEWER_SCRIPT = [
   '      slot.page = page;',
   '      var ptGetPage = PROBE ? pnow() : 0;',
   '      var vp1 = page.getViewport({ scale: 1 });',
-  '      var info = targetScaleInfo(vp1);',
+  '      var info = tierScaleInfo(vp1, tier);',
   '      var vp = page.getViewport({ scale: info.s });',
   '      var canvas = document.createElement("canvas");',
   '      var ptAlloc0 = PROBE ? pnow() : 0;',
@@ -979,6 +1312,7 @@ const VIEWER_SCRIPT = [
   '          canvasW: canvas.width, canvasH: canvas.height,',
   '          megapixels: Math.round((canvas.width * canvas.height) / 1e5) / 10,',
   '          ppi: r1(canvas.width / (vp1.width / 72)),',
+  '          tier: tier, primary: (slot === primary),',
   '          clamp: info.clamp, dpr: info.dpr, baseWidth: info.baseWidth',
   '        });',
   '      }',
@@ -994,6 +1328,7 @@ const VIEWER_SCRIPT = [
   '            getPageMs: r1(ptGetPage - pt0),',
   '            canvasAllocMs: r1(ptAlloc1 - ptAlloc0),',
   '            renderMs: r1(ptRender1 - ptRender0),',
+  '            tier: tier,',
   '            totalMs: r1(ptRender1 - pt0)',
   '          });',
   '        }',
@@ -1006,9 +1341,21 @@ const VIEWER_SCRIPT = [
   '        slot.el.innerHTML = "";',
   '        slot.el.appendChild(canvas);',
   '        slot.canvas = canvas;',
+  '        slot.tier = tier;',
   '        slot.done = true;',
   '        touch(slot);',
   '        trim();',
+  // ── THE SECOND PASS IS QUEUED ONLY NOW, AND ONLY FOR THIS SHEET ────────
+  //
+  // Queued after the draft has been ATTACHED, not before it, so the reader has
+  // something on screen for the whole of the sharp pass rather than a blank
+  // page for both of them. And only when this slot is still the primary — the
+  // reader may have scrolled during the ~465 ms the draft took, and promoting
+  // a sheet he has left would spend 64 MB and a thread on a page nobody is
+  // looking at. `wantedTier` is asked again rather than remembered, because
+  // the answer is a property of the moment.
+  '        var want = wantedTier(slot);',
+  '        if (want !== slot.tier) { slot.wantTier = want; enqueue(slot); }',
   '        finish();',
   '      });',
   '    })["catch"](function(e){',
@@ -1036,8 +1383,13 @@ const VIEWER_SCRIPT = [
   '  function sweep(){',
   '    for (var i = 0; i < slots.length; i++) {',
   '      slots[i].visible = inBand(slots[i]);',
-  '      if (slots[i].visible) enqueue(slots[i]); else dequeue(slots[i]);',
+  '      if (slots[i].visible) { enqueue(slots[i]); }',
+  '      else { dequeue(slots[i]); cancelInFlight(slots[i]); }',
   '    }',
+  // BEFORE trim() AND BEFORE pumpQueue(). The primary decides which sheet
+  // wants the expensive tier, and the demote it may trigger has to be in the
+  // queue before the queue is asked to pick.
+  '    refreshPrimary();',
   '    trim();',
   '    pumpQueue();',
   '  }',
@@ -1085,8 +1437,13 @@ const VIEWER_SCRIPT = [
   '        } else {',
   '          slot.visible = false;',
   '          dequeue(slot);',
+  // AND STOP THE ONE ALREADY RUNNING. `dequeue` only takes a sheet out of the
+  // LINE; with one thread, an in-flight render for a sheet the reader has left
+  // is the sheet he is looking at, waiting behind it.
+  '          cancelInFlight(slot);',
   '        }',
   '      }',
+  '      refreshPrimary();',
   '      trim();',
   '      pumpQueue();',
   '    }, { rootMargin: (band() * 100) + "% 0px" });',
@@ -1107,15 +1464,27 @@ const VIEWER_SCRIPT = [
   // PLACEHOLDERS are untouched — `slot.el` keeps the width and height layout()
   // gave it — so the document does not move under the reader's finger while
   // this happens; pages blank and come back sharper in place.
+  // ── WHAT THE PINCH STILL DOES, AND WHAT IT NO LONGER HAS TO ────────────
+  //
+  // IT USED TO BLANK EVERY SHEET. `sharp` was the RESOLUTION switch: first
+  // paint was viewport-anchored at 32.5 ppi and the pinch turned the PPI floor
+  // on, so everything already drawn was at the wrong scale and had to go.
+  //
+  // THAT IS NO LONGER WHAT IT MEANS. The sheet the reader is looking at is
+  // already at the sharp tier — it was promoted the moment it became primary,
+  // long before any pinch — so releasing every canvas here would blank the
+  // page he has just pinched into and redraw it AT THE SAME SCALE. A flicker
+  // bought with a second of thread, for nothing.
+  //
+  // SO `sharp` NOW MEANS ONE THING ONLY: tighten the band. A reader who has
+  // pinched in is looking at ONE sheet, and BAND_SHARP 0.25 is what stops the
+  // prefetch either side of it from being drawn at all. That is a memory
+  // lever, and with a sharp sheet at 64 MB it matters more than it did, not
+  // less. `trim()` frees what falls out of the new band on its own merits.
   '  function goSharp(){',
   '    if (sharp) return;',
   '    sharp = true;',
   '    probePost("sharp", { zoom: r1(zoomScale()), band: band() });',
-  '    for (var i = 0; i < slots.length; i++) {',
-  '      slots[i].visible = false;',
-  '      releaseSlot(slots[i]);',
-  '    }',
-  '    rendered.length = 0;',
   '    rewatch();',
   '  }',
   '',
@@ -1187,7 +1556,11 @@ const VIEWER_SCRIPT = [
   '            el.style.width = baseWidth + "px";',
   '            el.style.height = Math.round(baseWidth * (vp1.height / vp1.width)) + "px";',
   '            var slot = { n: pageNo, el: el, done: false, busy: false,',
-  '                          visible: false, canvas: null, page: null, task: null, gen: 0 };',
+  '                          visible: false, canvas: null, page: null, task: null, gen: 0,',
+  // `tier` is what the attached canvas IS; `wantTier` is what it should be.
+  // Both null on a slot that has never drawn anything, which is what makes
+  // `enqueue`'s "already correct" test false for a blank page.
+  '                          tier: null, wantTier: null };',
   '            el.__slot = slot;',
   '            slots.push(slot);',
   '            pagesEl.appendChild(el);',
@@ -1508,6 +1881,17 @@ const VIEWER_SCRIPT = [
   '    });',
   '  }',
   '',
+  // ── ONCE, BEFORE ANYTHING IS SIZED ─────────────────────────────────────
+  //
+  // NOT BEHIND THE PROBE FLAG, and that is the point: the SHIPPING scale now
+  // depends on this answer, so it has to be read for every reader and not only
+  // for the one being measured. It is cheap enough to do unconditionally — a
+  // ladder of thin strips, 512 KB at the top rung, against the probe's own
+  // square ladder which reaches a gigabyte and is emphatically not this.
+  //
+  // BEFORE `capabilityRead`, because the probe's `env` row reports what is in
+  // use and would otherwise report the fallback on every device.
+  '  measureCanvasEdge();',
   '  capabilityRead(function(){});',
   // ONCE, BEFORE ANY DOCUMENT. The zoom belongs to the WebView, not to the
   // document, so it is watched for the life of the page — and `resetDocument`
@@ -1540,6 +1924,10 @@ const VIEWER_SCRIPT = [
   // the viewport is the only reading that is true for both cases, and it
   // keeps the fail-toward-legible answer when the zoom cannot be read at all.
   '    sharp = zoomIsSharp();',
+  // The primary is a slot of the document that has just gone. Left set, the
+  // next document's first `refreshPrimary` would compare against a slot that
+  // is no longer in `slots` and demote something that no longer exists.
+  '    primary = null;',
   '    try { window.scrollTo(0, 0); } catch (e) {}',
   '  }',
   '',

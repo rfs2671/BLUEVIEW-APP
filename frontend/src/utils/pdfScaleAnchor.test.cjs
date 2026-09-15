@@ -75,8 +75,18 @@ function makeScaler(js) {
   };
   const body = [
     `var MAX_CANVAS_EDGE = ${constOf('MAX_CANVAS_EDGE')};`,
+    `var CANVAS_EDGE_FALLBACK = ${constOf('CANVAS_EDGE_FALLBACK')};`,
     `var MAX_CANVAS_PX = ${constOf('MAX_CANVAS_PX')};`,
     `var TARGET_PPI = ${constOf('TARGET_PPI')};`,
+    // THE EDGE CAP IS NO LONGER A LITERAL IN THE FUNCTION. It is what this
+    // WebView demonstrably allocates, held under the absolute guard — so the
+    // lift has to bring the real `canvasEdgeLimit` across too, and
+    // `measuredCanvasEdge` is supplied per case exactly as `baseWidth` and
+    // `sharp` already are. Reimplementing the clamp here instead would put
+    // this file's arithmetic and the viewer's on separate copies of the rule,
+    // which is the one thing lifting the real function exists to prevent.
+    'var measuredCanvasEdge = measured;',
+    grab('canvasEdgeLimit'),
     grab('targetScaleInfo'),
     'return targetScaleInfo(vp1, over);',
   ].join('\n');
@@ -86,13 +96,18 @@ function makeScaler(js) {
   // is not told otherwise. Supplying it as an argument is what lets this file
   // run BOTH tiers of the real function rather than describing them.
   // eslint-disable-next-line no-new-func
-  const fn = new Function('vp1', 'over', 'baseWidth', 'window', 'sharp', body);
-  return (widthIn, heightIn, cssPx, dpr, sharp, over) => fn(
+  const fn = new Function('vp1', 'over', 'baseWidth', 'window', 'sharp', 'measured', body);
+  // `measured` DEFAULTS TO THE OPERATOR'S DEVICE. His Pixel 10 Pro XL passes a
+  // 16384 edge — the probe's ladder measured it, by touching the far corner of
+  // a real allocation — and that is the device every number below is quoted
+  // against. Cases that care about a WEAKER device pass their own.
+  return (widthIn, heightIn, cssPx, dpr, sharp, over, measured) => fn(
     { width: widthIn * 72, height: heightIn * 72 },
     over,
     cssPx,
     { devicePixelRatio: dpr },
     !!sharp,
+    measured === undefined ? 16384 : measured,
   );
 }
 
@@ -185,13 +200,43 @@ console.log('\n── the caps still bind, so the ceiling did not move ───
     'a sheet this size is clamped, which is why LOWERING TARGET_PPI would '
     + 'change nothing until it drops below ~85 ppi — the reason this branch '
     + 'gates the floor instead of shrinking it');
-  // The edge clamp binds in BOTH tiers on a landscape tablet, so that device
-  // sees no change at all from this branch. Worth asserting rather than
-  // assuming: it is the device the operator is most likely to check first.
+  // ── THE TABLET IS NO LONGER UNTOUCHED, AND THAT IS THE POINT ───────────
+  //
+  // THIS USED TO ASSERT THE OPPOSITE. While MAX_CANVAS_EDGE was 4096 the edge
+  // clamp bound in BOTH tiers on a landscape tablet — 3072x4096 either way —
+  // so that device saw no difference between first paint and the floor, and
+  // the case checked exactly that.
+  //
+  // With the edge cap now read off the device and the AREA cap binding
+  // instead, the floored tier reaches the 16 MP fit — 3463x4618, 96 ppi —
+  // against 3072x4096 and 85 ppi at first paint. The tablet gains resolution
+  // it was previously being denied by a limit it does not have.
+  //
+  // NEVER FEWER PIXELS is the invariant that survives the change and is the
+  // one worth keeping: whatever the device, the sharp tier can only improve
+  // on the first paint, never coarsen it.
   const open = scale(36, 48, 1024, 2, false);
-  ok(Math.abs(open.s - a.s) < 1e-12,
-    'a landscape tablet is clamped to the same edge either way, so first '
-    + 'paint and zoom are identical there and that device is untouched');
+  ok(a.s > open.s,
+    `a landscape tablet now gains from the floor rather than being clamped `
+    + `flat by it (first paint ${(72 * open.s).toFixed(0)} ppi, sharp ${
+      (72 * a.s).toFixed(0)} ppi)`);
+  ok(a.w * a.h > 15e6 && a.w * a.h <= MAXPX + 1,
+    `and the sharp tier is the area fit, not an edge clamp (${
+      Math.round(a.w)}x${Math.round(a.h)})`);
+
+  // ── AND A DEVICE THAT IS NOT HIS ───────────────────────────────────────
+  // The measured cap is a reading off ONE WebView. A device that answers 4096
+  // must get the 4096 answer out of the same function, not a special case.
+  const weak = scale(36, 48, 1024, 2, true, undefined, 4096);
+  ok(Math.max(weak.w, weak.h) <= 4096 + 0.5,
+    `a WebView that only gives 4096 is held there by the same clamp (${
+      Math.round(weak.w)}x${Math.round(weak.h)})`);
+  // UNKNOWN IS NOT OPTIMISTIC. `measuredCanvasEdge = 0` is "could not read
+  // it", and the fallback is the 4096 this viewer has always shipped.
+  const blind = scale(36, 48, 1024, 2, true, undefined, 0);
+  ok(Math.max(blind.w, blind.h) <= 4096 + 0.5,
+    `and a device that could not be measured at all falls back to 4096 rather `
+    + `than to the top of the ladder (${Math.round(blind.w)}x${Math.round(blind.h)})`);
 }
 
 console.log('\n── small pages: the floor is off at open, so letter is too ───');
@@ -270,9 +315,26 @@ console.log('\n── the zoom actually switches the tier ───────�
   ok(/if \(sharp\) return;\s*\n\s*'?\s*sharp = true;/.test(gs.slice(0, 200))
      || /if \(sharp\) return;[\s\S]{0,80}sharp = true;/.test(gs),
     'goSharp is one-way and idempotent — no flicker back to 32 ppi on pinch-out');
-  ok(/releaseSlot\(slots\[i\]\)/.test(gs.slice(0, 600)),
-    'it frees every canvas drawn at the old scale rather than leaving a '
-    + 'mixed-resolution page');
+  // ── WHAT goSharp STOPPED DOING, AND WHY THAT IS THE FIX AND NOT A LOSS ─
+  //
+  // THIS USED TO ASSERT `releaseSlot(slots[i])` — every canvas freed, because
+  // `sharp` was the RESOLUTION switch and everything already drawn was at the
+  // wrong scale.
+  //
+  // `sharp` NO LONGER CHOOSES A SCALE. The sheet in front of the reader is
+  // promoted to the sharp tier the moment it becomes the primary, long before
+  // any pinch, so blanking it here would redraw THE SAME PIXELS behind a
+  // flicker — a second of the only thread there is, spent to change nothing.
+  //
+  // The one thing the pinch still decides is the BAND, and with a sharp sheet
+  // at 64 MB that lever matters more than it did, not less.
+  ok(!/releaseSlot\(slots\[i\]\)/.test(gs.slice(0, 600)),
+    'it no longer blanks every sheet — the one the reader just pinched into '
+    + 'is already at the sharp tier, so a release here is a flicker that '
+    + 'redraws identical pixels');
+  ok(/rewatch\(\);/.test(gs.slice(0, 400)),
+    'what it does instead is rebuild the observer at the tighter band, and '
+    + 'let trim() free what falls out of it on its own merits');
   ok(/visualViewport/.test(JS),
     'the zoom is read from visualViewport, which is what native pinch-zoom moves');
   // FAIL TOWARD LEGIBLE. A WebView that cannot report its zoom must not strand

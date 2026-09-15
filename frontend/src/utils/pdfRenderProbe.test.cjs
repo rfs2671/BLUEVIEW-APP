@@ -331,22 +331,47 @@ try {
     'targetScale is a thin wrapper over targetScaleInfo');
   ok(/\(over === undefined \? 1\.5 : over\)/.test(script),
     'the shipping oversample is still 1.5 when no override is passed');
-  ok(/var info = targetScaleInfo\(vp1\);/.test(script),
-    'renderSlot takes its scale from targetScaleInfo with no override');
-  // The caps must not have moved. This branch measures them; it does not
-  // change them, and a later "fix" that edits them must fail this test
-  // deliberately rather than slip past a probe branch.
+  // THE RENDER PATH NOW CHOOSES A TIER, and this check has been changed
+  // DELIBERATELY rather than slipped past — which is the whole purpose of its
+  // being here. `tierScaleInfo` is a thin thing on top of `targetScaleInfo`,
+  // not a replacement for it: the sharp tier IS `targetScaleInfo(vp1, 1.5,
+  // true)`, so the anchor/floor/clamp reasoning the two checks above pin is
+  // still the reasoning the shipping path runs.
+  ok(/var info = tierScaleInfo\(vp1, tier\);/.test(script),
+    'renderSlot takes its scale from tierScaleInfo, which is the tier choice '
+    + 'on top of the same targetScaleInfo');
+  ok(/var sh = targetScaleInfo\(vp1, 1\.5, true\);/.test(script),
+    'and the sharp tier is targetScaleInfo with the floor on, not a second '
+    + 'copy of the formula');
   ok(/var MAX_CANVAS_PX = 16000000;/.test(script), 'MAX_CANVAS_PX unchanged (16e6)');
-  ok(/var MAX_CANVAS_EDGE = 4096;/.test(script), 'MAX_CANVAS_EDGE unchanged (4096)');
   ok(/var BAND = 1\.5;/.test(script), 'BAND unchanged (1.5)');
-  // KEEP_RENDERED = 7 was replaced DELIBERATELY, which is the failure this
-  // check was written to force rather than one it was written to prevent: it
-  // never bound anything (trim() skips any page still in the band) and a page
-  // count is the wrong unit, since the same seven sheets are 31 MB at the
-  // viewport scale and 336 MB zoomed in. The two constants that took its place
-  // are pinned here in its stead.
-  ok(/var CANVAS_BUDGET_BYTES = 96 \* 1048576;/.test(script),
-    'the resident-bitmap budget is unchanged (96 MB)');
+  // ── THREE CONSTANTS MOVED, EACH FOR A STATED REASON ────────────────────
+  //
+  // This block exists to force a deliberate failure when a cap changes, and
+  // three have. Re-pinned at their new values with the reason beside each, so
+  // the next change has to argue with the reason and not just with a number:
+  //
+  //   MAX_CANVAS_EDGE 4096 -> 16384   4096 was a guess about the device and it
+  //                                   was the clamp that bound every large
+  //                                   sheet to 85 ppi. It is now the ABSOLUTE
+  //                                   guard; what is actually used is
+  //                                   min(measured, guard), and the AREA cap
+  //                                   binds instead.
+  //   CANVAS_BUDGET_BYTES 96 -> 128   96 MB was derived when the expensive
+  //                                   sheet was 12.58 MP / 50 MB. It is now
+  //                                   16 MP / 64 MB, and only ever one of
+  //                                   them: 64 + 26 drafts at 2 MB = 116.
+  //   KEEP_RENDERED gone              (already replaced in the queue branch:
+  //                                   it never bound anything, because trim()
+  //                                   skips any page still in the band.)
+  ok(/var MAX_CANVAS_EDGE = 16384;/.test(script),
+    'MAX_CANVAS_EDGE is now the absolute guard (16384), not the working limit');
+  ok(/var CANVAS_EDGE_FALLBACK = 4096;/.test(script),
+    'and an unreadable capability still falls back to the shipped 4096');
+  ok(/var CANVAS_BUDGET_BYTES = 128 \* 1048576;/.test(script),
+    'the resident-bitmap budget is re-derived against the 64 MB sheet (128 MB)');
+  ok(/var DRAFT_CANVAS_PX = 500000;/.test(script),
+    'and the draft tier is a named pixel budget');
   ok(/var MAX_CONCURRENT_RENDERS = 1;/.test(script),
     'the render concurrency cap is unchanged (1)');
 }
