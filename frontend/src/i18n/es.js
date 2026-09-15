@@ -55,4 +55,30 @@ export default {
   },
 
 
+  // ── app/admin/whatsapp-groups.jsx — conectar un grupo a una obra ──────────
+  waGroups: {
+    title: 'Grupos en espera',
+    subtitle: 'Grupos donde está el asistente pero que aún no están conectados a una obra. Elija el proyecto y confirme — nada se conecta solo.',
+    unavailableTitle: 'Grupos no disponibles',
+    unavailableOffline: 'La lista de espera no se pudo obtener sin conexión.',
+    unavailableError: 'La lista de espera no se pudo leer del servidor.',
+    emptyTitle: 'Nada en espera',
+    emptyDesc: 'Agregue el número de Levelog a un grupo de WhatsApp y aparecerá aquí.',
+    unnamed: 'Grupo sin nombre',
+    choose: 'Elija un proyecto',
+    matched: 'Coincidencia por el nombre del grupo — cámbielo si no es correcto',
+    confirm: 'Confirmar',
+    confirmAll: 'Confirmar coincidencias',
+    hide: 'Ocultar',
+    connectedTitle: 'Conectado',
+    connectFailTitle: 'No se pudo conectar',
+    connectFailBody: 'Inténtelo de nuevo',
+    offlineTitle: 'Sin conexión',
+    offlineConnect: 'Conectar un grupo requiere conexión. No se cambió nada.',
+    partialTitle: 'Algunos no se conectaron',
+    hideFailTitle: 'No se pudo ocultar',
+    deniedTitle: 'Acceso denegado',
+    deniedBody: 'Se requiere acceso de propietario, administrador o CP',
+  },
+
 };

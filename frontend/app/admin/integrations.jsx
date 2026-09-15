@@ -548,8 +548,24 @@ export default function AdminIntegrationsScreen() {
                       )}
                     </Pressable>
                     <Text style={s.whatsappHint}>
-                      Add this number to WhatsApp groups from each project page.
+                      Add this number to a WhatsApp group and it appears under Groups
+                      waiting, where you pick which job it belongs to.
                     </Text>
+                    {/* THE ENTRY POINT FOR THE NEW FLOW. Without a way in from
+                        here, the waiting list is a screen nobody knows exists
+                        -- which is the same failure the six-digit code flow
+                        had, and the reason it went unused. */}
+                    <Pressable
+                      onPress={() => router.push('/admin/whatsapp-groups')}
+                      style={({ pressed }) => [
+                        s.whatsappButton,
+                        pressed && s.dropboxButtonPressed,
+                        { marginTop: spacing.sm },
+                      ]}
+                    >
+                      <MessageCircle size={20} strokeWidth={2} color="#fff" />
+                      <Text style={s.dropboxButtonText}>Groups waiting</Text>
+                    </Pressable>
                   </View>
                 ) : whatsappStatus.platform_configured ? (
                   <View style={s.connectSection}>

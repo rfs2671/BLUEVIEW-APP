@@ -1891,4 +1891,37 @@ export default {
   reportPreview: {
     failedPhotos: '{n} photo(s) failed processing — they may be missing from this report.',
   },
+  // ── app/admin/whatsapp-groups.jsx — connecting a group to a job ───────────
+  //
+  // Read by an owner, admin or CP. The bot's own messages to the crew are
+  // bilingual in one string (see PENDING_GREETING in backend/server.py); this
+  // namespace is the app side, where the locale picks one.
+  waGroups: {
+    title: 'Groups waiting',
+    subtitle: 'Groups the assistant is in but not connected to a job yet. Pick the project and confirm — nothing connects on its own.',
+    // OFFLINE vs EMPTY. "Nothing waiting" must only appear when the SERVER
+    // said the list is empty — a group the bot is sitting silently in is
+    // exactly what this screen exists to surface.
+    unavailableTitle: 'Groups unavailable',
+    unavailableOffline: 'The waiting list could not be fetched offline.',
+    unavailableError: 'The waiting list could not be read from the server.',
+    emptyTitle: 'Nothing waiting',
+    emptyDesc: 'Add the Levelog number to a WhatsApp group and it will appear here.',
+    unnamed: 'Unnamed group',
+    choose: 'Choose a project',
+    matched: 'Matched from the group name — change it if this is wrong',
+    confirm: 'Confirm',
+    confirmAll: 'Confirm matched',
+    hide: 'Hide',
+    connectedTitle: 'Connected',
+    connectFailTitle: 'Could not connect',
+    connectFailBody: 'Please try again',
+    offlineTitle: 'Offline',
+    offlineConnect: 'Connecting a group needs a connection. Nothing changed.',
+    partialTitle: 'Some did not connect',
+    hideFailTitle: 'Could not hide',
+    deniedTitle: 'Access denied',
+    deniedBody: 'Owner, admin or CP access required',
+  },
+
 };
