@@ -47,14 +47,25 @@ import { Asset } from 'expo-asset';
  *   page LEAVING the viewport, so nothing ever came back. A 200-sheet plan set
  *   scrolled end to end accumulated the whole thing and Chromium killed the
  *   renderer, which is what the crash-after-load reports were. The page now
- *   holds a bounded window of rasterised sheets (KEEP_RENDERED) and frees the
- *   rest — removing the element AND zeroing width/height, because removal on
- *   its own does not drop the bitmap.
+ *   holds the resident bitmap under a MEGAPIXEL budget (CANVAS_BUDGET_MP) and
+ *   frees the rest — removing the element AND zeroing width/height, because
+ *   removal on its own does not drop the bitmap. Megapixels and not a page
+ *   count: the same seven sheets measured 27.4 MB un-zoomed and 336 MB zoomed
+ *   in, and 336 MB is where the renderer gets killed.
  *
- * ⚠️ ASSET PLACEMENT IS A HUMAN STEP. assets/pdfjs/*.txt currently hold
- *    documented placeholders, not the real pdf.js build. `ensurePdfJsViewer()`
- *    detects that by size and returns { ok: false, reason: 'assets-missing' }
- *    so the UI can say so instead of showing a blank page.
+ * WHERE THE WORK HAPPENS
+ *   pdf.js parses and decodes in a REAL Worker, built here from a blob: URL
+ *   because a file:// page cannot construct one from a path (see
+ *   `ensureWorker`). What stays on the UI thread is the CANVAS PAINT — pdf.js
+ *   replays the operator list through a real 2D context on the main thread —
+ *   so the residual stall this viewer can still show is paint, not decode.
+ *
+ * ⚠️ ASSET PLACEMENT IS A HUMAN STEP. `ensurePdfJsViewer()` checks
+ *    assets/pdfjs/*.txt by SIZE and returns { ok: false, reason:
+ *    'assets-missing' } if they are placeholders rather than the real pdf.js
+ *    build, so the UI can say so instead of showing a blank page. (They are
+ *    real in this tree — 377 KB and 1.13 MB — but the check stays: a
+ *    placeholder is what a fresh clone of a fork would get.)
  */
 
 // The pdf.js dist files, shipped as `.txt` because Metro bundles `.js` as
