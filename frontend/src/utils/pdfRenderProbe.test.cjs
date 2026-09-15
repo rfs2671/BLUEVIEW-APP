@@ -339,7 +339,16 @@ try {
   ok(/var MAX_CANVAS_PX = 16000000;/.test(script), 'MAX_CANVAS_PX unchanged (16e6)');
   ok(/var MAX_CANVAS_EDGE = 4096;/.test(script), 'MAX_CANVAS_EDGE unchanged (4096)');
   ok(/var BAND = 1\.5;/.test(script), 'BAND unchanged (1.5)');
-  ok(/var KEEP_RENDERED = 7;/.test(script), 'KEEP_RENDERED unchanged (7)');
+  // KEEP_RENDERED = 7 was replaced DELIBERATELY, which is the failure this
+  // check was written to force rather than one it was written to prevent: it
+  // never bound anything (trim() skips any page still in the band) and a page
+  // count is the wrong unit, since the same seven sheets are 31 MB at the
+  // viewport scale and 336 MB zoomed in. The two constants that took its place
+  // are pinned here in its stead.
+  ok(/var CANVAS_BUDGET_BYTES = 96 \* 1048576;/.test(script),
+    'the resident-bitmap budget is unchanged (96 MB)');
+  ok(/var MAX_CONCURRENT_RENDERS = 1;/.test(script),
+    'the render concurrency cap is unchanged (1)');
 }
 
 // ── 7. THE SUITE FREES WHAT IT ALLOCATES ─────────────────────────────────
