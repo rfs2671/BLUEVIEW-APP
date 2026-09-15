@@ -37038,6 +37038,113 @@ async def classify_intent(message: str) -> Optional[str]:
 
 # ---------- intent handlers ----------
 
+# ── "CHECK WITH HR" IS NEVER THE ANSWER FOR DATA WE HOLD ───────────────────
+#
+# Live test, 2026-09-14: asked whether a man on site had a current SST card,
+# the agent told the superintendent to check with HR. The card status was two
+# fields away — frozen onto the very check-in row the roster was built from —
+# and the roster handler simply did not render it, so the model had no way to
+# know it existed and correctly declined to guess.
+#
+# That is worse than a wrong answer. A superintendent standing at a gate is
+# asking the one question this product exists to answer, and being told to ask
+# somebody else teaches him the bot does not know things it knows.
+#
+# THE CHECK-IN ROW IS THE RECORD, NOT THE WORKER ROW. `checkins` freezes
+# sst_status, sst_expiration and sst_card_number at the moment of check-in and
+# never updates them, precisely so "did this man hold a valid card on this
+# date" is answerable later. The roster path reads those frozen fields. The
+# full-roster path has no check-in to read and derives the same three-state
+# verdict from the worker's certifications live — different source, same
+# vocabulary, so the agent never sees two words for one state.
+_SST_LABEL = {
+    "valid":         "SST ok",
+    "expiring_soon": "SST EXPIRING",
+    "expired":       "SST EXPIRED",
+    "missing":       "NO SST CARD",
+    "unknown":       "SST unconfirmed",
+}
+
+
+def _sst_suffix(status: Optional[str], expiration: Any) -> str:
+    """The card state as a short clause, for one line of a roster.
+
+    Empty string when there is nothing known to say, so a roster of workers
+    with no card data reads exactly as it did before this existed."""
+    label = _SST_LABEL.get((status or "").lower())
+    if not label:
+        return ""
+    date_txt = ""
+    exp = expiration
+    if isinstance(exp, str) and exp:
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            exp = None
+    if isinstance(exp, datetime):
+        date_txt = f" exp {exp.strftime('%Y-%m-%d')}"
+    elif status == "unknown":
+        # The whole point of `unknown` is that the expiry could not be read.
+        # Printing nothing where a date belongs is what makes it unknown.
+        date_txt = ""
+    return f" — {label}{date_txt}"
+
+
+def _sst_from_worker(worker: dict, now: Optional[datetime] = None) -> tuple:
+    """(status, expiration) for the full-roster path, from live certifications.
+
+    Mirrors the three-state gate frozen onto a check-in: expired, then
+    expiring within 30 days, then a class/expiry we could not confirm, then
+    missing, then valid. NEVER silently valid — an unreadable card is
+    `unknown`, which is the distinction the whole cert vocabulary exists for."""
+    now = now or datetime.now(timezone.utc)
+    certs = worker.get("certifications") or []
+    sst = [c for c in certs
+           if str(c.get("type") or "") in RECOGNIZED_SST_TYPES]
+    if not sst:
+        return "missing", None
+
+    # Prefer a class-confirmed card when the worker carries more than one.
+    cert = next(
+        (c for c in sst if str(c.get("type") or "") in SST_CLASS_TYPES),
+        sst[0],
+    )
+    exp = cert.get("expiration_date")
+    if isinstance(exp, str) and exp:
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            exp = None
+    if isinstance(exp, datetime) and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+
+    class_unknown = str(cert.get("type") or "") not in SST_CLASS_TYPES
+    expiry_unknown = (
+        not isinstance(exp, datetime) or bool(cert.get("expiration_raw_rejected"))
+    )
+    if isinstance(exp, datetime) and exp <= now:
+        return "expired", exp
+    if class_unknown or expiry_unknown:
+        return "unknown", exp if isinstance(exp, datetime) else None
+    if exp <= now + timedelta(days=30):
+        return "expiring_soon", exp
+    return "valid", exp
+
+
+def _sst_tally(states: list) -> str:
+    """A one-line headline so the agent can answer "is everyone current?"
+    without counting the list itself, which is what it got wrong."""
+    counts = {}
+    for st in states:
+        if st:
+            counts[st] = counts.get(st, 0) + 1
+    if not counts:
+        return ""
+    order = ("expired", "missing", "unknown", "expiring_soon", "valid")
+    bits = [f"{counts[k]} {_SST_LABEL[k]}" for k in order if k in counts]
+    return "SST: " + ", ".join(bits)
+
+
 async def _handle_who_on_site(
     project_id: str,
     trade: Optional[str] = None,
@@ -37085,28 +37192,40 @@ async def _handle_who_on_site(
             return f"No {trade or company} workers checked in on site today{filter_desc}."
         return "No workers currently checked in on site."
 
+    # Each man's card state travels with his name, because a roster that
+    # answers "who is here" and not "is he cleared to be here" sends the
+    # superintendent somewhere else for the half he actually needs.
+    def _entry(ci: dict) -> str:
+        return (ci.get("worker_name", "Unknown")
+                + _sst_suffix(ci.get("sst_status"), ci.get("sst_expiration")))
+
+    tally = _sst_tally([ci.get("sst_status") for ci in filtered])
+    head = f"*{n} on site today{filter_desc}:*"
+    if tally:
+        head += f"\n{tally}"
+
     # Group by company (or trade if filtering by company)
     if company:
         by_key: Dict[str, list] = {}
         for ci in filtered:
             key = (ci.get("worker_trade") or ci.get("trade") or "General").title()
-            by_key.setdefault(key, []).append(ci.get("worker_name", "Unknown"))
-        lines = [f"*{n} on site today{filter_desc}:*"]
-        for k, names in sorted(by_key.items()):
-            lines.append(f"\n_{k}_ ({len(names)}):")
-            for nm in sorted(names):
-                lines.append(f"  - {nm}")
+            by_key.setdefault(key, []).append(_entry(ci))
+        lines = [head]
+        for k, entries in sorted(by_key.items()):
+            lines.append(f"\n_{k}_ ({len(entries)}):")
+            for e in sorted(entries):
+                lines.append(f"  - {e}")
     else:
         by_company: Dict[str, list] = {}
         for ci in filtered:
             co = _worker_company(ci.get("worker_company"), ci.get("company"),
                                  ci.get("company_name")) or "Unknown"
-            by_company.setdefault(co, []).append(ci.get("worker_name", "Unknown"))
-        lines = [f"*{n} on site today{filter_desc}:*"]
-        for co, names in sorted(by_company.items()):
-            lines.append(f"\n_{co}_ ({len(names)}):")
-            for nm in sorted(names):
-                lines.append(f"  - {nm}")
+            by_company.setdefault(co, []).append(_entry(ci))
+        lines = [head]
+        for co, entries in sorted(by_company.items()):
+            lines.append(f"\n_{co}_ ({len(entries)}):")
+            for e in sorted(entries):
+                lines.append(f"  - {e}")
     return "\n".join(lines)
 
 
@@ -37154,15 +37273,26 @@ async def _handle_list_workers(
     elif company:
         filter_desc = f" — {company}"
 
+    # No check-in row here, so the verdict is derived live from the worker's
+    # certifications — same three states, same words, so the agent is never
+    # reading two vocabularies for one fact.
+    now = datetime.now(timezone.utc)
+    states = []
     by_trade: Dict[str, list] = {}
     for w in filtered:
         t = (w.get("trade") or "General").title()
-        by_trade.setdefault(t, []).append(w.get("name", "Unknown"))
+        status, exp = _sst_from_worker(w, now)
+        states.append(status)
+        by_trade.setdefault(t, []).append(
+            w.get("name", "Unknown") + _sst_suffix(status, exp))
     lines = [f"*{n} workers{filter_desc}:*"]
-    for t, names in sorted(by_trade.items()):
-        lines.append(f"\n_{t}_ ({len(names)}):")
-        for nm in sorted(names):
-            lines.append(f"  - {nm}")
+    tally = _sst_tally(states)
+    if tally:
+        lines.append(tally)
+    for t, entries in sorted(by_trade.items()):
+        lines.append(f"\n_{t}_ ({len(entries)}):")
+        for e in sorted(entries):
+            lines.append(f"  - {e}")
     return "\n".join(lines)
 
 
@@ -39271,18 +39401,68 @@ def _floor_regex(val: str) -> str:
 SHOW_VERBS = ("show me", "pull up", "send me", "find the", "open", "get me", "display")
 
 
+# A question whose answer is a number or a yes. These beat the show-verbs,
+# which is the whole fix — see the note in _classify_plan_question.
+_COUNT_PHRASING = re.compile(
+    r"\b(how many|how much|number of|count (of |the )?|total (number )?of)\b", re.I)
+# Existence words, which mean the same wherever they sit in the sentence.
+_YES_NO_ANYWHERE = re.compile(
+    r"\b(is there|are there|anywhere|do any|does any|any of)\b", re.I)
+
+# Bare auxiliaries, which only make a yes/no question when they OPEN it.
+#
+# "is the" ANYWHERE was the first draft and it was wrong. It fires inside
+# "what is the ceiling height on 2" — an open question whose answer is a
+# measurement, and the one kind of question the reference drawing most helps
+# with — so it suppressed exactly the image it should have sent. An auxiliary
+# in the middle of a sentence is grammar; at the front it is a yes/no.
+_YES_NO_LEADING = re.compile(
+    r"^(is|are|was|were|does|do|did|has|have|can|could|should|will|any)\b", re.I)
+
+
+def _is_count_or_yes_no(query: str) -> bool:
+    """True when the answer is a number or a yes/no, wherever it sits."""
+    if not query:
+        return False
+    low = re.sub(r"^@?levelog\s*[:,-]?\s*", "", query.strip().lower())
+    return bool(
+        _COUNT_PHRASING.search(low)
+        or _YES_NO_ANYWHERE.search(low)
+        or _YES_NO_LEADING.match(low)
+    )
+
+
 def _classify_plan_question(query: str) -> bool:
     """Return True if the user is asking a visual question about a drawing
     (VQA), False if they just want the image sent.
 
-    Heuristic: VQA if the query starts with or prominently features a
-    question word (what/how/where/why/which/when/is/are/does/do/can) AND
-    does NOT start with a show-verb. Also any '?' with no show-verb.
+    ── THE SHOW-VERB USED TO WIN, AND IT SHOULD NEVER WIN OVER A COUNT ──────
+    #
+    Live test, 2026-09-14: "show me how many outlets are on the roof plan"
+    came back as a drawing. So did "count the risers on ST-201". The first
+    lost because the show-verb check ran first and returned before the
+    question words were ever looked at; the second lost because "count" was
+    not in the starter list and the sentence carried no question mark.
+    Both are questions with a one-word answer, and a sheet is not an answer
+    to either.
+    #
+    "Show me" in front of a count is not a request for a picture. It is how
+    people ask for anything — "show me how many guys are on site" is not a
+    request for a photograph of the crew. So count and yes/no phrasing is
+    tested FIRST and anywhere in the sentence, not only at the front.
+    #
+    A bare show-verb with no question in it still sends the image, which is
+    the behaviour that was right all along: "show me A-101" wants A-101.
     """
     if not query:
         return False
     low = query.strip().lower()
-    # Explicit show-me requests → image send
+
+    # FIRST, and deliberately before the show-verbs.
+    if _is_count_or_yes_no(low):
+        return True
+
+    # Explicit show-me requests with no question in them → image send
     for v in SHOW_VERBS:
         if low.startswith(v):
             return False
@@ -39776,34 +39956,49 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             # Got an answer — format with sheet citation per spec.
             reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
             await send_whatsapp_message(group_id, reply_text)
-            # Follow up with the drawing image so the crew has visual
-            # reference. Silent failure is fine — they already have the
-            # answer text.
-            try:
-                await asyncio.sleep(0.6)
-                await _send_plan_image(
-                    group_id, rec, f"{sheet_number} — {sheet_title}",
-                )
-            except Exception as e:
-                logger.warning(
-                    f"plan image send after VQA failed sheet={sheet_number}: {e}"
-                )
+            # A DRAWING AFTER A NUMBER IS NOISE. The follow-up image is real
+            # help for an open question — "what is the ceiling height here"
+            # is better with the section in front of you. It is the opposite
+            # for "how many outlets" and "is there a skylight": the answer is
+            # one word, it has already been sent, and a full sheet after it is
+            # a scroll the superintendent did not ask for.
+            if not _is_count_or_yes_no(effective_question):
+                try:
+                    await asyncio.sleep(0.6)
+                    await _send_plan_image(
+                        group_id, rec, f"{sheet_number} — {sheet_title}",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"plan image send after VQA failed sheet={sheet_number}: {e}"
+                    )
             return
         except Exception as e:
             logger.warning(f"VQA attempt failed for {rec.get('sheet_number')}: {e}")
             continue
 
-    # All candidates exhausted — per spec, send the top image and note that
-    # the answer couldn't be confirmed directly.
-    top = candidates[0]
-    top_sheet = top.get("sheet_number") or "Sheet"
-    top_title = top.get("sheet_title")  or "Construction Drawing"
-    await send_whatsapp_message(
-        group_id,
-        f"Couldn't confirm an answer from the indexed drawings. Sending the "
-        f"closest match: *{top_sheet}* — {top_title}",
-    )
-    await _send_plan_image(group_id, top, f"{top_sheet} — {top_title}")
+    # ── NO IMAGE FALLBACK FOR A QUESTION ───────────────────────────────────
+    #
+    # This used to send the top sheet as a picture. Every candidate had just
+    # answered NOT_SHOWN_ON_SHEET — the model looked at that exact drawing and
+    # said the thing is not on it — and the handler sent it anyway.
+    #
+    # For a yes/no or a count that is worse than saying nothing. The user asked
+    # "are there sprinklers on 4", the drawings do not show sprinklers on 4, and
+    # what arrives is a drawing of floor 4. It reads as an answer. It is not
+    # one, and the reader has no way to tell.
+    #
+    # The sheet NUMBERS are still worth sending: they say where we looked, which
+    # is what turns "I don't know" into something a person can act on — open
+    # those three in the app, or tell us the set is missing a sheet.
+    top_sheets = [
+        (r.get("sheet_number") or "?") for r in candidates[:3]
+    ]
+    checked = ", ".join(dict.fromkeys(s for s in top_sheets if s != "?"))
+    msg = "Not found on the indexed drawings."
+    if checked:
+        msg += f"\nClosest sheets: {checked}."
+    await send_whatsapp_message(group_id, msg)
 
 
 # ==================== SPRINT 4 — AGENTIC INTENT ROUTER ====================
@@ -40184,9 +40379,13 @@ _AGENT_TOOLS = [
         "function": {
             "name": "who_on_site",
             "description": (
-                "Return the workers currently checked in on site today. "
-                "Optionally filter by trade (e.g. 'carpenter', 'electrician', 'framer') "
-                "or by subcontractor company name."
+                "Return the workers currently checked in on site today, EACH WITH "
+                "THEIR SST CARD STATUS AND EXPIRY DATE. Optionally filter by trade "
+                "(e.g. 'carpenter', 'electrician', 'framer') or by subcontractor "
+                "company name. USE THIS for any question about SST cards, OSHA "
+                "cards, certifications or who is cleared to work today — the card "
+                "data is in the result. Never tell the user to check with HR or "
+                "look somewhere else for it."
             ),
             "parameters": {
                 "type": "object",
@@ -40203,9 +40402,11 @@ _AGENT_TOOLS = [
         "function": {
             "name": "list_workers",
             "description": (
-                "Return the full roster of workers for the project's company, optionally "
-                "filtered. Use this when the user asks about workers in general ('how many "
-                "carpenters do we have'), not who is currently on site."
+                "Return the full roster of workers for the project's company, EACH WITH "
+                "THEIR SST CARD STATUS AND EXPIRY DATE, optionally filtered. Use this "
+                "when the user asks about workers in general ('how many carpenters do we "
+                "have', 'whose SST expires this month'), not who is currently on site. "
+                "Card data is in the result — never tell the user to check with HR."
             ),
             "parameters": {
                 "type": "object",
@@ -40419,7 +40620,22 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "answering your previous one. Don't pester.\n"
     "AT MOST ONE QUESTION, AND ONLY WHEN THE ANSWER IS ACTIONABLE. A follow-up "
     "on every single reply stops reading as helpful and starts reading as a "
-    "machine that will not stop talking. If the answer is complete, end.\n\n"
+    "machine that will not stop talking. If the answer is complete, end.\n"
+    "NEVER end with a generic offer. No 'anything else?', no 'let me know if "
+    "you need anything', no 'happy to help'. A next-step question names a "
+    "SPECIFIC next action or it does not get asked.\n\n"
+    # ── DO NOT SAY IT TWICE ────────────────────────────────────────────────
+    #
+    # Live test, 2026-09-14: the bot listed the crew, was asked a follow-up
+    # about one man, and re-listed the whole crew before answering. In a group
+    # chat the previous reply is still on screen, two inches up. Repeating it
+    # is not context, it is the same message twice, and it pushes the part the
+    # user actually asked for off the bottom of the phone.
+    "DO NOT REPEAT WHAT YOU JUST SENT:\n"
+    "If your previous message already listed the workers, permits, sheets or "
+    "items, do NOT list them again. The user can still see them. Answer only "
+    "the new question, referring to what is already on screen by name.\n"
+    "A follow-up about one item gets an answer about that one item.\n\n"
     # ──── THE PARALLEL CLAIM WAS FALSE AND IT HAS BEEN DELETED ───────────
     #
     # This paragraph used to end "The tool system runs them in parallel when
