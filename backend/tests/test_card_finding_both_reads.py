@@ -102,10 +102,15 @@ class BothReadsUseIt(unittest.TestCase):
 
     def test_the_two_reads_agree_on_the_same_row(self):
         """The document and the queue must not disagree about whether a row
-        has a finding."""
+        has a finding.
+
+        THE INDEX KEY IS NORMALISED (2026-09-14) -- "SUPERVISOR", not
+        "Supervisor". Only the key's spelling changed; both reads still go
+        through card_number_finding and still agree, which is what this test
+        is about."""
         review, _cards, _workers = server.osha_review_index(
             [{"_id": WORKER, "certifications": [BAD]}])
-        on_register = review.get((WORKER, "Supervisor"))
+        on_register = review.get((WORKER, "SUPERVISOR"))
         on_screen = _read([BAD])["certifications"][0].get("review_reason")
         self.assertEqual(on_register, on_screen)
         self.assertEqual(on_register, "CARD_NUMBER_FORMAT")

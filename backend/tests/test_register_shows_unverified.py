@@ -78,11 +78,20 @@ class TheReviewColumnReachesTheRowsWithNoCardNumber(unittest.TestCase):
         guard existed at all: a man holding a clean OSHA 30 and a flagged SST
         must not have his correct row marked uncertain. `(wid, "")` is an EXACT
         key for a cert with no number — it cannot reach a flag stored under a
-        different number."""
+        different number.
+
+        THE known_cards KEY IS NORMALISED (2026-09-14). Both sides of this join
+        now fold case: osha_review_index normalises the live card number when
+        it builds known_cards, and osha_review_cell normalises the filed one it
+        looks up with. This fixture builds known_cards BY HAND, so it has to
+        spell the key the way osha_review_index would — "CLEAN-30" is the only
+        key that function could ever emit for this cert. The guarantee under
+        test is unchanged: a flag stored under (wid, "") must not reach a row
+        that has a number."""
         cell = server.osha_review_cell(
             {"worker_id": self.WID, "card_number": "clean-30"},
             {(self.WID, ""): "CLASS_UNVERIFIED"},          # a DIFFERENT cert
-            {(self.WID, "clean-30")}, {self.WID},
+            {(self.WID, "CLEAN-30")}, {self.WID},
         )
         self.assertIn("No findings", cell)
         self.assertNotIn("Class unverified", cell)

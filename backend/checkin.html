@@ -72,6 +72,15 @@ input[type=text],input[type=tel],select{
 }
 input:focus,select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-glow)}
 input::placeholder{color:var(--text3)}
+/* THE WORKER MUST SEE WHAT IS BEING RECORDED. autocapitalize is a REQUEST to
+   the keyboard and a keyboard may decline it; a value pasted in, autofilled,
+   or written by the OCR fill below never passes through a keyboard at all.
+   This makes the field READ the way the record will be stored, so a man
+   looking at the screen is looking at his card number as filed.
+   The placeholder is exempt: it is a sentence asking him to do something, and
+   "CARD NUMBER" is a different tone from the rest of this page. */
+#regCardNumber{text-transform:uppercase}
+#regCardNumber::placeholder{text-transform:none}
 select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%2394a3b8'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:40px}
 select option{background:#1e293b;color:#f1f5f9}
 
@@ -343,7 +352,17 @@ select option{background:#1e293b;color:#f1f5f9}
           <div class="manual-note" data-i18n="manualEntryLink">Can't photograph the card? Enter the details below instead</div>
           <div class="input-group">
             <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
-            <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off">
+            <!-- autocapitalize="characters" IS THE DEFECT FIX, not a nicety.
+                 A plain <input type="text"> defaults to
+                 autocapitalize="sentences" on iOS and Android, which
+                 capitalises the FIRST letter and nothing else. Four real SST
+                 cards were recorded as Rzsszstz78 / Ckald4crd7 / Kp82q7k5hb /
+                 Vg61sfldfg on 2026-09-11 and scored "unexpected card format"
+                 for it. autocorrect/spellcheck off because a card number is
+                 not a word and must not be helpfully rewritten into one.
+                 The server normalises regardless — see
+                 normalize_card_number in server.py. -->
+            <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
           </div>
           <div class="input-group">
             <div class="input-label" data-i18n="issuedLabel">Issued Date</div>

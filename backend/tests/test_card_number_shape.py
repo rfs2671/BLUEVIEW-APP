@@ -100,8 +100,25 @@ class ThreeStatesBecauseThereAreThree(unittest.TestCase):
         for n in ("JH447TBBX", "JH447TBBXGX", "SST-88213"):
             self.assertEqual(server._card_number_shape(n), "unexpected", n)
 
-    def test_lower_case_is_unexpected(self):
-        self.assertEqual(server._card_number_shape("jh447tbbxg"), "unexpected")
+    def test_lower_case_is_NOT_unexpected_any_more(self):
+        """REVERSED ON 2026-09-14, and this test is left here inverted rather
+        than deleted so the reversal is visible to whoever reads this file
+        next.
+
+        It used to assert `_card_number_shape("jh447tbbxg") == "unexpected"`,
+        and that assertion was measured wrong on production: four real SST
+        cards -- Rzsszstz78, Ckald4crd7, Kp82q7k5hb, Vg61sfldfg -- were scored
+        "unexpected" for case alone. One capital, nine lower is not a shape a
+        person types; it is what `autocapitalize="sentences"` does to a plain
+        <input type="text"> on iOS and Android, which is what the gate's card
+        field was.
+
+        THE TRAP IS UNAFFECTED, and the test below this file already said so:
+        "upper casing it does not rescue it". The digit requirement is what
+        catches "Supervisor", and it still does. See test_card_number_case.py.
+        """
+        self.assertEqual(server._card_number_shape("jh447tbbxg"), "ok")
+        self.assertEqual(server._card_number_shape("Rzsszstz78"), "ok")
 
     def test_it_is_pure_and_takes_no_database(self):
         code = ast.unparse(ast.parse(textwrap.dedent(
@@ -175,10 +192,16 @@ class TheReadObservesAndWritesNothing(unittest.TestCase):
         return server.osha_review_index([{"_id": WORKER, "certifications": certs}])
 
     def test_a_malformed_row_is_surfaced(self):
+        """THE KEY IS NORMALISED NOW, and the finding is not changed by it.
+        osha_review_index folds the card number into the normal form on both
+        sides of the join (osha_review_cell does the same to its lookup key),
+        so a flag written against a live cert still reaches a FILED row that
+        spells the same card differently -- a filed document is never
+        rewritten, so the two spellings coexist forever."""
         review, _cards, _workers = self._index(
             [{"type": "SST_FULL", "card_number": "Supervisor",
               "needs_review": False}])
-        self.assertEqual(review[(WORKER, "Supervisor")], "CARD_NUMBER_FORMAT")
+        self.assertEqual(review[(WORKER, "SUPERVISOR")], "CARD_NUMBER_FORMAT")
 
     def test_a_good_row_is_not(self):
         review, _c, _w = self._index(

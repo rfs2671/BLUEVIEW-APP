@@ -3307,9 +3307,45 @@ SST_DEAD_CLASSES = {"SST_LIMITED"}
 #                                            field and it is exactly ten
 #                                            alphanumeric characters long.
 #
-# What separates it from the real ones is case and digits, so the rule needs
-# both: [A-Z0-9]{10} AND at least one digit.
+# What separates it from the real ones is DIGITS. Case was the other half of
+# that sentence until 2026-09-14, and case was wrong -- see below.
 _CARD_NUMBER_RE = re.compile(r"^[A-Z0-9]{10}$")
+
+
+def normalize_card_number(value) -> Optional[str]:
+    """A card number as it is STORED and COMPARED: stripped, upper-cased.
+
+    THE FOUR ROWS THAT PAID FOR THIS, all typed on 2026-09-11 on one project:
+
+        Rzsszstz78   Geovany Baten
+        Ckald4crd7   Amaury ayala ontero
+        Kp82q7k5hb   Abel Alvarez
+        Vg61sfldfg   Marcelino c garcia
+
+    One capital, nine lower. THAT IS NOT A SHAPE A PERSON TYPES -- it is the
+    shape a PHONE types. The gate's card field was a plain `<input
+    type="text">`, and a plain text input defaults to
+    `autocapitalize="sentences"` on iOS and Android: it capitalises the first
+    letter and nothing else. Four real cards, right length, right character
+    class, scored "unexpected" for a keyboard default.
+
+    UPPER, NOT LOWER, because the register, the LL196 attestation and every
+    card the DOB prints are upper-case, so the normal form should be the form a
+    reader already sees on the document.
+
+    NONE, NOT "", for absence. _card_number_shape has three states and the
+    middle one is not a fault: a row nobody filled is a GAP in the record, and
+    turning it into an empty string would make it a value.
+
+    THE CLIENT ATTRIBUTE IS NOT A SUBSTITUTE FOR THIS. checkin.html now asks
+    the keyboard for capitals, but that is a courtesy a cached gate page, a
+    retried submit or any future client will not honour. The rule has to hold
+    at the boundary regardless of what reached it.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    return text or None
 
 
 def card_number_finding(cert) -> Optional[str]:
@@ -3351,8 +3387,22 @@ def _card_number_shape(value) -> str:
     A row nobody filled is a GAP in the record; a row holding "Supervisor" is a
     value that LOOKS like data and is not. Only the second deceives a reader,
     and only the second is surfaced.
+
+    CASE IS NOT ONE OF THE THREE, and treating it as one cost four real cards.
+    This compared raw against `[A-Z0-9]{10}`, so `Rzsszstz78` -- Geovany Baten's
+    actual SST number, the right length and the right character class -- scored
+    "unexpected" because a phone keyboard capitalised the first letter.
+    normalize_card_number carries the reason in full.
+
+    THE TRAP STILL CLOSES, AND THE DIGIT RULE IS WHAT CLOSES IT. Folding case
+    turns "Supervisor" into "SUPERVISOR", which passes the character class --
+    so the ONLY thing now standing between the card CLASS and the card NUMBER
+    field is `any(c.isdigit())`. That was always true: test_card_number_shape
+    has asserted "upper casing it does not rescue it" since the rule was
+    written. Case was doing a job the digit rule already did, and it was
+    refusing real cards to do it. Do not delete the digit clause.
     """
-    text = str(value or "").strip()
+    text = normalize_card_number(value)
     if not text:
         return "missing"
     if _CARD_NUMBER_RE.match(text) and any(c.isdigit() for c in text):
@@ -3673,6 +3723,13 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         never touched.
       * Two unverified SST rows on one worker are both flagged (Amendment C).
     """
+    # THE FUNCTION THAT MINTS A card_number NORMALISES ITS OWN INPUT. The one
+    # production caller already normalises (register_and_checkin), so this is
+    # belt and braces -- but this is the only place a certification row is
+    # CREATED, three test modules call it directly, and a row minted here is
+    # written to a worker document and snapshotted onto an immutable check-in.
+    # A rule that has to hold at every write holds better inside the writer.
+    osha_number = normalize_card_number(osha_number)
     worker_certs = list(existing_certs or [])
     has_existing_osha = any(str(c.get("type", "")).startswith("OSHA") for c in worker_certs)
     # None unless the scan was of a card that is not an SST card at all.
@@ -3794,10 +3851,19 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         # then correctly left untouched). Fall back to an UNVERIFIED SST row
         # only: a verified row is a confirmed, specific card and a
         # different-number scan must never be folded onto (or swallowed by) it.
+        #
+        # "EXACT" MEANS THE SAME CARD, NOT THE SAME SPELLING. The scan's number
+        # is normalised above; the STORED row may predate that and hold any
+        # case. Compared raw, one man's one card reads as two: the first branch
+        # misses, and on a VERIFIED row the second branch misses too (it only
+        # takes unverified rows) — so a re-scan appended a DUPLICATE SST row to
+        # a worker whose card was already admin-confirmed. Measured, not
+        # supposed: the test for it asserted 2 != 1 before this line changed.
         existing_sst = next(
             (c for c in worker_certs
              if str(c.get("type", "")) in RECOGNIZED_SST_TYPES
-             and card_no and c.get("card_number") == card_no),
+             and card_no
+             and normalize_card_number(c.get("card_number")) == card_no),
             None,
         ) or next(
             (c for c in worker_certs
@@ -14878,7 +14944,33 @@ async def register_and_checkin(data: dict, request: Request):
     osha_data = data.get("osha_data")  # OCR results dict
     # Same rule, same reason: osha_number reaches the OSHA register and the
     # LL196 attestation, and a card number of "N/A" prints as one.
+    #
+    # AND THEN THE CASE RULE, IN THIS ORDER. norm_ocr_str first so a nullish
+    # token is recognised while it is still spelled the way the model spelled
+    # it -- upper-casing first would turn "n/a" into "N/A" and hand a value to
+    # a reader that no longer sees a null.
+    #
+    # ONE NORMALISATION, FOUR DESTINATIONS. Every write of this card number
+    # downstream reads this one name, so normalising here reaches all of them:
+    #   * the worker document          (osha_number, created and updated below)
+    #   * the certification row        (build_worker_certifications)
+    #   * the frozen check-in snapshot (sst_card_number, never overwritten)
+    #   * the subcontractor-orientation logbook (data.osha_number), which the
+    #     CP later signs and which is then locked
+    # The last two are why this belongs HERE and not at any single writer: they
+    # are immutable once written, so the only chance to get the case right is
+    # before it is written.
+    #
+    # TWO STATEMENTS, NOT ONE NESTED CALL, and deliberately so. Wrapping this
+    # as normalize_card_number(norm_ocr_str(...)) reads the same and IS the
+    # same, but it hides the inner call from
+    # test_osha_ocr_null_boundary::test_the_gate_normalises_the_name_it_is_posted,
+    # which walks this function's AST for `X = norm_ocr_str(...)` assignments
+    # and asserts osha_number is one of them. That guard exists because a card
+    # number of "N/A" prints as one on the register; it should keep working on
+    # this line, not be widened to accommodate a nesting that bought nothing.
     osha_number = norm_ocr_str(data.get("osha_number"))
+    osha_number = normalize_card_number(osha_number)
     safety_orientation = data.get("safety_orientation")  # dict of checked items
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
@@ -14992,7 +15084,25 @@ async def register_and_checkin(data: dict, request: Request):
     # after the validation, exactly as before.
     worker = await _worker_by_phone(phone)
     if not worker and osha_number:
-        worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
+        # CASE-INSENSITIVE, AND THIS IS THE HAZARD NORMALISATION CREATES.
+        #
+        # This is an IDENTITY lookup: it decides whether the man tapping the
+        # gate is someone the database already knows. `osha_number` is now
+        # upper-cased above, but every worker stored BEFORE that holds whatever
+        # case his phone produced -- four of them hold `Rzsszstz78` and its
+        # like. An exact match would miss his own record and the code below
+        # would enrol him a SECOND time: two worker documents, one man, his
+        # certifications and orientation history split across them.
+        #
+        # THAT IS WORSE THAN THE DEFECT BEING FIXED, so the query folds case
+        # rather than the stored rows being rewritten to suit it. Anchored and
+        # re.escape'd -- a card number is user input reaching a query, and an
+        # unescaped one is a regex, not a string.
+        worker = await db.workers.find_one({
+            "osha_number": {"$regex": f"^{re.escape(osha_number)}$",
+                            "$options": "i"},
+            "is_deleted": {"$ne": True},
+        })
 
     # PER-PROJECT PAIRING: this worker already picked a trade + company on
     # THIS project, so that answer stands. Read it, skip the roster prompt
@@ -16684,6 +16794,25 @@ async def add_worker_certification(
         now = datetime.now(timezone.utc)
         cert_dict = cert.model_dump()
 
+        # BEFORE THE GATE, AND THEREFORE BEFORE THE $push. Order is the whole
+        # content of this line, and it is two rulings at once:
+        #
+        #   BEFORE THE GATE   an admin holding the card and typing `rzsszstz78`
+        #                     into a web form is entering a REAL card number.
+        #                     Judged raw it is refused with CARD_NUMBER_FORMAT
+        #                     — a refusal he cannot act on, because the card in
+        #                     his hand says exactly what he typed.
+        #   BEFORE THE PUSH   whatever case he typed, the row that lands in the
+        #                     database is the normal form, so the register, the
+        #                     check-in snapshot and this row all spell one card
+        #                     one way.
+        #
+        # This is the admin twin of the gate's normalisation: the client
+        # attribute added to checkin.html does nothing for THIS screen, which
+        # is a different client entirely. The rule has to live at the boundary.
+        cert_dict["card_number"] = normalize_card_number(
+            cert_dict.get("card_number"))
+
         # BEFORE THE $push, WHICH IS THE WHOLE POINT. Validation already ran on
         # this endpoint -- after the write, on the row it had just created --
         # and its result was returned to the caller and never acted on. A row
@@ -16932,6 +17061,25 @@ async def update_worker(
     # visibly absent."
     ALLOWED_WORKER_FIELDS = {"name", "phone", "osha_number", "certifications", "emergency_contact", "emergency_phone", "notes"}
     update_data = {k: v for k, v in worker_data.items() if v is not None and k in ALLOWED_WORKER_FIELDS}
+
+    # THE THIRD WRITE BOUNDARY FOR A CARD NUMBER, and the easiest to miss: this
+    # allowlist admits `osha_number` AND a whole `certifications` array, so an
+    # admin editing a worker can set either to any case at all. It is also the
+    # screen an admin uses to CORRECT a card number, which is exactly when a
+    # mixed-case value is most likely to be typed.
+    #
+    # Same normal form as the gate and as POST /certifications, because a card
+    # number must be spelled one way no matter which door it came through.
+    if "osha_number" in update_data:
+        update_data["osha_number"] = normalize_card_number(
+            update_data["osha_number"])
+    if isinstance(update_data.get("certifications"), list):
+        update_data["certifications"] = [
+            ({**c, "card_number": normalize_card_number(c.get("card_number"))}
+             if isinstance(c, dict) and "card_number" in c else c)
+            for c in update_data["certifications"]
+        ]
+
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.workers.update_one(
@@ -28989,7 +29137,14 @@ def osha_review_index(worker_docs) -> Tuple[Dict, set, set]:
         wid = str(wdoc.get("_id"))
         known_workers.add(wid)
         for cert in (wdoc.get("certifications") or []):
-            cn = str(cert.get("card_number") or "")
+            # NORMALISED ON BOTH SIDES OF THE JOIN — osha_review_cell folds its
+            # lookup key the same way. The live side is now normalised at every
+            # write and the FILED side is a document that is never rewritten,
+            # so the two spellings coexist permanently and only the join can
+            # reconcile them. Folding here is what stops the case the docstring
+            # of osha_review_cell already calls "the dangerous direction": a
+            # flag that orphans from its row, and the row prints CLEAN.
+            cn = normalize_card_number(cert.get("card_number")) or ""
             if cn:
                 known_cards.add((wid, cn))
             if cert.get("needs_review"):
@@ -29037,7 +29192,12 @@ def osha_review_cell(entry, review_by_key, known_cards, known_workers) -> str:
     the full live set has no such failure mode.
     """
     wid = str((entry or {}).get("worker_id") or "")
-    cn = str((entry or {}).get("card_number") or "")
+    # THE FILED SPELLING, FOLDED TO THE JOIN'S SPELLING. This row comes from a
+    # document that is never rewritten, so it keeps whatever case was current
+    # when it was filed; osha_review_index folds the live side identically.
+    # Without this the normalisation of live card numbers would silently turn
+    # every pre-existing filed row into "Not checked".
+    cn = normalize_card_number((entry or {}).get("card_number")) or ""
     # ── THE ROWS THIS COLUMN EXISTS FOR WERE THE ONES IT COULD NOT REACH ─────
     #
     # `osha_review_index` writes `review_by_key[(wid, cn)]` for every flagged
