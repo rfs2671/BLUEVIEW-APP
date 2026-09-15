@@ -364,14 +364,45 @@ class AmberMeansOwedAndAbsent(unittest.TestCase):
 
     def test_a_record_that_is_not_due_is_not_amber(self):
         """AMBER MEANS REQUIRED TODAY AND ABSENT, and nothing else. A record
-        that is not due is not a deficiency, so neither its state nor the
-        rule above it takes the colour that says one is owed."""
+        that is not due is not a deficiency, so it does not take the colour
+        that says one is owed.
+
+        THE FIXTURE CARRIES A DOCUMENT NOW, and that is the point rather than
+        an incidental. `NOT_DUE` used to be what a card got merely for being
+        on a register that listed every required type whatever the date owed;
+        it means one thing now -- FILED, WITHOUT BEING OWED -- because the
+        register only admits an obligation or a record that exists. So the
+        card has a thumbnail and a link, like the filed record it is.
+
+        THE AMBER RULE IS GONE WITH THE ABSENCE. `recrule` is the hairline
+        over "No record filed for ...", which belongs to a record that is not
+        there; this one is.
+        """
         cards = _cards(n=2, filed=1)
-        cards[1] = dict(cards[1], state=v.CardState.NOT_DUE)
+        cards[1] = dict(cards[1], state=v.CardState.NOT_DUE,
+                        thumbnail=PIXEL, link="https://x/2")
         html = r.render_page_3(_view(cards=cards))
         self.assertIn('"recstate not_due"', html)
-        self.assertIn('"recrule not_due"', html)
+        # THE REGISTER'S OWN AMBER, not the page's. The totals line below it
+        # carries `cnum owed` for the outstanding record in this fixture, and
+        # that one is correct -- the sibling test with a complete register is
+        # what bans amber from the whole page.
         self.assertNotIn('"recstate missing"', html)
+        self.assertNotIn('"recrule', html)
+
+    def test_and_it_shows_the_document_it_indexes(self):
+        """A FILED RECORD DOES NOT VANISH FROM THE RECORD INDEX, and it does
+        not get an absence printed over it either. The register carries this
+        card precisely because the document exists -- a toolbox talk filed on
+        the Monday -- so printing "No record filed for ..." under it would be
+        the report contradicting the filing."""
+        cards = _cards(n=2, filed=1)
+        cards[1] = dict(cards[1], state=v.CardState.NOT_DUE,
+                        thumbnail=PIXEL, link="https://x/2")
+        html = r.render_page_3(_view(cards=cards))
+        self.assertNotIn("No record filed", html)
+        self.assertEqual(html.count(PIXEL), 2)
+        self.assertIn("https://x/2", html)
 
     def test_and_a_complete_register_shows_no_amber_at_all(self):
         html = r.render_page_3(_view(cards=_cards(n=3, filed=3),

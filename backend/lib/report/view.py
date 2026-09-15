@@ -45,6 +45,28 @@ class CardState(Enum):
     NOT_DUE IS NOT A DEFICIENCY. A weekly or as-needed log is not owed on a
     date it was not owed, and colouring it like a missing one would put amber
     on a page for a document nobody asked for.
+
+    ── AND IT NOW MEANS ONE THING ONLY: FILED, WITHOUT BEING OWED ───────────
+
+    THIS STATE WAS ANSWERING THE WRONG QUESTION. It was built to settle a
+    COLOUR -- do not paint amber on a type this date did not owe -- and it
+    settled that correctly. But it was then doing a second job nobody chose:
+    it was what a card got for being on the register at all, and the register
+    iterated every type the project carries. So a weekly toolbox talk and an
+    as-needed orientation drew a card EVERY SINGLE DAY, and the page carried a
+    register of five over a ratio out of three.
+
+    `RequiredLogsState.register` is the list now, and it admits a card only for
+    an obligation this date carried or a record that actually exists. A
+    not-owed type that was not filed has no card to colour. So what is left for
+    NOT_DUE is exactly the case the paragraph above describes and nothing else:
+    A RECORD THAT WAS FILED ON A DAY IT WAS NOT OWED. It carries its document,
+    its thumbnail and its link like any filed record -- see
+    `CardView.documented` -- and it stays out of a ratio that never counted it.
+
+    The consequence worth stating: NO CARD ON THIS PAGE IS AN ABSENCE UNLESS
+    THE DAY OWED IT. `MISSING` is the only state that means something is
+    wrong, which is what lets amber mean one thing.
     """
 
     FILED = "filed"
@@ -180,6 +202,29 @@ class CardView:
     thumbnail: Optional[str] = None
     link: Optional[str] = None
     absent_note: str = ""
+
+    @property
+    def documented(self) -> bool:
+        """IS THERE A RECORD BEHIND THIS CARD?
+
+        THE RENDERER USED TO ASK `state is FILED` AND MEAN THIS, and the two
+        stopped agreeing the moment NOT_DUE narrowed to "filed, not owed
+        today": a card in that state has a document, and the FILED-only test
+        would have printed "No record filed for 17 August 2026" underneath a
+        toolbox talk that was filed on 17 August 2026 -- the report
+        contradicting the filing it is indexing.
+
+        IT IS DERIVED, NOT CARRIED. A boolean beside the state is a second
+        thing to keep in step and a way for a card to claim a document it
+        does not have; the register admits a not-owed type only because it was
+        filed, so the state already answers this and the answer is written
+        once.
+
+        THE ABSENCE WORDING AND THE EMPTY EVIDENCE SPACE BELONG TO `MISSING`,
+        which is now the only state on the page that means a record is not
+        there.
+        """
+        return self.state in (CardState.FILED, CardState.NOT_DUE)
 
 
 @dataclass(frozen=True)
