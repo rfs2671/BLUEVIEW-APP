@@ -37337,6 +37337,49 @@ async def classify_intent(message: str) -> Optional[str]:
 # full-roster path has no check-in to read and derives the same three-state
 # verdict from the worker's certifications live — different source, same
 # vocabulary, so the agent never sees two words for one state.
+# ── "WAS THE UNCONFIRMED SST APPROVED?" WAS ANSWERED FROM PRIOR ────────────
+#
+# Live test, 2026-09-14 23:33. The agent answered a question about a CP's
+# review decision out of the model's own head, because the roster it was
+# reading carried the card STATE and not the DECISION — and a model given a
+# question it has no data for will answer it anyway.
+#
+# The decision is already on the same check-in row the roster is built from:
+# review_decision ("approved" or "sent_home"), reviewed_by_name, reviewed_at,
+# written by the review endpoint and never overwritten. Exactly the shape of
+# the SST-card defect before it, and the same fix: render what the row holds.
+#
+# A CARD THAT IS UNCONFIRMED AND UNREVIEWED IS NOT THE SAME AS ONE A CP LOOKED
+# AT AND CLEARED, and that distinction is the whole question being asked. So
+# "unconfirmed" and "unconfirmed, CP approved" read differently, and a man sent
+# home says so in the roster rather than appearing as merely unconfirmed.
+# The reviewer's name is appended as "by <name>", so neither label carries its
+# own "by" — "SENT HOME by CP by Roy F" was the first draft and it stutters.
+_REVIEW_LABEL = {
+    "approved":  "CP approved",
+    "sent_home": "SENT HOME",
+}
+
+
+def _review_suffix(ci: dict) -> str:
+    """The CP's decision on this check-in, as a short clause.
+
+    Empty when nobody has reviewed it — which is a real state and not the same
+    as approval. A roster that says nothing about review is saying "not
+    reviewed", and that has to stay distinguishable from "cleared"."""
+    label = _REVIEW_LABEL.get((ci.get("review_decision") or "").lower())
+    if not label:
+        return ""
+    who = (ci.get("reviewed_by_name") or "").strip()
+    when = ci.get("reviewed_at")
+    bits = [label]
+    if who:
+        bits.append(f"by {who}")
+    if isinstance(when, datetime):
+        bits.append(when.strftime("%Y-%m-%d"))
+    return " — " + " ".join(bits)
+
+
 _SST_LABEL = {
     "valid":         "SST ok",
     "expiring_soon": "SST EXPIRING",
@@ -37477,7 +37520,8 @@ async def _handle_who_on_site(
     # superintendent somewhere else for the half he actually needs.
     def _entry(ci: dict) -> str:
         return (ci.get("worker_name", "Unknown")
-                + _sst_suffix(ci.get("sst_status"), ci.get("sst_expiration")))
+                + _sst_suffix(ci.get("sst_status"), ci.get("sst_expiration"))
+                + _review_suffix(ci))
 
     tally = _sst_tally([ci.get("sst_status") for ci in filtered])
     head = f"*{n} on site today{filter_desc}:*"
@@ -38552,9 +38596,19 @@ async def run_whatsapp_startup_migrations():
     try:
         try:
             await db.whatsapp_conversation_state.drop_index("convo_state_by_group")
-            logger.info("dropped convo_state_by_group (unique on group_id alone)")
-        except Exception:
-            pass  # never created, or already gone
+            # WARNING, not info. This runs once per deploy and the question
+            # "did the old index actually go?" was asked of production and
+            # could not be answered from the log — an info line in a service
+            # nobody raised the level for is a fact that was never recorded.
+            logger.warning(
+                "dropped convo_state_by_group (was unique on group_id alone) — "
+                "bot sessions, nudges and checklist drafts can now coexist")
+        except Exception as e:
+            # Never created, already gone, or a real failure. The first two are
+            # the normal case on every deploy after the first, so this is not
+            # an error — but it IS the difference between "the fix is live" and
+            # "the fix silently did not apply", so it is said out loud.
+            logger.warning(f"convo_state_by_group not dropped: {e}")
 
         await _ensure_index_resilient(
             db.whatsapp_conversation_state,
@@ -40352,7 +40406,8 @@ def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> No
 async def _handle_plan_query(project_id: str, group_id: str, query: str,
                               question: Optional[str] = None,
                               parsed_override: Optional[dict] = None,
-                              reply_to: Optional[str] = None) -> None:
+                              reply_to: Optional[str] = None,
+                              user_body: Optional[str] = None) -> None:
     """End-to-end plan-query pipeline (spec-compliant v2).
 
     Flow:
@@ -40436,33 +40491,74 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         s = (s or "").strip().lower()
         return any(s.startswith(v) for v in SHOW_VERBS)
 
-    # ── AN IMAGE IS ONLY EVER SENT FOR A NAMED SHEET ───────────────────────
+    # ── THE DECISION IS MADE ON WHAT THE USER TYPED ────────────────────────
     #
-    # The verb used to decide this on its own, so "show me the sprinkler riser"
-    # shipped the top two keyword hits. Now the verb selects the INTENT and the
-    # presence of a sheet id decides what can be honoured:
+    # Live test, 2026-09-14 23:33: "how many piles" came back as two drawings
+    # and "show me roof drains" came back with no text at all. Same cause.
     #
-    #   "show me ST-201"            -> the sheet, as an image
-    #   "show me the sprinkler riser" -> which sheets show it, as an offer
-    #   "are there sprinklers on 4" -> the QA path, unchanged
+    # `query` here is NOT the user's message. _dispatch_agent_tool builds it
+    # from the agent's STRUCTURED arguments —
     #
-    # The middle case is the fix. Naming the sheets is a real answer built from
-    # what the index actually recorded about each page; sending the pages
-    # themselves asserts that the thing is on them, which nothing checked.
+    #     bits = [discipline, floor, sheet_type, sheet_number, *keywords]
+    #     synth = " ".join(bits) or question or "plan"
+    #
+    # — so it arrives as something like "structural pile". No show verb, no
+    # question mark, no question word. Every routing test below was therefore
+    # being run against a bag of keywords rather than a sentence:
+    #
+    #   _looks_like_show_verb("structural pile")     -> False, always
+    #   _classify_plan_question("structural pile")   -> False, always
+    #
+    # With `question` empty — which the agent leaves empty whenever it reads
+    # the request as a search — effective_question stayed None and control fell
+    # into the image-send branch, which ships up to two sheets with captions
+    # and NO TEXT LINE. That is both reported symptoms, from one fault.
+    #
+    # It also made the element path unreachable: offer_only can only be set
+    # when wants_image is true, and wants_image needed a show verb that the
+    # synth can never contain.
+    #
+    # `user_body` is the message as sent. The synth stays as the RETRIEVAL
+    # input, which is what it is good at — structured bits make a better
+    # search than a sentence — and the routing now reads the sentence.
+    route_text = (user_body or "").strip() or query
     offer_only = False
-    wants_image = (_looks_like_show_verb(query)
-                   or _looks_like_show_verb(question or ""))
+
+    # A count or a yes/no beats a show verb, exactly as _classify_plan_question
+    # already orders them. "show me how many piles" is a question with a
+    # one-word answer, not a request for a picture.
+    asks_for_a_value = _is_count_or_yes_no(route_text)
+    wants_image = (not asks_for_a_value) and (
+        _looks_like_show_verb(route_text) or _looks_like_show_verb(question or "")
+    )
+
     if wants_image:
         effective_question = None
-        if not (parsed.get("sheet_number") or _names_a_sheet(query)
+        if not (parsed.get("sheet_number") or _names_a_sheet(route_text)
                 or _names_a_sheet(question or "")):
             offer_only = True
     else:
         effective_question = (question or "").strip() or parsed.get("question")
         if effective_question and effective_question.strip().lower() in ("null", "none", ""):
             effective_question = None
-        if not effective_question and _classify_plan_question(query):
-            effective_question = query.strip()
+        # The user's own sentence is the fallback question, not the synth. A
+        # bag of keywords put to a vision model is a worse prompt than the
+        # thing the person actually asked.
+        if not effective_question and _classify_plan_question(route_text):
+            effective_question = route_text
+        # A show-verb request with no sheet named is an ELEMENT request even
+        # when the agent supplied no question, which is the case that fell
+        # through to images.
+        if (not effective_question
+                and _looks_like_show_verb(route_text)
+                and not (parsed.get("sheet_number") or _names_a_sheet(route_text))):
+            offer_only = True
+
+    logger.info(
+        f"plan route group={group_id[-10:] if group_id else '?'} "
+        f"offer_only={offer_only} vqa={bool(effective_question)} "
+        f"synth={query[:40]!r} body={route_text[:60]!r}"
+    )
 
     # 3. Retrieve
     candidates = await _retrieve_plan_candidates(
@@ -40561,6 +40657,10 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             logger.info(
                 f"plan query image send: all {len(candidates[:2])} candidates failed"
             )
+        # THE EXIT THAT LOGGED NOTHING. Both reported failures ended here and
+        # left no line in the log, so "which path handled it" could not be
+        # answered from production at all.
+        _log_plan_timing(group_id, query, _stage, "image_sent")
         return
 
     _vqa_n = 1
@@ -41009,6 +41109,36 @@ async def _is_bot_addressed(
                     break
 
     if not reason:
+        # ── A REFUSAL LEFT NO TRACE, WHICH IS WHY THE MISSES WERE INVISIBLE ─
+        #
+        # The success path below has logged `addressed via <reason>` since it
+        # was written. The refusal path logged nothing, so "why did the bot
+        # ignore that?" — asked twice now about real messages — could not be
+        # answered from production at all.
+        #
+        # The reason is NAMED rather than "not addressed", because the four
+        # causes want four different fixes: a message nobody tagged is a
+        # product decision, a session that expired is a TTL question, and a
+        # session that was never written is the duplicate-key fault that ate
+        # the first miss.
+        why = "no_mention"
+        if group_id and sender:
+            try:
+                row = await db.whatsapp_conversation_state.find_one(
+                    {"kind": "bot_session", "group_id": group_id, "sender": sender})
+                if row is None:
+                    why = "session_missing"
+                else:
+                    why = "session_expired"
+            except Exception:
+                why = "session_unreadable"
+        if mode != "loose":
+            why += "+strict"
+        logger.info(
+            f"NOT addressed ({why}) group={group_id[-10:] if group_id else '?'} "
+            f"sender={sender[-4:] if sender else '?'} mode={mode} "
+            f"body={(body or '')[:60]!r}"
+        )
         return False
 
     # ── ONE MARK, EVERY ROUTE IN, WHICH IS THE POINT ───────────────────────
@@ -41034,12 +41164,16 @@ _AGENT_TOOLS = [
             "name": "who_on_site",
             "description": (
                 "Return the workers currently checked in on site today, EACH WITH "
-                "THEIR SST CARD STATUS AND EXPIRY DATE. Optionally filter by trade "
-                "(e.g. 'carpenter', 'electrician', 'framer') or by subcontractor "
-                "company name. USE THIS for any question about SST cards, OSHA "
-                "cards, certifications or who is cleared to work today — the card "
-                "data is in the result. Never tell the user to check with HR or "
-                "look somewhere else for it."
+                "THEIR SST CARD STATUS, EXPIRY DATE, AND THE CP'S REVIEW DECISION "
+                "(approved / sent home, who decided, and when). Optionally filter "
+                "by trade (e.g. 'carpenter', 'electrician', 'framer') or by "
+                "subcontractor company name. USE THIS for any question about SST "
+                "cards, OSHA cards, certifications, whether a flagged or "
+                "unconfirmed card was APPROVED by the CP, or who is cleared to "
+                "work today — all of it is in the result. Never answer a review "
+                "question from memory and never tell the user to check with HR: "
+                "if a worker's line carries no review note, nobody has reviewed "
+                "it, which is a different answer from 'approved'."
             ),
             "parameters": {
                 "type": "object",
@@ -41711,6 +41845,9 @@ async def _run_group_agent(
     explicit_mention: bool = False,
     reply_to: Optional[str] = None,
 ) -> Optional[str]:
+    # `body` is already a parameter of this function — the user's message, as
+    # sent. It is passed down to the tool dispatcher below so the plan handler
+    # can route on the sentence rather than on the agent's rebuilt keywords.
     """Run the tool-use agent over a bot-addressed message. Returns the reply
     text to send (or None for NOREPLY / silence)."""
     if not OPENAI_API_KEY:
@@ -41868,21 +42005,45 @@ async def _run_group_agent(
                 # more LLM rounds after calling them just wastes tokens and risks
                 # double-replies. Stop here and let the async work speak.
                 async_dispatch_tools = {"query_plan", "start_checklist"}
-                if any(tc["function"]["name"] in async_dispatch_tools for tc in tool_calls):
-                    # Execute them (fire-and-forget semantics inside the handlers)
+                _async_calls = [tc for tc in tool_calls
+                                if tc["function"]["name"] in async_dispatch_tools]
+                if _async_calls:
+                    # ── ONE, NOT ALL OF THEM ───────────────────────────────
+                    #
+                    # This loop dispatched EVERY tool call in the round. Each
+                    # async handler runs its own pipeline and sends its own
+                    # user-facing messages, so two query_plan calls became two
+                    # acknowledgements and two answers — which is exactly what
+                    # the live test of 2026-09-14 23:33 reported for "stucco"
+                    # and "posts", 2x "Checking the drawings" and 2x reply.
+                    #
+                    # A model hedging one question across two disciplines is
+                    # normal and is not a bug in the model. The bug is treating
+                    # its hedge as two separate conversations: the crew asked
+                    # once and should be answered once.
+                    #
+                    # The FIRST is taken rather than the best, because ranking
+                    # them would need to know what the user meant, which is the
+                    # question the pipeline is about to go and answer.
                     import json as _json
-                    for tc in tool_calls:
-                        tc_name = tc["function"]["name"]
-                        try:
-                            tc_args = _json.loads(tc["function"].get("arguments") or "{}")
-                        except Exception:
-                            tc_args = {}
-                        await _dispatch_agent_tool(
-                            tc_name, tc_args,
-                            project_id=project_id, group_id=group_id,
-                            company_id=company_id, sender=sender,
-                            reply_to=reply_to,
+                    tc = _async_calls[0]
+                    if len(_async_calls) > 1:
+                        logger.info(
+                            f"agent emitted {len(_async_calls)} async tool calls "
+                            f"{[c['function']['name'] for c in _async_calls]}; "
+                            f"dispatching the first only"
                         )
+                    tc_name = tc["function"]["name"]
+                    try:
+                        tc_args = _json.loads(tc["function"].get("arguments") or "{}")
+                    except Exception:
+                        tc_args = {}
+                    await _dispatch_agent_tool(
+                        tc_name, tc_args,
+                        project_id=project_id, group_id=group_id,
+                        company_id=company_id, sender=sender,
+                        reply_to=reply_to, user_body=body,
+                    )
                     return None  # the async handler sends the reply
 
                 # Append assistant turn and execute each tool (synchronous tools)
@@ -41902,6 +42063,7 @@ async def _run_group_agent(
                         tc_name,
                         tc_args,
                         reply_to=reply_to,
+                        user_body=body,
                         project_id=project_id,
                         group_id=group_id,
                         company_id=company_id,
@@ -41931,6 +42093,7 @@ async def _run_group_agent(
 async def _dispatch_agent_tool(
     name: str, args: dict, *, project_id: str, group_id: str,
     company_id: Optional[str], sender: str, reply_to: Optional[str] = None,
+    user_body: Optional[str] = None,
 ) -> str:
     """Invoke one of the agent tools and return its text result."""
     try:
@@ -41986,6 +42149,7 @@ async def _dispatch_agent_tool(
                     question=question or None,
                     parsed_override=parsed_override,
                     reply_to=reply_to,
+                    user_body=user_body,
                 )
             )
             if question:
@@ -42354,6 +42518,40 @@ async def _process_whatsapp_message(payload: dict):
                         f"whatsapp link: group {group_id} registered code {code_val}"
                     )
                     break
+
+            # ── WaAPI REDELIVERS, AND THE TEXT PATH HAD NO GUARD ───────────
+            #
+            # The VOICE path has deduplicated on message_id since it shipped,
+            # with a comment saying WaAPI redelivers — so redelivery is known
+            # behaviour here, not a hypothesis. The text path had nothing, so a
+            # redelivered webhook ran the whole pipeline again: a second agent
+            # turn, a second plan query, a second answer.
+            #
+            # CHECKED AGAINST whatsapp_messages, which is where a processed
+            # group message already lands, so this needs no new collection and
+            # no new write — the row that proves we have seen it is the row we
+            # were going to store anyway.
+            #
+            # An empty message_id is not evidence of anything and is let
+            # through: some events carry no id, and refusing those would drop
+            # real messages to prevent a duplicate that may not exist.
+            _mid = parsed.get("message_id") or ""
+            if _mid:
+                try:
+                    if await db.whatsapp_messages.find_one(
+                        {"group_id": group_id, "message_id": _mid},
+                        {"_id": 1},
+                    ):
+                        logger.info(
+                            f"duplicate webhook for {group_id[-10:]} "
+                            f"message_id={_mid[:24]} — already processed"
+                        )
+                        return
+                except Exception as e:
+                    # A failed check must not drop the message. A duplicate is
+                    # an annoyance; a dropped question is the failure this bot
+                    # is judged on.
+                    logger.warning(f"duplicate check failed for {_mid[:24]}: {e}")
 
             # Look up linked group
             group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id, "active": True})
@@ -43100,6 +43298,101 @@ async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
             "full_matcher_set entries, or share the last 10 digits with a "
             "phone entry."
         ),
+    }
+
+
+@api_router.get("/whatsapp/debug/page-index")
+async def whatsapp_debug_page_index(
+    project_id: str, sheet: str = "", limit: int = 5,
+    current_user=Depends(get_current_user),
+):
+    """The RAW stored extraction for a sheet. Owner/admin only.
+
+    ── WHY THIS EXISTS ────────────────────────────────────────────────────
+    #
+    # Live test, 2026-09-14: stucco, posts, gauge and piles all came back "not
+    # found" on a drawing set that contains every one of them. Two explanations
+    # fit — retrieval is looking in the wrong place, or the indexer never
+    # extracted the words in the first place — and they want opposite fixes.
+    # Nothing in the product could tell them apart, because what the indexer
+    # wrote has never been visible anywhere.
+    #
+    # So this returns the stored fields verbatim, unranked and unsummarised.
+    # If `summary` and `keywords` come back thin or generic, no retrieval
+    # change helps and the work is in the indexing prompt. That is the decision
+    # this endpoint exists to make, and it is not one to make by guessing.
+    #
+    # NO EMBEDDING. It is 1536 floats that no human reads, and it would bury
+    # the text this is here to show.
+    """
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # SCOPED TO THE CALLER'S COMPANY. A project id in a query string is the
+    # client's input, and a debug endpoint is still an endpoint.
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    _same_company_or_403(project, current_user)
+
+    q: Dict[str, Any] = {"project_id": str(project_id)}
+    if sheet:
+        q["sheet_number"] = {
+            "$regex": f"^{re.escape(sheet)}(\\.\\d+)?$", "$options": "i"}
+
+    rows = await db.document_page_index.find(
+        q, {"embedding": 0},
+    ).limit(min(max(limit, 1), 25)).to_list(min(max(limit, 1), 25))
+
+    out = []
+    for r in rows:
+        r.pop("_id", None)
+        for k, v in list(r.items()):
+            if isinstance(v, datetime):
+                r[k] = v.isoformat()
+        # What a literal element search would actually see for this page —
+        # the same fields _pages_with_element looks in, concatenated. This is
+        # the string that decides whether "stucco" is findable.
+        searchable = []
+        for f in _ELEMENT_TEXT_FIELDS:
+            v = r.get(f)
+            if isinstance(v, list):
+                searchable.extend(str(x) for x in v)
+            elif v:
+                searchable.append(str(v))
+        r["_searchable_text"] = " | ".join(searchable)
+        r["_searchable_chars"] = len(r["_searchable_text"])
+        out.append(r)
+
+    return {
+        "project_id": str(project_id),
+        "sheet_filter": sheet or "(all)",
+        "count": len(out),
+        "searched_fields": list(_ELEMENT_TEXT_FIELDS),
+        "pages": out,
+    }
+
+
+@api_router.get("/whatsapp/debug/convo-state-indexes")
+async def whatsapp_debug_convo_state_indexes(current_user=Depends(get_current_user)):
+    """Which indexes whatsapp_conversation_state actually carries right now.
+
+    Asked of production and unanswerable: the old unique-on-group_id index is
+    what silently ate every bot session, the drop runs at boot inside a try,
+    and "did it go?" had no answer short of a database shell."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        info = await db.whatsapp_conversation_state.index_information()
+    except Exception as e:
+        return {"error": str(e)}
+    names = sorted(info.keys())
+    return {
+        "indexes": {k: str(v) for k, v in info.items()},
+        "old_index_still_present": "convo_state_by_group" in names,
+        "new_index_present": "convo_state_by_kind_group_sender" in names,
     }
 
 

@@ -310,14 +310,20 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
         takes a project_id straight from the request body and binds a WhatsApp
         group to it. Getting that check wrong does not raise -- it puts one
         crew's roster, daily log and permit data into another customer's chat,
-        with nothing anywhere going red."""
+        with nothing anywhere going red.
+
+        THE SIXTH IS A DEBUG ENDPOINT, AND THAT IS THE POINT. whatsapp_debug_
+        page_index reads a project's stored plan extraction from a project_id
+        in the QUERY STRING. "It's only for debugging" is how a route skips the
+        check; a debug endpoint is still an endpoint, and this one returns the
+        contents of another company's drawings if it is wrong."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 5)
+        self.assertEqual(calls, 6)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and
