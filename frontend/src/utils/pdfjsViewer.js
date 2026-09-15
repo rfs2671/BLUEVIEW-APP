@@ -97,7 +97,19 @@ const STAMP_NAME = '.stamp';
 //       byte-identical — but viewer.html is written to disk once per stamp, so
 //       a device already staged at `7` would run last version's suite, report
 //       three numbers instead of six, and the question would stay open.
-const VIEWER_VERSION = '8';
+//   9 — THE A/B IS ISOLATED, RUN THREE TIMES, AND SAYS WHAT `layout()` AND THE
+//       WORKER PATH COST. Every render-ab row taken so far is worthless: the
+//       suite starts 2000 ms after `pdf-ready` while the band's own sheets are
+//       still rasterising (they reported 5109 ms on the operator's phone), so
+//       each variant's wall clock contained the queue's wait and the three
+//       numbers were being compared through a shared, moving contention term.
+//       PROBE-ONLY — the shipping render path is byte-identical — but
+//       viewer.html is written to disk once per stamp, so a device already
+//       staged at `8` would run last version's contaminated suite, report six
+//       numbers instead of nine, emit no `layoutMs` split and no worker-path
+//       verdict, and every question this round exists to settle would stay
+//       open. THIS BUMP IS THE MEASUREMENT'S ENTIRE DELIVERY MECHANISM.
+const VIEWER_VERSION = '9';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -295,6 +307,23 @@ const VIEWER_SCRIPT = [
   '  var MEASURE = PROBE || CAPS;',
   '  function pnow(){ try { return performance.now(); } catch (e) { return Date.now(); } }',
   '  function r1(x){ return Math.round(x * 10) / 10; }',
+  // THE MIDDLE VALUE, WHICH IS THE WHOLE POINT OF TAKING THREE.
+  //
+  // A mean of three is dragged a third of the way by a single first-run
+  // warm-up cost, and that cost is precisely what the repeat passes exist to
+  // separate out — averaging it back in would undo the measurement. The median
+  // of three ignores one outlier in either direction and reports what the
+  // variant actually does. The raw three are emitted beside it regardless, so
+  // nobody has to trust this function to see the spread.
+  '  function median(a){',
+  '    if (!a || !a.length) return null;',
+  '    var s = a.slice().sort(function(x, y){ return x - y; });',
+  '    var m = Math.floor(s.length / 2);',
+  '    return (s.length % 2) ? s[m] : r1((s[m - 1] + s[m]) / 2);',
+  '  }',
+  '  function sum(a){ var t = 0, i; for (i = 0; i < (a ? a.length : 0); i++) t = t + a[i]; return r1(t); }',
+  '  function minOf(a){ if (!a || !a.length) return null; return a.reduce(function(x, y){ return x < y ? x : y; }); }',
+  '  function maxOf(a){ if (!a || !a.length) return null; return a.reduce(function(x, y){ return x > y ? x : y; }); }',
   '  function probePost(kind, data){',
   '    if (!MEASURE) return;',
   '    try { post({ type: "pdf-probe", probe: kind, data: data }); } catch (e) {}',
@@ -787,10 +816,59 @@ const VIEWER_SCRIPT = [
   '    }',
   '  }',
   '',
+  // ── THE MEASUREMENT HAS TO BE ABLE TO STOP THE THING IT IS MEASURING ───
+  //
+  // WHY EVERY `render-ab` ROW TAKEN SO FAR IS WORTHLESS. `probeSuite` starts
+  // 2000 ms after `pdf-ready`, and on the operator's phone the band's own
+  // sheets were still rasterising at that point — pages 6, 7 and 8 each
+  // reported renderMs 5109, which is three pages that started together and
+  // finished together, i.e. a number that is queue wait and not work. The
+  // suite's three variants ran INTERLEAVED with that, so each one's wall clock
+  // contained a share of the same contention, and the three were then compared
+  // to each other as though the only difference between them was pixels.
+  //
+  // SO THE SUITE SUSPENDS THE NORMAL PATH AND WAITS FOR IT TO GO QUIET, and
+  // then says in every row that it did. Three probe-only pieces of state:
+  //
+  //   abInflight   how many REAL slot rasterisations are running right now.
+  //                Counted here rather than inferred, because "in flight" is a
+  //                property of the render path and nothing else can see it.
+  //   abSuspend    when true, a page that would have been rasterised is put
+  //                aside instead. The band keeps being observed and `trim()`
+  //                keeps running; only the rasterisation is deferred.
+  //   abDeferred   what was put aside, replayed verbatim on resume — the same
+  //                slots the unsuspended path would have drawn, so the viewer
+  //                the operator is holding ends up in the state it would have
+  //                been in anyway, a few seconds later.
+  //
+  // INERT WITH THE FLAG OFF. Every one of these is behind `PROBE`, which is
+  // the same convention `pt0` below already uses and which the executing test
+  // asserts by rendering a six-sheet band with the probe off and checking the
+  // path is still uncapped and still concurrent.
+  '  var abInflight = 0;',
+  '  var abSuspend = false;',
+  '  var abDeferred = [];',
+  // A hard stop, so a device where something never settles still reports
+  // rather than hanging the suite forever. `drained:false` in the row is then
+  // the honest answer and the reader can discount the numbers themselves.
+  '  var AB_DRAIN_MAX_MS = 60000;',
+  '',
   '  function renderSlot(slot){',
   '    if (slot.done) { touch(slot); return; }',
   '    if (slot.busy) return;',
+  // PUT ASIDE, NOT DROPPED. `slot.busy` is deliberately NOT set: the slot is
+  // untouched, so a resume that calls renderSlot again takes the normal path.
+  '    if (PROBE && abSuspend) {',
+  '      if (abDeferred.indexOf(slot) < 0) abDeferred.push(slot);',
+  '      return;',
+  '    }',
   '    slot.busy = true;',
+  // EXACTLY ONCE ON EVERY PATH OUT — resolved, cancelled, generation-stale or
+  // thrown. A leaked count is a drain that never completes, which would hang
+  // the suite on the one device it most needs to report from.
+  '    var abSettled = false;',
+  '    function abDone(){ if (!PROBE || abSettled) return; abSettled = true; abInflight = abInflight - 1; }',
+  '    if (PROBE) abInflight = abInflight + 1;',
   '    var gen = slot.gen;',
   // PROBE: `pt0` and the stamps below are plain locals on the real render
   // path. They cost two subtractions and a branch when the probe is off, and
@@ -798,7 +876,7 @@ const VIEWER_SCRIPT = [
   // be measuring a different one, warm, with the operator list already parsed.
   '    var pt0 = PROBE ? pnow() : 0;',
   '    doc.getPage(slot.n).then(function(page){',
-  '      if (slot.gen !== gen) { slot.busy = false; try { page.cleanup(); } catch (e) {} return null; }',
+  '      if (slot.gen !== gen) { slot.busy = false; abDone(); try { page.cleanup(); } catch (e) {} return null; }',
   '      slot.page = page;',
   '      var ptGetPage = PROBE ? pnow() : 0;',
   '      var vp1 = page.getViewport({ scale: 1 });',
@@ -830,6 +908,7 @@ const VIEWER_SCRIPT = [
   '      return slot.task.promise.then(function(){',
   '        slot.task = null;',
   '        slot.busy = false;',
+  '        abDone();',
   '        if (PROBE) {',
   '          var ptRender1 = pnow();',
   '          probePost("timing", {',
@@ -856,6 +935,7 @@ const VIEWER_SCRIPT = [
   '    })["catch"](function(e){',
   '      slot.task = null;',
   '      slot.busy = false;',
+  '      abDone();',
   '      if (e && e.name === "RenderingCancelledException") return;',
   '      post({ type: "pdf-page-error", page: slot.n, detail: String(e) });',
   '    });',
@@ -996,14 +1076,40 @@ const VIEWER_SCRIPT = [
   '  }',
   '  window.addEventListener("pagehide", teardown);',
   '',
+  // ── WHAT `layout()` COSTS, PAGE BY PAGE ────────────────────────────────
+  //
+  // THE SUSPICION THIS EXISTS TO SETTLE. This function chains
+  // `doc.getPage(n)` for EVERY page before a single pixel is drawn — on a
+  // 26-sheet plan that is 26 sequential page parses on the main thread (there
+  // is no worker; a file:// origin forces pdf.js's rasteriser and parser onto
+  // the UI thread), purely to read `getViewport({scale:1})` so the placeholder
+  // <div> can be given a height. The comment below admits the MEMORY
+  // motivation for the `cleanup()` and says nothing at all about the time.
+  //
+  // `layoutMs` ALONE CANNOT SETTLE IT, which is why the split is here. A
+  // layout that is slow because ONE page is pathological and a layout that is
+  // slow because all 26 cost the same amount are different defects with
+  // different fixes, and the total reads identically for both. `getPage` is
+  // timed apart from the sizing-and-DOM work for the same reason: if the cost
+  // is in `getPage` the fix is to stop calling it 26 times, and if it is in
+  // the DOM the fix is somewhere else entirely.
+  //
+  // PROBE-ONLY, AND THE ARRAYS ARE NOT ALLOCATED OTHERWISE. With the flag off
+  // this is the same function it has always been plus one branch per page.
+  '  var layoutGetPageMs = null;',
+  '  var layoutSizeMs = null;',
   '  function layout(){',
   '    baseWidth = Math.max(200, document.documentElement.clientWidth || window.innerWidth || 320);',
   '    var chain = Promise.resolve();',
   '    var n;',
+  '    var lgGet = PROBE ? [] : null;',
+  '    var lgSize = PROBE ? [] : null;',
   '    for (n = 1; n <= doc.numPages; n++) {',
   '      (function(pageNo){',
   '        chain = chain.then(function(){',
+  '          var lt0 = PROBE ? pnow() : 0;',
   '          return doc.getPage(pageNo).then(function(page){',
+  '            var lt1 = PROBE ? pnow() : 0;',
   '            var vp1 = page.getViewport({ scale: 1 });',
   '            var el = document.createElement("div");',
   '            el.className = "pg";',
@@ -1017,11 +1123,15 @@ const VIEWER_SCRIPT = [
   // Sizing the placeholder is all this page object was wanted for. Without the
   // cleanup, laying out a 200-sheet set leaves 200 parsed pages in pdf.js.
   '            try { page.cleanup(); } catch (e) {}',
+  // Taken AFTER cleanup() on purpose: cleanup is part of what laying a page
+  // out costs, and a split that omitted it would under-report the half of this
+  // function that is not `getPage`.
+  '            if (PROBE) { lgGet.push(r1(lt1 - lt0)); lgSize.push(r1(pnow() - lt1)); }',
   '          });',
   '        });',
   '      })(n);',
   '    }',
-  '    return chain;',
+  '    return chain.then(function(){ layoutGetPageMs = lgGet; layoutSizeMs = lgSize; });',
   '  }',
   '',
   // ── THE A/B SUITE. Runs only after `pdf-ready`, never before ───────────
@@ -1032,6 +1142,9 @@ const VIEWER_SCRIPT = [
   //
   // ONE PAGE, THE FIRST. Enough to answer the question, and it keeps the suite
   // bounded on a 200-sheet set.
+  // variant name -> { runs: [ms, ms, ms], meta: the last row }. Filled by
+  // `probeRenderAt` and summarised once the three passes are done.
+  '  var abRuns = {};',
   '  function probeRenderAt(pageNo, scale, label, extra, next){',
   '    if (!PROBE) { if (next) next(); return; }',
   '    doc.getPage(pageNo).then(function(page){',
@@ -1041,6 +1154,17 @@ const VIEWER_SCRIPT = [
   '      var wpx = Math.max(1, Math.floor(vp.width)), hpx = Math.max(1, Math.floor(vp.height));',
   '      var a0 = pnow(); c.width = wpx; c.height = hpx; var ctx = c.getContext("2d"); var a1 = pnow();',
   '      if (!ctx) { try { c.width = 0; c.height = 0; } catch (e) {} probePost("render-ab", { label: label, page: pageNo, error: "no-2d-context", canvasW: wpx, canvasH: hpx }); if (next) next(); return; }',
+  // ── THE ISOLATION CLAIM RIDES IN THE ROW ───────────────────────────────
+  //
+  // Read at the instant this variant STARTS, not at the end, because the
+  // question is what else was running while it was timed.
+  //
+  // WHY IT IS A FIELD AND NOT A COMMENT. Whoever reads these numbers next has
+  // a phone screenshot of a log, not this file. "The suite drains first" is a
+  // promise they cannot check; `inflight: 0, pending: 0` on the row is a fact
+  // they can. And if a later change breaks the drain, the rows say so
+  // themselves instead of quietly going back to measuring contention.
+  '      var qIn = abInflight, qPend = abDeferred.length;',
   '      var r0 = pnow();',
   '      var t = page.render({ canvasContext: ctx, viewport: vp });',
   '      t.promise.then(function(){',
@@ -1050,8 +1174,13 @@ const VIEWER_SCRIPT = [
   '          canvasW: wpx, canvasH: hpx,',
   '          megapixels: Math.round((wpx * hpx) / 1e5) / 10,',
   '          ppi: r1(wpx / (vp1.width / 72)),',
+  '          inflight: qIn, pending: qPend,',
   '          canvasAllocMs: r1(a1 - a0), renderMs: r1(r1ms - r0) };',
   '        if (extra) { for (var k in extra) { if (Object.prototype.hasOwnProperty.call(extra, k)) out[k] = extra[k]; } }',
+  '        if (extra && extra.variant) {',
+  '          if (!abRuns[extra.variant]) abRuns[extra.variant] = { runs: [], meta: out };',
+  '          abRuns[extra.variant].runs.push(out.renderMs);',
+  '        }',
   '        probePost("render-ab", out);',
   '        try { c.width = 0; c.height = 0; } catch (e) {}',
   '        try { page.cleanup(); } catch (e) {}',
@@ -1308,15 +1437,85 @@ const VIEWER_SCRIPT = [
   // COST, STATED. The suite does three extra throwaway renders. It runs only
   // under `probe=1`, only after `pdf-ready`, and each canvas is still zeroed
   // the instant it is timed, so the peak footprint is unchanged.
+  // ── DRAIN FIRST, AND SAY SO ────────────────────────────────────────────
+  //
+  // Suspends the normal render path, then waits for whatever is already in
+  // flight to finish. It cannot cancel them — a half-drawn sheet is a blank
+  // sheet in front of the reader, and the suite is a measurement, not a reason
+  // to take the drawing away — so it waits, and reports how long it waited.
+  //
+  // THAT WAIT IS ITSELF A MEASUREMENT. It starts 2000 ms after `pdf-ready`, so
+  // `waitedMs + 2000` is how long the band's own rasterisations actually take
+  // from the open — the number behind the operator's 6.3 s to first visible
+  // page, measured rather than stopwatched.
+  '  var abDrainStartInflight = 0;',
+  '  function abDrain(next, waited){',
+  // Recorded on the FIRST call only. Without it the row would say how many
+  // were left at the end (always 0) and never how many there were to drain —
+  // and a drain of nothing looks identical to a drain that worked.
+  '    if (waited === undefined) abDrainStartInflight = abInflight;',
+  '    abSuspend = true;',
+  '    var w = waited || 0;',
+  '    if (abInflight <= 0 || w >= AB_DRAIN_MAX_MS) { next(w, abInflight); return; }',
+  '    setTimeout(function(){ abDrain(next, w + 50); }, 50);',
+  '  }',
+  '',
+  // HANDED BACK ON EVERY PATH OUT, including the failure ones. A suspension
+  // that is never lifted is a viewer that draws no more pages for the rest of
+  // the session — a far worse defect than the measurement error being fixed,
+  // and one that would only ever be seen by the single user the flag is on for.
+  '  function abResume(){',
+  '    if (!PROBE) return;',
+  '    abSuspend = false;',
+  '    var pending = abDeferred.slice();',
+  '    abDeferred.length = 0;',
+  '    probePost("resume", { suspended: false, replayed: pending.length });',
+  // Replayed verbatim rather than re-swept: these are exactly the slots the
+  // unsuspended path would have rasterised, so the viewer ends up in the state
+  // it would have been in anyway, a few seconds later.
+  '    for (var i = 0; i < pending.length; i++) renderSlot(pending[i]);',
+  '  }',
+  '',
+  // ── THE MEDIAN ROWS ────────────────────────────────────────────────────
+  //
+  // One per variant, carrying the three raw values IN PASS ORDER beside the
+  // middle one. Pass order is not decoration: sorted raws would throw away
+  // which run was the slow one, and "was the FIRST render the expensive one"
+  // is the entire question the repeat passes were added to answer.
+  '  function abSummarise(order){',
+  '    for (var i = 0; i < order.length; i++) {',
+  '      var v = order[i], rec = abRuns[v];',
+  '      if (!rec || !rec.runs.length) { probePost("render-ab-median", { variant: v, error: "no-runs" }); continue; }',
+  '      probePost("render-ab-median", {',
+  '        variant: v,',
+  '        runs: rec.runs.slice(),',
+  '        medianMs: median(rec.runs),',
+  '        minMs: minOf(rec.runs), maxMs: maxOf(rec.runs),',
+  '        scale: rec.meta.scale, megapixels: rec.meta.megapixels, ppi: rec.meta.ppi,',
+  '        canvasW: rec.meta.canvasW, canvasH: rec.meta.canvasH, clamp: rec.meta.clamp,',
+  '        inflight: rec.meta.inflight, pending: rec.meta.pending',
+  '      });',
+  '    }',
+  '  }',
+  '',
   '  function probeSuite(){',
   '    if (!PROBE) return;',
+  '    abDrain(function(waitedMs, stillInflight){',
+  '      probePost("drain", { waitedMs: waitedMs, inflightAtStart: abDrainStartInflight,',
+  '        inflightNow: stillInflight, drained: stillInflight <= 0,',
+  '        deferred: abDeferred.length, capMs: AB_DRAIN_MAX_MS });',
+  '      probeSuiteIsolated();',
+  '    });',
+  '  }',
+  '',
+  '  function probeSuiteIsolated(){',
   '    doc.getPage(1).then(function(page){',
   '      var vp1 = page.getViewport({ scale: 1 });',
   '      var cur = targetScaleInfo(vp1, 1.5);',
   '      var noOver = targetScaleInfo(vp1, 1.0);',
   '      var ceil = ceilingScaleInfo(vp1);',
   '      try { page.cleanup(); } catch (e) {}',
-  // ONE DEFINITION, TWO PASSES. Written once so the second pass cannot drift
+  // ONE DEFINITION, THREE PASSES. Written once so a later pass cannot drift
   // from the first — a pass that differed in scale or order would not be a
   // repeat and the comparison would be worthless.
   //
@@ -1324,23 +1523,46 @@ const VIEWER_SCRIPT = [
   // PDFViewer.native.jsx logs `label` verbatim into the report the operator
   // shares, and two identically-labelled rows would be unreadable in exactly
   // the artefact this was built to produce.
+  '      var V_CUR = "viewport/over1.5 (SHIPPING)";',
+  '      var V_NOOVER = "viewport/over1.0";',
+  '      var V_CEIL = "cap-ceiling (HEADROOM)";',
   '      function threeScales(pass, after){',
   '        var tag = "pass" + pass + " ";',
-  '        probeRenderAt(1, cur.s, tag + "anchor:viewport over:1.5 (SHIPPING)", { pass: pass, clamp: cur.clamp }, function(){',
-  '          probeRenderAt(1, noOver.s, tag + "anchor:viewport over:1.0", { pass: pass, clamp: noOver.clamp }, function(){',
-  '            probeRenderAt(1, ceil.s, tag + "anchor:cap-ceiling (HEADROOM)", { pass: pass, clamp: ceil.clamp }, after);',
+  '        probeRenderAt(1, cur.s, tag + "anchor:viewport over:1.5 (SHIPPING)", { pass: pass, clamp: cur.clamp, variant: V_CUR }, function(){',
+  '          probeRenderAt(1, noOver.s, tag + "anchor:viewport over:1.0", { pass: pass, clamp: noOver.clamp, variant: V_NOOVER }, function(){',
+  '            probeRenderAt(1, ceil.s, tag + "anchor:cap-ceiling (HEADROOM)", { pass: pass, clamp: ceil.clamp, variant: V_CEIL }, after);',
   '          });',
   '        });',
   '      }',
+  // ── THREE PASSES, AND WHY NOT TWO ──────────────────────────────────────
+  //
+  // Two readings of the same variant have no middle. If they disagree there is
+  // nothing to prefer between them, and a mean of two is dragged the whole way
+  // by one outlier — which is fatal here, because the outlier is the thing
+  // under investigation: the first rasterisation of a page pays a one-off
+  // decode cost (857 image operators on these sheets) that the ones after it
+  // reuse. Three is the smallest count that has a median, and the median is
+  // the one statistic that first-run cost cannot move.
+  //
+  // COST, STATED. Nine throwaway renders instead of six, each still zeroed the
+  // instant it is timed, all of them after `pdf-ready` AND after the drain —
+  // so the peak footprint is one extra canvas, exactly as before, and none of
+  // it touches the open being measured.
   '      threeScales(1, function(){',
   '        threeScales(2, function(){',
+  '        threeScales(3, function(){',
+  '          abSummarise([V_CUR, V_NOOVER, V_CEIL]);',
   '          probeNativeRaster(1, function(nat){',
   // FILTERS BEFORE THE WORKER A/B. The scan is a read plus a linear pass and
   // frees its buffer immediately; the worker A/B holds a whole second parsed
   // document. Running the cheap one first means a device that dies on the
   // expensive one has still reported the compression, which is the measurement
   // the engine decision turns on.
-  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ probePost("suite", { done: true }); }); }); }',
+  // THE SUSPENSION IS LIFTED WITH THE LAST MEASUREMENT AND NOT BEFORE. Every
+  // step from here on is still a render or a second parsed document, and the
+  // band starting up underneath any of them would put the contention straight
+  // back into the numbers that are left.
+  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ abResume(); probePost("suite", { done: true }); }); }); }',
   '            if (!nat) { thenWorker(); return; }',
   // Anchored to the SCAN's own pixels, then held to the same caps — the
   // "render it at what the plan actually is" case, measured rather than
@@ -1353,8 +1575,12 @@ const VIEWER_SCRIPT = [
   '            probeRenderAt(1, sNat, "anchor:native-raster (CLAMPED)", { nativeW: nat.w, nativeH: nat.h }, thenWorker);',
   '          });',
   '        });',
+  '        });',
   '      });',
-  '    })["catch"](function(e){ probePost("suite", { error: String(e) }); });',
+  // AND LIFTED HERE TOO. A suite that fell over halfway must not leave the
+  // render path switched off — the reader would be looking at a viewer that
+  // never draws another sheet, with nothing on screen to say why.
+  '    })["catch"](function(e){ abResume(); probePost("suite", { error: String(e) }); });',
   '  }',
   '',
   // ── THE SIX DEVICE MEASUREMENTS ────────────────────────────────────────
@@ -1409,6 +1635,13 @@ const VIEWER_SCRIPT = [
   '    slots.length = 0;',
   '    rendered.length = 0;',
   '    pagesEl.innerHTML = "";',
+  // THE NEXT DOCUMENT MUST NOT INHERIT THE LAST ONE'S SUSPENSION. The page
+  // outlives the document, so a reader who opens a second plan while the
+  // probe suite is mid-flight would otherwise get a viewer with its render
+  // path switched off and nothing on screen to explain it. The deferred slots
+  // belong to a document that no longer exists, so they go rather than
+  // replay.
+  '    if (PROBE) { abSuspend = false; abDeferred.length = 0; abRuns = {}; }',
   // THE NEXT DOCUMENT GETS THE FAST TIER AGAIN — unless the WebView is STILL
   // pinched in. Plain `sharp = false` was wrong: native zoom is a property of
   // the WebView, not of the document, so a reader who zoomed into sheet A and
@@ -1452,11 +1685,65 @@ const VIEWER_SCRIPT = [
   '  var initialFile = param("file");',
   '  if (initialFile) openDocument(initialFile);',
   '',
+  // ── WHICH WORKER IS ACTUALLY LIVE, SAID BY THE RUNNING CODE ────────────
+  //
+  // EVERY PERFORMANCE CONCLUSION IN THIS FILE RESTS ON A COMMENT. The note
+  // above `<script src="pdf.worker.min.js">` says loading the worker bundle
+  // first defines `globalThis.pdfjsWorker`, which makes pdf.js skip the
+  // real-Worker attempt (blocked from a file:// origin) and use the
+  // main-thread handler instead. That single fact is why "there is no worker
+  // to put it on" appears in four separate comments here and why the render
+  // cap in #544 is sized to one thread — and NOTHING HAS EVER CHECKED IT.
+  //
+  // A pdf.js upgrade that stopped honouring the global, or a staging order
+  // that wrote the two <script> tags the other way round, would flip the
+  // answer silently. Every reading taken afterwards would then be interpreted
+  // against the wrong model, and the readings themselves would look fine.
+  //
+  // READ BEFORE `getDocument`, WHICH IS THE ONLY MOMENT IT MEANS ANYTHING.
+  // Afterwards pdf.js may have populated things itself and the global no
+  // longer distinguishes "was already there" from "was created on demand".
+  //
+  // BEST-EFFORT ON THE LAST FIELD, AND SAID SO. `task._worker._webWorker` is
+  // pdf.js internals and may not exist on a given build; when it cannot be
+  // read the verdict falls back to the global, and when neither is available
+  // it says `unknown` rather than guessing. An honest `unknown` is a usable
+  // answer; a confident wrong one is not.
+  '  function probeWorkerPath(task, hadGlobal){',
+  '    if (!PROBE) return;',
+  '    var d = { globalWorkerDefinedBeforeGetDocument: !!hadGlobal, workerSrc: null,',
+  '              workerMessageHandlerPresent: false, workerPortType: "undefined",',
+  '              taskWebWorker: "unreadable", verdict: "unknown" };',
+  '    try { d.workerSrc = pdfjsLib.GlobalWorkerOptions.workerSrc || null; } catch (e) {}',
+  '    try { d.workerPortType = typeof pdfjsLib.GlobalWorkerOptions.workerPort; } catch (e) {}',
+  '    try { d.workerMessageHandlerPresent = !!(globalThis.pdfjsWorker && globalThis.pdfjsWorker.WorkerMessageHandler); } catch (e) {}',
+  '    var known = false;',
+  '    try {',
+  '      if (task && task._worker && Object.prototype.hasOwnProperty.call(task._worker, "_webWorker")) {',
+  '        d.taskWebWorker = task._worker._webWorker ? "present" : "null";',
+  '        d.verdict = task._worker._webWorker',
+  '          ? "REAL Worker — rasterisation is off the UI thread"',
+  '          : "FAKE worker — pdf.js parses and rasterises on the MAIN thread";',
+  '        known = true;',
+  '      }',
+  '    } catch (e) { d.taskWebWorkerError = String(e); }',
+  '    if (!known && d.globalWorkerDefinedBeforeGetDocument) {',
+  '      d.verdict = "FAKE worker — globalThis.pdfjsWorker was defined before getDocument, '
+    + 'so pdf.js uses the main-thread handler";',
+  '    }',
+  '    probePost("workerpath", d);',
+  '  }',
+  '',
   '  function loadCurrent(){',
   '  var ptOpen0 = PROBE ? pnow() : 0;',
+  '  var ptLayoutMs = 0, ptParseMs = 0, ptBytesMs = 0;',
   '  readBytes(fileUrl, function(bytes){',
   '    var ptBytes = PROBE ? pnow() : 0;',
-  '    if (PROBE) probePost("bytes", { readMs: r1(ptBytes - ptOpen0), byteLength: (bytes && bytes.length) || 0 });',
+  '    if (PROBE) { ptBytesMs = r1(ptBytes - ptOpen0); probePost("bytes", { readMs: ptBytesMs, byteLength: (bytes && bytes.length) || 0 }); }',
+  // Captured on the line BEFORE the call, because the call itself is what
+  // would create one.
+  '    var hadGlobalWorker = false;',
+  '    try { hadGlobalWorker = (typeof globalThis.pdfjsWorker !== "undefined") && !!globalThis.pdfjsWorker; } catch (e) {}',
   '    var task = pdfjsLib.getDocument({',
   '      data: bytes,',
   '      disableRange: true,',
@@ -1471,12 +1758,33 @@ const VIEWER_SCRIPT = [
   // is still worth doing — it makes doc.destroy() in teardown() the single
   // release point instead of one of two.
   '    bytes = null;',
+  '    if (PROBE) probeWorkerPath(task, hadGlobalWorker);',
   '    var ptParse0 = PROBE ? pnow() : 0;',
   '    task.promise.then(function(pdf){',
   '      doc = pdf;',
-  '      if (PROBE) probePost("parse", { parseMs: r1(pnow() - ptParse0), pages: pdf.numPages });',
+  '      if (PROBE) { ptParseMs = r1(pnow() - ptParse0); probePost("parse", { parseMs: ptParseMs, pages: pdf.numPages }); }',
   '      var ptLayout0 = PROBE ? pnow() : 0;',
-  '      return layout().then(function(){ if (PROBE) probePost("layout", { layoutMs: r1(pnow() - ptLayout0), pages: doc.numPages }); });',
+  '      return layout().then(function(){',
+  '        if (!PROBE) return;',
+  '        ptLayoutMs = r1(pnow() - ptLayout0);',
+  '        var g = layoutGetPageMs || [], z = layoutSizeMs || [];',
+  // `pages` is kept beside `numPages` so an existing reader of these logs is
+  // not broken by the addition; `numPages` is the name the report asked for.
+  // The per-page array is capped because a 200-sheet set would otherwise put
+  // 200 numbers through the bridge, and min/median/max already answer the
+  // question the array is only there to corroborate.
+  '        probePost("layout", {',
+  '          layoutMs: ptLayoutMs,',
+  '          numPages: doc.numPages,',
+  '          pages: doc.numPages,',
+  '          getPageTotalMs: sum(g),',
+  '          getPageMinMs: minOf(g), getPageMedianMs: median(g), getPageMaxMs: maxOf(g),',
+  '          sizeTotalMs: sum(z),',
+  '          sizeMinMs: minOf(z), sizeMedianMs: median(z), sizeMaxMs: maxOf(z),',
+  '          perPageGetPageMs: g.slice(0, 40),',
+  '          perPageTruncated: g.length > 40',
+  '        });',
+  '      });',
   '    }).then(function(){',
   // HIDDEN, NOT REMOVED. This page now outlives the document it is showing,
   // so the next `openDocument` needs this element back to say "Loading" with.
@@ -1489,8 +1797,15 @@ const VIEWER_SCRIPT = [
   // stall figure is closed here and the A/B suite starts only now — after
   // `watch()` has queued the band's renders, on a second turn, so the suite
   // never interleaves with the open it is measuring.
+  // THE OPEN'S OWN BREAKDOWN, IN ONE ROW. `layoutMs` has been emitted since
+  // the first probe round, but in a SEPARATE post — so settling "is layout()
+  // the open stall?" meant cross-referencing two lines of a log the operator
+  // reads off a phone. Carried beside the total, the answer is the row itself:
+  // if layoutMs is a small fraction of totalMs, layout is not the stall, and
+  // no arithmetic is needed to see it.
   '      if (PROBE) {',
-  '        probePost("open", { totalMs: r1(pnow() - ptOpen0), pages: doc.numPages });',
+  '        probePost("open", { totalMs: r1(pnow() - ptOpen0), bytesMs: ptBytesMs,',
+  '          parseMs: ptParseMs, layoutMs: ptLayoutMs, pages: doc.numPages, numPages: doc.numPages });',
   '        setTimeout(function(){ hbStop("open"); probeSuite(); }, 2000);',
   '      }',
   '    })["catch"](function(e){ if (PROBE) hbStop("open-failed"); fail("parse", e); });',
