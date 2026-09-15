@@ -22354,9 +22354,11 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                     and filename.lower().endswith(".pdf")
                     and r2_url
                 ):
-                    asyncio.create_task(
-                        _index_pdf_file(project_id, company_id, dict(file_record))
-                    )
+                    try:
+                        await _enqueue_plan_index(project_id, company_id, dict(file_record),
+                                                  source="dropbox_sync")
+                    except Exception as q_err:
+                        logger.error(f"plan index enqueue failed for {filename}: {q_err!r}")
 
                 synced += 1
             except Exception as entry_err:
@@ -22668,7 +22670,11 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
 
     # Sprint 3: spawn plan indexing for PDFs (no-op if QWEN_API_KEY unset)
     if filename.lower().endswith(".pdf") and QWEN_API_KEY:
-        asyncio.create_task(_index_pdf_file(project_id, company_id, file_record))
+        try:
+            await _enqueue_plan_index(project_id, company_id, file_record, source="upload")
+        except Exception as q_err:
+            # The upload has succeeded; a queue write must not fail it.
+            logger.error(f"plan index enqueue failed for {filename}: {q_err!r}")
 
     proxy_url = f"/api/projects/{project_id}/files/{file_record['_id']}/content"
     await _log_upload_attempt({
@@ -38826,6 +38832,17 @@ async def ensure_document_page_indexes():
             keys=[("file_id", 1), ("page_number", 1)],
             name="page_chunks_by_file_page",
         )
+        # The plan index queue: the worker's claim, and per-project status.
+        await _ensure_index_resilient(
+            db[PLAN_INDEX_JOBS],
+            keys=[("status", 1), ("not_before", 1), ("enqueued_at", 1)],
+            name="plan_index_jobs_claim",
+        )
+        await _ensure_index_resilient(
+            db[PLAN_INDEX_JOBS],
+            keys=[("project_id", 1), ("status", 1)],
+            name="plan_index_jobs_by_project",
+        )
     except Exception as e:
         logger.warning(f"ensure_document_page_indexes: {e}")
 
@@ -38968,7 +38985,9 @@ async def run_whatsapp_startup_migrations():
 # doesn't spawn 500 simultaneous indexers. Combined with the per-file page
 # semaphore (size 5) the worst case is 3 files * 5 pages = 15 in-flight Qwen
 # requests.
-_PDF_INDEX_FILE_SEMAPHORE = asyncio.Semaphore(3)
+_PDF_INDEX_FILE_SEMAPHORE = asyncio.Semaphore(1)
+# One page's text layout and render at a time, inside that one file.
+_PLAN_PAGE_PREP_SEMAPHORE = asyncio.Semaphore(1)
 
 
 _DISCIPLINE_PATTERNS = [
@@ -39212,6 +39231,13 @@ def _downscale_page_jpeg(jpeg_bytes: bytes, max_edge: int,
         from PIL import Image
         import io as _io
         img = Image.open(_io.BytesIO(jpeg_bytes))
+        # DECODE SMALL. draft() lets the JPEG decoder scale by 1/2, 1/4 or 1/8
+        # while decoding, so a 400px thumbnail of a 9000px page never builds
+        # the full 162 MB raster first.
+        try:
+            img.draft("RGB", (max_edge, max_edge))
+        except Exception:
+            pass
         img.load()
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
@@ -39456,9 +39482,15 @@ async def _index_single_page(
             "is_spec_page":       True,
             "page_complete":      True,
         })
-        # A SPEC PAGE IS STILL TEXT. It stays out of sheet retrieval, but its
-        # notes are chunked from the text layer — S-001.00, 25,000 characters
-        # of general notes, is exactly this shape, and "HELICAL PILES" is on it.
+        # A SPEC PAGE IS STILL A SHEET. S-001.00 — 25,000 characters of general
+        # notes — is exactly this shape, and "HELICAL PILES" is on it. From the
+        # text layer it gets, with no model call:
+        #   its chunks, for count / existence / attribute answers
+        #   the searchable fields, so the debug view and the literal element
+        #     search see its notes instead of "[SPECIFICATION PAGE]"
+        #   its page image, so "show me S-001" can send the sheet
+        # The broad candidate search still skips it (is_spec_page); lookup by
+        # sheet number does not.
         spec_fields = None
         if layout:
             spec_fields = dict(plan_extract.EMPTY_FIELDS)
@@ -39467,8 +39499,38 @@ async def _index_single_page(
             spec_fields["sheet_number"], _ = plan_text.validate_sheet_number(
                 None, plan_text.sheet_ids(plan_text.title_region(layout)),
                 plan_text.sheet_ids(layout.get("text") or ""))
+            heading_text = plan_text.headings(layout)
+            spec_fields["sheet_type"] = "notes"
+            spec_fields["contents_summary"] = (
+                "Notes and specification sheet: " + "; ".join(heading_text.split("\n")[:20])
+                if heading_text else None)
+            spec_legacy = plan_extract.legacy_fields(spec_fields)
+            spec_jpeg = spec_thumb = spec_base = ""
+            if page_image_bytes:
+                spec_jpeg = await _upload_page_jpeg_to_r2(
+                    project_id, file_id, page_number, page_image_bytes)
+                # Page one only, like the main path's thumbnail — written as an
+                # expression so the main path's `if page_number == 1:` guard stays
+                # the one test_plan_thumbnails reads.
+                spec_thumb = (await _upload_page_thumb_to_r2(
+                    project_id, file_id, page_number, page_image_bytes)
+                    if page_number == 1 else "")
+                spec_base = await _upload_page_base_to_r2(
+                    project_id, file_id, page_number, page_image_bytes)
             doc.update({
                 "sheet_number":     spec_fields["sheet_number"],
+                "sheet_title":      None,
+                "sheet_type":       "notes",
+                "keywords":         spec_legacy["keywords"],
+                "summary":          spec_legacy["summary"],
+                "dimensions":       spec_legacy["dimensions"],
+                "materials":        spec_legacy["materials"],
+                "code_refs":        spec_legacy["code_refs"],
+                "detail_refs":      spec_legacy["detail_refs"],
+                "notes":            spec_legacy["notes"],
+                "page_jpeg_r2_key": spec_jpeg,
+                "page_thumb_r2_key": spec_thumb,
+                "page_base_r2_key": spec_base,
                 "extraction":       spec_fields,
                 "tag_counts":       spec_fields["tag_counts"],
                 "text_source":      "vector",
@@ -39507,7 +39569,11 @@ async def _index_single_page(
             "page_thumb_r2_key":  "",
             "page_base_r2_key":   "",
             "is_spec_page":       False,
-            "page_complete":      True,
+            # NOT complete. No image means the render failed; a page written
+            # complete here would be skipped by every resume and never sent
+            # to the vision model at all.
+            "page_complete":      False,
+            "render_failed":      True,
         })
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
@@ -39705,65 +39771,117 @@ def _render_dpi_for(file_name: str, page_number: int) -> int:
     return _PLAN_RENDER_DPI
 
 
-def _pdf_total_pages(pdf_bytes: bytes) -> int:
+def _pdf_source(pdf) -> Any:
+    """A path stays a path; bytes become a stream. Indexing now passes a path
+    to a temp file, so a 30 MB set is not held in memory for its whole run."""
+    import io as _io
+    if isinstance(pdf, (bytes, bytearray)):
+        return _io.BytesIO(pdf)
+    return str(pdf)
+
+
+def _pdf_total_pages(pdf) -> int:
     try:
         from pypdf import PdfReader
-        import io as _io
-        return len(PdfReader(_io.BytesIO(pdf_bytes)).pages)
+        return len(PdfReader(_pdf_source(pdf)).pages)
     except Exception:
         try:
             from PyPDF2 import PdfReader as LegacyReader  # type: ignore
-            import io as _io
-            return len(LegacyReader(_io.BytesIO(pdf_bytes)).pages)
+            return len(LegacyReader(_pdf_source(pdf)).pages)
         except Exception:
-            # Last resort — render page 1 only to probe; returns 0 if render fails
-            from pdf2image.pdf2image import pdfinfo_from_bytes
             try:
-                info = pdfinfo_from_bytes(pdf_bytes)
+                from pdf2image.pdf2image import pdfinfo_from_bytes, pdfinfo_from_path
+                if isinstance(pdf, (bytes, bytearray)):
+                    info = pdfinfo_from_bytes(pdf)
+                else:
+                    info = pdfinfo_from_path(str(pdf))
                 return int(info.get("Pages") or 0)
             except Exception:
                 return 0
 
 
-def _pdf_page_texts(pdf_bytes: bytes) -> List[str]:
+def _pdf_page_texts(pdf) -> List[str]:
     """Extract text per page. Returns [] if extraction unavailable."""
     try:
         from pypdf import PdfReader
-        import io as _io
-        reader = PdfReader(_io.BytesIO(pdf_bytes))
+        reader = PdfReader(_pdf_source(pdf))
         return [(p.extract_text() or "") for p in reader.pages]
     except Exception:
         try:
             from PyPDF2 import PdfReader as LegacyReader  # type: ignore
-            import io as _io
-            reader = LegacyReader(_io.BytesIO(pdf_bytes))
+            reader = LegacyReader(_pdf_source(pdf))
             return [(p.extract_text() or "") for p in reader.pages]
         except Exception:
             return []
 
 
-def _render_pdf_page(pdf_bytes: bytes, page_number: int, dpi: int) -> Optional[bytes]:
+def _render_pdf_page(pdf, page_number: int, dpi: int) -> Optional[bytes]:
     """Render a single PDF page to JPEG bytes.
 
-    We render one page at a time (first_page/last_page = page_number) so
-    peak memory stays bounded — all-at-once renders OOM on large multi-page
-    architectural sets on small Railway instances.
+    ── POPPLER WRITES THE JPEG, PYTHON NEVER HOLDS THE RASTER ──────────────
+    #
+    # This used to return the page as a PIL image and encode it here. A 36x24
+    # sheet at 250 DPI is 9000x6000 pixels: 162 MB of RGB per page, and with
+    # three files indexing three pages each that was well over a gigabyte of
+    # rasters alive at once on a container that restarted mid-reindex with no
+    # crash line. pdftoppm now writes the JPEG straight to a temp directory
+    # and only the file's bytes — a few MB — come back.
     """
-    from pdf2image import convert_from_bytes
-    import io as _io
+    import tempfile as _tempfile
     try:
-        imgs = convert_from_bytes(
-            pdf_bytes, dpi=dpi,
-            first_page=page_number, last_page=page_number,
-        )
-        if not imgs:
-            return None
-        buf = _io.BytesIO()
-        imgs[0].save(buf, format="JPEG", quality=85)
-        return buf.getvalue()
+        from pdf2image import convert_from_bytes, convert_from_path
+        with _tempfile.TemporaryDirectory(prefix="planpage-") as tmp:
+            kw = dict(
+                dpi=dpi, first_page=page_number, last_page=page_number,
+                fmt="jpeg", jpegopt={"quality": 85, "progressive": False, "optimize": False},
+                output_folder=tmp, single_file=True, output_file="page",
+                paths_only=True, timeout=300,
+            )
+            if isinstance(pdf, (bytes, bytearray)):
+                paths = convert_from_bytes(pdf, **kw)
+            else:
+                paths = convert_from_path(str(pdf), **kw)
+            if not paths:
+                return None
+            with open(paths[0], "rb") as fh:
+                return fh.read()
     except Exception as e:
         logger.warning(f"render page {page_number} at {dpi} dpi failed: {e}")
         return None
+
+
+POPPLER_OK = False
+POPPLER_DETAIL = "not checked yet"
+
+
+def _check_poppler() -> Tuple[bool, str]:
+    """(ok, detail). Both binaries on PATH, their version, and a valid PDF
+    actually rendered."""
+    import io as _io
+    import shutil as _shutil
+    import subprocess as _subprocess
+    pdftoppm = _shutil.which("pdftoppm")
+    pdfinfo = _shutil.which("pdfinfo")
+    if not pdftoppm or not pdfinfo:
+        return False, f"not on PATH (pdftoppm={pdftoppm}, pdfinfo={pdfinfo})"
+    try:
+        out = _subprocess.run([pdftoppm, "-v"], capture_output=True, text=True, timeout=10)
+        version = ((out.stderr or out.stdout or "").strip().splitlines() or ["version unknown"])[0]
+    except Exception as e:
+        version = f"version unknown ({type(e).__name__})"
+    try:
+        from pypdf import PdfWriter
+        from pdf2image import convert_from_bytes
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        buf = _io.BytesIO()
+        writer.write(buf)
+        imgs = convert_from_bytes(buf.getvalue(), dpi=10, first_page=1, last_page=1)
+        if len(imgs) != 1:
+            return False, f"{pdftoppm} ({version}): self-test rendered {len(imgs)} images, expected 1"
+    except Exception as e:
+        return False, f"{pdftoppm} ({version}): render self-test failed: {e!r}"[:400]
+    return True, f"{pdftoppm} ({version}), render self-test passed"
 
 
 def _pdf_pages_render_and_text(pdf_bytes: bytes, dpi: int = _PLAN_RENDER_DPI,
@@ -39807,11 +39925,13 @@ async def _auto_aggregate_project_model(project_id: str) -> None:
 # See plan_text.combined_set_decision. The status is stored on the file so
 # Plans & Files can say why a PDF has no index, instead of looking broken.
 COMBINED_SET_SKIPPED = "skipped_combined_set"
-# reindex-all queues every file at once, so a combined set can reach this gate
-# before the discipline sets it duplicates have any rows. It then waits for
-# them — outside the indexing semaphore — and decides once they exist.
+# The queue can reach a combined set before the discipline sets it duplicates
+# are indexed. Its job is then put back with a not_before, and the worker moves
+# on to the project's other files; the check runs again with the profile the
+# job saved. The cap is a runaway guard only — the wait ends when the project
+# has no other queued or running jobs.
 COMBINED_DEFER_SECONDS = 120
-COMBINED_MAX_DEFERRALS = 30
+COMBINED_MAX_DEFERRALS = 360
 
 
 async def _discipline_sets(project_id: str, file_id: str) -> Tuple[Dict[str, List[str]], bool]:
@@ -39850,25 +39970,35 @@ async def _discipline_sets(project_id: str, file_id: str) -> Tuple[Dict[str, Lis
     return sets, pending
 
 
-def _defer_index(project_id: str, company_id: str, file_record: dict,
-                 deferral: int, profile: dict) -> None:
-    async def _later():
-        await asyncio.sleep(COMBINED_DEFER_SECONDS)
-        await _index_pdf_file(project_id, company_id, file_record,
-                              _deferral=deferral, _profile=profile)
-    asyncio.create_task(_later())
-
-
-async def _combined_set_gate(project_id: str, company_id: str, file_record: dict,
-                             file_id: str, profile: dict, deferral: int) -> bool:
-    """True: index this file. False: it was skipped, or deferred."""
+async def _combined_set_gate(project_id: str, file_record: dict, file_id: str,
+                             profile: dict, deferrals: int = 0,
+                             can_defer: bool = False) -> str:
+    """"index" | "skipped" | "deferred"."""
     if not plan_text.looks_combined(profile):
-        return True
+        return "index"
+    if not (profile.get("text_prefixes") or []):
+        # NOTHING TO BE A DUPLICATE OF. A file whose text shows no discipline
+        # cannot be proven a copy of anything, however long it waits — its
+        # disciplines come from its own pages, not from the other files. On 588
+        # Boyland cross connection waited an hour for that proof and then died
+        # with the container.
+        return "index"
     try:
-        sets, pending = await _discipline_sets(project_id, file_id)
+        sets, _unindexed = await _discipline_sets(project_id, file_id)
+        pending = 0
+        if can_defer:
+            # NOT counted: a job that has itself been deferred. Two combined-
+            # looking files that each waited for "the project's other files"
+            # waited for each other — the deadlock that left three Boyland
+            # files unindexed. Only work that will actually finish counts.
+            pending = await db[PLAN_INDEX_JOBS].count_documents({
+                "project_id": project_id, "_id": {"$ne": file_id},
+                "$or": [{"status": "running"},
+                        {"status": "queued", "deferrals": {"$in": [0, None]}}],
+            })
     except Exception as e:
         logger.warning(f"combined-set check failed for {file_id}: {e!r} — indexing it")
-        return True
+        return "index"
     decision = plan_text.combined_set_decision(profile, sets)
     name = file_record.get("name") or file_id
     if decision:
@@ -39878,144 +40008,398 @@ async def _combined_set_gate(project_id: str, company_id: str, file_record: dict
             {"$set": {"index_status": status}},
         )
         logger.info(f"Plan index: {name} skipped as a combined set — {decision['reason']}")
-        return False
-    if pending and deferral < COMBINED_MAX_DEFERRALS:
-        logger.info(f"Plan index: {name} looks like a combined set; waiting for the "
-                    f"project's other PDFs to index (check {deferral + 1}/{COMBINED_MAX_DEFERRALS})")
-        _defer_index(project_id, company_id, file_record, deferral + 1, profile)
-        return False
-    return True
+        return "skipped"
+    if pending and can_defer and deferrals < COMBINED_MAX_DEFERRALS:
+        logger.info(f"Plan index: {name} looks like a combined set; {pending} other file(s) on "
+                    f"the project still queued — checking again after them")
+        return "deferred"
+    return "index"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# THE PLAN INDEX QUEUE
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Re-indexing 588 Thomas S Boyland St queued 16 files as asyncio tasks. Two
+# minutes later the container restarted — no crash line, so most likely out of
+# memory — and every one of those tasks went with it. Nothing on disk said
+# they had been asked for.
+#
+# Now a request writes one row per file to plan_index_jobs, and a single worker
+# started at boot drains it: one file at a time, three pages at a time. A
+# claimed job holds a lease the worker renews while it works; after a restart
+# the lease runs out, the new container's worker claims the job again, and the
+# page-level resume in _index_pdf_file skips every page already complete.
+#
+# A file that takes the container down every time it runs must not become a
+# restart loop: after PLAN_INDEX_MAX_ATTEMPTS claims it is marked failed.
+PLAN_INDEX_JOBS = "plan_index_jobs"
+PLAN_INDEX_ACTIVE = ("queued", "running")
+PLAN_INDEX_BATCH = 3
+PLAN_INDEX_LEASE_SECONDS = 180
+PLAN_INDEX_HEARTBEAT_SECONDS = 45
+PLAN_INDEX_IDLE_SECONDS = 15
+PLAN_INDEX_MAX_ATTEMPTS = 3
+_PLAN_INDEX_WORKER_TASK = None
+
+
+def _as_utc(ts):
+    if isinstance(ts, datetime) and ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+async def _enqueue_plan_index(project_id: str, company_id: str, file_record: dict, *,
+                              source: str, resume: bool = True) -> str:
+    """Queue one file. Idempotent per file. Returns what happened."""
+    file_id = str(file_record.get("_id") or file_record.get("id") or "")
+    if not file_id:
+        return "no_file_id"
+    now = datetime.now(timezone.utc)
+    jobs = db[PLAN_INDEX_JOBS]
+    current = await jobs.find_one({"_id": file_id, "project_id": project_id},
+                                  {"status": 1, "lease_until": 1})
+    lease = _as_utc((current or {}).get("lease_until"))
+    if current and current.get("status") == "running" and lease and lease > now:
+        # Already being indexed. Run it again when this pass finishes rather
+        # than letting two passes over one file race.
+        await jobs.update_one({"_id": file_id, "project_id": project_id},
+                              {"$set": {"rerun": True, "rerun_resume": bool(resume),
+                                        "updated_at": now}})
+        return "rerun_after_current"
+    fields = {
+        "project_id": project_id, "company_id": company_id,
+        "file_name": file_record.get("name"), "status": "queued", "source": source,
+        "resume": bool(resume), "not_before": None, "enqueued_at": now, "updated_at": now,
+        "error": None, "attempts": 0, "deferrals": 0, "profile": None, "rerun": False,
+        "worker": None, "lease_until": None,
+    }
+    on_insert = {"created_at": now, "pages_total": None}
+    if resume:
+        on_insert["pages_done"] = 0
+    else:
+        fields["pages_done"] = 0
+    await jobs.update_one({"_id": file_id, "project_id": project_id},
+                          {"$set": fields, "$setOnInsert": on_insert}, upsert=True)
+    return "queued"
+
+
+async def _claim_plan_index_job(worker: str) -> Optional[dict]:
+    """The oldest runnable job, atomically: queued and due, or running on a
+    lease nobody renewed (its worker died with the container)."""
+    now = datetime.now(timezone.utc)
+    return await db[PLAN_INDEX_JOBS].find_one_and_update(
+        {"$or": [
+            {"status": "queued", "$or": [{"not_before": None}, {"not_before": {"$lte": now}}]},
+            {"status": "running", "lease_until": {"$lt": now}},
+        ]},
+        {"$set": {"status": "running", "worker": worker, "started_at": now, "updated_at": now,
+                  "lease_until": now + timedelta(seconds=PLAN_INDEX_LEASE_SECONDS)},
+         "$inc": {"attempts": 1}},
+        sort=[("enqueued_at", 1)],
+        return_document=_ReturnDocument.AFTER,
+    )
+
+
+async def _plan_job_progress(job: Optional[dict], project_id: str, file_id: str, *,
+                             pages_done: Optional[int] = None,
+                             pages_total: Optional[int] = None) -> None:
+    """Record progress on the job (and the page count on the file). No job —
+    a direct call — records nothing."""
+    if not job:
+        return
+    now = datetime.now(timezone.utc)
+    fields: Dict[str, Any] = {"updated_at": now}
+    if pages_done is not None:
+        fields["pages_done"] = int(pages_done)
+    if pages_total is not None:
+        fields["pages_total"] = int(pages_total)
+    try:
+        await db[PLAN_INDEX_JOBS].update_one({"_id": file_id, "project_id": project_id},
+                                             {"$set": fields})
+        if pages_total is not None:
+            await db.project_files.update_one(
+                {"_id": to_query_id(file_id), "project_id": project_id},
+                {"$set": {"page_count": int(pages_total)}})
+    except Exception as e:
+        logger.warning(f"plan index progress write failed for {file_id}: {e!r}")
+
+
+async def _plan_index_heartbeat(file_id: str, project_id: str, worker: str) -> None:
+    while True:
+        await asyncio.sleep(PLAN_INDEX_HEARTBEAT_SECONDS)
+        now = datetime.now(timezone.utc)
+        try:
+            await db[PLAN_INDEX_JOBS].update_one(
+                {"_id": file_id, "project_id": project_id, "worker": worker},
+                {"$set": {"lease_until": now + timedelta(seconds=PLAN_INDEX_LEASE_SECONDS),
+                          "updated_at": now}})
+        except Exception as e:
+            logger.warning(f"plan index lease renewal failed for {file_id}: {e!r}")
+
+
+async def _run_plan_index_job(job: dict, worker: str) -> str:
+    """Index one claimed file and record how it ended. Returns the status."""
+    file_id = str(job["_id"])
+    project_id = job["project_id"]
+    jobs = db[PLAN_INDEX_JOBS]
+    now = datetime.now(timezone.utc)
+    key = {"_id": file_id, "project_id": project_id}
+
+    if int(job.get("attempts") or 0) > PLAN_INDEX_MAX_ATTEMPTS:
+        await jobs.update_one(key, {"$set": {
+            "status": "failed", "finished_at": now, "updated_at": now,
+            "worker": None, "lease_until": None,
+            "error": (f"stopped after {PLAN_INDEX_MAX_ATTEMPTS} attempts — the container "
+                      f"restarted while this file was indexing each time"),
+        }})
+        logger.error(f"Plan index: {job.get('file_name')} failed after "
+                     f"{PLAN_INDEX_MAX_ATTEMPTS} attempts")
+        return "failed"
+
+    rec = await db.project_files.find_one({"_id": to_query_id(file_id), "project_id": project_id})
+    if not rec or rec.get("is_deleted"):
+        await jobs.update_one(key, {"$set": {
+            "status": "cancelled", "finished_at": now, "updated_at": now,
+            "worker": None, "lease_until": None, "error": "the file no longer exists"}})
+        return "cancelled"
+
+    heartbeat = asyncio.create_task(_plan_index_heartbeat(file_id, project_id, worker))
+    try:
+        result = await _index_pdf_file(
+            project_id, job.get("company_id") or rec.get("company_id") or "", rec, job=job)
+    except Exception as e:
+        logger.error(f"Plan index: {job.get('file_name')} raised {e!r}")
+        result = {"outcome": "failed", "error": repr(e)[:300]}
+    finally:
+        heartbeat.cancel()
+
+    result = result or {"outcome": "done"}
+    now = datetime.now(timezone.utc)
+    outcome = result.get("outcome", "done")
+    if outcome == "deferred":
+        await jobs.update_one(key, {
+            "$set": {"status": "queued", "worker": None, "lease_until": None, "updated_at": now,
+                     "not_before": now + timedelta(seconds=COMBINED_DEFER_SECONDS),
+                     "profile": result.get("profile")},
+            "$inc": {"deferrals": 1, "attempts": -1},
+        })
+        return "queued"
+
+    status = outcome if outcome in ("done", "skipped", "failed") else "done"
+    fields = {"status": status, "finished_at": now, "updated_at": now, "worker": None,
+              "lease_until": None, "error": result.get("error")}
+    latest = await jobs.find_one(key, {"rerun": 1, "rerun_resume": 1})
+    if latest and latest.get("rerun"):
+        fields.update({"status": "queued", "rerun": False, "attempts": 0, "enqueued_at": now,
+                       "not_before": None, "resume": bool(latest.get("rerun_resume", True))})
+    await jobs.update_one(key, {"$set": fields})
+    return fields["status"]
+
+
+def _plan_index_ready() -> Tuple[bool, str]:
+    missing = []
+    if not QWEN_API_KEY:
+        missing.append("QWEN_API_KEY not set")
+    if not _r2_client:
+        missing.append("R2 not configured")
+    if not POPPLER_OK:
+        missing.append(f"poppler check failed ({POPPLER_DETAIL})")
+    return (not missing), "; ".join(missing)
+
+
+async def _plan_index_worker() -> None:
+    import socket as _socket
+    import uuid as _uuid
+    worker = f"{_socket.gethostname()}:{os.getpid()}:{_uuid.uuid4().hex[:6]}"
+    logger.warning(f"Plan index worker started ({worker})")
+    loop = asyncio.get_event_loop()
+    last_pause_log = -1e9
+    while True:
+        try:
+            ready, why = _plan_index_ready()
+            if not ready:
+                if loop.time() - last_pause_log > 600:
+                    waiting = await db[PLAN_INDEX_JOBS].count_documents(
+                        {"status": {"$in": list(PLAN_INDEX_ACTIVE)}})
+                    logger.error(f"Plan index worker PAUSED: {why}. {waiting} file(s) waiting.")
+                    last_pause_log = loop.time()
+                await asyncio.sleep(60)
+                continue
+            job = await _claim_plan_index_job(worker)
+            if not job:
+                await asyncio.sleep(PLAN_INDEX_IDLE_SECONDS)
+                continue
+            logger.info(f"Plan index: claimed {job.get('file_name')} "
+                        f"(attempt {job.get('attempts')}, {job.get('pages_done') or 0} pages done)")
+            await _run_plan_index_job(job, worker)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Plan index worker error: {e!r}")
+            await asyncio.sleep(PLAN_INDEX_IDLE_SECONDS)
 
 
 async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
-                          _deferral: int = 0, _profile: Optional[dict] = None):
+                          job: Optional[dict] = None) -> dict:
     """Download a PDF from R2 and index each page into document_page_index.
 
-    Quiet no-op when QWEN_API_KEY isn't set (we still can't run text-only
-    pre-filtering without risking blank entries, so the whole index skip
-    is the safest behavior — the feature is off when key is absent).
+    Called by the plan index worker with its claimed `job`; progress is written
+    to the job as pages finish. Returns {"outcome": "done" | "skipped" |
+    "deferred" | "failed", ...}.
 
-    File-hash cache: if every page for this file_id is already indexed with
-    a matching file_hash, skip entirely. This makes repeated Dropbox syncs
-    essentially free.
+    MEMORY IS BOUNDED BY THE PAGE, NOT THE FILE. The PDF goes to a temp file
+    and is read from disk. The whole-file pass keeps only each page's text and
+    a few small facts; a page's full layout is parsed again when that page is
+    indexed, three at a time, and poppler writes each page's JPEG to disk.
+
+    File-hash cache: pages already complete for this file and hash are skipped,
+    so a restart or a repeat sync costs only the pages that are left.
     """
+    import shutil as _shutil
+    import tempfile as _tempfile
+
     if not QWEN_API_KEY:
         logger.info("Plan index skipped — QWEN_API_KEY not configured")
-        return
+        return {"outcome": "failed", "error": "QWEN_API_KEY not configured"}
     if not _r2_client or not file_record.get("r2_key"):
         logger.info(
             f"Plan index skipped (no R2 object) for "
             f"{file_record.get('name')}"
         )
-        return
+        return {"outcome": "failed", "error": "no R2 object for this file"}
 
-    # A deferred combined-set check re-runs here, before any download, and
-    # without taking an indexing slot while it waits.
-    if _profile is not None:
-        _fid = str(file_record.get("_id") or file_record.get("id") or "")
-        if not await _combined_set_gate(project_id, company_id, file_record, _fid,
-                                        _profile, _deferral):
-            return
+    file_id = str(file_record.get("_id") or file_record.get("id") or "")
+    file_name = file_record.get("name") or "unknown.pdf"
+    job = job or {}
+    deferrals = int(job.get("deferrals") or 0)
+    can_defer = bool(job)
+
+    # A deferred combined-set check runs here, with the profile its job saved,
+    # before anything is downloaded.
+    if job.get("profile"):
+        verdict = await _combined_set_gate(project_id, file_record, file_id,
+                                           job["profile"], deferrals, can_defer)
+        if verdict != "index":
+            return {"outcome": verdict, "profile": job["profile"]}
 
     async with _PDF_INDEX_FILE_SEMAPHORE:
-        file_id = str(file_record.get("_id") or file_record.get("id") or "")
-        file_name = file_record.get("name") or "unknown.pdf"
         r2_key = file_record["r2_key"]
         discipline = detect_discipline(file_name)
-
-        # Download bytes
+        tmpdir = _tempfile.mkdtemp(prefix="planidx-")
         try:
-            obj = await asyncio.to_thread(
-                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=r2_key
-            )
-            pdf_bytes = obj["Body"].read()
-        except Exception as e:
-            logger.error(f"Plan index: R2 download failed for {r2_key}: {e}")
-            return
-
-        # Compute MD5 for hash-cache
-        import hashlib
-        file_hash = hashlib.md5(pdf_bytes).hexdigest()
-
-        # Skip only if an existing entry has the same hash AND was produced by
-        # index_version 2 or later. Version 1 used a minimal prompt and no
-        # embedding and must be reprocessed. Version 2 is NOT forced up to 3
-        # here — see PLAN_INDEX_SKIP_MIN_VERSION.
-        existing = await db.document_page_index.find_one({
-            "file_id":      file_id,
-            "file_hash":    file_hash,
-            "index_version": {"$gte": PLAN_INDEX_SKIP_MIN_VERSION},
-        })
-        # Total page count up front so we can log progress.
-        total = _pdf_total_pages(pdf_bytes)
-        if total <= 0:
-            logger.error(f"Plan index: page count = 0 for {file_name}")
-            return
-
-        # ── RESUME, DON'T RESTART, AND DON'T SKIP A HALF-DONE FILE ─────────
-        #
-        # This used to return as soon as ANY row with this hash existed. A
-        # deploy in the middle of indexing an 80-page set left 30 rows, and
-        # every later sync saw "already indexed" and skipped the other 50
-        # forever. Now only pages that are done are skipped: a version 2 row,
-        # or a version 3 row marked page_complete (row and chunks written).
-        todo = list(range(1, total + 1))
-        if existing:
-            done = await _pages_already_indexed(file_id, file_hash)
-            if done is None or len(done) >= total:
-                logger.info(
-                    f"Plan index: {file_name} already indexed at current hash + "
-                    f"version — skipping"
+            # Download to disk. The bytes are dropped as soon as they are written.
+            try:
+                obj = await asyncio.to_thread(
+                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=r2_key
                 )
-                return
-            todo = [p for p in todo if p not in done]
-            logger.info(f"Plan index: {file_name} resuming — {len(todo)} of {total} pages left")
+                pdf_bytes = obj["Body"].read()
+            except Exception as e:
+                logger.error(f"Plan index: R2 download failed for {r2_key}: {e}")
+                return {"outcome": "failed", "error": f"R2 download failed: {e!r}"[:300]}
 
-        # The text layer, rebuilt at span level, once per file. Falls back to
-        # pypdf's flat text when the PDF library cannot read the file.
-        layouts = None
-        try:
-            layouts = await asyncio.to_thread(plan_text.page_layouts, pdf_bytes)
-            if len(layouts) != total:
-                layouts = None
-        except Exception as e:
-            logger.warning(f"Plan index: span-level text failed for {file_name}: {e!r}")
-            layouts = None
-        if layouts:
-            texts = [(L or {}).get("text") or "" for L in layouts]
-        else:
-            texts = _pdf_page_texts(pdf_bytes) or ["" for _ in range(total)]
-        # Lines on most pages of this file — the firm, the address, the stamp.
-        # Stripped before extraction so the model reads the sheet, not the
-        # title block it has already seen forty times.
-        boilerplate = plan_extract.boilerplate_lines(texts)
-        tag_vocab = plan_text.tag_vocabulary(layouts) if layouts else plan_text.SEED_TAGS
-        drawing_index = plan_text.drawing_list_index(layouts) if layouts else {}
+            # Compute MD5 for hash-cache
+            import hashlib
+            file_hash = hashlib.md5(pdf_bytes).hexdigest()
+            pdf_path = os.path.join(tmpdir, "source.pdf")
+            with open(pdf_path, "wb") as fh:
+                fh.write(pdf_bytes)
+            del pdf_bytes
 
-        # Before any page goes to the vision model.
-        if layouts and _profile is None:
-            profile = plan_text.file_sheet_profile(layouts)
-            if not await _combined_set_gate(project_id, company_id, file_record, file_id,
-                                            profile, _deferral):
-                return
-        if layouts and file_record.get("index_status"):
-            # Indexed after all — a stale "skipped" must not stay on screen.
-            await db.project_files.update_one(
-                {"_id": to_query_id(file_id), "project_id": project_id},
-                {"$unset": {"index_status": ""}},
-            )
+            # Skip only if an existing entry has the same hash AND was produced by
+            # index_version 2 or later. Version 1 used a minimal prompt and no
+            # embedding and must be reprocessed. Version 2 is NOT forced up to 3
+            # here — see PLAN_INDEX_SKIP_MIN_VERSION.
+            existing = await db.document_page_index.find_one({
+                "file_id":      file_id,
+                "file_hash":    file_hash,
+                "index_version": {"$gte": PLAN_INDEX_SKIP_MIN_VERSION},
+            })
+            # Total page count up front so we can log progress.
+            total = _pdf_total_pages(pdf_path)
+            if total <= 0:
+                logger.error(f"Plan index: page count = 0 for {file_name}")
+                return {"outcome": "failed", "error": "page count is 0"}
 
-        # Render page-by-page (bounded memory) and fire Qwen in parallel with
-        # a small semaphore so peak concurrency is 3 per file.
-        sem = asyncio.Semaphore(3)
+            # ── RESUME, DON'T RESTART, AND DON'T SKIP A HALF-DONE FILE ─────
+            #
+            # Only pages that are done are skipped: a version 2 row, or a
+            # version 3 row marked page_complete (row and chunks written).
+            todo = list(range(1, total + 1))
+            if existing:
+                done = await _pages_already_indexed(file_id, file_hash)
+                if done is None or len(done) >= total:
+                    logger.info(
+                        f"Plan index: {file_name} already indexed at current hash + "
+                        f"version — skipping"
+                    )
+                    await _plan_job_progress(job, project_id, file_id,
+                                             pages_done=total, pages_total=total)
+                    return {"outcome": "done"}
+                todo = [p for p in todo if p not in done]
+                logger.info(f"Plan index: {file_name} resuming — {len(todo)} of {total} pages left")
 
-        async def _process_page(page_num: int):
-            async with sem:
+            # The whole-file pass: each page's text and the facts the whole file
+            # decides, one page parsed at a time. Falls back to pypdf's flat
+            # text when the PDF library cannot read the file.
+            ctx = None
+            try:
+                ctx = await asyncio.to_thread(plan_text.file_context, pdf_path)
+                if ctx.get("page_count") != total:
+                    ctx = None
+            except Exception as e:
+                logger.warning(f"Plan index: text layer failed for {file_name}: {e!r}")
+                ctx = None
+            if ctx:
+                texts = ctx["texts"]
+            else:
+                texts = _pdf_page_texts(pdf_path) or ["" for _ in range(total)]
+            # Lines on most pages of this file — the firm, the address, the stamp.
+            # Stripped before extraction so the model reads the sheet, not the
+            # title block it has already seen forty times.
+            boilerplate = plan_extract.boilerplate_lines(texts)
+            tag_vocab = ctx["tag_vocab"] if ctx else plan_text.SEED_TAGS
+            drawing_index = ctx["drawing_index"] if ctx else {}
+
+            # Before any page goes to the vision model.
+            if ctx and not job.get("profile"):
+                verdict = await _combined_set_gate(project_id, file_record, file_id,
+                                                   ctx["profile"], deferrals, can_defer)
+                if verdict != "index":
+                    return {"outcome": verdict, "profile": ctx["profile"]}
+            if ctx and file_record.get("index_status"):
+                # Indexed after all — a stale "skipped" must not stay on screen.
+                try:
+                    await db.project_files.update_one(
+                        {"_id": to_query_id(file_id), "project_id": project_id},
+                        {"$unset": {"index_status": ""}},
+                    )
+                except Exception as e:
+                    logger.warning(f"could not clear index_status on {file_id}: {e!r}")
+
+            pages_done = total - len(todo)
+            await _plan_job_progress(job, project_id, file_id,
+                                     pages_done=pages_done, pages_total=total)
+
+            async def _process_page(page_num: int):
                 dpi = _render_dpi_for(file_name, page_num)
-                jpeg = await asyncio.to_thread(
-                    _render_pdf_page, pdf_bytes, page_num, dpi
-                )
-                text = texts[page_num - 1] if page_num - 1 < len(texts) else ""
+                layout = None
+                # PREPARED ONE PAGE AT A TIME; the vision calls still run three
+                # at a time. Measured: a page's layout with tables is up to
+                # ~100 MB, and pdftoppm builds a ~160 MB raster for a 36x24
+                # sheet at 250 DPI in its own process. Three of each at once is
+                # most of a gigabyte for work that takes seconds per page.
+                async with _PLAN_PAGE_PREP_SEMAPHORE:
+                    if ctx:
+                        try:
+                            layout = await asyncio.to_thread(plan_text.page_layout_at, pdf_path, page_num)
+                        except Exception as e:
+                            logger.warning(f"Plan index: page {page_num} layout failed: {e!r}")
+                    jpeg = await asyncio.to_thread(
+                        _render_pdf_page, pdf_path, page_num, dpi
+                    )
+                text = (layout or {}).get("text") or (
+                    texts[page_num - 1] if page_num - 1 < len(texts) else "")
                 await _index_single_page(
                     project_id=project_id,
                     company_id=company_id,
@@ -40027,17 +40411,21 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
                     page_text=text,
                     page_image_bytes=jpeg,
                     boilerplate=boilerplate,
-                    layout=(layouts[page_num - 1] if layouts else None),
+                    layout=layout,
                     tag_vocab=tag_vocab,
                     drawing_index=drawing_index,
                 )
 
-        # Chunked progress logging.
-        CHUNK = 5
-        for i in range(0, len(todo), CHUNK):
-            batch = todo[i:i + CHUNK]
-            await asyncio.gather(*[_process_page(n) for n in batch])
-            logger.info(f"Plan index: {file_name}: {batch[-1]}/{total}")
+            # Three pages at a time, progress written after each batch.
+            for i in range(0, len(todo), PLAN_INDEX_BATCH):
+                batch = todo[i:i + PLAN_INDEX_BATCH]
+                await asyncio.gather(*[_process_page(n) for n in batch])
+                pages_done += len(batch)
+                await _plan_job_progress(job, project_id, file_id,
+                                         pages_done=pages_done, pages_total=total)
+                logger.info(f"Plan index: {file_name}: {pages_done}/{total}")
+        finally:
+            _shutil.rmtree(tmpdir, ignore_errors=True)
 
         logger.info(f"Plan index complete: {file_name} ({total} pages)")
 
@@ -40048,11 +40436,11 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict,
 
         # Auto-rebuild the project's ProjectModel now that this file's pages are
         # fully indexed. Shared completion point for ALL indexing entry points
-        # (upload, Dropbox sync, single re-index, reindex-all — they all spawn
-        # _index_pdf_file). Fire-and-forget so indexing never waits on, or fails
-        # because of, aggregation. Fires once per completed file; the aggregator
-        # is per-project + merge-safe, so re-runs preserve confirmed fields.
+        # (upload, Dropbox sync, single re-index, reindex-all — they all enqueue,
+        # and the worker runs _index_pdf_file). Fire-and-forget so indexing
+        # never waits on, or fails because of, aggregation.
         asyncio.create_task(_auto_aggregate_project_model(project_id))
+        return {"outcome": "done"}
 
 
 async def _pages_already_indexed(file_id: str, file_hash: str) -> Optional[set]:
@@ -40082,71 +40470,136 @@ def _file_upload_order(fr: dict) -> tuple:
     return (ts or datetime.min.replace(tzinfo=timezone.utc), str(fr.get("_id")))
 
 
+# Sheets every discipline set carries its own copy of. A T-001.00 cover on the
+# architectural set is not a newer version of the structural set's T-001.00,
+# and EN-001.00 energy sheets and GN general sheets repeat the same way.
+_NEVER_SUPERSEDE_ACROSS_SETS = frozenset({"T", "EN", "GN"})
+_SHEET_DATE_RE = re.compile(r"(?<!\d)(\d{1,4})[./\-_](\d{1,2})[./\-_](\d{2,4})(?!\d)")
+
+
+def _parse_sheet_date(text: Any):
+    """The last date in a title-block revision field or a file name:
+    '03/28/2025', '07-29-26', 'AR - 3.28.25.pdf', '...AS BUILT 08-24-26.pdf'.
+    None when there is none."""
+    from datetime import date as _date
+    found = None
+    for m in _SHEET_DATE_RE.finditer(str(text or "")):
+        a, b, c = m.groups()
+        try:
+            if len(a) == 4:
+                found = _date(int(a), int(b), int(c))
+                continue
+            if len(c) == 2:
+                year = 2000 + int(c)
+            elif len(c) == 4:
+                year = int(c)
+            else:
+                continue
+            found = _date(year, int(a), int(b))
+        except ValueError:
+            continue
+    return found
+
+
+def _sheet_prefix(sheet_number: str) -> str:
+    return sheet_number.split("-")[0] if "-" in sheet_number else ""
+
+
 async def _supersede_plan_pages(project_id: str) -> dict:
-    """One current row per sheet: the newest upload wins.
+    """One current row per sheet, within each discipline set.
 
     ── THE DUPLICATES ────────────────────────────────────────────────────
     #
     # Page rows are keyed (file_id, page_number), and every re-upload of a
-    # drawing set mints a new file id. A.500.00 came back twice from the debug
-    # endpoint for that reason, and retrieval ranked both.
-    #
-    # Two ways a page is someone else's older copy:
+    # drawing set mints a new file id. Two ways a page is someone else's copy:
     #   same file_hash + page_number in another file — the identical PDF again
-    #   same sheet_number in another file            — a revised set
-    # In both, the file uploaded later (project_files.created_at) wins and the
-    # other row gets `superseded_by` = the winning file id.
+    #   same sheet_number in another file of the SAME discipline set — a revision
+    # The losing row gets `superseded_by` = the winning file id.
+    #
+    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
+    #
+    # This used to be "the newest upload wins", and on 588 Boyland that hid
+    # the June 2026 owners set behind the March 2025 architectural set, because
+    # the March set had been re-synced most recently. Now, in order:
+    #   1. the revision date read from the title block
+    #   2. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   3. upload time
+    #
+    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
+    #
+    # A file's discipline is its most common sheet prefix. Sheet numbers are
+    # matched only between files of the same discipline: the structural set's
+    # T-001.00 cover was being hidden by the architectural set's, and MH's
+    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
+    # files at all.
     #
     # NOTHING IS DELETED. Readers exclude a row only while the file that
-    # superseded it is still live, so deleting the newer upload brings the older
-    # sheet straight back without a re-run of this pass.
-    #
-    # A sheet that appears twice INSIDE one file (a continued plan, two pages
-    # with one number) is not a duplicate and both pages stay.
+    # superseded it is still live, so deleting the newer file brings the older
+    # sheet straight back. A sheet that appears twice INSIDE one file is not a
+    # duplicate and both pages stay.
     """
+    from collections import Counter as _Counter
+    from datetime import date as _date
+
     files = await db.project_files.find(
         {"project_id": project_id, "is_deleted": {"$ne": True}},
-        {"_id": 1, "created_at": 1},
+        {"_id": 1, "created_at": 1, "name": 1},
     ).to_list(2000)
-    rank = {str(f["_id"]): _file_upload_order(f) for f in files}
-    if not rank:
+    uploaded = {str(f["_id"]): _file_upload_order(f) for f in files}
+    name_date = {str(f["_id"]): _parse_sheet_date(f.get("name")) for f in files}
+    if not uploaded:
         return {"superseded": 0}
     rows = await db.document_page_index.find(
-        {"project_id": project_id, "file_id": {"$in": list(rank)},
-         "is_spec_page": {"$ne": True}},
+        {"project_id": project_id, "file_id": {"$in": list(uploaded)}},
         {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
-         "sheet_number": 1, "superseded_by": 1},
+         "sheet_number": 1, "superseded_by": 1, "revision_date": 1},
     ).to_list(20000)
 
-    groups: Dict[tuple, set] = {}
+    def _norm(sn):
+        return re.sub(r"\s+", "", str(sn or "")).upper()
+
+    prefixes: Dict[str, _Counter] = {}
     for r in rows:
-        fid = r.get("file_id")
-        if r.get("file_hash"):
-            groups.setdefault(("hash", r["file_hash"], r.get("page_number")), set()).add(fid)
-        sn = re.sub(r"\s+", "", str(r.get("sheet_number") or "")).upper()
-        if sn:
-            groups.setdefault(("sheet", sn), set()).add(fid)
+        p = _sheet_prefix(_norm(r.get("sheet_number")))
+        if p and p not in _NEVER_SUPERSEDE_ACROSS_SETS:
+            prefixes.setdefault(r.get("file_id"), _Counter())[p] += 1
+    family = {fid: c.most_common(1)[0][0] for fid, c in prefixes.items() if c}
 
     def _keys(r):
         out = []
         if r.get("file_hash"):
             out.append(("hash", r["file_hash"], r.get("page_number")))
-        sn = re.sub(r"\s+", "", str(r.get("sheet_number") or "")).upper()
-        if sn:
-            out.append(("sheet", sn))
+        sn = _norm(r.get("sheet_number"))
+        fam = family.get(r.get("file_id"))
+        if sn and fam and _sheet_prefix(sn) not in _NEVER_SUPERSEDE_ACROSS_SETS:
+            out.append(("sheet", fam, sn))
         return out
 
-    winners = {k: max(fids, key=lambda f: rank.get(f)) for k, fids in groups.items()
-               if len(fids) > 1}
+    members: Dict[tuple, Dict[str, list]] = {}
+    for r in rows:
+        for k in _keys(r):
+            members.setdefault(k, {}).setdefault(r.get("file_id"), []).append(r)
+
+    def _order(fid, file_rows):
+        revs = [d for d in (_parse_sheet_date(x.get("revision_date")) for x in file_rows) if d]
+        return (max(revs) if revs else _date.min,
+                name_date.get(fid) or _date.min,
+                uploaded[fid])
+
+    winners: Dict[tuple, Tuple[str, tuple]] = {}
+    for k, by_file in members.items():
+        if len(by_file) > 1:
+            best = max(by_file, key=lambda f: _order(f, by_file[f]))
+            winners[k] = (best, _order(best, by_file[best]))
+
     by_winner: Dict[str, list] = {}
     keep_ids = []
     for r in rows:
-        loser_to = None
+        loser_to, loser_order = None, None
         for k in _keys(r):
             w = winners.get(k)
-            if w and w != r.get("file_id"):
-                if loser_to is None or rank[w] > rank[loser_to]:
-                    loser_to = w
+            if w and w[0] != r.get("file_id") and (loser_order is None or w[1] > loser_order):
+                loser_to, loser_order = w
         if loser_to:
             if r.get("superseded_by") != loser_to:
                 by_winner.setdefault(loser_to, []).append(r["_id"])
@@ -40484,6 +40937,12 @@ async def _retrieve_plan_candidates(
             r"(\.\d+)?$"
         )
         fq = dict(base_filter)
+        # A NAMED SHEET IS FOUND EVEN WHEN IT IS A NOTES SHEET. The spec-page
+        # exclusion keeps a wall of notes out of a broad "which sheet is like
+        # this" search; it must not make "show me S-001" answer that S-001
+        # does not exist.
+        fq.pop("is_spec_page", None)
+        fq.pop("sheet_title", None)
         fq["sheet_number"] = {"$regex": pattern, "$options": "i"}
         # Multiple hits possible when a family shares a base (M-200, M-200.1…);
         # prefer the shortest — it's the "most canonical" base sheet.
@@ -45700,12 +46159,11 @@ async def reindex_project_document(
     except Exception:
         pass
 
-    # Spawn background re-index
-    asyncio.create_task(
-        _index_pdf_file(project_id, file_rec.get("company_id") or company_id or "", dict(file_rec))
-    )
+    # Queued, not spawned: the queue survives a restart.
+    await _enqueue_plan_index(project_id, file_rec.get("company_id") or company_id or "",
+                              dict(file_rec), source="reindex_document", resume=resume)
     return {
-        "status": "indexing",
+        "status": "queued",
         "file_name": file_rec.get("name"),
         "total_pages": total_pages,
     }
@@ -45748,13 +46206,10 @@ async def reindex_all_project_files(
         if not resume:
             await db.document_page_index.delete_many({"file_id": str(fr["_id"])})
             await db.document_page_chunks.delete_many({"file_id": str(fr["_id"])})
-        asyncio.create_task(
-            _index_pdf_file(
-                project_id,
-                fr.get("company_id") or company_id or "",
-                dict(fr),
-            )
-        )
+        # Queued, not spawned. Sixteen asyncio tasks died with the container on
+        # the first Boyland re-index; a queue row does not.
+        await _enqueue_plan_index(project_id, fr.get("company_id") or company_id or "",
+                                  dict(fr), source="reindex_all", resume=resume)
         queued.append(fr.get("name"))
     return {"queued": len(queued), "files": queued}
 
@@ -46559,12 +47014,6 @@ async def get_document_index_status(
     query["name"] = {"$regex": r"\.pdf$", "$options": "i"}
 
     files_out = []
-    try:
-        from pypdf import PdfReader
-        import io as _io
-    except Exception:
-        PdfReader = None  # type: ignore
-        _io = None        # type: ignore
 
     files = await db.project_files.find(query).to_list(500)
 
@@ -46581,22 +47030,36 @@ async def get_document_index_status(
                                          fr.get("dropbox_path") or "")
         ]
 
+    # ── THE QUEUE, NOT THE BUCKET ─────────────────────────────────────────
+    #
+    # This downloaded EVERY PDF on the project from R2 and parsed it, on every
+    # call, to count pages — about 90 MB for 588 Thomas S Boyland St, repeated
+    # every 30 seconds by a polling script, on the same container doing the
+    # indexing. The job table already knows pages_total and pages_done, and the
+    # page count is stored on the file when a job starts.
+    jobs: Dict[str, dict] = {}
+    file_ids = [str(fr.get("_id")) for fr in files]
+    if file_ids:
+        for j in await db[PLAN_INDEX_JOBS].find(
+            {"project_id": project_id, "_id": {"$in": file_ids}},
+        ).to_list(len(file_ids) + 1):
+            jobs[str(j["_id"])] = j
+
     for fr in files:
         file_id = str(fr.get("_id"))
-        total_pages = 0
-        # Try to read page count from the PDF (cheap if file is small)
-        if PdfReader is not None and _io is not None and fr.get("r2_key") and _r2_client:
-            try:
-                obj = await asyncio.to_thread(
-                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=fr["r2_key"]
-                )
-                total_pages = len(PdfReader(_io.BytesIO(obj["Body"].read())).pages)
-            except Exception:
-                total_pages = 0
-        indexed = await db.document_page_index.count_documents({
-            "file_id": file_id,
-            "sheet_title": {"$ne": "[SPECIFICATION PAGE]"},
-        })
+        job = jobs.get(file_id)
+        if job:
+            indexed = int(job.get("pages_done") or 0)
+            total_pages = int(job.get("pages_total") or fr.get("page_count") or 0)
+            queue_status = job.get("status")
+        else:
+            # Spec pages ARE indexed pages. Leaving them out made ST read
+            # 13/14 and AR 24/26 on a run where every page was done.
+            indexed = await db.document_page_index.count_documents({
+                "file_id": file_id,
+            })
+            total_pages = int(fr.get("page_count") or 0)
+            queue_status = "indexed" if indexed else "not_queued"
         most_recent = await db.document_page_index.find_one(
             {"file_id": file_id},
             sort=[("indexed_at", -1)],
@@ -46608,6 +47071,11 @@ async def get_document_index_status(
             "indexed_pages": indexed,
             "last_indexed_at": (most_recent or {}).get("indexed_at"),
             "index_status": _public_index_status(fr.get("index_status")),
+            "queue_status": queue_status,
+            "queue": ({k: job.get(k) for k in (
+                "status", "pages_done", "pages_total", "attempts", "deferrals",
+                "error", "not_before", "enqueued_at", "started_at", "finished_at",
+                "updated_at")} if job else None),
         })
 
     return {
@@ -48124,22 +48592,29 @@ async def startup_event():
     else:
         logger.warning("R2 storage not configured — file delivery will use Dropbox only")
 
-    global SCREENSHOT_ENABLED
-    SCREENSHOT_ENABLED = False
-    try:
-        from pdf2image import convert_from_bytes
-        _test_pdf = (
-            b"%PDF-1.4 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj "
-            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj "
-            b"3 0 obj<</Type/Page/MediaBox[0 0 3 3]>>endobj\n"
-            b"xref\n0 4\n0000000000 65535 f \n"
-            b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n0\n%%EOF"
-        )
-        convert_from_bytes(_test_pdf, first_page=1, last_page=1)
-        SCREENSHOT_ENABLED = True
-        logger.info("pdf2image/poppler: OK — annotation screenshots enabled")
-    except Exception as _e:
-        logger.error(f"pdf2image/poppler not available: {_e}. Annotation screenshots disabled.")
+    # ── POPPLER, CHECKED FOR REAL AND SAID LOUDLY ─────────────────────────
+    #
+    # The old self-test fed pdf2image a hand-written PDF whose xref offsets were
+    # all zero. pdfinfo rejects that file, and pdf2image reports it as "Unable
+    # to get page count." — the same first words it uses when poppler is not
+    # installed at all. So the log said poppler was missing on an image that
+    # installs poppler-utils, and nobody could tell which it was.
+    #
+    # Now: both binaries looked up on PATH, the version read, and a VALID
+    # one-page PDF rendered. One line either way, at a level that shows.
+    global SCREENSHOT_ENABLED, POPPLER_OK, POPPLER_DETAIL
+    POPPLER_OK, POPPLER_DETAIL = await asyncio.to_thread(_check_poppler)
+    SCREENSHOT_ENABLED = POPPLER_OK
+    if POPPLER_OK:
+        logger.warning(f"POPPLER CHECK: OK — {POPPLER_DETAIL}. Plan page rendering and "
+                       f"annotation screenshots enabled.")
+    else:
+        logger.error(f"POPPLER CHECK: FAILED — {POPPLER_DETAIL}. Plan indexing is PAUSED "
+                     f"(queued files wait) and annotation screenshots are disabled.")
+
+    # The plan index queue survives restarts; this drains it.
+    global _PLAN_INDEX_WORKER_TASK
+    _PLAN_INDEX_WORKER_TASK = asyncio.create_task(_plan_index_worker())
 
     # ── EVERY UNIQUE BUILD GOES THROUGH THE RESILIENT HELPER ───────────────
     #

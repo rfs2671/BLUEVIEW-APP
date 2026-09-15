@@ -294,14 +294,10 @@ def page_layouts(pdf_bytes: bytes, *, pages: Optional[Iterable[int]] = None,
     this set's sheets carry /Rotate 270 and pdfplumber reports them 2592x1728
     with the title block on the right, which is what the edge strips expect."""
     import io as _io
-    import logging as _logging
 
-    import pdfplumber  # imported here so the pure functions need nothing
-
-    _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
     wanted = set(pages) if pages else None
     out: List[Optional[Dict[str, Any]]] = []
-    with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+    with _open_pdf(_io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             if wanted is not None and i not in wanted:
                 out.append(None)
@@ -321,6 +317,89 @@ def page_layouts(pdf_bytes: bytes, *, pages: Optional[Iterable[int]] = None,
             except Exception:
                 pass
     return out
+
+
+# ── ONE PAGE IN MEMORY AT A TIME ──────────────────────────────────────────
+#
+# page_layouts above parses a whole file and returns every layout. Indexing
+# no longer uses it: on 588 Thomas S Boyland St three files at once, each held
+# whole, plus their page rasters, took the container down. Indexing reads a
+# file from disk, keeps only what the whole file is needed for — each page's
+# text, the sheet profile, the tag vocabulary, the drawing-list index — and
+# parses a page's full layout again only when that page is being indexed.
+
+def _open_pdf(source):
+    """A path, or a binary stream. The one place the PDF library is imported."""
+    import logging as _logging
+
+    import pdfplumber  # imported here so the pure functions need nothing
+
+    _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
+    return pdfplumber.open(source)
+
+
+def file_context(pdf_path: str) -> Dict[str, Any]:
+    """Whole-file facts from a PDF on disk, one page parsed and released at a
+    time. Tables are not read here (they are read per page at index time).
+
+    THE FILE IS REOPENED FOR EVERY PAGE. Measured peak memory over the text
+    pass, closing each page inside ONE open file vs reopening per page:
+    588 Boyland SET_UPDATED 130 MB vs 22 MB, AR 391 MB vs 287 MB. pdfplumber
+    keeps parser state across pages of an open document that page.close()
+    does not release; reopening costs no measurable time."""
+    texts: List[str] = []
+    vector = title_pages = 0
+    title_prefixes: set = set()
+    text_prefixes: set = set()
+    vocab: set = set(SEED_TAGS)
+    drawing_index: Dict[str, int] = {}
+    with _open_pdf(pdf_path) as pdf:
+        count = len(pdf.pages)
+    for i in range(1, count + 1):
+        with _open_pdf(pdf_path) as pdf:
+            page = pdf.pages[i - 1]
+            try:
+                L = layout_from_dict(page_dict_from_chars(page.chars), width=float(page.width),
+                                     height=float(page.height), page_number=i)
+            finally:
+                page.close()
+            texts.append(L["text"])
+            p = file_sheet_profile([L])
+            vector += p["vector_pages"]
+            title_pages += p["title_id_pages"]
+            title_prefixes |= set(p["title_prefixes"])
+            text_prefixes |= set(p["text_prefixes"])
+            vocab |= tag_vocabulary([L])
+            for sid, n in drawing_list_index([L]).items():
+                drawing_index.setdefault(sid, n)
+            del L
+    return {
+        "page_count": count,
+        "texts": texts,
+        "profile": {"vector_pages": vector, "title_id_pages": title_pages,
+                    "title_prefixes": sorted(title_prefixes), "text_prefixes": sorted(text_prefixes)},
+        "tag_vocab": frozenset(vocab),
+        "drawing_index": drawing_index,
+    }
+
+
+def page_layout_at(pdf_path: str, page_number: int, with_tables: bool = True) -> Dict[str, Any]:
+    """One page's full layout, tables included, from a PDF on disk."""
+    with _open_pdf(pdf_path) as pdf:
+        page = pdf.pages[page_number - 1]
+        try:
+            tables: List[Dict[str, Any]] = []
+            if with_tables:
+                try:
+                    for t in page.find_tables():
+                        tables.append({"bbox": [float(x) for x in t.bbox], "rows": t.extract()})
+                except Exception:
+                    tables = []
+            return layout_from_dict(page_dict_from_chars(page.chars), width=float(page.width),
+                                    height=float(page.height), page_number=page_number,
+                                    tables=tables)
+        finally:
+            page.close()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -816,10 +895,18 @@ def file_sheet_profile(layouts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str,
     }
 
 
+# A one- or two-page file is not a re-issue of the project. On 588 Boyland the
+# as-built survey (1 page) and the shed drawing (1 page) were both taken for
+# combined sets because their one page had no sheet number.
+COMBINED_MIN_VECTOR_PAGES = 3
+
+
 def looks_combined(profile: Dict[str, Any]) -> bool:
-    """Most of its pages have no sheet number in the title block."""
+    """Most of its pages have no sheet number in the title block, and there
+    are enough of them to be a set."""
     vp = int(profile.get("vector_pages") or 0)
-    return vp > 0 and int(profile.get("title_id_pages") or 0) / vp < COMBINED_MAX_TITLE_ID_SHARE
+    return (vp >= COMBINED_MIN_VECTOR_PAGES
+            and int(profile.get("title_id_pages") or 0) / vp < COMBINED_MAX_TITLE_ID_SHARE)
 
 
 def combined_set_decision(profile: Dict[str, Any],
@@ -858,7 +945,7 @@ __all__ = [
     "file_sheet_profile", "looks_combined", "combined_set_decision", "DISCIPLINE_PREFIXES",
     "COMBINED_MAX_TITLE_ID_SHARE",
     "normalize_glyphs", "split_stacked_fraction", "rebuild_line", "layout_from_dict",
-    "page_layouts", "page_dict_from_chars", "drawing_list_index",
+    "page_layouts", "page_dict_from_chars", "drawing_list_index", "file_context", "page_layout_at",
     "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
     "callouts_from_text", "stated_quantities", "dimensions_from_text", "material_lines",

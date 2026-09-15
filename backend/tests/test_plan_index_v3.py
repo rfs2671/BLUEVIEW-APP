@@ -66,7 +66,13 @@ def _match_one(doc, key, cond):
 
 
 def _matches(doc, q):
-    return all(_match_one(doc, k, c) for k, c in (q or {}).items())
+    for k, c in (q or {}).items():
+        if k == "$or":
+            if not any(_matches(doc, sub) for sub in c):
+                return False
+        elif not _match_one(doc, k, c):
+            return False
+    return True
 
 
 class _Cursor:
@@ -167,16 +173,98 @@ class OneCurrentRowPerSheet(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def _file(self, fid, days):
+    def _file(self, fid, days, name=None):
         self.db.project_files.rows.append(
-            {"_id": fid, "project_id": "p1", "created_at": T0 + timedelta(days=days)})
+            {"_id": fid, "project_id": "p1", "created_at": T0 + timedelta(days=days),
+             "name": name})
 
-    def _page(self, fid, page, sheet, file_hash):
+    def _page(self, fid, page, sheet, file_hash, revision_date=None):
         self.db.document_page_index.rows.append({
             "_id": f"{fid}-{page}", "project_id": "p1", "file_id": fid,
             "page_number": page, "sheet_number": sheet, "file_hash": file_hash,
-            "superseded_by": None,
+            "superseded_by": None, "revision_date": revision_date,
         })
+
+    # ── 588 Thomas S Boyland St, as the first full re-index found it ──────
+
+    def test_the_owners_set_is_not_hidden_by_a_re_synced_older_set(self):
+        """Owners set - 6.9.26 vs AR - 3.28.25. AR was re-synced last, so by
+        upload time it won and hid A-100…A-105. The title blocks say which is
+        the later drawing."""
+        self._file("owners", 0, "Owners set - 6.9.26.pdf")
+        self._file("ar", 10, "AR - 3.28.25.pdf")
+        for n, sn in enumerate(("A-100.00", "A-101.00"), start=1):
+            self._page("owners", n, sn, "h-owners", revision_date="06/09/2026")
+            self._page("ar", n + 10, sn, "h-ar", revision_date="03/28/2025")
+        _run(server._supersede_plan_pages("p1"))
+        self.assertIsNone(self._row("owners-1")["superseded_by"])
+        self.assertEqual(self._row("ar-11")["superseded_by"], "owners")
+        self.assertEqual(self._row("ar-12")["superseded_by"], "owners")
+
+    def test_with_no_revision_date_the_file_names_date_decides(self):
+        self._file("owners", 0, "Owners set - 6.9.26.pdf")
+        self._file("ar", 10, "AR - 3.28.25.pdf")
+        self._page("owners", 1, "A-100.00", "h-owners")
+        self._page("ar", 11, "A-100.00", "h-ar")
+        _run(server._supersede_plan_pages("p1"))
+        self.assertIsNone(self._row("owners-1")["superseded_by"])
+        self.assertEqual(self._row("ar-11")["superseded_by"], "owners")
+
+    def test_sp_after_co_does_not_hide_the_later_sp_set(self):
+        """'SP 4th floor after CO - 5.6.25.pdf' was uploaded after
+        'SP - 6.24.26.pdf' and hid its SP-003.00. The June 2026 set is later."""
+        self._file("sp", 0, "SP - 6.24.26.pdf")
+        self._file("co", 5, "SP 4th floor after CO - 5.6.25.pdf")
+        self._page("sp", 3, "SP-003.00", "h-sp")
+        self._page("co", 1, "SP-003.00", "h-co")
+        _run(server._supersede_plan_pages("p1"))
+        self.assertIsNone(self._row("sp-3")["superseded_by"])
+        self.assertEqual(self._row("co-1")["superseded_by"], "sp")
+
+    def test_cover_energy_and_general_sheets_never_supersede_across_sets(self):
+        """The structural set's T-001.00 was hidden by the architectural
+        set's, and MH's EN-001.00 by PL's."""
+        self._file("st", 0, "ST - 7.29.26.pdf")
+        self._file("ar", 5, "AR - 8.18.26.pdf")
+        self._file("mh", 0, "MH - 7.2.26.pdf")
+        self._file("pl", 5, "PL - 8.1.26.pdf")
+        self._page("st", 1, "T-001.00", "h-st")
+        self._page("st", 2, "S-101.00", "h-st")
+        self._page("ar", 1, "T-001.00", "h-ar")
+        self._page("ar", 2, "A-100.00", "h-ar")
+        self._page("ar", 3, "GN-001.00", "h-ar")
+        self._page("mh", 12, "EN-001.00", "h-mh")
+        self._page("mh", 1, "M-100.00", "h-mh")
+        self._page("pl", 21, "EN-001.00", "h-pl")
+        self._page("pl", 1, "P-100.00", "h-pl")
+        self._file("ar2", 9, "AR - 9.1.26.pdf")
+        self._page("ar2", 1, "GN-001.00", "h-ar2")
+        self._page("ar2", 2, "A-101.00", "h-ar2")
+        _run(server._supersede_plan_pages("p1"))
+        superseded = [r["_id"] for r in self.db.document_page_index.rows if r["superseded_by"]]
+        self.assertEqual(superseded, [])
+
+    def test_the_same_number_in_another_discipline_is_not_a_revision(self):
+        self._file("sp", 0, "SP - 6.24.26.pdf")
+        self._file("ssp", 5, "SSP - 9.1.26.pdf")
+        self._page("sp", 1, "SP-001.00", "h-sp")
+        self._page("ssp", 1, "SSP-001.00", "h-ssp")
+        self._page("ssp", 2, "SP-001.00", "h-ssp")
+        _run(server._supersede_plan_pages("p1"))
+        self.assertIsNone(self._row("sp-1")["superseded_by"])
+
+    def test_dates_are_read_from_title_blocks_and_file_names(self):
+        from datetime import date
+        cases = {
+            "03/28/2025": date(2025, 3, 28), "07-29-26": date(2026, 7, 29),
+            "AR - 3.28.25.pdf": date(2025, 3, 28),
+            "3540K25_588 THOMAS S BOYLAND STREET-AS BUILT 08-24-26.pdf": date(2026, 8, 24),
+            "SD1-2 - 4.1.25.pdf": date(2025, 4, 1), "2026-06-09": date(2026, 6, 9),
+            "B01141294-11": None, None: None,
+        }
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(server._parse_sheet_date(text), want)
 
     def _row(self, rid):
         return next(r for r in self.db.document_page_index.rows if r["_id"] == rid)
@@ -487,6 +575,21 @@ class AVectorPageIsOneCallAndItsSpecPageIsStillChunked(unittest.TestCase):
         self.assertEqual(row["sheet_number"], "S-001.00")
         self.assertTrue(row["page_complete"])
         self.assertTrue(db.document_page_chunks.rows)
+        # Searchable like any sheet, and it has an image to send.
+        self.assertIn("ALL PILES SHALL BE HELICAL PILES.", row["notes"])
+        self.assertNotEqual(row["sheet_title"], "[SPECIFICATION PAGE]")
+        self.assertEqual(row["page_jpeg_r2_key"], "key")
+
+    def test_a_spec_page_is_found_by_its_sheet_number(self):
+        db = _Db()
+        db.project_files.rows.append({"_id": "f1", "project_id": "p1"})
+        db.document_page_index.rows.append({
+            "_id": "s1", "project_id": "p1", "file_id": "f1", "sheet_number": "S-001.00",
+            "is_spec_page": True, "sheet_title": None, "superseded_by": None})
+        with mock.patch.object(server, "db", db):
+            hits = _run(server._retrieve_plan_candidates("p1", {"sheet_number": "S-001"},
+                                                         "show me S-001"))
+        self.assertEqual([h["_id"] for h in hits], ["s1"])
 
 
 class ACombinedSetIsNotSentToVision(unittest.TestCase):
@@ -504,32 +607,58 @@ class ACombinedSetIsNotSentToVision(unittest.TestCase):
             {"_id": "ar", "project_id": "p1", "name": "AR - 3.28.25.pdf"},
         ])
 
-    def _gate(self, deferral=0):
+    def _gate(self, deferrals=0, can_defer=True):
         return _run(server._combined_set_gate(
-            "p1", "c1", {"_id": "combo", "name": "588 THOMAS BOYLAND ST SET_UPDATED.pdf"},
-            "combo", self.PROFILE, deferral))
+            "p1", {"_id": "combo", "name": "588 THOMAS BOYLAND ST SET_UPDATED.pdf"},
+            "combo", self.PROFILE, deferrals, can_defer))
 
     def test_covered_by_an_indexed_discipline_set_it_is_skipped_and_says_why(self):
         self.db.document_page_index.rows.extend([
             {"project_id": "p1", "file_id": "ar", "sheet_number": "A-100.00"},
             {"project_id": "p1", "file_id": "ar", "sheet_number": "A-101.00"},
         ])
-        self.assertFalse(self._gate())
+        self.assertEqual(self._gate(), "skipped")
         status = self.db.project_files.rows[0]["index_status"]
         self.assertEqual(status["state"], "skipped_combined_set")
         self.assertEqual(status["covered_by"], ["AR - 3.28.25.pdf"])
         self.assertIn("no sheet number in the title block", status["reason"])
 
-    def test_it_waits_while_the_discipline_sets_are_still_unindexed(self):
-        deferred = []
-        with mock.patch.object(server, "_defer_index", lambda *a: deferred.append(a)):
-            self.assertFalse(self._gate())
-        self.assertEqual(len(deferred), 1)
+    def test_it_waits_while_the_projects_other_files_are_still_queued(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        self.assertEqual(self._gate(), "deferred")
         self.assertNotIn("index_status", self.db.project_files.rows[0])
 
+    def test_with_nothing_else_queued_an_uncovered_file_is_indexed(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "done"})
+        self.assertEqual(self._gate(), "index")
+
     def test_after_the_last_wait_it_is_indexed(self):
-        with mock.patch.object(server, "_defer_index", lambda *a: self.fail("deferred again")):
-            self.assertTrue(self._gate(deferral=server.COMBINED_MAX_DEFERRALS))
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        self.assertEqual(self._gate(deferrals=server.COMBINED_MAX_DEFERRALS), "index")
+
+    def test_two_waiting_combined_files_do_not_wait_for_each_other(self):
+        """As-built, cross connection and shed each waited for the other two
+        and none of them was ever indexed."""
+        self.db.plan_index_jobs.rows.append(
+            {"_id": "ar", "project_id": "p1", "status": "queued", "deferrals": 1})
+        self.assertEqual(self._gate(), "index")
+
+    def test_a_running_job_still_counts_as_pending(self):
+        self.db.plan_index_jobs.rows.append(
+            {"_id": "ar", "project_id": "p1", "status": "running", "deferrals": 2})
+        self.assertEqual(self._gate(), "deferred")
+
+    def test_a_file_showing_no_discipline_is_indexed_without_waiting(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        profile = dict(self.PROFILE, text_prefixes=[])
+        verdict = _run(server._combined_set_gate(
+            "p1", {"_id": "combo", "name": "cross connection - 6.13.25.pdf"},
+            "combo", profile, 0, True))
+        self.assertEqual(verdict, "index")
+
+    def test_a_direct_call_with_no_job_never_defers(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        self.assertEqual(self._gate(can_defer=False), "index")
 
     def test_a_skipped_file_is_not_live_for_retrieval(self):
         self.db.project_files.rows[0]["index_status"] = {"state": "skipped_combined_set"}
