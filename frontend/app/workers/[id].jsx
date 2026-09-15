@@ -210,6 +210,10 @@ export default function WorkerDetailScreen() {
     // onto the certification it returns, so it arrives through the same keys
     // as a stored flag and needs no new branch here.
     CARD_NUMBER_FORMAT: 'Card number does not match the expected format — check the card and re-enter',
+    // The class read fine; the name, the number or the expiry did not. Without
+    // this row the flag fell through to the 'Verify the card' fallback below,
+    // which tells a CP to look and not what to look for.
+    EXTRACTION_INCOMPLETE: 'Some details could not be read from the card — verify the card',
   };
   /**
    * What this certification is called, on the screen the CP checks it on.

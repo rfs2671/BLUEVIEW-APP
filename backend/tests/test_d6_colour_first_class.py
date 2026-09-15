@@ -81,11 +81,45 @@ class TheMap(unittest.TestCase):
         c = one(card_dominant_color="RED", card_color_confidence="high")
         self.assertEqual(c["type"], "SST_TEMPORARY")
 
-    def test_an_unmapped_colour_is_unknown_not_a_guess(self):
-        """GREEN is not in the map. That is 'a card this app does not know',
-        which is an answer — not a reason to fall back to text-wins."""
+    def test_an_unmapped_colour_is_no_signal_and_the_text_still_stands(self):
+        """OVERTURNED, AND THE OLD VERSION OF THIS TEST WAS THE DEFECT'S ALIBI.
+
+        It read: "GREEN is not in the map. That is 'a card this app does not
+        know', which is an answer — not a reason to fall back to text-wins" —
+        and asserted SST_UNSPECIFIED / CLASS_UNVERIFIED on a card whose class
+        text read perfectly.
+
+        WHAT WAS WRONG WITH IT. "I do not know this colour" and "I do not know
+        this card" are different claims, and only a function that has already
+        looked at the TEXT may make the second. The branch it locked in sat
+        ABOVE the text fall-through, so it made the second claim while holding
+        a legible class — and the consequence was an inversion: drop the colour,
+        report it at low confidence, or report it under glare, and the same card
+        resolved CLEANLY to SST_FULL. A better read scored worse than a degraded
+        one.
+
+        Nor was it a GREEN quirk. The OCR prompt invites nine colours and this
+        map holds three; five of the nine landed here, WHITE first among them.
+        Two flagged Blueview workers were sitting on exactly this.
+
+        AN UNMAPPED COLOUR IS NO SIGNAL. It falls through to the text class.
+        Only a MAPPED colour that CONTRADICTS the text flags — the conflict
+        path, which the tests below still hold. The relation this test could
+        not see, because it examined one row in isolation, is asserted as a
+        property in test_a_better_read_never_scores_worse.py.
+        """
         c = one(card_dominant_color="GREEN", card_color_confidence="high",
                 card_class="Supervisor")
+        self.assertEqual(c["type"], "SST_SUPERVISOR")
+        self.assertEqual(c["class_source"], "text_only")
+        self.assertIsNone(c["review_reason"])
+        self.assertFalse(c["needs_review"])
+
+    def test_an_unmapped_colour_with_no_text_is_still_unknown(self):
+        """The half of the old claim that WAS right, kept. With nothing legible
+        from either signal, "cannot determine the class" is true of the card and
+        not merely of the colour."""
+        c = one(card_dominant_color="GREEN", card_color_confidence="high")
         self.assertEqual(c["type"], server.SST_UNSPECIFIED)
         self.assertEqual(c["review_reason"], "CLASS_UNVERIFIED")
 
