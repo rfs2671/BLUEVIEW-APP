@@ -186,6 +186,46 @@ for (const [code, want] of Object.entries(CODES)) {
 ok(new Set(Object.values(CODES)).size === Object.keys(CODES).length,
   'no two codes share a sentence');
 
+// ── The attestation wording, which is RULED ────────────────────────────────
+console.log('\nthe attestation says what he saw, not that he dismissed a warning');
+
+eq(M.CARD_CHECK_STATEMENT,
+  "I have seen this worker's physical SST card. The name, card number and "
+  + 'class on the card match what is shown here.',
+  'the statement is the ruled wording, verbatim');
+eq(M.cardCheckScopeNote('4YU1RY8KKM'),
+  'Recorded against card number 4YU1RY8KKM. If this worker\'s card number '
+  + 'changes, this check does not carry over and the card must be checked again.',
+  'the scope note SHOWS the card number, it does not merely store it');
+eq(M.CARD_CHECK_AFFIRM, 'I checked this card', 'the control says what he did');
+eq(M.CARD_CHECK_REFUSE, 'I could not check this card',
+  'and there is a way out that is not an affirmation');
+
+// NEVER these words. He is attesting he saw the physical card, which is a
+// different claim from dismissing a warning.
+const BANNED = /\b(approve|approved|dismiss|dismissed|ignore|ignored|override|overridden|acknowledge|acknowledged)\b/i;
+for (const [name, text] of [
+  ['CARD_CHECK_STATEMENT', M.CARD_CHECK_STATEMENT],
+  ['CARD_CHECK_AFFIRM', M.CARD_CHECK_AFFIRM],
+  ['CARD_CHECK_REFUSE', M.CARD_CHECK_REFUSE],
+  ['scope note', M.cardCheckScopeNote('X1')],
+  ['no-number hint', M.CARD_CHECK_NO_NUMBER],
+]) {
+  ok(!BANNED.test(text), `${name}: never approve/dismiss/ignore/override/acknowledge`);
+}
+
+eq(M.CARD_CHECK_NO_NUMBER,
+  'No card number is recorded for this worker, so there is nothing to check '
+  + 'the card against.',
+  'no card number: the control is not offered, and the screen says why');
+
+eq(M.cardCheckedLine({ name: 'Carl CP', at: '2026-09-03T14:20:00Z', cardNumber: '4YU1RY8KKM' }),
+  'Card checked by Carl CP on 2026-09-03 — recorded against card number 4YU1RY8KKM.',
+  'once recorded: who, when, and against which card number');
+eq(M.cardCheckedLine({ name: '', at: null, cardNumber: '4YU1RY8KKM' }),
+  'Card checked — recorded against card number 4YU1RY8KKM.',
+  'a missing name or time omits the clause rather than printing "undefined"');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log('ALL PASSED');
