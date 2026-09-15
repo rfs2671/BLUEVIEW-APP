@@ -26,6 +26,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
 import { settleFetch, isOfflineError, failureDetail } from '../../src/utils/offlineState';
 import { checkinCompany, checkinProject, checkinWorker } from '../../src/utils/checkinFields';
+import { sstFlagCopy } from '../../src/utils/sstFlagCopy';
 import {
   queueCheckInReview,
   getQueuedCheckInReviews,
@@ -555,16 +556,32 @@ export default function SiteCheckInsScreen() {
                       <View style={s.reviewHeader}>
                         <AlertTriangle size={14} strokeWidth={1.5} color={semantic.attention} />
                         <Text style={s.reviewTitle}>
-                          {'Unverified SST — '}
-                          {checkin.sst_unknown_reason === 'CLASS'
-                            ? 'class could not be read'
-                            : checkin.sst_unknown_reason === 'EXPIRY'
-                            ? 'expiration could not be confirmed'
-                            : checkin.sst_unknown_reason === 'BOTH'
-                            ? 'class and expiration could not be confirmed'
-                            : 'credential could not be confirmed'}
+                          {sstFlagCopy({
+                            sstStatus: 'unknown',
+                            unknownReason: checkin.sst_unknown_reason,
+                          }).title}
                         </Text>
                       </View>
+                      {/* ONE DEFINITION OF THESE SENTENCES, shared with the
+                          pre-shift roster. This chain used to be written out
+                          here and again (differently, and with only two
+                          branches) in preshift_signin.jsx, so the same card
+                          was described two ways depending on which screen the
+                          CP was standing on.
+
+                          THIS SCREEN READS ONLY THE FROZEN FIELD. Its source
+                          is /checkins/project/{id}/today, which returns the
+                          check-in row; the cert's live `review_reason` is not
+                          on it. So `reviewReason` is deliberately not passed —
+                          the copy narrows to what this row actually knows
+                          rather than to what some other endpoint could have
+                          told it. */}
+                      <Text style={s.reviewHint}>
+                        {sstFlagCopy({
+                          sstStatus: 'unknown',
+                          unknownReason: checkin.sst_unknown_reason,
+                        }).detail}
+                      </Text>
                       {/* Approve here ADMITS the worker; it does NOT verify the
                           card. The credential stays flagged for cert review. */}
                       <Text style={s.reviewHint}>

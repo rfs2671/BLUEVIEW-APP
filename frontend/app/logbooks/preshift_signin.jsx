@@ -41,6 +41,10 @@ import { isAffirmedSignature, affirmationHintKey } from '../../src/utils/signatu
 import { adoptAmendment } from '../../src/utils/amendmentAdopt';
 import { useEsraConsent } from '../../src/hooks/useEsraConsent';
 import WorkerPicker from '../../src/components/WorkerPicker';
+// THE FOUR STATES THIS SCREEN USED TO PRINT AS ONE SENTENCE. They live in one
+// module so the CP's gate screen, the admin's review queue and the tests read
+// the same strings — the copy is the product here, not decoration.
+import { sstFlagCopy } from '../../src/utils/sstFlagCopy';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -59,6 +63,37 @@ const EMPTY_WORKER = () => ({
   signed: false,
   auto_filled: false,
 });
+
+/**
+ * WHY A WORKER'S SST CARD IS FLAGGED, IN WORDS HE CAN ACT ON.
+ *
+ * This replaced a binary ternary:
+ *
+ *     {f.sst_status === 'expired' ? 'Expired SST card' : 'Unknown SST card'}
+ *
+ * Two branches for five statuses, so everything that was not `expired` claimed
+ * "Unknown SST card" — four materially different production rows, and any
+ * status added later. See src/utils/sstFlagCopy.js for which of the two reason
+ * vocabularies drives the sentence and why.
+ *
+ * EXPORTED, AND THAT IS THE POINT. Mount smoke proves a route does not throw;
+ * a component returning null passes it. src/utils/sstCardFlagPaints.test.cjs
+ * renders THIS function — not a copy of it — and asserts the words come out,
+ * for each of the four rows. Nothing else in this repo executes a screen.
+ */
+export function SstFlagLines({ sstStatus, reviewReason, unknownReason, styles = {} }) {
+  const copy = sstFlagCopy({ sstStatus, reviewReason, unknownReason });
+  if (!copy) return null;
+  return (
+    <>
+      <View style={styles.flagReasonRow}>
+        <ShieldAlert size={14} strokeWidth={2} color={semantic.attention} />
+        <Text style={styles.flagReasonText}>{copy.title}</Text>
+      </View>
+      {copy.detail ? <Text style={styles.flagHint}>{copy.detail}</Text> : null}
+    </>
+  );
+}
 
 export default function PreShiftSignIn() {
   // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
@@ -305,7 +340,10 @@ export default function PreShiftSignIn() {
       // Built from the check-ins on EVERY path — including the one where the
       // saved logbook already has its worker rows — so re-opening a saved
       // draft still shows why a worker is flagged. Never merged into `workers`.
-      buildFlagMap(checkinList);
+      buildFlagMap(
+        checkinList,
+        Array.isArray(flaggedData?.items) ? flaggedData.items : [],
+      );
 
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
@@ -406,27 +444,48 @@ export default function PreShiftSignIn() {
   /**
    * FIX 1 — which of today's check-ins were ADMITTED WITH WARNINGS.
    *
-   * Scope is exactly three states, all of which already exist on the check-in
-   * row that /checkins-today now returns:
-   *   sst_status 'expired'   → expired SST card   → review (approve / deny)
-   *   sst_status 'unknown'   → unknown SST card   → review (approve / deny)
+   *   sst_status             → the SST warning line (see SstFlagLines)
    *   needs_trade_assignment → no trade assigned  → assign-trade
    *
    * The BLOCKED population (missing OSHA, `blocked: true` rows sourced from
    * compliance_alerts) is NOT included: those workers never completed sign-in,
    * have no check-in row, and there is nothing here to approve.
    *
+   * THE STATUS GATE IS GONE. It read:
+   *
+   *     const sst = c.sst_status === 'expired' || c.sst_status === 'unknown'
+   *       ? c.sst_status : null;
+   *
+   * so `missing` — a worker with no SST card on file at all — never reached
+   * this screen, and any status added later would have been discarded here
+   * before the render ever saw it. The whole status is carried now and
+   * sstFlagCopy decides what, if anything, it says; an unrecognised value
+   * yields no line rather than borrowing another state's sentence.
+   *
+   * WHAT DOES NOT WIDEN: approve / send-home is still offered on `expired` and
+   * `unknown` only. Those are the two the review queue treats as decisions
+   * (server.py, get_flagged_project_checkins); naming a third state on screen
+   * is not the same as inventing a decision for it.
+   *
+   * SECOND ARGUMENT — the flagged endpoint's rows, which this screen already
+   * fetches for the trade roster. /checkins-today carries `sst_status` but
+   * neither reason field, so without this merge the screen can name the status
+   * and not the cause. Nothing new is requested and nothing new is persisted.
+   *
    * Result goes into `flags`, never into `workers`.
    */
-  const buildFlagMap = (checkins) => {
+  const buildFlagMap = (checkins, flaggedItems = []) => {
     const map = {};
+    const byWorker = {};
+    for (const it of (Array.isArray(flaggedItems) ? flaggedItems : [])) {
+      if (it && it.worker_id) byWorker[String(it.worker_id)] = it;
+    }
     for (const c of checkins) {
       const key = c.worker_id;
       if (!key) continue;
       if (c.blocked) continue;   // out of scope: never admitted, no row to act on
-      const sst = c.sst_status === 'expired' || c.sst_status === 'unknown'
-        ? c.sst_status
-        : null;
+      const sst = c.sst_status || null;
+      const fl = byWorker[String(key)] || {};
       const needsTrade = !!c.needs_trade_assignment;
       // THE GATE IS LIFTED, and this is the whole defect it caused.
       //
@@ -452,6 +511,16 @@ export default function PreShiftSignIn() {
         // being changed FROM. Read-only; never written into `workers`.
         current_trade: c.worker_trade || c.trade || '',
         current_company: c.worker_company || c.company || '',
+        // ── The two reason vocabularies, both carried, neither
+        //    reconciled here. sstFlagCopy owns which one leads and why.
+        //    `sst_review_reason` is the LIVE cert code the flagged endpoint
+        //    already surfaces; `sst_unknown_reason` is the copy FROZEN onto the
+        //    row at check-in. Absent on rows the flagged endpoint does not
+        //    return (a decided one, a `missing`/`expiring_soon` one), and the
+        //    copy falls back to the narrower true sentence rather than
+        //    guessing.
+        review_reason: fl.sst_review_reason || null,
+        unknown_reason: fl.sst_unknown_reason || null,
       };
     }
     setFlags(map);
@@ -844,27 +913,35 @@ export default function PreShiftSignIn() {
     const f = key ? flags[key] : null;
     if (!f) return null;
     const busy = actingId === key;
-    const sstFlagged = f.sst_status === 'expired' || f.sst_status === 'unknown';
+    // The WARNING is drawn for every status the copy can name, so `missing`
+    // finally reaches this screen. The DECISION below it is still scoped to the
+    // two the review queue treats as decisions.
+    const sstFlagged = !!sstFlagCopy({
+      sstStatus: f.sst_status,
+      reviewReason: f.review_reason,
+      unknownReason: f.unknown_reason,
+    });
+    const sstReviewable = f.sst_status === 'expired' || f.sst_status === 'unknown';
     const canAct = !!f.checkin_id;
 
     return (
       <View style={styles.flagBlock}>
         {sstFlagged && (
           <>
-            <View style={styles.flagReasonRow}>
-              <ShieldAlert size={14} strokeWidth={2} color={semantic.attention} />
-              <Text style={styles.flagReasonText}>
-                {f.sst_status === 'expired' ? 'Expired SST card' : 'Unknown SST card'}
-              </Text>
-            </View>
-            {f.review_decision && (
+            <SstFlagLines
+              sstStatus={f.sst_status}
+              reviewReason={f.review_reason}
+              unknownReason={f.unknown_reason}
+              styles={styles}
+            />
+            {sstReviewable && f.review_decision && (
               <Text style={styles.flagStatusText}>
                 {f.review_decision === 'approved'
                   ? 'Approved — recorded on this check-in.'
                   : 'Denied — recorded as sent home. Still listed below.'}
               </Text>
             )}
-            {canAct ? (
+            {!sstReviewable ? null : canAct ? (
               /* Both buttons stay available after a decision — re-review is
                  allowed and the latest decision wins on the check-in row. */
               <View style={styles.flagActions}>
