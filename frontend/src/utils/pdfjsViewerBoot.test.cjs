@@ -249,5 +249,306 @@ ok(!!run.listeners['vv:resize'],
     'and never touches a document');
 }
 
-console.log(`\n  ${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. THE A/B SUITE RUNS ITS THREE SCALES TWICE, BACK TO BACK, SAME PAGE.
+//
+//    WHAT IS BEING SETTLED. The suite's numbers off the operator's device say
+//    the FIRST render is the slowest and the LARGEST is not:
+//
+//        cur     over 1.5   1.2 MP  ->  2252 ms   (run first)
+//        noOver  over 1.0   0.5 MP  ->   488 ms
+//        ceil    headroom  11.2 MP  ->   727 ms   (9x the pixels, a third
+//                                                  of the time)
+//
+//    Pixels cannot explain that. Either the first rasterisation of a page pays
+//    a one-off cost the ones after it reuse — the warm-up theory, on which a
+//    concurrency cap and a byte-bounded canvas cache are both about to be
+//    built — or the suite is measuring something other than what it thinks.
+//    A SECOND IDENTICAL PASS is the only reading that separates the two, and
+//    it has to be a second pass IN THE SAME SESSION: a reload re-parses the
+//    document and puts back whatever the first pass warmed.
+//
+//    WHY IT HAD TO EXECUTE. `pdfRenderProbe` parses this script and
+//    `pdfjsViewerMemory` walks its AST; neither can tell whether a second
+//    pass HAPPENS, in what order, or whether the two passes overlap. A
+//    sequenced suite is the entire premise of the comparison — two renders
+//    contending for one thread would put each other's time into each other's
+//    number, which is the very bug the cap exists to fix — so "no two A/B
+//    renders are ever in flight at once" is asserted here rather than assumed
+//    from the comment that claims it.
+//
+//    WHAT THE SANDBOX IS. `boot()` above deliberately has no clock and no
+//    timers, so nothing past the top level ever runs. `bootLive()` drives the
+//    page to completion instead: a fake pdf.js, an XHR that answers, a timer
+//    queue pumped in due order, and a performance.now() that advances with it.
+//    Still no pixels — the render stub resolves on a timer — because what is
+//    under test is the SHAPE of the suite, not a rasteriser.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function bootLive({ search = '?probe=1&file=file%3A%2F%2F%2Fplan.pdf', pages = 3 } = {}) {
+  const posted = [];
+  const listeners = {};
+  const renders = [];
+  const timers = [];
+  let now = 0;
+  let nextId = 1;
+  let inFlight = 0;
+  let maxInFlight = 0;
+
+  function schedule(ms, fn) {
+    const id = nextId; nextId += 1;
+    timers.push({ id, at: now + (Number(ms) || 0), fn });
+    return id;
+  }
+
+  const makeEl = () => ({
+    style: {}, textContent: '', innerHTML: '', className: '',
+    parentNode: null, __slot: null, width: 0, height: 0,
+    appendChild() {}, removeChild() {},
+    getBoundingClientRect: () => ({ top: 0, bottom: 100 }),
+    getContext: () => ({
+      fillStyle: '',
+      fillRect() {},
+      getImageData: () => ({ data: [0, 0, 0, 255] }),
+    }),
+    addEventListener(t, f) { listeners[`el:${t}`] = f; },
+  });
+
+  // A 36x48" sheet in PDF user units (72/inch) — the document this viewer
+  // exists for, and the one every measurement above was taken on.
+  const PT_W = 2592;
+  const PT_H = 3456;
+
+  function makePage(n) {
+    const page = {
+      _n: n,
+      cleanups: 0,
+      getViewport({ scale }) {
+        return { width: PT_W * scale, height: PT_H * scale, scale, __scale: scale };
+      },
+      getOperatorList() { return Promise.resolve({ fnArray: [], argsArray: [] }); },
+      objs: { get() { return null; } },
+      cleanup() { page.cleanups += 1; return true; },
+      render(opts) {
+        const scale = (opts && opts.viewport && opts.viewport.__scale) || 0;
+        inFlight += 1;
+        if (inFlight > maxInFlight) maxInFlight = inFlight;
+        const rec = { page: n, scale, startedAt: now, endedAt: null };
+        renders.push(rec);
+        let cancelled = false;
+        const promise = new Promise((resolve, reject) => {
+          schedule(5, () => {
+            inFlight -= 1;
+            rec.endedAt = now;
+            if (cancelled) {
+              const e = new Error('cancelled');
+              e.name = 'RenderingCancelledException';
+              reject(e);
+            } else resolve();
+          });
+        });
+        return { promise, cancel() { cancelled = true; } };
+      },
+    };
+    return page;
+  }
+
+  const pageCache = {};
+  const pdfStub = {
+    numPages: pages,
+    getPage(n) {
+      if (!pageCache[n]) pageCache[n] = makePage(n);
+      return Promise.resolve(pageCache[n]);
+    },
+    destroy() { return Promise.resolve(); },
+  };
+
+  // 64 bytes is enough for readBytes to accept it and for the filter scan to
+  // run; the point is that the XHR ANSWERS, not what it answers with.
+  const bodyBytes = new Uint8Array(64);
+
+  function XHR() {
+    this._url = '';
+    this.responseType = '';
+    this.response = null;
+    this.responseText = '';
+    this.onload = null;
+    this.onerror = null;
+    this.open = (m, u) => { this._url = u; };
+    this.send = () => {
+      schedule(1, () => {
+        if (this.responseType === 'arraybuffer') this.response = bodyBytes.buffer;
+        else this.responseText = 'stub-worker-source';
+        if (this.onload) this.onload();
+      });
+    };
+  }
+
+  const sandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    document: {
+      getElementById: () => makeEl(),
+      createElement: () => makeEl(),
+      documentElement: { clientWidth: 390, clientHeight: 800 },
+      addEventListener(t, f) { listeners[`doc:${t}`] = f; },
+    },
+    screen: { width: 390, height: 844 },
+    navigator: { userAgent: 'stub', deviceMemory: 4, hardwareConcurrency: 8 },
+    performance: { now: () => now, getEntriesByType: () => [] },
+    XMLHttpRequest: XHR,
+    IntersectionObserver: function IO() { this.observe = () => {}; this.disconnect = () => {}; },
+    pdfjsLib: {
+      GlobalWorkerOptions: {},
+      OPS: { paintImageXObject: 1, paintJpegXObject: 2, paintImageMaskXObject: 3 },
+      getDocument: () => ({ promise: Promise.resolve(pdfStub) }),
+    },
+    setTimeout: (fn, ms) => schedule(ms, fn),
+    clearTimeout: () => {},
+    // THE HEARTBEAT IS RECORDED AND NEVER FIRED, deliberately. It re-arms
+    // every 16 ms for the life of the open; a pump that honoured it would
+    // never reach the suite it was written to observe. hbStop() still gets a
+    // truthy id to clear, so the uithread post still happens.
+    setInterval: () => { const id = nextId; nextId += 1; return id; },
+    clearInterval: () => {},
+    Promise, Math, JSON, String, Number, Date, Object, RegExp, Array, Error,
+    Uint8Array, ArrayBuffer, Boolean, isNaN, parseInt, parseFloat,
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  sandbox.self = sandbox;
+  sandbox.window.location = { search };
+  sandbox.window.devicePixelRatio = 3;
+  sandbox.window.innerHeight = 800;
+  sandbox.window.innerWidth = 390;
+  sandbox.window.scrollTo = () => {};
+  sandbox.window.addEventListener = (t, f) => { listeners[`win:${t}`] = f; };
+  sandbox.window.removeEventListener = () => {};
+  sandbox.window.ReactNativeWebView = {
+    postMessage: (s) => { try { posted.push(JSON.parse(s)); } catch (_e) {} },
+  };
+  sandbox.window.visualViewport = {
+    scale: 1,
+    addEventListener(t, f) { listeners[`vv:${t}`] = f; },
+  };
+
+  let threw = null;
+  try {
+    vm.createContext(sandbox);
+    vm.runInContext(viewerScript(), sandbox, { filename: 'viewer.html' });
+  } catch (e) { threw = e; }
+
+  // Drain: give the event loop a turn, settle microtasks, then fire the
+  // earliest due timer, and repeat.
+  //
+  // THE setImmediate IS NOT DECORATION. A vm context keeps V8's own built-ins,
+  // so `WebAssembly` is real in there — and `WebAssembly.instantiate` settles
+  // on a FOREGROUND TASK, not a microtask. A pump that only awaited
+  // `Promise.resolve()` stalled the capability chain forever on `probeWasm`
+  // and never reached the suite it was written to observe.
+  //
+  // And it does not stop the moment the queue empties: work in flight can
+  // schedule the next timer a turn later, so it takes several idle passes in
+  // a row to call it done.
+  async function pump(maxSteps = 5000) {
+    let idle = 0;
+    for (let step = 0; step < maxSteps; step += 1) {
+      await new Promise((r) => setImmediate(r));
+      for (let k = 0; k < 12; k += 1) await Promise.resolve();
+      if (!timers.length) {
+        idle += 1;
+        if (idle > 4) break;
+        continue;
+      }
+      idle = 0;
+      timers.sort((a, b) => (a.at - b.at) || (a.id - b.id));
+      const t = timers.shift();
+      if (t.at > now) now = t.at;
+      try { t.fn(); } catch (e) { threw = threw || e; }
+    }
+  }
+
+  return { posted, listeners, renders, sandbox, pump, get threw() { return threw; },
+    get maxInFlight() { return maxInFlight; } };
+}
+
+async function main() {
+  console.log('\n── the A/B suite runs its three scales twice ──────────────────\n');
+
+  const live = bootLive();
+  await live.pump();
+
+  ok(!live.threw, `the viewer drives a whole probe session without throwing${
+    live.threw ? ` — ${String(live.threw && live.threw.stack).split('\n')[0]}` : ''}`);
+
+  const probes = live.posted.filter((m) => m && m.type === 'pdf-probe');
+  ok(probes.some((m) => m.probe === 'suite' && m.data && m.data.done === true),
+    'the suite reaches its completion marker — the harness really ran it '
+    + `(saw: ${probes.map((m) => m.probe).join(', ') || 'nothing'})`);
+
+  const ab = probes.filter((m) => m.probe === 'render-ab').map((m) => m.data);
+  const withPass = ab.filter((d) => d && (d.pass === 1 || d.pass === 2));
+
+  ok(withPass.filter((d) => d.pass === 1).length === 3,
+    `pass 1 runs all three scales (got ${withPass.filter((d) => d.pass === 1).length})`);
+  ok(withPass.filter((d) => d.pass === 2).length === 3,
+    `pass 2 runs all three scales (got ${withPass.filter((d) => d.pass === 2).length})`);
+
+  // ORDER. The claim under test is "the first render of a page is the
+  // expensive one", so the second pass must come AFTER the first and repeat
+  // the same three in the same sequence. A shuffled or interleaved second
+  // pass would answer a different question.
+  ok(withPass.length === 6
+    && withPass.slice(0, 3).every((d) => d.pass === 1)
+    && withPass.slice(3).every((d) => d.pass === 2),
+    `the six A/B renders are pass 1 then pass 2, not interleaved (got: ${
+      withPass.map((d) => d.pass).join(',') || 'none'})`);
+
+  // LIKE FOR LIKE. Pass 2 that rendered different scales would not be a
+  // repeat of pass 1 at all.
+  const p1 = withPass.filter((d) => d.pass === 1).map((d) => d.scale);
+  const p2 = withPass.filter((d) => d.pass === 2).map((d) => d.scale);
+  ok(p1.length === 3 && p2.length === 3 && p1.every((s, i) => s === p2[i]),
+    `pass 2 repeats pass 1's exact scales (p1=${p1.join('/')} p2=${p2.join('/')})`);
+
+  // And the same page, or it is not a warm-up reading.
+  ok(withPass.length === 6 && withPass.every((d) => d.page === 1),
+    'both passes render the same page');
+
+  // DISTINGUISHABLE IN THE LOG. PDFViewer.native.jsx dumps `label` verbatim
+  // into the shareable probe log; two identically-labelled rows would be
+  // unreadable in exactly the artefact the operator sends back.
+  const labels = withPass.map((d) => d.label);
+  ok(new Set(labels).size === 6,
+    `all six rows carry a distinct label (${labels.join(' | ')})`);
+
+  // SEQUENCED, WHICH IS THE PREMISE. Two rasterisations sharing a thread each
+  // contain the other's time — the exact defect the render cap is being
+  // written for — so an A/B that overlapped would be measuring contention and
+  // calling it warm-up.
+  ok(live.maxInFlight === 1,
+    `no two renders are ever in flight at once (peak ${live.maxInFlight})`);
+
+  // ── AND NONE OF IT HAPPENS WITH THE FLAG OFF ───────────────────────────
+  // The probe is inert unless `probe=1`. A second pass doubles the suite's
+  // cost, so this is the assertion that keeps that cost off every reader who
+  // is not being measured.
+  {
+    const off = bootLive({ search: '?file=file%3A%2F%2F%2Fplan.pdf' });
+    await off.pump();
+    ok(!off.threw, `a normal open still runs clean${
+      off.threw ? ` — ${String(off.threw && off.threw.stack).split('\n')[0]}` : ''}`);
+    ok(!off.posted.some((m) => m && m.type === 'pdf-probe'),
+      'with the flag off the viewer posts no probe readings at all');
+    ok(off.posted.some((m) => m && m.type === 'pdf-ready'),
+      'and still opens the document');
+  }
+}
+
+main().then(() => {
+  console.log(`\n  ${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+}).catch((e) => {
+  console.log(`  FAIL  the live harness threw — ${e && e.stack}`);
+  console.log(`\n  ${passed} passed, ${failed + 1} failed`);
+  process.exit(1);
+});
