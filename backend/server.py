@@ -852,13 +852,26 @@ WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# Qwen2.5-VL via Together AI (OpenAI-compatible) — used for plan indexing
-# and query-time sheet matching. 7B model chosen over 72B: title-block
-# extraction is a structured task where accuracy is effectively the same
-# but 7B is ~10x cheaper and ~3x lower latency.
-QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
-QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "https://api.together.xyz/v1")
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+# Qwen-VL (OpenAI-compatible) — used for OSHA/SST card reading at the gate,
+# plan indexing, query-time sheet matching, the WhatsApp plan QA, the card
+# audit, and COI insurance OCR. FIVE call sites, ONE pair of environment
+# variables.
+#
+# THE DEFAULTS DO NOT LIVE HERE ANY MORE, and that is the fix, not tidying.
+# This file defaulted QWEN_MODEL to `Qwen/Qwen2.5-VL-7B-Instruct` (404 `does
+# not exist` at the provider we call) and QWEN_API_BASE to Together, while
+# lib/coi_ocr.py defaulted the SAME TWO VARIABLES to a different model and a
+# different VENDOR. `lib/vision_model.py` is now the single answer, with the
+# measurement behind it written down; both files read it.
+from lib.vision_model import (                                   # noqa: E402
+    vision_api_base as _vision_api_base,
+    vision_api_key as _vision_api_key,
+    vision_model as _vision_model,
+)
+
+QWEN_API_KEY = _vision_api_key()
+QWEN_API_BASE = _vision_api_base()
+QWEN_MODEL = _vision_model()
 
 # PR #48 — Gemini for weekly project-phase inference and the report's
 # per-subcontractor line. google-genai SDK (already pinned in
@@ -11654,7 +11667,16 @@ async def admin_upload_coi(
     except Exception as e:
         # OCR failed but we have the PDF stored. Return a draft with
         # empty parsed values so admin can manually fill in.
-        logger.error(f"COI OCR failed for company={company_id} sha={sha[:16]}: {type(e).__name__}")
+        # SITE 5 OF 5 ON THE SHARED VISION MODEL. This named the type and
+        # nothing else — no message, no traceback, no model id — so a
+        # `ReadTimeout` here read as `... : ReadTimeout` with no way to tell a
+        # provider hang from a bad model id, which is one step better than the
+        # gate's empty string and still not enough to act on. %r keeps the type
+        # when the message is empty; .exception adds the line it happened on.
+        logger.exception(
+            "COI OCR failed for company=%s sha=%s: %r (model=%s base=%s)",
+            company_id, sha[:16], e, QWEN_MODEL, QWEN_API_BASE,
+        )
         from lib.coi_ocr import CoiOcrResult
         ocr_result = CoiOcrResult(min_confidence=0.0)
 
@@ -11697,7 +11719,7 @@ async def admin_upload_coi(
             },
         )
     except Exception as e:
-        logger.warning(f"audit_log(coi_uploaded) failed: {e}")
+        logger.exception("audit_log(coi_uploaded) failed: %r", e)
 
     return {
         "draft_id": str(insert_result.inserted_id),
@@ -11805,7 +11827,7 @@ async def admin_confirm_coi(
             },
         )
     except Exception as e:
-        logger.warning(f"audit_log(coi_confirmed) failed: {e}")
+        logger.exception("audit_log(coi_confirmed) failed: %r", e)
 
     return {
         "ok": True,
@@ -14155,7 +14177,17 @@ async def get_checkin_info(project_id: str, tag_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+        # THE GATE'S FIRST CALL, AND IT LOGGED NOTHING AT ALL. A worker taps
+        # the tag, this fails, and the only record anywhere is a 500 whose
+        # detail is `Server error: ` when the exception's str() is empty —
+        # the same empty-reason failure that hid the OCR outage, one endpoint
+        # earlier in the same flow. The worker's message stays generic (the
+        # exception text is ours, not his); the log now names the type and the
+        # line.
+        logger.exception(
+            "checkin info failed project=%s tag=%s: %r", project_id, tag_id, e
+        )
+        raise HTTPException(status_code=500, detail="Server error")
 
 class OshaCardOcrResult(BaseModel):
     """The shape POST /checkin/upload-osha is allowed to return.
@@ -14254,6 +14286,192 @@ def _osha_ocr_payload(data: dict) -> "OshaCardOcrResult":
     )
 
 
+# ══ THE CARD READ'S TIME BUDGET, AND WHY EACH NUMBER IS WHAT IT IS ═════════
+#
+# MEASURED ON PRODUCTION, 2026-09-15, one real SST card, DeepInfra:
+#
+#   Qwen/Qwen2.5-VL-32B-Instruct (in force)   6/6 OK, 3110-5391 ms
+#   Qwen/Qwen3-VL-30B-A3B (the outage)        470 ms or >240 s, uncorrelated
+#                                             with image size — 640/768/896/
+#                                             1024 px all ~500 ms, while 512 px
+#                                             and 1112 px both hung past 75 s
+#   at 1024 px on the long edge               200 / 626 ms, card read correctly
+#
+# THE OLD SHAPE WAS ONE ATTEMPT AT 60 s. On the tail that is 60 seconds of a
+# worker standing at a turnstile followed by a failure with no reason in it.
+#
+# 22 s PER ATTEMPT is ~6x the good-path median (3.5 s) and ~4x the slowest
+# measured success (5.4 s) — wide enough that a merely slow call is never cut
+# off, narrow enough that the pathological tail is cut off fast. TWO ATTEMPTS
+# because the tail is RANDOM, not a property of the image: the sweep above got
+# ~500 ms and a >75 s hang from the SAME card at neighbouring sizes, so the
+# single most valuable thing to do with a hung call is send it again.
+#
+# 22 x 2 = 44 s WORST CASE, deliberately inside the 60 s the endpoint already
+# spent, so nothing downstream of this handler sees a longer request than it
+# did before. The gate page's own fetch has no timeout at all (checkin.html's
+# api() calls fetch with no AbortSignal), so the browser outlives the server on
+# every path — see the PR body's budget table.
+#
+# ONLY A TIMEOUT OR A CONNECT FAILURE IS RETRIED. A 4xx from the provider is an
+# answer — a bad model id, a bad key, a rejected image — and sending it again
+# buys a second identical refusal and a second bill.
+OSHA_VISION_ATTEMPT_TIMEOUT = 22.0
+OSHA_VISION_ATTEMPTS = 2
+
+# ── MACHINE CODES THE GATE PAGE CAN BRANCH ON ─────────────────────────────
+#
+# The 500 a worker got for four days said `OCR processing failed: ` — the
+# trailing space is the whole story: `str(httpx.ReadTimeout())` is the empty
+# string. A human could not act on it and a client could not branch on it.
+#
+# A TIMEOUT AND AN UNREADABLE CARD ARE DIFFERENT EVENTS WITH DIFFERENT ANSWERS.
+# "Nothing came back from the reader, tap Retry" is a transient condition the
+# same photograph will probably survive; "we read the card and could not make
+# out the fields" is not, and sends the worker to manual entry instead. They
+# were the same opaque 500.
+CARD_READ_TIMEOUT = "CARD_READ_TIMEOUT"          # the provider never answered
+CARD_READ_UNAVAILABLE = "CARD_READ_UNAVAILABLE"  # the provider answered non-200
+CARD_READ_FAILED = "CARD_READ_FAILED"            # anything else on the read path
+CARD_READ_NOT_CONFIGURED = "CARD_READ_NOT_CONFIGURED"
+
+
+def _card_error_detail(code: str, message: str) -> dict:
+    """The body of a failed card read: a code for the client, a sentence for
+    the worker. checkin.html's api() lifts `code` onto the thrown Error and
+    shows `message`; a string detail still works everywhere else, so this is
+    additive."""
+    return {"code": code, "message": message}
+
+
+# ── DOWNSCALE BEFORE THE VISION CALL ──────────────────────────────────────
+#
+# Phones post 3000x2074 at ~800 KB. The card is legible to the model at 1024 px
+# on the long edge — measured 200/626 ms at that size with the card read
+# correctly — so the pixels above it buy nothing and cost upload time, provider
+# decode time, input tokens, and exposure to the latency tail on every retry.
+#
+# THE ORIGINAL IS NOT TOUCHED. Only the copy handed to the vision model is
+# resized; `osha_card_image` (what gets stored on the worker and printed on
+# filed compliance records) is the frame the browser sent, and this handler
+# never sees or writes it.
+#
+# ENV-OVERRIDABLE, AND LOGGED AT STARTUP FOR THAT REASON. If the ten-card
+# comparison in backend/scripts/verify_card_downscale.py ever shows 1024 losing
+# a card number or an expiry, the bound is raised without a deploy — and the
+# value in force is printed at boot so it can never become another setting that
+# changes behaviour with no diff.
+def _osha_vision_max_edge() -> int:
+    try:
+        v = int(os.environ.get("OSHA_VISION_MAX_EDGE", "1024"))
+    except (TypeError, ValueError):
+        return 1024
+    # A bound below 512 is smaller than the sweep ever tested and is far more
+    # likely to be a typo than an intention.
+    return v if v >= 512 else 1024
+
+
+def _downscale_card_for_vision(image_b64: str) -> tuple:
+    """(b64, content_type, meta) — the copy to send to the vision model.
+
+    NEVER RAISES, and never returns nothing. Every failure — an unreadable
+    image, a missing codec, an exhausted decoder — returns the caller's own
+    bytes unchanged. Losing a worker's card read to a resize that is a pure
+    optimisation is the one outcome this must not produce, which is the same
+    rule `_clean_photo_bytes` is written to.
+
+    An image already at or under the bound is returned untouched: this shrinks,
+    it never upscales, and it never re-encodes a small image just to say it
+    did.
+    """
+    meta = {"resized": False, "reason": None}
+    try:
+        import io as _io
+        import base64 as _b64
+        from PIL import Image
+
+        raw = _b64.b64decode(image_b64, validate=False)
+        meta["bytes_in"] = len(raw)
+        img = Image.open(_io.BytesIO(raw))
+        meta["size_in"] = list(img.size)
+        max_edge = _osha_vision_max_edge()
+        if max(img.size) <= max_edge:
+            meta["reason"] = "already within bound"
+            # None, NOT "image/jpeg". Nothing was re-encoded, so the caller's
+            # own content type is still the true one — claiming JPEG over an
+            # untouched PNG would mislabel it to the provider.
+            return image_b64, None, meta
+
+        img = img.convert("RGB")
+        img.thumbnail((max_edge, max_edge), Image.LANCZOS)
+        out = _io.BytesIO()
+        # quality=88: the card's text is the payload and JPEG ringing on thin
+        # strokes is what costs a digit. Measured payloads are ~95% smaller
+        # than the phone's frame even at this quality.
+        img.save(out, format="JPEG", quality=88, optimize=True)
+        data = out.getvalue()
+        meta.update({
+            "resized": True,
+            "size_out": list(img.size),
+            "bytes_out": len(data),
+            "max_edge": max_edge,
+        })
+        return _b64.b64encode(data).decode("ascii"), "image/jpeg", meta
+    except Exception as exc:                                    # noqa: BLE001
+        # %r, not str(): see this endpoint's exception handler.
+        meta["reason"] = repr(exc)
+        logger.warning("[osha-ocr] sending the frame unresized: %r", exc)
+        return image_b64, None, meta
+
+
+# ── THE CARD PROMPT, AT MODULE SCOPE ──────────────────────────────────────
+#
+# IT LIVED INSIDE THE HANDLER, AND THE CANARY IS WHY THAT NO LONGER WORKS.
+# A monitor that sends its own copy of the prompt stops testing the thing it
+# claims to test the first time either copy is edited — and the drift is
+# invisible, because both sides keep returning 200. One literal, one
+# address, both callers.
+_OSHA_EXTRACTION_PROMPT = (
+    "Extract the following from this SST/OSHA safety training card image. "
+    "Return ONLY valid JSON, no markdown:\n"
+    "{\"name\": \"full name on card\", "
+    "\"sst_number\": \"the ID number or card number shown on the card\", "
+    "\"card_type\": \"OSHA or SST — which kind of card this is\", "
+    "\"card_class\": \"the exact class or level printed on the card: "
+    "for SST one of FULL, LIMITED, SUPERVISOR, TEMPORARY; "
+    "for OSHA one of 10, 30. "
+    "CRITICAL: SST cards also print the COURSE HOURS (e.g. '40 hours', "
+    "'62 hours', '10-hr', '30-hr') — those are the training DURATION, NOT the "
+    "class. NEVER return an hours value as card_class. The SST class is always "
+    "a WORD: SUPERVISOR, LIMITED, FULL, or TEMPORARY. If only hours are visible "
+    "and no class word, set card_class to null\", "
+    "\"issued\": \"issued date if visible\", "
+    "\"expiration\": \"expiration date if visible\", "
+    # COLOUR IS ASKED FOR, AND THE MAP IS NOT IN THE PROMPT. No SST class
+    # names, no card-type names, no colour->class table: a mapping here
+    # would let the model work backwards (read a class, then report the
+    # colour that justifies it), it would be a rule no test can assert
+    # against, and it would make the model the thing that decides the
+    # class. The table lives in Python, which is what makes "colour
+    # proposes, never asserts" enforceable rather than aspirational.
+    "\"card_dominant_color\": \"the dominant background colour of the CARD "
+    "STOCK itself - not the lanyard, sleeve, hand, or background behind it. "
+    "One of: WHITE, BLUE, GREEN, PURPLE, RED, YELLOW, ORANGE, GREY, OTHER. "
+    "If the card is inside a tinted or reflective sleeve, if the lighting "
+    "has an obvious colour cast, if glare covers much of the card, or if "
+    "you are not confident, return null. Do NOT infer the colour from any "
+    "words printed on the card\", "
+    "\"card_color_confidence\": \"high, medium or low - how sure you are of "
+    "card_dominant_color given glare, shade, colour cast and sleeve. null "
+    "when card_dominant_color is null\", "
+    "\"card_color_conditions\": \"array of any of GLARE, SHADE, COLOR_CAST, "
+    "SLEEVE, PARTIAL_CARD that could be distorting the colour; [] if none\", "
+    "\"box_2d\": [ymin, xmin, ymax, xmax]}\n"
+    "If a field is not visible or you are not certain, set it to null — "
+    "do NOT guess the class. 'box_2d' should be the normalized coordinates "
+    "(0-1000) tightly framing the card. Return the JSON object only."
+)
+
 @api_router.post("/checkin/upload-osha", response_model=OshaCardOcrResult)
 async def upload_osha_card(file_data: dict, request: Request):
     """OCR an OSHA/SST card photo using the Qwen2.5-VL vision model.
@@ -14289,7 +14507,11 @@ async def upload_osha_card(file_data: dict, request: Request):
     if not QWEN_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="Vision API not configured. Set QWEN_API_KEY.",
+            detail=_card_error_detail(
+                CARD_READ_NOT_CONFIGURED,
+                "Card reading is not available right now. "
+                "Enter your card number below to continue.",
+            ),
         )
 
     image_b64 = file_data.get("image")
@@ -14302,7 +14524,21 @@ async def upload_osha_card(file_data: dict, request: Request):
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
-    image_url = f"data:{content_type};base64,{image_b64}"
+    # SHRUNK BEFORE IT IS SENT, NOT BEFORE IT IS STORED. See
+    # `_downscale_card_for_vision`: the browser's full frame is what the worker
+    # record keeps; this is the copy the model reads.
+    vision_b64, vision_ct, _scale = _downscale_card_for_vision(image_b64)
+    if _scale.get("resized"):
+        logger.info(
+            "[osha-ocr] downscaled %sx%s %s B -> %sx%s %s B (max_edge=%s)",
+            *(_scale.get("size_in") or [None, None]),
+            _scale.get("bytes_in"),
+            *(_scale.get("size_out") or [None, None]),
+            _scale.get("bytes_out"),
+            _scale.get("max_edge"),
+        )
+
+    image_url = f"data:{vision_ct or content_type};base64,{vision_b64}"
 
     # ── COUNTED BEFORE THE CALL, NOT AFTER ──────────────────────────────────
     #
@@ -14328,86 +14564,121 @@ async def upload_osha_card(file_data: dict, request: Request):
         project_id=(str(file_data.get("project_id") or "").strip() or None),
     )
 
-    extraction_prompt = (
-        "Extract the following from this SST/OSHA safety training card image. "
-        "Return ONLY valid JSON, no markdown:\n"
-        "{\"name\": \"full name on card\", "
-        "\"sst_number\": \"the ID number or card number shown on the card\", "
-        "\"card_type\": \"OSHA or SST — which kind of card this is\", "
-        "\"card_class\": \"the exact class or level printed on the card: "
-        "for SST one of FULL, LIMITED, SUPERVISOR, TEMPORARY; "
-        "for OSHA one of 10, 30. "
-        "CRITICAL: SST cards also print the COURSE HOURS (e.g. '40 hours', "
-        "'62 hours', '10-hr', '30-hr') — those are the training DURATION, NOT the "
-        "class. NEVER return an hours value as card_class. The SST class is always "
-        "a WORD: SUPERVISOR, LIMITED, FULL, or TEMPORARY. If only hours are visible "
-        "and no class word, set card_class to null\", "
-        "\"issued\": \"issued date if visible\", "
-        "\"expiration\": \"expiration date if visible\", "
-        # COLOUR IS ASKED FOR, AND THE MAP IS NOT IN THE PROMPT. No SST class
-        # names, no card-type names, no colour->class table: a mapping here
-        # would let the model work backwards (read a class, then report the
-        # colour that justifies it), it would be a rule no test can assert
-        # against, and it would make the model the thing that decides the
-        # class. The table lives in Python, which is what makes "colour
-        # proposes, never asserts" enforceable rather than aspirational.
-        "\"card_dominant_color\": \"the dominant background colour of the CARD "
-        "STOCK itself - not the lanyard, sleeve, hand, or background behind it. "
-        "One of: WHITE, BLUE, GREEN, PURPLE, RED, YELLOW, ORANGE, GREY, OTHER. "
-        "If the card is inside a tinted or reflective sleeve, if the lighting "
-        "has an obvious colour cast, if glare covers much of the card, or if "
-        "you are not confident, return null. Do NOT infer the colour from any "
-        "words printed on the card\", "
-        "\"card_color_confidence\": \"high, medium or low - how sure you are of "
-        "card_dominant_color given glare, shade, colour cast and sleeve. null "
-        "when card_dominant_color is null\", "
-        "\"card_color_conditions\": \"array of any of GLARE, SHADE, COLOR_CAST, "
-        "SLEEVE, PARTIAL_CARD that could be distorting the colour; [] if none\", "
-        "\"box_2d\": [ymin, xmin, ymax, xmax]}\n"
-        "If a field is not visible or you are not certain, set it to null — "
-        "do NOT guess the class. 'box_2d' should be the normalized coordinates "
-        "(0-1000) tightly framing the card. Return the JSON object only."
-    )
+    extraction_prompt = _OSHA_EXTRACTION_PROMPT
 
     text = ""
     try:
-        async with ServerHttpClient(timeout=60.0) as client_http:
-            resp = await client_http.post(
-                f"{QWEN_API_BASE}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {QWEN_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": QWEN_MODEL,
-                    "max_tokens": 500,
-                    "temperature": 0,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url",
-                             "image_url": {"url": image_url}},
-                            {"type": "text", "text": extraction_prompt},
-                        ],
-                    }],
-                },
-            )
-            if resp.status_code != 200:
-                # UA + IP on the line: the client reports this same failure as
-                # `card_ocr_http_failed`, but a vision-provider outage should be
-                # answerable from the server's own logs without correlating.
-                logger.error(
-                    f"Qwen vision error {resp.status_code}: {resp.text[:300]} "
-                    f"[ip={request.client.host if request.client else 'unknown'} "
-                    f"ua={request.headers.get('user-agent', '')[:200]}]"
-                )
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Vision API error: {resp.status_code}",
+        # ── ONE RETRY, ON A TIMEOUT ONLY ────────────────────────────────────
+        #
+        # See OSHA_VISION_ATTEMPT_TIMEOUT above for where 22 s and 2 attempts
+        # come from. The important property is that the loop retries a call
+        # that DID NOT ANSWER and nothing else: a non-200 breaks out to the
+        # 502 below on the first attempt, because a provider that answered
+        # "no" answers "no" again and bills for it twice.
+        resp = None
+        last_timeout = None
+        for _attempt in range(1, OSHA_VISION_ATTEMPTS + 1):
+            try:
+                async with ServerHttpClient(
+                        timeout=OSHA_VISION_ATTEMPT_TIMEOUT) as client_http:
+                    resp = await client_http.post(
+                        f"{QWEN_API_BASE}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {QWEN_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": QWEN_MODEL,
+                            "max_tokens": 500,
+                            "temperature": 0,
+                            "messages": [{
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url",
+                                     "image_url": {"url": image_url}},
+                                    {"type": "text", "text": extraction_prompt},
+                                ],
+                            }],
+                        },
+                    )
+                break
+            except (httpx.TimeoutException, httpx.ConnectError,
+                    httpx.ReadError, httpx.RemoteProtocolError) as timeout_exc:
+                # %r, ALWAYS. `str(httpx.ReadTimeout())` is the empty string —
+                # that single fact is why four days of failed registrations
+                # produced the log line "OSHA OCR error:" and nothing else.
+                last_timeout = timeout_exc
+                logger.warning(
+                    "[osha-ocr] attempt %d/%d did not answer within %.0fs: %r "
+                    "(model=%s)",
+                    _attempt, OSHA_VISION_ATTEMPTS,
+                    OSHA_VISION_ATTEMPT_TIMEOUT, timeout_exc, QWEN_MODEL,
                 )
 
+        if resp is None:
+            # EVERY ATTEMPT TIMED OUT. Its own status and its own machine code,
+            # separate from an unreadable card: the worker is told to retry,
+            # not sent to manual entry, and the gate page can tell the two
+            # apart for the first time.
+            logger.error(
+                "[osha-ocr] no answer after %d attempts of %.0fs "
+                "(model=%s base=%s last=%r) "
+                "[ip=%s ua=%s]",
+                OSHA_VISION_ATTEMPTS, OSHA_VISION_ATTEMPT_TIMEOUT,
+                QWEN_MODEL, QWEN_API_BASE, last_timeout,
+                request.client.host if request.client else "unknown",
+                request.headers.get("user-agent", "")[:200],
+                exc_info=last_timeout,
+            )
+            raise HTTPException(
+                status_code=504,
+                detail=_card_error_detail(
+                    CARD_READ_TIMEOUT,
+                    "Could not read the card — the reader did not answer. "
+                    "Tap the photo area to try again.",
+                ),
+            )
+
+        if resp.status_code != 200:
+            # UA + IP on the line: the client reports this same failure as
+            # `card_ocr_http_failed`, but a vision-provider outage should be
+            # answerable from the server's own logs without correlating.
+            #
+            # THE MODEL ID IS ON THE LINE NOW. A 404 here means QWEN_MODEL
+            # names something the provider does not have — the exact state the
+            # old code default (`Qwen/Qwen2.5-VL-7B-Instruct`) would have put
+            # every gate into — and the id is the only thing that identifies it.
+            logger.error(
+                f"Qwen vision error {resp.status_code}: {resp.text[:300]} "
+                f"[model={QWEN_MODEL} base={QWEN_API_BASE} "
+                f"ip={request.client.host if request.client else 'unknown'} "
+                f"ua={request.headers.get('user-agent', '')[:200]}]"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=_card_error_detail(
+                    CARD_READ_UNAVAILABLE,
+                    "The card reader is unavailable right now. "
+                    "Enter your card number below, or try the photo again.",
+                ),
+            )
+
+        # A PROVIDER BODY THAT IS NOT THE SHAPE WE EXPECT IS A FAILED READ,
+        # NOT A CRASH. `result["choices"][0]["message"]["content"]` has four
+        # ways to raise on a 200 whose body changed shape, and each of them
+        # used to reach the worker as an opaque 500. Nothing was read; that is
+        # what the gate is told, and the gate already knows what to do with it
+        # (offer a retake, then manual entry).
+        try:
             result = resp.json()
             raw_text = result["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError, ValueError) as shape_exc:
+            logger.exception(
+                "[osha-ocr] provider answered 200 with an unusable body: %r "
+                "(model=%s body=%s)",
+                shape_exc, QWEN_MODEL, (resp.text or "")[:300],
+            )
+            return _osha_ocr_payload({"raw_text": (resp.text or "")[:2000]})
 
         # Parse JSON from response
         text = (raw_text or "").strip()
@@ -14430,11 +14701,335 @@ async def upload_osha_card(file_data: dict, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"OSHA OCR error: {str(e)}")
+        # ── THE LINE THAT HID A FOUR-DAY OUTAGE ─────────────────────────────
+        #
+        # This was:
+        #     logger.error(f"OSHA OCR error: {str(e)}")
+        #     raise HTTPException(500, detail=f"OCR processing failed: {str(e)}")
+        #
+        # `str(httpx.ReadTimeout())` IS THE EMPTY STRING. So from 2026-09-11
+        # 18:11 UTC to 09-15 the log read `OSHA OCR error:` and the worker at
+        # the turnstile read `OCR processing failed: ` — neither naming the
+        # exception type, neither naming the model, neither hinting that a
+        # 60-second read timeout was what had happened. Zero worker rows were
+        # created in that window and nothing in the logs said why.
+        #
+        # `logger.exception` + `%r`: %r because `repr(ReadTimeout())` is
+        # `ReadTimeout('')` — the TYPE survives an empty message — and
+        # `.exception` because a traceback names the line as well as the class.
+        # This is the rule for the whole file: AN EXCEPTION IS NEVER RECORDED
+        # BY str() ALONE.
+        logger.exception(
+            "OSHA OCR failed: %r (model=%s base=%s)", e, QWEN_MODEL, QWEN_API_BASE
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"OCR processing failed: {str(e)}",
+            detail=_card_error_detail(
+                CARD_READ_FAILED,
+                "Could not read the card. Tap the photo area to try again, "
+                "or enter your card number below.",
+            ),
         )
+
+# ══ THE CARD-READ CANARY ═══════════════════════════════════════════════════
+#
+# THIS IS THE REAL DEFECT THE OUTAGE EXPOSED, and it is not the empty string.
+# The empty string is why nobody could diagnose it in a minute. The reason it
+# ran for FOUR DAYS is that nothing in this system ever asked "can a worker
+# read a card right now" unless a worker was standing at a gate trying to.
+# Registration produced zero rows from 09-11 18:11 UTC to 09-15 and every
+# dashboard was green, because every dashboard measured the process, not the
+# product.
+#
+# So: read a real card, on the real endpoint's real path, every 15 minutes,
+# and say so when it stops working.
+#
+# WHAT IT IS CAREFUL ABOUT
+#
+#   IT WRITES NOTHING ABOUT ANY PERSON. It calls the vision read only. It does
+#   not touch register-and-checkin, it creates no worker, no check-in, no
+#   certification, no gate_failure row. A monitor that can create records is a
+#   monitor that can corrupt the thing it monitors.
+#
+#   IT IS TAGGED AND EXCLUDED. `record_vision_call` is NOT called, so the
+#   canary never appears in the spend meter beside real worker traffic — a
+#   monitor whose own calls inflate the metric makes the metric useless. Its
+#   calls are counted separately, in `vision_canary_runs`, so the spend is
+#   still knowable, just not mixed in. It is server-side and never passes
+#   through the HTTP layer, so no rate limiter sees it either.
+#
+#   IT ALERTS ON THE SECOND CONSECUTIVE FAILURE, NEVER THE FIRST. One slow
+#   call is weather. Two in a row, 15 minutes apart, is a condition. The
+#   counter lives in Mongo, not in the process, because we run at least two
+#   containers and an in-process counter would need two failures on the SAME
+#   container to ever reach two.
+#
+#   IT COSTS $0.60 A MONTH. Measured: a real card is 870 prompt + 55 completion
+#   tokens; at Qwen2.5-VL-32B's $0.20/1M in and $0.60/1M out that is
+#   $0.000207 per call, and 2,880 calls a month is $0.60. Real gate traffic is
+#   52 registrations in 30 days (~$0.01), so the canary costs more than the
+#   thing it watches — which is the correct trade for four days of blind, and
+#   is why the interval is a named constant rather than a literal.
+CARD_CANARY_INTERVAL_MINUTES = 15
+# >20 s IS A FAILURE EVEN ON A 200. The good path measured 3110-5391 ms; the
+# outage model answered in 470 ms or not at all. 20 s is four times the slowest
+# healthy call and still under the endpoint's own 22 s per-attempt budget, so a
+# canary that is merely slow is reported before a worker is the one waiting.
+CARD_CANARY_SLOW_SECONDS = 20.0
+# TWO IN A ROW. See above.
+CARD_CANARY_FAILURES_BEFORE_ALERT = 2
+# The R2 key of the card the canary reads. A REAL stored card, so the canary
+# exercises decode, downscale, prompt and parse exactly as a worker's photo
+# does — a synthetic image would pass while every real card failed. Set it to
+# a key under worker-osha-cards/; the canary does not run without it, and says
+# so once rather than every 15 minutes.
+CARD_CANARY_R2_KEY = os.environ.get("CARD_CANARY_R2_KEY", "").strip()
+CARD_CANARY_STATE_ID = "card_read_canary"
+_card_canary_unconfigured_logged = False
+
+
+async def _card_read_canary():
+    """Read one stored card through the real vision path. Never raises.
+
+    APSCHEDULER MUST NEVER SEE A RAISE FROM HERE — same rule as
+    dob_approval_watcher. A monitor that can kill its own scheduler thread is
+    worse than no monitor, because the silence looks identical to success.
+    """
+    global _card_canary_unconfigured_logged
+    try:
+        if not CARD_CANARY_R2_KEY:
+            if not _card_canary_unconfigured_logged:
+                _card_canary_unconfigured_logged = True
+                logger.warning(
+                    "[card-canary] CARD_CANARY_R2_KEY is not set — the card-read "
+                    "canary is NOT running. Set it to a stored card's R2 key "
+                    "(worker-osha-cards/<id>/card.jpg) to enable it."
+                )
+            return
+        if not (_r2_client and R2_BUCKET_NAME):
+            return
+        if not QWEN_API_KEY:
+            return
+
+        started = _time.monotonic()
+        ok = False
+        reason = None
+        status = None
+        elapsed = None
+        fields_read = None
+
+        # ── COUNTED BEFORE IT SPENDS, IN ITS OWN LEDGER ────────────────────
+        #
+        # The SAME discipline as record_vision_call, for the same reason it
+        # gives: a call that errors after the provider has billed it is still
+        # spend, and a provider outage arrives as a burst of exactly those. The
+        # row is written now, empty, and filled in with the outcome below.
+        #
+        # A DIFFERENT COLLECTION, AND THAT IS THE POINT. This must not land in
+        # `vision_calls` beside worker traffic: 2,880 canary calls a month
+        # against 52 real registrations would swamp the metric the meter exists
+        # to provide, and the first honest answer to "how much did we spend on
+        # OCR" would become a number about the monitor. Separate ledger, so the
+        # $0.60 is still knowable and still not mixed in.
+        run_id = None
+        try:
+            _ins = await db.vision_canary_runs.insert_one({
+                "synthetic": True,      # never a worker, never a check-in
+                "ok": None,             # filled in below; None means "in flight"
+                "model": QWEN_MODEL,
+                "base": QWEN_API_BASE,
+                "started_at": datetime.now(timezone.utc),
+            })
+            run_id = _ins.inserted_id
+        except Exception as write_err:                          # noqa: BLE001
+            logger.warning("[card-canary] run row not opened: %r", write_err)
+
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=CARD_CANARY_R2_KEY,
+            )
+            raw = obj["Body"].read()
+            b64 = base64.b64encode(raw).decode("ascii")
+            vision_b64, _ct, _scale = _downscale_card_for_vision(b64)
+
+            async with ServerHttpClient(
+                    timeout=OSHA_VISION_ATTEMPT_TIMEOUT) as client_http:
+                resp = await client_http.post(
+                    f"{QWEN_API_BASE}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {QWEN_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": QWEN_MODEL,
+                        "max_tokens": 500,
+                        "temperature": 0,
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url",
+                                 "image_url": {
+                                     "url": f"data:image/jpeg;base64,{vision_b64}"}},
+                                {"type": "text", "text": _OSHA_EXTRACTION_PROMPT},
+                            ],
+                        }],
+                    },
+                )
+            elapsed = _time.monotonic() - started
+            status = resp.status_code
+            if resp.status_code != 200:
+                reason = f"HTTP {resp.status_code}: {(resp.text or '')[:200]}"
+            elif elapsed > CARD_CANARY_SLOW_SECONDS:
+                reason = (f"answered in {elapsed:.1f}s, over the "
+                          f"{CARD_CANARY_SLOW_SECONDS:.0f}s budget")
+            else:
+                ok = True
+                # NOT ASSERTED ON, RECORDED. A model that reads the card but
+                # reads it differently is a separate question from "is the gate
+                # up", and an availability monitor that fails on an OCR
+                # difference is an availability monitor nobody trusts.
+                try:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    text = (content or "").strip()
+                    if text.startswith("```"):
+                        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+                    parsed = json_mod_loads_safe(text)
+                    if isinstance(parsed, dict):
+                        got = _osha_ocr_payload(parsed)
+                        fields_read = {
+                            "name": bool(got.name),
+                            "sst_number": bool(got.sst_number),
+                            "expiration": bool(got.expiration),
+                        }
+                except Exception:                               # noqa: BLE001
+                    fields_read = None
+        except Exception as exc:                                # noqa: BLE001
+            elapsed = _time.monotonic() - started
+            # %r. `str(httpx.ReadTimeout())` is the empty string, and a canary
+            # whose alert body is blank is the outage all over again.
+            reason = repr(exc)
+
+        # The outcome, onto the row opened before the call. A row left with
+        # `ok: null` is a canary run that did not get as far as recording what
+        # happened — itself worth seeing, and impossible to represent if the
+        # only write were this one.
+        try:
+            if run_id is not None:
+                await db.vision_canary_runs.update_one(
+                    {"_id": run_id},
+                    {"$set": {
+                        "ok": ok,
+                        "status": status,
+                        "elapsed_s": round(elapsed, 3) if elapsed is not None else None,
+                        "reason": reason,
+                        "fields_read": fields_read,
+                        "created_at": datetime.now(timezone.utc),
+                    }},
+                )
+        except Exception as write_err:                          # noqa: BLE001
+            logger.warning("[card-canary] run outcome not written: %r", write_err)
+
+        # ── CONSECUTIVE-FAILURE STATE, IN MONGO ────────────────────────────
+        state = await db.system_state.find_one_and_update(
+            {"_id": CARD_CANARY_STATE_ID},
+            {"$inc": {"consecutive_failures": 0 if ok else 1},
+             "$set": {"last_ok": ok, "last_at": datetime.now(timezone.utc)}},
+            upsert=True, return_document=_canary_return_after(),
+        ) or {}
+        streak = int(state.get("consecutive_failures") or 0)
+
+        if ok:
+            if streak:
+                await db.system_state.update_one(
+                    {"_id": CARD_CANARY_STATE_ID},
+                    {"$set": {"consecutive_failures": 0}},
+                )
+                logger.info("[card-canary] recovered after %d failures", streak)
+            else:
+                logger.info(
+                    "[card-canary] OK in %.2fs (model=%s)", elapsed or 0.0, QWEN_MODEL
+                )
+            return
+
+        logger.error(
+            "[card-canary] FAILED (%d in a row): %s (model=%s base=%s elapsed=%.1fs)",
+            streak, reason, QWEN_MODEL, QWEN_API_BASE, elapsed or 0.0,
+        )
+        if streak < CARD_CANARY_FAILURES_BEFORE_ALERT:
+            return
+
+        # ONE OPEN ALERT AT A TIME. An outage that runs for a day must not
+        # write 96 rows — the same dedupe rule the CORS alert above uses, and
+        # for the same reason.
+        existing = await db.compliance_alerts.find_one({
+            "alert_type": "card_read_canary_failing", "resolved": False,
+        })
+        message = (
+            f"Workers cannot have their OSHA/SST cards read at the gate. "
+            f"The card-read canary has failed {streak} times in a row "
+            f"({CARD_CANARY_INTERVAL_MINUTES} min apart) on model {QWEN_MODEL} "
+            f"at {QWEN_API_BASE}. Last reason: {reason}. "
+            f"New workers cannot register while this is true."
+        )
+        if not existing:
+            await db.compliance_alerts.insert_one({
+                "alert_type": "card_read_canary_failing",
+                "severity": "critical",
+                "project_id": None,
+                "company_id": None,
+                "message": message,
+                "details": {
+                    "model": QWEN_MODEL,
+                    "base": QWEN_API_BASE,
+                    "consecutive_failures": streak,
+                    "reason": reason,
+                    "status": status,
+                    "elapsed_s": round(elapsed, 3) if elapsed is not None else None,
+                },
+                "resolved": False,
+                "created_at": datetime.now(timezone.utc),
+            })
+
+        # AND TELL A PERSON. send_notification carries the kill switch and a
+        # 23-hour per-recipient idempotency window, so a multi-day outage is
+        # one email a day per operator rather than 96.
+        try:
+            from lib.notifications import send_notification
+            for recipient in sorted(PLATFORM_OPERATOR_EMAILS):
+                await send_notification(
+                    db,
+                    permit_renewal_id="card_read_canary",
+                    trigger_type="card_read_canary_failing",
+                    recipient=recipient,
+                    subject="LeveLog: workers cannot register — card reading is down",
+                    html=f"<p>{message}</p>",
+                    text=message,
+                    metadata={"model": QWEN_MODEL, "consecutive_failures": streak},
+                )
+        except Exception as notify_err:                         # noqa: BLE001
+            logger.error("[card-canary] operator notify failed: %r", notify_err)
+
+    except Exception as fatal:                                  # noqa: BLE001
+        logger.exception("[card-canary] cycle crashed: %r", fatal)
+
+
+def _canary_return_after():
+    """pymongo's ReturnDocument.AFTER. Imported at the call, matching the note
+    at the report-number counter: pymongo already ships with motor, and one
+    symbol needed by one call does not earn a module-scope import."""
+    from pymongo import ReturnDocument
+    return ReturnDocument.AFTER
+
+
+def json_mod_loads_safe(text: str):
+    """json.loads that answers None instead of raising. Used by the canary,
+    which must never turn a parse difference into a scheduler traceback."""
+    import json as _json
+    try:
+        return _json.loads(text)
+    except Exception:                                           # noqa: BLE001
+        return None
+
 
 # ══ GATE FAILURE TELEMETRY ══════════════════════════════════════════════════
 #
@@ -14459,6 +15054,13 @@ GATE_FAILURE_KINDS = {
     "card_image_decode_failed",
     "card_handler_crashed",
     "card_ocr_http_failed",
+    # SEPARATE FROM card_ocr_http_failed ON PURPOSE. For four days every card
+    # failure at every gate landed under one kind with an empty detail, so the
+    # telemetry could say "the card step failed" and nothing more. A read that
+    # TIMED OUT and a read that came back unusable need different answers from
+    # the operator, and cannot be told apart after the fact if they share a
+    # bucket.
+    "card_ocr_timeout",
     "selfie_file_read_failed",
     "selfie_image_decode_failed",
     "selfie_handler_crashed",
@@ -16319,7 +16921,11 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Check-in failed: {str(e)}")
+        # Same defect, same flow: no log line, and a detail that is empty
+        # whenever str(e) is. A check-in that fails here is a man who cannot
+        # start work, and until now it left nothing behind to explain it.
+        logger.exception("check-in submit failed: %r", e)
+        raise HTTPException(status_code=500, detail="Check-in failed")
         
 # ==================== WORKERS ====================
 
@@ -16953,7 +17559,7 @@ async def add_worker_certification(
         try:
             validation = validate_worker_certifications(updated)
         except Exception as e:
-            logger.warning(f"validate_worker_certifications failed: {e}")
+            logger.exception("validate_worker_certifications failed: %r", e)
             validation = {"cleared": False, "blocks": [], "warnings": []}
 
         # Make the response JSON-safe — datetime objects from Pydantic v2 .model_dump()
@@ -28132,6 +28738,64 @@ async def get_signature_image(signin_id: str, current_user=Depends(get_current_u
 async def root():
     return {"message": "Levelog API v2.0.0 - Sync Enabled", "status": "running"}
 
+
+# ══ IS THE MODEL WE SEND EVEN A MODEL ══════════════════════════════════════
+#
+# `ok` is THREE-VALUED and that is the whole design:
+#
+#   None   we have not asked, or could not ask (no key, transport failure).
+#          NOT a finding. A flaky network on one boot must never read as "the
+#          vision model is dead" — an alarm that cries wolf gets muted, and a
+#          muted alarm is how four days pass.
+#   True   the provider accepted the id.
+#   False  the provider ANSWERED and rejected the id. This is the state the
+#          shipped code default was in the whole time
+#          (`Qwen/Qwen2.5-VL-7B-Instruct` -> 404 `does not exist`), discoverable
+#          only by a worker standing at a turnstile.
+#
+# Probed ONCE at boot, not per health request: /api/health is polled by the
+# platform and by the postdeploy check, and a paid call per poll would be its
+# own incident. The 15-minute canary re-answers the same question continuously
+# against a real card.
+VISION_MODEL_PROBE = {
+    "ok": None,
+    "status": None,
+    "reason": "not probed",
+    "model": None,
+    "base": None,
+    "checked_at": None,
+}
+
+
+async def _probe_vision_model_at_boot():
+    """Fill VISION_MODEL_PROBE. Never raises, never blocks startup."""
+    try:
+        from lib import vision_model as _vm
+        result = await _vm.probe()
+        result["checked_at"] = datetime.now(timezone.utc).isoformat()
+        VISION_MODEL_PROBE.update(result)
+        if result.get("ok") is True:
+            logger.info(
+                "Vision model probe OK: %s at %s", result["model"], result["base"]
+            )
+        elif result.get("ok") is False:
+            # ERROR, and it says what to do. A deploy whose vision model id
+            # does not resolve cannot read a single card.
+            logger.error(
+                "VISION MODEL IS NOT AVAILABLE: %s at %s — %s. "
+                "Every OSHA/SST card read, COI OCR and plan index call on this "
+                "deploy will fail. Fix QWEN_MODEL.",
+                result["model"], result["base"], result["reason"],
+            )
+        else:
+            logger.warning(
+                "Vision model probe inconclusive for %s: %s",
+                result.get("model"), result.get("reason"),
+            )
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning("vision model probe did not complete: %r", exc)
+
+
 @api_router.get("/health")
 async def health_check():
     """Up, and — separately — INDEX-COMPLETE.
@@ -28152,8 +28816,30 @@ async def health_check():
     _refused = sorted(CORS_PREFLIGHT_REJECTIONS)
     _ours = [h for h in _refused
              if CORS_PREFLIGHT_REJECTIONS[h].get("from_our_origins")]
+
+    # ── AND THE ONE CONDITION THAT DOES MOVE `status` ──────────────────────
+    #
+    # The rule this endpoint was written to — "status stays healthy, findings
+    # get their own section" — is about conditions a RESTART CANNOT FIX and
+    # that must not become a restart loop. A model id the provider rejects is
+    # exactly that kind of condition, so this still never returns a 5xx and
+    # never asks the platform to cycle the process.
+    #
+    # It does report "degraded", because "healthy" would be a lie a deploy
+    # check believes: for four days everything about this service was up and no
+    # worker could register. ONLY a definite False moves it — an unprobed or
+    # unreachable provider leaves `status` alone (see VISION_MODEL_PROBE), so a
+    # test environment with no API key, and the existing tests that assert
+    # "healthy", are untouched.
+    from lib import vision_model as _vm
+    _vision = dict(_vm.describe())
+    _vision["probe"] = dict(VISION_MODEL_PROBE)
+    _vision["ok"] = VISION_MODEL_PROBE.get("ok")
+    _status = "degraded" if VISION_MODEL_PROBE.get("ok") is False else "healthy"
+
     return {
-        "status": "healthy",
+        "status": _status,
+        "vision": _vision,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "indexes": {
             "complete": not _failed,
@@ -39379,6 +40065,23 @@ async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
     return len(docs)
 
 
+# ── THE PLAN INDEX'S TIME CEILING ─────────────────────────────────────────
+# See the block above `_section_call` for why a per-call timeout was never a
+# page budget and what the unbounded worst case was.
+PLAN_INDEX_CALL_TIMEOUT = 180.0       # one section, unchanged
+PLAN_INDEX_PAGE_BUDGET = 300.0        # every call on one page, together
+PLAN_INDEX_MIN_CALL_SECONDS = 20.0    # below this, refuse rather than send
+
+
+class BudgetExhausted(RuntimeError):
+    """The page ran out of time before this section was sent.
+
+    ITS OWN TYPE BECAUSE plan_extract RECORDS THE TYPE NAME. The section's flag
+    reads `call_failed:BudgetExhausted`, which says we stopped — distinct from
+    `call_failed:ReadTimeout`, which says the provider did.
+    """
+
+
 async def _index_single_page(
     *,
     project_id: str,
@@ -39488,7 +40191,7 @@ async def _index_single_page(
                     boilerplate=boilerplate,
                 )
             except Exception as e:
-                logger.warning(f"spec page chunks failed {file_name} p{page_number}: {e!r}")
+                logger.exception("spec page chunks failed %s p%s: %r", file_name, page_number, e)
                 await db.document_page_index.update_one(
                     {"file_id": file_id, "page_number": page_number},
                     {"$set": {"page_complete": False}})
@@ -39566,37 +40269,89 @@ async def _index_single_page(
     # a per-upload count would report a forty-sheet set as 1. Counted before the
     # post for the reason the meter's own docstring gives: a call that errors
     # after the provider has billed it is still spend.
+    # ── THE 180 s WAS A PAGE BUDGET APPLIED PER CALL ───────────────────────
+    #
+    # The comment below this line has always read "180s: measured 165-225s for
+    # a FOUR-CALL PAGE" — a budget for the whole page. It is passed as the
+    # timeout of EACH call, so the page's real ceiling is 180 s x the number of
+    # calls the extractor decides to make, and nothing anywhere bounded that:
+    #
+    #   raster path (extract_page)          5 sections  -> 900 s per page
+    #   vector path (extract_vector_page)   1 call           180 s per page
+    #     + PR #547's notes fallback        +1 call     -> 360 s per page
+    #
+    # A 44-sheet set on the vector path is a 4.4-hour worst case, and #547 did
+    # not introduce that — it doubled an exposure that had no ceiling to begin
+    # with. On the unbounded-tail model that ran 09-11 to 09-15, every one of
+    # those windows would have been spent in full.
+    #
+    # PLAN_INDEX_PAGE_BUDGET IS THE CEILING THE COMMENT ALREADY CLAIMED: 300 s
+    # for the whole page, generous against the measured 165-225 s four-call
+    # page, shared by every call the extractor makes. Each call still gets up
+    # to 180 s, clamped to what the page has left. When the budget is gone the
+    # call is refused rather than sent doomed — plan_extract records that as
+    # `call_failed:BudgetExhausted` on the section and keeps the rest of the
+    # page, which is the same degrade path a provider error already takes.
+    _page_deadline = _time.monotonic() + PLAN_INDEX_PAGE_BUDGET
+
     async def _section_call(image_b64: str, prompt: str, max_tokens: int):
+        remaining = _page_deadline - _time.monotonic()
+        if remaining < PLAN_INDEX_MIN_CALL_SECONDS:
+            logger.warning(
+                "[plan-index] page budget exhausted for %s p%s "
+                "(%.0fs spent, %.1fs left) — section refused",
+                file_name, page_number, PLAN_INDEX_PAGE_BUDGET, remaining,
+            )
+            raise BudgetExhausted(
+                f"plan index page budget of {PLAN_INDEX_PAGE_BUDGET:.0f}s exhausted"
+            )
+        call_timeout = min(PLAN_INDEX_CALL_TIMEOUT, remaining)
+
         await record_vision_call(
             db, endpoint=VISION_PLAN_INDEX_PAGE, project_id=project_id,
         )
         # 180s: measured 165-225s for a four-call page on the production model,
-        # and a 90s cap timed out the schedules call on S-001.00.
-        async with ServerHttpClient(timeout=180.0) as client_http:
-            resp = await client_http.post(
-                f"{QWEN_API_BASE}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {QWEN_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model":       QWEN_MODEL,
-                    "max_tokens":  max_tokens,
-                    "temperature": 0,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url",
-                             "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                            {"type": "text", "text": prompt},
-                        ],
-                    }],
-                },
+        # and a 90s cap timed out the schedules call on S-001.00. Now a cap on
+        # the call AND on the page, per the block above.
+        try:
+            async with ServerHttpClient(timeout=call_timeout) as client_http:
+                resp = await client_http.post(
+                    f"{QWEN_API_BASE}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {QWEN_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model":       QWEN_MODEL,
+                        "max_tokens":  max_tokens,
+                        "temperature": 0,
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url",
+                                 "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                                {"type": "text", "text": prompt},
+                            ],
+                        }],
+                    },
+                )
+        except Exception as call_exc:
+            # SITE 2 OF 5. plan_extract catches this and records
+            # `call_failed:<TypeName>` on the section — a flag, not a log, and
+            # a flag cannot carry a traceback or the model id. On a ReadTimeout
+            # the row said `call_failed:ReadTimeout` and the log said nothing
+            # at all, so a page that quietly indexed with no notes looked
+            # identical to one the model had nothing to say about.
+            logger.exception(
+                "[plan-index] vision call failed for %s p%s: %r "
+                "(model=%s timeout=%.0fs)",
+                file_name, page_number, call_exc, QWEN_MODEL, call_timeout,
             )
+            raise
         if resp.status_code != 200:
             logger.warning(
                 f"Qwen index returned {resp.status_code} for "
-                f"{file_name} page {page_number}"
+                f"{file_name} page {page_number} [model={QWEN_MODEL}]"
             )
             raise RuntimeError(f"qwen status {resp.status_code}")
         choice = resp.json()["choices"][0]
@@ -39687,7 +40442,7 @@ async def _index_single_page(
     except Exception as e:
         # The page row stands without its chunks: retrieval falls back to the
         # version 2 path for it. Logged, because a count cannot be answered.
-        logger.warning(f"page chunks failed {file_name} p{page_number}: {e!r}")
+        logger.exception("page chunks failed %s p%s: %r", file_name, page_number, e)
 
 
 # Minimum rendering DPI for the plan-query pipeline. Construction drawings
@@ -40967,7 +41722,13 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
                 return None
             return (resp.json()["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
-        logger.warning(f"Qwen VQA failed: {e}")
+        # SITE 3 OF 5, AND IT CARRIED THE EXACT DEFECT THE GATE DID. `{e}` is
+        # `str(e)`, and `str(httpx.ReadTimeout())` is the empty string — this
+        # line logged `Qwen VQA failed: ` for every timeout, on a 90 s budget,
+        # against the same unbounded-tail model. WhatsApp plan QA had no live
+        # traffic during the 09-11 -> 09-15 window, so it cost nothing; it was
+        # the same trap, unsprung.
+        logger.exception("Qwen VQA failed: %r (model=%s)", e, QWEN_MODEL)
         return None
 
 
@@ -47233,7 +47994,11 @@ async def _card_audit_vlm_adapter(jpeg_bytes: bytes, prompt: str) -> str:
         data = resp.json()
         return (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
     except Exception as e:
-        logger.error(f"card_audit VLM adapter failed: {e!r}")
+        # SITE 4 OF 5. Already `!r`, so the type survived an empty message —
+        # upgraded to .exception for the traceback and given the model id,
+        # which is the half that separates "the provider hung" from "the id we
+        # send does not exist".
+        logger.exception("card_audit VLM adapter failed: %r (model=%s)", e, QWEN_MODEL)
         return ""
 
 
@@ -48088,6 +48853,48 @@ async def shutdown_db_client():
 async def startup_event():
     logger.info("Starting Levelog API with Sync Support...")
 
+    # ── WHICH VISION MODEL IS THIS BOX ACTUALLY RUNNING ────────────────────
+    #
+    # QWEN_MODEL is a Railway environment variable, so the model that reads
+    # every worker's OSHA/SST card at the gate can change with NO COMMIT and
+    # NO DIFF. It did: a four-day registration outage (2026-09-11 to 09-15,
+    # zero new worker rows) traced to a model id swapped in the variable panel
+    # whose latency tail was unbounded — identical image and prompt, 470 ms or
+    # never. Nothing in the deploy log named the model, so there was nothing to
+    # correlate the outage against.
+    #
+    # One line, at boot, naming the value in force. It is printed unconditionally
+    # — including the fallback case — because "the variable is unset and we are
+    # on the default" is precisely the state that is otherwise invisible.
+    from lib import vision_model as _vision_cfg
+    _vcfg = _vision_cfg.describe()
+    logger.info(
+        "Vision model in use: model=%s (%s) base=%s (%s) key=%s",
+        _vcfg["model"], _vcfg["model_source"],
+        _vcfg["base"], _vcfg["base_source"],
+        "set" if _vcfg["key_set"] else "MISSING",
+    )
+    # EVERY CARD-PATH SETTING AN ENVIRONMENT VARIABLE CAN MOVE, ON ONE LINE.
+    # The outage's root cause was a value that changed behaviour with no commit
+    # and no diff; anything else with that property belongs in the deploy log
+    # beside the model, or it is the same trap waiting.
+    logger.info(
+        "Card read budget: %d attempts x %.0fs (total %.0fs), downscale max_edge=%d, "
+        "canary every %dmin (%s)",
+        OSHA_VISION_ATTEMPTS, OSHA_VISION_ATTEMPT_TIMEOUT,
+        OSHA_VISION_ATTEMPTS * OSHA_VISION_ATTEMPT_TIMEOUT,
+        _osha_vision_max_edge(), CARD_CANARY_INTERVAL_MINUTES,
+        "armed" if CARD_CANARY_R2_KEY else "NOT CONFIGURED — set CARD_CANARY_R2_KEY",
+    )
+    # ASKED, NOT ASSUMED. A boot-time probe so a model id the provider does not
+    # have is a line in the deploy log and a flag on /api/health, instead of a
+    # 500 at a turnstile four days later. Fire-and-forget: a slow or unreachable
+    # provider must never be able to hold up the API coming up.
+    try:
+        asyncio.create_task(_probe_vision_model_at_boot())
+    except Exception as _probe_err:                             # noqa: BLE001
+        logger.warning("could not schedule vision model probe: %r", _probe_err)
+
     # MR.14 commit 4a — ELIGIBILITY_BYPASS_DAYS_REMAINING boot warning
     # removed alongside the bypass helpers. The env var is fully dead
     # post-4a; operator deletes it from Railway as part of cleanup.
@@ -48866,6 +49673,25 @@ async def startup_event():
         IntervalTrigger(minutes=30),
         id='whatsapp_checklist_extraction',
         replace_existing=True,
+    )
+
+    # ── THE CARD-READ CANARY ───────────────────────────────────────────────
+    #
+    # The one job on this scheduler that answers a question about the PRODUCT
+    # rather than about the process: can a worker get his card read right now.
+    # Everything else here was green for the four days nobody could register.
+    # See `_card_read_canary` for the cost ($0.60/mo), the exclusions (no
+    # meter, no rate limiter, no worker or check-in row) and the two-in-a-row
+    # alert rule. It no-ops with one log line when CARD_CANARY_R2_KEY is unset.
+    scheduler.add_job(
+        _card_read_canary,
+        IntervalTrigger(minutes=CARD_CANARY_INTERVAL_MINUTES),
+        id='card_read_canary',
+        replace_existing=True,
+        # A hung call must not stack: 22 s per attempt against a 15-minute
+        # cadence cannot overlap, and max_instances says so out loud.
+        max_instances=1,
+        coalesce=True,
     )
 
     # Card audit nightly jobs. See backend/card_audit.py.
