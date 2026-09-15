@@ -28,7 +28,28 @@ const path = require('path');
 const APP = path.join(__dirname, '..', '..', 'app');
 const read = (...p) => fs.readFileSync(path.join(APP, ...p), 'utf8');
 
-const preshift = read('logbooks', 'preshift_signin.jsx');
+/**
+ * COMMENTS OUT, and this file needed it the day it was written.
+ *
+ * The assertion below used to be `/'Unknown SST card'/.test(preshift)`. When
+ * that string was replaced by real multi-state copy, the assertion KEPT
+ * PASSING — because the replacement's header comment quotes the ternary it
+ * removed, so the regex matched the DOCUMENTATION of the old behaviour instead
+ * of the behaviour. That is the exact trap backend/tests/source_text.py exists
+ * to close on the Python side, recorded there as having happened four times.
+ *
+ * So every assertion about preshift_signin.jsx below reads `preshift` with
+ * comments and JSX comments removed. Conservative on purpose: block comments,
+ * and lines whose first non-space characters are `//` or `*`. It does not try
+ * to parse strings, so a `'https://…'` inside code survives intact.
+ */
+const stripComments = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n')
+  .filter((l) => !/^\s*(\/\/|\*)/.test(l))
+  .join('\n');
+
+const preshift = stripComments(read('logbooks', 'preshift_signin.jsx'));
 const cpHome = read('logbooks', 'index.jsx');
 const workers = read('workers.jsx');
 const signIn = read('checkin', '[project_id]', '[tag_id].jsx');
@@ -57,8 +78,37 @@ ok(!/\.filter\([^)]*sst_status/.test(preshift) && !/\.filter\([^)]*needs_trade/.
   'no filter removes a flagged worker from the roster');
 
 // Each reason is named explicitly. A generic "flagged" label is the failure.
-ok(/'Expired SST card'/.test(preshift), "names the reason: 'Expired SST card'");
-ok(/'Unknown SST card'/.test(preshift), "names the reason: 'Unknown SST card'");
+//
+// INVERTED, AND IT WAS RIGHT TO BREAK. These two read:
+//
+//   ok(/'Expired SST card'/.test(preshift), "names the reason: 'Expired SST card'");
+//   ok(/'Unknown SST card'/.test(preshift), "names the reason: 'Unknown SST card'");
+//
+// pinning the two literals a BINARY TERNARY could produce:
+//
+//   {f.sst_status === 'expired' ? 'Expired SST card' : 'Unknown SST card'}
+//
+// The intent -- name the reason, never print a generic "flagged" -- was right
+// and is kept. The pin was wrong in the same way the ternary was: two strings
+// for five statuses, so "Unknown SST card" was the answer to every question
+// that was not `expired`, including four materially different production rows
+// and any status added later. Pinning the literal here made that arrangement
+// load-bearing.
+//
+// The strings now live in src/utils/sstFlagCopy.js and are asserted BY VALUE in
+// sstFlagCopy.test.cjs and BY RENDER in sstCardFlagPaints.test.cjs, which
+// executes the real component. What is asserted HERE is what this file is
+// about: the screen still names reasons, from one shared definition, and never
+// falls back to a generic label.
+ok(/sstFlagCopy/.test(preshift),
+  'the SST reason comes from the shared copy module, not an inline ternary');
+ok(!/'Unknown SST card'/.test(preshift),
+  'the one-size "Unknown SST card" string is GONE from the code (not merely '
+  + 'from a comment — see stripComments above)');
+ok(!/sst_status === 'expired' \?/.test(preshift),
+  'and the binary ternary that produced it is gone with it');
+ok(/<SstFlagLines/.test(preshift),
+  'the reason line is rendered by the exported component the paint test runs');
 ok(/>\s*No trade assigned\s*</.test(preshift), "names the reason: 'No trade assigned'");
 ok(!/>\s*Flagged\s*</.test(preshift) && !/'Flagged'/.test(preshift),
   'never renders a generic "Flagged" label');
