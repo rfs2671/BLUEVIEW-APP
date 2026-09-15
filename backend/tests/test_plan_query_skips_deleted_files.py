@@ -128,10 +128,28 @@ class TheOmissionIsSilent(unittest.TestCase):
         self.assertNotIn("'unavailable'", SRC[i:i + 4000])
 
     def test_the_existing_empty_answer_still_covers_it(self):
-        """The retriever already answers 'couldn't find a matching sheet' on an
-        empty pool, and that sentence is true when the only matches were
-        deleted."""
-        self.assertIn("Couldn't find a matching sheet", SRC)
+        """The retriever already answers honestly on an empty pool, and that
+        answer is true when the only matches were deleted.
+
+        THE WORDING MOVED AND THE CLAIM DID NOT. This pinned "Couldn't find a
+        matching sheet", whose full copy continued "Try a sheet number (A-301,
+        ME-401)" — which the agent stance now forbids outright: it hands the
+        problem back to a superintendent who does not carry the drawing list in
+        his head, and the agent has the whole sheet index in its context. What
+        this test is actually about is that SOME honest empty answer exists, so
+        it is anchored on the replacement rather than on the sentence that was
+        removed for an unrelated reason."""
+        self.assertIn(
+            "Nothing in the indexed drawings matched that", SRC,
+            "the retriever no longer has an honest empty answer — an omitted "
+            "deleted file would return nothing with nothing said about it")
+        # And it still must not invite a retry that cannot succeed.
+        # CODE LINES ONLY: the two remaining occurrences are comments
+        # explaining why the copy went, and a guard that trips on its own
+        # rationale is a guard nobody keeps.
+        code = "\n".join(
+            l for l in SRC.split("\n") if not l.lstrip().startswith("#"))
+        self.assertNotIn("Try a sheet number", code)
 
 
 if __name__ == "__main__":

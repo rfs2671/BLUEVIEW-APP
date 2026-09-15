@@ -124,11 +124,17 @@ def unreadable_failure_sites():
 #: now ask the filed record what it says instead of asking the source that used
 #: to build it.
 #: 61 -> 60 on 2026-09-13, when the last hand-written branch was deleted.
+#: 60 -> 59 on 2026-09-15. The plan retriever's empty answer changed wording —
+#: its old copy told a superintendent to "Try a sheet number", which the agent
+#: stance now forbids — and the test pinning it was rewritten with a message
+#: while it was open. The count fell as a side effect of a change made for an
+#: unrelated reason, which is the only direction this number is allowed to
+#: move.
 #: `test_single_logbook_print_width.py` was retired with it -- its subject was
 #: the print CSS that renderer emitted, and the renderer is gone -- and the
 #: branch-side claims in test_the_legal_render_engine.py went the same way.
 #: Each carried an assertion whose failure would have printed all of server.py.
-EXPECTED_TOTAL = 60
+EXPECTED_TOTAL = 59
 
 
 class AnAssertionMayNotPrintASourceFile(unittest.TestCase):
