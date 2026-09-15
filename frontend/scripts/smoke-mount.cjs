@@ -51,6 +51,48 @@ const DIST = path.resolve(arg('dist', 'dist'));
 const PORT = Number(arg('port', 5810));
 const THEMES = arg('theme', 'both') === 'both' ? ['light', 'dark'] : [arg('theme', 'both')];
 
+// ── A GATE THAT CANNOT SEE ITS SUBJECT MUST SAY SO ───────────────────────────
+//
+// `npx expo export` run from a path with a DOT-DIRECTORY ANCESTOR silently
+// emits a ROUTELESS bundle — 986 kB instead of 6.38 MB — because a leading dot
+// in an ancestor segment defeats expo-router's route discovery. Nothing errors.
+// The export succeeds, `dist/index.html` exists, and this job then mounts 78
+// routes that are all "No routes found".
+//
+// IT FAILS CLOSED, and that was checked rather than assumed: ROUTES is a fixed
+// list, every entry fails, and the verdict at the bottom exits 1. So the number
+// was never a false green. It was a SIX-MINUTE RUN THAT PROVED NOTHING, which
+// on this repo is the whole agent-worktree path — `.claude/worktrees/…` — and
+// this is the only gate that executes a screen.
+//
+// SO: REFUSE, rather than produce a number. A run that cannot see its subject
+// should not report on it, in either direction. The same rule the
+// no-preflight guard at the bottom of this file already follows.
+//
+// Checked against the EXPORT's own tree, not just cwd: `--dist` may point
+// somewhere clean while the app directory that was exported is not.
+function dotDirAncestor(p) {
+  const parts = path.resolve(p).split(/[\\/]+/);
+  // Skip the root ("C:" or ""), and ignore "." / ".." which are navigation
+  // rather than a real directory name.
+  return parts.slice(1).find((seg) => seg.startsWith('.') && seg !== '.' && seg !== '..') || null;
+}
+for (const [label, target] of [['the working directory', process.cwd()], ['--dist', DIST]]) {
+  const bad = dotDirAncestor(target);
+  if (!bad) continue;
+  console.error(
+    `\n✗ REFUSING TO RUN: ${label} sits under a dot-directory ("${bad}").\n`
+    + `    ${path.resolve(target)}\n\n`
+    + '  expo export emits a ROUTELESS bundle from such a path and every route\n'
+    + '  mount then fails for a reason that has nothing to do with your change.\n'
+    + '  This is the only gate that executes a screen; a number from here would\n'
+    + '  be six minutes spent proving nothing.\n\n'
+    + '  Copy the tree to a path with no dot-directory ancestor and run it there,\n'
+    + '  or let CI run it — CI checks out to a clean path and is unaffected.\n',
+  );
+  process.exit(1);
+}
+
 // ── THE API IS A REAL ORIGIN, NOT AN INTERCEPTED ONE ─────────────────────
 //
 // This job used to answer every API call with `page.route(...).fulfill()` and
