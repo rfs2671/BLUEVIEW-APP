@@ -66,13 +66,21 @@ EXTRACTION_VERSION = 3
 # Separate calls, run in this order. Order no longer matters for correctness
 # — each call is isolated — but title_block runs first so a page whose later
 # sections all fail still has a sheet number to be found by.
-SECTIONS: Tuple[str, ...] = ("title_block", "schedules", "notes", "elements")
+#
+# THIS IS THE SCANNED-PAGE PATH. A vector page makes one call — see
+# extract_vector_page — because its text layer already carries everything the
+# other sections would transcribe.
+#
+# `specs` is split out of `elements`: on A-500.00 the elements call listed 129
+# dimensions, hit its cap, and never reached materials. One list per budget.
+SECTIONS: Tuple[str, ...] = ("title_block", "schedules", "notes", "elements", "specs")
 
 SECTION_MAX_TOKENS: Dict[str, int] = {
     "title_block": 500,
     "schedules": 2000,
     "notes": 1600,
-    "elements": 1200,
+    "elements": 1000,
+    "specs": 1200,
 }
 
 # Raw model output kept on the row for inspection. Capped because a loop that
@@ -407,6 +415,14 @@ def validate_section(section: str, obj: Any) -> Tuple[Dict[str, Any], List[str]]
                                      200, flags, "materials"),
         }, flags
 
+    if section == "specs":
+        return {
+            "dimensions": _clean_list(o.get("dimensions"), _str_item(80, "dimensions"),
+                                      200, flags, "dimensions"),
+            "materials": _clean_list(o.get("materials"), _str_item(200, "materials"),
+                                     200, flags, "materials"),
+        }, flags
+
     raise ValueError(f"unknown section {section!r}")
 
 
@@ -415,6 +431,9 @@ EMPTY_FIELDS: Dict[str, Any] = {
     "sheet_type": None, "floors": [], "revision": None, "revision_date": None,
     "contents_summary": None, "schedules": [], "notes": [], "legend": [],
     "callouts": [], "elements": [], "dimensions": [], "materials": [],
+    # Vector pages only: fraction pieces that could not be rebuilt, labels
+    # counted per tag, and the blocks that are neither notes nor legend.
+    "dimensions_unverified": [], "tag_counts": [], "text_blocks": [],
 }
 
 
@@ -572,17 +591,20 @@ _SECTION_SPEC = {
     ),
     "elements": (
         "Return:\n"
-        '{"elements": [{"name": str, "count_if_stated": int, "location_hint": str}],\n'
-        ' "dimensions": [str], "materials": [str]}\n'
+        '{"elements": [{"name": str, "count_if_stated": int, "location_hint": str}]}\n'
         "elements: things a builder counts or locates — piles, roof drains, PTAC "
         "units, posts, chase walls, anchors, fixtures, openings. Max 150.\n"
         "count_if_stated: ONLY a quantity PRINTED on this sheet, in a schedule, a "
         "note, or a tag such as '(4) ROOF DRAINS'. NEVER count symbols yourself. "
         "null when no quantity is printed.\n"
-        "location_hint: where on the sheet, e.g. 'foundation plan', 'pile schedule'.\n"
-        "dimensions: each UNIQUE dimension value once, max 200.\n"
-        "materials: products, gauges, thicknesses, ratings, e.g. '7/8\" STUCCO', "
-        "'18 GA STEEL POST', '2 HR RATED'. Each once, max 200."
+        "location_hint: where on the sheet, e.g. 'foundation plan', 'pile schedule'."
+    ),
+    "specs": (
+        "Return:\n"
+        '{"materials": [str], "dimensions": [str]}\n'
+        "materials FIRST: products, gauges, thicknesses, ratings, e.g. '7/8\" "
+        "STUCCO', '18 GA STEEL POST', '2 HR RATED'. Each once, max 200.\n"
+        "dimensions: each UNIQUE dimension value once, max 200."
     ),
 }
 
@@ -651,6 +673,98 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
         "raw_vlm": raw,
         "prompt_text_chars": len(text_for_prompt),
         "prompt_text_truncated": prompt_text_truncated,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The vector page: text layer primary, one model call
+# ══════════════════════════════════════════════════════════════════════════
+
+TITLE_CALL_MAX_TOKENS = 600
+
+
+def title_prompt(title_text: str, heading_text: str, ids: List[str]) -> str:
+    """The one call a vector page makes. No text-layer cap to hit: it carries
+    the title-block strip and the sheet's headings, not the notes."""
+    return (
+        "You are reading ONE page of a New York City construction drawing set. "
+        "Return ONLY a JSON object: no prose, no markdown fences.\n"
+        "Return:\n"
+        '{"sheet_number": str, "sheet_title": str, "discipline": str,\n'
+        ' "sheet_type": one of plan|schedule|detail|notes|elevation|section|legend|cover|other,\n'
+        ' "floors": [str] (max 20), "revision": str, "revision_date": str,\n'
+        ' "contents_summary": str}\n'
+        "sheet_number: copy it from the title block. It is normally one of the SHEET "
+        "IDS listed below. A number in a drawing list is NOT the sheet number.\n"
+        "revision: the revision mark only, never a sheet id or a DOB job number.\n"
+        "contents_summary: 2 to 4 sentences naming the systems, elements, schedules "
+        "and details this sheet shows. Do not describe the title block.\n\n"
+        f"SHEET IDS PRINTED IN THE TITLE BLOCK: {', '.join(ids) or '(none found)'}\n\n"
+        f"TITLE BLOCK TEXT:\n<<<\n{title_text or '(none)'}\n>>>\n\n"
+        f"HEADINGS ON THIS SHEET:\n<<<\n{heading_text or '(none)'}\n>>>"
+    )
+
+
+async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_call: VlmCall,
+                              boilerplate: FrozenSet[str] = frozenset(),
+                              tag_vocab: Optional[FrozenSet[str]] = None) -> Dict[str, Any]:
+    """Structure from the text layer; title, type and summary from one call.
+
+    Same return shape as extract_page, so the writer and the harness treat the
+    two paths alike."""
+    from lib import plan_text as pt  # sibling, pure
+
+    title_text = pt.title_region(layout)
+    title_ids = pt.sheet_ids(title_text)
+    page_ids = pt.sheet_ids(layout.get("text") or "")
+    flags: Dict[str, List[str]] = {"title_block": [], "text_layer": []}
+    raw: Dict[str, str] = {"title_block": ""}
+    tb: Dict[str, Any] = {}
+    try:
+        content, finish = await vlm_call(
+            image_b64, title_prompt(title_text, pt.headings(layout), title_ids or page_ids[:12]),
+            TITLE_CALL_MAX_TOKENS)
+        content = content or ""
+        raw["title_block"] = content[:RAW_CAP]
+        if finish == "length":
+            flags["title_block"].append("hit_max_tokens")
+        cut, looped = detect_repetition(content)
+        if looped:
+            flags["title_block"].append("repetition_truncated")
+        obj = parse_json_loose(cut)
+        if obj is None:
+            flags["title_block"].append("unparseable")
+        else:
+            tb, vflags = validate_section("title_block", obj)
+            flags["title_block"].extend(vflags)
+    except Exception as e:
+        flags["title_block"].append(f"call_failed:{type(e).__name__}")
+
+    sheet_number, sn_flag = pt.validate_sheet_number(tb.get("sheet_number"), title_ids, page_ids)
+    if sn_flag:
+        flags["title_block"].append(sn_flag)
+    if tb.get("revision") and tb["revision"].upper() in {i.upper() for i in page_ids}:
+        flags["title_block"].append("revision_was_a_sheet_id")
+        tb["revision"] = None
+
+    text_fields = pt.fields_from_layout(layout, boilerplate, tag_vocab or pt.SEED_TAGS)
+    fields = merge_sections({"title_block": tb})
+    fields.update(text_fields)
+    fields["sheet_number"] = sheet_number
+
+    number_flags: List[str] = []
+    if text_fields["dimensions_unverified"]:
+        number_flags.append(f"dimension_fragments_unverified:{len(text_fields['dimensions_unverified'])}")
+    if layout.get("fractions_rebuilt"):
+        flags["text_layer"].append(f"fractions_rebuilt:{layout['fractions_rebuilt']}")
+    return {
+        "fields": fields,
+        "flags": flags,
+        "number_flags": number_flags,
+        "raw_vlm": raw,
+        "prompt_text_chars": len(title_text),
+        "prompt_text_truncated": False,
+        "vlm_calls": 1,
     }
 
 
@@ -769,6 +883,29 @@ def build_chunks(fields: Dict[str, Any], boilerplate: FrozenSet[str] = frozenset
                 f"count {e['count_if_stated']}" if e.get("count_if_stated") is not None else None,
                 e.get("location_hint")) if v)
             for e in fields["elements"]), fields["elements"])
+    # Everything else the text layer said: plan labels, wall-type descriptions,
+    # calculations. Grouped, never truncated, so a word anywhere on the sheet is
+    # findable — "HELICAL PILES" on S-001.00 is a short block of its own.
+    group: List[str] = []
+    size = 0
+    ti = 0
+    for tb in fields.get("text_blocks") or []:
+        t = (tb.get("text") or "").strip()
+        if not t:
+            continue
+        if group and size + len(t) > NOTE_BLOCK_CHARS:
+            add("text", ti, "\n".join(group), None)
+            ti += 1
+            group, size = [], 0
+        group.append(t)
+        size += len(t)
+    if group:
+        add("text", ti, "\n".join(group), None)
+    if fields.get("tag_counts"):
+        chunks.append({"chunk_type": "tag_counts", "ordinal": 0,
+                       "text": "\n".join(f"{t['tag']} x{t['count']}" for t in fields["tag_counts"]),
+                       "payload": fields["tag_counts"]})
+
     specs = list(fields.get("dimensions") or []) + list(fields.get("materials") or [])
     if specs:
         add("specs", 0, "\n".join(specs),
@@ -832,9 +969,19 @@ def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[st
             s = ch.get("payload") or {}
             cols = s.get("columns") or []
             rows = s.get("rows") or []
-            named_for_it = _matches(" ".join(filter(None, [s.get("name")] + cols)), terms)
+            # The NAME decides. A table the finder could not name ('TABLE') whose
+            # header cells mention 'W2' is not a schedule of W2s.
+            name = s.get("name") or ""
+            named_for_it = name.upper() != "TABLE" and _matches(name, terms)
             matched = rows if named_for_it else [r for r in rows if _matches(" ".join(r), terms)]
             if not matched:
+                continue
+            # A ROW COUNT IS ONLY A COUNT IN A SCHEDULE OF THAT THING. Measured
+            # on S-001.00: "how many piles" matched one row of SPECIAL
+            # INSPECTION CATEGORIES and answered "lists 1 row". A quantity
+            # column can still be summed from any table; a bare row count
+            # needs the table to be named for the thing.
+            if not named_for_it and _qty_column(cols) is None:
                 continue
             q = _qty_column(cols)
             if q is not None:
@@ -858,7 +1005,8 @@ def answer_existence(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dic
     specs. Each hit names its sheet and carries the line that matched."""
     out: List[Dict[str, Any]] = []
     for ch in chunks:
-        if ch.get("chunk_type") not in ("notes", "legend", "elements", "callouts", "specs", "schedule"):
+        if ch.get("chunk_type") not in ("notes", "legend", "elements", "callouts", "specs",
+                                        "schedule", "text"):
             continue
         for line in (ch.get("text") or "").splitlines():
             if _matches(line, terms):
@@ -919,7 +1067,8 @@ ATTRIBUTE_PATTERNS: Dict[str, "re.Pattern[str]"] = {
     "gauge": re.compile(r"\b\d{1,2}\s*(?:GA|GAUGE|GA\.)(?![A-Z])", re.I),
     "thickness": re.compile(
         r"(?:\d+\s+)?\d+(?:/\d+)?\s*(?:\"|”|''|IN\.?(?![A-Z])|INCH|MM(?![A-Z]))|\bTHICK", re.I),
-    "type": re.compile(r"\bTYPE\b|\b(?:H-?PILE|HP\s*\d|PIPE PILE|HELICAL|TIMBER|PRECAST|"
+    # No TIMBER: "STRUCTURAL LUMBER, TIMBER AND WOOD" is a material list.
+    "type": re.compile(r"\bTYPE\b|\b(?:H-?PILE|HP\s*\d|PIPE PILE|HELICAL|PRECAST|"
                        r"DRILLED|AUGER|CAISSON|MICROPILE|MICRO-PILE)\b", re.I),
     "size": re.compile(r"\d+\s*(?:\"|”|'|MM)?\s*[xX×]\s*\d+|\b\d+\s*(?:\"|”|IN\b)", re.I),
     "height": re.compile(r"\d+'\s*-?\s*\d*\"?|\bHEIGHT\b|\bHT\.?\b", re.I),
@@ -969,13 +1118,58 @@ def question_terms(text: str, keywords: Optional[List[Any]] = None, limit: int =
         words = re.findall(r"[a-z0-9]+", (text or "").lower())
     out: List[str] = []
     for w in words:
-        if w in _Q_STOP or w in _ATTRIBUTE_ALIASES or len(w) < 3 or w in out:
+        if w in _Q_STOP or w in _ATTRIBUTE_ALIASES or w in out:
+            continue
+        # A mark like 'w1' or 'rd' is short and is the whole subject.
+        if len(w) < 3 and not re.fullmatch(r"[a-z]{1,3}\d{1,2}[a-z]?|rd|fd|ad|co", w):
             continue
         out.append(w)
     return out[:limit]
 
 
-_LINE_SOURCES = ("specs", "notes", "schedule", "elements", "legend", "callouts")
+_LINE_SOURCES = ("specs", "notes", "schedule", "elements", "legend", "callouts", "text")
+
+# Another assembly's noun. A value next to one of these is ITS value: on
+# A-100.00 'STUCCO FINISH 12" CONCRETE' gives 12" to the concrete, and on
+# A-500.00 '...STUCCO FINISH BOARD 1 LAYERS OF 5/8" EXTERIOR DENS GLASS BOARD'
+# gives 5/8" to the board. Neither is a stucco thickness.
+_OTHER_ASSEMBLY = re.compile(
+    r"\b(CONCRETE|GYP|GYPSUM|BOARDS?|STUDS?|INSUL\w*|BRICK|DECK\w*|PLYWOOD|SHEATHING|"
+    r"BATT|EPS|GLASS|MEMBRANE|TRACK|JOISTS?|SLAB|CMU|BLOCK|LAYERS?)\b", re.I)
+_NEAR_CHARS = 40
+
+
+def _value_near_term(line: str, terms: List[str], rx: "re.Pattern[str]") -> bool:
+    """True when a value of the attribute's shape sits within a few words of the
+    thing asked about, with no other assembly between them or owning it."""
+    low = line.lower()
+    stems = [_stem(t) for t in terms if t]
+    # (start, end-of-word) — the gap is measured from the END of the term's
+    # word, so the term ('STUD') is never mistaken for another assembly.
+    spans = []
+    for s in stems:
+        for m in re.finditer(re.escape(s), low):
+            end = m.end()
+            while end < len(low) and low[end].isalpha():
+                end += 1
+            spans.append((m.start(), end))
+    if not spans:
+        return False
+    for m in rx.finditer(line):
+        for start, end in spans:
+            if end <= m.start():            # term, then value
+                between = line[end:m.start()]
+                owner = line[m.end():m.end() + 14].strip()
+                if _OTHER_ASSEMBLY.match(owner):
+                    continue                # '12" CONCRETE' — the concrete's
+            elif m.end() <= start:          # value, then term
+                between = line[m.end():start]
+            else:
+                between = ""
+            if len(between) > _NEAR_CHARS or _OTHER_ASSEMBLY.search(between):
+                continue
+            return True
+    return False
 
 
 def answer_attribute(chunks: List[Dict[str, Any]], terms: List[str], attribute: str,
@@ -994,17 +1188,30 @@ def answer_attribute(chunks: List[Dict[str, Any]], terms: List[str], attribute: 
     for ch in sorted(chunks, key=lambda c: order.get(c.get("chunk_type"), 99)):
         if ch.get("chunk_type") not in _LINE_SOURCES:
             continue
-        for line in (ch.get("text") or "").splitlines():
-            clean = line.strip()
-            key = (ch.get("sheet_number"), clean.lower())
-            if not clean or key in seen:
+        lines = [l.strip() for l in (ch.get("text") or "").splitlines()]
+        for i, clean in enumerate(lines):
+            if not clean or not _matches(clean, terms):
                 continue
-            if _matches(clean, terms) and rx.search(clean):
-                seen.add(key)
-                out.append({"sheet": ch.get("sheet_number"), "source": ch.get("chunk_type"),
-                            "line": clean[:200]})
-                if len(out) >= limit:
-                    return out
+            # The value is often printed on the NEXT line of the same label —
+            # '3 1/2" METAL STUD 16"' then 'O.C. 20 GAUGE MIN.' — so the line
+            # and the one after it are read together. Same block only.
+            # Only a line that is itself a spec (it carries a number) continues
+            # onto the next: 'STUCCO FINISH' + '1 LAYERS OF 5/8"' is two
+            # different layers, not one sentence.
+            joined = (" ".join(l for l in lines[i:i + 2] if l)
+                      if re.search(r"\d", clean) else clean)
+            hit = clean if _value_near_term(clean, terms, rx) else (
+                joined if _value_near_term(joined, terms, rx) else None)
+            if not hit:
+                continue
+            key = re.sub(r"[^a-z0-9]+", " ", hit.lower()).strip()
+            if any(key in k or k in key for k in seen):
+                continue
+            seen.add(key)
+            out.append({"sheet": ch.get("sheet_number"), "source": ch.get("chunk_type"),
+                        "line": hit[:200]})
+            if len(out) >= limit:
+                return out
     return out
 
 
@@ -1028,6 +1235,56 @@ def format_not_stated(mentions: List[Dict[str, Any]]) -> str:
     return base + (f" Mentioned on {', '.join(sheets[:4])}." if sheets else "")
 
 
+TAG_SYNONYMS: Dict[str, FrozenSet[str]] = {
+    "roof drain": frozenset({"RD"}), "floor drain": frozenset({"FD"}),
+    "area drain": frozenset({"AD"}), "cleanout": frozenset({"CO", "FCO"}),
+    "ptac": frozenset({"PTAC"}), "vent thru roof": frozenset({"VTR"}),
+    "water heater": frozenset({"WH"}), "hose bibb": frozenset({"HB"}),
+    "exhaust fan": frozenset({"EF"}), "smoke detector": frozenset({"SD"}),
+}
+
+
+def answer_tag_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[str, Any]]:
+    """Label counts per sheet for the tag(s) the question names."""
+    phrase = " ".join(_stem(t) for t in terms)
+    cands = set()
+    for k, v in TAG_SYNONYMS.items():
+        if k in phrase:
+            cands |= v
+    for t in terms:
+        cands.add(t.upper())
+        cands.add(_stem(t).upper())
+    out: List[Dict[str, Any]] = []
+    for ch in chunks:
+        if ch.get("chunk_type") != "tag_counts":
+            continue
+        for item in ch.get("payload") or []:
+            if item.get("tag") in cands and item.get("count"):
+                out.append({"sheet": ch.get("sheet_number"), "tag": item["tag"],
+                            "count": int(item["count"]), "source": item.get("source")})
+    return out
+
+
+def format_tag_count_answer(hits: List[Dict[str, Any]]) -> Optional[str]:
+    """'PTAC tag appears 24 times on A-100.00..A-201.00 (not a stated total).'
+
+    Worded so it cannot be read as a schedule total: it is how many times the
+    label is printed, and a unit shown on two plans is printed twice."""
+    if not hits:
+        return None
+    total = sum(h["count"] for h in hits)
+    tags = "/".join(sorted({h["tag"] for h in hits}))
+    sheets = sorted({h["sheet"] or "?" for h in hits})
+    if len(sheets) == 1:
+        where = sheets[0]
+    elif len(sheets) == 2:
+        where = f"{sheets[0]} and {sheets[1]}"
+    else:
+        where = f"{sheets[0]}..{sheets[-1]}"
+    times = "time" if total == 1 else "times"
+    return f"{tags} tag appears {total} {times} on {where} (not a stated total)."
+
+
 def answer_question(chunks: List[Dict[str, Any]], text: str,
                     keywords: Optional[List[Any]] = None) -> Optional[Dict[str, str]]:
     """The one dispatch both the WhatsApp handler and the local harness call.
@@ -1046,6 +1303,11 @@ def answer_question(chunks: List[Dict[str, Any]], text: str,
         hits = answer_count(chunks, terms)
         if hits:
             return {"text": format_count_answer(subject, hits), "outcome": "chunk_count"}
+        # Nothing printed. A label count is the next-best honest thing, and it
+        # is worded as a label count, never as a total.
+        tags = answer_tag_count(chunks, terms)
+        if tags:
+            return {"text": format_tag_count_answer(tags), "outcome": "chunk_tag_count"}
         return {"text": format_not_stated(answer_existence(chunks, terms)),
                 "outcome": "chunk_count_not_stated"}
     if kind == "exists":

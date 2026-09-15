@@ -3209,6 +3209,7 @@ from lib.vision_meter import (  # noqa: E402
     VISION_WHATSAPP_VQA,
 )
 from lib import plan_extract  # noqa: E402
+from lib import plan_text  # noqa: E402
 
 
 
@@ -39381,6 +39382,8 @@ async def _index_single_page(
     page_text: str,
     page_image_bytes: Optional[bytes],
     boilerplate=frozenset(),
+    layout: Optional[dict] = None,
+    tag_vocab=None,
 ):
     """Index one page: text layer + sectioned Qwen extraction + chunks + R2 JPEG.
 
@@ -39406,6 +39409,9 @@ async def _index_single_page(
         # Set by _supersede_plan_pages after the whole file is in. Cleared on
         # every write so a re-index never inherits a stale verdict.
         "superseded_by": None,
+        # True only once the row AND its chunks are written. The resume guard
+        # in _index_pdf_file redoes any page without it.
+        "page_complete": False,
     }
 
     # Spec-sheet detection: must be BOTH long (>5000 chars — a drawing with
@@ -39438,12 +39444,44 @@ async def _index_single_page(
             "page_thumb_r2_key":  "",
             "page_base_r2_key":   "",
             "is_spec_page":       True,
+            "page_complete":      True,
         })
+        # A SPEC PAGE IS STILL TEXT. It stays out of sheet retrieval, but its
+        # notes are chunked from the text layer — S-001.00, 25,000 characters
+        # of general notes, is exactly this shape, and "HELICAL PILES" is on it.
+        spec_fields = None
+        if layout:
+            spec_fields = dict(plan_extract.EMPTY_FIELDS)
+            spec_fields.update(plan_text.fields_from_layout(
+                layout, boilerplate, tag_vocab or plan_text.SEED_TAGS))
+            spec_fields["sheet_number"], _ = plan_text.validate_sheet_number(
+                None, plan_text.sheet_ids(plan_text.title_region(layout)),
+                plan_text.sheet_ids(layout.get("text") or ""))
+            doc.update({
+                "sheet_number":     spec_fields["sheet_number"],
+                "extraction":       spec_fields,
+                "tag_counts":       spec_fields["tag_counts"],
+                "text_source":      "vector",
+                "raw_text":         (layout.get("text") or "")[:plan_extract.RAW_CAP],
+                "vlm_calls":        0,
+            })
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
             {"$set": doc},
             upsert=True,
         )
+        if spec_fields:
+            try:
+                await _write_page_chunks(
+                    project_id=project_id, company_id=company_id, file_id=file_id,
+                    file_hash=file_hash, page_number=page_number, fields=spec_fields,
+                    boilerplate=boilerplate,
+                )
+            except Exception as e:
+                logger.warning(f"spec page chunks failed {file_name} p{page_number}: {e!r}")
+                await db.document_page_index.update_one(
+                    {"file_id": file_id, "page_number": page_number},
+                    {"$set": {"page_complete": False}})
         return
 
     if not page_image_bytes:
@@ -39459,6 +39497,7 @@ async def _index_single_page(
             "page_thumb_r2_key":  "",
             "page_base_r2_key":   "",
             "is_spec_page":       False,
+            "page_complete":      True,
         })
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
@@ -39493,7 +39532,14 @@ async def _index_single_page(
     # 2. The words on the page. A CAD export carries them exactly in its text
     # layer; a scan carries next to none, and only then is the page OCR'd.
     text_flags = []
-    text_source = plan_extract.classify_text_source(page_text)
+    # A VECTOR PAGE READS ITS OWN TEXT LAYER, rebuilt at span level so stacked
+    # fractions survive. Scanned pages (no layer worth the name) keep OCR and
+    # the full vision path below.
+    vector_layout = None
+    if layout and plan_extract.classify_text_source(layout.get("text")) == "vector":
+        vector_layout = layout
+        page_text = layout.get("text") or ""
+    text_source = "vector" if vector_layout else plan_extract.classify_text_source(page_text)
     if text_source == "sparse":
         ocr_text, ocr_flag = await _ocr_page_text(project_id, page_image_bytes)
         if ocr_flag:
@@ -39514,7 +39560,9 @@ async def _index_single_page(
         await record_vision_call(
             db, endpoint=VISION_PLAN_INDEX_PAGE, project_id=project_id,
         )
-        async with ServerHttpClient(timeout=90.0) as client_http:
+        # 180s: measured 165-225s for a four-call page on the production model,
+        # and a 90s cap timed out the schedules call on S-001.00.
+        async with ServerHttpClient(timeout=180.0) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={
@@ -39544,12 +39592,22 @@ async def _index_single_page(
         choice = resp.json()["choices"][0]
         return (choice["message"].get("content") or ""), choice.get("finish_reason")
 
-    result = await plan_extract.extract_page(
-        image_b64=base64.b64encode(page_image_bytes).decode("ascii"),
-        page_text=page_text or "",
-        vlm_call=_section_call,
-        boilerplate=boilerplate,
-    )
+    if vector_layout is not None:
+        # One call: title block, sheet type, summary. Everything else is text.
+        result = await plan_extract.extract_vector_page(
+            image_b64=base64.b64encode(page_image_bytes).decode("ascii"),
+            layout=vector_layout,
+            vlm_call=_section_call,
+            boilerplate=boilerplate,
+            tag_vocab=tag_vocab,
+        )
+    else:
+        result = await plan_extract.extract_page(
+            image_b64=base64.b64encode(page_image_bytes).decode("ascii"),
+            page_text=page_text or "",
+            vlm_call=_section_call,
+            boilerplate=boilerplate,
+        )
     fields = result["fields"]
     legacy = plan_extract.legacy_fields(fields)
     bad = {k: v for k, v in result["flags"].items() if v}
@@ -39591,6 +39649,9 @@ async def _index_single_page(
         "text_layer_chars":   len(page_text or ""),
         "raw_text":           (page_text or "")[:plan_extract.RAW_CAP],
         "raw_vlm":            result["raw_vlm"],
+        "vlm_calls":          result.get("vlm_calls", len(plan_extract.SECTIONS)),
+        # Label counts from the text layer — never a schedule total.
+        "tag_counts":         fields.get("tag_counts") or [],
         "embedding":          embedding,
         "page_jpeg_r2_key":   page_jpeg_r2_key,
         "page_thumb_r2_key":  page_thumb_r2_key,
@@ -39607,6 +39668,10 @@ async def _index_single_page(
             project_id=project_id, company_id=company_id, file_id=file_id,
             file_hash=file_hash, page_number=page_number, fields=fields,
             boilerplate=boilerplate,
+        )
+        await db.document_page_index.update_one(
+            {"file_id": file_id, "page_number": page_number},
+            {"$set": {"page_complete": True}},
         )
     except Exception as e:
         # The page row stands without its chunks: retrieval falls back to the
@@ -39776,23 +39841,50 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
             "file_hash":    file_hash,
             "index_version": {"$gte": PLAN_INDEX_SKIP_MIN_VERSION},
         })
-        if existing:
-            logger.info(
-                f"Plan index: {file_name} already indexed at current hash + "
-                f"version — skipping"
-            )
-            return
-
         # Total page count up front so we can log progress.
         total = _pdf_total_pages(pdf_bytes)
         if total <= 0:
             logger.error(f"Plan index: page count = 0 for {file_name}")
             return
-        texts = _pdf_page_texts(pdf_bytes) or ["" for _ in range(total)]
+
+        # ── RESUME, DON'T RESTART, AND DON'T SKIP A HALF-DONE FILE ─────────
+        #
+        # This used to return as soon as ANY row with this hash existed. A
+        # deploy in the middle of indexing an 80-page set left 30 rows, and
+        # every later sync saw "already indexed" and skipped the other 50
+        # forever. Now only pages that are done are skipped: a version 2 row,
+        # or a version 3 row marked page_complete (row and chunks written).
+        todo = list(range(1, total + 1))
+        if existing:
+            done = await _pages_already_indexed(file_id, file_hash)
+            if done is None or len(done) >= total:
+                logger.info(
+                    f"Plan index: {file_name} already indexed at current hash + "
+                    f"version — skipping"
+                )
+                return
+            todo = [p for p in todo if p not in done]
+            logger.info(f"Plan index: {file_name} resuming — {len(todo)} of {total} pages left")
+
+        # The text layer, rebuilt at span level, once per file. Falls back to
+        # pypdf's flat text when the PDF library cannot read the file.
+        layouts = None
+        try:
+            layouts = await asyncio.to_thread(plan_text.page_layouts, pdf_bytes)
+            if len(layouts) != total:
+                layouts = None
+        except Exception as e:
+            logger.warning(f"Plan index: span-level text failed for {file_name}: {e!r}")
+            layouts = None
+        if layouts:
+            texts = [(L or {}).get("text") or "" for L in layouts]
+        else:
+            texts = _pdf_page_texts(pdf_bytes) or ["" for _ in range(total)]
         # Lines on most pages of this file — the firm, the address, the stamp.
         # Stripped before extraction so the model reads the sheet, not the
         # title block it has already seen forty times.
         boilerplate = plan_extract.boilerplate_lines(texts)
+        tag_vocab = plan_text.tag_vocabulary(layouts) if layouts else plan_text.SEED_TAGS
 
         # Render page-by-page (bounded memory) and fire Qwen in parallel with
         # a small semaphore so peak concurrency is 3 per file.
@@ -39816,14 +39908,16 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
                     page_text=text,
                     page_image_bytes=jpeg,
                     boilerplate=boilerplate,
+                    layout=(layouts[page_num - 1] if layouts else None),
+                    tag_vocab=tag_vocab,
                 )
 
         # Chunked progress logging.
         CHUNK = 5
-        for start in range(1, total + 1, CHUNK):
-            end = min(start + CHUNK - 1, total)
-            await asyncio.gather(*[_process_page(n) for n in range(start, end + 1)])
-            logger.info(f"Plan index: {file_name}: {end}/{total}")
+        for i in range(0, len(todo), CHUNK):
+            batch = todo[i:i + CHUNK]
+            await asyncio.gather(*[_process_page(n) for n in batch])
+            logger.info(f"Plan index: {file_name}: {batch[-1]}/{total}")
 
         logger.info(f"Plan index complete: {file_name} ({total} pages)")
 
@@ -39839,6 +39933,21 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
         # because of, aggregation. Fires once per completed file; the aggregator
         # is per-project + merge-safe, so re-runs preserve confirmed fields.
         asyncio.create_task(_auto_aggregate_project_model(project_id))
+
+
+async def _pages_already_indexed(file_id: str, file_hash: str) -> Optional[set]:
+    """Page numbers that need no work. None when the lookup failed — the caller
+    then skips the file, which is what it did before resume existed."""
+    try:
+        rows = await db.document_page_index.find(
+            {"file_id": file_id, "file_hash": file_hash},
+            {"page_number": 1, "index_version": 1, "page_complete": 1},
+        ).to_list(5000)
+    except Exception as e:
+        logger.warning(f"resume lookup failed for file {file_id}: {e!r}")
+        return None
+    return {r.get("page_number") for r in rows
+            if (r.get("index_version") or 0) < PLAN_INDEX_VERSION or r.get("page_complete")}
 
 
 def _file_upload_order(fr: dict) -> tuple:
@@ -40969,8 +41078,9 @@ async def _current_v3_chunks(project_id: str) -> list:
     keeps the version 2 path, unchanged."""
     live_ids = await _live_plan_file_ids(str(project_id))
     pages = await db.document_page_index.find(
+        # Spec pages included: their notes are chunks too (S-001.00).
         {"project_id": str(project_id), "index_version": {"$gte": 3},
-         "is_spec_page": {"$ne": True}, **_current_page_filter(live_ids)},
+         **_current_page_filter(live_ids)},
         {"_id": 1},
     ).to_list(5000)
     if not pages:
@@ -45423,10 +45533,14 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
 async def reindex_project_document(
     project_id: str,
     body: dict,
+    resume: bool = False,
     current_user=Depends(get_admin_user),
 ):
     """Admin-only: re-index a single PDF. Clears existing page entries first
-    so the file_hash cache can't block the re-run."""
+    so the file_hash cache can't block the re-run.
+
+    `?resume=true` keeps the rows and indexes only pages not marked complete —
+    for a re-index a deploy interrupted."""
     file_id = (body or {}).get("file_id")
     if not file_id:
         raise HTTPException(status_code=422, detail="file_id is required")
@@ -45445,9 +45559,10 @@ async def reindex_project_document(
     if not file_rec.get("r2_key"):
         raise HTTPException(status_code=400, detail="File has no R2 storage key")
 
-    # Wipe existing entries for this file
-    await db.document_page_index.delete_many({"file_id": str(file_rec["_id"])})
-    await db.document_page_chunks.delete_many({"file_id": str(file_rec["_id"])})
+    # Wipe existing entries for this file — unless resuming.
+    if not resume:
+        await db.document_page_index.delete_many({"file_id": str(file_rec["_id"])})
+        await db.document_page_chunks.delete_many({"file_id": str(file_rec["_id"])})
 
     # Count pages for the response (best-effort)
     total_pages = 0
@@ -45479,9 +45594,13 @@ async def reindex_project_document(
 @api_router.post("/projects/{project_id}/reindex-all", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def reindex_all_project_files(
     project_id: str,
+    resume: bool = False,
     current_user=Depends(get_admin_user),
 ):
     """Admin-only: queue a full re-index of every PDF on this project.
+
+    `?resume=true` keeps existing rows: pages marked complete are skipped and
+    only the rest are indexed. Use it after a deploy interrupted a re-index.
 
     Useful after a prompt/DPI upgrade — the per-file hash cache is scoped
     by index_version, so v1-indexed pages will get reprocessed automatically
@@ -45504,9 +45623,11 @@ async def reindex_all_project_files(
 
     queued = []
     for fr in files:
-        # Wipe existing index entries so stale v1 pages don't linger.
-        await db.document_page_index.delete_many({"file_id": str(fr["_id"])})
-        await db.document_page_chunks.delete_many({"file_id": str(fr["_id"])})
+        # Wipe existing index entries so stale v1 pages don't linger — unless
+        # resuming an interrupted run.
+        if not resume:
+            await db.document_page_index.delete_many({"file_id": str(fr["_id"])})
+            await db.document_page_chunks.delete_many({"file_id": str(fr["_id"])})
         asyncio.create_task(
             _index_pdf_file(
                 project_id,

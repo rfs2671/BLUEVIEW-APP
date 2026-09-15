@@ -354,6 +354,125 @@ class ThePageRowAndItsChunks(unittest.TestCase):
         self.assertEqual(db.document_page_index.rows[0]["text_source"], "ocr")
 
 
+class ARestartResumesInsteadOfSkipping(unittest.TestCase):
+
+    def _db(self, rows):
+        db = _Db()
+        db.document_page_index.rows.extend(rows)
+        return db
+
+    def test_only_complete_v3_pages_and_v2_pages_count_as_done(self):
+        db = self._db([
+            {"file_id": "f", "file_hash": "h", "page_number": 1, "index_version": 3, "page_complete": True},
+            {"file_id": "f", "file_hash": "h", "page_number": 2, "index_version": 3, "page_complete": False},
+            {"file_id": "f", "file_hash": "h", "page_number": 3, "index_version": 2},
+            {"file_id": "f", "file_hash": "other", "page_number": 4, "index_version": 3, "page_complete": True},
+        ])
+        with mock.patch.object(server, "db", db):
+            done = _run(server._pages_already_indexed("f", "h"))
+        self.assertEqual(done, {1, 3})
+
+    def test_a_failed_lookup_skips_the_file_as_before(self):
+        class Boom:
+            def find(self, *a, **k):
+                raise RuntimeError("down")
+        db = _Db()
+        db._c["document_page_index"] = Boom()
+        with mock.patch.object(server, "db", db):
+            self.assertIsNone(_run(server._pages_already_indexed("f", "h")))
+
+    def test_the_file_indexes_only_the_pages_left(self):
+        src = inspect.getsource(server._index_pdf_file)
+        self.assertIn("todo = [p for p in todo if p not in done]", src)
+        self.assertIn("for n in batch", src)
+
+    def test_the_endpoints_can_resume_without_deleting(self):
+        for fn in (server.reindex_project_document, server.reindex_all_project_files):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("resume", inspect.signature(fn).parameters)
+                self.assertIn("if not resume:", inspect.getsource(fn))
+
+
+class AVectorPageIsOneCallAndItsSpecPageIsStillChunked(unittest.TestCase):
+
+    LAYOUT = {
+        "page_number": 2, "width": 2592, "height": 1728, "fractions_rebuilt": 0,
+        "fractions_unverified": [], "tables": [],
+        "blocks": [
+            {"bbox": [100, 400, 900, 800], "lines": ["1.", "ALL PILES SHALL BE HELICAL PILES."],
+             "text": "1.\nALL PILES SHALL BE HELICAL PILES."},
+            {"bbox": [100, 1600, 900, 1700], "lines": ["S-001.00", "GENERAL NOTES"],
+             "text": "S-001.00\nGENERAL NOTES"},
+        ],
+    }
+    LAYOUT["text"] = "\n".join(b["text"] for b in LAYOUT["blocks"]) + (" FILLER TEXT" * 20)
+
+    def _index(self, layout, page_text):
+        db = _Db()
+        calls = {"vlm": 0}
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return {"choices": [{"message": {"content": '{"sheet_number": "2"}'},
+                                     "finish_reason": "stop"}]}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, *a, **k):
+                calls["vlm"] += 1
+                return _Resp()
+
+        async def noop(*a, **k):
+            return "key"
+
+        async def emb(text):
+            return [0.1]
+
+        with mock.patch.object(server, "db", db), \
+                mock.patch.object(server, "ServerHttpClient", _Client), \
+                mock.patch.object(server, "_upload_page_jpeg_to_r2", noop), \
+                mock.patch.object(server, "_upload_page_thumb_to_r2", noop), \
+                mock.patch.object(server, "_upload_page_base_to_r2", noop), \
+                mock.patch.object(server, "_generate_embedding", emb), \
+                mock.patch.object(server, "record_vision_call", noop):
+            _run(server._index_single_page(
+                project_id="p1", company_id="c1", file_id="f1", file_name="ST.pdf",
+                file_hash="h", page_number=2, discipline="ST", page_text=page_text,
+                page_image_bytes=b"jpeg", layout=layout))
+        return db, calls
+
+    def test_one_model_call_and_the_row_is_complete(self):
+        db, calls = self._index(self.LAYOUT, self.LAYOUT["text"])
+        self.assertEqual(calls["vlm"], 1)
+        row = db.document_page_index.rows[0]
+        self.assertEqual(row["text_source"], "vector")
+        self.assertEqual(row["vlm_calls"], 1)
+        self.assertEqual(row["sheet_number"], "S-001.00")
+        self.assertTrue(row["page_complete"])
+        self.assertTrue(any(c["chunk_type"] == "notes" for c in db.document_page_chunks.rows))
+
+    def test_a_spec_page_makes_no_call_and_its_notes_are_chunks(self):
+        long_lines = "\n".join(["ALL STRUCTURAL WORK SHALL CONFORM TO THE BUILDING CODE OF NYC."] * 120)
+        layout = dict(self.LAYOUT, text=long_lines)
+        db, calls = self._index(layout, long_lines)
+        self.assertEqual(calls["vlm"], 0)
+        row = db.document_page_index.rows[0]
+        self.assertTrue(row["is_spec_page"])
+        self.assertEqual(row["sheet_number"], "S-001.00")
+        self.assertTrue(row["page_complete"])
+        self.assertTrue(db.document_page_chunks.rows)
+
+
 class TheSkipThresholdDidNotMove(unittest.TestCase):
     """Raising it re-indexes every customer's every plan on the next sync."""
 

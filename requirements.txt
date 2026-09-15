@@ -133,6 +133,9 @@ yarl==1.22.0
 zipp==3.23.0
 pdf2image
 pypdf>=4.0.0
+# Plan index v3: span-level text layer (stacked fractions), tables. AGPL-3.0 —
+# see backend/lib/plan_text.py; page_layouts() is the only caller.
+PyMuPDF==1.27.1
 
 # Fuzzy matching for WhatsApp group-name -> project auto-detect.
 # token_set_ratio is the only function used; see lib/group_match.py.

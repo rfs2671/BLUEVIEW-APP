@@ -512,6 +512,109 @@ class AttributeQuestionsFindTheLineThatCarriesTheValue(unittest.TestCase):
         self.assertEqual(pe.format_not_stated([]), "Not stated on the indexed drawings.")
 
 
+class AVectorPageMakesOneCall(unittest.TestCase):
+
+    LAYOUT = {
+        "page_number": 2, "width": 2592, "height": 1728, "fractions_rebuilt": 1,
+        "fractions_unverified": ["7"], "tables": [],
+        "blocks": [
+            {"bbox": [100, 100, 900, 400], "lines": ["GENERAL CONDITIONS:"], "text": "GENERAL CONDITIONS:"},
+            {"bbox": [100, 400, 900, 800], "lines": ["1.", "ALL PILES SHALL BE HELICAL PILES."],
+             "text": "1.\nALL PILES SHALL BE HELICAL PILES."},
+            {"bbox": [100, 1600, 900, 1700], "lines": ["2S-001.00", "GENERAL NOTES"],
+             "text": "2S-001.00\nGENERAL NOTES"},
+        ],
+    }
+    LAYOUT["text"] = "\n".join(b["text"] for b in LAYOUT["blocks"])
+
+    def test_one_call_and_the_sheet_number_is_checked(self):
+        prompts = []
+
+        async def vlm(image_b64, prompt, max_tokens):
+            prompts.append(prompt)
+            return (json.dumps({"sheet_number": "2", "sheet_title": "GENERAL NOTES",
+                                "sheet_type": "notes", "revision": "S-001.00",
+                                "contents_summary": "General notes."}), "stop")
+
+        out = _run(pe.extract_vector_page(image_b64="x", layout=self.LAYOUT, vlm_call=vlm))
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(out["vlm_calls"], 1)
+        f = out["fields"]
+        self.assertEqual(f["sheet_number"], "S-001.00")
+        self.assertIn("sheet_number_corrected", out["flags"]["title_block"])
+        self.assertIsNone(f["revision"], "a sheet id is not a revision")
+        self.assertEqual(f["notes"][0]["text"], "ALL PILES SHALL BE HELICAL PILES.")
+        self.assertEqual(f["dimensions_unverified"], ["7"])
+        self.assertIn("SHEET IDS PRINTED IN THE TITLE BLOCK: S-001.00", prompts[0])
+        self.assertNotIn("ALL PILES SHALL BE", prompts[0], "notes are chunked, not prompted")
+
+    def test_a_failed_call_still_yields_the_text(self):
+        async def vlm(*a):
+            raise TimeoutError()
+
+        out = _run(pe.extract_vector_page(image_b64="x", layout=self.LAYOUT, vlm_call=vlm))
+        self.assertEqual(out["fields"]["sheet_number"], "S-001.00")
+        self.assertEqual(len(out["fields"]["notes"]), 1)
+        self.assertIn("call_failed:TimeoutError", out["flags"]["title_block"])
+
+
+class TagCountsAreNeverATotal(unittest.TestCase):
+
+    CHUNKS = [
+        {"chunk_type": "tag_counts", "sheet_number": "A-100.00",
+         "payload": [{"tag": "PTAC", "count": 10, "source": "text-layer tag count"}]},
+        {"chunk_type": "tag_counts", "sheet_number": "A-201.00",
+         "payload": [{"tag": "PTAC", "count": 8, "source": "text-layer tag count"}]},
+        {"chunk_type": "tag_counts", "sheet_number": "A-102.00",
+         "payload": [{"tag": "PTAC", "count": 6, "source": "text-layer tag count"}]},
+    ]
+
+    def test_the_wording(self):
+        ans = pe.answer_question(self.CHUNKS, "how many PTAC units")
+        self.assertEqual(ans["outcome"], "chunk_tag_count")
+        self.assertEqual(ans["text"],
+                         "PTAC tag appears 24 times on A-100.00..A-201.00 (not a stated total).")
+
+    def test_a_printed_count_wins_over_a_tag_count(self):
+        chunks = self.CHUNKS + [{"chunk_type": "elements", "sheet_number": "M-001.00", "payload": [
+            {"name": "PTAC UNITS", "count_if_stated": 22, "count_verified": True}]}]
+        ans = pe.answer_question(chunks, "how many PTAC units")
+        self.assertEqual(ans["outcome"], "chunk_count")
+        self.assertIn("M-001.00: 22", ans["text"])
+
+    def test_a_synonym_finds_the_tag(self):
+        chunks = [{"chunk_type": "tag_counts", "sheet_number": "P-104.00",
+                   "payload": [{"tag": "RD", "count": 4, "source": "text-layer tag count"}]}]
+        ans = pe.answer_question(chunks, "how many roof drains")
+        self.assertEqual(ans["text"], "RD tag appears 4 times on P-104.00 (not a stated total).")
+
+
+class AValueBelongsToTheNounNextToIt(unittest.TestCase):
+    """Measured on A-100.00 and A-500.00."""
+
+    def test_a_value_owned_by_concrete_is_not_a_stucco_thickness(self):
+        chunks = [{"chunk_type": "text", "sheet_number": "A-100.00",
+                   "text": '6" STUD, R19 BATT-R11.5 RIGID INSU.,\nSTUCCO FINISH 12" CONCRETE'}]
+        self.assertEqual(pe.answer_attribute(chunks, ["stucco"], "thickness"), [])
+
+    def test_a_value_across_another_assembly_is_not_it_either(self):
+        chunks = [{"chunk_type": "schedule", "sheet_number": "A-500.00",
+                   "text": 'STUCCO FINISH BOARD 1 LAYERS OF 5/8" EXTERIOR DENS GLASS BOARD'}]
+        self.assertEqual(pe.answer_attribute(chunks, ["stucco"], "thickness"), [])
+
+    def test_a_row_count_needs_a_schedule_named_for_the_thing(self):
+        chunks = [{"chunk_type": "schedule", "sheet_number": "S-001.00", "text": "x", "payload": {
+            "name": "SPECIAL INSPECTION CATEGORIES", "columns": ["", "CATEGORY", "CODE"],
+            "rows": [["", "HELICAL PILES", "BC 1705.8"], ["", "WELDING", "BC 1705.2"]]}}]
+        self.assertEqual(pe.answer_count(chunks, ["piles"]), [])
+
+    def test_the_value_on_the_next_line_of_the_same_label(self):
+        chunks = [{"chunk_type": "text", "sheet_number": "A-500.00",
+                   "text": '3 1/2" METAL STUD 16"\nO.C. 20 GAUGE MIN.'}]
+        hits = pe.answer_attribute(chunks, ["stud"], "gauge")
+        self.assertEqual(hits[0]["line"], '3 1/2" METAL STUD 16" O.C. 20 GAUGE MIN.')
+
+
 class ItReachesNeitherADatabaseNorTheNetwork(unittest.TestCase):
 
     def test_no_driver_no_server_no_http(self):

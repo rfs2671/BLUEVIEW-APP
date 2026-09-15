@@ -4,47 +4,37 @@ WHY THIS EXISTS
 ===============
 
 The extraction that production runs during indexing lives in
-lib/plan_extract.py and takes its model call as an argument. This script
-supplies one and points it at a local file, so a drawing set can be checked
-BEFORE a merge and before a production re-index — the same prompts, the same
-loop detection, the same caps, the same number verification, the same
-chunking and the same count and existence answers.
+lib/plan_extract.py and lib/plan_text.py and takes its model call as an
+argument. This script supplies one and points it at a local file, so a drawing
+set can be checked BEFORE a merge and before a production re-index — the same
+text-layer rebuild, the same one-call vector path, the same scanned-page path,
+the same chunking, and the same question dispatch WhatsApp uses.
 
-It deliberately does NOT import server.py and does NOT open a database. The
-only inputs are a PDF path and a model key in the environment.
+It deliberately does NOT import server.py and does NOT open a database.
 
 WHAT DIFFERS FROM PRODUCTION, SAID PLAINLY
 ==========================================
 
-  RENDERING. Production renders pages with pdf2image, which needs poppler on
-  the machine. This script renders with PyMuPDF so it runs on a laptop without
-  it. Same DPI rule: 250, or 300 for detail, enlarged and schedule sheets.
+  RENDERING. Production renders the page image with pdf2image (poppler). This
+  renders with PyMuPDF so it runs without poppler. Same DPI rule. The TEXT
+  LAYER is read the same way in both: plan_text.page_layouts.
 
-  QUESTION CLASSIFICATION. --ask uses a small local count-versus-existence
-  test. The ANSWERING functions — answer_count, answer_existence and their
-  formatters — are the exact ones production calls.
+  TAG VOCABULARY. Production builds it from every page of the file at full
+  detail; this builds it from every page with tables off (fast) plus the
+  selected pages with tables on. The same marks come out of both on a set
+  whose schedules are on the selected pages.
 
-  THE MODEL. Whatever QWEN_API_BASE, QWEN_MODEL and QWEN_API_KEY are set to.
-  The model id is printed at the start and written into every output file, so
-  answers produced against one model are never mistaken for another's.
-
-COST
-====
-
-Four vision calls per page (title block, schedules, notes, elements), plus one
-Textract call per page with no usable text layer when --ocr is given. The plan
-is printed before anything is sent; --dry-run stops there.
+  THE MODEL. Whatever QWEN_API_BASE, QWEN_MODEL and QWEN_API_KEY are set to,
+  printed at the start and written into every output file.
 
 USAGE
 =====
 
-  set QWEN_API_KEY=...
-  set QWEN_API_BASE=https://api.together.xyz/v1
-  set QWEN_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
-
-  python backend/scripts/plan_extract_local.py plans/Arch.pdf plans/Struct.pdf ^
-      --sheets S-001,S-100,A-500.00,P-100.00 --out plan-out ^
+  railway run -- python backend/scripts/plan_extract_local.py plans/ST.pdf plans/AR.pdf ^
+      --pick "PL - 6.29:2" --pages-all ST --pages-all AR --out plan-out ^
       --ask "how many piles" --ask "stucco thickness"
+
+  python backend/scripts/plan_extract_local.py --answers-from plan-out --ask "..."
 """
 
 from __future__ import annotations
@@ -64,9 +54,11 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 from lib import plan_extract as pe  # noqa: E402
+from lib import plan_text as pt  # noqa: E402
 
 DPI = 250
 DPI_DETAIL = 300
+VLM_TIMEOUT = 240.0
 
 
 def _dpi_for(file_name: str) -> int:
@@ -76,19 +68,11 @@ def _dpi_for(file_name: str) -> int:
     return DPI
 
 
-def _page_texts(pdf_bytes: bytes) -> list:
-    """The same call production's _pdf_page_texts makes."""
-    from pypdf import PdfReader
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    return [(p.extract_text() or "") for p in reader.pages]
-
-
 def _render(pdf_path: str, page_index: int, dpi: int) -> bytes:
     import fitz  # PyMuPDF
     doc = fitz.open(pdf_path)
     try:
-        pix = doc[page_index].get_pixmap(dpi=dpi)
-        return pix.tobytes("jpeg", jpg_quality=85)
+        return doc[page_index].get_pixmap(dpi=dpi).tobytes("jpeg", jpg_quality=85)
     finally:
         doc.close()
 
@@ -99,26 +83,14 @@ def _parse_pages(spec: str, total: int) -> set:
         part = part.strip()
         if not part:
             continue
-        if "-" in part:
+        if part.lower() == "all":
+            out.update(range(1, total + 1))
+        elif "-" in part:
             a, b = part.split("-", 1)
             out.update(range(int(a), int(b) + 1))
         else:
             out.add(int(part))
     return {p for p in out if 1 <= p <= total}
-
-
-def _sheet_pattern(sheet: str) -> re.Pattern:
-    """S-100 also finds S-100.00, the way the debug endpoint's filter does.
-
-    pypdf joins a title block's cells without a separator, on both sides:
-    'S-100.00LIGHT GAUGE', '2S-001.00GENERAL NOTES', 'A-500.0024 OF 31'. So a
-    digit may precede, and the decimal suffix is exactly two digits with
-    anything after it. A drawing list names every sheet, so text selection can
-    also pick an index page — use --pick when the page is known."""
-    base = re.escape(sheet.strip())
-    if re.search(r"\.\d{2}$", sheet.strip()):
-        return re.compile(r"(?<![A-Za-z])" + base, re.IGNORECASE)
-    return re.compile(r"(?<![A-Za-z])" + base + r"(?:\.\d{2}|(?![\d.]))", re.IGNORECASE)
 
 
 def _ocr(image_bytes: bytes):
@@ -135,9 +107,8 @@ def _ocr(image_bytes: bytes):
             img = img.resize((int(img.width * scale), int(img.height * scale)))
         buf = io.BytesIO()
         img.convert("RGB").save(buf, format="JPEG", quality=80)
-        data = buf.getvalue()
         client = boto3.client("textract", region_name=os.environ.get("AWS_REGION") or "us-east-1")
-        resp = client.detect_document_text(Document={"Bytes": data})
+        resp = client.detect_document_text(Document={"Bytes": buf.getvalue()})
     except Exception as e:
         print(f"    OCR unavailable: {type(e).__name__}: {e}", file=sys.stderr)
         return None
@@ -145,13 +116,12 @@ def _ocr(image_bytes: bytes):
 
 
 def _make_vlm_call(base: str, model: str, key: str, counter: dict):
-    # ServerHttpClient, not httpx.AsyncClient: CI refuses a raw async client
-    # anywhere under backend/, and this script is under backend/.
+    # ServerHttpClient, not a raw async client: CI refuses one under backend/.
     from lib.server_http import ServerHttpClient
 
     async def call(image_b64: str, prompt: str, max_tokens: int):
         counter["calls"] += 1
-        async with ServerHttpClient(timeout=120.0) as client:
+        async with ServerHttpClient(timeout=VLM_TIMEOUT) as client:
             resp = await client.post(
                 f"{base.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {key}",
@@ -209,6 +179,21 @@ def _chunks_from_saved(folder: Path) -> list:
     return chunks
 
 
+def _selection(args, pdf: str, total: int) -> set:
+    name = Path(pdf).name.lower()
+    selected = _parse_pages(args.pages, total) if args.pages else set()
+    for spec in args.pick:
+        name_part, _, pages = spec.rpartition(":")
+        if name_part and name_part.lower() in name:
+            selected |= _parse_pages(pages, total)
+    for part in args.pages_all:
+        if part.lower() in name:
+            selected |= set(range(1, total + 1))
+    if not (args.pages or args.pick or args.pages_all):
+        selected = set(range(1, total + 1))
+    return selected
+
+
 async def main_async(args) -> int:
     if args.answers_from:
         folder = Path(args.answers_from)
@@ -220,50 +205,26 @@ async def main_async(args) -> int:
     base = os.environ.get("QWEN_API_BASE") or os.environ.get("QWEN_BASE_URL") or ""
     model = os.environ.get("QWEN_MODEL") or ""
     key = os.environ.get("QWEN_API_KEY") or ""
-
     out_root = Path(args.out)
-    wanted = [s.strip() for s in (args.sheets or "").split(",") if s.strip()]
 
     plan = []
     for pdf in args.pdf:
         pdf_bytes = Path(pdf).read_bytes()
-        texts = _page_texts(pdf_bytes)
-        total = len(texts)
-        selected = _parse_pages(args.pages, total) if args.pages else set()
-        picked = False
-        for spec in args.pick:
-            name_part, _, pages = spec.rpartition(":")
-            if name_part and name_part.lower() in Path(pdf).name.lower():
-                selected |= _parse_pages(pages, total)
-                picked = True
-        if args.pick and not picked and not args.pages:
-            plan.append((pdf, pdf_bytes, texts, []))
-            continue
-        if wanted and not args.pick:
-            pats = [_sheet_pattern(s) for s in wanted]
-            for i, t in enumerate(texts, start=1):
-                if any(p.search(t or "") for p in pats):
-                    selected.add(i)
-        if not args.pages and not wanted and not args.pick:
-            selected = set(range(1, total + 1))
-        plan.append((pdf, pdf_bytes, texts, sorted(selected)))
+        fast = pt.page_layouts(pdf_bytes, with_tables=False)
+        selected = sorted(_selection(args, pdf, len(fast)))
+        if selected:
+            plan.append((pdf, pdf_bytes, fast, selected))
 
     n_pages = sum(len(p[3]) for p in plan)
+    vector = sum(1 for _pdf, _b, fast, sel in plan for p in sel
+                 if pe.classify_text_source(fast[p - 1]["text"]) == "vector")
     print(f"model: {model or '(QWEN_MODEL unset)'}")
     print(f"endpoint: {base or '(QWEN_API_BASE unset)'}")
-    for pdf, _b, texts, sel in plan:
-        print(f"  {Path(pdf).name}: {len(sel)} of {len(texts)} page(s) selected: {sel}")
-    print(f"vision calls planned: {n_pages * len(pe.SECTIONS)}"
-          f"{'  (+ Textract for pages with no text layer)' if args.ocr else ''}")
-    if wanted:
-        found = set()
-        for _pdf, _b, texts, _sel in plan:
-            for s in wanted:
-                if any(_sheet_pattern(s).search(t or "") for t in texts):
-                    found.add(s)
-        missing = [s for s in wanted if s not in found]
-        if missing:
-            print(f"NOT IN ANY TEXT LAYER: {missing} - on a scanned set, pass --pages instead")
+    for pdf, _b, fast, sel in plan:
+        print(f"  {Path(pdf).name}: {len(sel)} of {len(fast)} page(s)")
+    print(f"pages: {n_pages} ({vector} vector x1 call, {n_pages - vector} scanned "
+          f"x{len(pe.SECTIONS)} calls) -> vision calls planned: "
+          f"{vector + (n_pages - vector) * len(pe.SECTIONS)}")
     if args.dry_run:
         return 0
     if not (base and model and key):
@@ -272,70 +233,84 @@ async def main_async(args) -> int:
 
     counter = {"calls": 0}
     vlm_call = _make_vlm_call(base, model, key, counter)
-    all_chunks = []
-    written = []
+    all_chunks: list = []
+    written: list = []
+    sem = asyncio.Semaphore(max(1, args.concurrency))
 
-    for pdf, pdf_bytes, texts, selected in plan:
-        stem = Path(pdf).stem
-        boiler = pe.boilerplate_lines(texts)
-        dpi = _dpi_for(Path(pdf).name)
-        folder = out_root / stem
+    for pdf, pdf_bytes, fast, selected in plan:
+        t_layout = time.perf_counter()
+        full = await asyncio.to_thread(pt.page_layouts, pdf_bytes, pages=selected)
+        vocab = pt.tag_vocabulary(list(fast) + [L for L in full if L])
+        boiler = pe.boilerplate_lines([(L or {}).get("text", "") for L in fast])
+        print(f"  {Path(pdf).name}: layouts {time.perf_counter() - t_layout:.1f}s, "
+              f"{len(vocab)} tags in vocabulary, {len(boiler)} boilerplate lines")
+        folder = out_root / Path(pdf).stem
         folder.mkdir(parents=True, exist_ok=True)
-        for page_num in selected:
-            t0 = time.perf_counter()
-            text = texts[page_num - 1] if page_num - 1 < len(texts) else ""
-            jpeg = _render(pdf, page_num - 1, dpi)
-            source = pe.classify_text_source(text)
-            if source == "sparse" and args.ocr:
-                ocr = _ocr(jpeg)
-                if ocr:
-                    text, source = ocr, "ocr"
-            if source == "sparse":
-                source = "none" if not (text or "").strip() else "sparse"
+        dpi = _dpi_for(Path(pdf).name)
 
-            result = await pe.extract_page(
-                image_b64=base64.b64encode(jpeg).decode("ascii"),
-                page_text=text, vlm_call=vlm_call, boilerplate=boiler)
-            fields = result["fields"]
-            chunks = pe.build_chunks(fields, boiler)
-            sheet = fields.get("sheet_number") or f"p{page_num:03d}"
-            for c in chunks:
-                c["sheet_number"] = fields.get("sheet_number")
-                c["page_number"] = page_num
-                c["file"] = Path(pdf).name
-            all_chunks.extend(chunks)
+        async def one(page_num: int):
+            async with sem:
+                t0 = time.perf_counter()
+                layout = full[page_num - 1]
+                jpeg = await asyncio.to_thread(_render, pdf, page_num - 1, dpi)
+                b64 = base64.b64encode(jpeg).decode("ascii")
+                if layout and pe.classify_text_source(layout["text"]) == "vector":
+                    source, text = "vector", layout["text"]
+                    result = await pe.extract_vector_page(
+                        image_b64=b64, layout=layout, vlm_call=vlm_call,
+                        boilerplate=boiler, tag_vocab=vocab)
+                else:
+                    text = (layout or {}).get("text", "")
+                    source = "sparse"
+                    if args.ocr:
+                        ocr = await asyncio.to_thread(_ocr, jpeg)
+                        if ocr:
+                            text, source = ocr, "ocr"
+                    if source == "sparse" and not text.strip():
+                        source = "none"
+                    result = await pe.extract_page(
+                        image_b64=b64, page_text=text, vlm_call=vlm_call, boilerplate=boiler)
+                fields = result["fields"]
+                chunks = pe.build_chunks(fields, boiler)
+                for c in chunks:
+                    c["sheet_number"] = fields.get("sheet_number")
+                    c["page_number"] = page_num
+                    c["file"] = Path(pdf).name
+                all_chunks.extend(chunks)
+                sheet = fields.get("sheet_number") or f"p{page_num:03d}"
+                record = {
+                    "file": Path(pdf).name, "page_number": page_num,
+                    "model": model, "extraction_version": pe.EXTRACTION_VERSION,
+                    "text_source": source, "text_layer_chars": len(text or ""),
+                    "vlm_calls": result.get("vlm_calls", len(pe.SECTIONS)),
+                    "fractions_rebuilt": (layout or {}).get("fractions_rebuilt", 0),
+                    "boilerplate_lines": len(boiler),
+                    "seconds": round(time.perf_counter() - t0, 1),
+                    "fields": fields, "flags": result["flags"],
+                    "number_flags": result["number_flags"],
+                    "prompt_text_chars": result["prompt_text_chars"],
+                    "prompt_text_truncated": result["prompt_text_truncated"],
+                    "chunks": [{k: v for k, v in c.items() if k != "payload"} for c in chunks],
+                    "legacy_fields": pe.legacy_fields(fields),
+                }
+                if args.raw:
+                    record["raw_vlm"] = result["raw_vlm"]
+                    record["raw_text"] = text
+                safe = re.sub(r"[^A-Za-z0-9._-]+", "_", sheet)
+                path = folder / f"{safe}__p{page_num:03d}.json"
+                path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+                written.append(str(path))
+                bad = {k: v for k, v in result["flags"].items() if v}
+                print(f"  p{page_num:>3} {sheet:<14} {source:<6} calls={record['vlm_calls']} "
+                      f"{record['seconds']:>5}s flags={bad or 'none'}", flush=True)
 
-            record = {
-                "file": Path(pdf).name, "page_number": page_num,
-                "model": model, "extraction_version": pe.EXTRACTION_VERSION,
-                "text_source": source, "text_layer_chars": len(text or ""),
-                "boilerplate_lines": len(boiler),
-                "seconds": round(time.perf_counter() - t0, 1),
-                "fields": fields, "flags": result["flags"],
-                "number_flags": result["number_flags"],
-                "prompt_text_chars": result["prompt_text_chars"],
-                "prompt_text_truncated": result["prompt_text_truncated"],
-                "chunks": [{k: v for k, v in c.items() if k != "payload"} for c in chunks],
-                "legacy_fields": pe.legacy_fields(fields),
-            }
-            if args.raw:
-                record["raw_vlm"] = result["raw_vlm"]
-                record["raw_text"] = text
-            safe = re.sub(r"[^A-Za-z0-9._-]+", "_", sheet)
-            path = folder / f"{safe}__p{page_num:03d}.json"
-            path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-            written.append(str(path))
-            bad = {k: v for k, v in result["flags"].items() if v}
-            print(f"  p{page_num:>3} {sheet:<14} {source:<6} {record['seconds']:>5}s"
-                  f"  flags={bad or 'none'}")
+        await asyncio.gather(*[one(p) for p in selected])
 
     if args.ask:
         written.append(_answers(args.ask, all_chunks, model, out_root))
 
     print(f"\nvision calls made: {counter['calls']}")
-    print("written:")
-    for w in written:
-        print(f"  {w}")
+    print(f"written: {len(written)} files under {out_root}")
     return 0
 
 
@@ -344,10 +319,13 @@ def main() -> int:
     ap.add_argument("pdf", nargs="*", help="PDF file(s) of the drawing set")
     ap.add_argument("--answers-from", default="",
                     help="answer --ask from a previous --out folder; no PDFs, no model calls")
-    ap.add_argument("--sheets", default="", help="comma list, e.g. S-001,S-100,A-500.00")
-    ap.add_argument("--pages", default="", help="1-based page list, e.g. 1,3-5")
+    ap.add_argument("--pages", default="", help="1-based page list for every PDF, e.g. 1,3-5")
     ap.add_argument("--pick", action="append", default=[],
                     help='FILENAME_PART:PAGES, e.g. "AR - 3.28:24"; repeatable')
+    ap.add_argument("--pages-all", action="append", default=[],
+                    help="FILENAME_PART: every page of matching PDFs; repeatable")
+    ap.add_argument("--concurrency", type=int, default=3,
+                    help="pages in flight at once (production uses 3 per file)")
     ap.add_argument("--out", default="plan-out")
     ap.add_argument("--ask", action="append", default=[], help="question; repeatable")
     ap.add_argument("--ocr", action="store_true", help="Textract for pages with no text layer")
