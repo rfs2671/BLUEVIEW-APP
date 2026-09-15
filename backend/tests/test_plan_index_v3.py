@@ -504,32 +504,38 @@ class ACombinedSetIsNotSentToVision(unittest.TestCase):
             {"_id": "ar", "project_id": "p1", "name": "AR - 3.28.25.pdf"},
         ])
 
-    def _gate(self, deferral=0):
+    def _gate(self, deferrals=0, can_defer=True):
         return _run(server._combined_set_gate(
-            "p1", "c1", {"_id": "combo", "name": "588 THOMAS BOYLAND ST SET_UPDATED.pdf"},
-            "combo", self.PROFILE, deferral))
+            "p1", {"_id": "combo", "name": "588 THOMAS BOYLAND ST SET_UPDATED.pdf"},
+            "combo", self.PROFILE, deferrals, can_defer))
 
     def test_covered_by_an_indexed_discipline_set_it_is_skipped_and_says_why(self):
         self.db.document_page_index.rows.extend([
             {"project_id": "p1", "file_id": "ar", "sheet_number": "A-100.00"},
             {"project_id": "p1", "file_id": "ar", "sheet_number": "A-101.00"},
         ])
-        self.assertFalse(self._gate())
+        self.assertEqual(self._gate(), "skipped")
         status = self.db.project_files.rows[0]["index_status"]
         self.assertEqual(status["state"], "skipped_combined_set")
         self.assertEqual(status["covered_by"], ["AR - 3.28.25.pdf"])
         self.assertIn("no sheet number in the title block", status["reason"])
 
-    def test_it_waits_while_the_discipline_sets_are_still_unindexed(self):
-        deferred = []
-        with mock.patch.object(server, "_defer_index", lambda *a: deferred.append(a)):
-            self.assertFalse(self._gate())
-        self.assertEqual(len(deferred), 1)
+    def test_it_waits_while_the_projects_other_files_are_still_queued(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        self.assertEqual(self._gate(), "deferred")
         self.assertNotIn("index_status", self.db.project_files.rows[0])
 
+    def test_with_nothing_else_queued_an_uncovered_file_is_indexed(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "done"})
+        self.assertEqual(self._gate(), "index")
+
     def test_after_the_last_wait_it_is_indexed(self):
-        with mock.patch.object(server, "_defer_index", lambda *a: self.fail("deferred again")):
-            self.assertTrue(self._gate(deferral=server.COMBINED_MAX_DEFERRALS))
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        self.assertEqual(self._gate(deferrals=server.COMBINED_MAX_DEFERRALS), "index")
+
+    def test_a_direct_call_with_no_job_never_defers(self):
+        self.db.plan_index_jobs.rows.append({"_id": "ar", "project_id": "p1", "status": "queued"})
+        self.assertEqual(self._gate(can_defer=False), "index")
 
     def test_a_skipped_file_is_not_live_for_retrieval(self):
         self.db.project_files.rows[0]["index_status"] = {"state": "skipped_combined_set"}

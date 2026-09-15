@@ -353,13 +353,75 @@ class ACombinedSetIsRecognised(unittest.TestCase):
         self.assertIsNone(pt.combined_set_decision(profile, {"AR.pdf": ["A"]}))
 
 
+def _make_pdf(pages):
+    """A real, minimal PDF with one Helvetica text line per list item per page.
+    Offsets are computed, so pdfplumber and poppler both accept it."""
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>"]
+    kids = " ".join(f"{4 + 2 * i} 0 R" for i in range(len(pages)))
+    objs.append(f"<< /Type /Pages /Kids [{kids}] /Count {len(pages)} >>".encode())
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    for i, lines in enumerate(pages):
+        ops = " ".join(f"({line}) Tj 0 -16 Td" for line in lines)
+        stream = f"BT /F1 12 Tf 72 700 Td {ops} ET"
+        objs.append((f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                     f"/Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * i} 0 R >>").encode())
+        objs.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream".encode())
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for k, obj in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += f"{k} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    return out
+
+
+class TheFileIsReadOnePageAtATime(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = str(Path(self.tmp.name) / "set.pdf")
+        Path(self.path).write_bytes(_make_pdf([
+            ["GENERAL NOTES", "1. ALL PILES SHALL BE HELICAL PILES."],
+            ["FOUNDATION PLAN", "PTAC"],
+            ["ROOF PLAN"],
+        ]))
+
+    def test_the_whole_file_pass_keeps_each_pages_text(self):
+        ctx = pt.file_context(self.path)
+        self.assertEqual(ctx["page_count"], 3)
+        self.assertIn("1. ALL PILES SHALL BE HELICAL PILES.", ctx["texts"][0])
+        self.assertIn("FOUNDATION PLAN", ctx["texts"][1])
+        self.assertEqual(set(ctx["profile"]), {"vector_pages", "title_id_pages",
+                                                "title_prefixes", "text_prefixes"})
+        self.assertIn("PTAC", ctx["tag_vocab"])
+
+    def test_one_page_is_parsed_on_its_own(self):
+        L = pt.page_layout_at(self.path, 2)
+        self.assertEqual(L["page_number"], 2)
+        self.assertIn("FOUNDATION PLAN", L["text"])
+        self.assertNotIn("HELICAL", L["text"])
+
+    def test_every_page_is_released_as_it_is_read(self):
+        import inspect
+        self.assertIn("page.close()", inspect.getsource(pt.file_context))
+        self.assertIn("page.close()", inspect.getsource(pt.page_layout_at))
+
+
 class ThePdfLibraryIsImportedInOnePlace(unittest.TestCase):
 
-    def test_only_page_layouts_imports_it(self):
+    def test_only_the_open_helper_imports_it(self):
         import inspect
         src = inspect.getsource(pt)
         self.assertEqual(src.count("import pdfplumber"), 1)
-        self.assertIn("import pdfplumber", inspect.getsource(pt.page_layouts))
+        self.assertIn("import pdfplumber", inspect.getsource(pt._open_pdf))
+        for fn in (pt.page_layouts, pt.file_context, pt.page_layout_at):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("_open_pdf(", inspect.getsource(fn))
 
     def test_no_agpl_pdf_library(self):
         """PyMuPDF is AGPL-3.0 and was ruled out for a hosted product."""

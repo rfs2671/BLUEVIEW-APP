@@ -162,9 +162,13 @@ def test_trigger_is_wired_at_shared_completion_point():
     import inspect
     src = inspect.getsource(server._index_pdf_file)
     assert "asyncio.create_task(_auto_aggregate_project_model(project_id))" in src
-    # Convergence: upload + Dropbox + re-index endpoints all spawn _index_pdf_file.
+    # Convergence: upload + Dropbox + both re-index endpoints enqueue, and the
+    # one worker runs _index_pdf_file — so this completion point is shared by
+    # every entry point. (Since 2026-09-15 they queue instead of spawning tasks
+    # that died with the container.)
     full = Path(server.__file__).read_text(encoding="utf-8")
-    assert full.count("_index_pdf_file(") >= 4  # 1 def + upload + dropbox + reindex
+    assert full.count("_enqueue_plan_index(") >= 5  # 1 def + upload + dropbox + 2 reindex
+    assert "_index_pdf_file(" in inspect.getsource(server._run_plan_index_job)
 
 
 def test_reaggregate_preserves_confirmed_field_via_autotrigger():
