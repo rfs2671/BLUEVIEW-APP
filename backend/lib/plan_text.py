@@ -616,10 +616,23 @@ _DIM_RE = re.compile(
     r"(?<![\d/])\d{1,2}/\d{1,2}\"|"
     r"(?<![\d/'\-])\d{1,3}\"")
 
+# A DRAWING SCALE IS NOT A DIMENSION. '3/4"=1'-0"' under a detail title is the
+# scale the detail is drawn at. Live test 2026-09-15: "stucco thickness" was
+# answered with 'FOUNDATION DETAIL STUCCO (UNEXCEVATED) Scale: 3/4"=1'-0"'.
+SCALE_EXPR_RE = re.compile(
+    r"\bSCALE\s*:?\s*(?:N\.?T\.?S\.?|AS\s+(?:NOTED|INDICATED|SHOWN))|"
+    r"(?:\bSCALE\s*:?\s*)?(?:\d{1,2}\s+)?\d{1,2}(?:/\d{1,3})?\"\s*=\s*\d{1,3}'\s*-?\s*\d{0,2}(?:\s+\d/\d)?\"?",
+    re.I)
+
+
+def strip_scales(text: str) -> str:
+    """Blank out scale expressions, keeping every other character's position."""
+    return SCALE_EXPR_RE.sub(lambda m: " " * len(m.group(0)), text or "")
+
 
 def dimensions_from_text(text: str) -> List[str]:
     out: List[str] = []
-    for m in _DIM_RE.finditer(text or ""):
+    for m in _DIM_RE.finditer(strip_scales(text or "")):
         v = re.sub(r"\s+", " ", m.group(0))
         if v not in out:
             out.append(v)
@@ -721,10 +734,42 @@ def count_tags(layout: Dict[str, Any], vocab: FrozenSet[str],
         # A legend entry or a note defines a tag; it is not a tag on the plan.
         if len(b["text"]) > LABEL_MAX_CHARS or i in exclude:
             continue
-        for tok in re.findall(r"[A-Z0-9\-]+", b["text"].upper()):
+        # CASE-SENSITIVE. A tag is printed in capitals. Upper-casing the block
+        # first turned the sprinkler engineer's address, '128 Museum Village
+        # Rd', into an RD tag, and the bot answered "RD tag appears 1 time on
+        # SP-003.00" for roof drains.
+        for tok in re.findall(r"[A-Za-z0-9\-]+", b["text"]):
             if tok in vocab:
                 counts[tok] += 1
     return [{"tag": k, "count": v, "source": TAG_SOURCE} for k, v in counts.most_common(60)]
+
+
+def empty_table_grids(layout: Dict[str, Any], max_fill: float = 0.1) -> int:
+    """Tables DRAWN on the sheet whose cells carry no text.
+
+    M-200.00 on 588 Boyland: the ROOMS PTAC UNITS SCHEDULE, the exhaust fan,
+    heater and fan schedules are ruled grids whose contents are drawn as
+    shapes. The table finder sees the grids and every cell is empty; the text
+    layer holds only the title block. Such a grid is a schedule the text layer
+    cannot read, and it is the signal to read it from the image instead.
+
+    Not counted: a grid under 2x2, and anything over half the page (the
+    title-block frame)."""
+    W, H = float(layout.get("width") or 0), float(layout.get("height") or 0)
+    page_area = W * H
+    n = 0
+    for t in layout.get("tables") or []:
+        rows = t.get("rows") or []
+        if len(rows) < 2 or max((len(r) for r in rows), default=0) < 2:
+            continue
+        x0, y0, x1, y1 = t.get("bbox") or (0, 0, 0, 0)
+        if page_area and (x1 - x0) * (y1 - y0) > 0.5 * page_area:
+            continue
+        cells = [c for r in rows for c in r]
+        filled = sum(1 for c in cells if (c or "").strip())
+        if cells and filled / len(cells) <= max_fill:
+            n += 1
+    return n
 
 
 # ══════════════════════════════════════════════════════════════════════════

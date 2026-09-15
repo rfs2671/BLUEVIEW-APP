@@ -703,8 +703,16 @@ def text_density(layout: Dict[str, Any]) -> Optional[float]:
 
 
 def needs_notes_fallback(fields: Dict[str, Any], layout: Dict[str, Any]) -> bool:
+    """No notes in the text, and EITHER a thin plan sheet OR any table grid
+    drawn with no text in it. A sheet whose schedules are drawn as shapes
+    (M-200.00) draws the notes under them the same way."""
+    from lib import plan_text as _pt
+    if fields.get("notes"):
+        return False
+    if _pt.empty_table_grids(layout):
+        return True
     density = text_density(layout)
-    return (not fields.get("notes") and fields.get("sheet_type") == "plan"
+    return (fields.get("sheet_type") == "plan"
             and density is not None and density < NOTES_FALLBACK_MAX_DENSITY)
 
 
@@ -788,36 +796,64 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
     fields["notes_source"] = "text" if fields.get("notes") else None
 
     calls = 1
-    if needs_notes_fallback(fields, layout):
-        calls += 1
-        f: List[str] = [f"density:{text_density(layout):.2f}"]
+    text_for_prompt = strip_boilerplate(layout.get("text") or "", boilerplate)[:TEXT_LAYER_PROMPT_CAP]
+
+    async def _section_from_image(section: str, f: List[str]) -> Dict[str, Any]:
+        """One section read from the page image. Its flags go on `f`."""
         try:
-            text_for_prompt = strip_boilerplate(layout.get("text") or "", boilerplate)
-            content, finish = await vlm_call(
-                image_b64, section_prompt("notes", text_for_prompt[:TEXT_LAYER_PROMPT_CAP]),
-                SECTION_MAX_TOKENS["notes"])
-            content = content or ""
-            raw["notes"] = content[:RAW_CAP]
-            if finish == "length":
-                f.append("hit_max_tokens")
-            cut, looped = detect_repetition(content)
-            if looped:
-                f.append("repetition_truncated")
-            obj = parse_json_loose(cut)
-            if obj is None:
-                f.append("unparseable")
-            else:
-                clean, vflags = validate_section("notes", obj)
-                f.extend(vflags)
-                if clean.get("notes"):
-                    fields["notes"] = [dict(n, heading=None) for n in clean["notes"]]
-                    fields["notes_source"] = "vision"
-                for k in ("legend", "callouts"):
-                    if clean.get(k) and not fields.get(k):
-                        fields[k] = clean[k]
-                f.append(f"notes_found:{len(clean.get('notes') or [])}")
+            content, finish = await vlm_call(image_b64, section_prompt(section, text_for_prompt),
+                                             SECTION_MAX_TOKENS[section])
         except Exception as e:
             f.append(f"call_failed:{type(e).__name__}")
+            return {}
+        content = content or ""
+        raw[section] = content[:RAW_CAP]
+        if finish == "length":
+            f.append("hit_max_tokens")
+        cut, looped = detect_repetition(content)
+        if looped:
+            f.append("repetition_truncated")
+        obj = parse_json_loose(cut)
+        if obj is None:
+            f.append("unparseable")
+            return {}
+        clean, vflags = validate_section(section, obj)
+        f.extend(vflags)
+        return clean
+
+    # ── SCHEDULES DRAWN AS SHAPES ─────────────────────────────────────────
+    #
+    # M-200.00's ROOMS PTAC UNITS SCHEDULE (PTAC-1 x21, PTAC-2 x9, PTAC-3 x11)
+    # and its fan, heater and diffuser schedules are ruled grids with no text
+    # in any cell. More empty grids than schedules read from the text layer
+    # means the schedules are in the image, so they are read from it. Each one
+    # is marked source "vision": its numbers cannot be checked against text.
+    grids = pt.empty_table_grids(layout)
+    if grids and len(fields.get("schedules") or []) < grids:
+        calls += 1
+        f: List[str] = [f"empty_grids:{grids}"]
+        clean = await _section_from_image("schedules", f)
+        found = [dict(s, source="vision") for s in (clean.get("schedules") or [])]
+        if found:
+            fields["schedules"] = list(fields.get("schedules") or []) + found
+        f.append(f"schedules_found:{len(found)}")
+        flags["schedules_fallback"] = f
+
+    if needs_notes_fallback(fields, layout):
+        calls += 1
+        density = text_density(layout)
+        f = [f"density:{density:.2f}" if density is not None else "density:unknown"]
+        if grids:
+            f.append(f"empty_grids:{grids}")
+        clean = await _section_from_image("notes", f)
+        if clean.get("notes"):
+            fields["notes"] = [dict(n, heading=None) for n in clean["notes"]]
+            fields["notes_source"] = "vision"
+        for k in ("legend", "callouts"):
+            if clean.get(k) and not fields.get(k):
+                fields[k] = clean[k]
+        if clean or not any(x.startswith(("call_failed", "unparseable")) for x in f):
+            f.append(f"notes_found:{len(clean.get('notes') or [])}")
         flags["notes_fallback"] = f
 
     number_flags: List[str] = []
@@ -994,10 +1030,42 @@ def _stem(term: str) -> str:
     return t
 
 
+# WHAT A PERSON SAYS vs WHAT THE DRAWING PRINTS. Live test 2026-09-15: "what
+# type of AC units" found nothing, because no sheet prints "AC" — the M set
+# says PTAC, HVAC and CONDENSING UNIT. A term here matches ANY of its
+# alternatives. The short word itself is never searched as a substring: "ac" is
+# inside "place" and "space" and would match every sheet in the set.
+QUERY_SYNONYMS: Dict[str, Tuple[str, ...]] = {
+    "ac": ("ptac", "hvac", "split", "condens", "rtu", "air condition", "a/c"),
+}
+_PHRASE_TO_TERM = (
+    (re.compile(r"\bair[\s-]*condition(?:ing|er|ers)?\b|\ba/c\b", re.I), " ac "),
+)
+
+
+def _variants(term: str) -> Tuple[str, ...]:
+    t = _stem(term)
+    return QUERY_SYNONYMS.get(t, (t,))
+
+
+# The same word written two ways. SSP-013.00 prints "8' HIGH SIDE WALK SHED";
+# the superintendent types "sidewalk". Replaced at the SAME LENGTH, so a
+# character position found in the normalised text is still right in the line.
+_TEXT_EQUIV = (
+    (re.compile(r"\bside[\s\-]+walk", re.I), "sidewalk"),
+)
+
+
+def _equiv(s: str) -> str:
+    for rx, rep in _TEXT_EQUIV:
+        s = rx.sub(lambda m: rep.ljust(len(m.group(0))), s)
+    return s
+
+
 def _matches(text: str, terms: List[str]) -> bool:
-    low = (text or "").lower()
-    stems = [_stem(t) for t in terms if t]
-    return bool(stems) and all(s in low for s in stems)
+    low = _equiv((text or "").lower())
+    terms = [t for t in terms if t]
+    return bool(terms) and all(any(v in low for v in _variants(t)) for t in terms)
 
 
 _QTY_HEADERS = ("qty", "quantity", "count", "no.", "no", "number", "#", "total")
@@ -1061,10 +1129,10 @@ def answer_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dict[st
                         counted += 1
                 if counted:
                     out.append({"sheet": sheet, "count": total, "source": "schedule_qty",
-                                "name": s.get("name"), "rows": counted})
+                                "name": s.get("name"), "rows": counted, "via": s.get("source")})
                     continue
             out.append({"sheet": sheet, "count": len(matched), "source": "schedule_rows",
-                        "name": s.get("name")})
+                        "name": s.get("name"), "via": s.get("source")})
     return out
 
 
@@ -1079,7 +1147,7 @@ def answer_existence(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dic
         for line in (ch.get("text") or "").splitlines():
             if _matches(line, terms):
                 out.append({"sheet": ch.get("sheet_number"), "source": ch.get("chunk_type"),
-                            "line": line.strip()[:200]})
+                            "line": line.strip()[:200], "title": ch.get("sheet_title")})
                 break
     return out
 
@@ -1088,14 +1156,18 @@ def format_count_answer(subject: str, hits: List[Dict[str, Any]]) -> Optional[st
     if not hits:
         return None
     label = (subject or "That").strip()
-    label = label[:1].upper() + label[1:]
+    # 'ptac' is an abbreviation and reads as one; 'piles' is a word.
+    label = label.upper() if len(label) <= 4 else label[:1].upper() + label[1:]
     lines = []
     for h in hits:
         where = f"{h['sheet'] or '?'}"
+        # A schedule read from the image, not the text layer, says so: its
+        # numbers could not be checked against printed text.
+        seen = ", read from the drawing image" if h.get("via") == "vision" else ""
         if h["source"] == "schedule_rows":
-            lines.append(f"{where}: {h.get('name') or 'schedule'} lists {h['count']} row(s)")
+            lines.append(f"{where}: {h.get('name') or 'schedule'} lists {h['count']} row(s){seen}")
         elif h["source"] == "schedule_qty":
-            lines.append(f"{where}: {h['count']} ({h.get('name') or 'schedule'}, qty column)")
+            lines.append(f"{where}: {h['count']} ({h.get('name') or 'schedule'}, qty column{seen})")
         else:
             lines.append(f"{where}: {h['count']}" + (f" ({h['where']})" if h.get("where") else ""))
     return f"{label}:\n" + "\n".join(lines)
@@ -1158,20 +1230,75 @@ _Q_STOP = {
     "count", "total", "quantity", "do", "does", "did", "we", "have", "has", "it", "its",
     "show", "me", "levelog", "plan", "plans", "drawing", "drawings", "sheet", "sheets",
     "please", "tell", "about", "they", "them", "this", "that", "and", "or", "be",
+    # Generic nouns that ride along with the real subject: "AC units",
+    # "PTAC units", "sprinkler system". Requiring them hid the answer.
+    "unit", "units", "system", "systems", "equipment", "used", "project", "site",
 }
+
+
+# "What about roof protection?" is asked the way a person asks whether a thing
+# is on the drawings. Live test 2026-09-15: it was not recognised as a question
+# at all, skipped the text, and the vision model on one sheet found nothing.
+_Q_WHAT_ABOUT = re.compile(r"^(?:what|how)\s+about\b", re.I)
+
+# Real words one keystroke from an attribute word. "weight" is not a misspelt
+# "height", and must not turn a question into a height search.
+_NOT_ATTRIBUTE_TYPOS = frozenset({
+    "weight", "eight", "eights", "space", "spaces", "rates", "rate", "gaze", "sized",
+    "tick", "thin", "hide", "types",
+})
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """One insertion, deletion, substitution or adjacent transposition."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return a == b
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        if len(diff) == 1:
+            return True
+        return (len(diff) == 2 and diff[1] == diff[0] + 1
+                and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    i = j = 0
+    skipped = False
+    while i < len(short) and j < len(long_):
+        if short[i] != long_[j]:
+            if skipped:
+                return False
+            skipped = True
+            j += 1
+            continue
+        i += 1
+        j += 1
+    return True
+
+
+def _attribute_word(w: str) -> Optional[str]:
+    """The attribute a word names, tolerating one typo ('hight', 'guage')."""
+    if w in _ATTRIBUTE_ALIASES:
+        return _ATTRIBUTE_ALIASES[w]
+    if len(w) < 5 or w in _NOT_ATTRIBUTE_TYPOS or w in _Q_STOP:
+        return None
+    for alias, attr in _ATTRIBUTE_ALIASES.items():
+        if len(alias) >= 5 and _one_edit_apart(w, alias):
+            return attr
+    return None
 
 
 def question_kind(text: str) -> Tuple[Optional[str], Optional[str]]:
     """('count', None) | ('exists', None) | ('attribute', name) | (None, None)."""
     low = re.sub(r"^@?levelog\s*[:,-]?\s*", "", (text or "").strip().lower())
+    low = re.sub(r"^@\S+\s*", "", low)
     if not low:
         return None, None
     if _Q_COUNT.search(low):
         return "count", None
     for w in re.findall(r"[a-z]+", low):
-        if w in _ATTRIBUTE_ALIASES:
-            return "attribute", _ATTRIBUTE_ALIASES[w]
-    if _Q_EXISTS.search(low):
+        attr = _attribute_word(w)
+        if attr:
+            return "attribute", attr
+    if _Q_EXISTS.search(low) or _Q_WHAT_ABOUT.search(low):
         return "exists", None
     return None, None
 
@@ -1179,17 +1306,25 @@ def question_kind(text: str) -> Tuple[Optional[str], Optional[str]]:
 def question_terms(text: str, keywords: Optional[List[Any]] = None, limit: int = 2) -> List[str]:
     """The subject of the question as search words. Multi-word keywords are
     split, because "pile type" as one needle matches nothing."""
+    def _words(s: str) -> List[str]:
+        s = re.sub(r"@\S+", " ", s)
+        for rx, repl in _PHRASE_TO_TERM:
+            s = rx.sub(repl, s)
+        return re.findall(r"[a-z0-9]+", _equiv(s.lower()))
+
     words: List[str] = []
     for k in keywords or []:
-        words.extend(re.findall(r"[a-z0-9]+", str(k).lower()))
-    if not [w for w in words if w not in _Q_STOP and w not in _ATTRIBUTE_ALIASES]:
-        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        words.extend(_words(str(k)))
+    if not [w for w in words if w not in _Q_STOP and not _attribute_word(w)]:
+        words = _words(text or "")
     out: List[str] = []
     for w in words:
-        if w in _Q_STOP or w in _ATTRIBUTE_ALIASES or w in out:
+        if w in _Q_STOP or _attribute_word(w) or w in out:
             continue
-        # A mark like 'w1' or 'rd' is short and is the whole subject.
-        if len(w) < 3 and not re.fullmatch(r"[a-z]{1,3}\d{1,2}[a-z]?|rd|fd|ad|co", w):
+        # A mark like 'w1' or 'rd' is short and is the whole subject, and so is
+        # a word with synonyms ('ac').
+        if (len(w) < 3 and w not in QUERY_SYNONYMS
+                and not re.fullmatch(r"[a-z]{1,3}\d{1,2}[a-z]?|rd|fd|ad|co", w)):
             continue
         out.append(w)
     return out[:limit]
@@ -1205,13 +1340,18 @@ _OTHER_ASSEMBLY = re.compile(
     r"\b(CONCRETE|GYP|GYPSUM|BOARDS?|STUDS?|INSUL\w*|BRICK|DECK\w*|PLYWOOD|SHEATHING|"
     r"BATT|EPS|GLASS|MEMBRANE|TRACK|JOISTS?|SLAB|CMU|BLOCK|LAYERS?)\b", re.I)
 _NEAR_CHARS = 40
+# '1 FOUNDATION DETAIL STUCCO (UNEXCEVATED)', '3 WALL SECTION', '2 ROOF PLAN'.
+_DETAIL_TITLE_RE = re.compile(
+    r"^\s*\d{1,2}\s+[A-Z0-9 &/().,'\-]*\b(DETAILS?|SECTIONS?|ELEVATIONS?|PLAN)\b", re.I)
 
 
 def _value_near_term(line: str, terms: List[str], rx: "re.Pattern[str]") -> bool:
     """True when a value of the attribute's shape sits within a few words of the
     thing asked about, with no other assembly between them or owning it."""
-    low = line.lower()
-    stems = [_stem(t) for t in terms if t]
+    from lib.plan_text import strip_scales
+    line = strip_scales(line)
+    low = _equiv(line.lower())
+    stems = [v for t in terms if t for v in _variants(t)]
     # (start, end-of-word) — the gap is measured from the END of the term's
     # word, so the term ('STUD') is never mistaken for another assembly.
     spans = []
@@ -1260,6 +1400,11 @@ def answer_attribute(chunks: List[Dict[str, Any]], terms: List[str], attribute: 
         for i, clean in enumerate(lines):
             if not clean or not _matches(clean, terms):
                 continue
+            # A DETAIL TITLE NAMES A DRAWING, IT DOES NOT STATE A VALUE.
+            # '1 FOUNDATION DETAIL STUCCO (UNEXCEVATED)' is the heading of
+            # detail 1; nothing printed on that line is about the stucco.
+            if _DETAIL_TITLE_RE.match(clean):
+                continue
             # The value is often printed on the NEXT line of the same label —
             # '3 1/2" METAL STUD 16"' then 'O.C. 20 GAUGE MIN.' — so the line
             # and the one after it are read together. Same block only.
@@ -1292,13 +1437,28 @@ def format_attribute_answer(subject: str, attribute: str,
     return f"{label}:\n" + "\n".join(f"{h['sheet'] or '?'}: {h['line']}" for h in hits)
 
 
-def format_not_stated(mentions: List[Dict[str, Any]]) -> str:
-    """For a count nobody printed. The sheets that mention the thing are named,
-    so "not stated" is still somewhere to look, and nothing is counted by eye."""
+def format_not_stated(mentions: List[Dict[str, Any]], terms: Optional[List[str]] = None,
+                      subject: Optional[str] = None, count: bool = False) -> str:
+    """For a value nobody printed. The sheets that mention the thing are named,
+    so "not stated" is still somewhere to look, and nothing is counted by eye.
+
+    For a COUNT, when a mentioning sheet's own title names the thing — roof
+    drains on the ROOF AND BULKHEAD PLAN — that sheet is where it is SHOWN, as
+    symbols with no printed number. The answer says so and says how to get the
+    sheet, instead of listing every floor plan whose legend defines the symbol."""
     sheets: List[str] = []
     for h in mentions:
         if h.get("sheet") and h["sheet"] not in sheets:
             sheets.append(h["sheet"])
+    if count and terms:
+        for h in mentions:
+            title = (h.get("title") or "").lower()
+            if h.get("sheet") and title and any(
+                    any(v in title for v in _variants(t)) for t in terms):
+                label = (subject or "That").strip()
+                label = label[:1].upper() + label[1:]
+                return (f"{label}: shown on {h['sheet']} ({title}) — count not stated. "
+                        f"Reply \"show me {h['sheet']}\" for the sheet.")
     base = "Not stated on the indexed drawings."
     return base + (f" Mentioned on {', '.join(sheets[:4])}." if sheets else "")
 
@@ -1317,8 +1477,10 @@ def answer_tag_count(chunks: List[Dict[str, Any]], terms: List[str]) -> List[Dic
     phrase = " ".join(_stem(t) for t in terms)
     cands = set()
     for k, v in TAG_SYNONYMS.items():
-        if k in phrase:
+        if re.search(rf"\b{re.escape(k)}\b", phrase):
             cands |= v
+    if "ac" in [_stem(t) for t in terms]:
+        cands.add("PTAC")
     for t in terms:
         cands.add(t.upper())
         cands.add(_stem(t).upper())
@@ -1376,17 +1538,29 @@ def answer_question(chunks: List[Dict[str, Any]], text: str,
         tags = answer_tag_count(chunks, terms)
         if tags:
             return {"text": format_tag_count_answer(tags), "outcome": "chunk_tag_count"}
-        return {"text": format_not_stated(answer_existence(chunks, terms)),
+        return {"text": format_not_stated(answer_existence(chunks, terms), terms,
+                                          subject, count=True),
                 "outcome": "chunk_count_not_stated"}
+    # THE HEAD NOUN, WHEN THE PHRASE FINDS NOTHING. "sidewalk shed height":
+    # SSP-003.00 prints "8' HIGH SHED" — the shed, not the sidewalk. The last
+    # word of the subject is what the drawing labels. Not used for counts: a
+    # count of "drains" is not a count of roof drains.
+    head = terms[-1:] if len(terms) > 1 else None
     if kind == "exists":
-        hits = answer_existence(chunks, terms)
+        hits = answer_existence(chunks, terms) or (head and answer_existence(chunks, head)) or []
         if hits:
             return {"text": format_existence_answer(subject, hits), "outcome": "chunk_exists"}
         return {"text": "Not found on indexed drawings.", "outcome": "chunk_exists_not_found"}
-    hits = answer_attribute(chunks, terms, attribute)
+    hits = (answer_attribute(chunks, terms, attribute)
+            or (head and answer_attribute(chunks, head, attribute)) or [])
     if hits:
         return {"text": format_attribute_answer(subject, attribute, hits),
                 "outcome": "chunk_attribute"}
+    # NAMED BUT NO VALUE: say so, with the sheets. A heading or a scale next
+    # to the word is not a value, and quoting one reads as an answer.
+    mentions = answer_existence(chunks, terms) or (head and answer_existence(chunks, head)) or []
+    if mentions:
+        return {"text": format_not_stated(mentions), "outcome": "chunk_attribute_not_stated"}
     return None
 
 
