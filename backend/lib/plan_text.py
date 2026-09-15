@@ -895,10 +895,18 @@ def file_sheet_profile(layouts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str,
     }
 
 
+# A one- or two-page file is not a re-issue of the project. On 588 Boyland the
+# as-built survey (1 page) and the shed drawing (1 page) were both taken for
+# combined sets because their one page had no sheet number.
+COMBINED_MIN_VECTOR_PAGES = 3
+
+
 def looks_combined(profile: Dict[str, Any]) -> bool:
-    """Most of its pages have no sheet number in the title block."""
+    """Most of its pages have no sheet number in the title block, and there
+    are enough of them to be a set."""
     vp = int(profile.get("vector_pages") or 0)
-    return vp > 0 and int(profile.get("title_id_pages") or 0) / vp < COMBINED_MAX_TITLE_ID_SHARE
+    return (vp >= COMBINED_MIN_VECTOR_PAGES
+            and int(profile.get("title_id_pages") or 0) / vp < COMBINED_MAX_TITLE_ID_SHARE)
 
 
 def combined_set_decision(profile: Dict[str, Any],

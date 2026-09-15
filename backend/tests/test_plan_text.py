@@ -348,6 +348,16 @@ class ACombinedSetIsRecognised(unittest.TestCase):
         self.assertFalse(pt.looks_combined(profile))
         self.assertIsNone(pt.combined_set_decision(profile, {"AR.pdf": ["A"]}))
 
+    def test_a_one_or_two_page_file_is_not_a_combined_set(self):
+        """The as-built survey and the shed drawing were each one page."""
+        for pages in (1, 2):
+            with self.subTest(pages=pages):
+                self.assertFalse(pt.looks_combined(
+                    {"vector_pages": pages, "title_id_pages": 0,
+                     "title_prefixes": [], "text_prefixes": ["A"]}))
+        self.assertTrue(pt.looks_combined(
+            {"vector_pages": 3, "title_id_pages": 0, "title_prefixes": [], "text_prefixes": ["A"]}))
+
     def test_a_file_with_no_readable_disciplines_is_indexed(self):
         profile = dict(self.PROFILE, text_prefixes=[])
         self.assertIsNone(pt.combined_set_decision(profile, {"AR.pdf": ["A"]}))

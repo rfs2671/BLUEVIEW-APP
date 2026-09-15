@@ -381,7 +381,10 @@ class StatusReadsTheQueueNotTheBucket(_WithDb):
         ])
         self.jobs.append({"_id": "st", "project_id": "p1", "status": "running",
                           "pages_done": 6, "pages_total": 14, "attempts": 1})
-        self.db.document_page_index.rows.extend([{"file_id": "old", "sheet_title": "A"}] * 4)
+        # One of the four is a spec page: it is an indexed page and is counted.
+        self.db.document_page_index.rows.extend(
+            [{"file_id": "old", "sheet_title": "A"}] * 3
+            + [{"file_id": "old", "sheet_title": "[SPECIFICATION PAGE]", "is_spec_page": True}])
         with mock.patch.object(server, "_r2_client", NoR2()), \
                 mock.patch.object(server, "get_user_company_id", lambda u: "c1"), \
                 mock.patch.object(server, "_is_site_device", lambda u: False):

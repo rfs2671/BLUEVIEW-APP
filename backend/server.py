@@ -39482,9 +39482,15 @@ async def _index_single_page(
             "is_spec_page":       True,
             "page_complete":      True,
         })
-        # A SPEC PAGE IS STILL TEXT. It stays out of sheet retrieval, but its
-        # notes are chunked from the text layer — S-001.00, 25,000 characters
-        # of general notes, is exactly this shape, and "HELICAL PILES" is on it.
+        # A SPEC PAGE IS STILL A SHEET. S-001.00 — 25,000 characters of general
+        # notes — is exactly this shape, and "HELICAL PILES" is on it. From the
+        # text layer it gets, with no model call:
+        #   its chunks, for count / existence / attribute answers
+        #   the searchable fields, so the debug view and the literal element
+        #     search see its notes instead of "[SPECIFICATION PAGE]"
+        #   its page image, so "show me S-001" can send the sheet
+        # The broad candidate search still skips it (is_spec_page); lookup by
+        # sheet number does not.
         spec_fields = None
         if layout:
             spec_fields = dict(plan_extract.EMPTY_FIELDS)
@@ -39493,8 +39499,38 @@ async def _index_single_page(
             spec_fields["sheet_number"], _ = plan_text.validate_sheet_number(
                 None, plan_text.sheet_ids(plan_text.title_region(layout)),
                 plan_text.sheet_ids(layout.get("text") or ""))
+            heading_text = plan_text.headings(layout)
+            spec_fields["sheet_type"] = "notes"
+            spec_fields["contents_summary"] = (
+                "Notes and specification sheet: " + "; ".join(heading_text.split("\n")[:20])
+                if heading_text else None)
+            spec_legacy = plan_extract.legacy_fields(spec_fields)
+            spec_jpeg = spec_thumb = spec_base = ""
+            if page_image_bytes:
+                spec_jpeg = await _upload_page_jpeg_to_r2(
+                    project_id, file_id, page_number, page_image_bytes)
+                # Page one only, like the main path's thumbnail — written as an
+                # expression so the main path's `if page_number == 1:` guard stays
+                # the one test_plan_thumbnails reads.
+                spec_thumb = (await _upload_page_thumb_to_r2(
+                    project_id, file_id, page_number, page_image_bytes)
+                    if page_number == 1 else "")
+                spec_base = await _upload_page_base_to_r2(
+                    project_id, file_id, page_number, page_image_bytes)
             doc.update({
                 "sheet_number":     spec_fields["sheet_number"],
+                "sheet_title":      None,
+                "sheet_type":       "notes",
+                "keywords":         spec_legacy["keywords"],
+                "summary":          spec_legacy["summary"],
+                "dimensions":       spec_legacy["dimensions"],
+                "materials":        spec_legacy["materials"],
+                "code_refs":        spec_legacy["code_refs"],
+                "detail_refs":      spec_legacy["detail_refs"],
+                "notes":            spec_legacy["notes"],
+                "page_jpeg_r2_key": spec_jpeg,
+                "page_thumb_r2_key": spec_thumb,
+                "page_base_r2_key": spec_base,
                 "extraction":       spec_fields,
                 "tag_counts":       spec_fields["tag_counts"],
                 "text_source":      "vector",
@@ -39940,13 +39976,25 @@ async def _combined_set_gate(project_id: str, file_record: dict, file_id: str,
     """"index" | "skipped" | "deferred"."""
     if not plan_text.looks_combined(profile):
         return "index"
+    if not (profile.get("text_prefixes") or []):
+        # NOTHING TO BE A DUPLICATE OF. A file whose text shows no discipline
+        # cannot be proven a copy of anything, however long it waits — its
+        # disciplines come from its own pages, not from the other files. On 588
+        # Boyland cross connection waited an hour for that proof and then died
+        # with the container.
+        return "index"
     try:
         sets, _unindexed = await _discipline_sets(project_id, file_id)
         pending = 0
         if can_defer:
+            # NOT counted: a job that has itself been deferred. Two combined-
+            # looking files that each waited for "the project's other files"
+            # waited for each other — the deadlock that left three Boyland
+            # files unindexed. Only work that will actually finish counts.
             pending = await db[PLAN_INDEX_JOBS].count_documents({
                 "project_id": project_id, "_id": {"$ne": file_id},
-                "status": {"$in": list(PLAN_INDEX_ACTIVE)},
+                "$or": [{"status": "running"},
+                        {"status": "queued", "deferrals": {"$in": [0, None]}}],
             })
     except Exception as e:
         logger.warning(f"combined-set check failed for {file_id}: {e!r} — indexing it")
@@ -40422,71 +40470,136 @@ def _file_upload_order(fr: dict) -> tuple:
     return (ts or datetime.min.replace(tzinfo=timezone.utc), str(fr.get("_id")))
 
 
+# Sheets every discipline set carries its own copy of. A T-001.00 cover on the
+# architectural set is not a newer version of the structural set's T-001.00,
+# and EN-001.00 energy sheets and GN general sheets repeat the same way.
+_NEVER_SUPERSEDE_ACROSS_SETS = frozenset({"T", "EN", "GN"})
+_SHEET_DATE_RE = re.compile(r"(?<!\d)(\d{1,4})[./\-_](\d{1,2})[./\-_](\d{2,4})(?!\d)")
+
+
+def _parse_sheet_date(text: Any):
+    """The last date in a title-block revision field or a file name:
+    '03/28/2025', '07-29-26', 'AR - 3.28.25.pdf', '...AS BUILT 08-24-26.pdf'.
+    None when there is none."""
+    from datetime import date as _date
+    found = None
+    for m in _SHEET_DATE_RE.finditer(str(text or "")):
+        a, b, c = m.groups()
+        try:
+            if len(a) == 4:
+                found = _date(int(a), int(b), int(c))
+                continue
+            if len(c) == 2:
+                year = 2000 + int(c)
+            elif len(c) == 4:
+                year = int(c)
+            else:
+                continue
+            found = _date(year, int(a), int(b))
+        except ValueError:
+            continue
+    return found
+
+
+def _sheet_prefix(sheet_number: str) -> str:
+    return sheet_number.split("-")[0] if "-" in sheet_number else ""
+
+
 async def _supersede_plan_pages(project_id: str) -> dict:
-    """One current row per sheet: the newest upload wins.
+    """One current row per sheet, within each discipline set.
 
     ── THE DUPLICATES ────────────────────────────────────────────────────
     #
     # Page rows are keyed (file_id, page_number), and every re-upload of a
-    # drawing set mints a new file id. A.500.00 came back twice from the debug
-    # endpoint for that reason, and retrieval ranked both.
-    #
-    # Two ways a page is someone else's older copy:
+    # drawing set mints a new file id. Two ways a page is someone else's copy:
     #   same file_hash + page_number in another file — the identical PDF again
-    #   same sheet_number in another file            — a revised set
-    # In both, the file uploaded later (project_files.created_at) wins and the
-    # other row gets `superseded_by` = the winning file id.
+    #   same sheet_number in another file of the SAME discipline set — a revision
+    # The losing row gets `superseded_by` = the winning file id.
+    #
+    # ── WHICH COPY WINS: THE DRAWING'S DATE, NOT THE UPLOAD'S ──────────────
+    #
+    # This used to be "the newest upload wins", and on 588 Boyland that hid
+    # the June 2026 owners set behind the March 2025 architectural set, because
+    # the March set had been re-synced most recently. Now, in order:
+    #   1. the revision date read from the title block
+    #   2. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   3. upload time
+    #
+    # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
+    #
+    # A file's discipline is its most common sheet prefix. Sheet numbers are
+    # matched only between files of the same discipline: the structural set's
+    # T-001.00 cover was being hidden by the architectural set's, and MH's
+    # EN-001.00 by PL's. T-, EN- and GN- sheets are never superseded across
+    # files at all.
     #
     # NOTHING IS DELETED. Readers exclude a row only while the file that
-    # superseded it is still live, so deleting the newer upload brings the older
-    # sheet straight back without a re-run of this pass.
-    #
-    # A sheet that appears twice INSIDE one file (a continued plan, two pages
-    # with one number) is not a duplicate and both pages stay.
+    # superseded it is still live, so deleting the newer file brings the older
+    # sheet straight back. A sheet that appears twice INSIDE one file is not a
+    # duplicate and both pages stay.
     """
+    from collections import Counter as _Counter
+    from datetime import date as _date
+
     files = await db.project_files.find(
         {"project_id": project_id, "is_deleted": {"$ne": True}},
-        {"_id": 1, "created_at": 1},
+        {"_id": 1, "created_at": 1, "name": 1},
     ).to_list(2000)
-    rank = {str(f["_id"]): _file_upload_order(f) for f in files}
-    if not rank:
+    uploaded = {str(f["_id"]): _file_upload_order(f) for f in files}
+    name_date = {str(f["_id"]): _parse_sheet_date(f.get("name")) for f in files}
+    if not uploaded:
         return {"superseded": 0}
     rows = await db.document_page_index.find(
-        {"project_id": project_id, "file_id": {"$in": list(rank)},
-         "is_spec_page": {"$ne": True}},
+        {"project_id": project_id, "file_id": {"$in": list(uploaded)}},
         {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
-         "sheet_number": 1, "superseded_by": 1},
+         "sheet_number": 1, "superseded_by": 1, "revision_date": 1},
     ).to_list(20000)
 
-    groups: Dict[tuple, set] = {}
+    def _norm(sn):
+        return re.sub(r"\s+", "", str(sn or "")).upper()
+
+    prefixes: Dict[str, _Counter] = {}
     for r in rows:
-        fid = r.get("file_id")
-        if r.get("file_hash"):
-            groups.setdefault(("hash", r["file_hash"], r.get("page_number")), set()).add(fid)
-        sn = re.sub(r"\s+", "", str(r.get("sheet_number") or "")).upper()
-        if sn:
-            groups.setdefault(("sheet", sn), set()).add(fid)
+        p = _sheet_prefix(_norm(r.get("sheet_number")))
+        if p and p not in _NEVER_SUPERSEDE_ACROSS_SETS:
+            prefixes.setdefault(r.get("file_id"), _Counter())[p] += 1
+    family = {fid: c.most_common(1)[0][0] for fid, c in prefixes.items() if c}
 
     def _keys(r):
         out = []
         if r.get("file_hash"):
             out.append(("hash", r["file_hash"], r.get("page_number")))
-        sn = re.sub(r"\s+", "", str(r.get("sheet_number") or "")).upper()
-        if sn:
-            out.append(("sheet", sn))
+        sn = _norm(r.get("sheet_number"))
+        fam = family.get(r.get("file_id"))
+        if sn and fam and _sheet_prefix(sn) not in _NEVER_SUPERSEDE_ACROSS_SETS:
+            out.append(("sheet", fam, sn))
         return out
 
-    winners = {k: max(fids, key=lambda f: rank.get(f)) for k, fids in groups.items()
-               if len(fids) > 1}
+    members: Dict[tuple, Dict[str, list]] = {}
+    for r in rows:
+        for k in _keys(r):
+            members.setdefault(k, {}).setdefault(r.get("file_id"), []).append(r)
+
+    def _order(fid, file_rows):
+        revs = [d for d in (_parse_sheet_date(x.get("revision_date")) for x in file_rows) if d]
+        return (max(revs) if revs else _date.min,
+                name_date.get(fid) or _date.min,
+                uploaded[fid])
+
+    winners: Dict[tuple, Tuple[str, tuple]] = {}
+    for k, by_file in members.items():
+        if len(by_file) > 1:
+            best = max(by_file, key=lambda f: _order(f, by_file[f]))
+            winners[k] = (best, _order(best, by_file[best]))
+
     by_winner: Dict[str, list] = {}
     keep_ids = []
     for r in rows:
-        loser_to = None
+        loser_to, loser_order = None, None
         for k in _keys(r):
             w = winners.get(k)
-            if w and w != r.get("file_id"):
-                if loser_to is None or rank[w] > rank[loser_to]:
-                    loser_to = w
+            if w and w[0] != r.get("file_id") and (loser_order is None or w[1] > loser_order):
+                loser_to, loser_order = w
         if loser_to:
             if r.get("superseded_by") != loser_to:
                 by_winner.setdefault(loser_to, []).append(r["_id"])
@@ -40824,6 +40937,12 @@ async def _retrieve_plan_candidates(
             r"(\.\d+)?$"
         )
         fq = dict(base_filter)
+        # A NAMED SHEET IS FOUND EVEN WHEN IT IS A NOTES SHEET. The spec-page
+        # exclusion keeps a wall of notes out of a broad "which sheet is like
+        # this" search; it must not make "show me S-001" answer that S-001
+        # does not exist.
+        fq.pop("is_spec_page", None)
+        fq.pop("sheet_title", None)
         fq["sheet_number"] = {"$regex": pattern, "$options": "i"}
         # Multiple hits possible when a family shares a base (M-200, M-200.1…);
         # prefer the shortest — it's the "most canonical" base sheet.
@@ -46934,9 +47053,10 @@ async def get_document_index_status(
             total_pages = int(job.get("pages_total") or fr.get("page_count") or 0)
             queue_status = job.get("status")
         else:
+            # Spec pages ARE indexed pages. Leaving them out made ST read
+            # 13/14 and AR 24/26 on a run where every page was done.
             indexed = await db.document_page_index.count_documents({
                 "file_id": file_id,
-                "sheet_title": {"$ne": "[SPECIFICATION PAGE]"},
             })
             total_pages = int(fr.get("page_count") or 0)
             queue_status = "indexed" if indexed else "not_queued"
