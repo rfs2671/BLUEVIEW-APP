@@ -312,10 +312,25 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
 
         THE FOOTER IS A SENTENCE ON THE PAGE, so that is what is asserted.
         It was `SRC.count("preshift_affirmation_footer(_affirm_n)")`, which
-        counted a call and not a document."""
-        t = visible(sheet(TYPE))
-        self.assertIn("affirmation record", t,
+        counted a call and not a document.
+
+        AND THE SENTENCE IT ASSERTED WAS THE WRONG ONE. It looked for
+        "affirmation record" on a fixture carrying NO affirmations, where the
+        section is omitted by `requires` exactly as designed -- so the string it
+        found was the per-row banner, "no affirmation record for this document",
+        printed against a named worker. The test believed it was checking that
+        the sheet had STOPPED making a per-row claim, and it was passing
+        BECAUSE the claim was back. The same substring did the same thing in
+        test_preshift_affirmation_record.py; both are fixed the same way.
+
+        A COUNT IS WHAT MAKES A FOOTER, so the fixture carries the gate
+        check-ins the count reads and the assertion is on the section's own
+        words."""
+        t = visible(sheet(TYPE, rows={"checkins": [{"worker_id": f"w{i}"}
+                                                   for i in range(6)]}))
+        self.assertIn("Affirmation Records", t,
                       "the sheet no longer points at the affirmation records")
+        self.assertIn("6 workers affirmed their sign-in at the gate", t)
 
     def test_the_column_headers_are_unchanged(self):
         """The roster's columns, in order. This counted the header f-string

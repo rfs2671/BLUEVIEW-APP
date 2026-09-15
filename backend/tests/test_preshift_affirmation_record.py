@@ -376,8 +376,34 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
     def test_the_sheet_shows_the_footer(self):
         """The footer points at the affirmation records instead of overlaying
         the Signature column. Asserted on the page: this counted a call in
-        `server.py`, and the branch that made the call is deleted."""
-        self.assertIn("affirmation record", visible(sheet("preshift_signin")))
+        `server.py`, and the branch that made the call is deleted.
+
+        AND IT WAS PASSING ON THE DEFECT. It read
+
+            assertIn("affirmation record", visible(sheet("preshift_signin")))
+
+        against a fixture carrying NO affirmations -- so the section is omitted
+        by `requires`, exactly as designed, and the only "affirmation record"
+        on the page was the per-row banner: "no affirmation record for this
+        document", stamped on the worker whose absence from this footer the
+        test believed it was checking. Removing the banner turned it red, which
+        is the first time it had anything to say.
+
+        A SHEET WITH A COUNT IS WHAT SHOWS A FOOTER, so the fixture now carries
+        the gate check-ins the count reads, and the assertion is on the
+        section's own wording rather than a substring two things share.
+        """
+        html = sheet("preshift_signin",
+                     rows={"checkins": [{"worker_id": f"w{i}"}
+                                        for i in range(6)]})
+        text = visible(html)
+        self.assertIn("Affirmation Records", text)
+        self.assertIn("6 workers affirmed their sign-in at the gate", text)
+
+    def test_and_a_sheet_with_no_affirmations_carries_NO_such_section(self):
+        """The other half, and the reason the one above could hide. Zero is a
+        silence, not a finding against the day."""
+        self.assertNotIn("Affirmation Records", visible(sheet("preshift_signin")))
 
     def test_the_cell_still_takes_the_resolved_map_and_nothing_else(self):
         """THE CALL FORM IS STILL PINNED, because the defect this guards is an
@@ -388,20 +414,142 @@ class NothingElseOnTheSheetMoved(unittest.TestCase):
         the render context, and the resolved map is inlined onto the row before
         it gets there; there is no second argument to smuggle anything into.
         So the claim is asserted where it now lives, and the OUTCOME is
-        asserted on the sheet: a drawn mark says nothing about affirmation, and
-        an unaffirmed one says so in words.
+        asserted on the sheet: a drawn mark says nothing about affirmation.
+
+        AND THE SECOND ASSERTION HERE USED TO SAY THE OPPOSITE. It read
+
+            self.assertIn("UNAFFIRMED", signed,
+                          "a drawn mark with no affirmation record must say so")
+
+        which is exactly the sentence the class docstring above forbids, and it
+        was written during the engine migration against the engine's own
+        output rather than against the rule. It certified the re-introduced
+        defect as correct and would have failed anybody who fixed it. See
+        AWorkersMarkIsNotAThingThatCanBeAffirmed below for the rule it is
+        replaced by, and for the CP signature that still does carry the banner.
         """
         from lib.legal_render import primitives
         self.assertIn("preshift_signature", primitives.ROW_FORMATTERS)
         html = sheet("preshift_signin")
         signed, unsigned = cells(html, "Signature")
         self.assertIn("[INK]", signed, "the drawn mark is not on the sheet")
-        self.assertIn("UNAFFIRMED", signed,
-                      "a drawn mark with no affirmation record must say so")
+        self.assertNotIn("UNAFFIRMED", signed,
+                         "a worker's roster mark has no affirmation state")
         self.assertIn("NO SIGNATURE ON FILE", unsigned)
 
     def test_the_overlay_resolver_is_gone(self):
         self.assertNotIn("async def preshift_affirmations", SRC)
+
+
+class AWorkersMarkIsNotAThingThatCanBeAffirmed(unittest.TestCase):
+    """THE DEFECT CAME BACK THROUGH THE ENGINE, AND MEASURED ON PRODUCTION.
+
+    Across filed `preshift_signin` rosters: 400 worker rows, 302 carrying a
+    mark, and all 302 printed
+
+        UNAFFIRMED -- no affirmation record for this document
+
+    beside a named man who did sign. The route is `ink`, which appends the
+    document affirmation banner under every mark it draws, and the roster's
+    Signature column reaches it through the `preshift_signature` row formatter.
+
+    NOTHING WRITES AFFIRMATION ONTO A WORKER'S ROSTER MARK. The only writers of
+    the key in `server.py` put it on `cp_signature`, the DOCUMENT signature,
+    and `_is_affirmed_signature` is that document predicate. So the banner on a
+    roster row is a deficiency no action on site can cure: the state it reports
+    missing does not exist for him and never will.
+
+    THE FIX IS NOT A TYPE CHECK. Suppressing the banner for a mark stored as a
+    string would fix these 302 rows and silently drop a REAL finding the first
+    time a CP's document signature is stored as one -- which is a shape
+    production holds, and which test_a_CP_signature_stored_as_a_string_... below
+    pins. The question is whose mark it is, and `ink` is told.
+    """
+
+    def _sigcol(self, html):
+        return cells(html, "Signature")
+
+    def test_no_worker_row_on_a_filed_roster_carries_the_banner(self):
+        """The 302. The drawn mark stays; the finding against him goes."""
+        signed, unsigned = self._sigcol(sheet("preshift_signin"))
+        self.assertIn("[INK]", signed)
+        self.assertNotIn("UNAFFIRMED", signed)
+        self.assertNotIn("UNAFFIRMED", unsigned)
+
+    def test_not_for_the_STRING_mark_production_actually_stores(self):
+        """All 302 are a `str`; zero are a dict. The fixture's dict mark alone
+        would leave the production shape unasserted."""
+        html = sheet("preshift_signin", data={"workers": [
+            dict(STORED, worker_signature="iVBORw0KGgo=")]})
+        cell, = self._sigcol(html)
+        self.assertIn("[IMAGE]", cell)
+        self.assertNotIn("UNAFFIRMED", cell)
+
+    def test_nor_for_a_roster_mark_carrying_the_key_set_FALSE(self):
+        """WHOSE MARK IT IS, NOT WHAT THE MARK SAYS. If some future writer put
+        `affirmed: False` on a roster row the answer is still that the column
+        makes no affirmation claim -- otherwise the banner is one write away
+        from returning."""
+        html = sheet("preshift_signin", data={"workers": [
+            dict(STORED, worker_signature={"data": "iVBORw0KGgo=",
+                                           "affirmed": False})]})
+        cell, = self._sigcol(html)
+        self.assertNotIn("UNAFFIRMED", cell)
+
+    def test_and_says_nothing_in_the_OTHER_direction_either(self):
+        """An affirmed-looking roster mark must not print a claim the sheet
+        does not own. The footer counts; the column does not claim."""
+        html = sheet("preshift_signin", data={"workers": [
+            dict(STORED, worker_signature={"data": "iVBORw0KGgo=",
+                                           "affirmed": True})]})
+        cell, = self._sigcol(html)
+        self.assertNotIn("AFFIRMED", cell)
+
+    def test_the_CPs_unaffirmed_DOCUMENT_signature_still_says_so(self):
+        """THE HALF THAT MUST SURVIVE. The CP can affirm; the app writes it on
+        `cp_signature`; a document signed without it is a real deficiency and
+        79 filed records once lost exactly this line."""
+        from tests.filed_sheet import UNAFFIRMED
+        html = sheet("preshift_signin", cp_signature=UNAFFIRMED)
+        self.assertIn("UNAFFIRMED", html)
+        self.assertIn("no affirmation record for this document", html)
+        for cell in self._sigcol(html):
+            self.assertNotIn("UNAFFIRMED", cell,
+                             "the CP's banner leaked into the roster column")
+
+    def test_a_CP_signature_stored_as_a_STRING_still_says_so(self):
+        """THE TEST THAT REFUSES THE CHEAP FIX. `isinstance(sig, str)` inside
+        `ink` would pass every assertion above and lose this one -- an
+        inherited credential is a bare string too, and that is the object the
+        whole mechanism exists to catch."""
+        html = sheet("preshift_signin", cp_signature="iVBORw0KGgo=")
+        self.assertIn("UNAFFIRMED", html)
+
+    def test_the_CPs_affirmed_signature_still_reports_its_audit_trail(self):
+        html = sheet("preshift_signin")
+        self.assertIn("AFFIRMED for this document", html)
+
+    def test_ink_still_banners_BY_DEFAULT(self):
+        """The safe default is the claim, so a new caller that forgets to think
+        about it prints the deficiency rather than hiding it."""
+        from lib.legal_render import primitives
+        ctx = {"signature_affirmation": server._signature_affirmation_html}
+        self.assertIn("UNAFFIRMED", primitives.ink("iVBORw0KGgo=", ctx))
+
+    def test_the_suppression_is_a_NAMED_ARGUMENT_not_a_shape_test(self):
+        """The rule is 'is affirmation a state this mark can be in', answered
+        by whose mark it is. That has to be readable in the signature of the
+        function that draws the mark, not inferred inside it."""
+        from lib.legal_render import primitives
+        params = inspect.signature(primitives.ink).parameters
+        self.assertIn("affirmable", params)
+        self.assertIs(params["affirmable"].default, True)
+
+    def test_the_row_formatter_is_what_says_NO(self):
+        """And it says it once, at the call, where the reason is legible."""
+        from lib.legal_render import primitives
+        code = _code_only(primitives.preshift_signature)
+        self.assertIn("affirmable=False", code)
 
 
 if __name__ == "__main__":
