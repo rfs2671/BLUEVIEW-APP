@@ -1562,8 +1562,27 @@ for (const [name, src] of PORTED_SCREENS) {
       `${name}: a server REFUSAL is not offline — it reports and does not freeze`);
   }
   // gateCopy — the server's English `detail` never renders.
-  ok(/const key = `code_\$\{code\}`/.test(src) && /tFinalize\('genericError'\)/.test(src),
-    `${name}: the client owns the wording; an unmapped code falls back`);
+  //
+  // ONE SCREEN NOW DELEGATES THE RULE INSTEAD OF INLINING IT, and the
+  // proposition is about the RULE rather than about those four lines. The
+  // superintendent's log meets a refusal that carries a FACT the sentence needs
+  // — NOT_THE_REGISTERED_SUPERINTENDENT's `registered_name`, the only part of
+  // it he can act on — so its gateCopy calls src/utils/csRefusalCopy.js, which
+  // holds the identical fallback and is asserted against every other code in
+  // the namespace by csRefusalCopy.test.cjs. Asserting the four lines here
+  // would have made "extract the shared helper" a red check while the
+  // guarantee was strictly stronger.
+  if (visit) {
+    ok(/import \{ refusalCopy \} from '[^']*csRefusalCopy'/.test(src)
+       && /refusalCopy\(code, detail, tFinalize\)/.test(src),
+    `${name}: the client owns the wording through the shared resolver; an `
+      + 'unmapped code falls back (see csRefusalCopy.test.cjs)');
+    ok(!/\bdetail\.message\b/.test(src),
+      `${name}: and the server's English prose is still never rendered`);
+  } else {
+    ok(/const key = `code_\$\{code\}`/.test(src) && /tFinalize\('genericError'\)/.test(src),
+      `${name}: the client owns the wording; an unmapped code falls back`);
+  }
   // No camera on either form, so neither may quietly grow one.
   ok(!/persistPhoto|compressUnderCap|Camera/.test(src),
     `${name}: no camera — persistPhoto and compressUnderCap are deliberately absent`);

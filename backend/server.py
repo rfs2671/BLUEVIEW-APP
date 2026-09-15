@@ -12946,6 +12946,23 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
         # The toggles, so the screen makes one request rather than two and can
         # never show a control whose state disagrees with the set beside it.
         "activations": logbook_activations(project),
+        # ── WHOSE LOG IT IS, FOR THE PERSON ASKING ─────────────────────────
+        #
+        # `required_logbooks` above is a fact about the PROJECT and has never
+        # asked who the caller is. The filing gate on POST /logbooks and on PUT
+        # at submit is a fact about the PERSON. The two answered different
+        # questions and the client only ever saw the first, so on 588 Thomas
+        # nine accounts saw the superintendent's tile and eight of them were
+        # refused the instant they pressed Submit -- at the end of a day, on a
+        # log BC 3301.13.13 requires completed before they leave the site.
+        #
+        # THE TILE IS STILL RETURNED. This says whose it is; it does not hide
+        # it. A required log a CP cannot see is one he cannot know exists or
+        # learn the owner of, which is the worse failure and the reason
+        # getVisibleLogTypes renders even a type it has no label for.
+        #
+        # SAME READ AS THE GATE. See `_cs_filing_check`.
+        "filing": await _logbook_filing_rights(project_id, required, current_user),
     }
 
 @api_router.delete("/projects/{project_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
@@ -24091,6 +24108,97 @@ def _signed_by(cp_signature, current_user) -> dict:
     return {"signed_by": str(uid)}
 
 
+#: The one log type whose FILING belongs to a named person rather than to
+#: anybody assigned to the project. BC 3301.13.13 is the construction
+#: superintendent's OWN record.
+CS_OWNED_LOG_TYPE = "site_superintendent_log"
+
+
+async def _cs_filing_check(log_type, project_id, log_date, current_user):
+    """ONE READ, FOR THE TWO PLACES THAT ASK WHO MAY FILE THIS LOG.
+
+    Returns `(registration, attribution)` -- or `(None, None)` when the
+    question does not arise, which is either a log type this rule does not
+    govern or a project that has registered nobody.
+
+    ── WHY IT IS A FUNCTION AND NOT TWO COPIES ─────────────────────────────
+
+    THE DEFECT THIS CLOSES WAS EXACTLY TWO READS ANSWERING TWO QUESTIONS. The
+    logbook list rendered `required_logbooks`, which enters
+    `site_superintendent_log` when the PROJECT's `superintendent_log_active`
+    is true -- a fact about the project, asked of nobody. The write gate below
+    reads `cs_registrations` and compares the SIGNER -- a fact about the
+    person. On 588 Thomas that is nine accounts seeing the tile and eight of
+    them refused at submit, at the end of a day, on a log that had to be filed
+    before they left the site.
+
+    The list now asks this same function (`_logbook_filing_rights`), so a tile
+    that says "yours to file" and a gate that refuses cannot both be right.
+    Splitting it back into two reads is how the defect returns.
+
+    READ-ONLY, ONE QUERY, AND ONLY FOR THE ONE TYPE. A read per logbook write
+    would be a cost on every type to govern one.
+    """
+    if log_type != CS_OWNED_LOG_TYPE:
+        return None, None
+    reg = await db.cs_registrations.find_one({
+        "project_id": str(project_id), "is_deleted": {"$ne": True},
+    })
+    if not reg:
+        return None, None
+    return reg, attribute_signer(current_user, reg, log_date)
+
+
+async def _logbook_filing_rights(project_id, required, current_user,
+                                 on_date=None):
+    """WHO MAY FILE, answered for the CALLER who is asking, for the tile.
+
+    One row per required log whose filing is restricted to a named person --
+    today that is exactly one type, and the list shape is so a second one needs
+    no client change:
+
+        {"log_type", "may_file", "registered_name", "reason"}
+
+    ── IT REPORTS THE GATE; IT IS NOT A SECOND GATE ────────────────────────
+
+    Nothing here refuses anything. `may_file` is the negation of what
+    `_refuse_if_not_the_superintendent` would do for this person on this day,
+    computed from the same read, so the screen can SAY whose log it is before
+    he fills it in rather than after he signs it.
+
+    ── NO REGISTRATION MEANS EVERYONE MAY FILE, AND THE TILE MUST NOT SAY
+       OTHERWISE ──────────────────────────────────────────────────────────
+
+    `cs_filing_refused` refuses only NOT_REGISTERED_CS. An absent registration
+    is deliberately NOT a refusal -- blocking a statutory log over a field an
+    admin never filled in punishes the superintendent for the office's
+    omission. So an unregistered project answers `may_file: True` and
+    `registered_name: None`, and the client has nothing to print. A tile that
+    named an owner the project has not named would re-introduce that refusal
+    one layer out, in the UI, where there is no gate to argue with.
+
+    THE DATE IS TODAY because this list is today's. `attribute_signer` is
+    date-aware -- a registration that postdates the log cannot describe who was
+    the CS when it was signed -- so asking about the wrong day is asking a
+    different question.
+    """
+    if CS_OWNED_LOG_TYPE not in (required or []):
+        return []
+    reg, result = await _cs_filing_check(
+        CS_OWNED_LOG_TYPE, project_id, on_date or eastern_today(), current_user,
+    )
+    refused = cs_filing_refused(result)
+    return [{
+        "log_type": CS_OWNED_LOG_TYPE,
+        "may_file": not refused,
+        # The NAME, not the message. The client owns the wording -- the same
+        # convention every `code_*` refusal on this server follows -- and a
+        # name is a fact rather than prose.
+        "registered_name": (reg or {}).get("full_name") or None,
+        "reason": "NOT_THE_REGISTERED_SUPERINTENDENT" if refused else None,
+    }]
+
+
 async def _refuse_if_not_the_superintendent(log_type, project_id, log_date,
                                             current_user):
     """Refuse a superintendent's log signed by somebody the project says is not
@@ -24119,16 +24227,15 @@ async def _refuse_if_not_the_superintendent(log_type, project_id, log_date,
     project-access gates, so a caller who fails those still gets the answer
     they got before, and it makes one query only for the one log type it
     governs.
+
+    THE READ MOVED OUT, THE RULE DID NOT. `_cs_filing_check` is the same three
+    lines this held inline; it is shared with the logbook list so a tile that
+    invites a man to fill this log and a gate that refuses his signature cannot
+    disagree. See its docstring for the defect that made it necessary.
     """
-    if log_type != "site_superintendent_log":
-        return
-    reg = await db.cs_registrations.find_one({
-        "project_id": str(project_id), "is_deleted": {"$ne": True},
-    })
-    if not reg:
-        return
-    result = attribute_signer(current_user, reg, log_date)
-    if not cs_filing_refused(result):
+    reg, result = await _cs_filing_check(
+        log_type, project_id, log_date, current_user)
+    if not reg or not cs_filing_refused(result):
         return
     # THE NAME IS IN THE MESSAGE. A refusal that does not say who MAY file
     # leaves the CP with nothing to do about it, and this is a log with a

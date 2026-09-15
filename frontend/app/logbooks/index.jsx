@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   AlertTriangle,
   Camera,
+  Lock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -39,6 +40,13 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI, logbookTypesAPI, logbookActivationAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
+// WHOSE LOG IS THIS — the server's answer for THIS caller, from the same read
+// the filing gate makes. See the module header for the nine tiles and the
+// eight refusals that made it necessary.
+import {
+  filingRights, mayFile, whoFilesLabel, whoFilesTitle, whoFilesReason,
+} from '../../src/utils/csFilingRights';
+import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -100,6 +108,10 @@ export default function LogBooksScreen() {
   );
   const { isDark, colors } = useTheme();
   const toast = useToast();
+  // The `finalize` namespace — the one that owns the wording of every refusal
+  // the server names by code. Read here so the tile's explanation and the
+  // refusal he would have met after signing are the SAME sentence.
+  const tFinalize = useT('finalize');
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
@@ -335,9 +347,67 @@ export default function LogBooksScreen() {
     await fetchProjectData(project._id || project.id);
   };
 
+  // ── WHOSE LOG IS THIS ────────────────────────────────────────────────────
+  //
+  // The server's answer for THIS caller, from the same read its filing gate
+  // makes — so a tile that invites a man to fill a log and a gate that refuses
+  // his signature cannot disagree. Two reads answering two different questions
+  // is exactly what produced nine tiles and eight refusals on 588 Thomas.
+  //
+  // EMPTY UNTIL IT ANSWERS, AND EMPTY MEANS "HE MAY FILE". This bundle ships by
+  // OTA and will meet servers older than itself; defaulting the other way would
+  // switch the superintendent's log off for everybody until the deploy caught
+  // up. It is also the server's own answer for a project that has registered
+  // nobody, which must not become a refusal on the way through the client.
+  //
+  // DECLARED HERE, above its first reader. handleOpenLog closes over it and
+  // runs long after render, so the order is not a correctness question — but a
+  // const read from above its declaration is how a later edit acquires a
+  // temporal-dead-zone crash that no static sweep sees.
+  const rights = filingRights(requiredLogbooks);
+
   const handleOpenLog = (logType) => {
     if (!selectedProject) {
       toast.warning('Select Project', 'Please select a project first');
+      return;
+    }
+    // ── A LOG THAT IS NOT HIS TO FILE IS NAMED, NOT OPENED ─────────────────
+    //
+    // THE GUARD IS HERE, not on the row, so every way into a fresh editor from
+    // this screen gets the same answer — the tile, and the alert buttons that
+    // call this with a log type of their own.
+    //
+    // WHY NOT LET HIM OPEN IT. The server's filing gate runs on create and on
+    // PUT ONLY AT SUBMIT: drafts save clean, deliberately, because refusing an
+    // autosave would strand work he can still hand over. The consequence is
+    // that opening the editor lets him fill the entire log, watch every
+    // autosave succeed, and meet the refusal the instant he presses Submit —
+    // at the end of his day, on a record BC 3301.13.13 requires completed
+    // before he leaves the site. Telling him now costs him nothing; telling
+    // him then costs him the day's work and the deadline.
+    //
+    // IT NAMES THE MAN, in the same words the refusal would have used. A "not
+    // yours" with no "whose" leaves him nothing to do about it, and the remedy
+    // here is to hand the log over.
+    //
+    // ANSWERS YES WHEN IT DOES NOT KNOW. No `filing` from the server, no row
+    // for this type, or a project that has registered nobody, and he may file
+    // — the server itself refuses nobody in that last case, and the client
+    // must not invent a refusal the gate does not make.
+    //
+    // AND A FILED LOG IS NOT A FILING. Once the day's record is submitted,
+    // LogbookStepper renders FiledLogView instead of the steps, so this route
+    // is READING a statutory document rather than writing one — which the
+    // eight who may not file it (an owner, four admins, a second CP) have
+    // every reason to do and could do before this guard existed. Withholding
+    // that would be a new defect wearing this one's clothes: it is the
+    // INVITATION TO FILL A LOG HE CANNOT FILE that is being closed.
+    const filed = logTypeStatus(todayLogs[logType]) === 'submitted';
+    if (!filed && !mayFile(rights, logType)) {
+      toast.warning(
+        whoFilesTitle(rights, logType),
+        whoFilesReason(rights, logType, tFinalize),
+      );
       return;
     }
     const projectId = selectedProject._id || selectedProject.id;
@@ -924,10 +994,45 @@ export default function LogBooksScreen() {
                   const Icon = typeof logType.icon === 'string' ? (ICON_MAP[logType.icon] || ClipboardList) : logType.icon;
                   const status = getLogStatus(logType.key);
                   const photoTarget = filedPhotoTarget(logType.key);
+                  // ── A THIRD STATE, NOT A HIDDEN ROW ────────────────────
+                  //
+                  // BC 3301.13.13 is the construction superintendent's OWN
+                  // record, and the server refuses a filing from anybody the
+                  // project did not register — on create, and on PUT ONLY AT
+                  // SUBMIT. So a tile that simply opened the editor let a man
+                  // fill the whole log and meet the refusal at the end of his
+                  // day, on a document due before he leaves the site. On 588
+                  // Thomas that was 8 of the 9 accounts that can see it.
+                  //
+                  // AND IT IS NOT HIDDEN, for the reason getVisibleLogTypes
+                  // already gives about a type it has no label for: "A
+                  // required log the CP cannot open is worse than an ugly
+                  // label." A CP who cannot see the log cannot see that it
+                  // EXISTS or learn who owns it — and on a project with no
+                  // registration at all the server withholds it from nobody,
+                  // so a hidden tile would be plainly wrong there too.
+                  //
+                  // SAME SHAPE AS THE ACTIVATION ROWS above, which say "Off —
+                  // an admin switches this one on" rather than showing a dead
+                  // control: the row names the state, and the tap names the
+                  // person.
+                  //
+                  // TWO FACTS, NOT ONE. Whose log it is stays true after it is
+                  // filed, so the LINE is shown either way — but a filed log
+                  // opens to FiledLogView, and reading a statutory record is
+                  // not filing one. The padlock is about the tap, and the tap
+                  // is only refused while there is still a log to fill in.
+                  const notHis = !mayFile(rights, logType.key);
+                  const whoseLine = whoFilesLabel(rights, logType.key);
+                  const openable = !notHis || status === 'submitted';
                   return (
                     <React.Fragment key={logType.key}>
                     <Pressable
                       onPress={() => handleOpenLog(logType.key)}
+                      accessibilityRole="button"
+                      accessibilityLabel={whoseLine
+                        ? `${openable ? 'Open ' : ''}${logType.label} — ${whoseLine}`
+                        : `Open ${logType.label}`}
                       style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
                     >
                       <View style={[styles.logIcon, { backgroundColor: logType.bg || (logType.color + '26') }]}>
@@ -935,11 +1040,21 @@ export default function LogBooksScreen() {
                       </View>
                       <View style={styles.logInfo}>
                         <Text style={styles.logLabel}>{logType.label}</Text>
-                        <Text style={styles.logSubtitle}>{logType.subtitle}</Text>
+                        {/* The whose-log line REPLACES the subtitle rather than
+                            joining it: both describe the same document, and
+                            two lines of small print is how a CP stops reading
+                            either. The subtitle here is "BC 3301.13.13 — the
+                            superintendent's own record", which the line says
+                            in words that also name him. */}
+                        <Text style={styles.logSubtitle}>{whoseLine || logType.subtitle}</Text>
                       </View>
                       <View style={styles.logRight}>
                         <StatusBadge status={status} />
-                        <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+                        {openable ? (
+                          <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+                        ) : (
+                          <Lock size={16} strokeWidth={1.5} color={colors.text.muted} />
+                        )}
                       </View>
                     </Pressable>
                     {/* A SECOND ROW, NOT A BUTTON INSIDE THE FIRST.
@@ -993,8 +1108,20 @@ export default function LogBooksScreen() {
               <Text style={styles.summaryTitle}>Today's Completion</Text>
               <View style={styles.summaryRow}>
                 {(() => {
-                  const submitted = visibleLogs.filter(lt => getLogStatus(lt.key) === 'submitted').length;
-                  const total = visibleLogs.length;
+                  // ── HIS DAY, NOT THE PROJECT'S ────────────────────────
+                  // "Today's Completion" is the bar on the CP's own screen and
+                  // it counts work he can do. A log the server will not let
+                  // him file can never leave the numerator, so counting it in
+                  // the denominator gives him a bar that is permanently short
+                  // through no act of his — and a progress bar that cannot
+                  // reach the end is one he stops reading, including on the
+                  // days it is telling him something.
+                  //
+                  // The tile stays on the list above either way; this is only
+                  // about arithmetic he is measured by.
+                  const countable = visibleLogs.filter(lt => mayFile(rights, lt.key));
+                  const submitted = countable.filter(lt => getLogStatus(lt.key) === 'submitted').length;
+                  const total = countable.length;
                   const pct = total > 0 ? Math.round((submitted / total) * 100) : 0;
                   return (
                     <>

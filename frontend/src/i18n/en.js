@@ -165,6 +165,36 @@ export default {
     // sends which items; the screen points at them, and this sentence is the
     // fallback for anywhere without a row to point at.
     code_SUBMIT_UNATTESTED_ITEMS: 'Some items have not been answered. Mark each one either with what you observed or as nothing to report, then sign.',
+    // ── THE REFUSAL THAT NEVER REACHED HIM ──────────────────────────────────
+    //
+    // The server has raised NOT_THE_REGISTERED_SUPERINTENDENT since the filing
+    // gate landed, with a message naming the registered man and a
+    // `registered_name` field beside it. There was no copy for the code, so
+    // gateCopy fell through to genericError — "That could not be recorded just
+    // now. Your entry is kept — try again." — which tells a superintendent to
+    // RETRY a refusal that can never succeed, names nobody, and offers no
+    // remedy. On 588 Thomas that is 8 of the 9 accounts that can see the tile,
+    // and they meet it at the moment they press Submit, at the end of a day,
+    // on a log BC 3301.13.13 requires completed before they leave the site.
+    //
+    // NO "TRY AGAIN" IN EITHER SENTENCE. This is a judgement about WHO the
+    // signer is. Nothing he does on this screen changes it; what he needs is
+    // the name of the man who signs, so he can hand the log over.
+    //
+    // TWO KEYS, AND THE SPLIT IS LOAD-BEARING. The name lives on the ERROR
+    // DETAIL, which exists only where the response does. LogbookLockBar
+    // renders this same namespace from a code STORED by recordFinalizeError —
+    // code only, no detail — so a single `{name}` sentence would paint a
+    // literal "{name}" onto that banner. The base key below is nameless and
+    // safe for every renderer; `_NAMED` carries the slot and is reached only
+    // from a call site holding the detail (src/utils/csRefusalCopy.js).
+    code_NOT_THE_REGISTERED_SUPERINTENDENT:
+      "This is the construction superintendent's own log under BC 3301.13.13. "
+      + 'It is signed by the superintendent this project registered — ask the '
+      + 'office who that is, and hand the log to him.',
+    code_NOT_THE_REGISTERED_SUPERINTENDENT_NAMED:
+      "This is the construction superintendent's own log under BC 3301.13.13. "
+      + '{name} is registered on this project and is the person who signs it.',
     // Raised for the two records that ARE a list of rows — the certification
     // register and the sign-in sheet — when every row is one the PDF renderer
     // would refuse to print. The document would come out blank. Not a

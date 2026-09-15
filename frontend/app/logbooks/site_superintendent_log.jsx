@@ -94,6 +94,10 @@ import {
   finalizeErrorCode, recordFinalizeError, clearFinalizeError,
 } from '../../src/utils/draftSync';
 import { isOfflineError } from '../../src/utils/offlineState';
+// The refusal copy rule, with the one code that also names a man. See its
+// header for why the named sentence is a second key rather than an
+// interpolation into the first.
+import { refusalCopy } from '../../src/utils/csRefusalCopy';
 // TWO MODULES, AND THEY ARE NOT INTERCHANGEABLE. `signatureAudit` is the
 // LEDGER (recordSignatureEvent, device fingerprint, integrity); the predicate
 // that says whether a signature was affirmed lives in `signatureAffirmed`.
@@ -534,13 +538,23 @@ export default function SiteSuperintendentLog() {
   // dependency array is evaluated during render. See the note down there.
   const scratchId = scratchKey(LOG_TYPE, projectId, logDate);
 
-  /** The server names the condition, the client owns the wording. */
-  const gateCopy = useCallback((code) => {
-    if (!code) return tFinalize('genericError');
-    const key = `code_${code}`;
-    const copy = tFinalize(key);
-    return copy && copy !== key ? copy : tFinalize('genericError');
-  }, [tFinalize]);
+  /**
+   * The server names the condition, the client owns the wording.
+   *
+   * AND FOR ONE CODE IT ALSO NAMES A MAN. NOT_THE_REGISTERED_SUPERINTENDENT
+   * carries `registered_name` — the only fact that makes that refusal
+   * actionable, because the remedy is to hand the log to him. The four-liner
+   * this replaced took a code and nothing else, so the name was thrown away at
+   * the door and the code itself had no copy: the superintendent read "try
+   * again" about a refusal no retry can clear.
+   *
+   * The rule is otherwise UNCHANGED — unmapped code falls back to
+   * genericError, the server's English `detail` is never rendered — and
+   * csRefusalCopy.test.cjs asserts that against every other code in the
+   * namespace, so this screen cannot have quietly reworded the other fifteen.
+   */
+  const gateCopy = useCallback((code, detail) => refusalCopy(code, detail, tFinalize),
+    [tFinalize]);
 
   // ── item state ──────────────────────────────────────────────────────────
   // ARRIVAL IS PREFILLED AND IS HIS TO CHANGE. He may open the app in his
@@ -1585,7 +1599,12 @@ export default function SiteSuperintendentLog() {
           // does not have.
           const code = finalizeErrorCode(freezeErr);
           await recordFinalizeError(savedId, code, _key, 'editor');
-          toast.error(tFinalize('errorTitle'), gateCopy(code));
+          // THE DETAIL, not just the code. /finalize does not raise the CS
+          // refusal today — the gate is on create and on submit — but this is
+          // the same four-liner and there is no reason for it to be the one
+          // that discards a name the response carried.
+          toast.error(tFinalize('errorTitle'),
+            gateCopy(code, freezeErr?.response?.data?.detail));
           return;
         }
         // NOT A JUDGEMENT — it never arrived. The content is filed, the
@@ -1652,7 +1671,15 @@ export default function SiteSuperintendentLog() {
         // gateCopy, NOT the raw code: the server names the condition, this
         // screen owns the wording. It is the reason `couldNotFile` stopped
         // printing `detail.code` at him in the first place.
-        return gateCopy(code);
+        //
+        // AND THE DETAIL GOES WITH IT, for the same reason `items` does two
+        // lines up. NOT_THE_REGISTERED_SUPERINTENDENT carries `registered_name`
+        // — the ONLY part of that refusal he can act on, because the remedy is
+        // to hand the log to the man it names. This path is the one the CS
+        // gate actually arrives on: it runs on POST /logbooks and on PUT at
+        // submit, so the refusal lands here, at the end of his day, on a log
+        // that had to be filed before he left.
+        return gateCopy(code, detail);
       };
 
       // REFUSAL IS NOT OFFLINE, and neither is a 5xx. Three outcomes, and the
