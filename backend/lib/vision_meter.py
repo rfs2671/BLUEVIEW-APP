@@ -96,10 +96,21 @@ VISION_PARSE_CARD = "enrollment_parse_card"
 VISION_PLAN_INDEX_PAGE = "plan_index_page"
 VISION_WHATSAPP_VQA = "whatsapp_visual_qa"
 
+# ── OCR FOR A PAGE WITH NO TEXT LAYER ─────────────────────────────────────
+#
+# Index version 3 reads a page's PDF text layer first, because a CAD-exported
+# sheet carries its wording and numbers exactly and for free. A scanned sheet
+# carries none, and for those alone the page image is sent to AWS Textract.
+# That is a paid call made per scanned page during indexing, so it is counted
+# here like every other one — and it is a separate name because its price and
+# its trigger are both different from the vision-model calls beside it.
+VISION_PLAN_INDEX_OCR = "plan_index_ocr"
+
 VISION_ENDPOINTS = frozenset({
     VISION_UPLOAD_OSHA,
     VISION_PARSE_CARD,
     VISION_PLAN_INDEX_PAGE,
+    VISION_PLAN_INDEX_OCR,
     VISION_WHATSAPP_VQA,
 })
 
@@ -158,5 +169,5 @@ async def record_vision_call(
 __all__ = [
     "record_vision_call", "eastern_day", "meter_key", "COLLECTION",
     "VISION_ENDPOINTS", "VISION_UPLOAD_OSHA", "VISION_PARSE_CARD",
-    "VISION_PLAN_INDEX_PAGE", "VISION_WHATSAPP_VQA",
+    "VISION_PLAN_INDEX_PAGE", "VISION_PLAN_INDEX_OCR", "VISION_WHATSAPP_VQA",
 ]
