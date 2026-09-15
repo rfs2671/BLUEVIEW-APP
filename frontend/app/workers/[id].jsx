@@ -44,13 +44,18 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import OfflineNotice from '../../src/components/OfflineNotice';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography, touchTarget } from '../../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
-import { certLabel, certExpiration } from '../../src/utils/oshaLogModel';
+import {
+  certLabel,
+  certExpiration,
+  CERT_TYPE_LABELS,
+  SST_CLASS_OPTIONS,
+} from '../../src/utils/oshaLogModel';
 import { pairingLine, hasPairing } from '../../src/utils/workerPairingCopy';
 import { settleFetch, failureDetail } from '../../src/utils/offlineState';
 
@@ -363,12 +368,28 @@ export default function WorkerDetailScreen() {
     }
   };
 
+  /**
+   * THE ADD-CERTIFICATION MENU.
+   *
+   * THE SST ROWS ARE NOT WRITTEN HERE. They are spread from SST_CLASS_OPTIONS,
+   * which is derived from the vocabulary in oshaLogModel — itself asserted
+   * against backend/lib/cert_vocab.py by certPickerVocabulary.test.cjs. This
+   * list used to carry its own copy and got both halves wrong:
+   *
+   *     'SST Full (62-hr)'     62 is the SUPERVISOR's hours; FULL is 40
+   *     'SST Limited (10-hr)'  10 is the TEMPORARY card's hours
+   *     SST_TEMPORARY          missing, though it is in SST_CLASS_TYPES
+   *
+   * and the labels disagreed with certLabel() — the accessor THIS SAME SCREEN
+   * uses to render the certs listed below. One screen, two names per class.
+   *
+   * The OSHA labels come from the same map for the same reason: they read
+   * 'OSHA-10' here and 'OSHA 10' everywhere else.
+   */
   const CERT_TYPES = [
-    { value: 'OSHA_10', label: 'OSHA-10' },
-    { value: 'OSHA_30', label: 'OSHA-30' },
-    { value: 'SST_FULL', label: 'SST Full (62-hr)' },
-    { value: 'SST_LIMITED', label: 'SST Limited (10-hr)' },
-    { value: 'SST_SUPERVISOR', label: 'SST Supervisor' },
+    { value: 'OSHA_10', label: CERT_TYPE_LABELS.OSHA_10 },
+    { value: 'OSHA_30', label: CERT_TYPE_LABELS.OSHA_30 },
+    ...SST_CLASS_OPTIONS,
     { value: 'FDNY_COF', label: 'FDNY Certificate of Fitness' },
     { value: 'SCAFFOLD', label: 'Scaffold Safety' },
     { value: 'RIGGING', label: 'Rigging' },
@@ -904,10 +925,48 @@ export default function WorkerDetailScreen() {
 
             {showAddCert && (
               <GlassCard style={s.addForm}>
+                {/*
+                  THE TYPE WAS NEVER ASKED FOR. CERT_TYPES was built and then
+                  never rendered — `newCertType` was initialised to 'OSHA_10'
+                  and no control could change it, so every certification an
+                  admin added was stored as an OSHA-10 whatever it was. That
+                  made the one manual repair for a worker stuck on
+                  CLASS_UNVERIFIED (add the right row, delete the flagged one)
+                  incapable of producing an SST row at all.
+                */}
+                <Text style={s.addLabel}>TYPE</Text>
+                <View style={s.typePicker}>
+                  {CERT_TYPES.map((t) => {
+                    const active = newCertType === t.value;
+                    return (
+                      <Pressable
+                        key={t.value}
+                        onPress={() => setNewCertType(t.value)}
+                        style={[s.typeChip, active && s.typeChipActive]}
+                      >
+                        <Text style={[s.typeChipText, active && s.typeChipTextActive]}>
+                          {t.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {/*
+                  A DEAD CLASS IS OFFERED AND SAID TO BE DEAD. "Limited" SST
+                  stopped being valid in August 2020; it stays on the menu
+                  because historical rows carry it and an admin transcribing a
+                  worker's existing record must be able to say what the record
+                  says. The sentence is the one the CP already reads on a
+                  flagged card (sstFlagCopy CLASS_CLAUSE.dead).
+                */}
+                {SST_CLASS_OPTIONS.some((o) => o.deprecated && o.value === newCertType) && (
+                  <Text style={s.typeNote}>This card class is no longer issued.</Text>
+                )}
                 <GlassInput
                   value={newCertName}
                   onChangeText={setNewCertName}
-                  placeholder="Certification name"
+                  placeholder="Card number (optional)"
+                  style={s.inputSpacing}
                 />
                 <GlassInput
                   value={newCertExpiry}
@@ -1313,6 +1372,45 @@ function buildStyles(colors, isDark) {
   },
   addForm: {
     marginBottom: spacing.md,
+  },
+  addLabel: {
+    fontSize: 11,
+    letterSpacing: 1,
+    color: colors.text.subtle,
+    marginBottom: spacing.sm,
+  },
+  typePicker: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  // touchTarget.min, not a height that fits the word. A chip sized to its own
+  // text gives "SST Full" a bigger way in than "Lead" — which is the shape
+  // touch-targets.cjs was written for after an 18pt disclosure row shipped.
+  typeChip: {
+    minHeight: touchTarget.min,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    backgroundColor: colors.glass.background,
+  },
+  typeChipActive: {
+    borderColor: chrome.brand,
+    backgroundColor: withAlpha(chrome.brand, 0.12),
+  },
+  typeChipText: {
+    fontSize: 13,
+    color: colors.text.secondary,
+  },
+  typeChipTextActive: {
+    color: colors.text.primary,
+  },
+  typeNote: {
+    fontSize: 12,
+    color: semantic.attention,
+    marginTop: spacing.sm,
   },
   addFormButtons: {
     flexDirection: 'row',

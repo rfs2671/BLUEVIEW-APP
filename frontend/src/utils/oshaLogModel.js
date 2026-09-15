@@ -75,7 +75,7 @@ export const EMPTY_ENTRY = () => ({
 // value here is one of the seven the backend can store (server.py:1894-1901).
 // An UNKNOWN code passes through VERBATIM rather than being guessed at — this
 // deliberately infers no card class, which is Part 3A's job.
-const CERT_TYPE_LABELS = Object.freeze({
+export const CERT_TYPE_LABELS = Object.freeze({
   OSHA_10: 'OSHA 10',
   OSHA_30: 'OSHA 30',
   OSHA_UNSPECIFIED: 'OSHA',
@@ -100,6 +100,56 @@ const CERT_TYPE_LABELS = Object.freeze({
 // `class_source` on the LIVE worker certification, not something this screen
 // has when it builds a row. The printed register resolves it at render time
 // (sst_class_label in server.py). This screen says the class and stops.
+
+/**
+ * THE SST CLASSES, AND THE ONE LIST A PICKER MAY OFFER.
+ *
+ * MIRRORS backend/lib/cert_vocab.py SST_CLASS_TYPES. The frontend cannot
+ * import Python, so this is the single JS copy and certPickerVocabulary.test.cjs
+ * reads the .py and asserts set equality — the same arrangement cert_vocab.py
+ * made on the backend, extended over the wire.
+ *
+ * WHY THIS EXISTS AT ALL. app/workers/[id].jsx carried its OWN list of four SST
+ * options and its own labels, and both were wrong:
+ *
+ *     SST_FULL      'SST Full (62-hr)'    62 is the SUPERVISOR's hours; FULL is 40
+ *     SST_LIMITED   'SST Limited (10-hr)' 10 is the TEMPORARY card's hours;
+ *                                         LIMITED was the 30-hour transitional
+ *     SST_TEMPORARY  absent entirely      though it is in SST_CLASS_TYPES
+ *
+ * The same screen already rendered STORED certs through certLabel() above, so
+ * one screen called SST_FULL "SST Worker" in the list and "SST Full (62-hr)" in
+ * the menu that adds one. Adding a correct row and deleting the flagged one is
+ * the only manual repair an admin has for a worker stuck on CLASS_UNVERIFIED —
+ * there is no edit endpoint — so the repair tool was the mislabelled one.
+ *
+ * NO HOURS IN A LABEL. For the reason stated directly above: hours are a
+ * property of the class, not a reading off the card, and nothing that picks a
+ * class should imply the card printed them.
+ */
+export const SST_CLASS_TYPES = Object.freeze([
+  'SST_FULL',
+  'SST_LIMITED',
+  'SST_SUPERVISOR',
+  'SST_TEMPORARY',
+]);
+
+/**
+ * "Limited" SST was the 30-hour transitional card; it ceased to be valid in
+ * AUGUST 2020 (server.py SST_DEAD_CLASSES). It STAYS offered because historical
+ * rows carry it and an admin transcribing a worker's existing record must be
+ * able to say what the record says. It is marked, not removed.
+ */
+export const SST_DEAD_CLASSES = Object.freeze(['SST_LIMITED']);
+
+/**
+ * The picker rows. Derived — never a second list of labels.
+ */
+export const SST_CLASS_OPTIONS = Object.freeze(SST_CLASS_TYPES.map((value) => Object.freeze({
+  value,
+  label: CERT_TYPE_LABELS[value],
+  deprecated: SST_DEAD_CLASSES.includes(value),
+})));
 
 export function certLabel(cert) {
   if (!cert || typeof cert !== 'object') return '';
@@ -386,6 +436,9 @@ export function draftBody(entries) {
 export default {
   CERT_TYPES,
   CERT_TYPE_LABELS,
+  SST_CLASS_TYPES,
+  SST_DEAD_CLASSES,
+  SST_CLASS_OPTIONS,
   certLabel,
   certExpiration,
   ENTRY_KEYS,
