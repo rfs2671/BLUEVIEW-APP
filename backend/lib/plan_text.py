@@ -32,8 +32,8 @@ to, is not guessed at: it is kept as an UNVERIFIED dimension fragment.
 PURE EXCEPT ONE FUNCTION
 ========================
 
-Everything below `page_layouts` works on plain dicts shaped like PyMuPDF's
-`get_text("dict")`, so it is tested without a PDF. `page_layouts` is the only
+Everything except `page_layouts` works on plain dicts — pdfplumber characters,
+or the blocks/lines/spans shape built from them — so it is tested without a PDF. `page_layouts` is the only
 function that imports the PDF library, lazily.
 """
 
@@ -173,41 +173,153 @@ def layout_from_dict(page_dict: Dict[str, Any], *, width: float, height: float,
     }
 
 
+# ── LINES ARE BUILT FROM CHARACTERS IN DRAWING ORDER ──────────────────────
+#
+# pdfminer's own line grouping is geometric, and a stacked fraction is
+# geometrically NOT on its line: the numerator sits above the baseline and the
+# denominator below it. Measured on A-500.00, pdfminer returned '2" METAL STUD'
+# with the '3 1' of '3 1/2"' filed in a different box. CAD writes a label's
+# characters in order, so following the drawing order and breaking only on a
+# real jump keeps the fraction with its label.
+_LINE_ALONG_MAX = 1.6      # x size: farther along the text direction is a new line
+_LINE_ALONG_BACK = 0.6     # x size: stepping back more than this is a new line
+_LINE_PERP_MAX = 0.75      # x size: a fraction's offset stays under this
+_SPACE_GAP = 0.25          # x size: a gap this wide between glyphs is a space
+_BLOCK_PERP_MAX = 2.4      # x size: the next line of the same label
+_SIZE_TOL = 0.3
+
+
+def _char_dir(ch: Dict[str, Any]) -> Tuple[float, float]:
+    m = ch.get("matrix") or (1, 0, 0, 1, 0, 0)
+    a, b = float(m[0]), float(m[1])
+    n = math.hypot(a, b) or 1.0
+    # pdfplumber's top/bottom run downward; the PDF matrix's y runs upward.
+    return (a / n, -b / n)
+
+
+def _char_center(ch: Dict[str, Any]) -> Tuple[float, float]:
+    return ((float(ch["x0"]) + float(ch["x1"])) / 2, (float(ch["top"]) + float(ch["bottom"])) / 2)
+
+
+def _char_extent(ch: Dict[str, Any], d: Tuple[float, float]) -> float:
+    return abs((float(ch["x1"]) - float(ch["x0"])) * d[0]) + abs((float(ch["bottom"]) - float(ch["top"])) * d[1])
+
+
+def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """pdfplumber characters -> the blocks/lines/spans shape layout_from_dict
+    reads. Pure: a character is a dict with text, size, x0, x1, top, bottom
+    and matrix, exactly as pdfplumber's page.chars gives it."""
+    lines: List[Dict[str, Any]] = []
+    cur: Optional[Dict[str, Any]] = None
+    for ch in chars:
+        text = ch.get("text") or ""
+        if not text:
+            continue
+        size = float(ch.get("size") or 0) or 1.0
+        d = _char_dir(ch)
+        c = _char_center(ch)
+        ext = _char_extent(ch, d)
+        joined = False
+        if cur is not None and (d[0] * cur["d"][0] + d[1] * cur["d"][1]) > 0.98:
+            vx, vy = c[0] - cur["last_c"][0], c[1] - cur["last_c"][1]
+            along = vx * d[0] + vy * d[1]
+            # Offset from the LINE, not from the previous glyph: a numerator
+            # sits above the baseline and its denominator below it, so glyph to
+            # glyph they are nearly a full small-size apart while each is well
+            # within a fraction's offset of the line itself.
+            sx, sy = c[0] - cur["start_c"][0], c[1] - cur["start_c"][1]
+            perp = abs(-sx * d[1] + sy * d[0])
+            big = max(cur["max_size"], size)
+            if -_LINE_ALONG_BACK * big <= along <= _LINE_ALONG_MAX * big + cur["last_ext"] and \
+                    perp <= _LINE_PERP_MAX * big:
+                gap = along - (cur["last_ext"] + ext) / 2
+                if gap > _SPACE_GAP * min(cur["last_size"], size) and text != " " \
+                        and not cur["chars"][-1]["text"].endswith(" "):
+                    cur["chars"].append({"text": " ", "size": cur["last_size"]})
+                joined = True
+        if not joined:
+            cur = {"d": d, "chars": [], "max_size": size, "start_c": c,
+                   "x0": float(ch["x0"]), "x1": float(ch["x1"]),
+                   "top": float(ch["top"]), "bottom": float(ch["bottom"])}
+            lines.append(cur)
+        cur["chars"].append({"text": text, "size": size})
+        cur["last_c"], cur["last_ext"], cur["last_size"] = c, ext, size
+        cur["max_size"] = max(cur["max_size"], size)
+        cur["x0"] = min(cur["x0"], float(ch["x0"]))
+        cur["x1"] = max(cur["x1"], float(ch["x1"]))
+        cur["top"] = min(cur["top"], float(ch["top"]))
+        cur["bottom"] = max(cur["bottom"], float(ch["bottom"]))
+
+    def spans_of(line_chars):
+        spans: List[Dict[str, Any]] = []
+        for c in line_chars:
+            if spans and (abs(spans[-1]["size"] - c["size"]) <= _SIZE_TOL or c["text"] == " "):
+                spans[-1]["text"] += c["text"]
+            else:
+                spans.append({"text": c["text"], "size": c["size"]})
+        return spans
+
+    blocks: List[Dict[str, Any]] = []
+    prev = None
+    for ln in lines:
+        entry = {"spans": spans_of(ln["chars"])}
+        bbox = [ln["x0"], ln["top"], ln["x1"], ln["bottom"]]
+        same_block = False
+        if prev is not None and (ln["d"][0] * prev["d"][0] + ln["d"][1] * prev["d"][1]) > 0.98:
+            vx = ln["start_c"][0] - prev["start_c"][0]
+            vy = ln["start_c"][1] - prev["start_c"][1]
+            along = vx * ln["d"][0] + vy * ln["d"][1]
+            perp = abs(-vx * ln["d"][1] + vy * ln["d"][0])
+            size = max(ln["max_size"], prev["max_size"])
+            length = abs((prev["x1"] - prev["x0"]) * ln["d"][0]) + abs((prev["bottom"] - prev["top"]) * ln["d"][1])
+            if 0.5 * size <= perp <= _BLOCK_PERP_MAX * size and abs(along) <= length + size:
+                same_block = True
+        if same_block:
+            b = blocks[-1]
+            b["lines"].append(entry)
+            b["bbox"] = [min(b["bbox"][0], bbox[0]), min(b["bbox"][1], bbox[1]),
+                         max(b["bbox"][2], bbox[2]), max(b["bbox"][3], bbox[3])]
+        else:
+            blocks.append({"type": 0, "bbox": bbox, "lines": [entry]})
+        prev = ln
+    return {"blocks": blocks}
+
+
 def page_layouts(pdf_bytes: bytes, *, pages: Optional[Iterable[int]] = None,
                  with_tables: bool = True) -> List[Optional[Dict[str, Any]]]:
     """One layout per page (1-based `pages` limits which are built; the rest
-    are None). The only function here that touches the PDF library."""
-    import fitz  # PyMuPDF — imported here so the pure functions need nothing
+    are None). The only function here that touches the PDF library.
 
-    try:
-        fitz.TOOLS.mupdf_display_errors(False)
-    except Exception:
-        pass
+    pdfplumber (MIT). Its coordinates are the page box as drawn in the file —
+    this set's sheets carry /Rotate 270 and pdfplumber reports them 2592x1728
+    with the title block on the right, which is what the edge strips expect."""
+    import io as _io
+    import logging as _logging
+
+    import pdfplumber  # imported here so the pure functions need nothing
+
+    _logging.getLogger("pdfminer").setLevel(_logging.ERROR)
     wanted = set(pages) if pages else None
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     out: List[Optional[Dict[str, Any]]] = []
-    try:
-        for i, page in enumerate(doc, start=1):
+    with pdfplumber.open(_io.BytesIO(pdf_bytes)) as pdf:
+        for i, page in enumerate(pdf.pages, start=1):
             if wanted is not None and i not in wanted:
                 out.append(None)
                 continue
             tables: List[Dict[str, Any]] = []
             if with_tables:
                 try:
-                    for t in page.find_tables().tables:
+                    for t in page.find_tables():
                         tables.append({"bbox": [float(x) for x in t.bbox], "rows": t.extract()})
                 except Exception:
                     tables = []
-            # UNROTATED size. Text coordinates are in the page's own space, and
-            # this set's sheets are rotated 270: page.rect reports 2592x1728
-            # while the blocks run to y=2501. Using the rotated size put the
-            # title block outside every edge strip on S-001.00.
-            box = page.cropbox
             out.append(layout_from_dict(
-                page.get_text("dict"), width=box.width, height=box.height,
-                page_number=i, tables=tables))
-    finally:
-        doc.close()
+                page_dict_from_chars(page.chars), width=float(page.width),
+                height=float(page.height), page_number=i, tables=tables))
+            try:
+                page.close()
+            except Exception:
+                pass
     return out
 
 
@@ -326,42 +438,142 @@ def classify_block(text: str) -> str:
     return "text"
 
 
-def notes_from_blocks(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Numbered notes, split where the numbers are, under the heading above
-    them. No length cap on a note's text: a long note is a long chunk, never a
+def _bbox_gap(a: List[float], b: List[float]) -> float:
+    """Distance between two boxes; 0 when they touch or overlap."""
+    dx = max(0.0, b[0] - a[2], a[0] - b[2])
+    dy = max(0.0, b[1] - a[3], a[1] - b[3])
+    return max(dx, dy)
+
+
+# A numbered note continues into the next block when that block is this close:
+# CAD writes a note's number as its own text object, and on S-001.00 the
+# number of note 8.2 ends the block that holds the text of 8.1.
+NOTE_CHAIN_GAP = 40.0
+# Unnumbered notes are taken only this close to the NOTES header or the last
+# note taken, and never from above the header.
+UNNUMBERED_NOTE_GAP = 60.0
+_NOTES_HEADER = re.compile(r"^(?:[A-Z0-9&/().,'\-]+\s+){0,5}NOTES?\s*:?$")
+
+
+def _caps_sentence(s: str) -> bool:
+    return (not re.search(r"[a-z]", s) and bool(re.search(r"[A-Z]{3,}", s))
+            and len(s.split()) >= 2 and len(s) <= 400)
+
+
+def notes_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], set]:
+    """(notes, indices of the blocks they came from).
+
+    Read as a stream of lines, because a block is a drawing object, not a note:
+    one block can hold a heading and three notes, and a number can end the
+    block before its own text. Numbered notes split where the numbers are.
+    Under a NOTES header, short all-caps blocks with no numbers are notes too,
+    one per block. No length cap: a long note is a long chunk, never a
     truncated one."""
     notes: List[Dict[str, Any]] = []
+    consumed: set = set()
     heading = None
-    for b in blocks:
-        kind = classify_block(b["text"])
-        if kind == "heading":
-            heading = b["text"].strip().rstrip(":")
-            continue
-        if kind != "notes":
-            continue
-        current = None
-        for line in b["lines"]:
-            only = _NOTE_NUM_ONLY.match(line)
-            inline = _NOTE_NUM_INLINE.match(line)
-            if only:
-                current = {"number": only.group(1), "text": "", "heading": heading}
+    current = None
+    last_bbox = None
+    header_bbox = None          # the NOTES header unnumbered notes hang from
+    chain_bbox = None           # the last block taken as an unnumbered note
+    for bi, b in enumerate(blocks):
+        near = last_bbox is not None and _bbox_gap(last_bbox, b["bbox"]) <= NOTE_CHAIN_GAP
+        if not near or (current is not None and current["number"] is None):
+            current = None
+        used = False
+        for raw in b["lines"]:
+            s = raw.strip()
+            if not s:
+                continue
+            upper_only = s.upper() == s
+            if upper_only and len(s) <= 60 and (
+                    (s.endswith(":") and _NOTE_HEADING.search(s)) or _NOTES_HEADER.match(s)):
+                heading = s.rstrip(":").strip()
+                current = None
+                used = True
+                if _NOTES_HEADER.match(s):
+                    header_bbox, chain_bbox = b["bbox"], b["bbox"]
+                continue
+            only = _NOTE_NUM_ONLY.match(s)
+            inline = _NOTE_NUM_INLINE.match(s)
+            if only or inline:
+                current = {"number": (only or inline).group(1),
+                           "text": inline.group(2) if inline else "", "heading": heading}
                 notes.append(current)
-            elif inline:
-                current = {"number": inline.group(1), "text": inline.group(2), "heading": heading}
+                used = True
+                continue
+            if current is not None:
+                current["text"] = (current["text"] + " " + s).strip()
+                used = True
+                continue
+            if (header_bbox is not None and _caps_sentence(s)
+                    and b["bbox"][1] >= header_bbox[1] - 2
+                    and _bbox_gap(chain_bbox, b["bbox"]) <= UNNUMBERED_NOTE_GAP):
+                current = {"number": None, "text": s, "heading": heading}
                 notes.append(current)
-            elif current is not None:
-                current["text"] = (current["text"] + " " + line).strip()
-    return [n for n in notes if n["text"]]
+                chain_bbox = b["bbox"]
+                used = True
+        if used:
+            consumed.add(bi)
+            last_bbox = b["bbox"]
+    return [n for n in notes if n["text"]], consumed
 
 
-def legend_from_blocks(blocks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+# Legend entries are separate drawing objects beside the word LEGEND. On
+# A-100.00 they sit up to ~200pt away, below and to the right, and the file
+# writes them interleaved with unrelated labels — so they are found by where
+# they are, not by what came next.
+LEGEND_RADIUS = 260.0
+
+
+def legend_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, str]], set]:
+    """(entries, indices of the blocks they came from)."""
     out: List[Dict[str, str]] = []
-    for b in blocks:
-        if classify_block(b["text"]) == "legend":
+    consumed: set = set()
+    for i, b in enumerate(blocks):
+        first = b["lines"][0].strip().upper()
+        if "LEGEND" not in first or len(first) > 40:
+            continue
+        consumed.add(i)
+        if len(b["lines"]) > 1:
             for line in b["lines"][1:]:
                 if line.strip():
                     out.append({"symbol": "", "meaning": line.strip()[:200]})
-    return out[:80]
+            continue
+        hb = b["bbox"]
+        for j, o in enumerate(blocks):
+            if j == i or j in consumed:
+                continue
+            text = " ".join(l.strip() for l in o["lines"] if l.strip())
+            if (_bbox_gap(hb, o["bbox"]) <= LEGEND_RADIUS and o["bbox"][1] >= hb[1] - 2
+                    and len(text) <= 80 and re.search(r"[A-Za-z]{3,}", text)
+                    and "LEGEND" not in text.upper()):
+                out.append({"symbol": "", "meaning": text[:200]})
+                consumed.add(j)
+    return out[:80], consumed
+
+
+def drawing_list_index(layouts: Iterable[Optional[Dict[str, Any]]]) -> Dict[str, int]:
+    """sheet id -> its number in the set's drawing list.
+
+    Read from pages that list at least five sheets. The number is either glued
+    to the id ('2S-001.00') or the text object written just before it ('2',
+    then 'S-001.00'). Used to recognise a model reading that number as the
+    sheet's revision."""
+    out: Dict[str, int] = {}
+    for L in layouts:
+        if not L or sum(1 for i in sheet_ids(L.get("text") or "") if "." in i) < 5:
+            continue
+        lines = [l.strip() for b in L.get("blocks") or [] for l in b["lines"]]
+        for k, line in enumerate(lines):
+            glued = re.fullmatch(r"(\d{1,3})\s*([A-Z]{1,3}-\d{3}\.\d{2})", line)
+            if glued:
+                out.setdefault(glued.group(2), int(glued.group(1)))
+                continue
+            if re.fullmatch(r"[A-Z]{1,3}-\d{3}\.\d{2}", line) and k > 0 \
+                    and re.fullmatch(r"\d{1,3}", lines[k - 1]):
+                out.setdefault(line, int(lines[k - 1]))
+    return out
 
 
 _CALLOUT_RES = (
@@ -496,7 +708,8 @@ def tag_vocabulary(layouts: Iterable[Optional[Dict[str, Any]]]) -> FrozenSet[str
     return frozenset(vocab)
 
 
-def count_tags(layout: Dict[str, Any], vocab: FrozenSet[str]) -> List[Dict[str, Any]]:
+def count_tags(layout: Dict[str, Any], vocab: FrozenSet[str],
+               exclude: FrozenSet[int] = frozenset()) -> List[Dict[str, Any]]:
     """How often each tag is PRINTED AS A LABEL on this sheet.
 
     Only short blocks count — a tag on a plan is a label on its own. The word
@@ -504,8 +717,9 @@ def count_tags(layout: Dict[str, Any], vocab: FrozenSet[str]) -> List[Dict[str, 
     set's floor plans, is not a PTAC tag and is not counted. This is a count of
     labels, never a schedule total, and it says so in its source."""
     counts: Counter = Counter()
-    for b in layout.get("blocks") or []:
-        if len(b["text"]) > LABEL_MAX_CHARS:
+    for i, b in enumerate(layout.get("blocks") or []):
+        # A legend entry or a note defines a tag; it is not a tag on the plan.
+        if len(b["text"]) > LABEL_MAX_CHARS or i in exclude:
             continue
         for tok in re.findall(r"[A-Z0-9\-]+", b["text"].upper()):
             if tok in vocab:
@@ -533,26 +747,30 @@ def fields_from_layout(layout: Dict[str, Any], boilerplate: FrozenSet[str] = fro
                        tag_vocab: FrozenSet[str] = SEED_TAGS) -> Dict[str, Any]:
     blocks = _strip_lines(layout.get("blocks") or [], boilerplate)
     text = "\n".join(b["text"] for b in blocks)
-    text_blocks = [{"kind": classify_block(b["text"]), "text": b["text"]} for b in blocks
-                   if classify_block(b["text"]) not in ("notes", "legend", "heading")]
+    notes, note_blocks = notes_from_blocks(blocks)
+    legend, legend_blocks = legend_from_blocks(blocks)
+    used = note_blocks | legend_blocks
+    text_blocks = [{"kind": classify_block(b["text"]), "text": b["text"]}
+                   for i, b in enumerate(blocks) if i not in used]
     return {
         "schedules": schedules_from_tables(layout.get("tables") or [],
                                            layout.get("width") or 0, layout.get("height") or 0),
-        "notes": notes_from_blocks(blocks),
-        "legend": legend_from_blocks(blocks),
+        "notes": notes,
+        "legend": legend,
         "callouts": callouts_from_text(text),
         "elements": stated_quantities(text),
         "dimensions": dimensions_from_text(text),
         "dimensions_unverified": list(layout.get("fractions_unverified") or []),
         "materials": material_lines(blocks),
-        "tag_counts": count_tags(layout, tag_vocab),
+        "tag_counts": count_tags({"blocks": blocks}, tag_vocab, frozenset(used)),
         "text_blocks": text_blocks,
     }
 
 
 __all__ = [
     "normalize_glyphs", "split_stacked_fraction", "rebuild_line", "layout_from_dict",
-    "page_layouts", "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",
+    "page_layouts", "page_dict_from_chars", "drawing_list_index",
+    "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
     "callouts_from_text", "stated_quantities", "dimensions_from_text", "material_lines",
     "schedules_from_tables", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",

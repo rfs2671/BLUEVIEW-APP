@@ -548,6 +548,23 @@ class AVectorPageMakesOneCall(unittest.TestCase):
         self.assertIn("SHEET IDS PRINTED IN THE TITLE BLOCK: S-001.00", prompts[0])
         self.assertNotIn("ALL PILES SHALL BE", prompts[0], "notes are chunked, not prompted")
 
+    def test_a_revision_equal_to_the_drawing_list_index_is_cleared(self):
+        async def vlm(image_b64, prompt, max_tokens):
+            return (json.dumps({"sheet_number": "S-001.00", "revision": "2"}), "stop")
+
+        out = _run(pe.extract_vector_page(image_b64="x", layout=self.LAYOUT, vlm_call=vlm,
+                                          drawing_index={"S-001.00": 2}))
+        self.assertIsNone(out["fields"]["revision"])
+        self.assertIn("revision_was_drawing_list_index", out["flags"]["title_block"])
+
+    def test_a_revision_that_is_not_the_index_is_kept(self):
+        async def vlm(image_b64, prompt, max_tokens):
+            return (json.dumps({"sheet_number": "S-001.00", "revision": "4"}), "stop")
+
+        out = _run(pe.extract_vector_page(image_b64="x", layout=self.LAYOUT, vlm_call=vlm,
+                                          drawing_index={"S-001.00": 2}))
+        self.assertEqual(out["fields"]["revision"], "4")
+
     def test_a_failed_call_still_yields_the_text(self):
         async def vlm(*a):
             raise TimeoutError()

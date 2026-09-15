@@ -16,7 +16,7 @@ WHAT DIFFERS FROM PRODUCTION, SAID PLAINLY
 ==========================================
 
   RENDERING. Production renders the page image with pdf2image (poppler). This
-  renders with PyMuPDF so it runs without poppler. Same DPI rule. The TEXT
+  renders with pdfplumber (pypdfium2) so it runs without poppler. Same DPI rule. The TEXT
   LAYER is read the same way in both: plan_text.page_layouts.
 
   TAG VOCABULARY. Production builds it from every page of the file at full
@@ -69,12 +69,12 @@ def _dpi_for(file_name: str) -> int:
 
 
 def _render(pdf_path: str, page_index: int, dpi: int) -> bytes:
-    import fitz  # PyMuPDF
-    doc = fitz.open(pdf_path)
-    try:
-        return doc[page_index].get_pixmap(dpi=dpi).tobytes("jpeg", jpg_quality=85)
-    finally:
-        doc.close()
+    import pdfplumber  # renders through pypdfium2, which pdfplumber installs
+    with pdfplumber.open(pdf_path) as pdf:
+        img = pdf.pages[page_index].to_image(resolution=dpi).original
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
 
 
 def _parse_pages(spec: str, total: int) -> set:
@@ -210,7 +210,12 @@ async def main_async(args) -> int:
     plan = []
     for pdf in args.pdf:
         pdf_bytes = Path(pdf).read_bytes()
-        fast = pt.page_layouts(pdf_bytes, with_tables=False)
+        # ONE PASS, tables included, as production does. Text parsing is the
+        # slow part with pdfplumber, so it is not done twice.
+        t_layout = time.perf_counter()
+        fast = await asyncio.to_thread(pt.page_layouts, pdf_bytes)
+        print(f"  {Path(pdf).name}: text layer + tables for {len(fast)} pages in "
+              f"{time.perf_counter() - t_layout:.1f}s", flush=True)
         selected = sorted(_selection(args, pdf, len(fast)))
         if selected:
             plan.append((pdf, pdf_bytes, fast, selected))
@@ -238,12 +243,12 @@ async def main_async(args) -> int:
     sem = asyncio.Semaphore(max(1, args.concurrency))
 
     for pdf, pdf_bytes, fast, selected in plan:
-        t_layout = time.perf_counter()
-        full = await asyncio.to_thread(pt.page_layouts, pdf_bytes, pages=selected)
-        vocab = pt.tag_vocabulary(list(fast) + [L for L in full if L])
+        full = fast
+        vocab = pt.tag_vocabulary(fast)
+        drawing_index = pt.drawing_list_index(fast)
         boiler = pe.boilerplate_lines([(L or {}).get("text", "") for L in fast])
-        print(f"  {Path(pdf).name}: layouts {time.perf_counter() - t_layout:.1f}s, "
-              f"{len(vocab)} tags in vocabulary, {len(boiler)} boilerplate lines")
+        print(f"  {Path(pdf).name}: {len(vocab)} tags in vocabulary, "
+              f"{len(drawing_index)} sheets in drawing list, {len(boiler)} boilerplate lines")
         folder = out_root / Path(pdf).stem
         folder.mkdir(parents=True, exist_ok=True)
         dpi = _dpi_for(Path(pdf).name)
@@ -258,7 +263,7 @@ async def main_async(args) -> int:
                     source, text = "vector", layout["text"]
                     result = await pe.extract_vector_page(
                         image_b64=b64, layout=layout, vlm_call=vlm_call,
-                        boilerplate=boiler, tag_vocab=vocab)
+                        boilerplate=boiler, tag_vocab=vocab, drawing_index=drawing_index)
                 else:
                     text = (layout or {}).get("text", "")
                     source = "sparse"

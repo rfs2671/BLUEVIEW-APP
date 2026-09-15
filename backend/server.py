@@ -39384,6 +39384,7 @@ async def _index_single_page(
     boilerplate=frozenset(),
     layout: Optional[dict] = None,
     tag_vocab=None,
+    drawing_index: Optional[dict] = None,
 ):
     """Index one page: text layer + sectioned Qwen extraction + chunks + R2 JPEG.
 
@@ -39600,6 +39601,7 @@ async def _index_single_page(
             vlm_call=_section_call,
             boilerplate=boilerplate,
             tag_vocab=tag_vocab,
+            drawing_index=drawing_index,
         )
     else:
         result = await plan_extract.extract_page(
@@ -39885,6 +39887,7 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
         # title block it has already seen forty times.
         boilerplate = plan_extract.boilerplate_lines(texts)
         tag_vocab = plan_text.tag_vocabulary(layouts) if layouts else plan_text.SEED_TAGS
+        drawing_index = plan_text.drawing_list_index(layouts) if layouts else {}
 
         # Render page-by-page (bounded memory) and fire Qwen in parallel with
         # a small semaphore so peak concurrency is 3 per file.
@@ -39910,6 +39913,7 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
                     boilerplate=boilerplate,
                     layout=(layouts[page_num - 1] if layouts else None),
                     tag_vocab=tag_vocab,
+                    drawing_index=drawing_index,
                 )
 
         # Chunked progress logging.

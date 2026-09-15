@@ -707,7 +707,8 @@ def title_prompt(title_text: str, heading_text: str, ids: List[str]) -> str:
 
 async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_call: VlmCall,
                               boilerplate: FrozenSet[str] = frozenset(),
-                              tag_vocab: Optional[FrozenSet[str]] = None) -> Dict[str, Any]:
+                              tag_vocab: Optional[FrozenSet[str]] = None,
+                              drawing_index: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     """Structure from the text layer; title, type and summary from one call.
 
     Same return shape as extract_page, so the writer and the harness treat the
@@ -745,6 +746,14 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
         flags["title_block"].append(sn_flag)
     if tb.get("revision") and tb["revision"].upper() in {i.upper() for i in page_ids}:
         flags["title_block"].append("revision_was_a_sheet_id")
+        tb["revision"] = None
+    # A bare number equal to this sheet's place in the drawing list is that
+    # place, not a revision. S-001.00 is number 2 in the ST list, and the model
+    # returned revision "2" — the same digit it once read as the sheet number.
+    rev = (tb.get("revision") or "").strip()
+    if (rev.isdigit() and drawing_index and sheet_number
+            and drawing_index.get(sheet_number) == int(rev)):
+        flags["title_block"].append("revision_was_drawing_list_index")
         tb["revision"] = None
 
     text_fields = pt.fields_from_layout(layout, boilerplate, tag_vocab or pt.SEED_TAGS)
