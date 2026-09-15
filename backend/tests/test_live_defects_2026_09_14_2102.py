@@ -127,45 +127,129 @@ class ShowMeAnElementIsNotAShowMeASheet(unittest.TestCase):
         self.assertIn("sheet_number", window)
         self.assertIn("offer_only", window)
 
-    def test_the_offer_path_sends_no_image(self):
-        """Bounded by CODE landmarks. The first draft used the "# 4a." comment
-        as the end marker, which _code_only has already stripped — a boundary
-        that only exists in a comment is a boundary the guard cannot find."""
+    def test_the_element_path_sends_no_ranked_guess(self):
+        """Bounded by CODE landmarks; _code_only has already stripped the
+        comments, so a boundary that lives in one cannot be found.
+
+        The image sent on this path comes from _pages_with_element, never from
+        the RRF candidate list — that list is always populated and therefore
+        can never say the thing is not there."""
         code = _code_only(server._handle_plan_query)
         start = code.index("if offer_only:")
         end = code.index("if not effective_question:", start)
-        self.assertNotIn("_send_plan_image", code[start:end],
-                         "the offer path is sending pages again")
+        block = code[start:end]
+        self.assertIn("_pages_with_element", block)
+        self.assertNotIn("candidates[", block,
+                         "the element path is reaching into the ranked list again")
 
-    def test_the_offer_names_the_sheets_and_offers_them(self):
+    def test_it_answers_rather_than_asking_back(self):
+        """A superintendent who typed "show me the roof drains" has already
+        said what he wants. Answering a request with a request is what the
+        sixty-second latency makes unbearable."""
         code = _code_only(server._handle_plan_query)
-        self.assertIn("Want them?", code)
-        self.assertIn("Not found on the indexed drawings.", code)
+        self.assertNotIn("Want them?", code)
+        self.assertIn("_send_plan_image", code)
 
-    def test_yes_is_heard(self):
-        """An offer the bot cannot hear the answer to is a worse bug than the
-        one being fixed."""
-        for t in ("yes", "Sure", "send them", "ok!", "si", "dale"):
-            with self.subTest(t=t):
-                self.assertTrue(server._AFFIRMATIVE_RE.match(t))
+    def test_nothing_found_says_so(self):
+        self.assertIn("Not found on indexed drawings.",
+                      _code_only(server._handle_plan_query))
 
-    def test_a_sentence_that_starts_with_yes_is_not_an_answer(self):
-        for t in ("yes we poured 3 already", "yesterday", "no"):
-            with self.subTest(t=t):
-                self.assertFalse(server._AFFIRMATIVE_RE.match(t))
+    def test_the_offer_machinery_is_gone(self):
+        """Removed with the behaviour it served, rather than left dormant."""
+        for name in ("_maybe_answer_plan_offer", "_AFFIRMATIVE_RE",
+                     "PLAN_OFFER_TTL_SECONDS"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(server, name))
+        # ANCHORED, because a bare word against the whole file bans a
+        # SUBSTRING: "plan_offers" would satisfy it and an unrelated
+        # identifier containing the letters would break it. Every site that
+        # touched this row wrote or filtered it as a `kind`, so that is the
+        # shape worth forbidding.
+        self.assertNotIn('"kind": "plan_offer"', SRC,
+                         "a plan_offer row is still written or read somewhere")
+        self.assertNotIn('"kind":       "plan_offer"', SRC,
+                         "a plan_offer row is still being stored")
 
-    def test_the_offer_is_consumed_before_the_send(self):
-        """So a second yes, or the same webhook redelivered, does not send the
-        sheets twice."""
-        code = _code_only(server._maybe_answer_plan_offer)
-        self.assertLess(code.index("delete_one"), code.index("_send_plan_image"))
 
-    def test_it_is_checked_before_any_addressing_rule(self):
-        """"yes" is exactly the untagged two-letter reply no addressing rule
-        should have to recognise."""
-        code = _code_only(server._process_whatsapp_message)
-        self.assertLess(code.index("_maybe_answer_plan_offer"),
-                        code.index("_is_bot_addressed"))
+class ASheetIsSentOnlyWhenItMentionsTheThing(unittest.TestCase):
+    """The hard rule: never a best-keyword guess.
+
+    _retrieve_plan_candidates fuses a vector rank and a keyword rank and
+    returns its top three. Its top three are ALWAYS populated, so it cannot
+    return nothing — which makes it incapable of saying "not on the drawings".
+    _pages_with_element asks the literal question instead."""
+
+    def test_the_search_runs_over_extracted_text_only(self):
+        """`embedding` is a guess by construction and `file_name` is about the
+        upload, not the drawing."""
+        for f in ("keywords", "summary", "materials", "spaces", "notes"):
+            with self.subTest(field=f):
+                self.assertIn(f, server._ELEMENT_TEXT_FIELDS)
+        for f in ("embedding", "file_name", "file_hash"):
+            with self.subTest(field=f):
+                self.assertNotIn(f, server._ELEMENT_TEXT_FIELDS)
+
+    def test_every_field_it_searches_is_one_the_indexer_writes(self):
+        idx = inspect.getsource(server._index_single_page)
+        written = set(re.findall(r'^\s+"([a-z_]+)":', idx, re.M))
+        stray = [f for f in server._ELEMENT_TEXT_FIELDS if f not in written]
+        self.assertEqual(stray, [],
+                         f"searching fields nothing writes: {stray}")
+
+    def test_every_term_has_to_appear(self):
+        """An OR over the terms would match a page that mentions "roof" and
+        knows nothing about drains."""
+        code = _code_only(server._pages_with_element)
+        self.assertIn('"$and"', code)
+
+    def test_stopwords_are_stripped_from_the_element(self):
+        """"the" is on every page ever indexed."""
+        terms = server._element_terms("show me the roof drains", {})
+        self.assertNotIn("the", terms)
+        self.assertNotIn("show", terms)
+        self.assertIn("roof", terms)
+
+    def test_the_parsers_keywords_win_when_it_has_them(self):
+        """It has already read the sentence and pulled out the subject."""
+        terms = server._element_terms("show me the thing",
+                                      {"keywords": ["roof drain"]})
+        self.assertEqual(terms, ["roof drain"])
+
+    def test_an_empty_element_finds_nothing_rather_than_everything(self):
+        """A query that reduces to no terms must not turn into an unfiltered
+        scan that matches every page in the project."""
+        import asyncio
+        self.assertEqual(asyncio.run(server._pages_with_element("p1", [])), [])
+        self.assertEqual(asyncio.run(server._pages_with_element("", ["roof"])), [])
+
+    def test_a_plural_finds_the_singular(self):
+        """MEASURED, not assumed. Against a stubbed index, "show me the roof
+        drains" found the roof plan and MISSED the riser diagram, whose summary
+        reads "roof drain leaders to riser" — so the answer said one sheet when
+        the truth was two. A literal search that cannot see past an "s" is a
+        literal search that lies by omission."""
+        code = _code_only(server._pages_with_element)
+        self.assertIn('endswith("s")', code)
+        self.assertIn('endswith("es")', code)
+
+    def test_the_stem_is_not_a_stemmer(self):
+        """A real stemmer turns "gas" into "ga" and matches everything. The
+        length guard is what keeps short words whole."""
+        code = _code_only(server._pages_with_element)
+        self.assertIn("len(needle) > 3", code)
+
+    def test_a_page_the_indexer_thought_was_about_it_is_sent_first(self):
+        """The difference between sending the riser diagram and sending a page
+        that says "see riser diagram"."""
+        code = _code_only(server._pages_with_element)
+        self.assertIn("keywords", code)
+        self.assertIn("rows.sort", code)
+
+    def test_the_lookup_is_timed_like_every_other_stage(self):
+        code = _code_only(server._handle_plan_query)
+        self.assertIn('_mark("element_lookup")', code)
+        self.assertIn('"element_not_found"', code)
+        self.assertIn('"element_answered"', code)
 
 
 # ══════════════════════════════════════════════════════════════════

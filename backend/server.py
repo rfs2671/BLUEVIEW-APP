@@ -40114,86 +40114,106 @@ async def _send_plan_image(
         return False
 
 
-# A bare affirmative. Anchored whole-string so "yes we poured 3 already" is a
-# statement about the slab and not an answer to an offer the bot made four
-# minutes ago.
-_AFFIRMATIVE_RE = re.compile(
-    r"^\s*(?:yes|yeah|yep|yup|ya|sure|ok|okay|please|"
-    r"send|send them|send it|send em|show me|go ahead|do it|"
-    r"si|s[ií]|dale|claro|m[aá]ndalas|m[aá]ndalos)"
-    r"[\s!.,]*$",
-    re.IGNORECASE,
+# Words that carry no element. Stripped before a literal text search, because
+# "the" appears on every page ever indexed and would make every sheet a match.
+_ELEMENT_STOPWORDS = frozenset({
+    "show", "me", "the", "a", "an", "of", "on", "in", "at", "for", "to",
+    "please", "pull", "up", "send", "find", "get", "display", "open",
+    "levelog", "plan", "plans", "drawing", "drawings", "sheet", "sheets",
+    "where", "is", "are", "what", "which", "any",
+})
+
+
+def _element_terms(query: str, parsed: dict) -> list:
+    """The thing being asked about, as words to look for in a page's text.
+
+    The parser's `keywords` are preferred — it has already read the sentence
+    and pulled out the subject. The raw query minus stopwords is the fallback
+    for when it returns nothing, which it does on short requests."""
+    kws = parsed.get("keywords") or []
+    terms = [str(k).strip().lower() for k in kws if str(k).strip()]
+    if not terms:
+        terms = [w for w in re.findall(r"[a-z0-9]+", (query or "").lower())
+                 if w not in _ELEMENT_STOPWORDS and len(w) > 2]
+    # Two terms is enough to be specific and few enough that an AND over them
+    # still matches a page that phrases it differently.
+    return terms[:2]
+
+
+# The fields the indexer fills from what it read off the page. A literal search
+# runs over THESE and nothing else: `embedding` is a guess by construction and
+# file_name is about the upload, not the drawing.
+_ELEMENT_TEXT_FIELDS = (
+    "keywords", "summary", "materials", "spaces", "notes",
+    "sheet_title", "detail_refs", "dimensions",
 )
 
 
-async def _maybe_answer_plan_offer(group_id: str, body: str,
-                                   reply_to: Optional[str] = None) -> bool:
-    """If the bot asked "Want them?" and this is a yes, send the sheets.
+async def _pages_with_element(project_id: str, terms: list, limit: int = 8) -> list:
+    """Pages whose EXTRACTED TEXT actually mentions the element.
 
-    ── AN OFFER THE BOT CANNOT HEAR THE ANSWER TO IS A WORSE BUG ───────────
+    ── WHY THIS IS NOT THE RETRIEVAL ABOVE ────────────────────────────────
     #
-    # "show me <element>" no longer ships two keyword-ranked pages as if they
-    # were an answer; it names the sheets and offers them. That offer is only
-    # honest if "yes" does something, so the sheet numbers are stored when the
-    # question is asked and read back here.
+    # _retrieve_plan_candidates fuses a vector rank and a keyword rank and
+    # returns its top three. That is the right instrument for "which sheet is
+    # most like this question" and the wrong one for "which sheets mention
+    # roof drains", because its top three are ALWAYS populated — it cannot
+    # return nothing, so it can never say the thing is not there.
     #
-    # Returns True when it handled the message, so the caller stops. Checked
-    # BEFORE addressing, because "yes" is exactly the kind of untagged
-    # two-letter reply that no addressing rule should have to recognise."""
-    if not (group_id and body and _AFFIRMATIVE_RE.match(body)):
-        return False
+    # This asks the literal question. Every term has to appear, somewhere in
+    # what the indexer extracted from that page. No match is a real answer.
+    #
+    # ORDERING PUTS THE STRONGEST EVIDENCE FIRST. A page whose `keywords` name
+    # the element is a page the indexer thought the element was ABOUT; a page
+    # that merely mentions it in a note is weaker. The primary sheet sent to
+    # the group is the first of these, so the ordering is the difference
+    # between sending the riser diagram and sending a page that says "see
+    # riser diagram"."""
+    if not (project_id and terms):
+        return []
+    clauses = []
+    for t in terms:
+        # ── A PLURAL MUST FIND THE SINGULAR ────────────────────────────────
+        #
+        # Measured against a stubbed index: "show me the roof drains" found the
+        # roof plan and MISSED the riser diagram, whose summary reads "roof
+        # drain leaders to riser". A literal search is the right instrument
+        # here and a literal search that cannot see past an "s" answers "on one
+        # sheet" when the truth is two.
+        #
+        # The stem, not a stemmer. Dropping a trailing s (and the e of "es")
+        # covers how these words actually differ on a drawing — drain/drains,
+        # riser/risers, box/boxes — and a real stemmer would turn "gas" into
+        # "ga" and match everything.
+        needle = t
+        if len(needle) > 3 and needle.endswith("es"):
+            needle = needle[:-2]
+        elif len(needle) > 3 and needle.endswith("s"):
+            needle = needle[:-1]
+        rx = {"$regex": re.escape(needle), "$options": "i"}
+        clauses.append({"$or": [{f: rx} for f in _ELEMENT_TEXT_FIELDS]})
+    live_ids = await _live_plan_file_ids(project_id)
+    q = {"project_id": str(project_id), "$and": clauses}
+    if live_ids is not None:
+        q["file_id"] = {"$in": live_ids}
     try:
-        row = await db.whatsapp_conversation_state.find_one(
-            {"kind": "plan_offer", "group_id": group_id})
-    except Exception:
-        return False
-    if not row:
-        return False
+        rows = await db.document_page_index.find(
+            q, _PAGE_FIELDS,
+        ).limit(max(limit * 4, 32)).to_list(max(limit * 4, 32))
+    except Exception as e:
+        logger.warning(f"element lookup failed for {terms}: {e}")
+        return []
 
-    exp = row.get("expires_at")
-    if exp is not None:
-        exp = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
-        if exp <= datetime.now(timezone.utc):
-            return False
+    def _rank(rec):
+        kws = " ".join(str(k).lower() for k in (rec.get("keywords") or []))
+        in_keywords = sum(1 for t in terms if t in kws)
+        title = (rec.get("sheet_title") or "").lower()
+        in_title = sum(1 for t in terms if t in title)
+        # Negated so a plain ascending sort puts the strongest first.
+        return (-in_keywords, -in_title, str(rec.get("sheet_number") or "~"))
 
-    # CONSUMED BEFORE THE SEND, so a second "yes" — or the same webhook
-    # redelivered — does not send the sheets twice.
-    try:
-        await db.whatsapp_conversation_state.delete_one(
-            {"kind": "plan_offer", "group_id": group_id})
-    except Exception:
-        pass
-
-    sheets = row.get("sheets") or []
-    project_id = row.get("project_id")
-    if not sheets or not project_id:
-        return False
-
-    sent = 0
-    for sheet in sheets[:2]:
-        try:
-            recs = await db.document_page_index.find(
-                {"project_id": str(project_id),
-                 "sheet_number": {"$regex": f"^{re.escape(sheet)}(\\.\\d+)?$",
-                                   "$options": "i"}},
-                _PAGE_FIELDS,
-            ).limit(1).to_list(1)
-            if not recs:
-                continue
-            rec = recs[0]
-            caption = f"{rec.get('sheet_number')} — {rec.get('sheet_title') or ''}".strip(" —")
-            if await _send_plan_image(group_id, rec, caption):
-                sent += 1
-                await asyncio.sleep(1.2)
-        except Exception as e:
-            logger.warning(f"plan offer send failed for {sheet}: {e}")
-    if not sent:
-        await send_whatsapp_message(
-            group_id,
-            "Couldn't open those sheets. They're in the app under Plans & Files.",
-            reply_to=reply_to,
-        )
-    return True
+    rows.sort(key=_rank)
+    return rows[:limit]
 
 
 def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> None:
@@ -40345,44 +40365,57 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     # 4a-offer. A show-verb with no sheet named: say where it is, do not
     # assert that it is there by sending the page.
     if offer_only:
-        sheets = []
-        for rec in candidates[:3]:
-            sn = rec.get("sheet_number")
-            if sn and sn not in sheets:
-                sheets.append(sn)
-        if not sheets:
+        # ── AN ANSWER, NOT A QUESTION BACK ─────────────────────────────────
+        #
+        # The first version of this named the sheets and asked "Want them?".
+        # That is still a round trip: a superintendent who typed "show me the
+        # roof drains" has already said what he wants, and answering a request
+        # with a request is the thing the sixty-second latency makes
+        # unbearable. He gets the answer and the sheet, in one turn.
+        #
+        # AND THE SHEETS ARE FOUND BY TEXT, NOT BY RANK. The retrieval above
+        # is a fused vector-plus-keyword guess, which is the right instrument
+        # for "which sheet is most like this question" and the wrong one for
+        # "which sheets actually mention roof drains" — its top three are
+        # always populated, so it can never say no. `_pages_with_element` asks
+        # the second question literally: the element's words have to appear in
+        # what the indexer extracted from that page. A sheet that does not
+        # mention the thing is not sent, and when nothing mentions it the
+        # answer is that nothing does.
+        terms = _element_terms(query, parsed)
+        matches = await _pages_with_element(project_id, terms)
+        _mark("element_lookup")
+        _stage["matches"] = len(matches)
+        if not matches:
+            _log_plan_timing(group_id, query, _stage, "element_not_found")
             await send_whatsapp_message(
-                group_id, "Not found on the indexed drawings.", reply_to=reply_to,
+                group_id, "Not found on indexed drawings.", reply_to=reply_to,
             )
             return
-        subject = (parsed.get("keywords") or [None])[0] or "That"
-        listed = ", ".join(sheets)
+
+        subject = " ".join(terms).strip() or "That"
+        where = []
+        for rec in matches[:4]:
+            sn = rec.get("sheet_number") or "?"
+            title = (rec.get("sheet_title") or "").strip()
+            where.append(f"{sn} ({title})" if title else sn)
         await send_whatsapp_message(
             group_id,
-            f"{str(subject).capitalize()} shows up on {listed}.\n"
-            f"Want them?",
+            f"{subject[:1].upper()}{subject[1:]}: {', '.join(where)}.",
             reply_to=reply_to,
         )
-        # The offer is stored so "yes" can be honoured. Without it "Want them?"
-        # is a question the bot cannot hear the answer to, which is a worse
-        # failure than the one being fixed.
+
+        # The primary sheet, in the same turn. First is the best-matching one
+        # that actually mentions the element — see _pages_with_element for the
+        # ordering — so this is never a guess dressed as an answer.
+        primary = matches[0]
+        caption = (f"{primary.get('sheet_number') or 'Sheet'} — "
+                   f"{primary.get('sheet_title') or ''}").strip(" —")
         try:
-            await db.whatsapp_conversation_state.update_one(
-                {"kind": "plan_offer", "group_id": group_id},
-                {"$set": {
-                    "kind":       "plan_offer",
-                    "group_id":   group_id,
-                    "sender":     None,
-                    "project_id": project_id,
-                    "sheets":     sheets,
-                    "expires_at": datetime.now(timezone.utc)
-                                  + timedelta(seconds=PLAN_OFFER_TTL_SECONDS),
-                    "updated_at": datetime.now(timezone.utc),
-                }},
-                upsert=True,
-            )
+            await _send_plan_image(group_id, primary, caption)
         except Exception as e:
-            logger.warning(f"plan offer store failed for {group_id}: {e}")
+            logger.warning(f"primary sheet send failed for {caption}: {e}")
+        _log_plan_timing(group_id, query, _stage, "element_answered")
         return
 
     # 4a. Image-send path (parser said user wants the image, no question)
@@ -40628,12 +40661,6 @@ def _has_explicit_bot_mention(
 # "@levelog who's on site" → (bot replies) → voice note "also show me the roof"
 BOT_SESSION_TTL_SECONDS = 180  # 3 minutes
 
-# How long "Want them?" stays answerable. Longer than a bot session because the
-# question was the BOT'S: somebody has to read it, decide, and type, and a
-# reply that arrives at four minutes should not meet a bot that has forgotten
-# asking. Short enough that a "yes" tomorrow does not dredge up yesterday's
-# sheets.
-PLAN_OFFER_TTL_SECONDS = 600  # 10 minutes
 
 
 async def _mark_bot_session(group_id: str, sender: str) -> None:
@@ -42581,12 +42608,6 @@ async def _process_whatsapp_message(payload: dict):
             # bot sends below carries it, so an answer that arrives eight
             # messages later still points at its own question.
             reply_to = parsed.get("message_id_serialized") or ""
-
-            # "yes" to a "Want them?" offer, before any addressing rule sees
-            # it. A two-letter affirmative is exactly what no addressing rule
-            # should have to recognise, and the offer was the bot's question.
-            if await _maybe_answer_plan_offer(group_id, body, reply_to):
-                return
 
             # Is the message this one replies to one of OURS? fromMe is the
             # strong signal; the author JID is the fallback, matched against

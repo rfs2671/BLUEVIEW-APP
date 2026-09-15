@@ -90,13 +90,6 @@ NUDGE = ({"kind": "nudge", "group_id": GROUP},
 DRAFT = ({"kind": "checklist", "group_id": GROUP},
          {"kind": "checklist", "group_id": GROUP, "sender": None,
           "awaiting": "checklist_assignment"})
-# The fourth kind, added with the "show me <element>" offer. It stores the
-# sheet numbers the bot named so "yes" can be honoured, and it has to sit
-# beside the other three rather than evict one of them.
-OFFER = ({"kind": "plan_offer", "group_id": GROUP},
-         {"kind": "plan_offer", "group_id": GROUP, "sender": None,
-          "sheets": ["ST-201", "ST-202"]})
-
 
 def session(sender):
     q = {"kind": "bot_session", "group_id": GROUP, "sender": sender}
@@ -142,46 +135,29 @@ class TheNewKeyLetsThemCoexist(unittest.TestCase):
     def setUp(self):
         self.c = FakeIndexedCollection(["kind", "group_id", "sender"])
 
-    def test_all_five_rows_live_in_one_group(self):
-        """The whole point: a nudge, a draft, a plan offer, and a session for
-        each of two people, in the same group, at the same time."""
-        for q, doc in (NUDGE, DRAFT, OFFER, session(ALICE), session(BOB)):
+    def test_all_four_rows_live_in_one_group(self):
+        """The whole point: a nudge, a draft, and a session for each of two
+        people, in the same group, at the same time.
+
+        A fourth kind, `plan_offer`, existed briefly here and was removed with
+        the machinery that wrote it — "show me <element>" answers in one turn
+        now and stores nothing. The index is unchanged by that: a kind nobody
+        writes costs nothing, and the next one that needs a row has a key that
+        already admits it."""
+        for q, doc in (NUDGE, DRAFT, session(ALICE), session(BOB)):
             self.c.upsert(q, doc)
-        self.assertEqual(len(self.c.rows), 5)
+        self.assertEqual(len(self.c.rows), 4)
 
     def test_every_kind_has_its_own_slot(self):
-        """Stated as key tuples, because that is what the index compares. Four
-        distinct kinds against one group, three of them sender-less."""
-        for q, doc in (NUDGE, DRAFT, OFFER, session(ALICE)):
+        """Stated as key tuples, because that is what the index compares."""
+        for q, doc in (NUDGE, DRAFT, session(ALICE)):
             self.c.upsert(q, doc)
         keys = {self.c._key(r) for r in self.c.rows}
         self.assertEqual(keys, {
             ("nudge", GROUP, None),
             ("checklist", GROUP, None),
-            ("plan_offer", GROUP, None),
             ("bot_session", GROUP, ALICE),
         })
-
-    def test_an_offer_does_not_evict_a_live_session(self):
-        """The sequence the live test would produce: somebody tags the bot,
-        asks "show me the sprinkler riser", and the offer is stored while
-        their window is still open."""
-        self.c.upsert(*session(ALICE))
-        self.c.upsert(*OFFER)
-        q, _ = session(ALICE)
-        self.assertIsNotNone(self.c.find_one(q))
-        self.assertIsNotNone(self.c.find_one(OFFER[0]))
-
-    def test_one_offer_per_group(self):
-        """A second "show me <element>" replaces the first offer rather than
-        stacking, so "yes" is never ambiguous about which sheets it means."""
-        self.c.upsert(*OFFER)
-        self.c.upsert({"kind": "plan_offer", "group_id": GROUP},
-                      {"kind": "plan_offer", "group_id": GROUP, "sender": None,
-                       "sheets": ["A-301"]})
-        offers = [r for r in self.c.rows if r.get("kind") == "plan_offer"]
-        self.assertEqual(len(offers), 1)
-        self.assertEqual(offers[0]["sheets"], ["A-301"])
 
     def test_the_reported_sequence_now_works(self):
         self.c.upsert(*NUDGE)          # first untagged question
