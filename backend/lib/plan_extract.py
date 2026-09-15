@@ -434,6 +434,9 @@ EMPTY_FIELDS: Dict[str, Any] = {
     # Vector pages only: fraction pieces that could not be rebuilt, labels
     # counted per tag, and the blocks that are neither notes nor legend.
     "dimensions_unverified": [], "tag_counts": [], "text_blocks": [],
+    # "text" when notes came from the text layer, "vision" when the notes
+    # fallback read them off the image, None when there are none.
+    "notes_source": None,
 }
 
 
@@ -682,6 +685,28 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
 
 TITLE_CALL_MAX_TOKENS = 600
 
+# ── THE NOTES FALLBACK ────────────────────────────────────────────────────
+#
+# P-100.00's text layer is room labels and a title block — 1,393 characters on
+# a 36x24 sheet — and its thirteen notes exist only as drawn geometry. The
+# one-call path therefore found no notes on it. A PLAN sheet with no notes in
+# its text and this little text per square inch gets the notes section run
+# against the image as well. Measured on the Boyland set: every page that had
+# a notes block in its text sat above this density, and P-100.00 sits at 1.61.
+NOTES_FALLBACK_MAX_DENSITY = 2.0      # characters per square inch of sheet
+_PT_PER_SQ_IN = 72.0 * 72.0
+
+
+def text_density(layout: Dict[str, Any]) -> Optional[float]:
+    area = (float(layout.get("width") or 0) * float(layout.get("height") or 0)) / _PT_PER_SQ_IN
+    return len(layout.get("text") or "") / area if area else None
+
+
+def needs_notes_fallback(fields: Dict[str, Any], layout: Dict[str, Any]) -> bool:
+    density = text_density(layout)
+    return (not fields.get("notes") and fields.get("sheet_type") == "plan"
+            and density is not None and density < NOTES_FALLBACK_MAX_DENSITY)
+
 
 def title_prompt(title_text: str, heading_text: str, ids: List[str]) -> str:
     """The one call a vector page makes. No text-layer cap to hit: it carries
@@ -760,6 +785,40 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
     fields = merge_sections({"title_block": tb})
     fields.update(text_fields)
     fields["sheet_number"] = sheet_number
+    fields["notes_source"] = "text" if fields.get("notes") else None
+
+    calls = 1
+    if needs_notes_fallback(fields, layout):
+        calls += 1
+        f: List[str] = [f"density:{text_density(layout):.2f}"]
+        try:
+            text_for_prompt = strip_boilerplate(layout.get("text") or "", boilerplate)
+            content, finish = await vlm_call(
+                image_b64, section_prompt("notes", text_for_prompt[:TEXT_LAYER_PROMPT_CAP]),
+                SECTION_MAX_TOKENS["notes"])
+            content = content or ""
+            raw["notes"] = content[:RAW_CAP]
+            if finish == "length":
+                f.append("hit_max_tokens")
+            cut, looped = detect_repetition(content)
+            if looped:
+                f.append("repetition_truncated")
+            obj = parse_json_loose(cut)
+            if obj is None:
+                f.append("unparseable")
+            else:
+                clean, vflags = validate_section("notes", obj)
+                f.extend(vflags)
+                if clean.get("notes"):
+                    fields["notes"] = [dict(n, heading=None) for n in clean["notes"]]
+                    fields["notes_source"] = "vision"
+                for k in ("legend", "callouts"):
+                    if clean.get(k) and not fields.get(k):
+                        fields[k] = clean[k]
+                f.append(f"notes_found:{len(clean.get('notes') or [])}")
+        except Exception as e:
+            f.append(f"call_failed:{type(e).__name__}")
+        flags["notes_fallback"] = f
 
     number_flags: List[str] = []
     if text_fields["dimensions_unverified"]:
@@ -773,7 +832,7 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
         "raw_vlm": raw,
         "prompt_text_chars": len(title_text),
         "prompt_text_truncated": False,
-        "vlm_calls": 1,
+        "vlm_calls": calls,
     }
 
 
