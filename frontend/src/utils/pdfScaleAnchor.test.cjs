@@ -354,7 +354,7 @@ console.log('\n── the fixed cost finally gets a number ───────
 console.log('\n── the stamp moved, or none of this reaches a device ─────────');
 {
   const m = /const VIEWER_VERSION = '(\d+)';/.exec(fs.readFileSync(VIEWER, 'utf8'));
-  ok(!!m && Number(m[1]) >= 7,
+  ok(!!m && Number(m[1]) >= 8,
     'VIEWER_VERSION bumped — viewer.html is written to disk once and re-used '
     + 'until this changes, so without a bump every already-staged device keeps '
     + 'the slow viewer and the fix ships to nobody',

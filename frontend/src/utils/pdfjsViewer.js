@@ -90,7 +90,14 @@ const STAMP_NAME = '.stamp';
 //       device that already staged `6` would keep rasterising 12.58 MP a
 //       sheet on every open and the change would reach nobody. The app code
 //       would be new and the viewer would be old.
-const VIEWER_VERSION = '7';
+//   8 — THE WARM-UP READING. The A/B suite now runs its three scales TWICE in
+//       one session, which is the only measurement that can tell "the first
+//       rasterisation of a page is the expensive one" from "the suite is
+//       measuring something else". Probe-only — the shipping render path is
+//       byte-identical — but viewer.html is written to disk once per stamp, so
+//       a device already staged at `7` would run last version's suite, report
+//       three numbers instead of six, and the question would stay open.
+const VIEWER_VERSION = '8';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -1261,6 +1268,46 @@ const VIEWER_SCRIPT = [
   '',
   // The whole suite, sequenced. Each step calls the next, so nothing overlaps
   // and no two renders contend for the UI thread while being timed.
+  //
+  // ── THE THREE SCALES RUN TWICE, AND THE SECOND PASS IS THE MEASUREMENT ──
+  //
+  // WHAT THE FIRST ROUND FOUND, on a 26-page plan on the operator's phone:
+  //
+  //     cur     over 1.5    1.2 MP  ->  2252 ms    (run FIRST)
+  //     noOver  over 1.0    0.5 MP  ->   488 ms
+  //     ceil    headroom   11.2 MP  ->   727 ms    (9x the pixels of `cur`,
+  //                                                 a third of the time)
+  //
+  // PIXELS CANNOT EXPLAIN THAT. These three run uncontended and in this order,
+  // so the ONLY thing distinguishing `cur` is that it was first. The reading
+  // that fits is that the first rasterisation of a page pays a one-off cost —
+  // decoding its 710 Flate and 147 DCT image operators — and the renders after
+  // it reuse the result, which would make the shipping viewer's monotonic
+  // 4585 -> 9490 ms climb across twelve concurrent pages a CONTENTION story
+  // and not a pixel story.
+  //
+  // That reading is about to have two fixes built on it, so it is measured
+  // rather than assumed. A second identical pass separates the two candidates
+  // with no arithmetic at all: if pass 2 is uniformly fast INCLUDING the
+  // 11.2 MP case, the cost was one-off and reusable; if `cur` is slow again in
+  // pass 2, first-ness is not what made it slow and the model is wrong.
+  //
+  // IT MUST BE THE SAME SESSION AND THE SAME PAGE. A reload re-parses the
+  // document and puts back everything the first pass warmed, which is why
+  // "run the probe twice" would answer nothing and this is one run of six.
+  //
+  // WHAT IT ALSO SETTLES, FOR FREE, AND THE READER SHOULD KNOW IT.
+  // `probeRenderAt` calls `page.cleanup()` after every render — that is
+  // pre-existing and deliberately left alone — and `releaseSlot()` on the real
+  // path calls exactly the same thing when it evicts a canvas. So pass 2 is
+  // not measuring a page held warm in memory; it is measuring whatever
+  // survives the same cleanup an eviction performs. A fast pass 2 therefore
+  // says the warm-up is NOT in pdf.js's per-page cache, and any claim that
+  // eviction costs a full re-decode has to account for that.
+  //
+  // COST, STATED. The suite does three extra throwaway renders. It runs only
+  // under `probe=1`, only after `pdf-ready`, and each canvas is still zeroed
+  // the instant it is timed, so the peak footprint is unchanged.
   '  function probeSuite(){',
   '    if (!PROBE) return;',
   '    doc.getPage(1).then(function(page){',
@@ -1269,27 +1316,41 @@ const VIEWER_SCRIPT = [
   '      var noOver = targetScaleInfo(vp1, 1.0);',
   '      var ceil = ceilingScaleInfo(vp1);',
   '      try { page.cleanup(); } catch (e) {}',
-  '      probeRenderAt(1, cur.s, "anchor:viewport over:1.5 (SHIPPING)", { clamp: cur.clamp }, function(){',
-  '        probeRenderAt(1, noOver.s, "anchor:viewport over:1.0", { clamp: noOver.clamp }, function(){',
-  '          probeRenderAt(1, ceil.s, "anchor:cap-ceiling (HEADROOM)", { clamp: ceil.clamp }, function(){',
-  '            probeNativeRaster(1, function(nat){',
+  // ONE DEFINITION, TWO PASSES. Written once so the second pass cannot drift
+  // from the first — a pass that differed in scale or order would not be a
+  // repeat and the comparison would be worthless.
+  //
+  // The pass number goes in the LABEL as well as in its own field:
+  // PDFViewer.native.jsx logs `label` verbatim into the report the operator
+  // shares, and two identically-labelled rows would be unreadable in exactly
+  // the artefact this was built to produce.
+  '      function threeScales(pass, after){',
+  '        var tag = "pass" + pass + " ";',
+  '        probeRenderAt(1, cur.s, tag + "anchor:viewport over:1.5 (SHIPPING)", { pass: pass, clamp: cur.clamp }, function(){',
+  '          probeRenderAt(1, noOver.s, tag + "anchor:viewport over:1.0", { pass: pass, clamp: noOver.clamp }, function(){',
+  '            probeRenderAt(1, ceil.s, tag + "anchor:cap-ceiling (HEADROOM)", { pass: pass, clamp: ceil.clamp }, after);',
+  '          });',
+  '        });',
+  '      }',
+  '      threeScales(1, function(){',
+  '        threeScales(2, function(){',
+  '          probeNativeRaster(1, function(nat){',
   // FILTERS BEFORE THE WORKER A/B. The scan is a read plus a linear pass and
   // frees its buffer immediately; the worker A/B holds a whole second parsed
   // document. Running the cheap one first means a device that dies on the
   // expensive one has still reported the compression, which is the measurement
   // the engine decision turns on.
-  '              function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ probePost("suite", { done: true }); }); }); }',
-  '              if (!nat) { thenWorker(); return; }',
+  '            function thenWorker(){ probeImageFilters(function(){ probeWorkerAB(function(){ probePost("suite", { done: true }); }); }); }',
+  '            if (!nat) { thenWorker(); return; }',
   // Anchored to the SCAN's own pixels, then held to the same caps — the
   // "render it at what the plan actually is" case, measured rather than
   // argued.
-  '              var sNat = nat.w / vp1.width;',
-  '              var wN = vp1.width * sNat, hN = vp1.height * sNat;',
-  '              if (wN > MAX_CANVAS_EDGE) { sNat = sNat * (MAX_CANVAS_EDGE / wN); wN = vp1.width * sNat; hN = vp1.height * sNat; }',
-  '              if (hN > MAX_CANVAS_EDGE) { sNat = sNat * (MAX_CANVAS_EDGE / hN); wN = vp1.width * sNat; hN = vp1.height * sNat; }',
-  '              if (wN * hN > MAX_CANVAS_PX) sNat = sNat * Math.sqrt(MAX_CANVAS_PX / (wN * hN));',
-  '              probeRenderAt(1, sNat, "anchor:native-raster (CLAMPED)", { nativeW: nat.w, nativeH: nat.h }, thenWorker);',
-  '            });',
+  '            var sNat = nat.w / vp1.width;',
+  '            var wN = vp1.width * sNat, hN = vp1.height * sNat;',
+  '            if (wN > MAX_CANVAS_EDGE) { sNat = sNat * (MAX_CANVAS_EDGE / wN); wN = vp1.width * sNat; hN = vp1.height * sNat; }',
+  '            if (hN > MAX_CANVAS_EDGE) { sNat = sNat * (MAX_CANVAS_EDGE / hN); wN = vp1.width * sNat; hN = vp1.height * sNat; }',
+  '            if (wN * hN > MAX_CANVAS_PX) sNat = sNat * Math.sqrt(MAX_CANVAS_PX / (wN * hN));',
+  '            probeRenderAt(1, sNat, "anchor:native-raster (CLAMPED)", { nativeW: nat.w, nativeH: nat.h }, thenWorker);',
   '          });',
   '        });',
   '      });',
