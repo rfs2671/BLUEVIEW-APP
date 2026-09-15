@@ -72,6 +72,28 @@ export default function WhatsAppGroupsScreen() {
 
   // Modal state
   const [showLinkModal, setShowLinkModal] = useState(false);
+  // ── THE CODE FLOW IS NO LONGER THE FRONT DOOR ─────────────────────────
+  //
+  // Adding the bot to a group now puts it on a waiting list an admin confirms
+  // from one screen (app/admin/whatsapp-groups.jsx), which is a tap instead of
+  // four steps that begin with knowing the six-digit flow exists.
+  //
+  // The code flow is KEPT, working and reachable, behind this disclosure. It
+  // is the only path that works when the bot cannot be added to the group by
+  // the person doing the linking, and deleting a working route because a
+  // better one shipped is how a fallback stops existing right when it is
+  // needed.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // The nickname lives HERE, not on a project settings screen, because there
+  // is no general project settings screen in this app and because this is the
+  // only place the field does anything: it is scored against WhatsApp group
+  // names so a group called "The Church Job" finds a project whose address
+  // says nothing of the kind.
+  const [nickname, setNickname] = useState('');
+  const [nicknameSaving, setNicknameSaving] = useState(false);
+  const [nicknameDirty, setNicknameDirty] = useState(false);
+
   const [linkStep, setLinkStep] = useState(1);
   const [verifyCode, setVerifyCode] = useState('');
   const [verifying, setVerifying] = useState(false);
@@ -146,6 +168,10 @@ export default function WhatsAppGroupsScreen() {
       setFetchState(netState);
 
       setProject(projectData);
+      // Seeded from the server, not kept in sync after — the field is only
+      // dirty once a person types, so a background refetch cannot silently
+      // discard what they are in the middle of writing.
+      if (!nicknameDirty) setNickname(projectData?.nickname || '');
       setGroups(Array.isArray(groupsRes.data) ? groupsRes.data : []);
       setWhatsappStatus(waStatus);
       setIndexStatus(idxStatus);
@@ -193,6 +219,22 @@ export default function WhatsAppGroupsScreen() {
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
       toast.error('Error', 'Could not copy to clipboard');
+    }
+  };
+
+  const handleSaveNickname = async () => {
+    setNicknameSaving(true);
+    try {
+      await projectsAPI.update(projectId, { nickname: nickname.trim() });
+      setNicknameDirty(false);
+      toast.success('Saved', 'Nickname updated');
+    } catch (error) {
+      toast.error(
+        'Could not save',
+        error.response?.data?.detail || 'Please try again',
+      );
+    } finally {
+      setNicknameSaving(false);
     }
   };
 
@@ -330,15 +372,85 @@ export default function WhatsAppGroupsScreen() {
                 </>
               )}
 
-              {/* Link a Group Button — the whole flow is a live handshake
-                  (code generation + verification), so it is unusable offline. */}
-              <GlassButton
-                title={readOnly ? 'Linking needs a connection' : '+ Link a Group'}
-                icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                onPress={handleOpenLinkModal}
-                disabled={readOnly}
-                style={s.linkButton}
-              />
+              {/* ── HOW A GROUP GETS CONNECTED NOW ───────────────────────
+                  Add the number to the group; it appears on the waiting list
+                  and an admin confirms which job it is. No code to paste. */}
+              <GlassCard style={{ padding: spacing.md, marginTop: spacing.md }}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary }}>
+                  Add a group
+                </Text>
+                <Text style={{ fontSize: 13, color: colors.text.secondary, marginTop: 4 }}>
+                  Add the Levelog number to the WhatsApp group. It shows up under
+                  Groups waiting, and you pick the job there.
+                </Text>
+                <GlassButton
+                  title="Open groups waiting"
+                  onPress={() => router.push('/admin/whatsapp-groups')}
+                  style={{ marginTop: spacing.sm }}
+                />
+              </GlassCard>
+
+              {/* The six-digit flow, kept and demoted. See the note beside
+                  `advancedOpen` for why it is not deleted. */}
+              <Pressable
+                onPress={() => setAdvancedOpen((v) => !v)}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+                         paddingVertical: spacing.sm, marginTop: spacing.xs }}
+              >
+                <Text style={{ fontSize: 13, color: colors.text.muted }}>
+                  Advanced: link with code
+                </Text>
+                {advancedOpen
+                  ? <ChevronDown size={16} color={colors.text.muted} />
+                  : <ChevronRight size={16} color={colors.text.muted} />}
+              </Pressable>
+              {advancedOpen && (
+                <GlassButton
+                  title={readOnly ? 'Linking needs a connection' : '+ Link with a code'}
+                  icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                  onPress={handleOpenLinkModal}
+                  disabled={readOnly}
+                  style={s.linkButton}
+                />
+              )}
+
+              {/* ── THE NICKNAME ─────────────────────────────────────────────
+                  One field, filled in once, that removes a guess for every
+                  group on this job. Scored against group names alongside the
+                  street — see backend/lib/group_match.py. */}
+              <GlassCard style={{ padding: spacing.md, marginTop: spacing.md }}>
+                <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary }}>
+                  Job nickname
+                </Text>
+                <Text style={{ fontSize: 13, color: colors.text.secondary, marginTop: 4 }}>
+                  What people call this job in conversation. Used to match WhatsApp
+                  group names to this project. Optional.
+                </Text>
+                <TextInput
+                  value={nickname}
+                  onChangeText={(v) => { setNickname(v); setNicknameDirty(true); }}
+                  placeholder="e.g. The Church Job"
+                  placeholderTextColor={colors.text.subtle}
+                  style={{
+                    marginTop: spacing.sm,
+                    borderWidth: 1,
+                    borderColor: withAlpha('#ffffff', 0.12),
+                    borderRadius: borderRadius.sm,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                    color: colors.text.primary,
+                    fontSize: 15,
+                  }}
+                />
+                {nicknameDirty && (
+                  <GlassButton
+                    title={nicknameSaving ? 'Saving…' : 'Save nickname'}
+                    onPress={handleSaveNickname}
+                    disabled={nicknameSaving || readOnly}
+                    style={{ marginTop: spacing.sm }}
+                  />
+                )}
+              </GlassCard>
 
               {/* Groups List */}
               {groups.length > 0 ? (

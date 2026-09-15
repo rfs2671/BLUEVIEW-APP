@@ -1685,6 +1685,41 @@ export const whatsappAPI = {
     return response.data;
   },
 
+  // ── PENDING GROUPS: THE FRONT DOOR THAT NEEDS NO CODE ──────────────────
+  //
+  // Every group the bot can see but is not connected to a project. The
+  // six-digit flow below still works and is still exposed, behind an
+  // "Advanced" disclosure — see app/projects/[id]/whatsapp-groups.jsx.
+  getPendingGroups: async () => {
+    const response = await apiClient.get('/api/whatsapp/pending-groups');
+    return response.data;
+  },
+
+  // A single pending group, named by a signed token from an in-chat link.
+  // The token says WHICH group; it grants nothing — this call is
+  // authenticated and tenant-checked exactly like the list above.
+  getPendingGroupByToken: async (token) => {
+    const response = await apiClient.get(
+      `/api/whatsapp/pending-groups/by-token?t=${encodeURIComponent(token)}`,
+    );
+    return response.data;
+  },
+
+  linkPendingGroup: async (groupId, projectId) => {
+    const response = await apiClient.post(
+      `/api/whatsapp/pending-groups/${encodeURIComponent(groupId)}/link`,
+      { project_id: projectId },
+    );
+    return response.data;
+  },
+
+  ignorePendingGroup: async (groupId) => {
+    const response = await apiClient.post(
+      `/api/whatsapp/pending-groups/${encodeURIComponent(groupId)}/ignore`,
+    );
+    return response.data;
+  },
+
   initiateLink: async (projectId) => {
     const response = await apiClient.post('/api/whatsapp/group-link/initiate', {
       project_id: projectId,

@@ -300,17 +300,24 @@ class NoDoublePermissiveLineSurvives(unittest.TestCase):
 
     def test_every_site_calls_the_shared_helper(self):
         """WIDENS AS THE HELPER IS ADOPTED. This pinned 3 -- the two file routes
-        and the checklist write -- and grew to 4 when the WhatsApp group config
-        write moved onto it in the group-D PR. The claim is "no site rolls its
-        own", not "exactly three exist", so the count is a floor with the
-        current value named."""
+        and the checklist write -- grew to 4 when the WhatsApp group config
+        write moved onto it in the group-D PR, and to 5 when connecting a
+        pending WhatsApp group to a project adopted it. The claim is "no site
+        rolls its own", not "exactly three exist", so the count is a floor with
+        the current value named.
+
+        THE FIFTH IS THE ONE WORTH KNOWING ABOUT. whatsapp_pending_group_link
+        takes a project_id straight from the request body and binds a WhatsApp
+        group to it. Getting that check wrong does not raise -- it puts one
+        crew's roster, daily log and permit data into another customer's chat,
+        with nothing anywhere going red."""
         tree = ast.parse(self.SRC)
         calls = sum(
             1 for n in ast.walk(tree)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
             and n.func.id == "_same_company_or_403")
         self.assertGreaterEqual(calls, 3)
-        self.assertEqual(calls, 4)
+        self.assertEqual(calls, 5)
 
     def test_the_helper_treats_empty_string_as_absent(self):
         """The mechanism, not just the outcome: both sides are coerced and

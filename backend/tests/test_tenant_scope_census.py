@@ -96,6 +96,16 @@ _EXEMPT: dict[str, str] = {
         "a WRITE stamping the new row with the creator's company, not a read "
         "filter; a falsy company writes a company-less row, which is the "
         "pre-existing behaviour and not a cross-tenant read",
+    "_upsert_pending_group":
+        "the same shape as the two above and on a path with no caller at all: "
+        "it runs from the WhatsApp webhook, where there is no authenticated "
+        "user to refuse. The conditional writes a company RESOLVED from the "
+        "phone of whoever added the bot, onto a row keyed by the group's own "
+        "globally-unique @g.us id. It reads nothing scoped by company, and a "
+        "row it cannot resolve is left company-less on purpose -- visible only "
+        "to the person who added the bot, never to a tenant. The tenant gate "
+        "for this feature lives on the pending-groups ROUTES, which do have a "
+        "caller; see test_pending_group_linking.py",
 }
 
 

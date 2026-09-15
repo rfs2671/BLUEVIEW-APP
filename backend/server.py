@@ -2832,6 +2832,18 @@ class ProjectCreate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: str = "active"
+    # ── THE NAME PEOPLE ACTUALLY CALL THIS JOB ─────────────────────────────
+    #
+    # Optional, free text, and the only field on a project that exists purely
+    # for matching. A WhatsApp group is named by whoever made it — "The Church
+    # Job", "Ridgewood", "Mrs. Katz" — and none of that appears in an address.
+    # lib/group_match.py scores the group name against this alongside the
+    # street, so one field filled in once removes a guess for every group on
+    # that job.
+    #
+    # Never displayed in place of the address and never used to identify a
+    # project anywhere else. A nickname is a hint, not a key.
+    nickname: Optional[str] = None
     # NYC DOB Classification (§3310)
     building_stories: Optional[int] = None
     building_height: Optional[int] = None  # feet
@@ -2873,6 +2885,8 @@ class ProjectUpdate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = None
+    # See ProjectCreate. Editable from project settings.
+    nickname: Optional[str] = None
     report_email_list: Optional[List[str]] = None
     report_send_time: Optional[str] = None
     building_stories: Optional[int] = None
@@ -2945,6 +2959,11 @@ class ProjectResponse(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: str = "active"
+    # DECLARED HERE OR IT DOES NOT EXIST. A response_model is an allow-list:
+    # pydantic drops every undeclared field with no error anywhere, which is
+    # how three live Dropbox fields once reported every project as unlinked.
+    # The settings screen reads this back after saving.
+    nickname: Optional[str] = None
     company_id: Optional[str] = None
     company_name: Optional[str] = None
     nfc_tags: List[Dict] = []
@@ -3177,6 +3196,7 @@ from lib.cert_vocab import (  # noqa: E402  (import placed with its subject)
 
 # The same rule the COI path has always had, now with one address so the two
 # OCR paths cannot disagree about what "null" means. See lib/ocr_text.py.
+from lib.group_match import suggest_project_for_group  # noqa: E402
 from lib.ocr_text import norm_ocr_str  # noqa: E402
 from lib.vision_meter import (  # noqa: E402
     record_vision_call,
@@ -36209,6 +36229,13 @@ async def send_whatsapp_message(chat_id: str, message: str):
         return None
 
 
+# The WaAPI events that are about a GROUP rather than about a message. They
+# nest under data.notification and share none of a message's shape.
+_GROUP_LIFECYCLE_EVENTS = frozenset({
+    "group_join", "group_leave", "group_update",
+})
+
+
 def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
     """Normalize a WaAPI inbound webhook payload to a standard format.
 
@@ -36218,6 +36245,67 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
     """
     if vendor == "waapi":
         data = payload.get("data", {})
+
+        # ── group_join ARRIVES SOMEWHERE ELSE IN THE PAYLOAD ───────────────
+        #
+        # Every WaAPI message event nests under data.message. The group
+        # lifecycle events — group_join, group_leave, group_update — nest under
+        # data.NOTIFICATION instead, and carry no body, no author in the usual
+        # place, and no `from`.
+        #
+        # Nothing here read the event type, so `data.get("message", data)` fell
+        # back to `data` itself, every _pick() came back empty, and a join
+        # event parsed as a DIRECT MESSAGE FROM AN EMPTY SENDER. Measured
+        # before this change: is_group False, group_id None, sender "". It then
+        # walked into the DM branch, looked up a contact for "", found none,
+        # and returned — silently, having learned nothing from an event whose
+        # entire purpose is to tell us a group exists.
+        #
+        # A notification is now parsed as what it is. `event` and `notification`
+        # travel on the parsed dict so the processor can route on them rather
+        # than inferring from empty fields.
+        event = str(payload.get("event") or "").strip().lower()
+        notification = data.get("notification")
+        if isinstance(notification, dict) and event in _GROUP_LIFECYCLE_EVENTS:
+            chat_id = str(notification.get("chatId") or "")
+            nid = notification.get("id") if isinstance(
+                notification.get("id"), dict) else {}
+            if not chat_id:
+                chat_id = str(nid.get("remote") or "")
+            author = str(notification.get("author") or "")
+            recipients = notification.get("recipientIds")
+            recipients = [str(r) for r in recipients] if isinstance(
+                recipients, list) else []
+            return {
+                "event":             event,
+                "notification":      notification,
+                "notification_type": str(notification.get("type") or ""),
+                "group_id":          chat_id or None,
+                "is_group":          bool(chat_id),
+                # `author` is the person who performed the action — for a
+                # group_join of type "add", the person who did the adding.
+                "sender":            author,
+                "from":              chat_id,
+                "to":                "",
+                "body":              "",
+                "recipient_ids":     recipients,
+                "message_id":        str(nid.get("id") or ""),
+                "message_id_serialized": str(nid.get("_serialized") or ""),
+                "timestamp":         notification.get("timestamp"),
+                "quoted_body":       "",
+                "quoted_type":       "",
+                "quoted_is_audio":   False,
+                "quoted_message_id": "",
+                "quoted_from_me":    False,
+                "quoted_author":     "",
+                "mentioned_jids":    [],
+                "has_audio":         False,
+                "audio_url":         None,
+                "has_image":         False,
+                "image_url":         None,
+                "raw":               notification,
+            }
+
         msg = data.get("message", data)
         inner = (msg.get("_data") or {}) if isinstance(msg.get("_data"), dict) else {}
 
@@ -36463,6 +36551,9 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         )
 
         return {
+            # Present on every parsed payload so the processor can branch on it
+            # without asking whether the key exists.
+            "event": str(payload.get("event") or "").strip().lower() or "message",
             "message_id": msg_id,
             "message_id_serialized": msg_id_serialized,
             "from": from_field,
@@ -41344,10 +41435,308 @@ async def _dispatch_agent_tool(
 
 # ==================== WHATSAPP MESSAGE PROCESSOR ====================
 
+# ── A GROUP THE BOT IS IN AND NOT YET LINKED TO A JOB ──────────────────────
+#
+# The old behaviour for an unlinked group was one line: `return`. The bot sat
+# in the chat, silent, forever, and nothing anywhere recorded that it was
+# there. The only way to link a group was for somebody to already know the
+# six-digit flow existed, open the app, generate a code, paste it, and confirm
+# — four steps that begin with knowing about step one.
+#
+# This registry is the other front door. Every group the bot can see is written
+# down the first time it is seen, with whatever is known about it, and an admin
+# confirms it from a list. The group name usually says which job it is
+# (lib/group_match.py), so the common case is one tap on a pre-filled row.
+#
+# THE MESSAGE PATH IS PRIMARY, NOT THE JOIN EVENT. group_join is the obvious
+# trigger and it is the one that cannot be relied on: it has to be enabled on
+# the WaAPI instance, it has never been observed on this account, and it does
+# not carry the group's name. So a pending row is created by ANY inbound
+# message from a group we do not know, which needs no vendor configuration at
+# all. group_join, when it arrives, is enrichment — it is the only thing that
+# tells us WHO added the bot, which is what lets the row resolve a company.
+PENDING_GROUPS = "whatsapp_pending_groups"
+
+# What the bot says in a group it cannot serve yet. Said ONCE — `greeted_at` on
+# the pending row is the guard — because a bot that repeats itself in a chat it
+# has no business in is the thing people mute.
+#
+# Bilingual because the crew is. Spanish second and separated by a blank line
+# so neither language reads as a footnote to the other.
+PENDING_GREETING = (
+    "I'm Levelog. I'm not connected to a project yet — "
+    "an admin can connect me from the Levelog app.\n\n"
+    "Soy Levelog. Todavía no estoy conectado a un proyecto — "
+    "un administrador puede conectarme desde la app de Levelog."
+)
+
+
+def _bot_was_added(parsed: dict) -> bool:
+    """True when this group_join is the BOT joining, not a person.
+
+    A crew adding a labourer to the chat produces the same event. Matching the
+    recipient against the bot's own identifiers is what tells them apart, and
+    it uses the same identifier set an @mention is matched against so an
+    auto-learned LID counts here too."""
+    if parsed.get("event") != "group_join":
+        return False
+    ids = _bot_identifier_digits()
+    for jid in (parsed.get("recipient_ids") or []):
+        if _digits_match_bot(_jid_digits(str(jid)), ids):
+            return True
+    return False
+
+
+async def _fetch_group_subject(group_id: str) -> str:
+    """The group's name, from WaAPI. Empty string on any failure.
+
+    ── ONE CALL, ON FIRST SIGHT ONLY ──────────────────────────────────────
+    #
+    # The name is the entire input to project auto-detection, and no webhook
+    # carries it: a message event has the group id and the sender, and
+    # group_join has neither a subject nor a name field. get-group-info is the
+    # only source, so it is called once when a pending row is created and the
+    # answer is stored.
+    #
+    # NEVER RAISES. A pending row with no name is still a row an admin can
+    # confirm by hand; a failed lookup that propagated would lose the group
+    # entirely, which is the outcome this registry exists to prevent."""
+    if not (WAAPI_INSTANCE_ID and WAAPI_TOKEN and group_id):
+        return ""
+    try:
+        async with ServerHttpClient(timeout=15.0) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}"
+                f"/client/action/get-group-info",
+                headers={
+                    "Authorization": f"Bearer {WAAPI_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={"chatId": group_id},
+            )
+            if resp.status_code < 200 or resp.status_code >= 300:
+                logger.info(
+                    f"get-group-info {resp.status_code} for {group_id[-12:]}")
+                return ""
+            payload = resp.json() if resp.content else {}
+    except Exception as e:
+        logger.info(f"get-group-info failed for {group_id[-12:]}: {e}")
+        return ""
+
+    # WaAPI nests the useful part differently across plans, so the subject is
+    # hunted rather than addressed. Bounded depth; first string wins.
+    def _find_subject(node, depth=0):
+        if depth > 6 or node is None:
+            return ""
+        if isinstance(node, dict):
+            v = node.get("subject")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            for child in node.values():
+                got = _find_subject(child, depth + 1)
+                if got:
+                    return got
+        elif isinstance(node, list):
+            for child in node[:20]:
+                got = _find_subject(child, depth + 1)
+                if got:
+                    return got
+        return ""
+
+    return _find_subject(payload)
+
+
+async def _resolve_company_from_phone(phone_digits: str) -> Optional[str]:
+    """The company of the person who added the bot, if we know them.
+
+    Only a contact row with a LIVE user_id counts: deleting a user nulls that
+    field rather than dropping the row, so a removed admin's number must not
+    still resolve a company. None when unknown, which leaves the pending row
+    visible to whoever added it and to nobody else."""
+    contact = await _find_whatsapp_contact(phone_digits)
+    if not contact:
+        return None
+    return contact.get("company_id") or None
+
+
+async def _upsert_pending_group(
+    group_id: str,
+    *,
+    added_by_phone: str = "",
+    fetch_name: bool = True,
+) -> Optional[dict]:
+    """Record a group the bot can see but is not linked to. Returns the row.
+
+    Idempotent on group_id: first sight writes everything, later sightings
+    only push `last_seen` forward. `added_by_phone` and the name are filled in
+    by whichever sighting learns them — a message event knows neither, a
+    group_join knows the adder, and get-group-info knows the name — so a row
+    created by one is completed by the other rather than replaced."""
+    if not group_id:
+        return None
+    now = datetime.now(timezone.utc)
+    try:
+        existing = await db[PENDING_GROUPS].find_one({"group_id": group_id})
+    except Exception as e:
+        logger.warning(f"pending group read failed for {group_id[-12:]}: {e}")
+        return None
+
+    set_fields: Dict[str, Any] = {"last_seen": now}
+
+    if existing is None:
+        name = await _fetch_group_subject(group_id) if fetch_name else ""
+        company_id = (await _resolve_company_from_phone(added_by_phone)
+                      if added_by_phone else None)
+        doc = {
+            "group_id":       group_id,
+            "group_name":     name,
+            "added_by_phone": added_by_phone or "",
+            "company_id":     company_id,
+            "status":         "pending",
+            "first_seen":     now,
+            "last_seen":      now,
+            "greeted_at":     None,
+            "invite_sent_at":  None,
+        }
+        try:
+            await db[PENDING_GROUPS].update_one(
+                {"group_id": group_id}, {"$setOnInsert": doc}, upsert=True,
+            )
+        except Exception as e:
+            # A duplicate-key race is two webhooks for one group arriving at
+            # once, which is a success from this function's point of view.
+            logger.info(f"pending group insert raced for {group_id[-12:]}: {e}")
+        return await db[PENDING_GROUPS].find_one({"group_id": group_id})
+
+    # Later sightings only ADD what was missing. Never overwrite a known name
+    # or adder with a blank one.
+    if added_by_phone and not existing.get("added_by_phone"):
+        set_fields["added_by_phone"] = added_by_phone
+        if not existing.get("company_id"):
+            resolved = await _resolve_company_from_phone(added_by_phone)
+            if resolved:
+                set_fields["company_id"] = resolved
+    if fetch_name and not existing.get("group_name"):
+        name = await _fetch_group_subject(group_id)
+        if name:
+            set_fields["group_name"] = name
+
+    try:
+        await db[PENDING_GROUPS].update_one(
+            {"group_id": group_id}, {"$set": set_fields},
+        )
+    except Exception as e:
+        logger.warning(f"pending group update failed for {group_id[-12:]}: {e}")
+    return {**existing, **set_fields}
+
+
+async def _greet_pending_group_once(row: Optional[dict]) -> None:
+    """Say who we are, once, in a group we cannot serve yet.
+
+    THE GUARD IS A STORED TIMESTAMP, NOT A FLAG IN MEMORY. Two containers see
+    the same webhook stream and an in-process guard would greet twice; worse,
+    a restart would re-arm it and the group would be greeted again days later
+    with no idea why."""
+    if not row or row.get("greeted_at") or row.get("status") != "pending":
+        return
+    gid = row.get("group_id")
+    if not gid:
+        return
+    try:
+        # Marked BEFORE the send. A greeting that was sent and not recorded
+        # repeats forever; one recorded and not sent is silent, which is the
+        # failure this group already has and is not made worse by.
+        res = await db[PENDING_GROUPS].update_one(
+            {"group_id": gid, "greeted_at": None},
+            {"$set": {"greeted_at": datetime.now(timezone.utc)}},
+        )
+        if res.modified_count != 1:
+            return  # another worker got there first
+        await send_whatsapp_message(gid, PENDING_GREETING)
+    except Exception as e:
+        logger.warning(f"pending greeting failed for {gid}: {e}")
+
+
+async def _handle_group_lifecycle(parsed: dict) -> None:
+    """group_join / group_leave / group_update.
+
+    Only two of the three do anything today. A join that added the bot creates
+    or completes a pending row and carries the one fact no other event has:
+    who did the adding. A subject change refreshes a stored name so a renamed
+    group does not sit in the admin list under a name nobody uses any more."""
+    group_id = parsed.get("group_id") or ""
+    if not group_id:
+        return
+    event = parsed.get("event")
+
+    if event == "group_update":
+        name = await _fetch_group_subject(group_id)
+        if name:
+            for coll in (PENDING_GROUPS, "whatsapp_groups"):
+                key = ("group_id" if coll == PENDING_GROUPS else "wa_group_id")
+                try:
+                    await db[coll].update_one(
+                        {key: group_id}, {"$set": {"group_name": name}},
+                    )
+                except Exception:
+                    pass
+        return
+
+    if event != "group_join" or not _bot_was_added(parsed):
+        # A person joining a crew chat is not our business.
+        return
+
+    # Already linked? Then the bot was re-added to a group it already serves,
+    # and there is nothing pending about it.
+    try:
+        linked = await db.whatsapp_groups.find_one(
+            {"wa_group_id": group_id, "active": True})
+    except Exception:
+        linked = None
+    if linked:
+        return
+
+    adder = (parsed.get("sender") or "").split("@")[0]
+    row = await _upsert_pending_group(group_id, added_by_phone=adder)
+    await _greet_pending_group_once(row)
+
+    # ONLY WHEN WE KNOW WHO ADDED US. A tappable link posted into a group where
+    # nobody present can act on it is an invitation to a locked door — and the
+    # message path, which creates most pending rows, never learns an adder. So
+    # this rides on group_join alone, which is the only event that carries one.
+    if adder and row and not row.get("invite_sent_at"):
+        try:
+            res = await db[PENDING_GROUPS].update_one(
+                {"group_id": group_id, "invite_sent_at": None},
+                {"$set": {"invite_sent_at": datetime.now(timezone.utc)}},
+            )
+            if res.modified_count == 1:
+                url = (f"{APP_BASE_URL.rstrip('/')}/wa/link"
+                       f"?t={_mint_group_link_token(group_id)}")
+                await send_whatsapp_message(
+                    group_id,
+                    f"Tap to connect: {url}\n\n"
+                    f"Toca para conectar: {url}",
+                )
+        except Exception as e:
+            logger.warning(f"in-chat link invite failed for {group_id}: {e}")
+
+
 async def _process_whatsapp_message(payload: dict):
     """Background task to process an inbound WhatsApp message."""
     try:
         parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
+
+        # ── A NOTIFICATION IS NOT A MESSAGE ────────────────────────────────
+        #
+        # Routed here, first, before anything reads a body or a sender. Before
+        # this, a group_join fell through the whole message path and ended up
+        # in the DIRECT MESSAGE branch looking up a contact for an empty
+        # string — a silent no-op on the one event that announces a new group.
+        if parsed.get("event") in _GROUP_LIFECYCLE_EVENTS:
+            await _handle_group_lifecycle(parsed)
+            return
+
         sender = parsed["sender"].split("@")[0]  # phone number
         now = datetime.now(timezone.utc)
 
@@ -41395,7 +41784,21 @@ async def _process_whatsapp_message(payload: dict):
             # Look up linked group
             group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id, "active": True})
             if not group_doc:
-                return  # Not a linked group — ignore further processing
+                # ── THE PRIMARY FRONT DOOR ─────────────────────────────────
+                #
+                # This used to be a bare `return`: the bot sat in the chat
+                # forever and nothing recorded that it was there. Any message
+                # from a group we do not know now writes a pending row an
+                # admin can confirm, which needs no vendor event and no
+                # six-digit code.
+                #
+                # IT STILL ANSWERS NOTHING. A group with no project has no
+                # data to serve and no tenant to serve it from, so the only
+                # thing sent is one greeting, once, saying what the bot is and
+                # who can connect it. Everything else stays silent.
+                pending = await _upsert_pending_group(group_id)
+                await _greet_pending_group_once(pending)
+                return
             project_id = group_doc["project_id"]
             msg_company_id = group_doc.get("company_id")
 
@@ -42579,6 +42982,319 @@ async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_curr
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Group not found")
     return {"status": "unlinked"}
+
+
+# ── LINKING IS A TENANT DECISION, SO EVERY ROUTE BELOW ASSERTS TENANCY ─────
+#
+# A group binds to exactly ONE project; many groups may bind to one project.
+# Getting this wrong does not produce a 500 — it produces a crew's daily log,
+# their roster and their permit data appearing in another customer's chat, and
+# nothing anywhere goes red. So the checks are stated once, here, and every
+# route calls them rather than each re-deriving the rule.
+_PENDING_LINK_ROLES = ("owner", "admin", "cp")
+
+
+def _require_link_role(current_user) -> str:
+    """Caller must be able to bind a group to a job. Returns their company."""
+    role = (current_user.get("role") or "").lower()
+    if role not in _PENDING_LINK_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Owner, admin or CP access required to connect a group",
+        )
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        # A caller with no company has no projects to link TO. Returning an
+        # empty list would be a lie of omission; refusing says why.
+        raise HTTPException(status_code=400, detail="No company associated")
+    return company_id
+
+
+def _caller_phone_digits(current_user) -> str:
+    return re.sub(r"\D", "", str(current_user.get("phone") or ""))
+
+
+def _pending_visible_query(company_id: str, phone_digits: str) -> dict:
+    """Which pending groups this caller may see.
+
+    Two kinds. Groups whose company we resolved — because the person who added
+    the bot is a known contact — belong to that company and only that company.
+    Groups we could NOT resolve have no owner yet, and the only person with a
+    claim on them is whoever added the bot, matched by phone. Without that
+    second clause an unresolved group would be invisible to everyone and the
+    bot would sit in it forever; with it widened to "everyone", one customer
+    would see another's group names."""
+    clauses: List[Dict[str, Any]] = [{"company_id": company_id}]
+    if phone_digits:
+        clauses.append({
+            "company_id": None,
+            "added_by_phone": {"$in": _contact_phone_variants(phone_digits)},
+        })
+    return {"status": "pending", "$or": clauses}
+
+
+@api_router.get("/whatsapp/pending-groups",
+                dependencies=[Depends(require_approved)])
+async def whatsapp_pending_groups(current_user=Depends(get_current_user)):
+    """Groups the bot is in that are not connected to a project yet.
+
+    Each row carries a SUGGESTION when the group's name points at exactly one
+    of this company's projects. The suggestion pre-fills a dropdown and links
+    nothing — see lib/group_match.py for why one clear winner or nothing."""
+    company_id = _require_link_role(current_user)
+    phone = _caller_phone_digits(current_user)
+
+    rows = await db[PENDING_GROUPS].find(
+        _pending_visible_query(company_id, phone)
+    ).sort("first_seen", -1).to_list(200)
+
+    projects = await db.projects.find(
+        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"name": 1, "address": 1, "location": 1, "nickname": 1,
+         "nyc_bin": 1, "bbl": 1},
+    ).to_list(500)
+    for p in projects:
+        p["id"] = str(p.pop("_id"))
+
+    out = []
+    for r in rows:
+        suggestion = suggest_project_for_group(projects, r.get("group_name"))
+        out.append({
+            "group_id":       r.get("group_id"),
+            "group_name":     r.get("group_name") or "",
+            "added_by_phone": r.get("added_by_phone") or "",
+            "first_seen":     (r.get("first_seen").isoformat()
+                               if isinstance(r.get("first_seen"), datetime)
+                               else None),
+            "last_seen":      (r.get("last_seen").isoformat()
+                               if isinstance(r.get("last_seen"), datetime)
+                               else None),
+            "suggested_project_id": (suggestion or {}).get("project_id"),
+            "suggested_confidence": (suggestion or {}).get("confidence"),
+        })
+    return {
+        "pending": out,
+        "projects": [
+            {"id": p["id"], "name": p.get("name") or "",
+             "address": p.get("address") or p.get("location") or "",
+             "nickname": p.get("nickname") or ""}
+            for p in projects
+        ],
+    }
+
+
+@api_router.post("/whatsapp/pending-groups/{group_id}/link",
+                 dependencies=[Depends(require_approved)])
+async def whatsapp_pending_group_link(
+    group_id: str, body: dict, current_user=Depends(get_current_user),
+):
+    """Bind a pending group to a project. Never automatic; always this call."""
+    company_id = _require_link_role(current_user)
+    project_id = (body or {}).get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=422, detail="project_id required")
+
+    pending = await db[PENDING_GROUPS].find_one({"group_id": group_id})
+    if not pending:
+        raise HTTPException(status_code=404, detail="Group not found")
+    # The caller must be able to SEE it before they may bind it — same rule as
+    # the list, so a group id guessed from elsewhere is not a way in.
+    visible = await db[PENDING_GROUPS].find_one({
+        "group_id": group_id,
+        **_pending_visible_query(company_id, _caller_phone_digits(current_user)),
+    })
+    if not visible:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # THE PROJECT MUST BE THEIRS. Checked against the database rather than
+    # against anything the client sent, because the project id IS the client's
+    # input and the whole tenancy decision rests on it.
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    _same_company_or_403(project, current_user,
+                         detail="That project belongs to another company")
+
+    now = datetime.now(timezone.utc)
+    linker_id = str(current_user.get("id") or current_user.get("_id") or "")
+
+    # ── RE-LINKING CLEARS THE CONVERSATION ─────────────────────────────────
+    #
+    # whatsapp_conversation_state is keyed by group_id alone and holds a
+    # half-finished checklist and its candidate assignees. Moved to another
+    # project, that draft names people from the OLD job — and if the move
+    # crosses companies it names another customer's staff. Deleted, not
+    # migrated: a draft that survives a re-link is worse than one that is lost.
+    existing = await db.whatsapp_groups.find_one({"wa_group_id": group_id})
+    if existing and str(existing.get("project_id") or "") != str(project_id):
+        try:
+            await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+        except Exception as e:
+            logger.warning(f"conversation state clear failed for {group_id}: {e}")
+
+    await db.whatsapp_groups.update_one(
+        {"company_id": company_id, "wa_group_id": group_id},
+        {
+            "$set": {
+                "project_id":  str(project_id),
+                "company_id":  company_id,
+                "wa_group_id": group_id,
+                "group_name":  pending.get("group_name") or "",
+                "linked_by":   linker_id,
+                "linked_at":   now,
+                "active":      True,
+            },
+            "$setOnInsert": {"bot_config": _default_bot_config()},
+        },
+        upsert=True,
+    )
+    await db[PENDING_GROUPS].update_one(
+        {"group_id": group_id},
+        {"$set": {"status": "linked", "linked_at": now,
+                  "linked_project_id": str(project_id)}},
+    )
+
+    # ── THE CONFIRMATION IS ALSO HOW @MENTIONS START WORKING ───────────────
+    #
+    # This message is not only manners. WhatsApp routes group @mentions by LID,
+    # a random identifier that is NOT the bot's phone number, and the only way
+    # this server learns its own LID is by observing a webhook for a message it
+    # sent (_learn_bot_lid, in the parser). Until the bot has spoken in a group,
+    # a native @mention of it arrives as digits that match nothing and the
+    # message reads as unaddressed.
+    #
+    # So the first thing a freshly linked group gets is the bot speaking. From
+    # the next message on, tapping @Levelog works.
+    address = (project.get("address") or project.get("location")
+               or project.get("name") or "the project")
+    try:
+        await send_whatsapp_message(
+            group_id,
+            f"Connected to {address}.\n\n"
+            f"Conectado a {address}.",
+        )
+    except Exception as e:
+        logger.warning(f"link confirmation failed for {group_id}: {e}")
+
+    return {"status": "linked", "group_id": group_id,
+            "project_id": str(project_id)}
+
+
+@api_router.post("/whatsapp/pending-groups/{group_id}/ignore",
+                 dependencies=[Depends(require_approved)])
+async def whatsapp_pending_group_ignore(
+    group_id: str, current_user=Depends(get_current_user),
+):
+    """Take a group off the list without connecting it.
+
+    Ignored rather than deleted, so the next message from that group does not
+    put it straight back on the list — which is what a delete would do, and the
+    reason a person ignored it was to stop seeing it."""
+    company_id = _require_link_role(current_user)
+    visible = await db[PENDING_GROUPS].find_one({
+        "group_id": group_id,
+        **_pending_visible_query(company_id, _caller_phone_digits(current_user)),
+    })
+    if not visible:
+        raise HTTPException(status_code=404, detail="Group not found")
+    await db[PENDING_GROUPS].update_one(
+        {"group_id": group_id},
+        {"$set": {"status": "ignored",
+                  "ignored_at": datetime.now(timezone.utc)}},
+    )
+    return {"status": "ignored", "group_id": group_id}
+
+
+# ── THE IN-CHAT FRONT DOOR ─────────────────────────────────────────────────
+#
+# A tappable link posted in the group, for the case where the person who added
+# the bot is holding a phone and will not go hunting through an admin screen.
+#
+# THE TOKEN CARRIES THE GROUP ID SO THE URL DOES NOT. A raw @g.us id in a link
+# is an identifier for a real conversation, pasted into browser history, server
+# logs and anywhere the link is forwarded. Signed with the app's own secret and
+# expiring in 24 hours, the token is meaningless anywhere else and stale by the
+# next day.
+#
+# IT IS NOT A CREDENTIAL. /wa/link requires a normal login and the link route
+# re-runs every tenancy check. The token names WHICH group to show; it grants
+# nothing.
+WA_LINK_TOKEN_TTL_HOURS = 24
+
+
+def _mint_group_link_token(group_id: str) -> str:
+    return jwt.encode(
+        {
+            "group_id": group_id,
+            "kind":     "wa_group_link",
+            "exp":      datetime.now(timezone.utc)
+                        + timedelta(hours=WA_LINK_TOKEN_TTL_HOURS),
+        },
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+
+
+def _read_group_link_token(token: str) -> str:
+    """The group id inside a valid token, or '' for anything else.
+
+    `kind` is checked as well as the signature: every token this app issues is
+    signed with the same secret, and without that check a login token would be
+    accepted here as a group link."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except Exception:
+        return ""
+    if payload.get("kind") != "wa_group_link":
+        return ""
+    return str(payload.get("group_id") or "")
+
+
+@api_router.get("/whatsapp/pending-groups/by-token",
+                dependencies=[Depends(require_approved)])
+async def whatsapp_pending_group_by_token(
+    t: str, current_user=Depends(get_current_user),
+):
+    """One pending row, named by a token from an in-chat link.
+
+    Same visibility rule as the list. An expired or forged token and a group
+    the caller may not see return the same 404, because distinguishing them
+    would confirm that a group exists to someone who may not know it."""
+    company_id = _require_link_role(current_user)
+    group_id = _read_group_link_token(t or "")
+    if not group_id:
+        raise HTTPException(status_code=404, detail="Link expired or invalid")
+
+    row = await db[PENDING_GROUPS].find_one({
+        "group_id": group_id,
+        **_pending_visible_query(company_id, _caller_phone_digits(current_user)),
+    })
+    if not row:
+        raise HTTPException(status_code=404, detail="Link expired or invalid")
+
+    projects = await db.projects.find(
+        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"name": 1, "address": 1, "location": 1, "nickname": 1,
+         "nyc_bin": 1, "bbl": 1},
+    ).to_list(500)
+    for p in projects:
+        p["id"] = str(p.pop("_id"))
+    suggestion = suggest_project_for_group(projects, row.get("group_name"))
+    return {
+        "pending": [{
+            "group_id":   row.get("group_id"),
+            "group_name": row.get("group_name") or "",
+            "added_by_phone": row.get("added_by_phone") or "",
+            "suggested_project_id": (suggestion or {}).get("project_id"),
+            "suggested_confidence": (suggestion or {}).get("confidence"),
+        }],
+        "projects": [
+            {"id": p["id"], "name": p.get("name") or "",
+             "address": p.get("address") or p.get("location") or "",
+             "nickname": p.get("nickname") or ""}
+            for p in projects
+        ],
+    }
 
 
 @api_router.post("/whatsapp/activate", dependencies=[Depends(require_approved)])
@@ -45533,6 +46249,16 @@ async def startup_event():
         unique=True,
     )
     await db.whatsapp_link_codes.create_index("expires_at", expireAfterSeconds=0)
+    # One row per group, enforced by the database rather than by the two call
+    # sites that upsert into it. Two webhooks for one group arrive at once more
+    # often than not.
+    await _ensure_index_resilient(
+        db[PENDING_GROUPS],
+        keys=[("group_id", 1)],
+        name="whatsapp_pending_groups_group_id",
+        unique=True,
+    )
+    await db[PENDING_GROUPS].create_index([("company_id", 1), ("status", 1)])
 
     # Create owner account if doesn't exist
     owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
