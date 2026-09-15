@@ -522,11 +522,25 @@ function bootLive({
   // Stop at a MOMENT rather than at exhaustion. `pump()` runs the clock to the
   // end, which is no use when the thing under test is what the page does while
   // work is still in flight.
+  //
+  // ⚠️ THE PREDICATE IS CHECKED AFTER THE MICROTASKS SETTLE AND BEFORE THE NEXT
+  // TIMER FIRES, and the order is the whole correctness of this function. With
+  // the check at the TOP of the loop instead, an iteration that satisfies the
+  // predicate during its microtask drain STILL went on to fire a timer — so
+  // `pumpUntil(pdf-ready)` could return with the suite's 2000 ms timer already
+  // run. That is not hypothetical: it passed locally and failed on CI, where
+  // the only timer left at that moment WAS the suite's, and the drain therefore
+  // happened before the case had delivered a single page to the observer. The
+  // rows came back `inflight: 0, pending: 6` — the queue technically empty,
+  // for entirely the wrong reason.
+  //
+  // Checking after the drain and before the fire makes "stop the instant this
+  // becomes true" mean what it says, on any machine.
   async function pumpUntil(pred, maxSteps = 5000) {
     for (let step = 0; step < maxSteps; step += 1) {
-      if (pred()) return true;
       await new Promise((r) => setImmediate(r));
       for (let k = 0; k < 12; k += 1) await Promise.resolve();
+      if (pred()) return true;
       if (!timers.length) continue;
       timers.sort((a, b) => (a.at - b.at) || (a.id - b.id));
       const t = timers.shift();
@@ -784,6 +798,22 @@ async function main() {
     const delivered = s.deliverIO();
     ok(delivered === 6,
       `the band really does hand over a crowd (${delivered} pages in one callback)`);
+
+    // ⚠️ THE SIX MUST ACTUALLY BE RUNNING BEFORE THE SUITE IS LET NEAR THEM.
+    // `renderSlot` starts on a microtask (it waits for `doc.getPage`), so
+    // immediately after `deliverIO()` nothing is in flight yet. Handing
+    // straight to `pump()` from here lets the clock jump to the suite's 2000 ms
+    // timer with the queue still empty — which is precisely the CI failure the
+    // note on `pumpUntil` describes, and it makes the whole case pass for the
+    // wrong reason. This settles the microtasks WITHOUT advancing the clock,
+    // and says so out loud rather than assuming it worked.
+    await s.pumpUntil(() => s.renders.length >= 6);
+    ok(s.renders.length >= 6,
+      `and the six are really in flight before the suite is due (${s.renders.length} started, `
+      + `clock at ${s.now} ms of the 2000 the suite waits)`);
+    ok(s.now < 2000,
+      `with the suite's timer still ahead of us, not behind (clock ${s.now} ms)`);
+
     await s.pump();
 
     ok(!s.threw, `the viewer survives a suite that had to wait${
@@ -850,6 +880,7 @@ async function main() {
     const off = bootLive({ search: '?file=file%3A%2F%2F%2Fplan.pdf', pages: 6, slotRenderMs: 5000 });
     await off.pumpUntil(() => off.posted.some((m) => m && m.type === 'pdf-ready'));
     off.deliverIO();
+    await off.pumpUntil(() => off.renders.length >= 6);
     await off.pump();
     const drawn = new Set(off.renders.map((r) => r.page));
     ok(drawn.size === 6,
