@@ -57,6 +57,17 @@ BASELINE = {
     ("document_page_index", "file_hash"),
     ("document_page_index", "file_id"),
     ("document_page_index", "index_version"),
+    # Written in _index_single_page through doc.update({...}) on a copied
+    # base_doc, which the sweep does not follow. Read by the v3 chunk lookup and
+    # the supersession pass (2026-09-15).
+    ("document_page_index", "is_spec_page"),
+    # document_page_chunks: all four written by _write_page_chunks, which builds
+    # its rows in a loop into a list and calls insert_many(docs) — a variable,
+    # not a literal, so the sweep sees no writer (2026-09-15).
+    ("document_page_chunks", "file_id"),
+    ("document_page_chunks", "page_id"),
+    ("document_page_chunks", "page_number"),
+    ("document_page_chunks", "project_id"),
     ("document_page_index", "page_number"),
     ("document_page_index", "project_id"),
     ("document_page_index", "sheet_number"),

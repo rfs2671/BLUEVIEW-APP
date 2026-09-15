@@ -50,7 +50,12 @@ class TheRetrieverAsksWhichFilesStillExist(unittest.TestCase):
         anywhere else would leave one of those three paths citing a dead file."""
         i = SRC.index("async def _retrieve_plan_candidates(")
         body = SRC[i:i + 3000]
-        self.assertIn('base_filter["file_id"] = {"$in": live_ids}', body)
+        # Since 2026-09-15 the live-file constraint travels with the
+        # superseded-row constraint in _current_page_filter, merged into
+        # base_filter in one statement.
+        self.assertIn("base_filter.update(_current_page_filter(live_ids))", body)
+        h = SRC.index("def _current_page_filter(")
+        self.assertIn('"file_id": {"$in": live_ids}', SRC[h:h + 600])
         # The three consumers of base_filter still derive from it.
         self.assertIn("fq = dict(base_filter)", SRC[i:i + 6000])
         self.assertIn("relaxed = {k: v for k, v in base_filter.items()", SRC[i:i + 8000])
@@ -88,9 +93,12 @@ class AFailedLookupDegradesToTodaysBehaviour(unittest.TestCase):
         self.assertNotIn("\n        raise", SRC[i:j])
 
     def test_None_means_no_filter_at_all(self):
+        # The None branch lives in the shared helper now, and returns an empty
+        # filter — asserted by behaviour, not by source text.
+        import server
+        self.assertEqual(server._current_page_filter(None), {})
         i = SRC.index("async def _retrieve_plan_candidates(")
-        body = SRC[i:i + 3000]
-        self.assertIn("if live_ids is not None:", body)
+        self.assertIn("_current_page_filter(live_ids)", SRC[i:i + 3000])
 
     def test_the_handler_really_is_fire_and_forget(self):
         """The premise of the two assertions above, asserted rather than
