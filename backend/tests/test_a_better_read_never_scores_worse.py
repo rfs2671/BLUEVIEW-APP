@@ -79,10 +79,28 @@ def resolve(**kw):
 # ASKS FOR, so these are the answers it must survive. Reading them from the
 # source means a colour added to the prompt is covered without this file being
 # touched — which is the whole failure being fixed, one level up.
+#
+# READ FROM THE VALUE, NOT FROM THE SOURCE TEXT. This sliced
+# `SRC.index("extraction_prompt = (")`, and #550 lifted that local into the
+# module constant `_OSHA_EXTRACTION_PROMPT`. The slice then raised ValueError
+# AT IMPORT, which is a COLLECTION error — pytest aborts the whole run, so
+# ~7000 tests stopped executing on main and on every branch cut from it. Both
+# PRs were green alone; only the merge was red.
+#
+# The prompt is a module-level string now, so ask the module for it. A rename
+# cannot break this again, and if the constant disappears the failure is an
+# AttributeError naming it rather than a substring nobody can find.
 def _prompt_colours():
-    i = SRC.index("extraction_prompt = (")
-    prompt = SRC[i:SRC.index("\n\n", i)]
-    m = re.search(r'"One of: ([A-Z, ]+)\. ', prompt)
+    prompt = getattr(server, "_OSHA_EXTRACTION_PROMPT", None)
+    assert isinstance(prompt, str) and prompt, (
+        "server._OSHA_EXTRACTION_PROMPT is missing or not a string; the OCR "
+        "prompt this test derives its colour list from has moved again")
+    # NO LEADING QUOTE. The old pattern was `"One of: …` because it read the
+    # SOURCE, where that quote is a string-literal boundary. In the joined
+    # VALUE the adjacent literals are concatenated and the quote is gone —
+    # which is the second half of why reading source text is fragile: the
+    # thing you anchor on may not exist in the object at all.
+    m = re.search(r'One of: ([A-Z, ]+)\. ', prompt)
     assert m, "the prompt no longer enumerates the colours it invites"
     return [c.strip() for c in m.group(1).split(",") if c.strip()]
 
