@@ -174,8 +174,22 @@ try {
       .join('\n');
     ok(!/probe=0/.test(code), 'no probe=0 is ever emitted');
   }
-  ok(/localViewerUrlFor\(localViewerUri, pdfUrl, \{ probe: probeOn \}\)/.test(componentSrc),
+  // The component now builds the DOCUMENT-FREE host url — the document arrives
+  // by postMessage — but the property this check exists for is unchanged: the
+  // flag, and only the flag, reaches the url builder.
+  ok(/localViewerHostUrl\(localViewerUri, \{ probe: probeOn \}\)/.test(componentSrc),
     'the component passes the flag into the url builder');
+  const hostFn = /export function localViewerHostUrl\(viewerUri, opts\) \{[\s\S]*?\n\}/.exec(viewerSrc);
+  ok(!!hostFn, 'localViewerHostUrl takes an opts argument');
+  if (hostFn) {
+    const code = hostFn[0]
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n');
+    ok(/const probe = opts && opts\.probe \? '\?probe=1' : '';/.test(code),
+      'the host url gains probe=1 only when the flag is on');
+    ok(!/probe=0/.test(code), 'and never emits probe=0 on the host url either');
+  }
   ok(/useFeatureFlag\('pdf_viewer_probe'\)/.test(componentSrc),
     'the gate is the pdf_viewer_probe feature flag, not a constant');
 }
@@ -244,11 +258,22 @@ try {
   ok(/var CAPS = param\("caps"\) === "1";/.test(script),
     'caps mode is its own url flag, independent of the feature flag');
 
+  // WAS: "caps runs before the no-file guard". That guard is gone — the page
+  // no longer takes its document from the url at all, because a url that
+  // changed per document made every open a WebView NAVIGATION and re-parsed
+  // 1.5 MB of pdf.js. The PROPERTY is unchanged and is what is asserted here:
+  // caps mode returns before anything that touches a document can run.
   const capsAt = script.indexOf('if (CAPS) {');
-  const fileAt = script.indexOf('var fileUrl = param("file")');
-  ok(capsAt > 0 && capsAt < fileAt,
-    'the caps short-circuit runs BEFORE the no-file guard',
-    `caps@${capsAt} file@${fileAt}`);
+  const libAt = script.indexOf('if (typeof pdfjsLib === "undefined")');
+  const openAt = script.indexOf('function openDocument(url){');
+  ok(capsAt > 0 && libAt > capsAt && openAt > capsAt,
+    'the caps short-circuit runs BEFORE the library guard and before any '
+    + 'document can be opened',
+    `caps@${capsAt} lib@${libAt} open@${openAt}`);
+  // The short-circuit is only a short-circuit if it returns.
+  const capsBlock = script.slice(capsAt, capsAt + 400);
+  ok(/\n\s*return;\n\s*\}/.test(capsBlock),
+    'and it returns rather than falling through into the document path');
   ok(/probePost\("caps", \{ done: true \}\)/.test(script),
     'caps mode posts a completion marker — "still running" and "answered nothing" must differ');
 

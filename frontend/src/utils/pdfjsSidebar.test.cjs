@@ -84,35 +84,65 @@ function returnedTemplates(fnNode) {
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. The staged viewer -- the only Android path there is.
 // ═══════════════════════════════════════════════════════════════════════════
+// THERE ARE TWO BUILDERS NOW, AND BOTH HAVE TO CARRY THE HASH.
+//
+// `localViewerHostUrl` is what the component uses: the viewer page with NO
+// document in it, held constant for the life of the WebView so that opening a
+// second document is a postMessage rather than a navigation — a navigation
+// re-parsed 1.5 MB of pdf.js on the main thread on every single open.
+//
+// `localViewerUrlFor` is the older `?file=` form. The viewer still honours it
+// and it is still exported, so it is still a place the hash can be dropped,
+// and it is still asserted here. A builder that stops being called does not
+// stop being wrong.
 const stagedTree = ast('src/utils/pdfjsViewer.js');
-const staged = returnedTemplates(findFn(stagedTree, 'localViewerUrlFor'));
+const BUILDERS = ['localViewerHostUrl', 'localViewerUrlFor'];
 
-ok(staged.length === 1, 'localViewerUrlFor returns exactly one template literal');
-ok(staged.every((t) => t.endsWith('#pagemode=none')),
-  'staged viewer URL ends with #pagemode=none');
-ok(staged.every((t) => t.includes('?file=')),
-  'staged viewer URL still hands the document over as ?file=');
+for (const name of BUILDERS) {
+  const staged = returnedTemplates(findFn(stagedTree, name));
+  ok(staged.length === 1, `${name} returns exactly one template literal`);
+  ok(staged.length > 0 && staged.every((t) => t.endsWith('#pagemode=none')),
+    `${name}: URL ends with #pagemode=none`);
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // THE CLASS: the hash must be LAST. A later `?`/`&` appended after the hash
+  // would land inside the fragment and pdf.js would stop parsing pagemode.
+  // ═════════════════════════════════════════════════════════════════════════
+  ok(staged.every((t) => t.indexOf('#') === t.lastIndexOf('#')),
+    `${name}: exactly one '#' in the URL`);
+  ok(staged.every((t) => !t.slice(t.indexOf('#')).includes('?')),
+    `${name}: no query appended after the fragment`);
+}
+
+{
+  // The document-bearing form must still say so; the host form must NOT, or
+  // the WebView would navigate per document again and the parse would come
+  // back with it.
+  const withFile = returnedTemplates(findFn(stagedTree, 'localViewerUrlFor'));
+  const hostOnly = returnedTemplates(findFn(stagedTree, 'localViewerHostUrl'));
+  ok(withFile.every((t) => t.includes('?file=')),
+    'localViewerUrlFor still hands the document over as ?file=');
+  ok(hostOnly.every((t) => !t.includes('file=')),
+    'localViewerHostUrl carries NO document — that constancy is what stops the '
+    + 'WebView navigating, and a document in this url would silently undo it');
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. THE CLASS: the hash must be LAST. A later `?`/`&` appended after the hash
-//    would land inside the fragment and pdf.js would stop parsing pagemode.
-// ═══════════════════════════════════════════════════════════════════════════
-ok(staged.every((t) => t.indexOf('#') === t.lastIndexOf('#')),
-  "staged: exactly one '#' in the URL");
-ok(staged.every((t) => !t.slice(t.indexOf('#')).includes('?')),
-  'staged: no query appended after the fragment');
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 3. The staged builder is the one the viewer actually calls, and it is the
+// 3. The host builder is the one the component actually calls, and it is the
 //    ONLY viewer builder in the component.
 // ═══════════════════════════════════════════════════════════════════════════
 const viewerTree = ast('src/components/PDFViewer.native.jsx');
 let callsStaged = false;
+let callsFileForm = false;
 walk(viewerTree, (n) => {
   if (n.type !== 'CallExpression') return;
-  if (n.callee.type === 'Identifier' && n.callee.name === 'localViewerUrlFor') callsStaged = true;
+  if (n.callee.type === 'Identifier' && n.callee.name === 'localViewerHostUrl') callsStaged = true;
+  if (n.callee.type === 'Identifier' && n.callee.name === 'localViewerUrlFor') callsFileForm = true;
 });
-ok(callsStaged, 'the component builds its Android source with localViewerUrlFor');
+ok(callsStaged, 'the component builds its Android source with localViewerHostUrl');
+ok(!callsFileForm,
+  'and never with the ?file= form — that is the navigation-per-document this '
+  + 'change removes');
 
 // A second builder would be a second place to forget the hash -- and, as the
 // hosted one proved, a second place for a url to go somewhere it should not.
@@ -121,7 +151,7 @@ walk(viewerTree, (n) => {
   if (otherBuilder) return;
   const named = (n.type === 'FunctionDeclaration' && n.id && n.id.name)
     || (n.type === 'VariableDeclarator' && n.id && n.id.type === 'Identifier' && n.id.name);
-  if (!named || named === 'localViewerUrlFor') return;
+  if (!named || BUILDERS.includes(named)) return;
   for (const t of returnedTemplates(n)) {
     if (t.includes('viewer.html')) { otherBuilder = named; return; }
   }

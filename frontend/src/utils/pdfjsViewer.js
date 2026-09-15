@@ -83,7 +83,14 @@ const STAMP_NAME = '.stamp';
 //   5 — the embedded-image compression scan. Same reasoning: a device staged
 //       at `4` would report every other measurement and silently omit the one
 //       the engine decision turns on.
-const VIEWER_VERSION = '6';
+//   7 — SHARPNESS ON DEMAND. The ppi floor #413 added is no longer applied at
+//       first paint; it is switched on by the reader zooming in. THIS BUMP IS
+//       THE FIX'S ENTIRE DELIVERY MECHANISM and is not optional: viewer.html
+//       is written to disk once and re-used until this string changes, so a
+//       device that already staged `6` would keep rasterising 12.58 MP a
+//       sheet on every open and the change would reach nobody. The app code
+//       would be new and the viewer would be old.
+const VIEWER_VERSION = '7';
 
 // The placeholders are a couple of KB of comments; a real pdf.min.js is ~300KB
 // and the worker ~1MB. Anything under this is not a pdf.js build.
@@ -141,8 +148,27 @@ const VIEWER_SCRIPT = [
   // measures. 150 is a statement of intent, not a promise: the two caps above
   // bind first on anything bigger than about 27x27 inches, so an arch-E sheet
   // lands at 4096px on the long edge — 85 ppi — and asking for more here
-  // changes nothing until those move. Lower this first if a phone renders
-  // too slowly; it is the one constant to revert.
+  // changes nothing until those move.
+  //
+  // ⚠️ DO NOT "JUST LOWER THIS" TO MAKE THE VIEWER FASTER. An earlier note
+  // here said to, and it is a trap. Run the arithmetic on a 36x48 sheet
+  // (2592 x 3456 pt) before touching the number:
+  //
+  //   TARGET_PPI  scale  long edge          effect
+  //   150         2.083  7200 -> clamped    4096 px, 85.3 ppi
+  //   120         1.667  5760 -> clamped    4096 px, 85.3 ppi   — no change
+  //    96         1.333  4608 -> clamped    4096 px, 85.3 ppi   — no change
+  //    85         1.181  4082                4082 px, 85.0 ppi  — barely
+  //    84         1.167  4032                4032 px, 84.0 ppi  — now it moves
+  //
+  // MAX_CANVAS_EDGE is the binding clamp, so ANY value from ~85 upward
+  // produces a byte-identical render and costs exactly the same. The first
+  // value that makes a phone faster is one that has already dropped below the
+  // clamp — and once below it, `viewportS` takes over on a phone at 32.5 ppi
+  // and every bit of the legibility #413 bought is gone. There is no setting
+  // of this constant that trades a little sharpness for a little speed; it is
+  // all or nothing, which is precisely why the floor is now gated on the zoom
+  // (see `sharp` below) rather than shrunk.
   '  var TARGET_PPI = 150;',
   // How far either side of the viewport a page counts as "near". Feeds both
   // the observer's rootMargin and the no-observer sweep, so the two paths
@@ -157,12 +183,50 @@ const VIEWER_SCRIPT = [
   // lands on a canvas that is still there — and it caps the page at about 7
   // sheets of bitmap (~30–50 MB) no matter how long the set is.
   '  var KEEP_RENDERED = 7;',
+  // ── SHARPNESS ON DEMAND, WHICH IS WHAT #413 SHOULD HAVE BEEN ───────────
+  //
+  // #413 was right about the resolution and wrong about when to pay for it.
+  // A 36x48 sheet at a phone's viewport scale is 32.5 ppi and genuinely
+  // unreadable, so `TARGET_PPI` had to exist. But it applied on every page of
+  // every open: a phone went 1.83 MP a sheet to 12.58 MP, 6.9x, and the band
+  // rasterises four or five sheets before the operator has touched anything.
+  // That is ~63 MP on the UI thread — with no worker to put it on — to show a
+  // drawing nobody has yet asked to read the fine print of. An inspector
+  // waits through all of it, every single time.
+  //
+  // So the floor is attached to the ZOOM instead of to the open. `sharp` is
+  // false at first paint and the scale is viewport-anchored — byte for byte
+  // what this viewer rendered before #413 — and the first pinch past
+  // ZOOM_SHARP switches it on and redraws. The legibility arrives at the
+  // moment someone zooms in to read, which is the only moment it was ever
+  // wanted.
+  //
+  // ONE WAY ONLY. `sharp` never returns to false. A reader who has zoomed in
+  // once is reading the drawing, and dropping back to 32 ppi on every
+  // pinch-out would be a flicker on every gesture and a re-render to pay for
+  // it. `trim()` and the band below bound the memory in both directions
+  // instead.
+  '  var ZOOM_SHARP = 1.25;',
+  // THE BAND, ONCE THE EXPENSIVE SCALE IS IN USE. This is the fix for the
+  // zoom-then-reload, and KEEP_RENDERED could not have been: `trim()` never
+  // frees a page that is still in the band, so at BAND = 1.5 the four or five
+  // near sheets are unfreeable whatever the window is set to. Seven sheets at
+  // 12.58 MP is 350 MB of bitmap and five is still 250 MB, which is what gets
+  // a Chromium renderer killed and reloaded. A reader who has pinched in is
+  // looking at ONE sheet; 0.25 spans a viewport and a half either side, so
+  // the near set is one or two.
+  '  var BAND_SHARP = 0.25;',
+  '  var sharp = false;',
+  // ONE FUNCTION, BOTH READERS. The observer's rootMargin and the
+  // no-observer sweep must agree about what "near" means or a page is drawn
+  // by one and freed by the other.
+  '  function band(){ return sharp ? BAND_SHARP : BAND; }',
   '',
   '  function post(obj){',
   '    try { if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(obj)); } catch (e) {}',
   '  }',
   '  function fail(code, detail){',
-  '    if (msgEl) msgEl.textContent = "Could not render this document.";',
+  '    if (msgEl) { msgEl.style.display = ""; msgEl.textContent = "Could not render this document."; }',
   '    post({ type: "pdf-error", code: code, detail: String(detail || "") });',
   '  }',
   '  function param(name){',
@@ -233,6 +297,53 @@ const VIEWER_SCRIPT = [
   // compatibility table. `transferControlToOffscreen` is checked on a real
   // element because the prototype can carry the method on builds where calling
   // it throws.
+  // ── THE FIXED COST, WHICH EVERY OTHER MEASUREMENT HERE IS BLIND TO ─────
+  //
+  // THE PROBE SHIPPED WITH A HOLE IN IT. `ptOpen0` is taken on the first line
+  // of this script — and this script does not run until pdf.worker.min.js
+  // (1.1 MB) and pdf.min.js (377 KB) have both been read off file:// storage,
+  // compiled and executed on the MAIN THREAD, because a real Worker is
+  // blocked from a file:// origin. So `open.totalMs` excludes the entire cost
+  // of the viewer booting.
+  //
+  // THAT IS THE ONE COST THAT DOES NOT CARE HOW BIG THE DOCUMENT IS. It is
+  // identical for a 16 KB logbook and a 30 MB plan set, which makes it the
+  // only candidate that explains the operator seeing both take the same
+  // 20-30 seconds. Every number the probe already reports could come back
+  // small and the open would still feel slow, and nobody would know why.
+  //
+  // `scriptStartMs` IS THE ANSWER. performance.now() on a page is measured
+  // from navigation start, so read on the first line of the capability
+  // sequence it is exactly "how long before any of our code ran". The
+  // per-script resource timings underneath it say how that time split between
+  // reading the bytes and compiling them, and which of the two files cost it
+  // — the 1.1 MB worker is the one that would move off-thread if the
+  // blob-worker probe comes back supported.
+  '  function probeBoot(){',
+  '    if (!MEASURE) return;',
+  '    var d = { scriptStartMs: r1(pnow()) };',
+  '    try {',
+  '      var nav = performance.getEntriesByType("navigation")[0];',
+  '      if (nav) {',
+  '        d.domInteractiveMs = r1(nav.domInteractive);',
+  '        d.responseEndMs = r1(nav.responseEnd);',
+  '      }',
+  '    } catch (e) { d.navTimingError = String(e); }',
+  '    try {',
+  '      var res = performance.getEntriesByType("resource") || [];',
+  '      d.scripts = [];',
+  '      for (var i = 0; i < res.length; i++) {',
+  '        var nm = String(res[i].name || "");',
+  '        if (nm.indexOf(".js") < 0) continue;',
+  '        d.scripts.push({ name: nm.split("/").pop(),',
+  '                         startMs: r1(res[i].startTime),',
+  '                         durationMs: r1(res[i].duration),',
+  '                         bytes: res[i].decodedBodySize || 0 });',
+  '      }',
+  '    } catch (e) { d.resourceTimingError = String(e); }',
+  '    probePost("boot", d);',
+  '  }',
+  '',
   '  function probeEnv(){',
   '    if (!MEASURE) return;',
   '    var d = {};',
@@ -502,8 +613,33 @@ const VIEWER_SCRIPT = [
   '    return;',
   '  }',
   '',
-  '  var fileUrl = param("file");',
-  '  if (!fileUrl) { fail("no-file", "missing ?file="); return; }',
+  // ── THE DOCUMENT IS NO LONGER PART OF THE URL ──────────────────────────
+  //
+  // THE COST THIS REMOVES, AND WHY THE MEMOISATION NEVER TOUCHED IT.
+  // `alreadyStaged()` correctly copies pdf.min.js and pdf.worker.min.js to
+  // disk once per VIEWER_VERSION, and it was easy to read that as "the viewer
+  // is only set up once". It is not. The page used to take its document from
+  // `?file=`, so opening a second document meant a different url, and a
+  // different url in a WebView is a NAVIGATION: the page is torn down and
+  // 1.5 MB of pdf.js — 1.1 MB of it the worker bundle, which a file:// origin
+  // forces onto the MAIN THREAD — is read off storage, compiled and executed
+  // again from nothing. The staging was memoised; the PARSE never was, and
+  // the parse is the expensive half.
+  //
+  // THAT IS THE WHOLE OF THE LOGBOOK COMPLAINT. A 16 KB letter-size logbook
+  // needs 2.1 MP of canvas and pays exactly the same startup as a 36x48
+  // drawing, which is why a small document was as slow as a large one and why
+  // no amount of work on the SCALE could have fixed it.
+  //
+  // So `fileUrl` starts empty and the host sends documents IN, over the
+  // channel `post()` already uses in the other direction. The url stays
+  // constant for the life of the WebView, the page never navigates, and
+  // pdf.js is parsed once per WebView rather than once per open.
+  //
+  // `?file=` IS STILL HONOURED. It is how the page was always opened, it
+  // costs one branch, and keeping it means this change cannot strand a caller
+  // that has not been moved over.
+  '  var fileUrl = "";',
   '  if (typeof pdfjsLib === "undefined") { fail("no-lib", "pdf.min.js did not load"); return; }',
   '  try { pdfjsLib.GlobalWorkerOptions.workerSrc = "' + WORKER_NAME + '"; } catch (e) {}',
   '',
@@ -540,7 +676,7 @@ const VIEWER_SCRIPT = [
   // OVERSAMPLE IS A PARAMETER, not a literal, for the SAME reason: the A/B
   // measures 1.0 against 1.5 through this function rather than through a
   // second copy of the formula.
-  '  function targetScaleInfo(vp1, over){',
+  '  function targetScaleInfo(vp1, over, wantFloor){',
   '    var dpr = window.devicePixelRatio || 1;',
   // ── THE SHEET'S OWN SIZE HAD CANCELLED OUT OF THIS ────────────────────────
   //
@@ -571,15 +707,20 @@ const VIEWER_SCRIPT = [
   // A/B still measures what it was written to measure.
   '    var viewportS = (baseWidth / vp1.width) * Math.min(dpr, 2) * (over === undefined ? 1.5 : over);',
   '    var ppiS = TARGET_PPI / 72;',
-  '    var s = Math.max(viewportS, ppiS);',
-  '    var anchor = (s === ppiS && ppiS > viewportS) ? "ppi" : "viewport";',
+  // THE FLOOR IS NOW A TIER, NOT A CONSTANT. `wantFloor` left undefined means
+  // "whatever the viewer is currently doing", which is what the real render
+  // path passes; the probe's A/B passes it explicitly so it can time both
+  // tiers without depending on what the reader happened to have done.
+  '    var floorOn = (wantFloor === undefined) ? sharp : !!wantFloor;',
+  '    var s = floorOn ? Math.max(viewportS, ppiS) : viewportS;',
+  '    var anchor = (floorOn && ppiS > viewportS) ? "ppi" : "viewport";',
   '    var w = vp1.width * s, h = vp1.height * s;',
   '    var clamp = "none";',
   '    if (w > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / w); w = vp1.width * s; h = vp1.height * s; clamp = "edge-w"; }',
   '    if (h > MAX_CANVAS_EDGE) { s = s * (MAX_CANVAS_EDGE / h); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "edge-h" : clamp + "+edge-h"); }',
   '    if (w * h > MAX_CANVAS_PX) { s = s * Math.sqrt(MAX_CANVAS_PX / (w * h)); w = vp1.width * s; h = vp1.height * s; clamp = (clamp === "none" ? "maxpx" : clamp + "+maxpx"); }',
   '    return { s: s, w: w, h: h, clamp: clamp, dpr: dpr, baseWidth: baseWidth,',
-  '             anchor: anchor, ppi: 72 * s, targetPpi: TARGET_PPI };',
+  '             anchor: anchor, floor: floorOn, ppi: 72 * s, targetPpi: TARGET_PPI };',
   '  }',
   '',
   '  function targetScale(vp1){ return targetScaleInfo(vp1).s; }',
@@ -716,7 +857,7 @@ const VIEWER_SCRIPT = [
   '  function inBand(slot){',
   '    var h = window.innerHeight || document.documentElement.clientHeight || 800;',
   '    var r = slot.el.getBoundingClientRect();',
-  '    return r.bottom > -(BAND * h) && r.top < h + (BAND * h);',
+  '    return r.bottom > -(band() * h) && r.top < h + (band() * h);',
   '  }',
   '',
   // The no-IntersectionObserver path, and the same shape as the observer's
@@ -739,12 +880,21 @@ const VIEWER_SCRIPT = [
   '',
   // Lazy render: only pages near the viewport. A 200-sheet plan set must not
   // rasterise 200 canvases up front — nor keep the ones it has already drawn.
+  // `swept` GUARDS THE REBUILD. watch() is no longer called once: goSharp()
+  // calls it again through rewatch() to change the band. On the
+  // no-IntersectionObserver path that would stack a second pair of scroll
+  // listeners every time, so the listeners are registered once and only the
+  // sweep is repeated.
+  '  var swept = false;',
   '  function watch(){',
   '    if (typeof IntersectionObserver === "undefined") {',
   // WAS: a for-loop over every slot calling renderSlot. That rasterised the
   // whole set at once and uncapped, which is the worst version of this bug.
-  '      window.addEventListener("scroll", scheduleSweep, true);',
-  '      window.addEventListener("resize", scheduleSweep);',
+  '      if (!swept) {',
+  '        swept = true;',
+  '        window.addEventListener("scroll", scheduleSweep, true);',
+  '        window.addEventListener("resize", scheduleSweep);',
+  '      }',
   '      sweep();',
   '      return;',
   '    }',
@@ -760,8 +910,65 @@ const VIEWER_SCRIPT = [
   '        }',
   '      }',
   '      trim();',
-  '    }, { rootMargin: (BAND * 100) + "% 0px" });',
+  '    }, { rootMargin: (band() * 100) + "% 0px" });',
   '    for (var j = 0; j < slots.length; j++) io.observe(slots[j].el);',
+  '  }',
+  '',
+  // A rootMargin is fixed at construction, so the only way to change the band
+  // is to build a new observer. Disconnecting first is what stops the old one
+  // continuing to report against the old margin.
+  '  function rewatch(){',
+  '    if (io) { io.disconnect(); io = null; }',
+  '    watch();',
+  '  }',
+  '',
+  // ── THE TIER CHANGE ────────────────────────────────────────────────────
+  //
+  // Everything already rasterised is at the wrong scale, so it all goes. The
+  // PLACEHOLDERS are untouched — `slot.el` keeps the width and height layout()
+  // gave it — so the document does not move under the reader's finger while
+  // this happens; pages blank and come back sharper in place.
+  '  function goSharp(){',
+  '    if (sharp) return;',
+  '    sharp = true;',
+  '    probePost("sharp", { zoom: r1(zoomScale()), band: band() });',
+  '    for (var i = 0; i < slots.length; i++) {',
+  '      slots[i].visible = false;',
+  '      releaseSlot(slots[i]);',
+  '    }',
+  '    rendered.length = 0;',
+  '    rewatch();',
+  '  }',
+  '',
+  // Native pinch-zoom is the WebView's own, not the page's: it moves the
+  // VISUAL viewport and leaves the layout viewport alone, so innerWidth and
+  // devicePixelRatio both stay put and only visualViewport.scale reports it.
+  '  function zoomScale(){',
+  '    try { if (window.visualViewport && window.visualViewport.scale) return window.visualViewport.scale; } catch (e) {}',
+  '    return 1;',
+  '  }',
+  '',
+  // FAIL TOWARD THE LEGIBLE RENDER. If this WebView cannot report its zoom,
+  // there is no event that could ever switch the floor on — so it goes on at
+  // first paint and stays on, exactly as the viewer behaves today. A slow open
+  // is an inconvenience; an unreadable 32-ppi sheet in a cellar with no way to
+  // ask for more is the defect #413 was raised to fix, and this must never
+  // reintroduce it by silence.
+  '  var zoomBlind = false;',
+  '  function zoomIsSharp(){ return zoomBlind || zoomScale() >= ZOOM_SHARP; }',
+  // REGISTERED ONCE, NOT PER DOCUMENT. This page now stays loaded across every
+  // document the operator opens, so a listener added on each open would
+  // accumulate one per document for the life of the WebView.
+  '  var zoomWatched = false;',
+  '  function watchZoom(){',
+  '    if (zoomWatched) return;',
+  '    zoomWatched = true;',
+  '    var vv = null;',
+  '    try { vv = window.visualViewport || null; } catch (e) { vv = null; }',
+  '    if (!vv) { zoomBlind = true; sharp = true; return; }',
+  '    function onZoom(){ if (zoomIsSharp()) goSharp(); }',
+  '    try { vv.addEventListener("resize", onZoom); } catch (e) { zoomBlind = true; sharp = true; return; }',
+  '    onZoom();',
   '  }',
   '',
   // The WebView outlives the document — PDFViewer.native.jsx repoints `source`
@@ -1101,6 +1308,11 @@ const VIEWER_SCRIPT = [
   // WebView can and cannot do.
   '  function capabilityRead(after){',
   '    if (!MEASURE) { if (after) after(); return; }',
+  // FIRST, AND THAT ORDER IS THE MEASUREMENT. probeCanvasLimits() below walks
+  // a ladder up to 16384x16384 and is the most expensive thing on this page;
+  // reading the boot cost after it would fold the probe's own allocations
+  // into the number.
+  '    probeBoot();',
   '    probeEnv();',
   '    probeCanvasLimits();',
   '    probeBlobWorker(function(){',
@@ -1113,7 +1325,73 @@ const VIEWER_SCRIPT = [
   '  }',
   '',
   '  capabilityRead(function(){});',
-  '  hbStart();',
+  // ONCE, BEFORE ANY DOCUMENT. The zoom belongs to the WebView, not to the
+  // document, so it is watched for the life of the page — and `resetDocument`
+  // reads the answer rather than re-registering.
+  '  watchZoom();',
+  '',
+  // ── HANDING THE PAGE BACK BETWEEN DOCUMENTS ────────────────────────────
+  //
+  // THE TRADE THIS MUST NOT MAKE. Keeping the page alive across documents
+  // removes a 1.5 MB parse; it would be a bad bargain if the previous
+  // document's canvases stayed with it. `teardown()` is exactly the right
+  // thing to call here and is reused rather than reimplemented — it
+  // disconnects the observer, releases every slot (detaching AND zeroing each
+  // canvas, which is the only step that returns the bitmap) and destroys the
+  // pdf.js document, which is what frees the file bytes the parser holds.
+  //
+  // What teardown() does NOT do, because on `pagehide` there is no next
+  // document, is empty the arrays and the DOM. That is this function's whole
+  // remaining job.
+  '  function resetDocument(){',
+  '    teardown();',
+  '    slots.length = 0;',
+  '    rendered.length = 0;',
+  '    pagesEl.innerHTML = "";',
+  // THE NEXT DOCUMENT GETS THE FAST TIER AGAIN — unless the WebView is STILL
+  // pinched in. Plain `sharp = false` was wrong: native zoom is a property of
+  // the WebView, not of the document, so a reader who zoomed into sheet A and
+  // then opened sheet B would get the 32-ppi render with no `resize` event
+  // coming to correct it, because nothing about the zoom had changed. Asking
+  // the viewport is the only reading that is true for both cases, and it
+  // keeps the fail-toward-legible answer when the zoom cannot be read at all.
+  '    sharp = zoomIsSharp();',
+  '    try { window.scrollTo(0, 0); } catch (e) {}',
+  '  }',
+  '',
+  '  function openDocument(url){',
+  '    if (!url) { fail("no-file", "no document url"); return; }',
+  '    resetDocument();',
+  '    fileUrl = url;',
+  '    if (msgEl) { msgEl.style.display = ""; msgEl.textContent = "Loading document\\u2026"; }',
+  '    hbStart();',
+  '    loadCurrent();',
+  '  }',
+  '',
+  // react-native-webview delivers `postMessage` to `document` on Android and
+  // to `window` on iOS. Android is the only platform that reaches this file at
+  // all — iOS hands a PDF to PDFKit and never loads pdf.js — but registering
+  // both costs nothing and the cost of listening on the wrong one is a viewer
+  // that silently never opens anything.
+  '  function onHostMessage(ev){',
+  '    var d = null;',
+  '    try { d = JSON.parse((ev && ev.data) || "{}"); } catch (e) { return; }',
+  '    if (!d || d.type !== "open-document" || !d.file) return;',
+  '    openDocument(d.file);',
+  '  }',
+  '  try { document.addEventListener("message", onHostMessage); } catch (e) {}',
+  '  try { window.addEventListener("message", onHostMessage); } catch (e) {}',
+  '',
+  // THE HOST CANNOT SEND UNTIL THE PAGE CAN RECEIVE. A document posted before
+  // these listeners exist is dropped with no trace, so the page says when it
+  // is ready and PDFViewer.native.jsx holds the first document until it hears
+  // this.
+  '  post({ type: "pdf-viewer-ready" });',
+  '',
+  '  var initialFile = param("file");',
+  '  if (initialFile) openDocument(initialFile);',
+  '',
+  '  function loadCurrent(){',
   '  var ptOpen0 = PROBE ? pnow() : 0;',
   '  readBytes(fileUrl, function(bytes){',
   '    var ptBytes = PROBE ? pnow() : 0;',
@@ -1139,7 +1417,11 @@ const VIEWER_SCRIPT = [
   '      var ptLayout0 = PROBE ? pnow() : 0;',
   '      return layout().then(function(){ if (PROBE) probePost("layout", { layoutMs: r1(pnow() - ptLayout0), pages: doc.numPages }); });',
   '    }).then(function(){',
-  '      if (msgEl && msgEl.parentNode) msgEl.parentNode.removeChild(msgEl);',
+  // HIDDEN, NOT REMOVED. This page now outlives the document it is showing,
+  // so the next `openDocument` needs this element back to say "Loading" with.
+  // Removing it from the DOM was safe only while a second document meant a
+  // second page.
+  '      if (msgEl) msgEl.style.display = "none";',
   '      watch();',
   '      post({ type: "pdf-ready", pages: doc.numPages });',
   // THE OPEN IS OVER. Everything the operator waits for has happened, so the
@@ -1152,9 +1434,10 @@ const VIEWER_SCRIPT = [
   '      }',
   '    })["catch"](function(e){ if (PROBE) hbStop("open-failed"); fail("parse", e); });',
   '  }, function(code){',
-  '    if (msgEl) msgEl.textContent = "Could not read this document from storage.";',
+  '    if (msgEl) { msgEl.style.display = ""; msgEl.textContent = "Could not read this document from storage."; }',
   '    post({ type: "pdf-error", code: code, detail: fileUrl });',
   '  });',
+  '  }',
   '})();',
 ].join('\n');
 
@@ -1260,6 +1543,26 @@ export function localViewerUrlFor(viewerUri, pdfFileUri, opts) {
   // the flag off this returns the byte-identical string it always returned.
   const probe = opts && opts.probe ? '&probe=1' : '';
   return `${viewerUri}?file=${encodeURIComponent(pdfFileUri)}${probe}#pagemode=none`;
+}
+
+/** The viewer page with NO document in it — the url an Android WebView is
+ *  pointed at once and then left alone.
+ *
+ *  THIS RETURNING A CONSTANT IS THE POINT. `localViewerUrlFor` puts the
+ *  document in the query string, so every open was a different url, and a
+ *  different url is a navigation: the page is discarded and 1.5 MB of pdf.js
+ *  is read off storage and recompiled on the main thread before anything can
+ *  be drawn. Documents are delivered into this page by postMessage instead
+ *  (`{ type: "open-document", file }`), so the url never changes and pdf.js is
+ *  parsed once per WebView rather than once per document.
+ *
+ *  The probe flag is the ONLY thing that can vary here, and it resolves once
+ *  per session before any document is opened — see the note in
+ *  PDFViewer.native.jsx about why it must not move mid-session. */
+export function localViewerHostUrl(viewerUri, opts) {
+  if (!viewerUri) return null;
+  const probe = opts && opts.probe ? '?probe=1' : '';
+  return `${viewerUri}${probe}#pagemode=none`;
 }
 
 /** Directory WKWebView must be granted read access to (iOS allowingReadAccessToURL). */

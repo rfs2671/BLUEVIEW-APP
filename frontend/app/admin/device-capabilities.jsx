@@ -40,10 +40,24 @@ import { spacing, borderRadius } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { ensurePdfJsViewer, pdfJsViewerDir } from '../../src/utils/pdfjsViewer';
 
-// The six the read produces, in the order the reporting wants them. `wasm` and
-// `binread` are first because they gate the packed-file design regardless of
-// what happens to tiling.
-const ORDER = ['wasm', 'binread', 'blobworker', 'workersrc', 'canvas-lim', 'env'];
+// The readings, in the order the reporting wants them.
+//
+// `boot` IS FIRST BECAUSE IT IS THE COMPLAINT. It is how long this device
+// spent reading, compiling and executing 1.5 MB of pdf.js before a single
+// line of the viewer's own code ran — a cost paid on every open, identical
+// for a 16 KB logbook and a 30 MB plan set, and the only candidate that
+// explains an operator seeing both take the same twenty seconds. This screen
+// opens NO document, so the number it shows here is that fixed cost alone,
+// with nothing else mixed into it.
+//
+// `blobworker` and `workersrc` are next because together they decide whether
+// that cost can be moved off the UI thread at all: a Worker built from a
+// blob: URL usually inherits the document origin and escapes the file://
+// restriction that forced the worker onto the main thread in the first place.
+// If both come back true, the 1.1 MB worker bundle leaves the UI thread with
+// no native change and no new build. `wasm` and `binread` gate the
+// packed-file design regardless of what happens to tiling.
+const ORDER = ['boot', 'blobworker', 'workersrc', 'wasm', 'binread', 'canvas-lim', 'env'];
 
 export default function DeviceCapabilitiesScreen() {
   const { colors, isDark } = useTheme();
