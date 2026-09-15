@@ -274,8 +274,16 @@ async function runHandler({ mode }) {
     // synthetic scope, so a name it references and this scope does not declare
     // is a ReferenceError on the happy path. That is the extraction doing its
     // job; it refused to test a handler it could not actually run.
+    // CARD_UPLOAD_TIMEOUT_MS is the next such name: a module-level const in
+    // checkin.html that the handler passes to api() as the card upload's
+    // declared client ceiling. LIFTED OUT OF THE REAL FILE, not retyped —
+    // a hardcoded copy here would keep passing after the shipped value
+    // changed, which is the drift this whole extraction style exists to stop.
     `let oshaImage = null; let oshaData = null; let projectId = 'p_test';
      let ocrAttempts = 0; let ocrLastFailureReason = null;
+     ${(src.match(/const CARD_UPLOAD_TIMEOUT_MS = \d+;/) || [
+      'throw new Error("CARD_UPLOAD_TIMEOUT_MS is gone from checkin.html");',
+    ])[0]}
      ${handlerSrc}
      return handleOshaPhoto;`,
   );

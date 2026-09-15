@@ -153,9 +153,16 @@ async def extract_coi_fields(
             f"Expected one of {sorted(ALLOWED_INSURANCE_TYPES)}."
         )
 
-    api_key = os.environ.get("QWEN_API_KEY", "").strip()
-    api_base = os.environ.get("QWEN_API_BASE", "https://api.deepinfra.com/v1/openai")
-    model = os.environ.get("QWEN_MODEL", "Qwen/Qwen3-VL-30B-A3B-Instruct")
+    # ONE RESOLVER, NOT A SECOND SET OF DEFAULTS. These three lines used to
+    # default QWEN_API_BASE to DeepInfra and QWEN_MODEL to
+    # `Qwen/Qwen3-VL-30B-A3B-Instruct` while server.py defaulted THE SAME TWO
+    # VARIABLES to Together and to a 7B id that 404s. Qwen3-VL-30B-A3B is the
+    # model whose unbounded latency tail cost four days of worker
+    # registrations; it must not be anything's fallback. See lib/vision_model.py.
+    from lib.vision_model import vision_api_base, vision_api_key, vision_model
+    api_key = vision_api_key()
+    api_base = vision_api_base()
+    model = vision_model()
     if not api_key:
         raise OcrConfigError(
             "QWEN_API_KEY not configured. Cannot OCR COI."
