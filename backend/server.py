@@ -3590,6 +3590,90 @@ def resolve_card_class(od: dict) -> dict:
             "color": color}
 
 
+# ── A CLASS THE WORKER TYPED IS EVIDENCE, NOT PROOF ────────────────────────
+#
+# WHAT THIS IS FOR. When OCR fails, the gate's manual-entry fields were the
+# ONLY way through, and they collapsed the card to three keys — sst_number,
+# issued, expiration. There was no class field at all, so every manual entry
+# resolved to SST_UNSPECIFIED and landed in the review queue as
+# CLASS_UNVERIFIED — permanently, by construction. Six of the twelve flagged
+# certifications on the live company got there this way.
+#
+# A CLASS PICKER FIXES THE GAP AND MUST NOT FIX THE VERDICT. A man naming his
+# own card class is a better record than a blank — the reviewer now knows what
+# he says he holds — but it is his word about his own credential, which is
+# exactly the thing a compliance record exists to check independently. So a
+# self-reported class is STORED, and it NEVER clears review.
+#
+# WHY THIS IS A SEPARATE FUNCTION AND NOT A BRANCH INSIDE resolve_card_class.
+# resolve_card_class answers one question — "what does this PHOTO say the class
+# is" — from two machine signals, colour and text. "The worker told us" is not
+# a third reading of the photo; it is a different kind of claim entirely, and
+# folding it in would put a human assertion inside a function whose whole
+# contract is that it is a pure read of an image. Post-processing the resolver's
+# answer keeps that contract, keeps resolve_card_class untouched (it is being
+# changed concurrently for the unmapped-colour fall-through), and makes the
+# demotion one line that a test can point at.
+CLASS_SOURCE_SELF_REPORTED = "self_reported"
+CLASS_SELF_REPORTED_REASON = "CLASS_SELF_REPORTED"
+
+# THE CLASS SOURCES THAT MAY NEVER STAND ALONE, as ONE list rather than as the
+# same tuple spelled twice. `derive_cert_review` (does this row go to a human?)
+# and `_sst_cert_state` (may this credential read as valid?) are two sides of
+# one rule, and they drifted apart the moment they were written out separately.
+#
+# NOT `text_only`, and that scoping is load-bearing — see _sst_cert_state: until
+# the client reports colour, text_only is EVERY card, so sweeping it in turns
+# "colour proposes" into "nothing is valid any more".
+UNCONFIRMED_CLASS_SOURCES = ("color_only", "conflict", CLASS_SOURCE_SELF_REPORTED)
+
+
+def class_is_self_reported(od: dict) -> bool:
+    """True when the class on this payload is the WORKER'S OWN ANSWER.
+
+    The gate sets `class_source: "self_reported"` on the osha_data it posts
+    when the value in the class picker did not come from the card read — either
+    OCR read no class at all (the manual-entry case this exists for) or the
+    worker changed what OCR proposed. A class OCR read and the worker left
+    alone carries no marker and is resolved exactly as before.
+    """
+    raw = str((od or {}).get("class_source") or "").strip().lower()
+    return raw == CLASS_SOURCE_SELF_REPORTED
+
+
+def demote_self_reported_class(od: dict, res: dict) -> dict:
+    """Apply the self-report demotion to ONE resolver answer. PURE.
+
+    Returns a NEW dict (the resolver's own answer is never mutated) whose
+    `class_source` is "self_reported" and whose `review_reason` is non-None.
+
+    THE INVARIANT, AND IT IS THE WHOLE POINT: a self-reported class can never
+    produce `review_reason: None`. Without this, a picked class reaches
+    resolve_card_class as `card_class` text, matches _map_sst_class, comes back
+    `text_only` with review_reason None — a CLEAN row minted from nothing but
+    the worker's say-so. That is a worse record than the blank it replaces,
+    because the blank at least announced itself.
+
+    A MORE SPECIFIC REASON IS KEPT. CLASS_CONFLICTED (his answer contradicts the
+    card's colour) and CLASS_EXPIRED_SCHEME (he picked the dead Limited class)
+    each say something CLASS_SELF_REPORTED cannot, and both already force
+    review. Same precedence rule `derive_cert_review` uses for resolver reasons.
+
+    `not_sst` IS NOT TOUCHED. "This is a Worker Wallet, not an SST card" is a
+    refusal about the CARD, decided from its colour; the worker's opinion of its
+    class does not answer it and must not soften it.
+    """
+    if not class_is_self_reported(od):
+        return res
+    if res.get("not_sst"):
+        return res
+    out = dict(res)
+    out["class_source"] = CLASS_SOURCE_SELF_REPORTED
+    if not out.get("review_reason"):
+        out["review_reason"] = CLASS_SELF_REPORTED_REASON
+    return out
+
+
 def _map_sst_class(raw) -> str:
     """OCR card_class -> stored SST type. Illegible/unknown -> SST_UNSPECIFIED,
     which can never resolve to a valid credential."""
@@ -3652,10 +3736,16 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
         # COLOUR PROPOSES, NEVER ASSERTS — enforced here rather than merely
         # documented. A class that ONLY COLOUR produced cannot make a credential
         # valid; nor can a conflict, where two signals disagree and the photo
-        # has not settled which is right.
+        # has not settled which is right. NOR CAN THE WORKER'S OWN ANSWER: a
+        # class he picked off a dropdown is his word about his own credential,
+        # which is a weaker signal than either machine read, not a stronger one.
+        # This is also why the class picker cannot regress anything — a manual
+        # entry resolves to 'unknown' today (no class at all), and it resolves
+        # to 'unknown' with the picker too. What changes is that the reviewer
+        # now knows what he says he holds.
         #
-        # SCOPED DELIBERATELY TO THE COLOUR-DERIVED SOURCES. An earlier version
-        # demoted everything except `color_and_text`, which swept up `text_only`
+        # SCOPED DELIBERATELY, AND `text_only` IS STILL OUTSIDE IT. An earlier
+        # version demoted all but `color_and_text`, which swept up `text_only`
         # — and until the client sends a colour, text_only is EVERY card. That
         # turned "colour proposes" into "nothing is valid any more", flagged
         # every worker on every site, and broke four existing tests that were
@@ -3665,10 +3755,61 @@ def _sst_cert_state(cert: dict, now: datetime) -> str:
         #
         # `class_source` absent means the row predates this work entirely and
         # keeps the old behaviour for the same reason.
-        if cert.get("class_source") in ("color_only", "conflict"):
+        if cert.get("class_source") in UNCONFIRMED_CLASS_SOURCES:
             return "unknown"
         return "valid"
     return "unknown"                           # missing / suppressed / unparseable
+
+
+def worker_needs_card_scan(worker: dict, now: datetime) -> Tuple[bool, Optional[str]]:
+    """Does the gate need to ASK this returning worker for a card photo? PURE.
+
+    Returns (needs_scan, reason) where reason is one of MISSING_SST /
+    EXPIRED_SST / CLASS_UNVERIFIED, or None when no scan is wanted.
+
+    ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+    checkin.html deliberately skipped the card step for a returning worker —
+    "a returning worker already has a card on file" — so his tap posted no
+    osha_data and no image, build_worker_certifications hit
+    `if suppressed or stored_exp is None: pass`, and the row was left exactly as
+    it was. THERE WAS NO WAY BACK TO A CARD SCAN. The only route to a fresh read
+    was registering as a NEW worker, which is how one man — Jose David Hernandez
+    Pena — ended up with two worker documents for one person.
+
+    ── ASK, NEVER REQUIRE ─────────────────────────────────────────────────────
+    A true answer here changes what the gate OFFERS, not what it permits. The
+    standing rule is that the gate does not stop a man working, and a card that
+    could not be read yesterday is not a reason to turn him around today —
+    flag-but-allow already covers that, and validate_worker_certifications still
+    decides what blocks. `Check In Now` stays live beside the scan button on the
+    returning screen. See checkin.html showReturningScreen.
+
+    ── AND IT STILL SKIPS FOR A CLEAN CARD ────────────────────────────────────
+    A man with a confirmed, unexpired, class-known card must not be asked to
+    photograph it every single morning; that is the behaviour the skip was
+    written for and it is preserved exactly. `valid` is the ONE state that
+    skips, and it is _sst_cert_state's own definition of it — legible class,
+    parsed future expiry, and a class source that is not merely proposed. Using
+    that function rather than a second opinion is the point: the question "may
+    this credential read as valid" now has one answer in this file.
+    """
+    certs = (worker or {}).get("certifications") or []
+    sst = [c for c in certs
+           if str(c.get("type") or "") in RECOGNIZED_SST_TYPES]
+    if not sst:
+        # No SST row at all. Covers the OSHA-only reads and the workers whose
+        # first scan produced nothing a certification could be built from.
+        return True, "MISSING_SST"
+    states = [_sst_cert_state(c, now) for c in sst]
+    if "valid" in states:
+        return False, None
+    if "expired" in states:
+        return True, "EXPIRED_SST"
+    # Everything left is `unknown`: an unread class, a suppressed or unparseable
+    # expiry, a colour-only or self-reported class. All of them are answered by
+    # the same act — photograph the card again — so they share one reason rather
+    # than leaking the row's internal review code to a public endpoint.
+    return True, "CLASS_UNVERIFIED"
 
 
 def card_image_may_be_replaced(worker, new_image) -> bool:
@@ -3863,7 +4004,12 @@ def derive_cert_review(name_ok, number_ok, class_ok, stored_exp,
     # too would put every card in the queue until the client ships colour,
     # which is how a review queue becomes something nobody reads.
     needs_review = not (name_ok and number_ok and class_ok and bool(stored_exp))
-    if class_source in ("color_only", "conflict"):
+    # SELF_REPORTED IS IN THIS LIST FOR A DIFFERENT REASON FROM THE OTHER TWO,
+    # and the shared list is still right. colour-only and conflict are machine
+    # readings that are not confirmed; a self-reported class is not a reading at
+    # all. Both dispositions are the same — a human looks at it — so both live
+    # under one name rather than as two tuples that can drift.
+    if class_source in UNCONFIRMED_CLASS_SOURCES:
         needs_review = True
     # ── A REVIEWER IS NEVER TOLD TO REVIEW AND NOT TOLD WHAT TO LOOK AT ─────
     #
@@ -3988,6 +4134,14 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
         # PROPOSES: `class_source` records which signal produced the answer and
         # nothing but colour-and-text agreement is treated as confirmed.
         _res = resolve_card_class(od)
+        # ...AND THEN THE WORKER'S OWN ANSWER IS DEMOTED, if that is where the
+        # class came from. resolve_card_class reads a PHOTO; a class picked off
+        # the gate's manual-entry dropdown reaches it as ordinary `card_class`
+        # text and would come back `text_only` with review_reason None — a clean
+        # certification row minted from nothing but the worker's say-so. This
+        # single line is what makes "evidence, not proof" a fact rather than a
+        # sentence in a commit message. See demote_self_reported_class.
+        _res = demote_self_reported_class(od, _res)
         # THE WRONG CARD ENTIRELY. A purple card is a Worker Wallet, not an SST
         # credential, so NO SST certification row is created for it — not even
         # SST_UNSPECIFIED, which RECOGNIZED_SST_TYPES would let satisfy the OSHA
@@ -4076,6 +4230,21 @@ def build_worker_certifications(existing_certs, osha_data, osha_number, osha_car
                 existing_sst["review_reason"] = reason
                 existing_sst["expiration_raw_rejected"] = None
                 existing_sst["extraction_completeness"] = completeness
+                # PROVENANCE TRAVELS WITH THE CORRECTION, and it did not.
+                # Every other field this branch touches came from THIS scan;
+                # class_source and card_color_seen were left describing the
+                # PREVIOUS one, on a row whose type had just been replaced.
+                #
+                # That is not cosmetic. `_sst_cert_state` demotes a credential
+                # whose class is only proposed by reading class_source off the
+                # row — so a flagged row updated here kept a stale (or, on a
+                # pre-colour row, an ABSENT) source, read as fully-confirmed,
+                # and returned 'valid'. A self-reported class would have cleared
+                # itself through this branch on the worker's second try: exactly
+                # the auto-clear this work exists to forbid, reached by a route
+                # that never touches the review flag.
+                existing_sst["class_source"] = class_source
+                existing_sst["card_color_seen"] = color_seen or None
             else:
                 if old_exp != stored_exp:
                     existing_sst["needs_review"] = True
@@ -15192,6 +15361,50 @@ async def record_gate_failure(data: dict, request: Request):
         if lang not in ("en", "es"):
             lang = None
 
+        # ── THE NAME. THIS IS A DELIBERATE REVERSAL OF "NO PII" ─────────────
+        #
+        # The rule above this endpoint said kind, project, tag, attempts,
+        # language, fingerprint — and no name. On 2026-09-15 two men were turned
+        # away at 588 Thomas (fingerprints fc47338d687a0d at 13:21 and 13:23,
+        # b1a3cd8c8b019c at 13:23 and 13:48) and the rows recorded every one of
+        # those fields. NOBODY KNOWS WHO THEY WERE. A CP cannot call back a
+        # fingerprint, cannot check whether the man got in later on someone
+        # else's phone, and cannot tell the two of them apart from one man who
+        # tried twice on two devices.
+        #
+        # "A device failed" is not an incident anyone can act on. "Luis failed
+        # at 13:21 after waiting 38 seconds" is. The name is the difference, and
+        # a gate-failure record with no way back to a person was the whole
+        # reason this collection was created.
+        #
+        # SCOPED TO EXACTLY ONE FIELD, and the rest of the rule stands. The name
+        # is taken ONLY if he has already typed it into the form at the moment
+        # of failure — nothing is looked up, nothing is inferred from the
+        # fingerprint, and no phone number, card number, image or signature is
+        # accepted here. norm_ocr_str because the value passes through the same
+        # field OCR pre-fills, and a worker called "null" in a diagnostic table
+        # is the same defect it is everywhere else.
+        typed_name = norm_ocr_str(data.get("name"))
+        typed_name = (str(typed_name)[:120] if typed_name else None)
+
+        # ── HOW LONG HE WAITED, MEASURED ON HIS PHONE ───────────────────────
+        #
+        # CLIENT-SIDE ON PURPOSE. The question this answers is "how long did the
+        # MAN stand there", and the server cannot see that: on the failures that
+        # matter the client gave up (or the page was unloaded) before any
+        # response was written, so there is no server-side duration to record —
+        # a request that never completed has no server timing at all.
+        #
+        # Bounded and non-negative. A client-reported duration is untrusted
+        # input; 10 minutes is far past any plausible wait and anything beyond
+        # it is a clock, not a worker.
+        try:
+            waited_ms = int(data.get("waited_ms"))
+            if waited_ms < 0 or waited_ms > 600000:
+                waited_ms = None
+        except (TypeError, ValueError):
+            waited_ms = None
+
         await db.gate_failures.insert_one({
             "kind": kind,
             # Only set when the client sent something off-vocabulary, so the
@@ -15203,6 +15416,11 @@ async def record_gate_failure(data: dict, request: Request):
             "company_id": company_id,
             "tag_id": str(data.get("tag_id") or "")[:120] or None,
             "ocr_attempts": ocr_attempts,
+            # The two fields that turn a device into a person and an event into
+            # a duration. Both nullable: he may not have typed a name yet, and
+            # an older cached gate page sends no timing at all.
+            "name": typed_name,
+            "waited_ms": waited_ms,
             "lang": lang,
             "fingerprint_id": str(data.get("fingerprint_id") or "")[:120] or None,
             "source": str(data.get("source") or "")[:60] or None,
@@ -16683,6 +16901,36 @@ async def lookup_worker(data: dict):
         for o in _orientations
     )
 
+    # ── WHETHER TO ASK THIS MAN TO PHOTOGRAPH HIS CARD AGAIN ────────────────
+    #
+    # DECIDED HERE, AND THE LOCATION IS THE DESIGN. Two things had to be true of
+    # wherever this landed: the decider must know the worker's CERTIFICATION
+    # STATE, and the page must have it before it renders the returning screen.
+    #
+    # The obvious candidate was /checkin/{project_id}/{tag_id}/info — it is the
+    # page's first call and it already carries the site's answers. IT CANNOT
+    # HOLD THIS: /info is fetched from init() before any identity exists. The
+    # page has a tag and a project and nothing else; the phone has not been
+    # typed and the saved-identity lookup has not run. An /info that tried to
+    # answer "what does this worker need" would have to be told who he is, and
+    # at that point it IS this endpoint, only public on a different key.
+    #
+    # So the answer rides on the lookup that FIRST NAMES HIM, which is this one,
+    # on both of its paths — the saved-identity call in init() and the typed
+    # phone in lookupWorker(). It is also where `oriented_on_this_project`
+    # already lives, and for the same reason: the page must not be handed the
+    # worker's certification rows and asked to judge them itself. It gets a
+    # boolean and a reason code, and no cert data at all.
+    #
+    # WHY NOT ON THE CLIENT AT ALL. The page would need the cert list to decide,
+    # and this endpoint is PUBLIC and keyed on a phone number — shipping
+    # certifications here would make one man's credential history enumerable by
+    # anyone who knows his number. The server already holds the rows and the
+    # rules (_sst_cert_state, and the same `valid` definition the gate blocks
+    # on), so it answers, and nothing new is exposed.
+    needs_card_scan, card_scan_reason = worker_needs_card_scan(
+        worker, datetime.now(timezone.utc))
+
     return {
         "found": True,
         "worker_id": str(worker["_id"]),
@@ -16692,6 +16940,17 @@ async def lookup_worker(data: dict):
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
         "oriented_on_this_project": oriented_on_this_project,
+        # A REQUEST, NOT A REFUSAL. True means the returning screen OFFERS a
+        # card re-scan; `Check In Now` is untouched beside it. See
+        # worker_needs_card_scan for why, and checkin.html for the two controls.
+        #
+        # THE REASON IS A CODE, NOT A SENTENCE. checkin.html renders bilingual
+        # copy from it (the gate is EN/ES and every server-side English string
+        # that reached it has had to be un-rendered again — see FIX 3 on the
+        # blocked screen). One of MISSING_SST / EXPIRED_SST / CLASS_UNVERIFIED,
+        # or null when no scan is wanted.
+        "needs_card_scan": needs_card_scan,
+        "card_scan_reason": card_scan_reason,
         # ── DAILY SIGNATURE AFFIRMATION — what the kiosk needs, and no more.
         #
         # A BOOLEAN AND A DATE, NEVER THE IMAGE. This endpoint is PUBLIC and
@@ -29961,6 +30220,12 @@ def _inspection_label(key: str) -> str:
 
 OSHA_REVIEW_LABELS = {
     "CLASS_UNVERIFIED": "Class unverified",
+    # DISTINCT FROM "Class unverified", and the distinction is the reviewer's
+    # whole job here. Unverified means nothing could be read; this means
+    # something WAS answered, by the worker, about his own card. The reviewer
+    # is not being asked to read an illegible field — he is being asked to
+    # check a claim against the card. Same disposition, different question.
+    "CLASS_SELF_REPORTED": "Class stated by worker",
     "EXPIRY_IMPLAUSIBLE": "Expiry implausible",
     "EXPIRY_UNPARSEABLE": "Expiry unreadable",
     "EXPIRY_CONFLICT": "Expiry conflict",

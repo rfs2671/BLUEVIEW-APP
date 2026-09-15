@@ -293,6 +293,23 @@ select option{background:#1e293b;color:#f1f5f9}
     <button class="btn btn-success" style="margin-top:8px;padding:18px;font-size:17px" onclick="quickCheckIn()" data-i18n="retCheckIn">
       ✓ &nbsp;Check In Now
     </button>
+    <!-- THE WAY BACK TO A CARD SCAN, which did not exist.
+         The returning path deliberately skipped the card step — "a returning
+         worker already has a card on file" — so his tap posted no osha_data
+         and no image, and build_worker_certifications left the row untouched.
+         The ONLY route to a fresh read was registering as a NEW worker, which
+         is how one man ended up with two worker documents.
+
+         SHOWN ONLY WHEN THE SERVER SAYS SO (lookup-worker's needs_card_scan);
+         a man with a clean card is not asked to photograph it every morning.
+
+         SECOND, AND NEVER FIRST. It sits BELOW `Check In Now` and does not
+         replace it. The gate does not stop a man working: a card that could
+         not be read yesterday is a record to fix, not a reason to turn him
+         around, and flag-but-allow already covers the compliance side. -->
+    <button class="btn btn-primary hidden" id="btnRetScanCard" style="margin-top:10px" onclick="startCardRescan()" data-i18n="retScanCard">
+      📸 &nbsp;Update My Card
+    </button>
     <div class="not-me" onclick="notMe()" data-i18n="retNotMe">Not me? Register as new worker</div>
   </div>
 
@@ -363,6 +380,58 @@ select option{background:#1e293b;color:#f1f5f9}
                  The server normalises regardless — see
                  normalize_card_number in server.py. -->
             <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
+          </div>
+          <!-- THE CLASS FIELD THAT DID NOT EXIST.
+               Manual entry collapsed the card to three keys — number, issued,
+               expiration — so a typed card carried NO CLASS, resolved to
+               SST_UNSPECIFIED, and landed in the review queue as
+               CLASS_UNVERIFIED. Every manual entry, forever, by construction:
+               six of the twelve flagged certifications on the live company got
+               there this way and no amount of care by the worker could avoid it.
+
+               `onchange` MARKS THE SOURCE, and that is what the server keys on.
+               dataset.src is set to 'ocr' by showOcrResults when the card read
+               produced a class, and to 'worker' the moment he touches the
+               control. Anything that is not 'ocr' is posted as
+               class_source: "self_reported" and can never clear review.
+
+               NO "LIMITED" OPTION. Limited SST died in August 2020; offering it
+               would invite a pick that the resolver then has to refuse
+               (CLASS_EXPIRED_SCHEME). A card the app cannot classify has an
+               honest answer on this list — "I'm not sure" — and it is the
+               default, so a wrong pick is never the path of least resistance.
+
+               THIS DELIBERATELY DIFFERS FROM THE ADMIN PICKER (#551,
+               SST_CLASS_OPTIONS in oshaLogModel.js), on two points, and both
+               differences are the same difference: WHO IS HOLDING THE DROPDOWN.
+
+                 HOURS AND COLOUR ARE IN THESE LABELS. #551's rule — hours are a
+                 property of the class, never a reading off the card — governs an
+                 ADMIN TRANSCRIBING A STORED RECORD, where an hours figure beside
+                 a class reads as something the card said. A WORKER AT A TURNSTILE
+                 does not know the word SST_FULL; he knows "the blue 40-hour one".
+                 Colour is also the one thing on a worn card that never rubs off,
+                 and it is the signal resolve_card_class already leads on.
+
+                 #551 KEEPS SST_LIMITED; this does not. Its reason is exact and
+                 does not transfer: "an admin transcribing a worker's record must
+                 be able to say what the record says." He is not transcribing a
+                 record. He is answering about the card in his hand, and he is
+                 very unlikely to tell the dead 30-hour Limited card from the
+                 Worker card. "I'm not sure" is the honest answer for him and it
+                 is already the default.
+
+               These values are OCR TEXT, resolved by _map_sst_class — not the
+               stored class constants certPickerVocabulary.test.cjs governs. -->
+          <div class="input-group">
+            <div class="input-label" data-i18n="cardClassLabel">Card Class</div>
+            <select id="regCardClass" onchange="this.dataset.src='worker'">
+              <option value="" data-i18n="cardClassUnsure">I'm not sure</option>
+              <option value="Worker" data-i18n="cardClassWorker">Worker — 40 hour (blue)</option>
+              <option value="Supervisor" data-i18n="cardClassSupervisor">Supervisor — 62 hour (yellow)</option>
+              <option value="Temporary" data-i18n="cardClassTemporary">Temporary — 10 hour (red)</option>
+            </select>
+            <div class="manual-note" data-i18n="cardClassNote">Your answer is recorded as your own statement and is checked by your site manager.</div>
           </div>
           <div class="input-group">
             <div class="input-label" data-i18n="issuedLabel">Issued Date</div>
@@ -534,8 +603,27 @@ const TRANSLATIONS = {
     selfieHint: 'Optional — used for site verification only',
     cardNumberLabel: 'Card / SST Number',
     cardNumberPlaceholder: 'Card number',
+    // The class picker. Hours and colour are in the labels on purpose: a
+    // worker knows "the blue 40-hour one" far better than he knows the word
+    // the app stores, and the colour is the one thing on the card that never
+    // wears off.
+    cardClassLabel: 'Card Class',
+    cardClassUnsure: "I'm not sure",
+    cardClassWorker: 'Worker — 40 hour (blue)',
+    cardClassSupervisor: 'Supervisor — 62 hour (yellow)',
+    cardClassTemporary: 'Temporary — 10 hour (red)',
+    cardClassNote: 'Your answer is recorded as your own statement and is checked by your site manager.',
     issuedLabel: 'Issued Date',
     expirationLabel: 'Expiration Date',
+    // ── RETURNING WORKER: CARD RE-SCAN ──
+    // Amber, not red, and the wording never says he is refused: the check-in
+    // button beside it stays live. See showReturningScreen.
+    cardCheckMissing: '⚠ No SST card on file — please photograph your card',
+    cardCheckExpired: '⚠ Your SST card has expired — please photograph your card',
+    cardCheckUnverified: '⚠ Your SST card could not be confirmed — please photograph it again',
+    retScanCard: '📸  Update My Card',
+    cardRescanWhy: 'Photograph your card (or type the details) and check in. You can also check in now without doing this.',
+    cardRescanSubmit: '✓  Save Card & Check In',
     nextCompany: 'Next: Select Trade & Company',
     companyTitle: '🏗️ Select Your Trade & Company',
     companyDesc: 'Choose your trade and the company you work for on this project. Only trades your site admin has assigned to this project appear below.',
@@ -652,8 +740,20 @@ const TRANSLATIONS = {
     selfieHint: 'Opcional — solo para verificación en el sitio',
     cardNumberLabel: 'Número de Tarjeta / SST',
     cardNumberPlaceholder: 'Número de tarjeta',
+    cardClassLabel: 'Clase de Tarjeta',
+    cardClassUnsure: 'No estoy seguro',
+    cardClassWorker: 'Trabajador — 40 horas (azul)',
+    cardClassSupervisor: 'Supervisor — 62 horas (amarilla)',
+    cardClassTemporary: 'Temporal — 10 horas (roja)',
+    cardClassNote: 'Su respuesta se registra como su propia declaración y la verifica el administrador del sitio.',
     issuedLabel: 'Fecha de Emisión',
     expirationLabel: 'Fecha de Vencimiento',
+    cardCheckMissing: '⚠ No hay tarjeta SST registrada — por favor fotografíe su tarjeta',
+    cardCheckExpired: '⚠ Su tarjeta SST está vencida — por favor fotografíe su tarjeta',
+    cardCheckUnverified: '⚠ No se pudo confirmar su tarjeta SST — por favor fotografíela de nuevo',
+    retScanCard: '📸  Actualizar Mi Tarjeta',
+    cardRescanWhy: 'Fotografíe su tarjeta (o escriba los datos) y regístrese. También puede registrarse ahora sin hacer esto.',
+    cardRescanSubmit: '✓  Guardar Tarjeta y Registrarse',
     nextCompany: 'Siguiente: Oficio y Empresa',
     companyTitle: '🏗️ Seleccione Su Oficio y Empresa',
     companyDesc: 'Elija su oficio y la empresa para la que trabaja en este proyecto. Solo aparecen los oficios que su administrador ha asignado a este proyecto.',
@@ -860,6 +960,32 @@ let ocrLastFailureReason = null;
 let checkedItems = new Set();
 let returningWorker = null;
 let signatureData = null;
+// TRUE while a RETURNING worker is on the register screen for a card re-scan
+// ONLY — not a registration. It is what makes goStep(2) submit instead of walk
+// to the trade step: he already has a trade, an orientation and a signature on
+// file and must not be marched through all four steps to replace one photo.
+// Cleared by notMe(), and by the off-roster reroute inside quickCheckIn (at
+// that point he genuinely does need to pick a trade, so the short path ends).
+let cardRescanOnly = false;
+// ── HOW LONG HE STOOD THERE ────────────────────────────────────────────────
+// Set the instant a step the worker WAITS ON begins; read by
+// reportGateFailure, which posts the elapsed milliseconds as `waited_ms`.
+//
+// MEASURED ON THE PHONE, because the server cannot measure it: on the failures
+// that matter the client gave up (or the page was unloaded) before any response
+// was written, so there is no server-side duration for the request at all.
+// Without it a gate_failures row says a device failed and cannot say whether
+// the man waited two seconds or forty.
+let waitStartedAt = null;
+function markWaitStart() { waitStartedAt = Date.now(); }
+function waitedMs() {
+  if (!waitStartedAt) return null;
+  const ms = Date.now() - waitStartedAt;
+  // Total on purpose: a clock that jumped (an NTP correction, a device asleep
+  // in a pocket) must not post a negative or absurd duration, and must never
+  // throw on the telemetry path.
+  return (ms >= 0 && ms <= 600000) ? ms : null;
+}
 
 // ==================== PHONE FORMATTING ====================
 function formatPhoneDisplay(val) {
@@ -1215,18 +1341,43 @@ async function api(path, method = 'GET', body = null, timeoutMs = 0) {
 //      being recorded ends with the worker giving up and re-tapping the tag,
 //      which unloads the page; a plain fetch would be cancelled in flight and
 //      lose exactly the events worth having. keepalive:true is the fallback.
-//   3. IT CARRIES NO PII AND NO IMAGE. Kind, project, tag, attempt count,
-//      language, device fingerprint. No name, no phone, no card number, no
+//   3. IT CARRIES THE NAME, AND NOTHING ELSE PERSONAL, AND NO IMAGE. Kind,
+//      project, tag, attempt count, language, device fingerprint, the name he
+//      has already typed, and how long he waited. No phone, no card number, no
 //      frame. The UA and IP are read server-side from the request headers —
 //      the client is not trusted to report them and does not send them.
+//
+//      THE NAME IS A DELIBERATE REVERSAL of this rule's first version, which
+//      said "no name". Two men were turned away on 588 Thomas on 2026-09-15 and
+//      the rows recorded the fingerprint, the attempts, the language and the
+//      detail — and NOBODY KNOWS WHO THEY WERE. A CP cannot call back a
+//      fingerprint. "A device failed" is not an incident anyone can act on;
+//      "Luis failed at 13:21 after waiting 38 seconds" is, and those two fields
+//      are the whole difference.
+//
+//      ONLY WHAT HE HAS ALREADY TYPED. #regName is read at the moment of
+//      failure; nothing is looked up, nothing is recovered from localStorage,
+//      and an empty field stays empty. The failures that matter most happen
+//      BEFORE the form is submitted, which is exactly when this field is the
+//      only thing on the page that knows his name.
 function reportGateFailure(kind, detail) {
   try {
+    // Total: this runs on paths where the DOM is already in trouble, and a
+    // telemetry read must never be the thing that throws.
+    let typedName = null;
+    try {
+      const el = document.getElementById('regName');
+      typedName = (el && el.value ? String(el.value).trim().slice(0, 120) : '') || null;
+    } catch (e) { typedName = null; }
+
     const body = JSON.stringify({
       project_id: projectId || null,
       tag_id: tagId || null,
       kind: String(kind || 'unknown'),
       detail: String(detail == null ? '' : detail).slice(0, 300),
       ocr_attempts: ocrAttempts,
+      name: typedName,
+      waited_ms: waitedMs(),
       lang: currentLang,
       fingerprint_id: deviceFingerprint || null,
       source: 'checkin_html',
@@ -1348,7 +1499,28 @@ function showReturningScreen(worker, needsOrientation = false) {
   // Rendered HERE rather than at submit so the language he sees is the
   // language he affirms in — see toggleAffirm.
   renderAffirmBlock(worker);
-  
+
+  // ── THE RESET, AND IT IS NOT DEFENSIVE TIDYING ────────────────────────────
+  // This screen is REACHED MORE THAN ONCE per page load: notMe() sends the
+  // worker back to the phone screen and lookupWorker() brings the next one
+  // here. Every branch below MUTATES shared DOM — the badge's text and three
+  // inline styles, and now a second button — and none of them restored it. A
+  // worker who followed a man needing orientation was shown that man's amber
+  // badge under his own name. Undo first, then decide.
+  const _badge = document.querySelector('#screenReturning .returning-badge');
+  _badge.textContent = t('retBadge');
+  _badge.style.background = '';
+  _badge.style.borderColor = '';
+  _badge.style.color = '';
+  document.getElementById('btnRetScanCard').classList.add('hidden');
+  const _retBtn = document.querySelector('#screenReturning .btn-success');
+  _retBtn.textContent = t('retCheckIn');
+  // The orientation branch REPLACES this handler (assigning .onclick overrides
+  // the inline attribute), so it has to be put back or the next worker's
+  // `Check In Now` runs the previous worker's orientation routing.
+  _retBtn.onclick = quickCheckIn;
+  endCardRescan();
+
   if (needsOrientation) {
     document.querySelector('#screenReturning .returning-badge').textContent = t('orientationNeeded');
     document.querySelector('#screenReturning .returning-badge').style.background = 'rgba(245,158,11,0.1)';
@@ -1375,9 +1547,91 @@ function showReturningScreen(worker, needsOrientation = false) {
         goStep(2);
       }
     };
+  } else if (worker.needs_card_scan === true) {
+    // ── THE CARD RE-SCAN OFFER ───────────────────────────────────────────
+    // STRICT === true so an older server, a cached page, or any response that
+    // simply lacks the field reads as "no scan wanted". Failing closed in the
+    // OTHER direction here would ask every returning worker on the site to
+    // photograph a card the app has no complaint about.
+    //
+    // ONLY IN THE `else`. When orientation is ALSO outstanding the branch above
+    // sends him through the full registration, whose step 1 IS the card step —
+    // so the scan is already covered and two amber banners would fight for the
+    // same badge.
+    //
+    // THE BADGE CHANGES AND THE BUTTON DOES NOT. `Check In Now` keeps its text,
+    // its colour and its handler; the scan is an additional control underneath.
+    // Amber, like the orientation state, because this is a record to fix and
+    // not a refusal — the gate does not stop a man working.
+    const badge = document.querySelector('#screenReturning .returning-badge');
+    badge.textContent = t(CARD_SCAN_REASON_KEYS[worker.card_scan_reason]
+      || 'cardCheckUnverified');
+    badge.style.background = 'rgba(245,158,11,0.1)';
+    badge.style.borderColor = 'rgba(245,158,11,0.2)';
+    badge.style.color = '#f59e0b';
+    document.getElementById('btnRetScanCard').classList.remove('hidden');
   }
-  
+
   showScreen('screenReturning');
+}
+
+// The server sends a CODE, not a sentence — this gate is EN/ES and an English
+// string from the backend cannot be shown to a Spanish-speaking worker (the
+// same reason the blocked screen renders block types and not `b.detail`).
+// An unrecognised code falls back to the general wording rather than showing
+// the code itself.
+const CARD_SCAN_REASON_KEYS = {
+  MISSING_SST: 'cardCheckMissing',
+  EXPIRED_SST: 'cardCheckExpired',
+  CLASS_UNVERIFIED: 'cardCheckUnverified',
+};
+
+// ==================== RETURNING WORKER: CARD RE-SCAN ====================
+// Sends a worker who ALREADY HAS a record to step 1 of the register screen and
+// nowhere else. He keeps his trade, his orientation and his signature; the only
+// thing being replaced is the card evidence.
+//
+// WHY THE REGISTER SCREEN AND NOT A NEW ONE. Step 1 already holds every control
+// this needs — the camera zone, the OCR round trip, the bounded retake prompt,
+// the always-visible typed fields and now the class picker — along with every
+// silent-failure fix made to them. A second card surface would be a second
+// place for all of that to be got wrong, and the duplicate "manual entry"
+// surface this file has already refused once.
+function startCardRescan() {
+  if (!returningWorker) return;
+  cardRescanOnly = true;
+
+  // Pre-fill what we already know so goStep(2)'s name guard is satisfied and he
+  // is not asked to retype an identity the server just confirmed.
+  document.getElementById('regName').value = returningWorker.name || '';
+  document.getElementById('regPhone').value =
+    formatPhoneDisplay(localStorage.getItem(LS_WORKER_PHONE) || '');
+  // NOT the expiry and NOT the class: those are the values in question. Only
+  // the card NUMBER is carried over, because re-typing a ten-character code off
+  // a worn card is how three of the four mis-cased numbers got recorded.
+  if (returningWorker.osha_number) {
+    document.getElementById('regCardNumber').value = returningWorker.osha_number;
+  }
+
+  // The four dots describe a four-step registration. This is one step, so they
+  // would be a lie on screen and a worker counting them would expect three more.
+  document.getElementById('regSteps').classList.add('hidden');
+  document.getElementById('btnStep1Next').textContent = t('cardRescanSubmit');
+
+  showScreen('screenRegister');
+  revealStep(1);
+  // AFTER the screen switch, which is what would otherwise clear it. Persistent,
+  // and it says he can still check in without doing this — the offer has to
+  // read as an offer.
+  showError(t('cardRescanWhy'), true);
+}
+
+// Put the register screen back the way it ships. Called from notMe() and from
+// the off-roster reroute, both of which end the short path.
+function endCardRescan() {
+  cardRescanOnly = false;
+  document.getElementById('regSteps').classList.remove('hidden');
+  document.getElementById('btnStep1Next').textContent = t('nextCompany');
 }
 
 function notMe() {
@@ -1385,6 +1639,10 @@ function notMe() {
   localStorage.removeItem(LS_WORKER_PHONE);
   localStorage.removeItem(LS_WORKER_NAME);
   returningWorker = null;
+  // This is somebody else now. The short card-only path belonged to the worker
+  // who just left it, and leaving it armed would make the NEXT man's step-1
+  // button submit a check-in instead of walking him to the trade step.
+  endCardRescan();
   showScreen('screenPhone');
   document.getElementById('phoneInput').value = '';
 }
@@ -1441,9 +1699,32 @@ async function quickCheckIn() {
       // Persistent, not a 4s toast — he needs it while he picks. AFTER
       // revealStep, because the screen switch is what would clear it.
       showError(t(hasStoredPair ? 'tradeOffRoster' : 'tradeNotRecorded'), true);
+      // He genuinely has to pick a trade now, so the one-step card path is
+      // over: put the dots and the step-1 button back, or his next tap would
+      // submit from the trade step instead of advancing.
+      endCardRescan();
       return;
     }
   }
+
+  // ── THE CARD EVIDENCE, WHEN THERE IS ANY ─────────────────────────────────
+  // An ordinary returning tap carries NOTHING here and must not: that is the
+  // whole point of the quick path, and posting an empty osha_data would put a
+  // man's clean certification row through the resolver every morning.
+  //
+  // But when he came through `Update My Card`, this call IS the re-scan — and
+  // without these three keys it would post no card evidence at all,
+  // build_worker_certifications would hit `if suppressed or stored_exp is None:
+  // pass`, and the row would be left exactly as it was. A tap that looks like a
+  // fix and changes nothing is worse than no button.
+  //
+  // KEYED ON THE EVIDENCE, NOT ON THE FLAG. `cardRescanOnly` says which screen
+  // he came from; what belongs in the payload is whether a photo or typed
+  // details actually exist. goStep(2)'s guard already refused to get here
+  // without one of them.
+  const _card = (oshaImage || oshaData || hasManualCardDetails())
+    ? buildCardPayload()
+    : null;
 
   showLoading(t('checkingIn'));
   try {
@@ -1454,7 +1735,12 @@ async function quickCheckIn() {
       phone: localStorage.getItem(LS_WORKER_PHONE),
       trade: returningWorker.trade,
       company: returningWorker.company,
-      osha_number: returningWorker.osha_number,
+      osha_number: (_card && _card.osha_number) || returningWorker.osha_number,
+      osha_card_image: oshaImage || undefined,
+      osha_data: (_card && _card.osha_data) || undefined,
+      // FEATURE 2.10: the re-scan's own OCR telemetry, on the row it produced.
+      card_ocr_attempts: ocrAttempts,
+      card_ocr_failure_reason: ocrLastFailureReason,
       // Tapped or scanned. See the parse in init().
       checkin_method: checkinMethod,
       // OPTIONAL roster enhancement — false when untouched, never a gate.
@@ -1494,6 +1780,13 @@ async function quickCheckIn() {
 async function handleOshaPhoto(input) {
   const file = input.files[0];
   if (!file) return;
+
+  // THE CLOCK STARTS HERE, not at the fetch. The worker's wait begins the
+  // moment he takes the photo and covers the whole chain — FileReader, canvas
+  // compression, and the OCR round trip — and a failure in the first two feels
+  // exactly as long to him as a failure in the third. Timing only the request
+  // would report 0 ms for the two silent paths that started this collection.
+  markWaitStart();
 
   const reader = new FileReader();
   // A FileReader error fired into the void: no handler existed, so onload never
@@ -1802,6 +2095,9 @@ async function handleSelfiePhoto(input) {
   const file = input.files[0];
   if (!file) return;
 
+  // Same clock, same reason — a selfie failure is also a wait he sat through.
+  markWaitStart();
+
   const reader = new FileReader();
   // The selfie is OPTIONAL and never gates anything, so a failure here is
   // logged and dropped rather than shown — but it is no longer silent to the
@@ -1837,6 +2133,36 @@ function showOcrResults(data) {
   if (data.sst_number) document.getElementById('regCardNumber').value = data.sst_number;
   if (data.issued) document.getElementById('regIssued').value = data.issued;
   if (data.expiration) document.getElementById('regExpiration').value = data.expiration;
+  presetCardClass(data.card_class);
+}
+
+// Preselect the class picker from what OCR read, and STAMP WHERE IT CAME FROM.
+//
+// THIS IS A DISPLAY DECISION, NOT THE CLASSIFICATION. The authoritative mapping
+// is _map_sst_class on the server and it runs on the text that is POSTED; this
+// only decides which row of the dropdown is highlighted. A reading that matches
+// no option therefore loses nothing — the picker stays on "I'm not sure", the
+// original OCR `card_class` still rides in the payload under Object.assign, and
+// the worker is free to answer for himself (which marks it self-reported).
+//
+// dataset.src='ocr' IS THE LOAD-BEARING LINE. It is the only thing that
+// distinguishes a class the CARD said from a class the WORKER said, and the
+// server's whole self-report demotion keys on the marker it produces. The
+// control's onchange overwrites it with 'worker' the instant he touches it, so
+// correcting a misread class is correctly recorded as his statement and not as
+// a second reading of the card.
+function presetCardClass(raw) {
+  const el = document.getElementById('regCardClass');
+  if (!el) return;
+  const s = String(raw == null ? '' : raw).trim().toUpperCase();
+  if (!s || OCR_NULLISH.has(s.toLowerCase())) return;
+  let value = '';
+  if (s.indexOf('SUPERV') >= 0) value = 'Supervisor';
+  else if (s.indexOf('TEMP') >= 0) value = 'Temporary';
+  else if (s.indexOf('WORKER') >= 0 || s.indexOf('FULL') >= 0 || s.indexOf('COMPLETE') >= 0) value = 'Worker';
+  if (!value) return;
+  el.value = value;
+  el.dataset.src = 'ocr';
 }
 
 // FIX 2: true when the worker has typed enough card detail by hand to stand
@@ -1846,6 +2172,52 @@ function hasManualCardDetails() {
   const num = document.getElementById('regCardNumber');
   const exp = document.getElementById('regExpiration');
   return !!((num && num.value.trim()) || (exp && exp.value.trim()));
+}
+
+// ── THE CARD PAYLOAD, BUILT ONCE ────────────────────────────────────────────
+// Read the (possibly corrected) editable card fields and merge them over the
+// raw OCR blob, so a worker or admin correction — especially the expiration,
+// which the backend parses into the SST cert — actually reaches the server.
+//
+// ONE FUNCTION, TWO CALLERS. submitRegistration (a new worker) and
+// quickCheckIn (a returning worker re-scanning his card) send the SAME card
+// evidence, and they must agree about what self-reported means or the
+// demotion holds on one path and not the other.
+//
+// `class_source` IS THE WHOLE POINT OF THE NEW KEY. The class picker feeds
+// `card_class`, which is ordinary OCR text as far as resolve_card_class is
+// concerned — it would come back `text_only` with no review reason, minting a
+// CLEAN certification row out of the worker's own say-so. The marker is what
+// tells the server that this class is a statement and not a reading; the
+// server demotes on it (demote_self_reported_class) and the row can never
+// clear review. It is sent ONLY when the value did not come from the card
+// read: showOcrResults stamps dataset.src='ocr' when OCR supplied the class,
+// and the control's own onchange stamps 'worker' the moment he touches it.
+function buildCardPayload() {
+  const cardNumber = document.getElementById('regCardNumber').value.trim();
+  const issued = document.getElementById('regIssued').value.trim();
+  const expiration = document.getElementById('regExpiration').value.trim();
+  const classEl = document.getElementById('regCardClass');
+  const pickedClass = classEl ? String(classEl.value || '').trim() : '';
+  const classFromOcr = !!(classEl && classEl.dataset && classEl.dataset.src === 'ocr');
+
+  const payload = Object.assign({}, oshaData || {}, {
+    sst_number: cardNumber || (oshaData ? oshaData.sst_number : null) || null,
+    issued: issued || (oshaData ? oshaData.issued : null) || null,
+    expiration: expiration || (oshaData ? oshaData.expiration : null) || null,
+  });
+
+  if (pickedClass) {
+    payload.card_class = pickedClass;
+    // "I'm not sure" is the empty value, so an untouched picker adds nothing
+    // and the card read (or the blank) stands exactly as before.
+    if (!classFromOcr) payload.class_source = 'self_reported';
+  }
+
+  return {
+    osha_number: cardNumber || (oshaData && oshaData.sst_number) || '',
+    osha_data: payload,
+  };
 }
 
 // ==================== TRADE & COMPANY (STRICT ROSTER) ====================
@@ -2077,6 +2449,20 @@ function goStep(step) {
       el.focus();
       return;
     }
+    // ── THE RETURNING WORKER'S SHORT PATH ENDS HERE, NOT AT STEP 4 ─────────
+    // He is on this screen to replace ONE PHOTO. His trade, his orientation
+    // and his signature are already on file and re-collecting them is how a
+    // re-scan turns into a second worker document for one man — the exact
+    // defect this path exists to remove.
+    //
+    // AFTER THE TWO GUARDS ABOVE, DELIBERATELY. The same name-and-card-evidence
+    // gate that protects a registration protects this: a re-scan that carried
+    // nothing would post no osha_data, and build_worker_certifications would
+    // leave the row untouched — a tap that looks like a fix and changes nothing.
+    if (cardRescanOnly) {
+      quickCheckIn();
+      return;
+    }
   }
   if (step === 3) {
     // FIX 1: nothing to select when the project has no trades — let them by.
@@ -2116,18 +2502,12 @@ async function submitRegistration() {
   const trade = (assignment && !notListed) ? assignment.trade : '';
   const company = (assignment && !notListed) ? assignment.company : '';
 
-  // Read the (possibly corrected) editable OCR fields. These override the raw
-  // OCR blob so a worker/admin correction — especially expiration, which the
-  // backend parses into the SST cert — actually flows through to register-and-checkin.
-  const cardNumber = document.getElementById('regCardNumber').value.trim();
-  const issued = document.getElementById('regIssued').value.trim();
-  const expiration = document.getElementById('regExpiration').value.trim();
-  const oshaNumber = cardNumber || oshaData?.sst_number || '';
-  const correctedOshaData = Object.assign({}, oshaData || {}, {
-    sst_number: cardNumber || (oshaData ? oshaData.sst_number : null) || null,
-    issued: issued || (oshaData ? oshaData.issued : null) || null,
-    expiration: expiration || (oshaData ? oshaData.expiration : null) || null,
-  });
+  // Read the (possibly corrected) editable OCR fields, including the class
+  // picker. See buildCardPayload — it is shared with the returning worker's
+  // card re-scan so both paths send identical card evidence.
+  const card = buildCardPayload();
+  const oshaNumber = card.osha_number;
+  const correctedOshaData = card.osha_data;
 
   if (!name) { showError(t('enterName')); return; }
   // FIX 1: only require a roster pick when the project actually has trades.

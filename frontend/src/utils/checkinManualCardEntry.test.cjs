@@ -118,12 +118,25 @@ function runGoStep({ regName, regCardNumber, regExpiration }) {
   const document = makeDom({ regName, regCardNumber, regExpiration });
   const errors = [];
   const revealed = [];
+  // THE BINDING LIST IS PART OF THE ASSERTION. goStep is evaluated VERBATIM,
+  // so every free name it reads has to be supplied here — and when it acquires
+  // a new one this harness throws a ReferenceError rather than quietly testing
+  // a different function. That is the contract working, not a nuisance: it
+  // fired the day goStep gained the returning-worker card re-scan branch.
+  //
+  // cardRescanOnly IS FALSE ON EVERY CASE IN THIS FILE, deliberately. Every
+  // test here is about a NEW worker registering — Jose Luna's worn card, the
+  // typed-number path, the blank-name refusal — and for him the branch must not
+  // exist at all. The re-scan path has its own file
+  // (checkinCardClassAndRescan.test.cjs) and asserts the true case there.
   // eslint-disable-next-line no-new-func
   const build = new Function(
     'document', 'showError', 't', 'oshaImage', 'oshaData',
     'getSelectedAssignment', 'noTradesConfigured', 'revealStep',
+    'cardRescanOnly', 'quickCheckIn',
     `${hasManualSrc}\n${goStepSrc}\nreturn goStep;`,
   );
+  const submits = [];
   const goStep = build(
     document,
     (m) => errors.push(m),
@@ -133,9 +146,11 @@ function runGoStep({ regName, regCardNumber, regExpiration }) {
     () => null,        // getSelectedAssignment
     true,              // noTradesConfigured
     (s) => revealed.push(s),
+    false,             // cardRescanOnly — a NEW worker, not a re-scan
+    () => submits.push(1),
   );
   goStep(2);
-  return { errors, revealed };
+  return { errors, revealed, submits };
 }
 
 // THE ONE THAT WOULD HAVE PREVENTED TODAY. Jose Luna's worn card: OCR read
@@ -267,6 +282,14 @@ async function runHandler({ mode }) {
     'showLoading', 'hideLoading', 'showError', 'resetCardCameraZone',
     'handleOcrOutcome', 'reportGateFailure', 'showOcrResults',
     'ocrMissingCriticalFields', 'console',
+    // `markWaitStart` IS THE SAME KIND OF ADDITION AS `projectId` BELOW, for
+    // the same kind of reason: the handler now starts the worker's own clock
+    // the moment he takes the photo, because a gate_failures row that says a
+    // device failed cannot say whether he waited two seconds or forty. Named
+    // here so the shipped handler actually runs; the duration it produces is
+    // asserted in checkinCardClassAndRescan.test.cjs, against
+    // reportGateFailure, which is what posts it.
+    'markWaitStart',
     // `projectId` IS A MODULE-LEVEL LET IN checkin.html, and the handler now
     // reads it — the upload-osha POST carries it so a paid vision call can be
     // attributed to a site. Declared here for the same reason every other free
@@ -298,6 +321,7 @@ async function runHandler({ mode }) {
     () => {},
     () => [],
     { error() {}, warn() {} },
+    () => {},          // markWaitStart
   );
 
   // Against main the extracted handler references reportGateFailure, which

@@ -79,6 +79,12 @@ export default {
     admittedUnverified: 'Admitted — credential still unverified',
     unknownAdmitHint: 'Admitting records entry only — it does not verify the card. The credential stays flagged for review.',
     reason_CLASS_UNVERIFIED: 'Card class could not be read — verify the card',
+    // DIFFERENT FROM CLASS_UNVERIFIED, and the difference is what the CP does
+    // next. Unverified means nothing could be read off the card. This means
+    // something WAS answered — by the worker, about his own card, on the gate's
+    // manual-entry picker — so the CP is checking a claim rather than squinting
+    // at an illegible field. It is stored, and it never clears itself.
+    reason_CLASS_SELF_REPORTED: 'Card class was stated by the worker — check it against the card',
     reason_EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
     reason_EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
     reason_EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
