@@ -70,7 +70,11 @@ function ok(cond, label) {
 
 // ── 1. THE SHIPPED api(), RUN AGAINST FAKE RESPONSES ──────────────────────
 
-const apiSrc = extractFn('async function api(path, method = \'GET\', body = null)');
+// ANCHORED ON THE NAME, NOT THE SIGNATURE. The full parameter list was the
+// anchor until `timeoutMs` was added to it, at which point this file stopped
+// running at all — a hard crash, which at least is loud. The name is the part
+// that identifies the function; the parameters are the part that changes.
+const apiSrc = extractFn('async function api(');
 
 function buildApi(fakeResponse) {
   // eslint-disable-next-line no-new-func
@@ -136,6 +140,40 @@ async function thrown(fakeResponse) {
   ok(garbage && garbage.message === 'Request failed',
     'an unreadable error body falls back to a real sentence');
 
+  // ── THE TWO iPhones, REPRODUCED ────────────────────────────────────────
+  //
+  // FOLLOW THE STRING. `Request failed` is produced in exactly two places and
+  // BOTH are on the `!res.ok` branch — a body that is not JSON, and an empty
+  // detail. A fetch REJECTION never produces it; that path carries the
+  // browser's own wording. So the two rows recorded on 2026-09-15 got a
+  // RESPONSE: a non-2xx with a non-JSON body, which on this stack is the
+  // platform edge's HTML error page after the app failed to answer in time.
+  //
+  // It carried no code, so the card step could not classify it and the worker
+  // was left with raw English and a photo he could not retake.
+  ok(garbage && garbage.code === 'GATEWAY_NO_ANSWER',
+    'an edge 502 with an HTML body is classified, not left codeless — this is '
+    + 'the exact shape the two iPhone rows recorded');
+  const edge504 = await thrown({
+    ok: false, status: 504, json: async () => { throw new Error('html'); },
+  });
+  ok(edge504 && edge504.code === 'GATEWAY_NO_ANSWER', 'a 504 is classified too');
+  // AND IT DOES NOT STEAL A CODE THE SERVER SENT. CARD_READ_UNAVAILABLE is
+  // itself a 502; the server's own answer must win.
+  const serverSaid = await thrown({
+    ok: false,
+    status: 502,
+    json: async () => ({ detail: { code: 'CARD_READ_UNAVAILABLE', message: 'x' } }),
+  });
+  ok(serverSaid && serverSaid.code === 'CARD_READ_UNAVAILABLE',
+    'a code the server sent is never overwritten by the gateway fallback');
+  // AND A 4xx IS NOT A GATEWAY. A 400 is an answer about the request.
+  const badRequest = await thrown({
+    ok: false, status: 400, json: async () => ({ detail: 'Bad image' }),
+  });
+  ok(badRequest && badRequest.code === undefined,
+    'a 4xx is an answer, not a missing one, and stays codeless');
+
   // ── 2. THE CARD STEP BRANCHES ON THE CODE, NOT ON PROSE ─────────────────
 
   const handler = extractFn('async function handleOshaPhoto(input)');
@@ -173,16 +211,112 @@ async function thrown(fakeResponse) {
     'a timeout is reported to the gate telemetry under its own kind');
   ok(timeoutEntry.msg === 'cardReadTimeout',
     'the timeout shows its own translated sentence');
-  // A TIMEOUT GOES BACK TO THE CAMERA; EVERYTHING ELSE TO MANUAL ENTRY. The
-  // reader not answering is transient; a provider that is down or that read
-  // the frame and could not make it out is not fixed by another photo.
-  ok(timeoutEntry.retake === true,
-    'a timeout puts the worker back at the camera');
-  const others = Object.entries(CARD_CODES).filter(([c]) => c !== 'CARD_READ_TIMEOUT');
-  ok(others.length > 0 && others.every(([, v]) => v.retake === false),
-    'every non-timeout card failure sends the worker to manual entry');
+  // THE INVARIANT IS "DID AN ANSWER ARRIVE", NOT "IS IT THE TIMEOUT CODE".
+  //
+  // This block used to read `every non-timeout entry has retake === false`,
+  // which was true when CARD_READ_TIMEOUT was the only no-answer case. It is
+  // not any more: the client's own ceiling and a dropped connection are both
+  // "no answer arrived" and both must go back to the camera. Written as the
+  // rule, so the next code added is classified rather than grandfathered.
+  const NO_ANSWER = [
+    'CARD_READ_TIMEOUT', 'CLIENT_TIMEOUT', 'CLIENT_NETWORK', 'GATEWAY_NO_ANSWER',
+  ];
+  NO_ANSWER.forEach((code) => {
+    const v = CARD_CODES[code];
+    ok(!!v && v.retake === true,
+      `${code} means no answer arrived, so it puts the worker back at the camera`);
+  });
+  const answered = Object.entries(CARD_CODES).filter(([c]) => !NO_ANSWER.includes(c));
+  ok(answered.length > 0 && answered.every(([, v]) => v.retake === false),
+    'a card failure the provider ANSWERED sends the worker to manual entry');
+  // EVERY entry is classified. A code with no `retake` at all is falsy, which
+  // reads as "manual entry" — a silent default on the branch that decides
+  // whether the worker gets a way back to the camera.
+  ok(Object.values(CARD_CODES).every((v) => typeof v.retake === 'boolean'),
+    'every card code states its retake disposition explicitly');
   ok(/t\(known\.msg\)/.test(handler),
     'the message comes from the page translations, not from the server');
+
+  // ── 2b. THE CLIENT CEILING EXCEEDS THE SERVER BUDGET ────────────────────
+  //
+  // THE DEFECT, FROM THE DATA: two iPhone gate failures on 2026-09-15 recorded
+  // `Request failed` rather than the server's own sentence, i.e. something
+  // gave up before the handler answered while a paid vision call was still
+  // running.
+  //
+  // BOTH NUMBERS ARE READ OUT OF THE TWO FILES AND COMPARED. Hardcoding either
+  // side would let a future server budget increase pass this test while
+  // re-creating the exact race — the invariant is the relationship, not the
+  // values. (See: "assert the invariant, not both sides".)
+  const attemptTimeout = parseFloat(
+    (serverSrc.match(/^OSHA_VISION_ATTEMPT_TIMEOUT = ([\d.]+)/m) || [])[1]);
+  const attempts = parseInt(
+    (serverSrc.match(/^OSHA_VISION_ATTEMPTS = (\d+)/m) || [])[1], 10);
+  const clientMs = parseInt(
+    (src.match(/const CARD_UPLOAD_TIMEOUT_MS = (\d+);/) || [])[1], 10);
+  ok(Number.isFinite(attemptTimeout) && Number.isFinite(attempts),
+    'the server budget is readable from server.py');
+  ok(Number.isFinite(clientMs),
+    'the gate page declares CARD_UPLOAD_TIMEOUT_MS instead of leaving the '
+    + 'ceiling to whatever the browser happens to default to');
+  const serverMs = attemptTimeout * attempts * 1000;
+  ok(clientMs > serverMs,
+    `the client ceiling (${clientMs} ms) outlives the server budget `
+    + `(${attempts} x ${attemptTimeout} s = ${serverMs} ms)`);
+  // AND NOT BY A HAIR. A margin under 10 s is a tie in practice once the
+  // upload of the image itself and the platform edge are counted.
+  ok(clientMs - serverMs >= 10000,
+    `the margin is ${(clientMs - serverMs) / 1000}s, enough for the upload `
+    + 'and the edge, not just for the model call');
+
+  // THE CEILING IS ACTUALLY APPLIED TO THE CARD UPLOAD, not merely declared.
+  ok(/api\('\/checkin\/upload-osha'[\s\S]{0,900}?CARD_UPLOAD_TIMEOUT_MS\)/.test(src),
+    'the card upload passes CARD_UPLOAD_TIMEOUT_MS to api()');
+
+  // AND api() HONOURS IT. The shipped function is run with a fetch that never
+  // settles; the abort must surface as a tagged, retry-able error rather than
+  // as a promise that hangs for as long as the browser feels like.
+  const apiWithTimeout = new Function(
+    'API_BASE', 'fetch', 'AbortController', 'setTimeout', 'clearTimeout',
+    `${apiSrc}\nreturn api;`,
+  )('', (url, opts) => new Promise((resolve, reject) => {
+    // A fetch that only ever settles by being aborted — the hung provider.
+    opts.signal.addEventListener('abort', () => {
+      const e = new Error('The operation was aborted.');
+      e.name = 'AbortError';
+      reject(e);
+    });
+  }), AbortController, setTimeout, clearTimeout);
+
+  let aborted = null;
+  try {
+    await apiWithTimeout('/checkin/upload-osha', 'POST', { image: 'x' }, 30);
+  } catch (e) {
+    aborted = e;
+  }
+  ok(aborted instanceof Error, 'a hung request rejects instead of hanging forever');
+  ok(aborted && aborted.network === true,
+    'a client timeout is a TRANSPORT failure — the server said nothing');
+  ok(aborted && aborted.code === 'CLIENT_TIMEOUT',
+    'a client timeout carries a code, so the card step never falls through to '
+    + 'the raw-English branch that showed the empty string');
+  ok(!!CARD_CODES[aborted && aborted.code],
+    'the code api() produces on its own timeout is one the page answers');
+
+  // A PLAIN TRANSPORT FAILURE IS TAGGED TOO, and differently — we did not stop
+  // waiting, the connection went.
+  const apiThatDrops = new Function('API_BASE', 'fetch', `${apiSrc}\nreturn api;`)(
+    '', async () => { throw new TypeError('Load failed'); });
+  let dropped = null;
+  try {
+    await apiThatDrops('/checkin/upload-osha', 'POST', { image: 'x' });
+  } catch (e) {
+    dropped = e;
+  }
+  ok(dropped && dropped.code === 'CLIENT_NETWORK',
+    'a dropped connection is tagged CLIENT_NETWORK, not left codeless');
+  ok(dropped && dropped.network === true,
+    'a dropped connection is still marked as a transport failure');
 
   // ── 3. THE SENTENCE EXISTS IN BOTH LANGUAGES ────────────────────────────
   //
@@ -211,18 +345,63 @@ async function thrown(fakeResponse) {
   ok(/foto/i.test(esSentence),
     'the Spanish sentence tells the worker what to do next');
 
+  // EVERY msg THE MAP NAMES MUST EXIST IN BOTH LANGUAGES. Derived from the map
+  // rather than listed here, so a code added next week is covered by this
+  // assertion on the day it is added. ELEVEN OF ELEVEN recorded gate failures
+  // are lang='es'; a key that exists only in English falls back through t() to
+  // English, silently, for the only people who actually hit this screen.
+  const msgKeys = [...new Set(Object.values(CARD_CODES).map((v) => v.msg))];
+  ok(msgKeys.length > 0, `the map names ${msgKeys.length} translation keys`);
+  msgKeys.forEach((key) => {
+    const enHas = new RegExp(`\\n\\s*${key}:\\s*'[^']{40,}'`).test(en);
+    const esHas = new RegExp(`\\n\\s*${key}:\\s*'[^']{40,}'`).test(es);
+    ok(enHas, `English has a real ${key} sentence`);
+    ok(esHas, `Spanish has a real ${key} sentence`);
+  });
+
+  // AND EVERY "NO ANSWER" SENTENCE NAMES THE RETRY, in both languages. The
+  // outage's message named no way out at all; a retry the copy does not
+  // mention is a retry the worker does not know he has.
+  NO_ANSWER.forEach((code) => {
+    const key = (CARD_CODES[code] || {}).msg;
+    if (!key) return;
+    const enS = (en.match(new RegExp(`${key}:\\s*'([^']*)'`)) || [])[1] || '';
+    const esS = (es.match(new RegExp(`${key}:\\s*'([^']*)'`)) || [])[1] || '';
+    ok(/photo/i.test(enS), `English ${key} points at the photo area again`);
+    ok(/foto/i.test(esS), `Spanish ${key} points at the photo area again`);
+  });
+
   // ── 4. AND NO MESSAGE ENDS IN A DANGLING REASON ─────────────────────────
   //
   // `t('readCardFailed') + ': ' + reason` is the shape that printed
-  // "Could not read card: " for four days. It is still used for transport
-  // failures, where `reason` is a real browser message — but the TIMEOUT path,
-  // where the server's reason was the empty string, no longer goes near it.
-  const timeoutBranch = handler.slice(
-    handler.indexOf("e.code === 'CARD_READ_TIMEOUT'"),
-    handler.indexOf('return;', handler.indexOf("e.code === 'CARD_READ_TIMEOUT'")),
-  );
-  ok(!/\+ ': ' \+ reason/.test(timeoutBranch),
-    'the timeout message never interpolates an empty server reason');
+  // "Could not read card: " for four days. It survives ONLY on the fallback
+  // branch, for a failure this page does not recognise, where `reason` is at
+  // least a real browser message.
+  //
+  // THIS ASSERTION WAS PASSING ON THE EMPTY STRING. It anchored on
+  // `e.code === 'CARD_READ_TIMEOUT'`, a literal that has never appeared in
+  // checkin.html — the page branches through a MAP, not an equality. Both
+  // indexOf calls returned -1, `slice` produced '', and the regex tested
+  // nothing. A green tick for a check that never ran. It now anchors on the
+  // `if (known) {` block, which is the real coded-failure branch, and FAILS
+  // when that anchor is missing instead of passing quietly.
+  const knownAt = handler.indexOf('if (known) {');
+  ok(knownAt >= 0, 'the coded-failure branch is present (anchor for the next check)');
+  const knownBranch = knownAt < 0
+    ? ' SENTINEL: anchor missing, this must fail'
+    : handler.slice(knownAt, matchBalancedIn(handler, handler.indexOf('{', knownAt)) + 1);
+  ok(knownAt >= 0 && !/\+ ': ' \+ reason/.test(knownBranch),
+    'a coded failure never interpolates the server reason into the worker\'s message');
+  // AND IT REACHES THE WORKER IN HIS OWN LANGUAGE, not the server's English.
+  ok(knownAt >= 0 && /showError\(t\(known\.msg\)/.test(knownBranch),
+    'a coded failure shows copy this page owns, in the worker\'s language');
+  // The raw reason is not thrown away — it goes where an operator can read it.
+  ok(knownAt >= 0 && /reportGateFailure\(known\.kind/.test(knownBranch),
+    'the raw reason still reaches the gate telemetry under the code\'s own kind');
+  // AND THE CAMERA IS GIVEN BACK when the disposition says so. This is the
+  // difference between "try again" and a photo the worker cannot replace.
+  ok(knownAt >= 0 && /if \(known\.retake\) resetCardCameraZone\(\);/.test(knownBranch),
+    'a no-answer failure puts the camera zone back so there is a way to retry');
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

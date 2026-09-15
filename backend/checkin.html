@@ -591,6 +591,11 @@ const TRANSLATIONS = {
     // back to the camera rather than to manual entry, and names both ways out.
     cardReadTimeout: 'The card reader did not answer. Tap the photo area to try again — your card is fine. If it keeps failing, type your card number below.',
     cardReaderDown: 'The card reader is unavailable right now. Enter your card number below to continue — you do not need the photo.',
+    // NO ANSWER ARRIVED — we stopped waiting, or the connection dropped. Same
+    // advice as a server timeout because it is the same situation from the
+    // worker's side, and it must name the retry: this is the case that used to
+    // show him a raw browser string and no way back to the camera.
+    cardReadNoConnection: 'We lost the connection before the card reader answered. Tap the photo area to try again — your card is fine. If you have no signal, type your card number below.',
     orientationNeeded: '⚠ Safety orientation needed for this site',
     completeOrientation: 'Complete Safety Orientation',
     enterName: 'Please enter your name',
@@ -700,6 +705,10 @@ const TRANSLATIONS = {
     readCardFailed: 'No se pudo leer la tarjeta',
     cardReadTimeout: 'El lector de tarjetas no respondió. Toque el área de la foto para intentar de nuevo — su tarjeta está bien. Si sigue fallando, escriba el número de su tarjeta abajo.',
     cardReaderDown: 'El lector de tarjetas no está disponible en este momento. Escriba el número de su tarjeta abajo para continuar — no necesita la foto.',
+    // ELEVEN OF ELEVEN recorded gate failures are lang='es'. This sentence is
+    // not the translation of the English one; it is the one most workers will
+    // actually read.
+    cardReadNoConnection: 'Se perdió la conexión antes de que respondiera el lector de tarjetas. Toque el área de la foto para intentar de nuevo — su tarjeta está bien. Si no tiene señal, escriba el número de su tarjeta abajo.',
     orientationNeeded: '⚠ Se requiere orientación de seguridad para este sitio',
     completeOrientation: 'Completar Orientación de Seguridad',
     enterName: 'Ingrese su nombre',
@@ -1076,16 +1085,74 @@ function cropImage(dataUrl, box) {
 // that happens to be an error status (4xx/5xx). Callers that act DESTRUCTIVELY
 // on failure — e.g. wiping the worker's saved identity off this device — must be
 // able to tell them apart, so transport failures are tagged `err.network = true`.
-async function api(path, method = 'GET', body = null) {
+//
+// ── THE CLIENT CEILING, AND WHY IT IS A NUMBER AND NOT A DEFAULT ──────────
+//
+// TWO iPhone gate failures on 2026-09-15 recorded `Request failed` instead of
+// the server's own sentence. Something between the worker and the handler gave
+// up BEFORE the handler answered — and while it was still running a paid
+// vision call nobody would ever read.
+//
+// THE TWO NUMBERS THAT HAVE TO BE COMPARED:
+//
+//   server, worst case   OSHA_VISION_ATTEMPTS x OSHA_VISION_ATTEMPT_TIMEOUT
+//                        = 2 x 22 s = 44 s   (server.py, and the PR body)
+//   client, before this  NOTHING. `fetch` with no AbortSignal, so the ceiling
+//                        was whatever the browser chose — on iOS that is
+//                        NSURLRequest's 60 s default, which nothing in this
+//                        file set, nothing tested, and nothing could see.
+//
+// A ceiling nobody chose is not a ceiling; it is a coincidence that currently
+// happens to sit above the server. It was 60 s against the OLD 1 x 60 s server
+// budget, which is a tie — and a tie is exactly how a worker ends up staring
+// at a dead screen while the call he is waiting for is still in flight.
+//
+// SO IT IS DECLARED, AND IT EXCEEDS THE SERVER'S TOTAL BY DESIGN. 75 s against
+// 44 s leaves 31 s for the upload of the image itself, the platform edge, and
+// anything the handler does either side of the model call. The invariant —
+// client > server — is asserted in checkinCardReadTimeout.test.cjs by reading
+// BOTH numbers out of BOTH files, so raising the server budget without raising
+// this fails the suite rather than silently re-creating the tie.
+//
+// ONLY THE CARD UPLOAD GETS ONE, DELIBERATELY. It is the one call whose server
+// budget is a known, bounded number, so it is the one call where a ceiling can
+// be justified rather than guessed. `register-and-checkin` carries two base64
+// images up a phone connection and has no such bound; capping it on a number
+// nobody measured would invent a new way to fail a check-in that was going to
+// succeed. Those calls keep today's behaviour until someone measures them.
+const CARD_UPLOAD_TIMEOUT_MS = 75000;
+
+async function api(path, method = 'GET', body = null, timeoutMs = 0) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
+  // `clientTimedOut` rather than reading `ctrl.signal.aborted` in the catch:
+  // a fetch aborted by the browser for its own reasons (navigation away, the
+  // tab being discarded) must not be reported to the worker as our timeout.
+  // This flag is set by OUR timer and by nothing else.
+  let clientTimedOut = false;
+  let ctrl = null;
+  let timer = null;
+  if (timeoutMs > 0 && typeof AbortController === 'function') {
+    ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(() => { clientTimedOut = true; ctrl.abort(); }, timeoutMs);
+  }
   let res;
   try {
     res = await fetch(API_BASE + path, opts);
   } catch (netErr) {
     const err = new Error((netErr && netErr.message) || 'Network request failed');
     err.network = true;
+    // A CODE ON THE TRANSPORT FAILURES TOO. Every one of these used to arrive
+    // at the card step with no code at all, which dropped it into the
+    // English-only `readCardFailed + ': ' + reason` path — the same shape that
+    // showed a worker the empty string for four days, and the one branch in
+    // that catch that never sends him back to the camera. Both of these mean
+    // NO ANSWER ARRIVED, which is the transient, retry-able case.
+    err.code = clientTimedOut ? 'CLIENT_TIMEOUT' : 'CLIENT_NETWORK';
     throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (!res.ok) {
     // `errBody`, not `body`: `body` is this function's own request-payload
@@ -1106,6 +1173,24 @@ async function api(path, method = 'GET', body = null) {
       code = detail.code || null;
       detail = detail.message || detail.code || 'Request failed';
     }
+    // ── A GATEWAY ANSWERED INSTEAD OF THE APP ──────────────────────────────
+    //
+    // FOLLOW THE STRING. `Request failed` is produced in exactly two places,
+    // both of them in THIS branch: an error body that is not JSON, and a
+    // detail that is empty. It is NOT what a fetch rejection produces — that
+    // path is above and carries the browser's own wording.
+    //
+    // So the two iPhone rows that recorded `Request failed` on 2026-09-15 did
+    // get a RESPONSE: a non-2xx whose body was not JSON. On this stack that is
+    // the platform edge's own HTML error page — a 502/503/504 — which is what
+    // it serves when the app has not answered inside the edge's ceiling.
+    // Something gave up before the handler did, and it was not the browser.
+    //
+    // From the WORKER's side that is indistinguishable from the reader not
+    // answering, and it is just as retry-able. Without a code it fell into the
+    // fallback branch of the card step: raw English, and the one branch there
+    // that never gives the camera back. That is the dead end those two men hit.
+    if (!code && res.status >= 502 && res.status <= 504) code = 'GATEWAY_NO_ANSWER';
     const err = new Error(detail || 'Request failed');
     if (code) err.code = code;
     err.status = res.status;
@@ -1463,7 +1548,10 @@ async function handleOshaPhoto(input) {
         // cached page that does not send it counts under "unknown" rather
         // than not at all. Nothing gates on this value.
         project_id: projectId || undefined,
-      });
+      // THE ONLY CALL ON THIS PAGE WITH A DECLARED CEILING, because it is the
+      // only one whose server budget is a known number. 75 s > 2 x 22 s.
+      // See CARD_UPLOAD_TIMEOUT_MS.
+      }, CARD_UPLOAD_TIMEOUT_MS);
       oshaData = res;
       if (res.box_2d && res.box_2d.length === 4) {
         // Task 2: crop ONLY for the on-screen preview. `oshaImage` (what gets SAVED
@@ -1515,8 +1603,33 @@ async function handleOshaPhoto(input) {
       // four days the empty string. A recognised code is answered with copy
       // this file owns, in the worker's language, and the raw reason goes to
       // the console and the telemetry where it belongs.
+      //
+      // THE RULE THIS MAP ENCODES, IN ONE LINE: did an answer arrive?
+      //
+      //   NO ANSWER  -> the same photograph very probably works on the next
+      //                 tap, so the worker goes back to the camera and the
+      //                 copy says so. The server timing out, US timing out,
+      //                 and the connection dropping are all this case.
+      //   AN ANSWER  -> the reader is down, switched off, or read the frame
+      //                 and could not make it out. Another photo does not fix
+      //                 any of those, so he goes to manual entry.
+      //
+      // THE TWO CLIENT_* CODES ARE NEW AND THEY ARE THE POINT OF THIS ROUND.
+      // A transport failure used to reach this catch with NO code, which
+      // dropped it into the fallback branch below: raw English prose, and the
+      // ONE branch here that never sends the worker back to the camera. Two
+      // iPhones hit exactly that on 2026-09-15 and the worker was left holding
+      // a photo he could not retake. `api()` now tags both (see its comment).
       const CARD_CODES = {
         CARD_READ_TIMEOUT: { msg: 'cardReadTimeout', kind: 'card_ocr_timeout', retake: true },
+        CLIENT_TIMEOUT: { msg: 'cardReadTimeout', kind: 'card_ocr_client_timeout', retake: true },
+        CLIENT_NETWORK: { msg: 'cardReadNoConnection', kind: 'card_ocr_network_failed', retake: true },
+        // THE ONE THE DATA ACTUALLY SHOWS. Two iPhones on 2026-09-15 recorded
+        // `Request failed` — an edge 502/504 with an HTML body, i.e. the
+        // platform answered because the app had not. Codeless until now, so it
+        // landed in the fallback branch below and the worker never got the
+        // camera back. See api().
+        GATEWAY_NO_ANSWER: { msg: 'cardReadTimeout', kind: 'card_ocr_gateway_no_answer', retake: true },
         CARD_READ_UNAVAILABLE: { msg: 'cardReaderDown', kind: 'card_ocr_http_failed', retake: false },
         CARD_READ_NOT_CONFIGURED: { msg: 'cardReaderDown', kind: 'card_ocr_http_failed', retake: false },
         CARD_READ_FAILED: { msg: 'couldNotReadCard', kind: 'card_ocr_http_failed', retake: false },
