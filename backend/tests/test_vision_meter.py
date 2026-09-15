@@ -221,15 +221,31 @@ def test_every_qwen_call_site_is_metered():
 
     unmetered = []
     for name, body in posts_to_qwen:
-        meter = body.find("record_vision_call")
         post = body.find("chat/completions")
-        if meter == -1 or meter > post:
-            # The card-audit adapter is metered by its caller in
-            # card_audit.py, with the project_id this level does not have.
-            # Counting it here too would double every card parse.
-            if name == "_card_audit_vlm_adapter":
-                continue
-            unmetered.append(name)
+        meter = body.find("record_vision_call")
+        if meter != -1 and meter < post:
+            continue
+        # ── THE SECOND LEDGER, AND IT IS A PROPERTY, NOT A NAME ────────────
+        #
+        # The card-read canary posts to the same provider and MUST NOT count
+        # into `vision_calls`: at 15-minute intervals it is 2,880 calls a month
+        # against ~52 real registrations, so counting it here would make the
+        # meter a number about the monitor rather than about the product.
+        #
+        # It is exempt from THIS collection, NOT from accounting. It opens a
+        # row in `vision_canary_runs` before the post, under the same
+        # count-before-you-spend rule — so the test still demands a write
+        # ahead of the call, it just accepts the other ledger. A future
+        # synthetic caller that counts nowhere still fails here.
+        canary = body.find("vision_canary_runs")
+        if canary != -1 and canary < post:
+            continue
+        # The card-audit adapter is metered by its caller in card_audit.py,
+        # with the project_id this level does not have. Counting it here too
+        # would double every card parse.
+        if name == "_card_audit_vlm_adapter":
+            continue
+        unmetered.append(name)
 
     assert not unmetered, (
         f"paid vision calls with no count before them: {unmetered}"

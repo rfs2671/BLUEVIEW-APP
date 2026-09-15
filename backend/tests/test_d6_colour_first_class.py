@@ -294,8 +294,16 @@ class TheMapIsNotInThePrompt(unittest.TestCase):
     and would make the MODEL the thing that decides the class."""
 
     def _prompt(self):
-        i = SRC.index("extraction_prompt = (")
-        return SRC[i:SRC.index("\n\n", i)]
+        """THE VALUE, NOT A SLICE OF THE SOURCE FILE.
+
+        This read `SRC[SRC.index("extraction_prompt = ("):...]` — the prompt's
+        literal text, located by a substring, and it broke the moment the
+        prompt moved to module scope so the card-read canary could send the
+        SAME string the gate does. A source slice was always the weaker
+        assertion anyway: it tests what the file says rather than what the
+        model is handed, and it cannot see a prompt assembled from parts.
+        """
+        return server._OSHA_EXTRACTION_PROMPT
 
     def test_the_prompt_asks_for_colour(self):
         p = self._prompt()

@@ -586,6 +586,11 @@ const TRANSLATIONS = {
     readingCard: 'Reading your card...',
     couldNotReadCard: 'Could not read the card. You can enter your details manually below.',
     readCardFailed: 'Could not read card',
+    // A TIMEOUT, NOT AN UNREADABLE CARD. The reader did not answer at all —
+    // the same photo usually works on the next tap, so this sends the worker
+    // back to the camera rather than to manual entry, and names both ways out.
+    cardReadTimeout: 'The card reader did not answer. Tap the photo area to try again — your card is fine. If it keeps failing, type your card number below.',
+    cardReaderDown: 'The card reader is unavailable right now. Enter your card number below to continue — you do not need the photo.',
     orientationNeeded: '⚠ Safety orientation needed for this site',
     completeOrientation: 'Complete Safety Orientation',
     enterName: 'Please enter your name',
@@ -693,6 +698,8 @@ const TRANSLATIONS = {
     readingCard: 'Leyendo su tarjeta...',
     couldNotReadCard: 'No se pudo leer la tarjeta. Puede ingresar sus datos manualmente abajo.',
     readCardFailed: 'No se pudo leer la tarjeta',
+    cardReadTimeout: 'El lector de tarjetas no respondió. Toque el área de la foto para intentar de nuevo — su tarjeta está bien. Si sigue fallando, escriba el número de su tarjeta abajo.',
+    cardReaderDown: 'El lector de tarjetas no está disponible en este momento. Escriba el número de su tarjeta abajo para continuar — no necesita la foto.',
     orientationNeeded: '⚠ Se requiere orientación de seguridad para este sitio',
     completeOrientation: 'Completar Orientación de Seguridad',
     enterName: 'Ingrese su nombre',
@@ -1081,8 +1088,28 @@ async function api(path, method = 'GET', body = null) {
     throw err;
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(err.detail || 'Request failed');
+    // `errBody`, not `body`: `body` is this function's own request-payload
+    // parameter, and a block-scoped shadow of it inside the failure branch is
+    // a trap for whoever edits this next.
+    const errBody = await res.json().catch(() => ({ detail: 'Request failed' }));
+    // A MACHINE CODE, WHEN THE SERVER SENDS ONE.
+    //
+    // `detail` was always a string, so every failure arrived here as prose —
+    // and the card step's prose was the empty string for four days
+    // (`OCR processing failed: `, because `str(httpx.ReadTimeout())` is ''),
+    // which is a thing no worker can act on and no branch can test. The server
+    // may now send `{code, message}`; a plain string still works exactly as
+    // before, so nothing else on this page had to change.
+    let detail = errBody && errBody.detail;
+    let code = null;
+    if (detail && typeof detail === 'object') {
+      code = detail.code || null;
+      detail = detail.message || detail.code || 'Request failed';
+    }
+    const err = new Error(detail || 'Request failed');
+    if (code) err.code = code;
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -1469,6 +1496,46 @@ async function handleOshaPhoto(input) {
       // failed when in reality the request often never reached it.
       console.error('OSHA OCR upload failed:', e);
       const reason = (e && e.message) ? e.message : 'Unknown error';
+      // ── A TIMEOUT IS NOT AN UNREADABLE CARD ────────────────────────────
+      //
+      // They were the same opaque 500 with an empty reason, and the worker was
+      // told the same thing for both: "Could not read card: ". They need
+      // OPPOSITE advice. A timeout means the reader did not answer — the same
+      // photograph very probably works on the next tap, so the worker is sent
+      // back to the camera. An unreadable card means the photograph is the
+      // problem, so he is sent to manual entry.
+      //
+      // The code comes off `err.code` (see api()), never off the message text:
+      // matching on English prose is how BACKEND_ERROR_MAP already has to
+      // work, and it is exactly what breaks when a sentence is reworded.
+      //
+      // AND THE WORKER NEVER READS THE SERVER'S ENGLISH. Every other branch
+      // here still does `readCardFailed + ': ' + reason`, where `reason` is
+      // whatever the backend said — English-only on a bilingual page, and for
+      // four days the empty string. A recognised code is answered with copy
+      // this file owns, in the worker's language, and the raw reason goes to
+      // the console and the telemetry where it belongs.
+      const CARD_CODES = {
+        CARD_READ_TIMEOUT: { msg: 'cardReadTimeout', kind: 'card_ocr_timeout', retake: true },
+        CARD_READ_UNAVAILABLE: { msg: 'cardReaderDown', kind: 'card_ocr_http_failed', retake: false },
+        CARD_READ_NOT_CONFIGURED: { msg: 'cardReaderDown', kind: 'card_ocr_http_failed', retake: false },
+        CARD_READ_FAILED: { msg: 'couldNotReadCard', kind: 'card_ocr_http_failed', retake: false },
+      };
+      const known = e && e.code ? CARD_CODES[e.code] : null;
+      if (known) {
+        showError(t(known.msg), true);
+        reportGateFailure(known.kind, (e.code + ' ' + reason).slice(0, 300));
+        oshaData = oshaData || {};
+        ocrAttempts++;
+        ocrLastFailureReason = 'ocr_error:' + e.code;
+        // A TIMEOUT GOES BACK TO THE CAMERA, EVERYTHING ELSE TO MANUAL ENTRY.
+        // The reader not answering is transient and the same photograph very
+        // probably works; a provider that is down, switched off, or that read
+        // the frame and could not make it out is not fixed by another photo.
+        if (known.retake) resetCardCameraZone();
+        handleOcrOutcome(null);
+        return;
+      }
       // PERSISTENT, and it names the way out. This was a 4-SECOND TOAST — the
       // exact vanishing-message shape this file already identified twice as
       // what drives the re-scan loop (see showError and submitFailureHint),
