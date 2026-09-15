@@ -18,6 +18,9 @@ from typing import List, Literal, NamedTuple, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
+# perf_counter only — `time` itself is deliberately not a module-level
+# import here (see the local `import time as _time` further down).
+from time import perf_counter
 import jwt
 import bcrypt
 from bson import ObjectId
@@ -36314,14 +36317,81 @@ import io
 
 # ---------- helpers ----------
 
-async def send_whatsapp_message(chat_id: str, message: str):
-    """Send a WhatsApp message via WaAPI HTTP API."""
+# -- ITEM 4: THE PROMPT BAN DID NOT HOLD, SO THIS IS NOT A PROMPT CHANGE ----
+#
+# The system prompt already says NEVER end with a generic offer and names
+# "anything else?" explicitly. "Need anything else?" arrived in the live test
+# of 2026-09-14 anyway. A prompt is a request; this is the last thing every
+# outbound line passes through, and a request that has been measured failing
+# gets replaced by a guarantee.
+#
+# IT SITS IN send_whatsapp_message SO NOTHING CAN ROUTE AROUND IT. Thirty call
+# sites send text, some from the agent and some from handlers, and a stripper
+# bolted to one of them is a stripper the next one forgets.
+#
+# WHAT IT MUST NOT EAT IS THE POINT. "Want me to start renewal for PL-4412?"
+# and "Want them?" after naming two sheets are specific offers that name a
+# thing and do work. Every pattern below is anchored to the END of the message
+# and matches only the contentless forms; none of them admits an object, so an
+# offer with one in it cannot match.
+_GENERIC_OFFER_RE = re.compile(
+    r"(?:^|\n)\s*(?:"
+    r"(?:is\s+there\s+)?(?:anything|something)\s+else"
+    r"(?:\s+(?:that\s+)?(?:i\s+can\s+)?(?:help|do|assist)\w*"
+    r"(?:\s+(?:you\s+)?with)?)?"
+    r"|(?:do\s+you\s+)?need\s+(?:anything|something)\s+else"
+    r"|(?:just\s+)?let\s+me\s+know(?:\s+if\s+you\s+need\s+anything)?"
+    r"|happy\s+to\s+help"
+    r"|hope\s+(?:this|that)\s+helps"
+    r"|feel\s+free\s+to\s+ask"
+    r"|(?:i'm|i\s+am)\s+here\s+(?:to\s+help|if\s+you\s+need)"
+    r")\s*[!.?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_generic_offer(text: str) -> str:
+    """Remove a trailing contentless offer. Never returns an empty message."""
+    if not text:
+        return text
+    out = _GENERIC_OFFER_RE.sub("", text).rstrip()
+    # A message that was NOTHING but the offer keeps its original text. An
+    # empty send is a bot that looks broken, and silence is never the better
+    # repair for a badly-shaped reply.
+    return out if out.strip() else text
+
+
+async def send_whatsapp_message(
+    chat_id: str, message: str, reply_to: Optional[str] = None,
+):
+    """Send a WhatsApp message via WaAPI HTTP API.
+
+    ── A REPLY THAT DOES NOT QUOTE IS UNREADABLE IN A BUSY GROUP ──────────
+    #
+    # Reported from the live test of 2026-09-14: replies arrive out of order.
+    # The bot answers a plan question in sixty seconds while the crew keeps
+    # talking, so the answer lands eight messages below the question and
+    # nothing connects the two. With four people in a group and two questions
+    # in flight it is not merely hard to read, it is ambiguous — there is no
+    # way to tell which answer belongs to which question.
+    #
+    # `reply_to` is WaAPI's `replyToMessageId`, and its format is the
+    # SERIALIZED message id — {fromMe}_{chatId}_{messageId} — which is exactly
+    # what parse_inbound_message already returns as `message_id_serialized`.
+    #
+    # BEST EFFORT, NEVER FATAL. A quote that cannot be formed is a message
+    # that reads worse, not a message that must not be sent, so an absent or
+    # stale id sends the reply unquoted rather than dropping it.
+    """
     if not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
         logger.warning("WhatsApp send skipped — WAAPI credentials not configured")
         return None
     url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-message"
     headers = {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"}
+    message = _strip_generic_offer(message)
     payload = {"chatId": chat_id, "message": message}
+    if reply_to:
+        payload["replyToMessageId"] = reply_to
     try:
         async with ServerHttpClient(timeout=15) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
@@ -38454,12 +38524,43 @@ async def run_whatsapp_startup_migrations():
     # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
     # One active draft per group; auto-expire via TTL on expires_at.
     # (Migration 4 was document_page_index — see ensure_document_page_indexes.)
+    # ── ONE ROW PER GROUP WAS ONE ROW TOO FEW ──────────────────────────────
+    #
+    # `convo_state_by_group` was unique on group_id ALONE, and this collection
+    # now holds three kinds of row keyed by the same group: a checklist draft,
+    # a bot session, and a nudge cooldown.
+    #
+    # THE SECOND WRITER ALWAYS LOST, SILENTLY. Its upsert filter did not match
+    # the existing row, so it fell through to an insert and hit E11000, which
+    # _mark_bot_session caught and logged at DEBUG. Measured against the live
+    # test of 2026-09-14: the first untagged question wrote a nudge row, every
+    # subsequent _mark_bot_session in that group failed, and an untagged
+    # follow-up twenty seconds after a tagged message was judged unaddressed
+    # because the window it should have ridden had never been written.
+    #
+    # It also meant two people in one group could never both hold a session,
+    # and a live checklist draft blocked sessions outright — both true long
+    # before the nudge existed, which is why this is a fix and not a revert.
+    #
+    # THE KEY IS NOW WHAT ACTUALLY IDENTIFIES A ROW. One draft per group still
+    # holds: a checklist row carries kind="checklist" and no sender, so (kind,
+    # group_id, sender) admits exactly one of them per group.
+    #
+    # The old index is dropped BY NAME. _ensure_index_resilient only rebuilds
+    # an index whose name it is given, so leaving the old one in place would
+    # keep rejecting every write this change exists to allow.
     try:
+        try:
+            await db.whatsapp_conversation_state.drop_index("convo_state_by_group")
+            logger.info("dropped convo_state_by_group (unique on group_id alone)")
+        except Exception:
+            pass  # never created, or already gone
+
         await _ensure_index_resilient(
             db.whatsapp_conversation_state,
-            keys=[("group_id", 1)],
+            keys=[("kind", 1), ("group_id", 1), ("sender", 1)],
             unique=True,
-            name="convo_state_by_group",
+            name="convo_state_by_kind_group_sender",
         )
         await _ensure_index_resilient(
             db.whatsapp_conversation_state,
@@ -39426,6 +39527,29 @@ async def _live_plan_file_ids(project_id: str) -> list:
         return None
 
 
+# Everything the ranking, fusion and answer paths read off a page row. The
+# `embedding` field is deliberately ABSENT: it is fetched separately for the
+# cosine pass and dropped, so 1536 floats per page stop travelling through
+# four stages that never look at them.
+# TAKEN FROM WHAT _index_single_page ACTUALLY WRITES, not from the prompt that
+# produced it. The indexing prompt asks the model for MATERIALS_AND_SPECS and
+# SPACES_AND_ROOMS; the fields it stores are `materials` and `spaces`. Guessing
+# the names from the prompt gave a projection that silently dropped the two
+# fields the keyword rank leans on hardest — a projection typo does not raise,
+# it just makes matching quietly worse.
+_PAGE_FIELDS = {
+    "_id": 1, "project_id": 1, "company_id": 1,
+    "file_id": 1, "file_name": 1, "file_hash": 1,
+    "page_number": 1, "sheet_number": 1, "sheet_title": 1,
+    "discipline": 1, "floor": 1, "keywords": 1,
+    "materials": 1, "spaces": 1, "summary": 1, "notes": 1,
+    "dimensions": 1, "code_refs": 1, "detail_refs": 1,
+    "index_version": 1, "indexed_at": 1,
+    # Written by later passes than the one above, and read by the image path.
+    "page_jpeg_r2_key": 1, "page_base_r2_key": 1, "is_spec_page": 1,
+}
+
+
 async def _retrieve_plan_candidates(
     project_id: str,
     parsed: dict,
@@ -39517,7 +39641,26 @@ async def _retrieve_plan_candidates(
         # Fall through to full search if no exact match
 
     # ── 2. Load candidate pool + parallel search ──────────────────────────
-    pool = await db.document_page_index.find(base_filter).limit(400).to_list(400)
+    # ── THE EMBEDDING RODE ALONG WITH EVERY DOCUMENT ───────────────────────
+    #
+    # This find carried NO projection, so all 400 pages shipped their full
+    # `embedding` field — 1536 floats each, roughly 2.4 MB of vectors per
+    # question — and then carried them through the keyword rank, the fusion,
+    # the sort and the candidate slice, none of which look at a vector.
+    #
+    # The cosine pass genuinely needs them, so this is not a saving of bytes
+    # off the wire: it is the same vectors fetched once, used, and dropped,
+    # instead of held on 400 dicts for the rest of the function. What it buys
+    # is that the large field is now visible as a cost with a name, next to the
+    # timer that will say whether it matters. `_PAGE_FIELDS` also stops a
+    # future field from joining the ride silently.
+    #
+    # NO OTHER LATENCY CHANGE IS MADE HERE. The timers come first; this one is
+    # in because the projection is what makes the retrieval timing readable at
+    # all — an unprojected find times as one number covering both.
+    pool = await db.document_page_index.find(
+        base_filter, _PAGE_FIELDS,
+    ).limit(400).to_list(400)
     if not pool and base_filter.get("discipline"):
         # Discipline filter was too strict (e.g. user asked about "drains in
         # backyard" — parser tagged it PL, but the drainage is actually on
@@ -39528,7 +39671,9 @@ async def _retrieve_plan_candidates(
             f"returned empty pool, retrying without discipline filter"
         )
         relaxed = {k: v for k, v in base_filter.items() if k != "discipline"}
-        pool = await db.document_page_index.find(relaxed).limit(400).to_list(400)
+        pool = await db.document_page_index.find(
+            relaxed, _PAGE_FIELDS,
+        ).limit(400).to_list(400)
     if not pool:
         return []
 
@@ -39549,9 +39694,22 @@ async def _retrieve_plan_candidates(
     query_embedding = await _generate_embedding(original_query)
     vector_ranked = []
     if query_embedding:
+        # Vectors are fetched HERE, for the pass that needs them, keyed by id
+        # and dropped when it ends. Nothing downstream sees them.
+        vec_by_id = {}
+        try:
+            async for row in db.document_page_index.find(
+                {"_id": {"$in": [p["_id"] for p in pool]}},
+                {"embedding": 1},
+            ):
+                vec_by_id[row["_id"]] = row.get("embedding") or []
+        except Exception as e:
+            # A failed vector fetch costs the cosine rank, not the answer: the
+            # keyword rank below still runs and RRF still fuses what it has.
+            logger.warning(f"plan retrieval: embedding fetch failed: {e}")
         scored = []
         for p in pool:
-            emb = p.get("embedding") or []
+            emb = vec_by_id.get(p["_id"]) or []
             sim = _cosine_similarity(query_embedding, emb)
             scored.append((sim, p))
         scored.sort(key=lambda x: -x[0])
@@ -39609,6 +39767,42 @@ def _floor_regex(val: str) -> str:
 
 
 SHOW_VERBS = ("show me", "pull up", "send me", "find the", "open", "get me", "display")
+
+# NYC sheet ids: one to three letters, a separator, digits, optionally .1 for a
+# revision. A-301, ME-401, S102, SP-1.2. Anchored on word boundaries so a
+# permit number or a date cannot pass for one.
+_SHEET_ID_RE = re.compile(r"\b([A-Za-z]{1,3})[-\s]?(\d{1,4}(?:\.\d+)?)\b")
+
+# Letters that actually begin a sheet id on these drawings. Without this,
+# "on 4" and "by 12" match the pattern and every message looks like a sheet
+# request. Taken from the discipline prefixes the agent prompt already names.
+_SHEET_PREFIXES = frozenset({
+    "a", "ar", "s", "st", "m", "me", "e", "el", "p", "pl", "sp", "gn", "g",
+    "c", "fa", "fp", "t", "id", "ls", "q",
+})
+
+
+def _names_a_sheet(text: str) -> bool:
+    """True when the text contains something shaped like a sheet id.
+
+    ── WHY THIS EXISTS ────────────────────────────────────────────────────
+    #
+    # Reported from the live test of 2026-09-14: "show me <element>" came back
+    # as two drawings picked by keyword rank. The branch that sends an image
+    # was gated on the VERB alone, so "show me the sprinkler riser" and "show
+    # me ST-201" took the same path — and for the first of them the top two RRF
+    # candidates are a guess dressed as an answer. The reader cannot tell that
+    # nobody checked whether the riser is on either sheet.
+    #
+    # A person asking for a SHEET names the sheet. A person asking about a
+    # THING names the thing. That is the distinction the image path needs, and
+    # it is a property of the text rather than of the verb in front of it."""
+    if not text:
+        return False
+    for m in _SHEET_ID_RE.finditer(text):
+        if m.group(1).lower() in _SHEET_PREFIXES:
+            return True
+    return False
 
 
 # A question whose answer is a number or a yes. These beat the show-verbs,
@@ -40039,9 +40233,126 @@ async def _send_plan_image(
         return False
 
 
+# Words that carry no element. Stripped before a literal text search, because
+# "the" appears on every page ever indexed and would make every sheet a match.
+_ELEMENT_STOPWORDS = frozenset({
+    "show", "me", "the", "a", "an", "of", "on", "in", "at", "for", "to",
+    "please", "pull", "up", "send", "find", "get", "display", "open",
+    "levelog", "plan", "plans", "drawing", "drawings", "sheet", "sheets",
+    "where", "is", "are", "what", "which", "any",
+})
+
+
+def _element_terms(query: str, parsed: dict) -> list:
+    """The thing being asked about, as words to look for in a page's text.
+
+    The parser's `keywords` are preferred — it has already read the sentence
+    and pulled out the subject. The raw query minus stopwords is the fallback
+    for when it returns nothing, which it does on short requests."""
+    kws = parsed.get("keywords") or []
+    terms = [str(k).strip().lower() for k in kws if str(k).strip()]
+    if not terms:
+        terms = [w for w in re.findall(r"[a-z0-9]+", (query or "").lower())
+                 if w not in _ELEMENT_STOPWORDS and len(w) > 2]
+    # Two terms is enough to be specific and few enough that an AND over them
+    # still matches a page that phrases it differently.
+    return terms[:2]
+
+
+# The fields the indexer fills from what it read off the page. A literal search
+# runs over THESE and nothing else: `embedding` is a guess by construction and
+# file_name is about the upload, not the drawing.
+_ELEMENT_TEXT_FIELDS = (
+    "keywords", "summary", "materials", "spaces", "notes",
+    "sheet_title", "detail_refs", "dimensions",
+)
+
+
+async def _pages_with_element(project_id: str, terms: list, limit: int = 8) -> list:
+    """Pages whose EXTRACTED TEXT actually mentions the element.
+
+    ── WHY THIS IS NOT THE RETRIEVAL ABOVE ────────────────────────────────
+    #
+    # _retrieve_plan_candidates fuses a vector rank and a keyword rank and
+    # returns its top three. That is the right instrument for "which sheet is
+    # most like this question" and the wrong one for "which sheets mention
+    # roof drains", because its top three are ALWAYS populated — it cannot
+    # return nothing, so it can never say the thing is not there.
+    #
+    # This asks the literal question. Every term has to appear, somewhere in
+    # what the indexer extracted from that page. No match is a real answer.
+    #
+    # ORDERING PUTS THE STRONGEST EVIDENCE FIRST. A page whose `keywords` name
+    # the element is a page the indexer thought the element was ABOUT; a page
+    # that merely mentions it in a note is weaker. The primary sheet sent to
+    # the group is the first of these, so the ordering is the difference
+    # between sending the riser diagram and sending a page that says "see
+    # riser diagram"."""
+    if not (project_id and terms):
+        return []
+    clauses = []
+    for t in terms:
+        # ── A PLURAL MUST FIND THE SINGULAR ────────────────────────────────
+        #
+        # Measured against a stubbed index: "show me the roof drains" found the
+        # roof plan and MISSED the riser diagram, whose summary reads "roof
+        # drain leaders to riser". A literal search is the right instrument
+        # here and a literal search that cannot see past an "s" answers "on one
+        # sheet" when the truth is two.
+        #
+        # The stem, not a stemmer. Dropping a trailing s (and the e of "es")
+        # covers how these words actually differ on a drawing — drain/drains,
+        # riser/risers, box/boxes — and a real stemmer would turn "gas" into
+        # "ga" and match everything.
+        needle = t
+        if len(needle) > 3 and needle.endswith("es"):
+            needle = needle[:-2]
+        elif len(needle) > 3 and needle.endswith("s"):
+            needle = needle[:-1]
+        rx = {"$regex": re.escape(needle), "$options": "i"}
+        clauses.append({"$or": [{f: rx} for f in _ELEMENT_TEXT_FIELDS]})
+    live_ids = await _live_plan_file_ids(project_id)
+    q = {"project_id": str(project_id), "$and": clauses}
+    if live_ids is not None:
+        q["file_id"] = {"$in": live_ids}
+    try:
+        rows = await db.document_page_index.find(
+            q, _PAGE_FIELDS,
+        ).limit(max(limit * 4, 32)).to_list(max(limit * 4, 32))
+    except Exception as e:
+        logger.warning(f"element lookup failed for {terms}: {e}")
+        return []
+
+    def _rank(rec):
+        kws = " ".join(str(k).lower() for k in (rec.get("keywords") or []))
+        in_keywords = sum(1 for t in terms if t in kws)
+        title = (rec.get("sheet_title") or "").lower()
+        in_title = sum(1 for t in terms if t in title)
+        # Negated so a plain ascending sort puts the strongest first.
+        return (-in_keywords, -in_title, str(rec.get("sheet_number") or "~"))
+
+    rows.sort(key=_rank)
+    return rows[:limit]
+
+
+def _log_plan_timing(group_id: str, query: str, stage: dict, outcome: str) -> None:
+    """One line per plan question, every stage named.
+
+    Read it with: grep 'plan timing' on the app log. The shape is deliberately
+    flat and greppable rather than JSON — this exists to survive one live test,
+    not to feed a dashboard."""
+    total = round(sum(v for k, v in stage.items() if k != "candidates"), 2)
+    parts = " ".join(f"{k}={v}" for k, v in stage.items())
+    logger.warning(
+        f"plan timing outcome={outcome} total={total}s {parts} "
+        f"group={group_id[-10:] if group_id else '?'} q={query[:60]!r}"
+    )
+
+
 async def _handle_plan_query(project_id: str, group_id: str, query: str,
                               question: Optional[str] = None,
-                              parsed_override: Optional[dict] = None) -> None:
+                              parsed_override: Optional[dict] = None,
+                              reply_to: Optional[str] = None) -> None:
     """End-to-end plan-query pipeline (spec-compliant v2).
 
     Flow:
@@ -40054,7 +40365,8 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
       5. If parser extracted a question → VQA loop through candidates.
     """
     if not QWEN_API_KEY:
-        await send_whatsapp_message(group_id, "Plan queries are not configured.")
+        await send_whatsapp_message(group_id, "Plan queries are not configured.",
+                                    reply_to=reply_to)
         return
 
     # THE CEILING, CHECKED BEFORE THE ACK. Checking it after would promise to go
@@ -40065,13 +40377,37 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             group_id,
             "I've hit today's limit on drawing lookups for this project. "
             "Open the sheet in the app, or ask me again tomorrow.",
+            reply_to=reply_to,
         )
         logger.warning(f"vision daily cap hit for project {project_id}")
         return
 
+    # ── THE NUMBERS THE LATENCY FIX WILL BE BUILT FROM ─────────────────────
+    #
+    # Reported: plan Q&A takes about sixty seconds. There is no instrumentation
+    # anywhere on this path, so every explanation available today is arithmetic
+    # off the call chain rather than a measurement, and optimising against
+    # arithmetic is how the wrong stage gets cut.
+    #
+    # One log line per answered question, with each stage named. Deliberately
+    # not a metrics backend: this has to survive one live test in one group
+    # next week, and a log line does that with nothing to stand up.
+    #
+    # NOTHING BELOW CHANGES BEHAVIOUR. The stages are timed where they already
+    # happen, in the order they already happen.
+    _t0 = perf_counter()
+    _stage = {}
+
+    def _mark(name):
+        nonlocal _t0
+        now = perf_counter()
+        _stage[name] = round(now - _t0, 2)
+        _t0 = now
+
     # 1. Immediate ack (needs to be fast — construction sites have poor signal)
     try:
-        await send_whatsapp_message(group_id, "🔎 Checking the drawings…")
+        await send_whatsapp_message(group_id, "🔎 Checking the drawings…",
+                                    reply_to=reply_to)
     except Exception:
         pass
 
@@ -40082,10 +40418,11 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         parsed = dict(parsed_override)
     else:
         parsed = await _parse_plan_query(query)
+    _mark("parse")
     if parsed.get("dob_route"):
         # Parser flagged this as a DOB/permits question — route to dob_status.
         txt = await _handle_dob_status(project_id)
-        await send_whatsapp_message(group_id, txt)
+        await send_whatsapp_message(group_id, txt, reply_to=reply_to)
         return
 
     # `question` param from the agent-router overrides parser's question —
@@ -40099,8 +40436,27 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         s = (s or "").strip().lower()
         return any(s.startswith(v) for v in SHOW_VERBS)
 
-    if _looks_like_show_verb(query) or _looks_like_show_verb(question or ""):
+    # ── AN IMAGE IS ONLY EVER SENT FOR A NAMED SHEET ───────────────────────
+    #
+    # The verb used to decide this on its own, so "show me the sprinkler riser"
+    # shipped the top two keyword hits. Now the verb selects the INTENT and the
+    # presence of a sheet id decides what can be honoured:
+    #
+    #   "show me ST-201"            -> the sheet, as an image
+    #   "show me the sprinkler riser" -> which sheets show it, as an offer
+    #   "are there sprinklers on 4" -> the QA path, unchanged
+    #
+    # The middle case is the fix. Naming the sheets is a real answer built from
+    # what the index actually recorded about each page; sending the pages
+    # themselves asserts that the thing is on them, which nothing checked.
+    offer_only = False
+    wants_image = (_looks_like_show_verb(query)
+                   or _looks_like_show_verb(question or ""))
+    if wants_image:
         effective_question = None
+        if not (parsed.get("sheet_number") or _names_a_sheet(query)
+                or _names_a_sheet(question or "")):
+            offer_only = True
     else:
         effective_question = (question or "").strip() or parsed.get("question")
         if effective_question and effective_question.strip().lower() in ("null", "none", ""):
@@ -40112,6 +40468,8 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     candidates = await _retrieve_plan_candidates(
         project_id, parsed, query, limit=3
     )
+    _mark("retrieval")
+    _stage["candidates"] = len(candidates)
     if not candidates:
         await send_whatsapp_message(
             group_id,
@@ -40119,7 +40477,64 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             "Try a sheet number (A-301, ME-401) or a description like "
             "'4th floor mechanical plan'. If your plans are new, make sure "
             "they've finished indexing in the app.",
+            reply_to=reply_to,
         )
+        return
+
+    # 4a-offer. A show-verb with no sheet named: say where it is, do not
+    # assert that it is there by sending the page.
+    if offer_only:
+        # ── AN ANSWER, NOT A QUESTION BACK ─────────────────────────────────
+        #
+        # The first version of this named the sheets and asked "Want them?".
+        # That is still a round trip: a superintendent who typed "show me the
+        # roof drains" has already said what he wants, and answering a request
+        # with a request is the thing the sixty-second latency makes
+        # unbearable. He gets the answer and the sheet, in one turn.
+        #
+        # AND THE SHEETS ARE FOUND BY TEXT, NOT BY RANK. The retrieval above
+        # is a fused vector-plus-keyword guess, which is the right instrument
+        # for "which sheet is most like this question" and the wrong one for
+        # "which sheets actually mention roof drains" — its top three are
+        # always populated, so it can never say no. `_pages_with_element` asks
+        # the second question literally: the element's words have to appear in
+        # what the indexer extracted from that page. A sheet that does not
+        # mention the thing is not sent, and when nothing mentions it the
+        # answer is that nothing does.
+        terms = _element_terms(query, parsed)
+        matches = await _pages_with_element(project_id, terms)
+        _mark("element_lookup")
+        _stage["matches"] = len(matches)
+        if not matches:
+            _log_plan_timing(group_id, query, _stage, "element_not_found")
+            await send_whatsapp_message(
+                group_id, "Not found on indexed drawings.", reply_to=reply_to,
+            )
+            return
+
+        subject = " ".join(terms).strip() or "That"
+        where = []
+        for rec in matches[:4]:
+            sn = rec.get("sheet_number") or "?"
+            title = (rec.get("sheet_title") or "").strip()
+            where.append(f"{sn} ({title})" if title else sn)
+        await send_whatsapp_message(
+            group_id,
+            f"{subject[:1].upper()}{subject[1:]}: {', '.join(where)}.",
+            reply_to=reply_to,
+        )
+
+        # The primary sheet, in the same turn. First is the best-matching one
+        # that actually mentions the element — see _pages_with_element for the
+        # ordering — so this is never a guess dressed as an answer.
+        primary = matches[0]
+        caption = (f"{primary.get('sheet_number') or 'Sheet'} — "
+                   f"{primary.get('sheet_title') or ''}").strip(" —")
+        try:
+            await _send_plan_image(group_id, primary, caption)
+        except Exception as e:
+            logger.warning(f"primary sheet send failed for {caption}: {e}")
+        _log_plan_timing(group_id, query, _stage, "element_answered")
         return
 
     # 4a. Image-send path (parser said user wants the image, no question)
@@ -40138,6 +40553,7 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
                 await send_whatsapp_message(
                     group_id,
                     f"Found: {caption}. Open it in the Levelog app under Plans & Files.",
+                    reply_to=reply_to,
                 )
             if i + 1 < min(2, len(candidates)):
                 await asyncio.sleep(1.2)
@@ -40147,6 +40563,8 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             )
         return
 
+    _vqa_n = 1
+
     # 4b. VQA path — iterate candidates, stop on first real answer.
     # On success we send BOTH the short text answer AND the sheet image so
     # the crew can verify the answer against the drawing in one message.
@@ -40155,23 +40573,28 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             sheet_number = rec.get("sheet_number") or "Sheet"
             sheet_title  = rec.get("sheet_title")  or "Construction Drawing"
             jpeg = await _fetch_page_jpeg(rec)
+            _mark(f"fetch{_vqa_n}")
             if not jpeg:
                 continue
             answer = await _qwen_visual_qa(
                 jpeg, effective_question, sheet_number, sheet_title,
                 project_id=project_id,
             )
+            _mark(f"vqa{_vqa_n}")
+            _vqa_n += 1
             if not answer or "NOT_SHOWN_ON_SHEET" in answer.upper():
                 continue
             # Got an answer — format with sheet citation per spec.
             reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
-            await send_whatsapp_message(group_id, reply_text)
+            await send_whatsapp_message(group_id, reply_text,
+                                        reply_to=reply_to)
             # A DRAWING AFTER A NUMBER IS NOISE. The follow-up image is real
             # help for an open question — "what is the ceiling height here"
             # is better with the section in front of you. It is the opposite
             # for "how many outlets" and "is there a skylight": the answer is
             # one word, it has already been sent, and a full sheet after it is
             # a scroll the superintendent did not ask for.
+            _log_plan_timing(group_id, query, _stage, "answered")
             if not _is_count_or_yes_no(effective_question):
                 try:
                     await asyncio.sleep(0.6)
@@ -40205,10 +40628,11 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         (r.get("sheet_number") or "?") for r in candidates[:3]
     ]
     checked = ", ".join(dict.fromkeys(s for s in top_sheets if s != "?"))
+    _log_plan_timing(group_id, query, _stage, "not_found")
     msg = "Not found on the indexed drawings."
     if checked:
         msg += f"\nClosest sheets: {checked}."
-    await send_whatsapp_message(group_id, msg)
+    await send_whatsapp_message(group_id, msg, reply_to=reply_to)
 
 
 # ==================== SPRINT 4 — AGENTIC INTENT ROUTER ====================
@@ -40357,6 +40781,7 @@ def _has_explicit_bot_mention(
 BOT_SESSION_TTL_SECONDS = 180  # 3 minutes
 
 
+
 async def _mark_bot_session(group_id: str, sender: str) -> None:
     """Record that `sender` just explicitly addressed the bot in this group.
 
@@ -40378,7 +40803,26 @@ async def _mark_bot_session(group_id: str, sender: str) -> None:
             upsert=True,
         )
     except Exception as e:
-        logger.debug(f"mark_bot_session failed: {e}")
+        # ── THIS LINE USED TO BE logger.debug ──────────────────────────────
+        #
+        # A session that fails to write is a bot that stops answering a
+        # conversation it is in the middle of, and for months the only trace
+        # was a debug line nobody reads. E11000 in particular is never
+        # transient and never benign here: it means the key does not describe
+        # the row, which is a schema fault that will keep happening on every
+        # message until somebody changes an index.
+        #
+        # The FILTER is logged, not just the message, because "duplicate key"
+        # without it does not say which of the three row kinds collided.
+        _filter = {"kind": "bot_session", "group_id": group_id, "sender": sender}
+        if "E11000" in str(e) or "duplicate key" in str(e).lower():
+            logger.warning(
+                f"mark_bot_session DUPLICATE KEY — the session was NOT "
+                f"written and this group's follow-ups will be ignored. "
+                f"filter={_filter} err={e}"
+            )
+        else:
+            logger.warning(f"mark_bot_session failed: filter={_filter} err={e}")
 
 
 async def _is_in_bot_session(group_id: str, sender: str) -> bool:
@@ -41064,8 +41508,13 @@ async def _handle_start_checklist(
     ]
     try:
         await db.whatsapp_conversation_state.update_one(
-            {"group_id": group_id},
+            # `kind` is explicit from here on. Rows written before this deploy
+            # carry no kind and are invisible to this filter — they expire on
+            # the ten-minute TTL, so the worst case is a draft in flight at
+            # deploy time being lost, which is what expiry does to it anyway.
+            {"kind": "checklist", "group_id": group_id},
             {"$set": {
+                "kind":        "checklist",
                 "group_id":    group_id,
                 "project_id":  project_id,
                 "company_id":  company_id,
@@ -41164,7 +41613,8 @@ async def _handle_checklist_assignment_reply(
         return None
 
     if parsed and parsed[0][0] == "CANCEL":
-        await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+        await db.whatsapp_conversation_state.delete_one(
+            {"kind": "checklist", "group_id": group_id})
         return "✓ Checklist discarded."
 
     # Apply assignments — last one wins per index
@@ -41237,7 +41687,8 @@ async def _handle_checklist_assignment_reply(
         "is_deleted":           False,
     }
     await db.whatsapp_checklists.insert_one(doc)
-    await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+    await db.whatsapp_conversation_state.delete_one(
+            {"kind": "checklist", "group_id": group_id})
 
     # Compose confirmation message
     lines = [f"✅ Checklist created for {project_name}:"]
@@ -41258,6 +41709,7 @@ async def _run_group_agent(
     body: str,
     features: Dict[str, Any],
     explicit_mention: bool = False,
+    reply_to: Optional[str] = None,
 ) -> Optional[str]:
     """Run the tool-use agent over a bot-addressed message. Returns the reply
     text to send (or None for NOREPLY / silence)."""
@@ -41429,6 +41881,7 @@ async def _run_group_agent(
                             tc_name, tc_args,
                             project_id=project_id, group_id=group_id,
                             company_id=company_id, sender=sender,
+                            reply_to=reply_to,
                         )
                     return None  # the async handler sends the reply
 
@@ -41448,6 +41901,7 @@ async def _run_group_agent(
                     tool_result = await _dispatch_agent_tool(
                         tc_name,
                         tc_args,
+                        reply_to=reply_to,
                         project_id=project_id,
                         group_id=group_id,
                         company_id=company_id,
@@ -41476,7 +41930,7 @@ async def _run_group_agent(
 
 async def _dispatch_agent_tool(
     name: str, args: dict, *, project_id: str, group_id: str,
-    company_id: Optional[str], sender: str,
+    company_id: Optional[str], sender: str, reply_to: Optional[str] = None,
 ) -> str:
     """Invoke one of the agent tools and return its text result."""
     try:
@@ -41531,6 +41985,7 @@ async def _dispatch_agent_tool(
                     project_id, group_id, synth,
                     question=question or None,
                     parsed_override=parsed_override,
+                    reply_to=reply_to,
                 )
             )
             if question:
@@ -42097,6 +42552,11 @@ async def _process_whatsapp_message(payload: dict):
                 "has_audio": parsed["has_audio"],
                 "transcribed": bool(parsed["has_audio"]),
                 "message_id": parsed["message_id"],
+                # THE QUOTABLE FORM. `message_id` is the short hash; WaAPI's
+                # replyToMessageId wants {fromMe}_{chatId}_{messageId}. It was
+                # parsed and thrown away, so any reply composed after the
+                # webhook had been forgotten could not quote anything.
+                "message_id_serialized": parsed.get("message_id_serialized") or "",
                 "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
                 "created_at": now,
             })
@@ -42110,7 +42570,7 @@ async def _process_whatsapp_message(payload: dict):
             # try to parse the reply BEFORE running any other handlers.
             try:
                 convo_state = await db.whatsapp_conversation_state.find_one(
-                    {"group_id": group_id}
+                    {"kind": "checklist", "group_id": group_id}
                 )
             except Exception:
                 convo_state = None
@@ -42120,7 +42580,8 @@ async def _process_whatsapp_message(payload: dict):
                 if isinstance(exp, datetime):
                     exp_aware = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
                     if exp_aware < datetime.now(timezone.utc):
-                        await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+                        await db.whatsapp_conversation_state.delete_one(
+            {"kind": "checklist", "group_id": group_id})
                         convo_state = None
             if convo_state and convo_state.get("awaiting") == "checklist_assignment":
                 reply = await _handle_checklist_assignment_reply(
@@ -42262,6 +42723,11 @@ async def _process_whatsapp_message(payload: dict):
                 _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids)
                 or _has_explicit_bot_mention(quoted_body, bot_phone_digits, None)
             )
+            # The quotable id of the message being answered. Every reply the
+            # bot sends below carries it, so an answer that arrives eight
+            # messages later still points at its own question.
+            reply_to = parsed.get("message_id_serialized") or ""
+
             # Is the message this one replies to one of OURS? fromMe is the
             # strong signal; the author JID is the fallback, matched against
             # the same identifier set an @mention is matched against so an
@@ -42294,9 +42760,11 @@ async def _process_whatsapp_message(payload: dict):
                     body=body,
                     features=features,
                     explicit_mention=explicit_mention,
+                    reply_to=reply_to,
                 )
                 if reply:
-                    await send_whatsapp_message(group_id, reply)
+                    await send_whatsapp_message(group_id, reply,
+                                                reply_to=reply_to)
                 return
 
             # ── A QUESTION NOBODY ANSWERED IS WORSE THAN A WRONG ANSWER ────
@@ -43247,7 +43715,8 @@ async def whatsapp_pending_group_link(
     existing = await db.whatsapp_groups.find_one({"wa_group_id": group_id})
     if existing and str(existing.get("project_id") or "") != str(project_id):
         try:
-            await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+            await db.whatsapp_conversation_state.delete_one(
+            {"kind": "checklist", "group_id": group_id})
         except Exception as e:
             logger.warning(f"conversation state clear failed for {group_id}: {e}")
 
