@@ -178,6 +178,7 @@ const CODES = {
   DUPLICATE_SST: 'This worker has two SST records that have not been resolved to one.',
   CARD_NUMBER_FORMAT: 'The card number does not match the expected format.',
   CARD_NOT_SST: 'The card that was scanned is not an SST card.',
+  EXTRACTION_INCOMPLETE: 'Some details could not be read from this card.',
 };
 for (const [code, want] of Object.entries(CODES)) {
   eq(sstFlagCopy({ sstStatus: 'unknown', reviewReason: code, unknownReason: null }).detail,

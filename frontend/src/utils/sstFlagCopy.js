@@ -100,6 +100,11 @@ const WHOLE_SENTENCE = {
   DUPLICATE_SST: 'This worker has two SST records that have not been resolved to one.',
   CARD_NUMBER_FORMAT: 'The card number does not match the expected format.',
   CARD_NOT_SST: 'The card that was scanned is not an SST card.',
+  // Raised when the CLASS read fine but the name, the number or the expiry did
+  // not. It is deliberately about neither half: it says which act failed
+  // (reading the card) rather than guessing which field, and the row beside it
+  // already shows the blanks.
+  EXTRACTION_INCOMPLETE: 'Some details could not be read from this card.',
 };
 
 const sentence = (clauses) => {

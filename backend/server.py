@@ -3481,11 +3481,47 @@ def resolve_card_class(od: dict) -> dict:
             "color": color,
         }
 
-    if not color_usable:
-        # Colour could not lead. Text may still corroborate nothing — on its own
-        # it is a proposal too, because the field facts show it can be
-        # confidently wrong (a purple card with SST wording) and absent on the
-        # commonest card.
+    # ── WHAT THE COLOUR ACTUALLY CONTRIBUTES, DECIDED IN ONE PLACE ──────────
+    # A colour is a SIGNAL only when it is usable AND this app has a class for
+    # it. Every other colour contributes NOTHING, and the two ways of
+    # contributing nothing — "I could not read the colour" and "I read it and
+    # it means nothing here" — must land on the same branch, because they have
+    # the same evidentiary weight: none.
+    proposed = _CARD_COLOR_CLASS_MAP.get(color) if color_usable else None
+
+    if not proposed:
+        # ── AN UNMAPPED COLOUR IS NO SIGNAL. IT FALLS THROUGH TO THE TEXT. ──
+        #
+        # THE DEFECT THIS CLOSES, AND IT INVERTED THE WHOLE SCORE. Until now a
+        # usable-but-unmapped colour returned SST_UNSPECIFIED + CLASS_UNVERIFIED
+        # from its own branch, sited ABOVE the `text_known` fall-through — so it
+        # destroyed a correctly-read class before text was ever consulted.
+        # Replayed against production payloads:
+        #
+        #     'FULL' + WHITE / high / []        -> SST_UNSPECIFIED, CLASS_UNVERIFIED
+        #     same, colour dropped              -> SST_FULL, text_only, clean
+        #     same, confidence 'low'            -> SST_FULL, text_only, clean
+        #     same, high but ['GLARE']          -> SST_FULL, text_only, clean
+        #
+        # DEGRADE THE COLOUR READ AND THE MAN PASSES; READ IT WELL AND HE IS
+        # FLAGGED. A better read scored worse than a worse one, which is not a
+        # conservative failure — it is an incoherent one, and it rewards a bad
+        # photograph.
+        #
+        # NOT A WHITE QUIRK. The OCR prompt enumerates NINE colours the model
+        # may return (WHITE, BLUE, GREEN, PURPLE, RED, YELLOW, ORANGE, GREY,
+        # OTHER); this map holds THREE and PURPLE is handled above. So FIVE of
+        # the nine answers the prompt invites destroyed a read class — and
+        # WHITE is the first value the prompt lists.
+        #
+        # The old branch called itself "the honest answer". It was honest about
+        # the COLOUR and silent about the TEXT: "I do not know this colour" is
+        # not the same claim as "I do not know this card", and only a function
+        # that has already looked at the text may make the second. Saying "I
+        # cannot determine the class" while holding a legible class is not
+        # caution. ONLY A MAPPED COLOUR THAT CONTRADICTS THE TEXT MAY FLAG —
+        # that is the conflict path below, and it is the one case where colour
+        # carries information worth overriding a clean read.
         if text_known:
             # NO REVIEW REASON. An earlier version attached
             # CLASS_FROM_TEXT_UNCONFIRMED here to justify forcing needs_review.
@@ -3495,17 +3531,17 @@ def resolve_card_class(od: dict) -> dict:
             # scan. `class_source` already records that this rested on one
             # signal, which is what a reviewer needs; the reason field is for
             # rows that are actually being surfaced.
+            #
+            # `color` IS STILL RETURNED, unmapped or not. It reaches the row as
+            # `card_color_seen`, so a reviewer can still see that the model
+            # called this card WHITE even though nothing was classified on it.
+            # Not classifying on a colour and not recording it are different
+            # acts; only the first is ruled.
             return {"sst_type": text_type, "class_source": "text_only",
                     "review_reason": None, "not_sst": None, "color": color}
-        return {"sst_type": SST_UNSPECIFIED, "class_source": None,
-                "review_reason": "CLASS_UNVERIFIED", "not_sst": None,
-                "color": color}
-
-    proposed = _CARD_COLOR_CLASS_MAP.get(color)
-    if not proposed:
-        # A usable colour that is not in the map. NOT a guess and not a
-        # fallback to text-wins: an unmapped colour is a card this app does not
-        # know, and saying so is the honest answer.
+        # Nothing legible from either signal. THIS is where "cannot determine
+        # the class" is the honest answer, because now it is true of the card
+        # and not merely of the colour.
         return {"sst_type": SST_UNSPECIFIED, "class_source": None,
                 "review_reason": "CLASS_UNVERIFIED", "not_sst": None,
                 "color": color}
@@ -3816,6 +3852,32 @@ def derive_cert_review(name_ok, number_ok, class_ok, stored_exp,
     needs_review = not (name_ok and number_ok and class_ok and bool(stored_exp))
     if class_source in ("color_only", "conflict"):
         needs_review = True
+    # ── A REVIEWER IS NEVER TOLD TO REVIEW AND NOT TOLD WHAT TO LOOK AT ─────
+    #
+    # LATENT, NOT LIVE — 0 rows in production carry it today — and closed
+    # anyway, because it is one input away from being live and the whole point
+    # of this function is that the flag and its reason are derived TOGETHER.
+    # Confirmed by execution before the fix:
+    #
+    #     derive_cert_review(name_ok=True, number_ok=False, class_ok=True,
+    #                        stored_exp=None, "text_only", None, None)
+    #         -> (True, None, 0.5)
+    #
+    # The two reason-setting lines above only fire on a CLASS failure or on a
+    # reason handed in from elsewhere; a row whose NAME, NUMBER or EXPIRY is
+    # the thing that is missing raised the flag and named nothing. Downstream
+    # that renders as a bare "Needs review" (OSHA_REVIEW_LABELS' default) or as
+    # the frontend's "Verify the card" fallback — a queue entry the reviewer
+    # cannot act on and cannot clear, which is how a review queue becomes
+    # something nobody reads.
+    #
+    # EXTRACTION_INCOMPLETE is not a new word: WorkerCertification.review_reason
+    # has declared it as part of this vocabulary since the field was written,
+    # and nothing has ever emitted it. `needs_review` IS "the extraction was
+    # incomplete", spelled out three lines up, so the declared code and the
+    # condition already matched — only the assignment was missing.
+    if needs_review and reason is None:
+        reason = "EXTRACTION_INCOMPLETE"
     return needs_review, reason, completeness
 
 
@@ -29218,6 +29280,13 @@ OSHA_REVIEW_LABELS = {
     # which matters, because the rule rests on two samples. "Not recognised"
     # was rejected too: it implies a registry was checked, and none was.
     "CARD_NUMBER_FORMAT": "Unexpected card format",
+    # THE CODE THAT USED TO ARRIVE AS THE DEFAULT BELOW. derive_cert_review
+    # could raise the flag and name nothing when the NAME, NUMBER or EXPIRY was
+    # the missing field; that row rendered as the bare "Needs review" fallback,
+    # which tells a reviewer to look at a card and not what to look for. It now
+    # names itself, so the fallback is once again only for a code this table has
+    # not heard of.
+    "EXTRACTION_INCOMPLETE": "Card details incomplete",
     "NEEDS_REVIEW": "Needs review",
 }
 
