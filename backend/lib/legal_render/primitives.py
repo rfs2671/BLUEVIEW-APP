@@ -266,6 +266,23 @@ def preshift_signature(row: Any, ctx: Dict = None) -> str:
     THE THIRD IS NOT THE SECOND. A resolution that failed is not a man who did
     not sign, and collapsing them puts a deficiency on a filed record against
     somebody who has none.
+
+    ── AND NEITHER IS A FOURTH, WHICH IS WHY `affirmable=False` IS HERE ──
+
+    A worker's roster mark is NOT A DOCUMENT SIGNATURE and has no affirmation
+    state. The CP affirms the record; the app writes `affirmed` onto
+    `cp_signature`; nothing in the product ever writes it onto a worker's row,
+    and no screen offers him the act. The affirmation he makes at the GATE is a
+    separate signed record -- its own content hash, signer, capacity, device
+    and wording -- which this sheet's footer COUNTS and this column has
+    deliberately made no claim about since the overlay was removed.
+
+    So the banner `ink` draws by default is, on this row, a finding against a
+    named man from a state that does not exist for him and that no action on
+    site can reach. That is the original defect verbatim, and the engine
+    migration put it back: 302 of 302 marked rows across the filed rosters.
+    The cell says it here, at the call, rather than leaving `ink` to guess it
+    from the shape of the mark -- see `ink` for why a shape cannot answer it.
     """
     w = row if isinstance(row, dict) else {}
     # `worker_signature` FIRST, WHICH IS WHAT THE ROSTER ACTUALLY STORES.
@@ -292,7 +309,7 @@ def preshift_signature(row: Any, ctx: Dict = None) -> str:
         # reader of a filed roster needs the claim even where the ink renders.
         # Dropping it cost the phrase on 30 of 49 sheets -- caught by the same
         # comparison, one pass after it caught the images themselves.
-        return (ink(sig, ctx or {}, present=True)
+        return (ink(sig, ctx or {}, present=True, affirmable=False)
                 + f'<div style="{_LABEL}">Signature on file</div>')
     if w.get("signin_id") or w.get("signature_unavailable"):
         # RECORDED AND NOT DRAWABLE. The resolution runs before render and
@@ -861,7 +878,8 @@ def narrative(sec: Dict, rec: Any, ctx: Dict) -> str:
             f'padding:5px 6px;line-height:1.45;">{body}</div>')
 
 
-def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
+def ink(sig: Any, ctx: Dict, present: bool = True,
+        affirmable: bool = True) -> str:
     """A signature, with NO BOUNDARY.
 
     No box, no background, no fixed-height container, true aspect ratio, free
@@ -893,6 +911,38 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
     signature and prints no banner over nothing, and an absent signature has no
     affirmation record to report on in the first place. The UNSIGNED word below
     is a statement about the RECORD -- it was asked for -- and stands alone.
+
+    ── AND NOT EVERY MARK HAS AN AFFIRMATION STATE AT ALL ───────────────
+
+    `affirmable` is whether affirmation is A STATE THIS MARK CAN BE IN, which
+    is a question about WHOSE mark it is and is therefore answered by the
+    caller. It is NOT whether this particular mark happens to be affirmed --
+    that is `ctx["signature_affirmation"]`'s question, and it keeps it.
+
+    THE DISTINCTION IS THE DOCUMENT SIGNATURE AGAINST A ROSTER MARK. The app
+    lets a CP affirm the record he is signing, writes `affirmed` onto
+    `cp_signature`, and a document signature without it is a real deficiency
+    that must print. A WORKER'S SIGN-IN MARK ON A ROSTER HAS NO SUCH ACT:
+    nothing in the product writes affirmation onto it, no screen offers it,
+    and the affirmation he DID make at the gate is a separate signed record
+    that the sheet's footer counts and this column deliberately does not claim
+    (see `preshift_signature` and test_preshift_affirmation_record.py).
+
+    SO THE BANNER ON A ROSTER ROW REPORTS A DEFICIENCY NO ACTION CAN CURE,
+    against a named man who did sign. It was the original defect -- NOT
+    AFFIRMED from a field nobody wrote -- and it came back through this
+    function during the engine migration: 302 of 302 marked rows across the
+    filed pre-shift rosters carried it.
+
+    IT IS A NAMED ARGUMENT AND NOT A TYPE TEST, deliberately. Every one of
+    those 302 marks is a bare `str`, so `isinstance(sig, str)` would clear them
+    all -- and would also silence the banner over a CP's document signature
+    stored as a string, which is a shape production holds and is precisely the
+    inherited-credential case `_is_affirmed_signature` exists to refuse. A
+    shape cannot answer "whose mark is this". The caller can, and says so.
+
+    TRUE IS THE DEFAULT so a new caller that has not thought about it prints
+    the deficiency rather than hiding it.
     """
     if not sig:
         # ASKED AND UNSIGNED IS NOT THE SAME AS NEVER ASKED.
@@ -916,7 +966,7 @@ def ink(sig: Any, ctx: Dict, present: bool = True) -> str:
     # is allowed to make it. Absent from ctx it contributes nothing, so a
     # caller that has no affirmation machinery -- a test, a preview -- renders
     # exactly what it rendered before.
-    _affirm = ctx.get("signature_affirmation")
+    _affirm = ctx.get("signature_affirmation") if affirmable else None
     banner = ""
     if callable(_affirm):
         try:
