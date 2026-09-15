@@ -351,6 +351,88 @@ ok(typeof keep === 'number', 'the page declares a KEEP_RENDERED budget');
 ok(typeof keep === 'number' && keep >= 5 && keep <= 12,
   `KEEP_RENDERED (${keep}) covers the near band without holding the set`);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. THE PAGE NOW OUTLIVES THE DOCUMENT, AND MUST NOT ACCUMULATE THEM.
+//
+//    WHY THE PAGE OUTLIVES THE DOCUMENT AT ALL. The viewer used to take its
+//    file from `?file=`, so every open was a different url — and a different
+//    url in a WebView is a NAVIGATION. 1.5 MB of pdf.js, 1.1 MB of it the
+//    worker bundle that a file:// origin forces onto the MAIN THREAD, was
+//    read off storage and recompiled before anything could be drawn. Staging
+//    was memoised; the parse never was, and the parse is the half that is
+//    identical for a 16 KB logbook and a 30 MB plan set.
+//
+//    THE TRADE THIS MUST NOT MAKE. A navigation was, incidentally, a complete
+//    reset: the old document's canvases died with the page. Keeping the page
+//    means that reset has to be done deliberately, and a viewer that holds two
+//    plan sets' bitmaps has swapped a slow open for the OOM this whole file
+//    exists to prevent.
+// ═══════════════════════════════════════════════════════════════════════════
+ok(fns.has('openDocument'),
+  'a document can be opened into the live page, without a navigation');
+
+// It has to be reachable from a listener, or the host can never deliver one.
+let openFromListener = false;
+for (const h of listenerHandlers) {
+  const node = typeof h === 'string' ? fns.get(h) : h;
+  if (!node) continue;
+  if (reachable(node.body || node).has('openDocument')) openFromListener = true;
+}
+ok(openFromListener,
+  'and it is reachable from a registered message listener — a handler nothing '
+  + 'dispatches to is a viewer that never opens anything');
+
+const fromOpen = fns.has('openDocument') ? reachable(fns.get('openDocument').body) : new Set();
+ok([...evictorNames].some((n) => fromOpen.has(n)),
+  'opening a document reaches the eviction path — the previous document\'s '
+  + 'canvases are zeroed, not merely dropped on the floor');
+ok(fromOpen.has('disconnect'),
+  'and disconnects the previous document\'s observer, which would otherwise '
+  + 'keep every one of its slots alive');
+ok(fromOpen.has('destroy'),
+  'and destroys the previous pdf.js document, which is what frees the file '
+  + 'bytes the parser holds for the life of the document');
+
+// The arrays are the other half: releaseSlot frees the bitmap but leaves the
+// slot object, and a second document appends to `slots` rather than replacing
+// it unless something empties it.
+function zeroesLengthOf(node, arrName) {
+  let hit = false;
+  walk(node, (n) => {
+    if (n.type !== 'AssignmentExpression' || n.operator !== '=') return;
+    const t = n.left;
+    if (t.type !== 'MemberExpression' || t.computed) return;
+    if (t.object.type !== 'Identifier' || t.object.name !== arrName) return;
+    if (t.property.type !== 'Identifier' || t.property.name !== 'length') return;
+    if (n.right.type === 'NumericLiteral' && n.right.value === 0) hit = true;
+  });
+  return hit;
+}
+// Look across every function the open path reaches, so it does not matter
+// which one of them does the emptying.
+const openPathNodes = [...fromOpen].map((n) => fns.get(n)).filter(Boolean);
+if (fns.has('openDocument')) openPathNodes.push(fns.get('openDocument'));
+ok(openPathNodes.some((n) => zeroesLengthOf(n, 'slots')),
+  'the slot list is emptied between documents — otherwise the second document '
+  + 'is appended to the first and the page grows without bound');
+ok(openPathNodes.some((n) => zeroesLengthOf(n, 'rendered')),
+  'and so is the rasterised-page list that trim() bounds against');
+
+// The DOM placeholders too: `slots` is the model, `pagesEl` is the view.
+let clearsPages = false;
+for (const n of openPathNodes) {
+  walk(n, (a) => {
+    if (a.type !== 'AssignmentExpression' || a.operator !== '=') return;
+    const t = a.left;
+    if (t.type !== 'MemberExpression' || t.computed) return;
+    if (t.object.type !== 'Identifier' || t.object.name !== 'pagesEl') return;
+    if (t.property.type !== 'Identifier' || t.property.name !== 'innerHTML') return;
+    if (a.right.type === 'StringLiteral' && a.right.value === '') clearsPages = true;
+  });
+}
+ok(clearsPages,
+  'and the previous document\'s page elements are removed from the DOM');
+
 // The staged copy on an installed device is only replaced when the stamp
 // changes, so the fix does not reach anyone unless VIEWER_VERSION moved.
 let viewerVersion = null;

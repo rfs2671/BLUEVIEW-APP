@@ -18,7 +18,7 @@ import { useAuth } from '../context/AuthContext';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { spacing } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
-import { ensurePdfJsViewer, localViewerUrlFor, pdfJsViewerDir } from '../utils/pdfjsViewer';
+import { ensurePdfJsViewer, localViewerHostUrl, pdfJsViewerDir } from '../utils/pdfjsViewer';
 import { ensureCachedDocFile } from '../utils/docCache';
 import {
   isLocalFileUri, authorizedPdfUrl, pdfSourcePlan, pdfCacheKey,
@@ -79,12 +79,32 @@ function webViewSourceForPdf(pdfUrl, localViewerUri, probeOn) {
     // PDFKit via WKWebView: smooth native zoom/scroll. THE PROBE DOES NOT
     // APPLY HERE and cannot: there is no pdf.js on iOS, no canvas we size, and
     // no JS context of ours in the page. Everything the probe measures is a
-    // property of the Android viewer.
+    // property of the Android viewer, and so is everything below — iOS never
+    // loads the staged viewer at all, so none of the parse cost this indirection
+    // exists to remove is paid there.
     return { uri: pdfUrl };
   }
   // No staged viewer yet -> caller keeps showing the loader / error.
   if (!isLocalFileUri(pdfUrl) || !localViewerUri) return null;
-  return { uri: localViewerUrlFor(localViewerUri, pdfUrl, { probe: probeOn }) };
+  // ── THE DOCUMENT IS NOT IN THIS URL, AND THAT IS THE FIX ────────────────
+  //
+  // This used to be `localViewerUrlFor(localViewerUri, pdfUrl, …)` — the
+  // document url in the query string. `webViewSource` is memoised, which made
+  // it look as though the WebView was being reused, but the memo's own
+  // dependency list included `url`: a second document produced a second url,
+  // and a second url in a WebView is a NAVIGATION. The page was thrown away
+  // and 1.5 MB of pdf.js — 1.1 MB of it the worker bundle, which a file://
+  // origin forces onto the MAIN THREAD — was read off storage, compiled and
+  // executed again before a single pixel could be drawn.
+  //
+  // Nothing in the staging memoisation touched that. `alreadyStaged()` skips
+  // the COPY; it has never had anything to say about the PARSE, and the parse
+  // is the part that is identical for a 16 KB logbook and a 30 MB plan set.
+  // That is why a small document was as slow as a large one.
+  //
+  // So the url is now constant for the life of the WebView and documents are
+  // posted into the live page. See `sendDocument` below.
+  return { uri: localViewerHostUrl(localViewerUri, { probe: probeOn }) };
 }
 
 export default function PDFViewer({ visible, file, projectId, onClose }) {
@@ -132,10 +152,56 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // `probeOn` IS A DEPENDENCY and has to be: it changes the url. It resolves
   // once per session before a document is opened, so in practice it never
   // moves while a viewer is mounted.
+  //
+  // ⚠️ AND IT IS NOW THE ONLY THING THAT CAN REMOUNT THE ANDROID VIEWER. `url`
+  // is still a dependency because the iOS branch renders the PDF itself and
+  // genuinely needs it — but on Android `webViewSourceForPdf` no longer puts
+  // the document in the url, so every document produces the SAME string and
+  // the memo returns a value the WebView treats as unchanged. Turning
+  // `pdf_viewer_probe` on for a signed-in user mid-session is therefore the
+  // one remaining way to make this WebView reload, and it looks exactly like
+  // the crash-and-reload the probe exists to investigate. Enable the flag,
+  // fully close the app, then reopen.
   const webViewSource = useMemo(
     () => (url ? webViewSourceForPdf(url, localViewerUri, probeOn) : null),
     [url, localViewerUri, probeOn]
   );
+
+  // ── DELIVERING A DOCUMENT INTO A PAGE THAT IS ALREADY RUNNING ───────────
+  //
+  // The viewer announces `pdf-viewer-ready` once its message listeners exist.
+  // Anything posted before that is dropped silently — there is no listener to
+  // receive it and no error either — so the first document has to wait for the
+  // handshake. After that every open is a single postMessage into a page with
+  // pdf.js already compiled.
+  const webViewRef = useRef(null);
+  const [viewerBooted, setViewerBooted] = useState(false);
+  // The document the page has actually been told to open. Compared against
+  // `url` so a re-render cannot re-send the same document and restart a load
+  // that is already running.
+  const sentUrlRef = useRef(null);
+
+  // A fresh WebView has never been told anything, whatever the last one knew.
+  useEffect(() => {
+    if (!visible) {
+      setViewerBooted(false);
+      sentUrlRef.current = null;
+    }
+  }, [visible]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    if (!viewerBooted || !url || !isLocalFileUri(url)) return;
+    if (sentUrlRef.current === url) return;
+    sentUrlRef.current = url;
+    try {
+      webViewRef.current?.postMessage(JSON.stringify({ type: 'open-document', file: url }));
+    } catch (_e) {
+      // A post that cannot be made leaves the page on its "Loading…" message
+      // rather than throwing into the render tree; the error state is driven
+      // by the viewer's own `pdf-error`, which is the path that already exists.
+    }
+  }, [viewerBooted, url]);
 
   const isLocalPdf = isLocalFileUri(url);
   const needsLocalViewer = isLocalPdf && Platform.OS === 'android';
@@ -438,6 +504,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
             {React.createElement(
               require('react-native-webview').default,
               {
+                ref: webViewRef,
                 source: webViewSource,
                 style: { flex: 1, backgroundColor: '#050a12' },
                 originWhitelist: ['*', 'file://'],
@@ -501,6 +568,13 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                       // growing without limit on a screen the CP leaves open.
                       if (probeLines.current.length > 400) probeLines.current.shift();
                     } catch (_e) {}
+                    return;
+                  }
+                  // THE HANDSHAKE. The page is loaded and listening; anything
+                  // posted before this is dropped with no error, so the first
+                  // document is held until it arrives.
+                  if (msg?.type === 'pdf-viewer-ready') {
+                    setViewerBooted(true);
                     return;
                   }
                   if (msg?.type === 'pdf-error') {
