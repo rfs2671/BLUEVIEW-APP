@@ -41091,7 +41091,72 @@ _SHEET_ID_RE = re.compile(r"\b([A-Za-z]{1,3})[-\s]?(\d{1,4}(?:\.\d+)?)\b")
 _SHEET_PREFIXES = frozenset({
     "a", "ar", "s", "st", "m", "me", "e", "el", "p", "pl", "sp", "gn", "g",
     "c", "fa", "fp", "t", "id", "ls", "q",
+    # On 588 Boyland: the site safety plan, reflected ceiling plans, energy
+    # sheets and zoning sheets. "show me SSP-013" named nothing without these.
+    "ssp", "rcp", "en", "z",
 })
+
+
+def _requested_sheet_id(text: str) -> Optional[str]:
+    """The sheet id a message names, normalised ('s-001' -> 'S-001'), or None.
+
+    A bare letter and a short number ('a 4 story') is not a sheet: without a
+    hyphen the number must be three digits or more."""
+    for m in _SHEET_ID_RE.finditer(text or ""):
+        prefix, num = m.group(1), m.group(2)
+        if prefix.lower() not in _SHEET_PREFIXES:
+            continue
+        hyphenated = "-" in m.group(0)
+        if not hyphenated and len(num.split(".")[0]) < 3:
+            continue
+        return f"{prefix.upper()}-{num}"
+    return None
+
+
+# "Show me", "@levelog show me that", "pull it up" — a show verb with nothing to
+# show. Live test 2026-09-15: after a not-found, a bare "Show me" reached the
+# plan pipeline with a sheet the agent made up (S-402.00) and that sheet was
+# sent.
+_SHOW_FILLER = frozenset({
+    "me", "it", "that", "this", "them", "those", "these", "the", "a", "please", "pls",
+    "again", "up", "now", "here", "one", "sheet", "sheets", "drawing", "drawings",
+    "plan", "plans", "levelog",
+})
+
+
+def _is_bare_show_request(body: Optional[str]) -> bool:
+    s = re.sub(r"@\S+", " ", body or "").lower()
+    s = " ".join(re.sub(r"[^\w\s/-]", " ", s).split())
+    verb = next((v for v in SHOW_VERBS if s == v or s.startswith(v + " ")), None)
+    if not verb:
+        return False
+    return not [w for w in s[len(verb):].split() if w not in _SHOW_FILLER]
+
+
+async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
+    """EXACTLY the sheet asked for, or nothing. Spec pages included.
+
+    Live test 2026-09-15: "show me s-001" sent S-002 and M-001. The exact match
+    skipped S-001.00 because it is a notes (spec) page, and the search then fell
+    through to its closest neighbours. A sheet id is not a search: the named
+    sheet is sent, or the reply says it is not there."""
+    q_upper = re.sub(r"\s+", "", (sheet_q or "")).upper()
+    m = re.match(r"^([A-Z]{1,4})-?(\d{1,4}[A-Z]?)(\.\d+)?$", q_upper)
+    if not m:
+        return []
+    base = rf"{re.escape(m.group(1))}-?{re.escape(m.group(2))}"
+    pattern = (rf"^{base}{re.escape(m.group(3))}$" if m.group(3) else rf"^{base}(\.\d+)?$")
+    live_ids = await _live_plan_file_ids(project_id)
+    q = {"project_id": project_id,
+         "sheet_number": {"$regex": pattern, "$options": "i"},
+         **_current_page_filter(live_ids)}
+    try:
+        rows = await db.document_page_index.find(q, _PAGE_FIELDS).to_list(10)
+    except Exception as e:
+        logger.warning(f"named sheet lookup failed for {sheet_q}: {e!r}")
+        return []
+    rows.sort(key=lambda r: (len(r.get("sheet_number") or ""), not r.get("page_jpeg_r2_key")))
+    return rows[:1]
 
 
 def _names_a_sheet(text: str) -> bool:
@@ -41752,6 +41817,15 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         logger.warning(f"vision daily cap hit for project {project_id}")
         return
 
+    # NOTHING TO SHOW. Checked on the user's own words, before the "checking
+    # the drawings" ack — there is nothing to check — and before anything the
+    # agent put in the query, because for a bare "show me" that is a guess.
+    if _is_bare_show_request(user_body):
+        await send_whatsapp_message(group_id, "Nothing to show for that — which sheet?",
+                                    reply_to=reply_to)
+        logger.info(f"plan route group={group_id[-10:] if group_id else '?'} bare show request")
+        return
+
     # ── THE NUMBERS THE LATENCY FIX WILL BE BUILT FROM ─────────────────────
     #
     # Reported: plan Q&A takes about sixty seconds. There is no instrumentation
@@ -41892,17 +41966,42 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             _log_plan_timing(group_id, query, _stage, chunk_answer["outcome"])
             return
 
-    # 3. Retrieve
-    candidates = await _retrieve_plan_candidates(
-        project_id, parsed, query, limit=3
-    )
+    # 3. Retrieve. A NAMED SHEET IS AN EXACT LOOKUP, NEVER A SEARCH: the sheet
+    # the person typed, or the one the agent mapped their words to. See
+    # _find_named_sheet — neighbours are never sent in its place.
+    named_sheet = (_requested_sheet_id(route_text) or _requested_sheet_id(question or "")
+                   or (parsed.get("sheet_number") or "").strip() or None)
+    if named_sheet:
+        candidates = await _find_named_sheet(project_id, named_sheet)
+        _mark("retrieval")
+        _stage["candidates"] = len(candidates)
+        if not candidates:
+            await send_whatsapp_message(
+                group_id, f"{named_sheet.upper()} isn't in the indexed drawings.",
+                reply_to=reply_to)
+            _log_plan_timing(group_id, query, _stage, "named_sheet_not_found")
+            return
+        if not candidates[0].get("page_jpeg_r2_key"):
+            label = candidates[0].get("sheet_number") or named_sheet.upper()
+            await send_whatsapp_message(
+                group_id,
+                (f"{label} is a notes sheet — indexed, can't render yet."
+                 if candidates[0].get("is_spec_page")
+                 else f"{label} is indexed, but its image isn't available yet."),
+                reply_to=reply_to)
+            _log_plan_timing(group_id, query, _stage, "named_sheet_no_image")
+            return
+    else:
+        candidates = await _retrieve_plan_candidates(
+            project_id, parsed, query, limit=3
+        )
+        _mark("retrieval")
+        _stage["candidates"] = len(candidates)
     # A version 3 project sends a spatial question to the vision model on the
     # ONE best sheet. Walking three sheets tripled the latency and the spend
     # for an answer the first sheet either has or does not.
     if has_v3 and effective_question:
         candidates = candidates[:1]
-    _mark("retrieval")
-    _stage["candidates"] = len(candidates)
     if not candidates:
         await send_whatsapp_message(
             group_id,
@@ -42747,8 +42846,23 @@ _AGENT_STANCE = (
     "outside working hours, answer for the last working day and say which day. "
     "Never make the user name a sheet. Never invent policy — if the data doesn't "
     "say, say the data doesn't say. One reply, no follow-up questions unless the "
-    "request is genuinely ambiguous.\n\n"
+    "request is genuinely ambiguous. A general-knowledge answer (nothing from this "
+    "project's data) is two sentences at most — you are a foreman, not a textbook.\n\n"
 )
+
+# Enforced as well as asked for. Live test 2026-09-15: "what are helical piles"
+# came back as six sentences in a WhatsApp group. Applied only to a reply the
+# model wrote WITHOUT calling a tool; a roster or a permit list is data and is
+# never cut.
+AGENT_KNOWLEDGE_MAX_SENTENCES = 2
+
+
+def _cap_sentences(text: str, n: int) -> str:
+    t = (text or "").strip()
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])", t)
+    if len(parts) <= n:
+        return t
+    return " ".join(p.strip() for p in parts[:n])
 
 _AGENT_SYSTEM_PROMPT_BASE = (
     _AGENT_STANCE +
@@ -43662,6 +43776,7 @@ async def _run_group_agent(
     try:
         async with ServerHttpClient(timeout=40.0) as client_http:
             last_content = ""  # track so we can fall back gracefully on overrun
+            used_tool = False  # a reply built from tool results is data; never cut it
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
                     "https://api.openai.com/v1/chat/completions",
@@ -43712,7 +43827,10 @@ async def _run_group_agent(
                                 "show me <sheet>, or what's the project address."
                             )
                         return None
+                    if not used_tool:
+                        stripped = _cap_sentences(stripped, AGENT_KNOWLEDGE_MAX_SENTENCES)
                     return stripped or None
+                used_tool = True
 
                 # Short-circuit: query_plan and start_checklist both dispatch
                 # asynchronously — the async worker will send its own user-facing
