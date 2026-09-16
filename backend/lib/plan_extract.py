@@ -465,22 +465,52 @@ def _legend_norm(t: str) -> str:
     return re.sub(r"[^A-Z0-9]+", " ", (t or "").upper()).strip()
 
 
+# HOW A RECORD CAME TO BE, WHICH IS THE ONLY CONFIDENCE THERE IS. Never a
+# number, never the model's opinion of itself: the tier is the extraction path.
+TIER_SCHEDULE_CELL = "schedule_cell"     # a detected grid, cells from the text layer
+TIER_TAG_LEGEND = "tag_legend"           # a mark paired to a legend entry on its sheet
+TIER_TEXT_LAYER = "text_layer"           # a value printed in a note or a spec
+TIER_VISION = "vision_read"              # read off the image; lowest, never a value
+EVIDENCE_TIERS = (TIER_SCHEDULE_CELL, TIER_TAG_LEGEND, TIER_TEXT_LAYER, TIER_VISION)
+
+
 def constrain_legend_to_page(entries: List[Dict[str, Any]], page_text: str
                              ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """(entries, flags). Meanings the page does not print are removed."""
+    """(entries, flags). A meaning the page does not print stops being a
+    meaning and becomes a LABEL.
+
+    ── WHY THE WORDS ARE KEPT AND NOT QUOTED ──────────────────────────────
+    #
+    # The M-sheet legends are drawn as artwork: 'PACKAGE TERMINAL AIR
+    # CONDITIONER' appears on NO page's text layer on this project, and neither
+    # does 'KITCHEN EXHAUST'. Both came from the vision model, and so did
+    # 'KICKER' and 'THERMOSTATIC EXPANSION VALVE'. Nothing in the text can tell
+    # the true readings from the invented ones, which is why none of them may
+    # be a meaning.
+    #
+    # Dropping them outright cost real recall: PTAC-1 became a bare mark on six
+    # sheets and the words "air conditioner" left the project entirely, so a
+    # question about AC units had nothing to match.
+    #
+    # So the words are kept as `label`, at TIER_VISION. A label WIDENS WHAT THE
+    # SEARCH FINDS and never becomes what the reader is shown: the words in an
+    # answer come from a text-layer fact or from the sheet's own printed text.
+    # `build_chunks` keeps labels out of the chunk text for that reason, and
+    # test_no_vision_label_reaches_an_answer holds the line."""
     entries = entries or []
     hay = _legend_norm(page_text)
     if len(hay) < LEGEND_CHECKABLE_MIN_CHARS:
-        return ([dict(e, verified=False) for e in entries],
+        return ([dict(e, verified=False, tier=TIER_VISION) for e in entries],
                 ([f"legend_unverifiable:{len(entries)}"] if entries else []))
     out, dropped = [], 0
     for e in entries:
-        mean = _legend_norm(e.get("meaning"))
-        if mean and mean in hay:
-            out.append(dict(e, verified=True))
+        mean = (e.get("meaning") or "").strip()
+        if mean and _legend_norm(mean) in hay:
+            out.append(dict(e, verified=True, tier=TIER_TAG_LEGEND))
             continue
         if (e.get("symbol") or "").strip():
-            out.append(dict(e, meaning="", verified=True))
+            out.append(dict(e, meaning="", label=mean, verified=True,
+                            tier=TIER_VISION if mean else TIER_TAG_LEGEND))
         dropped += 1
     return out, ([f"legend_meaning_not_printed:{dropped}"] if dropped else [])
 
@@ -713,6 +743,14 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
         flags[name] = f
 
     fields = merge_sections(sections)
+    # A COUNT WITH NO BASIS IS WHAT WE REMOVED EVERYWHERE ELSE. On a scanned
+    # page the elements section IS the vision model — there is no text layer to
+    # build them from — so they arrive with a count and no account of where it
+    # came from. Thirteen of them reached production that way. They are stamped
+    # here rather than left blank, so the tier can rank them last.
+    for _el in fields.get("elements") or []:
+        if isinstance(_el, dict) and not _el.get("count_basis"):
+            _el["count_basis"] = TIER_VISION
     if fields.get("legend"):
         fields["legend"], lflags = constrain_legend_to_page(fields["legend"], page_text or "")
         flags.setdefault("notes", []).extend(lflags)
@@ -1874,7 +1912,8 @@ __all__ = [
     "EXTRACTION_VERSION", "SECTIONS", "SECTION_MAX_TOKENS", "REPEAT_MIN_RUN",
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
     "validate_section", "merge_sections", "verify_numbers", "number_in_text",
-    "constrain_legend_to_page",
+    "constrain_legend_to_page", "EVIDENCE_TIERS", "TIER_SCHEDULE_CELL",
+    "TIER_TAG_LEGEND", "TIER_TEXT_LAYER", "TIER_VISION",
     "boilerplate_lines", "strip_boilerplate", "classify_text_source",
     "section_prompt", "extract_page", "legacy_fields", "embedding_text",
     "build_chunks", "answer_count", "answer_existence", "format_count_answer",

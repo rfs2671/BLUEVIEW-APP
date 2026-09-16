@@ -55,7 +55,7 @@ class AMarkTheSheetDoesNotExplain(unittest.TestCase):
         out, flags = pe.constrain_legend_to_page(
             [{"symbol": "KE 1", "meaning": "KITCHEN EXHAUST 1"}], self.PAGE)
         self.assertEqual(out, [{"symbol": "KE 1", "meaning": "KITCHEN EXHAUST 1",
-                                "verified": True}])
+                                "verified": True, "tier": pe.TIER_TAG_LEGEND}])
         self.assertEqual(flags, [])
 
     def test_a_meaning_the_page_does_not_print_is_removed(self):
@@ -65,6 +65,11 @@ class AMarkTheSheetDoesNotExplain(unittest.TestCase):
             self.PAGE)
         self.assertEqual([(e["symbol"], e["meaning"]) for e in out],
                          [("KE 1", ""), ("TE 1", "")])
+        # The words are kept as a LABEL at the vision tier: they widen what the
+        # search finds and never become what the reader is shown.
+        self.assertEqual([(e["label"], e["tier"]) for e in out],
+                         [("KICKER 1", pe.TIER_VISION),
+                          ("THERMOSTATIC EXPANSION VALVE 1", pe.TIER_VISION)])
         self.assertEqual(flags, ["legend_meaning_not_printed:2"])
 
     def test_the_mark_survives_its_meaning(self):
@@ -88,7 +93,7 @@ class AMarkTheSheetDoesNotExplain(unittest.TestCase):
         out, flags = pe.constrain_legend_to_page(
             [{"symbol": "KE 1", "meaning": "KICKER 1"}], "M-200.00\nP:\nE:\nW:\n9")
         self.assertEqual(out, [{"symbol": "KE 1", "meaning": "KICKER 1",
-                                "verified": False}])
+                                "verified": False, "tier": pe.TIER_VISION}])
         self.assertEqual(flags, ["legend_unverifiable:1"])
 
 

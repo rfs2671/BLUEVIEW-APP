@@ -762,6 +762,30 @@ def _row_overlap(a: List[float], b: List[float]) -> float:
 _SYMBOL_TOKEN = re.compile(r"[A-Z0-9&/.\-\"']+")
 
 
+# WHAT MAY BECOME A COUNTABLE TAG. Seeding the tag vocabulary from every
+# legend symbol put 'A', 'F', 'N', 'T', 'W' and '1' into it, and '1' was then
+# counted 138 times across 11 sheets — which is not a tag, it is the digit one.
+# A tag is a MARK: letters with an optional number, two characters at least,
+# two tokens at most. A bare letter is a callout bubble or a column head.
+def looks_like_a_tag(text: str) -> bool:
+    """A mark a plan prints as a label, as opposed to a letter in a bubble.
+
+    The FIRST token carries the letters and is at least two characters; a
+    following token may be the instance number. 'W1', 'AD', 'PTAC-1', 'RD OD',
+    'KE 1' and 'DHW&R' are marks. 'A', 'F', 'N', 'T', 'W' and '1' are not, and
+    seeding them from the legend had '1' counted 138 times over 11 sheets."""
+    t = (text or "").strip().upper()
+    toks = t.split()
+    if not t or len(t) > 12 or len(toks) > 2:
+        return False
+    head = toks[0]
+    if len(head) < 2 or not re.fullmatch(r"[A-Z][A-Z&/]{0,3}-?\d{0,2}[A-Z]?", head):
+        return False
+    if len(toks) == 2 and not re.fullmatch(r"\d{1,2}|[A-Z]{1,3}\d{0,2}", toks[1]):
+        return False
+    return True
+
+
 def _looks_like_a_symbol(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) > SYMBOL_MAX_CHARS:
@@ -843,7 +867,20 @@ def legend_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, str
                 used.add(idx); used.add(m)
                 consumed.add(j); consumed.add(k)
             else:
-                out.append({"symbol": text[:60], "meaning": "", "pair": "unpaired"})
+                # THE SHEET'S OWN WORDS, NOT A MEANING. A mark with nothing
+                # pairable on its row is reported as the mark — but "AD" alone
+                # is useless in an answer, so the nearest text the sheet does
+                # print travels with it, labelled for what it is. It is NOT a
+                # definition and must never be rendered as one.
+                near = None
+                for _m, (_k, kb, ktext) in enumerate(cells):
+                    if _m in used or _m == idx or not re.search(r"[A-Za-z]{3,}", ktext):
+                        continue
+                    d = _bbox_gap(bb, kb)
+                    if near is None or d < near[0]:
+                        near = (d, ktext)
+                out.append({"symbol": text[:60], "meaning": "", "pair": "unpaired",
+                            "nearby": (near[1][:200] if near else "")})
                 used.add(idx); consumed.add(j)
         for idx, (j, bb, text) in enumerate(cells):
             if idx in used or not re.search(r"[A-Za-z]{3,}", text):
@@ -925,8 +962,12 @@ def elements_from_evidence(legend: List[Dict[str, Any]],
         sym, mean = (e.get("symbol") or "").strip(), (e.get("meaning") or "").strip()
         if not sym:
             continue
+        near = (e.get("nearby") or "").strip()
         out.append({"name": mean or sym, "tag": sym, "count_if_stated": None,
-                    "count_basis": "not_stated", "location_hint": "legend"})
+                    "count_basis": "not_stated", "location_hint": "legend",
+                    # Set only when the sheet did not say what the mark means.
+                    "described_by": "" if mean else near,
+                    "name_is_the_mark": not mean})
     for t in tag_counts or []:
         tag = (t.get("tag") or "").strip()
         if not tag:
@@ -1065,7 +1106,7 @@ def tag_vocabulary(layouts: Iterable[Optional[Dict[str, Any]]]) -> FrozenSet[str
         for e, _used in [legend_from_blocks(L.get("blocks") or [])]:
             for entry in e:
                 sym = (entry.get("symbol") or "").strip()
-                if sym and not SHEET_ID_RE.match(sym):
+                if sym and looks_like_a_tag(sym) and not SHEET_ID_RE.match(sym):
                     vocab.add(sym)
         for b in L.get("blocks") or []:
             if classify_block(b["text"]) == "label":
