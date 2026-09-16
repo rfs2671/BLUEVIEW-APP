@@ -48337,6 +48337,119 @@ async def debug_indexed_pages(
 # another tenant's project and read file names and page counts -- and it FETCHES EVERY MATCHED PDF FROM R2 to count pages, so an unauthorized caller also drove unmetered egress. The company filter below cannot substitute for it:
 # a caller with a legitimate company could still name a project outside it.
 # Same dependency POST /projects/{project_id}/reindex-document already carries.
+@api_router.get("/admin/plan-index/failed", tags=["Admin"],
+                dependencies=[Depends(require_approved)])
+async def list_failed_plan_index_jobs(current_user=Depends(get_admin_user)):
+    """Every plan-index job that gave up, across this admin's projects.
+
+    ── A JOB AT THREE ATTEMPTS IS SILENT ──────────────────────────────────
+    #
+    # `_run_plan_index_job` marks a file `failed` after PLAN_INDEX_MAX_ATTEMPTS
+    # and writes the reason onto the job row. Nothing read that row.
+    # document-index-status returns it per file, and the only client that ever
+    # called document-index-status was a dead wrapper in the app's api.js — so
+    # a drawing set that failed three times disappeared, and the next anyone
+    # learned of it was a plan question answering "not on the indexed
+    # drawings" about a sheet that is sitting in Plans & Files.
+    #
+    # Cross-project deliberately: nobody opens sixteen projects to find the one
+    # that broke. Scoped to the caller's company unless they are the platform
+    # operator, the same rule every other admin surface here follows.
+    #
+    # STUCK IS REPORTED BESIDE FAILED. A job whose lease expired while it was
+    # running is recovered by the worker on its next pass, which is correct and
+    # invisible; it is worth seeing when it happens repeatedly, because that is
+    # what three attempts looks like on the way to failing.
+    """
+    # SCOPED BY WHAT THE CALLER IS, NOT BY WHAT THEY LACK. `if company_id:`
+    # would have made a companyless account read every tenant's queue — the
+    # double-permissive shape the census gates exist to keep out. The platform
+    # operator is a role, tested for; everyone else needs a company, and no
+    # company is a refusal rather than a wildcard.
+    company_id = get_user_company_id(current_user)
+    query: Dict[str, Any] = {}
+    if not is_platform_operator(current_user):
+        if not company_id:
+            raise HTTPException(status_code=403,
+                                detail="No company on this account")
+        query["company_id"] = company_id
+    now = datetime.now(timezone.utc)
+    try:
+        rows = await db[PLAN_INDEX_JOBS].find(query).to_list(500)
+    except Exception as e:
+        logger.warning(f"failed plan-index list read failed: {e!r}")
+        raise HTTPException(status_code=503, detail="Could not read the index queue")
+
+    names: Dict[str, str] = {}
+    out = []
+    for j in rows:
+        status = j.get("status")
+        lease = _as_utc(j.get("lease_until"))
+        stuck = status == "running" and lease is not None and lease < now
+        if status not in ("failed", "cancelled") and not stuck:
+            continue
+        pid = str(j.get("project_id") or "")
+        if pid and pid not in names:
+            try:
+                p = await db.projects.find_one({"_id": to_query_id(pid)},
+                                               {"name": 1, "address": 1})
+            except Exception:
+                p = None
+            names[pid] = ((p or {}).get("address") or (p or {}).get("name") or "")
+        out.append({
+            "file_id": str(j.get("_id")),
+            "file_name": j.get("file_name"),
+            "project_id": pid,
+            "project_name": names.get(pid) or None,
+            # 'stuck' is not a stored status: it is a running job whose lease
+            # ran out, which the row cannot say on its own.
+            "state": "stuck" if stuck else status,
+            "attempts": int(j.get("attempts") or 0),
+            "pages_done": j.get("pages_done"),
+            "pages_total": j.get("pages_total"),
+            "error": j.get("error"),
+            "enqueued_at": j.get("enqueued_at"),
+            "started_at": j.get("started_at"),
+            "finished_at": j.get("finished_at"),
+            "updated_at": j.get("updated_at"),
+        })
+    out.sort(key=lambda r: str(r.get("updated_at") or ""), reverse=True)
+    return {"count": len(out), "jobs": out}
+
+
+@api_router.post("/projects/{project_id}/plan-index/{file_id}/retry",
+                 dependencies=[Depends(require_approved), Depends(require_project_access)])
+async def retry_plan_index_job(project_id: str, file_id: str,
+                               current_user=Depends(get_admin_user)):
+    """Put a given-up file back on the queue, keeping the pages it finished.
+
+    RESUME, NOT RESTART. A set that failed on page 90 of 129 has 89 pages that
+    cost vision calls; re-running them buys nothing and is charged again.
+    `_enqueue_plan_index` already resets attempts, clears the error and
+    re-queues, so a retry is that call and not a second code path that could
+    drift from it."""
+    rec = await db.project_files.find_one(
+        {"_id": to_query_id(file_id), "project_id": project_id,
+         "is_deleted": {"$ne": True}})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found on this project")
+    company_id = get_user_company_id(current_user)
+    if not is_platform_operator(current_user):
+        if not company_id:
+            raise HTTPException(status_code=403, detail="No company on this account")
+        if rec.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    if not QWEN_API_KEY:
+        raise HTTPException(status_code=503, detail="Plan indexing is not configured")
+
+    outcome = await _enqueue_plan_index(
+        project_id, rec.get("company_id") or company_id or "", dict(rec),
+        source="retry", resume=True)
+    logger.info(f"plan index retry {rec.get('name')} on {project_id}: {outcome}")
+    return {"queued": outcome in ("queued", "requeued", "rerun_after_current"),
+            "outcome": outcome, "file_name": rec.get("name")}
+
+
 @api_router.get("/projects/{project_id}/document-index-status", dependencies=[Depends(require_project_access)])
 async def get_document_index_status(
     project_id: str,

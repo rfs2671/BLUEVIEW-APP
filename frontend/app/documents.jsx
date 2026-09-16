@@ -30,7 +30,7 @@ import { CP_NAV_CLEARANCE } from '../src/components/CpNav';
 import OfflineNotice from '../src/components/OfflineNotice';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { projectsAPI, dropboxAPI } from '../src/utils/api';
+import { projectsAPI, dropboxAPI, documentsAPI } from '../src/utils/api';
 import { settleFetch } from '../src/utils/offlineState';
 import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
 import {
@@ -41,7 +41,7 @@ import {
 } from '../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import {
-  UNFILED, folderLabel, groupByFolder, collidingNames, isColliding,
+  UNFILED, folderLabel, groupByFolder, collidingNames, isColliding, indexFailureNote,
   treeHeadline, COLLISION_NOTE,
 } from '../src/utils/dropboxTree';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
@@ -120,6 +120,12 @@ export default function DocumentsScreen() {
   // file list so a failure in either one never renders as "nothing exists".
   const [projectsState, setProjectsState] = useState('ok');
   const [filesState, setFilesState] = useState('ok');
+  // A DRAWING SET THAT GAVE UP LOOKED EXACTLY LIKE ONE THAT WORKED. The queue
+  // marks a file `failed` after three attempts and writes the reason on the
+  // job row; document-index-status has always returned it, and nothing on this
+  // screen read it. The file sat here looking fine while the bot answered "not
+  // on the indexed drawings" about a sheet the superintendent could see.
+  const [indexState, setIndexState] = useState({});
   const offline = projectsState === 'offline' || filesState === 'offline';
 
   useEffect(() => {
@@ -220,6 +226,16 @@ export default function DocumentsScreen() {
       setFiles(list);
       setFilesState('ok');
       cacheDocList(scopeKey, list);
+      // Best effort and separate: the file list renders whether or not the
+      // index has anything to say about it.
+      settleFetch(() => documentsAPI.getIndexStatus(projectId)).then((ix) => {
+        if (ix.status !== 'ok') return;
+        const byId = {};
+        for (const row of ix.data?.files || []) {
+          if (row?.file_id) byId[row.file_id] = row;
+        }
+        setIndexState(byId);
+      }).catch(() => {});
       // Fire-and-forget byte warm so these PDFs survive the next dead zone.
       warmDocCache(list.filter((f) => isPdf(f?.name)), { limit: 15 }).catch(() => {});
     } else if (r.error?.response?.status === 404) {
@@ -580,6 +596,11 @@ export default function DocumentsScreen() {
                         {isColliding(file, collisions) && (
                           <Text style={s.collisionNote}>{COLLISION_NOTE}</Text>
                         )}
+                        {indexFailureNote(indexState[file.id]) && (
+                          <Text style={s.indexFailureNote} numberOfLines={2}>
+                            {indexFailureNote(indexState[file.id])}
+                          </Text>
+                        )}
                       </View>
                       <ExternalLink size={16} strokeWidth={1.5} color={colors.text.muted} />
                     </Pressable>
@@ -647,6 +668,12 @@ function buildStyles(colors, isDark) {
     fontSize: 12,
     lineHeight: 16,
     color: colors.text.muted,
+    marginTop: 4,
+  },
+  indexFailureNote: {
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.status?.danger || '#D9534F',
     marginTop: 4,
   },
   header: {
