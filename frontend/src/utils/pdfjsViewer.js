@@ -1869,10 +1869,18 @@ const VIEWER_SCRIPT = [
   '      function attach(storage, url, bytes, encodeMs){',
   // A LATE ENCODER IS NOT A SECOND PREVIEW. The watchdog above may already
   // have given this job up and handed the thread to another sheet; if the
-  // callback then arrives, its canvas goes back and nothing else happens —
-  // attaching here would count a completion the census has already recorded
-  // as a failure, and would leave `inFlight` one below the truth.
-  '        if (settledOut || slot2.pgen !== pgen2) { try { c.width = 0; c.height = 0; } catch (e) {} done(); return; }',
+  // callback then arrives, its canvas AND its object URL go back and nothing
+  // else happens — attaching here would count a completion the census has
+  // already recorded as a failure, and would leave `inFlight` one below the
+  // truth. The revoke matters as much as the canvas: this is the one path on
+  // which a blob: URL is created and never reaches a slot, so nothing else
+  // would ever give it back.
+  '        if (settledOut || slot2.pgen !== pgen2) {',
+  '          try { c.width = 0; c.height = 0; } catch (e) {}',
+  '          if (storage === "blob" && url) { try { URL.revokeObjectURL(url); } catch (e) {} }',
+  '          done();',
+  '          return;',
+  '        }',
   '        if (storage === "canvas") {',
   '          c.className = "pv";',
   '          slot2.pvImg = c;',
