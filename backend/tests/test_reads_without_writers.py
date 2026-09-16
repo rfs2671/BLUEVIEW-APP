@@ -64,6 +64,11 @@ BASELINE = {
     ("document_page_chunks", "page_id"),
     ("document_page_chunks", "page_number"),
     ("document_page_chunks", "project_id"),
+    # _index_single_page builds the row in `doc`, updates it with a literal
+    # dict and writes update_one(..., {"$set": doc}) — a variable, so the sweep
+    # sees the read in _sheet_index_lines and _find_named_sheet and no writer
+    # (2026-09-16). Same shape as the document_page_chunks four above.
+    ("document_page_index", "is_document"),
     ("document_page_index", "page_number"),
     ("document_page_index", "project_id"),
     ("document_page_index", "sheet_number"),

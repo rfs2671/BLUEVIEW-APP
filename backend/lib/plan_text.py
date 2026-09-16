@@ -448,30 +448,121 @@ def title_region(layout: Dict[str, Any], cap: int = 3000) -> str:
     return best[:cap]
 
 
+# A SHEET'S PLACE IN ITS OWN SET, printed in the title block: '16 OF 31'.
+# Two numbers that claim the same place are the same sheet — A-105.00 in the
+# June owners set and A-105.01 in the August reissue both read '16 OF 31'.
+# NOT THE TAIL OF THE SHEET NUMBER. The plumbing set prints
+# 'P-202.00 of 19' — the number, then how many sheets there are, with no
+# index at all. Without the dot in this lookbehind the '00' of P-202.00
+# reads as position zero, and the id found in front of it is 'P-202'.
+_SHEET_POSITION_RE = re.compile(r"(?<![\d.])(\d{1,3})\s*OF\s*(\d{1,3})(?!\d)", re.I)
+
+# What a sheet number looks like. Everything else in a project's files — a
+# DOB form numbered 'Page 2 of 2', a survey numbered '0', an attachment
+# numbered 'F' — is a document, not a drawing.
+_SHEET_NUMBER_RE = re.compile(r"^[A-Z]{1,4}-?\d{1,4}[A-Z]?(?:\.\d{1,2})?$")
+
+
+def _position_match(text: str):
+    """The '16 OF 31' match, once it makes sense as a place in a set."""
+    for m in _SHEET_POSITION_RE.finditer(text or ""):
+        n, of = int(m.group(1)), int(m.group(2))
+        if 0 < n <= of:
+            return m
+    return None
+
+
+def sheet_position(text: str) -> Optional[Tuple[int, int]]:
+    """'16 OF 31' -> (16, 31), or None when the title block does not say."""
+    m = _position_match(text)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def looks_like_a_sheet_number(value: Optional[str]) -> bool:
+    return bool(_SHEET_NUMBER_RE.fullmatch(re.sub(r"\s+", "", (value or "")).upper()))
+
+
+def _id_beside_position(title_text: str) -> Optional[str]:
+    """The sheet id printed immediately before '16 OF 31', if there is one.
+
+    The title block prints the number and the place together; a section bubble
+    prints a number and a detail digit. On the roof plan in the June gas-change
+    set the title block is not in the text layer at all, and the only ids in
+    the edge strips are the bubbles — which is how that sheet came to be filed
+    as A-300, the sheet it points AT, colliding with the real A-300.00."""
+    m = _position_match(title_text)
+    if not m:
+        return None
+    before = (title_text or "")[max(0, m.start() - 60):m.start()]
+    found = sheet_ids(before)
+    return found[-1] if found else None
+
+
 def validate_sheet_number(model_value: Optional[str], title_ids: List[str],
-                          page_ids: List[str]) -> Tuple[Optional[str], Optional[str]]:
-    """(sheet_number, flag). The printed ids decide; the model's reading is
-    kept only when it is one of them.
+                          page_ids: List[str],
+                          drawing_index: Optional[Dict[str, int]] = None,
+                          position: Optional[Tuple[int, int]] = None,
+                          title_text: str = "",
+                          ) -> Tuple[Optional[str], Optional[str]]:
+    """(sheet_number, flag). The TITLE BLOCK decides, and nothing else names
+    the sheet.
 
     The case this exists for: S-001.00's title strip reads '2S-001.00' — its
     position in the drawing list glued to its id — and the model returned "2".
+
+    ── WHAT `page_ids` NO LONGER DOES ─────────────────────────────────────
+    #
+    # There used to be a branch here that accepted the model's reading when it
+    # appeared anywhere in the page's text. On the roof plan in
+    # 'AR - 6.9.26 (Gas change).pdf' the title strip yielded nothing, and the
+    # only sheet ids on the page were the five its section bubbles point AT:
+    # A-200, A-201, A-202, A-300, A-301. The model answered "A-300", the branch
+    # confirmed it against a callout, and the roof plan was filed as A-300 —
+    # colliding with the real A-300.00, LONGITUDINAL SECTIONS.
+    #
+    # A callout bubble cannot be told apart from a title-block id by looking at
+    # the text: '16 A-105.00' in a title strip and '1 A-300' in a bubble are
+    # the same shape, and on this project 26 of 113 pages print their own
+    # number that way. So the body text does not get a vote at all. When the
+    # title block yields nothing, the drawing list gets one chance, and then
+    # the page is left UNNUMBERED and flagged. A wrong sheet number is worse
+    # than none: none is a gap, wrong is a sheet that hides another one.
+    #
+    # `page_ids` stays in the signature — callers pass it, and it is still the
+    # right thing to show the model in the prompt.
     """
     def norm(s):
         return re.sub(r"\s+", "", s or "").upper()
 
     v = norm(model_value)
     by_norm = {norm(i): i for i in title_ids}
-    if v and v in by_norm:
-        return by_norm[v], None
+
+    # THE ID PRINTED NEXT TO THE PLACE IS THE SHEET'S OWN. Every title block in
+    # this set reads '... DRAWING NO. SHEET NO. <address> A-105.01 16 OF 31
+    # ROOF AND BULKEAD PLAN'. The bubbles never carry a place.
+    own = _id_beside_position(title_text)
+    if own:
+        return own, (None if v == norm(own) else "sheet_number_corrected")
+
     decimal = [i for i in title_ids if "." in i]
-    preferred = decimal or title_ids
-    if len(preferred) == 1:
-        return preferred[0], ("sheet_number_corrected" if v else "sheet_number_from_text")
-    if v and v in {norm(i) for i in page_ids}:
-        return model_value.strip().upper(), "sheet_number_not_in_title_block"
-    if preferred:
-        return preferred[0], "sheet_number_ambiguous"
-    return (model_value.strip() if model_value else None), ("sheet_number_unverified" if v else None)
+    if len(decimal) == 1:
+        return decimal[0], (None if v == norm(decimal[0])
+                            else ("sheet_number_corrected" if v else "sheet_number_from_text"))
+    if len(decimal) > 1:
+        # Several full ids in the strip: the model picking one of them is a
+        # choice between printed candidates, which is what it is good at.
+        return (by_norm.get(v) or decimal[0]), "sheet_number_ambiguous"
+    if len(title_ids) == 1:
+        return title_ids[0], (None if v == norm(title_ids[0])
+                              else ("sheet_number_corrected" if v else "sheet_number_from_text"))
+    # NOTHING IN THE TITLE BLOCK. The drawing list is the one other place that
+    # names this sheet without guessing: the set's own index says which sheet
+    # is number 16, and the title block says this page is 16 of 31.
+    if position and drawing_index:
+        at = sorted({s for s, n in drawing_index.items() if n == position[0]})
+        if len(at) == 1:
+            return at[0], "sheet_number_from_drawing_list"
+    return None, ("sheet_number_ambiguous" if title_ids else "sheet_number_unresolved")
 
 
 def headings(layout: Dict[str, Any], limit: int = 40, cap: int = 1500) -> str:
@@ -992,6 +1083,7 @@ __all__ = [
     "normalize_glyphs", "split_stacked_fraction", "rebuild_line", "layout_from_dict",
     "page_layouts", "page_dict_from_chars", "drawing_list_index", "file_context", "page_layout_at",
     "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",
+    "sheet_position", "looks_like_a_sheet_number",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
     "callouts_from_text", "stated_quantities", "dimensions_from_text", "material_lines",
     "schedules_from_tables", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",

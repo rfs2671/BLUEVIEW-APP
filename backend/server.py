@@ -40533,9 +40533,13 @@ async def _index_single_page(
             spec_fields = dict(plan_extract.EMPTY_FIELDS)
             spec_fields.update(plan_text.fields_from_layout(
                 layout, boilerplate, tag_vocab or plan_text.SEED_TAGS))
+            _spec_title = plan_text.title_region(layout)
             spec_fields["sheet_number"], _ = plan_text.validate_sheet_number(
-                None, plan_text.sheet_ids(plan_text.title_region(layout)),
-                plan_text.sheet_ids(layout.get("text") or ""))
+                None, plan_text.sheet_ids(_spec_title),
+                plan_text.sheet_ids(layout.get("text") or ""),
+                drawing_index, plan_text.sheet_position(_spec_title), _spec_title)
+            spec_fields["sheet_position"] = list(
+                plan_text.sheet_position(_spec_title) or ()) or None
             heading_text = plan_text.headings(layout)
             spec_fields["sheet_type"] = "notes"
             spec_fields["contents_summary"] = (
@@ -40556,6 +40560,10 @@ async def _index_single_page(
                     project_id, file_id, page_number, page_image_bytes)
             doc.update({
                 "sheet_number":     spec_fields["sheet_number"],
+                "sheet_position":   spec_fields["sheet_position"],
+                "is_document":      bool(spec_fields["sheet_number"]) and not
+                                    plan_text.looks_like_a_sheet_number(
+                                        spec_fields["sheet_number"]),
                 "sheet_title":      None,
                 "sheet_type":       "notes",
                 "keywords":         spec_legacy["keywords"],
@@ -40792,6 +40800,15 @@ async def _index_single_page(
         # The version 2 string fields, filled from the structure, so the
         # thirteen readers of this collection keep working unchanged.
         "sheet_number":       legacy["sheet_number"],
+        # '16 OF 31' — corroborates two numbers being one sheet. See
+        # _supersede_plan_pages.
+        "sheet_position":     fields.get("sheet_position"),
+        # A DOB form numbered 'Page 2 of 2' and a survey numbered '0' are in
+        # the project's files and are not drawings. Their text stays
+        # searchable; they are kept out of sheet lookup and out of the sheet
+        # index the agent is given, where they read as sheets that exist.
+        "is_document":        bool(legacy["sheet_number"]) and not
+                              plan_text.looks_like_a_sheet_number(legacy["sheet_number"]),
         "sheet_title":        legacy["sheet_title"],
         "floor":              legacy["floor"],
         "keywords":           legacy["keywords"],
@@ -41563,6 +41580,9 @@ def _file_upload_order(fr: dict) -> tuple:
 # architectural set is not a newer version of the structural set's T-001.00,
 # and EN-001.00 energy sheets and GN general sheets repeat the same way.
 _NEVER_SUPERSEDE_ACROSS_SETS = frozenset({"T", "EN", "GN"})
+
+# The '.01' of a partial reissue. Standard drafting: same sheet, revised.
+_SHEET_SUFFIX_RE = re.compile(r"\.\d{1,2}$")
 _SHEET_DATE_RE = re.compile(r"(?<!\d)(\d{1,4})[./\-_](\d{1,2})[./\-_](\d{2,4})(?!\d)")
 
 
@@ -41610,9 +41630,12 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     # This used to be "the newest upload wins", and on 588 Boyland that hid
     # the June 2026 owners set behind the March 2025 architectural set, because
     # the March set had been re-synced most recently. Now, in order:
-    #   1. the revision date read from the title block
-    #   2. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   1. the date in the file name ('Owners set - 6.9.26.pdf')
+    #   2. the revision date read from the title block
     #   3. upload time
+    # See _order for why the title-block date is the tie-break and not the
+    # lead: it is the date of a revision cloud, and the sheet that supersedes
+    # another frequently carries none.
     #
     # ── WITHIN A SET, AND NEVER FOR COVER / ENERGY / GENERAL SHEETS ────────
     #
@@ -41641,11 +41664,27 @@ async def _supersede_plan_pages(project_id: str) -> dict:
     rows = await db.document_page_index.find(
         {"project_id": project_id, "file_id": {"$in": list(uploaded)}},
         {"_id": 1, "file_id": 1, "file_hash": 1, "page_number": 1,
-         "sheet_number": 1, "superseded_by": 1, "revision_date": 1},
+         "sheet_number": 1, "superseded_by": 1, "revision_date": 1,
+         "sheet_position": 1},
     ).to_list(20000)
 
     def _norm(sn):
         return re.sub(r"\s+", "", str(sn or "")).upper()
+
+    # ── A .01 IS THE SAME SHEET, REVISED ───────────────────────────────────
+    #
+    # 'AR - 8.18.26.pdf' reissues ten sheets of the March architectural set and
+    # bumps every suffix: A-105.00 becomes A-105.01, keeping its place in the
+    # set ('16 OF 31' on both). Matching on the exact string left both current,
+    # and the project carried nine duplicated sheets — three roof plans among
+    # them — until 2026-09-16.
+    #
+    # The stem goes in its OWN key space. Stemming into the ordinary sheet key
+    # would let a number with no suffix collide with one that has it: on this
+    # project a roof plan misfiled as 'A-300' would have hidden the real
+    # A-300.00, LONGITUDINAL SECTIONS, which is the opposite of the point.
+    def _stem_key(sn):
+        return _SHEET_SUFFIX_RE.sub("", sn)
 
     prefixes: Dict[str, _Counter] = {}
     for r in rows:
@@ -41660,7 +41699,18 @@ async def _supersede_plan_pages(project_id: str) -> dict:
             out.append(("hash", r["file_hash"], r.get("page_number")))
         sn = _norm(r.get("sheet_number"))
         fam = family.get(r.get("file_id"))
-        if sn and fam and _sheet_prefix(sn) not in _NEVER_SUPERSEDE_ACROSS_SETS:
+        if not sn or not fam:
+            return out
+        # T-, EN- and GN- stay out of the exact-number key: that is the one
+        # that hid the structural set's T-001.00 behind the architectural
+        # set's, and MH's EN-001.00 behind PL's. They DO get a stem key, and
+        # the pass below keeps only the ones that are a genuine reissue —
+        # AR - 8.18.26's T-001.01 for AR - 3.28.25's T-001.00. Two files of the
+        # same discipline that both print GN-001.00 are not a reissue of each
+        # other and neither is hidden.
+        if _SHEET_SUFFIX_RE.search(sn):
+            out.append(("stem", fam, _stem_key(sn)))
+        elif _sheet_prefix(sn) not in _NEVER_SUPERSEDE_ACROSS_SETS:
             out.append(("sheet", fam, sn))
         return out
 
@@ -41669,11 +41719,49 @@ async def _supersede_plan_pages(project_id: str) -> dict:
         for k in _keys(r):
             members.setdefault(k, {}).setdefault(r.get("file_id"), []).append(r)
 
+    # ── THE FILE'S DATE LEADS ──────────────────────────────────────────────
+    #
+    # A title-block revision date is the date of the last revision CLOUD on
+    # that sheet. It is not the date the set was issued, and the sheet that
+    # replaces another often carries none at all: AR - 3.28.25's Z-001.00
+    # carries 2/27/2025 and AR - 8.18.26's Z-001.01 carries nothing, so
+    # reading the revision date first put the March sheet above the August one
+    # and the reissue superseded itself backwards.
+    #
+    # The failure is not particular to a reissue. Any pair where only the older
+    # sheet was ever clouded picks the wrong winner the same way, and the
+    # revision date is only evidence about the newer drawing when the newer
+    # drawing actually carries one. The file is the issue; the date on the file
+    # is the date of the issue; the revision date breaks ties between two
+    # issues of the same day.
     def _order(fid, file_rows):
         revs = [d for d in (_parse_sheet_date(x.get("revision_date")) for x in file_rows) if d]
-        return (max(revs) if revs else _date.min,
-                name_date.get(fid) or _date.min,
+        return (name_date.get(fid) or _date.min,
+                max(revs) if revs else _date.min,
                 uploaded[fid])
+
+    # A COVER SHEET IS REISSUED, NOT DUPLICATED. T-, EN- and GN- reach the
+    # stem key so that T-001.00 and T-001.01 of one architectural set resolve
+    # to one cover. Where every row under the stem carries the SAME number,
+    # nothing was reissued — it is the same general sheet bound into two
+    # issues — and the old exclusion still applies.
+    for k in [k for k in members
+              if k[0] == "stem" and _sheet_prefix(k[2]) in _NEVER_SUPERSEDE_ACROSS_SETS]:
+        numbers = {_norm(r.get("sheet_number")) for rs in members[k].values() for r in rs}
+        if len(numbers) < 2:
+            del members[k]
+
+    # THE SET'S OWN INDEX GETS A VETO. Two sheets whose title blocks claim
+    # DIFFERENT places in the set are different sheets, whatever their numbers
+    # stem to. Corroboration only: a page whose title block does not print its
+    # place says nothing either way, and most do not.
+    for k in [k for k in members if k[0] == "stem"]:
+        places = {tuple(r["sheet_position"]) for rs in members[k].values() for r in rs
+                  if r.get("sheet_position")}
+        if len(places) > 1:
+            logger.info(f"plan supersession {project_id}: {k[2]} left alone, "
+                        f"title blocks claim {sorted(places)}")
+            del members[k]
 
     winners: Dict[tuple, Tuple[str, tuple]] = {}
     for k, by_file in members.items():
@@ -42238,6 +42326,8 @@ async def _find_named_sheet(project_id: str, sheet_q: str) -> list:
     live_ids = await _live_plan_file_ids(project_id)
     q = {"project_id": project_id,
          "sheet_number": {"$regex": pattern, "$options": "i"},
+         # A permit form numbered '0' or 'F' is not a sheet anyone can be sent.
+         "is_document": {"$ne": True},
          **_current_page_filter(live_ids)}
     try:
         rows = await db.document_page_index.find(q, _PAGE_FIELDS).to_list(10)
@@ -44596,6 +44686,7 @@ async def _sheet_index_lines(project_id: str) -> list:
     try:
         rows = await db.document_page_index.find(
             {"project_id": str(project_id), "sheet_number": {"$ne": None},
+             "is_document": {"$ne": True},
              **_current_page_filter(live_ids)},
             {"sheet_number": 1, "sheet_title": 1},
         ).limit(_SHEET_INDEX_CAP + 1).to_list(_SHEET_INDEX_CAP + 1)
