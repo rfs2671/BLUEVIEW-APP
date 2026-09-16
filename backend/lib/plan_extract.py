@@ -444,6 +444,47 @@ EMPTY_FIELDS: Dict[str, Any] = {
 }
 
 
+# THE SHEET SAYS WHAT A MARK MEANS, OR NOTHING DOES. The model reads the mark
+# off the image and, where the sheet prints no expansion beside it, supplies
+# one from what it knows. On 588 Boyland that produced 'KE 1 = KICKER 1' and
+# 'TE 1 = THERMOSTATIC EXPANSION VALVE 1' alongside the correct 'KITCHEN
+# EXHAUST' and 'TOILET EXHAUST', and two of those guesses were corroborated on
+# a second sheet, because the same legend is misread the same way every time.
+#
+# This is the counting rule applied to words: extraction may report what is
+# PRINTED and nothing else. A mark whose meaning is not on the page keeps its
+# mark and loses its meaning — 'KE 1' is a true record, 'KICKER 1' is not.
+#
+# A page with no text layer cannot be checked against itself. There the model
+# IS the reader, the entries are kept, and they are marked unverified, exactly
+# as a schedule read off the image is.
+LEGEND_CHECKABLE_MIN_CHARS = 400
+
+
+def _legend_norm(t: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", " ", (t or "").upper()).strip()
+
+
+def constrain_legend_to_page(entries: List[Dict[str, Any]], page_text: str
+                             ) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """(entries, flags). Meanings the page does not print are removed."""
+    entries = entries or []
+    hay = _legend_norm(page_text)
+    if len(hay) < LEGEND_CHECKABLE_MIN_CHARS:
+        return ([dict(e, verified=False) for e in entries],
+                ([f"legend_unverifiable:{len(entries)}"] if entries else []))
+    out, dropped = [], 0
+    for e in entries:
+        mean = _legend_norm(e.get("meaning"))
+        if mean and mean in hay:
+            out.append(dict(e, verified=True))
+            continue
+        if (e.get("symbol") or "").strip():
+            out.append(dict(e, meaning="", verified=True))
+        dropped += 1
+    return out, ([f"legend_meaning_not_printed:{dropped}"] if dropped else [])
+
+
 def merge_sections(sections: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Every field present, whichever sections succeeded."""
     out = json.loads(json.dumps(EMPTY_FIELDS))
@@ -672,6 +713,9 @@ async def extract_page(*, image_b64: str, page_text: str, vlm_call: VlmCall,
         flags[name] = f
 
     fields = merge_sections(sections)
+    if fields.get("legend"):
+        fields["legend"], lflags = constrain_legend_to_page(fields["legend"], page_text or "")
+        flags.setdefault("notes", []).extend(lflags)
     number_flags = verify_numbers(fields, page_text or "")
     return {
         "fields": fields,
@@ -859,6 +903,10 @@ async def extract_vector_page(*, image_b64: str, layout: Dict[str, Any], vlm_cal
         for k in ("legend", "callouts"):
             if clean.get(k) and not fields.get(k):
                 fields[k] = clean[k]
+        if fields.get("legend"):
+            fields["legend"], lflags = constrain_legend_to_page(
+                fields["legend"], layout.get("text") or "")
+            f.extend(lflags)
         if clean or not any(x.startswith(("call_failed", "unparseable")) for x in f):
             f.append(f"notes_found:{len(clean.get('notes') or [])}")
         flags["notes_fallback"] = f
@@ -1789,6 +1837,7 @@ __all__ = [
     "EXTRACTION_VERSION", "SECTIONS", "SECTION_MAX_TOKENS", "REPEAT_MIN_RUN",
     "VECTOR_TEXT_THRESHOLD", "detect_repetition", "parse_json_loose",
     "validate_section", "merge_sections", "verify_numbers", "number_in_text",
+    "constrain_legend_to_page",
     "boilerplate_lines", "strip_boilerplate", "classify_text_source",
     "section_prompt", "extract_page", "legacy_fields", "embedding_text",
     "build_chunks", "answer_count", "answer_existence", "format_count_answer",

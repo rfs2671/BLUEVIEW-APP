@@ -133,6 +133,7 @@ def layout_from_dict(page_dict: Dict[str, Any], *, width: float, height: float,
                      page_number: int, tables: Optional[List[Dict[str, Any]]] = None
                      ) -> Dict[str, Any]:
     """Blocks of rebuilt lines, the page text, and the fraction bookkeeping."""
+    page = page_dict
     raw_blocks = [b for b in page_dict.get("blocks") or [] if b.get("type", 0) == 0]
     all_sizes = [float(s.get("size") or 0)
                  for b in raw_blocks for l in b.get("lines") or []
@@ -144,6 +145,7 @@ def layout_from_dict(page_dict: Dict[str, Any], *, width: float, height: float,
     unverified: List[str] = []
     for b in raw_blocks:
         lines: List[str] = []
+        line_bboxes: List[List[float]] = []
         for l in b.get("lines") or []:
             spans = [s for s in l.get("spans") or [] if s.get("text")]
             if not spans:
@@ -159,9 +161,12 @@ def layout_from_dict(page_dict: Dict[str, Any], *, width: float, height: float,
                 # A fraction piece on its own. Kept, not guessed, not dropped.
                 unverified.append(core)
             lines.append(core)
+            line_bboxes.append([float(v) for v in (l.get("bbox") or b.get("bbox")
+                                                   or (0, 0, 0, 0))])
         if lines:
             blocks.append({"bbox": [float(x) for x in b.get("bbox") or (0, 0, 0, 0)],
-                           "lines": lines, "text": "\n".join(lines)})
+                           "lines": lines, "line_bboxes": line_bboxes,
+                           "text": "\n".join(lines)})
     return {
         "page_number": page_number,
         "width": float(width), "height": float(height),
@@ -170,6 +175,8 @@ def layout_from_dict(page_dict: Dict[str, Any], *, width: float, height: float,
         "tables": tables or [],
         "fractions_rebuilt": fixed_total,
         "fractions_unverified": unverified[:200],
+        "lines_mirrored": int(page.get("lines_mirrored") or 0),
+        "lines_dropped_mirrored": int(page.get("lines_dropped_mirrored") or 0),
     }
 
 
@@ -236,11 +243,18 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
                 if gap > _SPACE_GAP * min(cur["last_size"], size) and text != " " \
                         and not cur["chars"][-1]["text"].endswith(" "):
                     cur["chars"].append({"text": " ", "size": cur["last_size"]})
+                # WHICH WAY THE LINE IS BEING WRITTEN. A page rotated in the
+                # PDF can emit its glyphs right to left along the same text
+                # direction, and the line comes out mirrored: 'GNIDLIUB' for
+                # BUILDING. _LINE_ALONG_BACK allows a step backwards, because a
+                # stacked fraction needs one, so the join itself cannot refuse.
+                cur["back" if along < 0 else "fwd"] += 1
                 joined = True
         if not joined:
             cur = {"d": d, "chars": [], "max_size": size, "start_c": c,
                    "x0": float(ch["x0"]), "x1": float(ch["x1"]),
-                   "top": float(ch["top"]), "bottom": float(ch["bottom"])}
+                   "top": float(ch["top"]), "bottom": float(ch["bottom"]),
+                   "fwd": 0, "back": 0}
             lines.append(cur)
         cur["chars"].append({"text": text, "size": size})
         cur["last_c"], cur["last_ext"], cur["last_size"] = c, ext, size
@@ -259,11 +273,35 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
                 spans.append({"text": c["text"], "size": c["size"]})
         return spans
 
+    # A MIRRORED LINE IS NOT A LINE. Every step backwards and none forwards is
+    # a line written right to left: reverse it and it reads. Steps in BOTH
+    # directions is a line whose reading order cannot be recovered from the
+    # order the glyphs were drawn in, and it is dropped rather than quoted — a
+    # reversed string inside a citation is a fabrication that looks verified,
+    # and nothing downstream can tell it from a real quote.
+    mirrored = dropped = 0
+    kept: List[Dict[str, Any]] = []
+    for ln in lines:
+        real = [c for c in ln["chars"] if (c["text"] or "").strip()]
+        if ln["back"] > 0 and len(real) > 1:
+            if ln["fwd"] == 0:
+                ln["chars"] = list(reversed(ln["chars"]))
+                mirrored += 1
+            elif ln["back"] > ln["fwd"]:
+                dropped += 1
+                continue
+        kept.append(ln)
+    lines = kept
+
     blocks: List[Dict[str, Any]] = []
     prev = None
     for ln in lines:
-        entry = {"spans": spans_of(ln["chars"])}
         bbox = [ln["x0"], ln["top"], ln["x1"], ln["bottom"]]
+        # A LEGEND CELL IS A LINE, NOT A BLOCK. Three stacked labels arrive as
+        # one block, and pairing whole blocks produced 'A = EXIT SIGN DOOR TAG
+        # WINDOW TAG'. The line keeps its own box so a legend can be read row
+        # by row.
+        entry = {"spans": spans_of(ln["chars"]), "bbox": list(bbox)}
         same_block = False
         if prev is not None and (ln["d"][0] * prev["d"][0] + ln["d"][1] * prev["d"][1]) > 0.98:
             vx = ln["start_c"][0] - prev["start_c"][0]
@@ -282,7 +320,8 @@ def page_dict_from_chars(chars: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             blocks.append({"type": 0, "bbox": bbox, "lines": [entry]})
         prev = ln
-    return {"blocks": blocks}
+    return {"blocks": blocks, "lines_mirrored": mirrored,
+            "lines_dropped_mirrored": dropped}
 
 
 def page_layouts(pdf_bytes: bytes, *, pages: Optional[Iterable[int]] = None,
@@ -696,8 +735,66 @@ def notes_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
 LEGEND_RADIUS = 260.0
 
 
+# A legend is TWO COLUMNS: the mark, and what it means, on the same row.
+# Radius-based pairing ignored that, and on the architectural sheets it matched
+# symbols from one column to wall-type text from another — 'EXIT SIGN = 2.5"
+# STUD, 1 LAYER GYB.' and 'EXHAUST FAN = 6" STUD, R19 BATT-R11.5 RIGID INSU.,
+# STUCCO FINISH', both corroborated on two sheets because the same legend block
+# is extracted the same wrong way every time it appears.
+SYMBOL_MAX_CHARS = 14        # a mark is short: 'PTAC-1', 'RD OD', 'DHW&R'
+LEGEND_ROW_TOL = 0.60        # share of a row's height two blocks may differ by
+LEGEND_HEIGHT_RATIO = 1.6    # a taller text is a label that wrapped, not this row
+LEGEND_GAP_RATIO = 8.0       # a text further right than this is another column
+
+
+def _row_overlap(a: List[float], b: List[float]) -> float:
+    """Vertical overlap of two bboxes as a share of the shorter one."""
+    top, bot = max(a[1], b[1]), min(a[3], b[3])
+    short = min(a[3] - a[1], b[3] - b[1]) or 1.0
+    return max(0.0, bot - top) / short
+
+
+# What a MARK looks like, as opposed to a short phrase. 'RD OD', 'PTAC-1',
+# 'DHW&R', 'W1' and 'A' are marks; 'PTAC UNIT', 'EXIT SIGN' and 'EXHAUST FAN'
+# are what a mark MEANS, and reading them as marks is how a symbol column got
+# paired to the wrong text. Every token has to be mark-shaped: short, or
+# carrying a digit or a connector.
+_SYMBOL_TOKEN = re.compile(r"[A-Z0-9&/.\-\"']+")
+
+
+def _looks_like_a_symbol(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or len(t) > SYMBOL_MAX_CHARS:
+        return False
+    toks = t.split()
+    if not toks or len(toks) > 2:
+        return False
+    return all(_SYMBOL_TOKEN.fullmatch(tok)
+               and (len(tok) <= 3 or re.search(r"[0-9&/]", tok)) for tok in toks)
+
+
 def legend_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, str]], set]:
-    """(entries, indices of the blocks they came from)."""
+    """(entries, indices of the blocks they came from).
+
+    A mark is paired with the text on ITS OWN ROW, to its right, and ONLY when
+    the geometry leaves no choice: one mark, one text, similar heights, a small
+    gap. Anything else is reported unpaired.
+
+    ── WHY IT REFUSES ─────────────────────────────────────────────────────
+    #
+    # Radius matching gave 'EXIT SIGN = 2.5" STUD, 1 LAYER GYB.' and 'EXHAUST
+    # FAN = 6" STUD, R19 BATT-R11.5 RIGID INSU., STUCCO FINISH' — symbols from
+    # one column against wall types from another, on two sheets each, because
+    # the same legend is misread the same way every time it appears.
+    #
+    # Row matching alone is not enough either. A-100.00 stacks SD and CM
+    # against ONE label that wraps over two lines, and pairing by row gives
+    # 'SD = SMOKE/CARBON MONOXIDE' and 'CM = DETECTOR': two records, both
+    # wrong, both looking exactly like the right answer. The wrapped label is
+    # twice the height of the mark beside it, and that is the tell.
+    #
+    # An unpaired mark and an unpaired text are both true records of what is
+    # printed. A wrong pair is not, and nothing downstream can catch it."""
     out: List[Dict[str, str]] = []
     consumed: set = set()
     for i, b in enumerate(blocks):
@@ -705,21 +802,54 @@ def legend_from_blocks(blocks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, str
         if "LEGEND" not in first or len(first) > 40:
             continue
         consumed.add(i)
+        hb = b["bbox"]
         if len(b["lines"]) > 1:
             for line in b["lines"][1:]:
                 if line.strip():
-                    out.append({"symbol": "", "meaning": line.strip()[:200]})
+                    out.append({"symbol": "", "meaning": line.strip()[:200],
+                                "pair": "same_block"})
             continue
-        hb = b["bbox"]
+        cells = []
         for j, o in enumerate(blocks):
             if j == i or j in consumed:
                 continue
             text = " ".join(l.strip() for l in o["lines"] if l.strip())
-            if (_bbox_gap(hb, o["bbox"]) <= LEGEND_RADIUS and o["bbox"][1] >= hb[1] - 2
-                    and len(text) <= 80 and re.search(r"[A-Za-z]{3,}", text)
-                    and "LEGEND" not in text.upper()):
-                out.append({"symbol": "", "meaning": text[:200]})
-                consumed.add(j)
+            if not text or len(text) > 200 or "LEGEND" in text.upper():
+                continue
+            if _bbox_gap(hb, o["bbox"]) > LEGEND_RADIUS or o["bbox"][1] < hb[1] - 2:
+                continue
+            cells.append((j, [float(v) for v in o["bbox"]], text))
+        used: set = set()
+        for idx, (j, bb, text) in enumerate(cells):
+            if idx in used or not _looks_like_a_symbol(text):
+                continue
+            h = max(1.0, bb[3] - bb[1])
+            mates = []
+            for m, (k, kb, ktext) in enumerate(cells):
+                if m in used or m == idx or kb[0] < bb[2]:
+                    continue                          # must sit to the RIGHT
+                if _row_overlap(bb, kb) < LEGEND_ROW_TOL:
+                    continue                          # must share the row
+                if not re.search(r"[A-Za-z]{3,}", ktext):
+                    continue
+                if (kb[3] - kb[1]) > LEGEND_HEIGHT_RATIO * h:
+                    continue                          # a wrapped label, not this row's
+                if kb[0] - bb[2] > LEGEND_GAP_RATIO * h:
+                    continue                          # too far to be its own column
+                mates.append((m, k, ktext))
+            if len(mates) == 1:
+                m, k, ktext = mates[0]
+                out.append({"symbol": text[:60], "meaning": ktext[:200], "pair": "row"})
+                used.add(idx); used.add(m)
+                consumed.add(j); consumed.add(k)
+            else:
+                out.append({"symbol": text[:60], "meaning": "", "pair": "unpaired"})
+                used.add(idx); consumed.add(j)
+        for idx, (j, bb, text) in enumerate(cells):
+            if idx in used or not re.search(r"[A-Za-z]{3,}", text):
+                continue
+            out.append({"symbol": "", "meaning": text[:200], "pair": "unpaired"})
+            consumed.add(j)
     return out[:80], consumed
 
 
@@ -770,14 +900,67 @@ def callouts_from_text(text: str) -> List[Dict[str, Any]]:
 _STATED_QTY = re.compile(r"\((\d{1,4})\)[ \t]*([A-Z][A-Z0-9 \-/&.]{2,40}?)[ \t]*(?=$|,|;)", re.M)
 
 
-def stated_quantities(text: str) -> List[Dict[str, Any]]:
-    """'(4) ROOF DRAINS' — a quantity PRINTED on the sheet. Verified by
-    construction: it was read from the text, not from a picture."""
-    out = []
-    for m in _STATED_QTY.finditer(text or ""):
-        out.append({"name": m.group(2).strip()[:120], "count_if_stated": int(m.group(1)),
-                    "location_hint": "text layer", "count_verified": True})
+def elements_from_evidence(legend: List[Dict[str, Any]],
+                           schedules: List[Dict[str, Any]],
+                           tag_counts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Things on the sheet that a builder counts or locates.
+
+    ── WHY THIS IS NOT READ FROM THE PROSE ───────────────────────────────
+    #
+    # It used to be: a regex for '(N) SOMETHING' over the page text. On 588
+    # Boyland that produced nine element records, of which seven were sentence
+    # fragments — 'WORKING DAYS TO PERFORM REVIEW count=10', 'OF THE NEW YORK
+    # CITY BUILDING CODE count=7', 'TWO TIMES TO SIGNAL EVACUATION count=2' —
+    # each marked count_verified, because 'verified' only ever meant the digits
+    # were in the text, which they were, having been taken from it.
+    #
+    # An element now needs something structural behind it: a legend symbol, a
+    # schedule row, or a tag counted on the plan. Nothing is inferred from a
+    # sentence.
+    """
+    out: List[Dict[str, Any]] = []
+    meaning_of = {(e.get("symbol") or "").strip(): (e.get("meaning") or "").strip()
+                  for e in legend or [] if (e.get("symbol") or "").strip()}
+    for e in legend or []:
+        sym, mean = (e.get("symbol") or "").strip(), (e.get("meaning") or "").strip()
+        if not sym:
+            continue
+        out.append({"name": mean or sym, "tag": sym, "count_if_stated": None,
+                    "count_basis": "not_stated", "location_hint": "legend"})
+    for t in tag_counts or []:
+        tag = (t.get("tag") or "").strip()
+        if not tag:
+            continue
+        out.append({"name": meaning_of.get(tag) or tag, "tag": tag,
+                    "count_if_stated": t.get("count"),
+                    "count_basis": "tag_occurrences", "location_hint": "tags on the sheet"})
+    for sc in schedules or []:
+        cols = [str(c or "") for c in (sc.get("columns") or [])]
+        qty = _qty_column_index(cols)
+        for row in (sc.get("rows") or [])[:200]:
+            mark = str((row or [""])[0] or "").strip()
+            if not mark or not _looks_like_a_symbol(mark):
+                continue
+            n = None
+            if qty is not None and qty < len(row):
+                cell = str(row[qty] or "").strip()
+                n = int(cell) if re.fullmatch(r"\d{1,6}", cell) else None
+            out.append({"name": meaning_of.get(mark) or mark, "tag": mark,
+                        "count_if_stated": n,
+                        "count_basis": "schedule_qty" if n is not None else "not_stated",
+                        "location_hint": (sc.get("name") or "schedule")[:120]})
     return out[:150]
+
+
+_QTY_HEADER_WORDS = ("qty", "quantity", "no.", "number", "count", "total")
+
+
+def _qty_column_index(columns: List[str]) -> Optional[int]:
+    for i, c in enumerate(columns or []):
+        h = (c or "").strip().lower()
+        if h in _QTY_HEADER_WORDS or "qty" in h or "quantity" in h:
+            return i
+    return None
 
 
 _DIM_RE = re.compile(
@@ -875,6 +1058,15 @@ def tag_vocabulary(layouts: Iterable[Optional[Dict[str, Any]]]) -> FrozenSet[str
     for L in layouts:
         if not L:
             continue
+        # THE SHEET'S OWN LEGEND IS THE TAG LIST. Every mark the legend column
+        # prints is a mark worth counting on the plan, whether or not it is in
+        # the seed set — the seed set is a dozen MEP abbreviations and cannot
+        # know what this drafter uses.
+        for e, _used in [legend_from_blocks(L.get("blocks") or [])]:
+            for entry in e:
+                sym = (entry.get("symbol") or "").strip()
+                if sym and not SHEET_ID_RE.match(sym):
+                    vocab.add(sym)
         for b in L.get("blocks") or []:
             if classify_block(b["text"]) == "label":
                 continue
@@ -967,19 +1159,22 @@ def fields_from_layout(layout: Dict[str, Any], boilerplate: FrozenSet[str] = fro
     used = note_blocks | legend_blocks
     text_blocks = [{"kind": classify_block(b["text"]), "text": b["text"]}
                    for i, b in enumerate(blocks) if i not in used]
-    return {
+    tags = count_tags({"blocks": blocks}, tag_vocab, frozenset(used))
+    out = {
         "schedules": schedules_from_tables(layout.get("tables") or [],
                                            layout.get("width") or 0, layout.get("height") or 0),
         "notes": notes,
         "legend": legend,
         "callouts": callouts_from_text(text),
-        "elements": stated_quantities(text),
+        "elements": [],   # filled below, from structure only
         "dimensions": dimensions_from_text(text),
         "dimensions_unverified": list(layout.get("fractions_unverified") or []),
         "materials": material_lines(blocks),
-        "tag_counts": count_tags({"blocks": blocks}, tag_vocab, frozenset(used)),
+        "tag_counts": tags,
         "text_blocks": text_blocks,
     }
+    out["elements"] = elements_from_evidence(legend, out["schedules"], tags)
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1085,7 +1280,7 @@ __all__ = [
     "SHEET_ID_RE", "sheet_ids", "title_region", "validate_sheet_number",
     "sheet_position", "looks_like_a_sheet_number",
     "headings", "classify_block", "notes_from_blocks", "legend_from_blocks",
-    "callouts_from_text", "stated_quantities", "dimensions_from_text", "material_lines",
+    "callouts_from_text", "elements_from_evidence", "dimensions_from_text", "material_lines",
     "schedules_from_tables", "SEED_TAGS", "TAG_SOURCE", "tag_vocabulary", "count_tags",
     "fields_from_layout",
 ]

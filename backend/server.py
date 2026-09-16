@@ -40393,7 +40393,7 @@ async def _ocr_page_text(project_id: str, jpeg_bytes: bytes) -> Tuple[str, Optio
 
 async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
                              file_hash: str, page_number: int, fields: dict,
-                             boilerplate) -> int:
+                             boilerplate, discipline: Optional[str] = None) -> int:
     """Replace this page's chunks. The page row must already exist."""
     page = await db.document_page_index.find_one(
         {"file_id": file_id, "page_number": page_number}, {"_id": 1})
@@ -40416,6 +40416,13 @@ async def _write_page_chunks(*, project_id: str, company_id: str, file_id: str,
             "page_id": str(page["_id"]), "page_number": page_number,
             "sheet_number": fields.get("sheet_number"),
             "sheet_title": fields.get("sheet_title"),
+            # THE SAME MARK MEANS DIFFERENT THINGS IN DIFFERENT SETS. On 588
+            # Boyland 'S' is the sanitary stack on five plumbing sheets, the
+            # storm stack on two, and a smoke detector on one architectural
+            # sheet. All three readings are correct. A record carries the
+            # discipline it was read in so nothing downstream can merge them
+            # into one project-wide meaning.
+            "discipline": discipline or fields.get("discipline"),
             "chunk_type": c["chunk_type"], "ordinal": c["ordinal"],
             "text": c["text"], "payload": c["payload"],
             "embedding": emb if isinstance(emb, list) else None,
@@ -40592,7 +40599,7 @@ async def _index_single_page(
                 await _write_page_chunks(
                     project_id=project_id, company_id=company_id, file_id=file_id,
                     file_hash=file_hash, page_number=page_number, fields=spec_fields,
-                    boilerplate=boilerplate,
+                    boilerplate=boilerplate, discipline=discipline,
                 )
             except Exception as e:
                 logger.exception("spec page chunks failed %s p%s: %r", file_name, page_number, e)
@@ -40850,7 +40857,7 @@ async def _index_single_page(
         await _write_page_chunks(
             project_id=project_id, company_id=company_id, file_id=file_id,
             file_hash=file_hash, page_number=page_number, fields=fields,
-            boilerplate=boilerplate,
+            boilerplate=boilerplate, discipline=discipline,
         )
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
